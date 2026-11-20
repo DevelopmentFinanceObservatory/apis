@@ -725,25 +725,24 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> Resp
                 options=options,
                 trace_id=trace_id,
             )
-            answer = (
-                StoredHeadAnswer(
-                    manifest=await _run_retrieval(
-                        deps.work_executor,
-                        retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
-                        timings=call.timings,
-                        stored=head_answer.stored,
-                        options=options,
-                        trigger="get",
-                        deps=request_deps,
-                        trace_id=trace_id,
-                        head_read=head_answer,
-                        revoked_under=(id,),
-                    ),
-                    freshness="current",
+            if isinstance(head_answer, HeadRead):
+                manifest = await _run_retrieval(
+                    deps.work_executor,
+                    retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
+                    timings=call.timings,
+                    stored=head_answer.stored,
+                    options=options,
+                    trigger="get",
+                    deps=request_deps,
+                    trace_id=trace_id,
+                    head_read=head_answer,
+                    revoked_under=(id,),
                 )
-                if isinstance(head_answer, HeadRead)
-                else head_answer
-            )
+                # The work executor judged the head in this request.
+                call.timings.label("freshness", "current")
+                answer = StoredHeadAnswer(manifest=manifest, freshness="current")
+            else:
+                answer = head_answer
             record_manifest(answer.manifest)
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
@@ -771,6 +770,8 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> Resp
         content_version=answer.manifest.content_version,
     )
     if etag_matches(request.headers.get("if-none-match"), etag):
+        if call.delivery is not None:
+            call.delivery.revalidated = True
         return call.delivered(Response(status_code=304, headers=headers))
     response.headers.update(headers)
     return call.delivered(response)

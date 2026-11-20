@@ -10,12 +10,16 @@ the currency tests' doubles, and the task queue records its tasks.
 
 from __future__ import annotations
 
-from datetime import timedelta
+import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from datasets_api.operation_store import LiveOperationStore
-from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
+from datasets_api.operations.head_check import HEAD_CHECK_OPTIONS
+from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, FakeTaskClient
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 
 from ._operation_store import FakeOperationDatasetStore
 from .test_definition_door import _CSV_HEADER, _RECIPIENT, _STAT_VAR, _STAT_VAR_REF, _mint_one_spec
@@ -38,7 +42,19 @@ _IDENTITY = {"accept-encoding": "identity"}
 
 
 class _RaisingTaskClient:
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    """Fails every create, counting them."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        self.calls += 1
         raise RuntimeError("cloud tasks unavailable")
 
 
@@ -47,10 +63,18 @@ class _SwitchableTaskClient(FakeTaskClient):
 
     failing = False
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         if self.failing:
             raise RuntimeError("cloud tasks unavailable")
-        super().enqueue(operation_id=operation_id, submission_count=submission_count)
+        super().enqueue(
+            operation_id=operation_id, submission_count=submission_count, timeout=timeout
+        )
 
 
 class _Rig:
@@ -133,12 +157,23 @@ def test_a_get_inside_the_window_answers_current_and_submits_nothing():
     assert rig.task_client.enqueued == []
 
 
-def test_a_get_past_the_serve_stale_ceiling_rebuilds_in_the_request():
+def test_a_get_past_the_serve_stale_ceiling_rebuilds_in_the_request(
+    caplog: pytest.LogCaptureFixture,
+):
     rig = _Rig()
     rig.head_store.age_head(rig.spec_id, age=_PAST_SERVE_STALE_CEILING)
     sdmx_calls = rig.sdmx_calls.n
 
-    resp = rig.get()
+    with caplog.at_level(logging.INFO):
+        resp = rig.get()
+
+    # The timings line labels the freshness on the work executor's path too.
+    (timings,) = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("datasets.timings door=definition ")
+    ]
+    assert " freshness=current " in timings
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["trace"]["served_from"] == "materialise"
@@ -191,18 +226,87 @@ def test_a_get_whose_check_cannot_be_submitted_serves_the_head_stale(rig):
     assert resp.headers["cache-control"] == "no-cache"
 
 
-def test_a_revalidation_naming_the_etag_answers_304_with_the_same_headers():
-    rig = _Rig()
-    first = rig.get(**_IDENTITY)
-    etag = first.headers["etag"]
-    assert etag.startswith('"'), etag
+def test_stale_reads_against_a_failing_task_queue_all_answer_and_create_once():
+    """Inside the recovery interval only the read that wrote the check creates its task, so a
+    Cloud Tasks outage costs one short create per spec, and every read still answers."""
+    task_client = _RaisingTaskClient()
+    rig = _Rig(task_client=task_client)
+    rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
 
-    revalidated = rig.get(**_IDENTITY, **{"if-none-match": etag})
+    answers = [rig.get() for _ in range(5)]
+
+    assert [resp.status_code for resp in answers] == [200] * 5
+    assert {resp.headers["x-dfo-freshness"] for resp in answers} == {"stale"}
+    assert task_client.calls == 1
+
+
+def test_readers_of_every_rendering_share_one_check():
+    """The check carries one rendering whatever the read asked for, so a reader of another
+    rendering the head holds joins the same row and creates no second task."""
+    rig = _Rig()
+    held = rig.get("?format=parquet&bundle=false")
+    assert held.status_code == 200, held.text
+    rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
+
+    csv = rig.get()
+    parquet = rig.get("?format=parquet&bundle=false")
+
+    for resp in (csv, parquet):
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trace"]["served_from"] == "head"
+        assert resp.headers["x-dfo-freshness"] == "pending"
+    ((operation_id, _),) = rig.task_client.enqueued
+    check = rig.operation_store.get(operation_id)
+    assert check is not None
+    assert check.options == HEAD_CHECK_OPTIONS.model_dump(mode="json")
+
+
+def test_a_get_whose_check_failed_for_good_judges_the_head_in_the_request():
+    """A check that ended on a refusal stays failed, so the GET takes the in-request path, which
+    judges the head and answers what it finds, refusal included, in place of `stale`."""
+    rig = _Rig()
+    rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    assert rig.get().headers["x-dfo-freshness"] == "pending"
+    ((operation_id, submission),) = rig.task_client.enqueued
+    rig.operation_store.claim(
+        operation_id, submission_count=submission, lease_seconds=60, final_delivery=False
+    )
+    rig.operation_store.fail(operation_id, attempt=1, refusal_code="over_ceiling", retryable=False)
+    confirms = rig.head_store.confirm_head_calls
+
+    resp = rig.get()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-dfo-freshness"] == "current"
+    assert rig.head_store.confirm_head_calls == confirms + 1
+    assert len(rig.task_client.enqueued) == 1
+
+
+def test_a_revalidation_naming_the_etag_answers_304_with_the_same_headers(
+    caplog: pytest.LogCaptureFixture,
+):
+    rig = _Rig()
+    with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
+        first = rig.get(**_IDENTITY)
+        etag = first.headers["etag"]
+        assert etag.startswith('"'), etag
+
+        revalidated = rig.get(**_IDENTITY, **{"if-none-match": etag})
 
     assert revalidated.status_code == 304
     assert revalidated.content == b""
     for name in ("etag", "x-dfo-freshness", "x-dfo-content-version", "cache-control"):
         assert revalidated.headers[name] == first.headers[name], name
+    # Each read logs its delivery, and the 304's line says it sent no body.
+    lines = [
+        fields
+        for record in caplog.records
+        if (fields := getattr(record, JSON_FIELDS_ATTR, None)) and fields.get("door")
+    ]
+    assert [(line["door"], line["revalidated"]) for line in lines] == [
+        ("definition", False),
+        ("definition", True),
+    ]
 
 
 def test_a_gzip_answer_carries_the_etag_weak_and_revalidates_on_it():
@@ -220,12 +324,20 @@ def test_the_etag_moves_with_the_freshness_while_the_body_stays():
     """A cache holding the `stale` answer revalidates to a 200 once the check is submitted, so it
     never keeps `stale` for a head whose check is under way."""
     task_client = _SwitchableTaskClient()
-    rig = _Rig(task_client=task_client)
+    clock = {"t": datetime(2026, 11, 20, 9, tzinfo=UTC)}
+    rig = _Rig(
+        task_client=task_client,
+        operation_store=LiveOperationStore(
+            store=FakeOperationDatasetStore(), now=lambda: clock["t"]
+        ),
+    )
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
     task_client.failing = True
     stale = rig.get(**_IDENTITY)
     assert stale.headers["x-dfo-freshness"] == "stale"
     task_client.failing = False
+    # The next read past the recovery interval retries the lost create.
+    clock["t"] += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
 
     pending = rig.get(**_IDENTITY, **{"if-none-match": stale.headers["etag"]})
 

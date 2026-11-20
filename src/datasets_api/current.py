@@ -49,7 +49,8 @@ renders it from the stored frame (`render.servable_frame_location`) under a mate
 executor and hands every other call to the work executor. `serve_stored_head`, which the GET uses,
 also answers from a head past the recheck window, up to `head_serve_stale_max_age_seconds` since
 its last materialisation, and submits the head's check to the worker as an operation
-(`operations.head_check`), whose run is `serve_current`.
+(`operations.head_check`), whose run is `serve_current`. A check that failed for good hands
+the GET to the work executor.
 
 Each serve sets the `trigger` and `served_from` labels of the call's `datasets.timings` line, the
 `rebuild_reason` label of a rebuild, and starts the counts the clients, the store, the signer and
@@ -1424,10 +1425,11 @@ def serve_stored_head(
     recheck window answers `current`. Past the window, a head whose import is not replaced and
     whose `materialised_at` is younger than `head_serve_stale_max_age_seconds` answers too, past
     `head_max_age` included, and its check runs on the worker as an operation
-    (`submit_head_check`): `pending` while it is pending or running, `stale` when it failed or
-    could not be submitted. No head, a replaced import, a head past that ceiling, a missing
-    rendering, or an uncounted year coverage (`_serve_head`) hand the call to the work executor,
-    as `serve_fresh_head` does. It reads no graph, renders nothing, and materialises nothing.
+    (`submit_head_check`): `pending` while it is pending or running, `stale` when it could not
+    be submitted. No head, a replaced import, a head past that ceiling, a missing rendering, an
+    uncounted year coverage (`_serve_head`), or a check that failed for good hand the call to
+    the work executor, as `serve_fresh_head` does, so the refusal that ended the check reaches
+    the caller. It reads no graph, renders nothing, and materialises nothing.
     """
     with phase("coverage"):
         coverage_snapshot = deps.coverage.snapshot()
@@ -1453,18 +1455,18 @@ def serve_stored_head(
     )
     if isinstance(served, str):
         return HeadRead(stored=stored, head=head)
-    freshness: HeadFreshness = (
-        "current"
-        if fresh
-        else submit_head_check(
+    freshness: HeadFreshness = "current"
+    if not fresh:
+        check = submit_head_check(
             subject_id=stored.spec_id,
-            options=options,
             coverage_stamp=coverage_snapshot.stamp,
             operation_store=deps.operation_store,
             task_client=deps.task_client,
             backlog_max=deps.settings.operation_backlog_max,
         )
-    )
+        if check == "failed":
+            return HeadRead(stored=stored, head=head)
+        freshness = check
     label("freshness", freshness)
     return StoredHeadAnswer(manifest=_labelled(served, trigger=trigger), freshness=freshness)
 

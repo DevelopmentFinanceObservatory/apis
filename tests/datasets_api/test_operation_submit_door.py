@@ -21,7 +21,7 @@ from datasets_api.operations.submit import (
     OperationSubmitted,
     submit_over_budget,
 )
-from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, FakeTaskClient
 from dc_sdmx import SdmxClient
 from materialise.errors import OverCeilingError
 from materialise.trace import UNKNOWN_FAMILY
@@ -289,7 +289,13 @@ class _RaisingTaskClient:
     def __init__(self) -> None:
         self.calls = 0
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         self.calls += 1
         raise RuntimeError("cloud tasks unavailable")
 
@@ -357,7 +363,13 @@ class _ClaimedMeanwhileTaskClient:
     def __init__(self, operation_store: LiveOperationStore) -> None:
         self._operation_store = operation_store
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         claimed = self._operation_store.claim(
             operation_id, submission_count=submission_count, lease_seconds=60, final_delivery=False
         )

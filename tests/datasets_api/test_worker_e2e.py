@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.operation_store import LiveOperationStore, Operation
+from datasets_api.operations.head_check import HEAD_CHECK_OPTIONS
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import build_worker_app
@@ -28,6 +30,7 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
+from materialise import window as window_module
 from materialise.rate_tables import RateTableCache
 from series_coverage.index import Estimate
 from spec_registry import LiveSpecRegistry
@@ -488,9 +491,11 @@ def test_a_get_after_the_worker_ran_an_over_budget_mint_is_a_head_hit(
     assert len(requests) == fetched
 
 
-def _head_check_rig(*, body: Callable[[], str] = lambda: _CSV_BODY):
-    """A minted spec served by the API and checked by the worker, on one clock. Each head check
-    the API submits waits in `runs` until the test runs it."""
+def _head_check_rig(
+    *, body: Callable[[], str] = lambda: _CSV_BODY, mint: dict[str, Any] = _HAPPY_PATH_BODY
+):
+    """A spec minted from `mint`, served by the API and checked by the worker, on one clock.
+    Each head check the API submits waits in `runs` until the test runs it."""
     clock = {"t": datetime(2026, 11, 20, 9, tzinfo=UTC)}
     runs: list[Callable[[], None]] = []
     requests: list[httpx.Request] = []
@@ -501,7 +506,7 @@ def _head_check_rig(*, body: Callable[[], str] = lambda: _CSV_BODY):
         now=lambda: clock["t"],
         deferred=runs,
     )
-    minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+    minted = api_client.post("/api/datasets", json=mint)
     assert minted.status_code == 200, minted.text
     return api_client, operation_store, forwarded, runs, clock, minted.json(), requests
 
@@ -511,8 +516,9 @@ _PAST_RECHECK = timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds +
 
 def test_a_head_past_the_window_is_served_at_once_and_checked_again_after_each_confirmation():
     """A GET past the recheck window serves the head and submits its check. The worker confirms
-    the head, the next GET is current, and once the confirmed head passes the window again the
-    done check runs once more under a new submission."""
+    the head under the check's own rendering, the next GET of the reader's rendering is current,
+    and once the confirmed head passes the window again the done check runs once more under a
+    new submission."""
     api_client, operation_store, forwarded, runs, clock, minted, requests = _head_check_rig()
     url = f"/api/datasets/{minted['definition']['spec_id']}?bundle=false"
     fetched = len(requests)
@@ -532,6 +538,7 @@ def test_a_head_past_the_window_is_served_at_once_and_checked_again_after_each_c
 
         check = operation_store.get(operation_id)
         assert check is not None and check.state == "done"
+        assert check.options == HEAD_CHECK_OPTIONS.model_dump(mode="json")
         current = api_client.get(url)
         assert current.headers["x-dfo-freshness"] == "current"
         assert current.json()["trace"]["confirmed_at"] == clock["t"].isoformat()
@@ -544,7 +551,8 @@ def test_a_head_past_the_window_is_served_at_once_and_checked_again_after_each_c
 
 def test_a_head_past_the_maximum_age_is_served_while_the_worker_rebuilds_it():
     """A head a day old serves at once, and its check rebuilds it on the worker and advances the
-    head, so the next GET serves the new version."""
+    head, so the next GET serves the new version. The rebuild leaves the check's rendering on
+    the new head, so the reader's rendering is rendered from the stored frame in the request."""
     body = {"text": _CSV_BODY}
     api_client, _operation_store, forwarded, runs, clock, minted, requests = _head_check_rig(
         body=lambda: body["text"]
@@ -567,6 +575,36 @@ def test_a_head_past_the_maximum_age_is_served_while_the_worker_rebuilds_it():
     assert rebuilt.json()["content_version"] != minted["content_version"]
     assert rebuilt.headers["x-dfo-content-version"] == rebuilt.json()["content_version"]
     assert len(requests) > fetched
+
+
+def test_the_check_behind_a_get_re_reads_an_open_ended_head_in_a_new_year(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head minted in 2026 under "since 2015" read its window to 2026. In 2027 a GET past the
+    recheck window serves it and submits the check, and the worker re-reads the data to 2027.
+    The data ends in 2016, so the re-read keeps the content version, and the next GET is
+    current."""
+    monkeypatch.setattr(window_module, "current_year", lambda: 2026)
+    scope = {**_HAPPY_PATH_BODY["input"]["scope"], "window": {"kind": "range", "start_year": 2015}}
+    mint = {**_HAPPY_PATH_BODY, "input": {**_HAPPY_PATH_BODY["input"], "scope": scope}}
+    api_client, _operation_store, forwarded, runs, clock, minted, requests = _head_check_rig(
+        mint=mint
+    )
+    url = f"/api/datasets/{minted['definition']['spec_id']}?bundle=false"
+    fetched = len(requests)
+
+    monkeypatch.setattr(window_module, "current_year", lambda: 2027)
+    clock["t"] += _PAST_RECHECK
+    served = api_client.get(url)
+    assert served.headers["x-dfo-freshness"] == "pending"
+    assert len(forwarded) == 1
+    runs.pop()()
+
+    assert len(requests) == fetched + 1
+    current = api_client.get(url)
+    assert current.headers["x-dfo-freshness"] == "current"
+    assert current.json()["content_version"] == minted["content_version"]
+    assert len(requests) == fetched + 1
 
 
 def test_a_worker_run_bound_to_a_swapped_out_release_takes_no_permit(

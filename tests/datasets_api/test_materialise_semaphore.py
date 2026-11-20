@@ -456,8 +456,8 @@ class _FakeHeadStore:
         )
 
 
-# Past the 7-day serve-stale ceiling, so a GET rebuilds in the request rather than serving the
-# head and checking it on the worker. Past the 24 h maximum age, so it rematerialises before
+# Past the 7-day serve-stale ceiling, so a GET rebuilds the head in the request, where a younger
+# head would serve at once while the worker checks it. Past the 24 h maximum age, so it rematerialises before
 # snapshot loading. This fixture has no snapshot reader.
 _PAST_INTERVAL = timedelta(days=8)
 

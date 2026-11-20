@@ -2,8 +2,8 @@
 (`materialise.window.election_window`), so its stored head is current only while a read would
 end at the same year. Its dependency fingerprint carries the window it read, and past the
 recheck interval a new calendar year re-reads the head on every checked path: a mint, the
-options route, and the worker's check behind a GET. Inside the interval the head serves with no
-read, clock included. The re-read keeps its content version when the data it reads is unchanged.
+options route, and the worker's check behind a GET (`test_worker_e2e`). Inside the interval the
+head serves with no read, clock included. The re-read keeps its content version when the data it reads is unchanged.
 A window stating its end, and one with no years, hold no clock.
 """
 
@@ -95,9 +95,12 @@ class _Dataset:
         return response.json()
 
     def get(self) -> dict:
+        return self.read().json()
+
+    def read(self):
         response = self.client.get(f"/api/datasets/{self.spec_id}")
         assert response.status_code == 200, response.text
-        return response.json()
+        return response
 
     def options(self) -> dict:
         response = self.client.get(f"/api/datasets/{self.spec_id}/options")
@@ -144,13 +147,18 @@ def test_a_fresh_mint_in_a_new_year_reads_to_that_year(
 def test_the_options_route_re_reads_a_head_the_clock_moved_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In 2027 the first options call past the recheck interval re-reads a head minted in 2026
-    and, finding the same content version, advances its window. The second options call and a
-    GET serve the head."""
+    """In 2027 a GET inside the recheck interval serves the head minted in 2026 as current with
+    no read. Past the interval, the first options call re-reads it and, finding the same
+    content version, advances its window. The second options call and a GET serve the head."""
     dataset = _Dataset(monkeypatch, years=range(2016, 2022), window=_SINCE_2016, clock=2026)
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
+    inside = dataset.read()
+    assert inside.json()["trace"]["served_from"] == "head"
+    assert inside.json()["content_version"] == dataset.minted["content_version"]
+    assert inside.headers["x-dfo-freshness"] == "current"
+    assert dataset.sdmx_calls.n == sdmx_reads
     dataset.age()
     first = dataset.options()
     second = dataset.options()

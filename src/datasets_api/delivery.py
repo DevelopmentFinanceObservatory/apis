@@ -29,7 +29,9 @@ structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short me
   operations poll included), an export prepare, an analysis answer and a series statistics
   file. A file whose rendering reshapes rows (`RESHAPING_KEYS`) or leaves total rows out (a
   bare long CSV) stores no row count of its own, so its `rows_served` is `None`. A call that
-  records none, including a file whose row count raised, still logs its line with null.
+  records none, including a file whose row count raised, still logs its line with null;
+- `revalidated`, true on a definition read answered 304 to a matching `If-None-Match`, which
+  sent no body, so a count of deliveries can leave revalidations out, and false otherwise.
 """
 
 from __future__ import annotations
@@ -76,6 +78,7 @@ class Delivery:
     series_count: int | None = None
     rows_available: int | None = None
     rows_served: int | None = None
+    revalidated: bool = False
 
 
 _current: ContextVar[Delivery | None] = ContextVar("datasets_delivery", default=None)
@@ -316,10 +319,11 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             "series_count": delivery.series_count,
             "rows_available": delivery.rows_available,
             "rows_served": delivery.rows_served,
+            "revalidated": delivery.revalidated,
         }
         logger.info(
             "datasets.delivery door=%s spec_id=%s content_version=%s surface=%s "
-            "caller_source=%s admission=%s measure_count=%s rows_served=%s",
+            "caller_source=%s admission=%s measure_count=%s rows_served=%s revalidated=%s",
             door,
             delivery.spec_id,
             delivery.content_version,
@@ -328,6 +332,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             identity.admission,
             delivery.measure_count,
             delivery.rows_served,
+            delivery.revalidated,
             extra={JSON_FIELDS_ATTR: fields},
         )
     except Exception as exc:

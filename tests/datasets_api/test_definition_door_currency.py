@@ -456,6 +456,10 @@ def test_spec_currency_sequence():
     )
     assert head_store.head_for(spec_id).materialised_at == materialised_at_before_third
     assert third_body["content_version"] == first_body["content_version"]
+    # The confirmed head serves the GET with the content it served before.
+    confirmed = client.get(f"/api/datasets/{spec_id}")
+    assert confirmed.headers["x-dfo-freshness"] == "current"
+    assert _content_fields(confirmed.json()) == _content_fields(first_body)
     # Rehydrating the members reads the StatVar's arcs; the fingerprint is one more read.
     assert graph.calls["node_arcs_many"] == graph_calls_before_third["node_arcs_many"] + 1
     assert (

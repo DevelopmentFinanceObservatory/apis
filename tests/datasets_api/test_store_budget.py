@@ -55,9 +55,9 @@ _ALIAS_MINT_TRANSACTIONS = 8
 # A head hit under a non-canonical posted id adds the served definition's read and binding.
 _ALIAS_HEAD_HIT_TRANSACTIONS = 5
 # Past the recheck window a head hit also records the head's check and its dispatch, and confirms
-# nothing: the definition read, the head read, the version read, the check's record, its
-# dispatch and the retention read.
-_CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 6
+# nothing: the definition read, the head read, the version read, the check's read (which tells
+# the read whether it wrote the row), its record, its dispatch and the retention read.
+_CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 7
 # The served ids the posted id of the version-addressed read is bound to.
 _BOUND_SERVED_IDS = 2
 # Past the 15-minute recheck window and inside the 24-hour maximum age.
@@ -263,9 +263,10 @@ def test_a_head_hit_past_the_recheck_window_adds_only_its_check(surface):
     assert resp.headers["x-dfo-freshness"] == "pending"
     assert len(budget.transactions) <= _CHECKED_LATER_HEAD_HIT_TRANSACTIONS, _counted(budget)
     assert not any("confirm_head" in caller for caller in budget.transactions), _counted(budget)
-    # `LiveOperationStore` runs each statement under `_guarded`: the record and the dispatch.
-    operation_writes = [caller for caller in budget.transactions if "_guarded" in caller]
-    assert len(operation_writes) == 2, _counted(budget)
+    # `LiveOperationStore` runs each statement under `_guarded`: the read, the record and the
+    # dispatch.
+    operation_calls = [caller for caller in budget.transactions if "_guarded" in caller]
+    assert len(operation_calls) == 3, _counted(budget)
     assert budget.max_in_flight == 1, _counted(budget)
     assert budget.signings == 0
 

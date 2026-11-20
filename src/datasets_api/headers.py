@@ -2,9 +2,9 @@
 serves a listing or a signed redirect for an artifact revoked or expired since. Meta responses
 use `public, max-age=300`. Pin responses carry only `PinnedCoordinates` and bypass this helper.
 
-`GET /api/datasets/{id}` answers 200 and 304 with `no-cache` instead (`head_answer_headers`): a
-cache may store the answer and must revalidate it, by the strong `ETag` the route sets over the
-body and its `x-dfo-freshness`. Its 202 and every refusal keep `no-store`.
+`GET /api/datasets/{id}` answers 200 and 304 with `no-cache` (`head_answer_headers`): a cache
+may store the answer and must revalidate it, by the strong `ETag` the route sets over the body
+and its `x-dfo-freshness`. Its 202 and every refusal keep `no-store`.
 """
 
 from __future__ import annotations
