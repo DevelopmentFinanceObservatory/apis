@@ -176,13 +176,15 @@ async def run_resolve(
     *,
     policy: MembershipPolicy | None,
     deadline: float | None = None,
+    near_matches: bool = True,
 ) -> ResolveResponse:
     """Refresh the generation before setting the deadline, so `resolver.resolve` sees a fresh
     stamp after an idle gap.
 
     The resolver's reads share one absolute monotonic deadline, set before their first
     submission so executor queue time counts against it: `deadline` when given, else
-    `GRAPH_RESOLVE_TIMEOUT_SECONDS` after the refresh.
+    `GRAPH_RESOLVE_TIMEOUT_SECONDS` after the refresh. `near_matches` asks the resolver for
+    near matches, which a caller that drops them can skip.
     """
     await deps.generation.refresh_if_stale()
 
@@ -192,7 +194,7 @@ async def run_resolve(
         body.texts,
         kinds=body.kinds,
         code_system=body.code_system,
-        near_matches=True,
+        near_matches=near_matches,
         deadline=deadline,
     )
     expand = "members" in body.expand

@@ -5,17 +5,21 @@ start:
 
 - `dcid`: a query in dcid syntax (`graph_api.routing.DcidConvertor.regex`) is read as a whole
   dcid from the node view's own readers, as `GET /api/graph/schema/node/{dcid}` reads it: a UN
-  id from the UN deployment, any other from the mixer and, when the mixer holds no such node,
-  from the UN deployment. The UN deployment is read only with `un=1` and the UN origin served.
-  A held node is one hit.
+  id from the UN deployment, any other from the mixer and, when the mixer answers it with no
+  name and no type, from the UN deployment. The UN deployment is read only with `un=1` and
+  the UN origin served. A node with a name or a type is one hit.
 - `names`: the shared entity resolver as `POST /api/graph/resolve` runs it
-  (`graph_api.doors.resolve.run_resolve`). A resolved entity, or an ambiguous result's
-  candidates, are hits. A query past `RESOLVE_TEXT_MAX_LENGTH` skips it.
+  (`graph_api.doors.resolve.run_resolve`), without near matches. A resolved entity, or an
+  ambiguous result's candidates, are hits. A query past `RESOLVE_TEXT_MAX_LENGTH` skips it.
+  Its reads run on the shared DCP-read executor and resolvekit's one worker, which the
+  resolve and node routes use too, so at most `SCHEMA_SEARCH_NAME_LEGS` names legs run at
+  once per process; another waits for its turn within the leg's cap.
 - `dfo`, `base` and `un_system`: one indicator `/v2/resolve` on the mixer, `custom_only` for
   DFO StatVars or `base_and_custom` with `base=1`, and with `un=1` one `custom_only` on the UN
   deployment where the bound catalogue serves the UN origin. Each keeps its first
   `INDICATOR_CANDIDATES` candidates in the resolver's order that are typed
-  `StatisticalVariable` or name no type (`origin_catalogue.graph.parse_indicator_candidates`).
+  `StatisticalVariable` or name no type (`origin_catalogue.graph.parse_indicator_candidates`),
+  skipping a candidate that fails the parser's checks.
 
 Hits come in that order, each ref once, the first kept. Two reads of `name` and `typeOf`, one
 batch on the mixer and one on the UN deployment where the request reads it, give each name and
@@ -29,9 +33,10 @@ A leg that raises or runs out of time is named in `unavailable`, the mixer's ind
 `dfo`, and `base` beside it with `base=1`, and the rest still answer 200. When every leg run
 fails the route answers retryable 503 `service_unavailable`, and when every failure was a graph
 read answered HTTP 429, it answers as the schema routes answer a rate-limited read, with
-`cause: {"code": "upstream_rate_limited"}` and `Retry-After`. The legs' graph reads run on an
-executor of `SCHEMA_SEARCH_WORKERS` workers of their own that refuses a read when every worker
-is busy, which fails that leg. The entity resolver's reads run on the shared DCP-read executor.
+`cause: {"code": "upstream_rate_limited"}` and `Retry-After` (`SchemaSearchRateLimited`). The
+dcid, indicator and label reads run on an executor of `SCHEMA_SEARCH_WORKERS` workers of their
+own that refuses a read when every worker is busy, which fails that leg. Every deadline counts
+from the request's start, before its generation refresh.
 
 An answer with no unavailable source is kept in an LRU of `SCHEMA_SEARCH_CACHE_SIZE` entries
 keyed by the mixer's generation stamp, the UN deployment's where the request reads it, the
@@ -44,11 +49,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, NamedTuple, Protocol
 
 from cachetools import TLRUCache
@@ -59,6 +65,7 @@ from pydantic import StringConstraints
 from dc_graph import ArcTarget, display_name
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
+from dfo_platform.problem import Cause
 from graph_api.deps import (
     DcpExecutorSaturated,
     DcpReadExecutor,
@@ -69,7 +76,7 @@ from graph_api.deps import (
 )
 from graph_api.doors.node import published_membership
 from graph_api.doors.resolve import run_resolve
-from graph_api.doors.schema import SchemaReadFailed
+from graph_api.doors.schema import GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS
 from graph_api.node_view import NodeViewReader
 from graph_api.resolve_models import RESOLVE_TEXT_MAX_LENGTH, ResolveRequest
 from graph_api.routing import DcidConvertor
@@ -105,6 +112,11 @@ with slow upstreams run at once before a sixth finds its reads refused."""
 SCHEMA_SEARCH_CACHE_SIZE = 512
 """The most search answers the cache keeps."""
 
+SCHEMA_SEARCH_NAME_LEGS = 1
+"""The most names legs that run at once per process. Each holds at most one of the shared
+DCP-read executor's `GRAPH_NODE_POOL_SIZE` workers (4) at a time and queues on resolvekit's one
+worker, so the resolve and node routes keep the rest."""
+
 INDICATOR_CANDIDATES = 10
 """The candidates each indicator leg keeps, in the resolver's order."""
 
@@ -120,6 +132,8 @@ _EXPECTED_FAILURES: tuple[type[Exception], ...] = (
     TimeoutError,
     DcpExecutorSaturated,
     GraphReadError,
+    # A resolve answer whose shape the parser refuses, logged on every request it recurs on.
+    ValueError,
 )
 
 type SearchQuery = Annotated[
@@ -199,12 +213,16 @@ class SchemaSearchCache:
 class SchemaSearchDeps:
     """The search route's state: the indicator resolver, `None` on a surface with none, which
     reports its indicator legs unavailable; the executor its graph reads run on; its answer
-    cache; and the UN deployment's generation, which keys the answers that read it."""
+    cache; the UN deployment's generation, which keys the answers that read it; and the
+    semaphore that admits `SCHEMA_SEARCH_NAME_LEGS` names legs at once."""
 
     indicators: IndicatorResolver | None
     executor: DcpReadExecutor
     cache: SchemaSearchCache
     un_generation: GenerationProvider
+    names: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(SCHEMA_SEARCH_NAME_LEGS)
+    )
 
 
 def new_search_executor() -> DcpReadExecutor:
@@ -218,6 +236,15 @@ class SchemaSearchUnavailable(Exception):
 
     def __init__(self, legs: Sequence[SearchSource]) -> None:
         super().__init__(f"no search leg answered ({', '.join(legs)}); retry")
+
+
+class SchemaSearchRateLimited(Exception):
+    """Every leg the search ran failed on a graph read answered HTTP 429. `retry_after` is the
+    longest `Retry-After` those answers named, `None` where none named one."""
+
+    def __init__(self, retry_after: float | None) -> None:
+        super().__init__("the graph is limiting the rate of reads; retry")
+        self.retry_after = retry_after
 
 
 class _LegUnavailable(Exception):
@@ -270,7 +297,9 @@ def _read_facts(
 def _read_dcid(
     readers: _Readers, dcid: str, *, catalogue: Catalogue, deadline: float
 ) -> _Facts | None:
-    """`dcid`'s facts as the node view route finds the node, `None` where no read holds it."""
+    """`dcid`'s facts as the node view route finds the node, `None` where no read answers it
+    with a name or a type. A node with neither, which the node view would still open, is not
+    found here."""
     if is_un_dcid(dcid):
         if readers.un is None:
             return None
@@ -282,9 +311,9 @@ def _read_dcid(
 
 
 def _kept_candidates(body: dict) -> list[IndicatorCandidate]:
-    """The first `INDICATOR_CANDIDATES` candidates of an indicator resolve answer that are typed
-    `StatisticalVariable` or name no type."""
-    candidates = parse_indicator_candidates(body)
+    """The first `INDICATOR_CANDIDATES` valid candidates of an indicator resolve answer that are
+    typed `StatisticalVariable` or name no type."""
+    candidates = parse_indicator_candidates(body, skip_invalid=True)
     kept = [c for c in candidates if not c.types or _STATVAR in c.types]
     return kept[:INDICATOR_CANDIDATES]
 
@@ -379,15 +408,21 @@ async def _fill_facts(
 
 
 async def _search(
-    deps: GraphDeps, search: SchemaSearchDeps, request: Request, query: str, *, base: bool, un: bool
+    deps: GraphDeps,
+    search: SchemaSearchDeps,
+    request: Request,
+    query: str,
+    *,
+    base: bool,
+    un: bool,
+    started: float,
 ) -> SchemaSearch:
-    """The answer to `query`.
+    """The answer to `query`, its deadlines counted from `started`.
 
     Raises:
-        SchemaReadFailed: every leg failed, each on a graph read answered HTTP 429.
+        SchemaSearchRateLimited: every leg failed, each on a graph read answered HTTP 429.
         SchemaSearchUnavailable: every leg failed.
     """
-    started = time.monotonic()
     leg_deadline = started + SCHEMA_SEARCH_LEG_SECONDS
     deadline = started + SCHEMA_SEARCH_TIMEOUT_SECONDS
     catalogue = current_catalogue()
@@ -423,12 +458,14 @@ async def _search(
         ]
 
     async def names_leg() -> list[SchemaSearchHit]:
-        response = await run_resolve(
-            deps,
-            ResolveRequest(texts=[query]),
-            policy=published_membership(request),
-            deadline=leg_deadline,
-        )
+        async with search.names:
+            response = await run_resolve(
+                deps,
+                ResolveRequest(texts=[query]),
+                policy=published_membership(request),
+                deadline=leg_deadline,
+                near_matches=False,
+            )
         (result,) = response.results
         if result.status == "resolved" and result.entity is not None:
             entities = [result.entity]
@@ -508,9 +545,12 @@ async def _search(
             hits.setdefault(hit.ref, hit)
     if len(failures) == len(legs):
         if all(_rate_limited(exc) for exc in failures):
-            first = failures[0]
-            assert isinstance(first, GraphReadError)
-            raise SchemaReadFailed(first)
+            waits = [
+                exc.retry_after
+                for exc in failures
+                if isinstance(exc, GraphReadError) and exc.retry_after is not None
+            ]
+            raise SchemaSearchRateLimited(max(waits, default=None))
         raise SchemaSearchUnavailable(unavailable)
 
     if any(hit.via != "dcid" for hit in hits.values()):
@@ -529,6 +569,7 @@ async def get_schema_search(
     base: bool = False,
     un: bool = False,
 ) -> JSONResponse:
+    started = time.monotonic()
     search = deps.schema_search
     if search is None:
         raise GraphDepsNotSet()
@@ -546,15 +587,31 @@ async def get_schema_search(
     )
     answer = search.cache.get(key)
     if answer is None:
-        answer = await _search(deps, search, request, q, base=base, un=un)
+        answer = await _search(deps, search, request, q, base=base, un=un, started=started)
         if not answer.unavailable:
             search.cache.put(key, answer)
     return JSONResponse(answer.model_dump(mode="json"))
 
 
 def classify_schema_search_exception(exc: BaseException) -> ProblemSpec | None:
-    """`SchemaSearchUnavailable` as retryable 503. A search whose every leg was rate limited
-    raises `SchemaReadFailed`, which the schema door classifies."""
+    """Both refusals as retryable 503 `service_unavailable`, a rate-limited one with
+    `cause: {"code": "upstream_rate_limited"}` and `Retry-After`, as the schema routes answer a
+    rate-limited read."""
+    if isinstance(exc, SchemaSearchRateLimited):
+        retry_after = (
+            exc.retry_after
+            if exc.retry_after is not None
+            else GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS
+        )
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(exc),
+            retryable=True,
+            cause=Cause(code="upstream_rate_limited"),
+            headers={"Retry-After": str(math.ceil(retry_after))},
+            log="Graph schema search's every leg was answered 429",
+        )
     if isinstance(exc, SchemaSearchUnavailable):
         return ProblemSpec(
             status=503,
@@ -578,6 +635,9 @@ def build_schema_search_door() -> DoorContribution:
     return DoorContribution(
         router=router,
         classify=classify_schema_search_exception,
-        exception_types=(SchemaSearchUnavailable,),
-        exception_exemplars=(SchemaSearchUnavailable(["names", "dfo"]),),
+        exception_types=(SchemaSearchUnavailable, SchemaSearchRateLimited),
+        exception_exemplars=(
+            SchemaSearchUnavailable(["names", "dfo"]),
+            SchemaSearchRateLimited(None),
+        ),
     )

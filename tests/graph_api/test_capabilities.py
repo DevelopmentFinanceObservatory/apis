@@ -22,6 +22,7 @@ from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_ROWS,
+    SEARCH_QUERY_MAX_LENGTH,
 )
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation.fake import FakeGeneration
@@ -59,6 +60,7 @@ class TestDoorLivenessAndOtherFields:
             "sources": True,
             "json_schema": True,
             "schema": True,
+            "schema_search": True,
         }
 
     def test_node_shape_gaps_are_the_paths_every_carrying_node_gaps(self):
@@ -99,6 +101,7 @@ class TestEndpoint:
             "max_check_rows": CHECK_MAX_ROWS,
             "max_check_constraint_properties": CHECK_MAX_CONSTRAINT_PROPERTIES,
             "max_check_observation_properties": CHECK_MAX_OBSERVATION_PROPERTIES,
+            "max_search_query_chars": SEARCH_QUERY_MAX_LENGTH,
         }
 
     def test_serves_public_with_an_etag_and_answers_304(self):

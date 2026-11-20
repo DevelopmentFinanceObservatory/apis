@@ -26,6 +26,7 @@ from graph_api.schema_models import (
     SchemaCheckRequest,
     SchemaCheckResponse,
     SchemaDocument,
+    SchemaSearch,
     SchemaTerms,
 )
 from graph_api.source_models import SourceCatalogue, SourceDocumentation
@@ -56,6 +57,7 @@ def served_wire_schemas() -> dict[str, dict[str, Any]]:
         "schema_node_response": SchemaNodeView.model_json_schema(mode="serialization"),
         "schema_check_request": SchemaCheckRequest.model_json_schema(),
         "schema_check_response": SchemaCheckResponse.model_json_schema(mode="serialization"),
+        "schema_search_response": SchemaSearch.model_json_schema(mode="serialization"),
     }
 
 

@@ -3,6 +3,7 @@ late and refused legs and label reads, validation and the answer cache."""
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -11,6 +12,7 @@ import pytest
 
 from dc_graph import ArcTarget
 from graph_api.doors import schema_search
+from graph_api.resolve_models import ResolveResponse, ResolveResult
 from graph_generation import FakeGeneration
 from materialise.graph import GraphReadError
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -57,12 +59,12 @@ class _Reader(FakeGraphNodeReader):
         return super().node_arc_targets_many(dcids, **kwargs)
 
 
-type _Answer = Sequence[tuple[str, str | list[str] | None]]
+type _Answer = Sequence[tuple[str, str | list[str] | None] | dict]
 
 
 class _Indicators:
     """Indicator resolves answered from `answers`, keyed by `(target, un)`, each a list of
-    `(dcid, typeOf)` where a `None` typeOf leaves the member out. A key in `failing` raises its
+    `(dcid, typeOf)` where a `None` typeOf leaves the member out, or a raw candidate. A key in `failing` raises its
     exception, and a key in `slow` sleeps that many seconds first. `calls` records
     `(query, target, un)`."""
 
@@ -88,7 +90,11 @@ class _Indicators:
         if (target, un) in self._failing:
             raise self._failing[(target, un)]
         candidates = []
-        for dcid, type_of in self._answers.get((target, un), ()):
+        for entry in self._answers.get((target, un), ()):
+            if isinstance(entry, dict):
+                candidates.append(entry)
+                continue
+            dcid, type_of = entry
             candidate: dict = {"dcid": dcid, "metadata": {"score": "0.9", "sentence": "s"}}
             if type_of is not None:
                 candidate["typeOf"] = type_of if isinstance(type_of, list) else [type_of]
@@ -231,7 +237,7 @@ def test_the_switches_choose_the_indicator_resolves_and_the_un_reads(
     assert bool(un_reader.batches) == (un and un_served)
 
 
-def test_an_indicator_leg_keeps_its_first_statvars_and_untyped_candidates(
+def test_an_indicator_leg_keeps_its_first_valid_statvars_and_untyped_candidates(
     serve_catalogue, shared_resolver, monkeypatch
 ):
     serve_catalogue(FakeCatalogue())
@@ -239,6 +245,7 @@ def test_an_indicator_leg_keeps_its_first_statvars_and_untyped_candidates(
     answers: dict[tuple[str, bool], _Answer] = {
         ("custom_only", False): [
             ("dc/topic/T", "Topic"),
+            {"dcid": "sv/no-score", "typeOf": [_SV], "metadata": {}},
             ("sv/untyped", None),
             ("sv/second", ["Thing", _SV]),
             *((f"sv/{i}", _SV) for i in range(3)),
@@ -291,10 +298,51 @@ def test_a_failing_leg_is_named_and_the_rest_answer(
     assert len(indicators.calls) == 2 * calls
 
 
+async def _no_names(deps, body, **kwargs):
+    return ResolveResponse(results=[ResolveResult(input=body.texts[0], status="not_found")])
+
+
+def test_names_legs_run_one_at_a_time_without_near_matches(
+    serve_catalogue, shared_resolver, monkeypatch
+):
+    """Two searches at once share the shared resolver one names leg at a time, and each asks
+    for no near matches."""
+    serve_catalogue(FakeCatalogue())
+    running = 0
+    most = 0
+    asked: list[bool] = []
+
+    async def counting(deps, body, **kwargs):
+        nonlocal running, most
+        asked.append(kwargs["near_matches"])
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0.2)
+        running -= 1
+        return await _no_names(deps, body)
+
+    monkeypatch.setattr(schema_search, "run_resolve", counting)
+
+    with _client(shared_resolver, _Indicators({})) as client:
+        threads = [
+            threading.Thread(target=client.get, args=(_ROUTE,), kwargs={"params": {"q": q}})
+            for q in ("first query", "second query")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+    assert asked == [False, False]
+    assert most == 1
+
+
 def test_a_late_leg_and_a_refused_leg_are_named(serve_catalogue, shared_resolver, monkeypatch):
     """With one worker the mixer resolve, submitted first, holds it, so the UN resolve is
-    refused. With a short leg cap, a mixer resolve slower than the cap is late."""
+    refused. With a short leg cap, a mixer resolve slower than the cap is late. The names leg
+    answers at once, so the cap reaches only the legs under test."""
     serve_catalogue(FakeCatalogue())
+    monkeypatch.setattr(schema_search, "run_resolve", _no_names)
     monkeypatch.setattr(schema_search, "SCHEMA_SEARCH_WORKERS", 1)
     monkeypatch.setattr(schema_search, "SCHEMA_SEARCH_LEG_SECONDS", 0.3)
     indicators = _Indicators(_ANSWERS, slow={("custom_only", False): 0.6})
@@ -346,20 +394,36 @@ def test_a_new_un_generation_misses_the_cache(serve_catalogue, shared_resolver):
     assert len(indicators.calls) == 4
 
 
+def _read_error(status: int, retry_after: float | None) -> GraphReadError:
+    error = GraphReadError("resolve failed", upstream_status=status)
+    error.retry_after = retry_after
+    return error
+
+
 @pytest.mark.parametrize(
-    ("status", "retry_after", "cause"),
-    [(503, None, None), (429, "5", "upstream_rate_limited")],
-    ids=["failing", "rate-limited"],
+    ("status", "waits", "retry_after", "cause"),
+    [
+        (503, (None, None), None, None),
+        (429, (7.2, None), "8", "upstream_rate_limited"),
+        (429, (None, None), "5", "upstream_rate_limited"),
+    ],
+    ids=["failing", "rate-limited", "rate-limited-no-wait"],
 )
 def test_every_leg_failing_answers_503(
-    serve_catalogue, shared_resolver, status: int, retry_after: str | None, cause: str | None
+    serve_catalogue,
+    shared_resolver,
+    status: int,
+    waits: tuple[float | None, float | None],
+    retry_after: str | None,
+    cause: str | None,
 ):
     """A query with whitespace past the resolver's 200 characters runs only the indicator
-    legs."""
+    legs. A rate-limited refusal waits the longest `Retry-After` the reads named, and the
+    schema routes' 5 s where none named one."""
     serve_catalogue(FakeCatalogue())
     failing = {
-        key: GraphReadError("resolve failed", upstream_status=status)
-        for key in (("custom_only", False), ("custom_only", True))
+        key: _read_error(status, wait)
+        for key, wait in zip((("custom_only", False), ("custom_only", True)), waits, strict=True)
     }
 
     with _client(shared_resolver, _Indicators({}, failing=failing)) as client:

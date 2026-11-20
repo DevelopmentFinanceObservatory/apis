@@ -150,13 +150,57 @@ def _first_type_of(raw_type_of: object) -> str | None:
     return None
 
 
-def parse_indicator_candidates(body: dict) -> list[IndicatorCandidate]:
-    """Every candidate of every entity of a `resolve_indicators` answer, in the answer's order,
-    skipping a candidate with no dcid.
+def _indicator_candidate(cand: object) -> IndicatorCandidate | None:
+    """One candidate of a resolve answer, `None` for one with no dcid.
 
     Raises:
-        ValueError: the body is not the resolve answer's shape, a candidate's score is missing,
-            not a number or not finite, or its sentence is not a string.
+        ValueError: the candidate is not an object, its dcid is not a string, its score is
+            missing, not a number or not finite, or its sentence is not a string.
+    """
+    if not isinstance(cand, dict):
+        raise ValueError(f"graph resolve returned malformed body: candidate {cand!r}")
+    dcid = cand.get("dcid")
+    if not dcid:
+        return None
+    if not isinstance(dcid, str):
+        raise ValueError(f"graph resolve candidate dcid is not a string: {dcid!r}")
+    metadata = cand.get("metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError(f"graph resolve candidate metadata is not a dict: {metadata!r}")
+    raw_score = metadata.get("score")
+    try:
+        score = float(raw_score)  # ty: ignore[invalid-argument-type]
+        if not math.isfinite(score):
+            raise ValueError("score is not finite")
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"graph resolve candidate {dcid!r} has a missing/non-numeric score: {raw_score!r}"
+        ) from None
+    sentence = metadata.get("sentence")
+    if sentence is not None and not isinstance(sentence, str):
+        raise ValueError(
+            f"graph resolve candidate {dcid!r} has a non-string sentence: {sentence!r}"
+        )
+    return IndicatorCandidate(
+        dcid=dcid,
+        score=score,
+        type_of=_first_type_of(cand.get("typeOf")),
+        types=_type_of_values(cand.get("typeOf")),
+        sentence=sentence,
+    )
+
+
+def parse_indicator_candidates(
+    body: dict, *, skip_invalid: bool = False
+) -> list[IndicatorCandidate]:
+    """Every candidate of every entity of a `resolve_indicators` answer, in the answer's order,
+    skipping a candidate with no dcid, and with `skip_invalid` one that fails
+    `_indicator_candidate`'s checks.
+
+    Raises:
+        ValueError: the body is not the resolve answer's shape, or, without `skip_invalid`, a
+            candidate is invalid: not an object, a dcid that is not a string, a score missing,
+            not a number or not finite, or a sentence that is not a string.
     """
     try:
         entities = body.get("entities", [])
@@ -168,38 +212,14 @@ def parse_indicator_candidates(body: dict) -> list[IndicatorCandidate]:
             if not isinstance(candidates, list):
                 raise ValueError(f"graph resolve returned non-list candidates: {candidates!r}")
             for cand in candidates:
-                dcid = cand.get("dcid")
-                if not dcid:
-                    continue
-                metadata = cand.get("metadata", {}) or {}
-                if not isinstance(metadata, dict):
-                    raise ValueError(
-                        f"graph resolve candidate metadata is not a dict: {metadata!r}"
-                    )
-                raw_score = metadata.get("score")
                 try:
-                    score = float(raw_score)  # ty: ignore[invalid-argument-type]
-                    if not math.isfinite(score):
-                        raise ValueError("score is not finite")
-                except (TypeError, ValueError):
-                    raise ValueError(
-                        f"graph resolve candidate {dcid!r} has a missing/non-numeric score: "
-                        f"{raw_score!r}"
-                    ) from None
-                sentence = metadata.get("sentence")
-                if sentence is not None and not isinstance(sentence, str):
-                    raise ValueError(
-                        f"graph resolve candidate {dcid!r} has a non-string sentence: {sentence!r}"
-                    )
-                result.append(
-                    IndicatorCandidate(
-                        dcid=dcid,
-                        score=score,
-                        type_of=_first_type_of(cand.get("typeOf")),
-                        types=_type_of_values(cand.get("typeOf")),
-                        sentence=sentence,
-                    )
-                )
+                    candidate = _indicator_candidate(cand)
+                except ValueError:
+                    if not skip_invalid:
+                        raise
+                    continue
+                if candidate is not None:
+                    result.append(candidate)
         return result
     except (AttributeError, TypeError) as exc:
         raise ValueError(f"graph resolve returned malformed body: {exc}") from exc
