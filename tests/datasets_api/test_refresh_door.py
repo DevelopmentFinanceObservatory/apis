@@ -32,7 +32,11 @@ from datasets_api.operation_store import LiveOperationStore, OperationBacklogFul
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
-from datasets_api.recorded_rendering import MintingOptions, recorded_mintings
+from datasets_api.recorded_rendering import (
+    MintingOptions,
+    RenderingNotRecorded,
+    recorded_mintings,
+)
 from datasets_api.render import CANONICAL_FRAME_RENDERING, servable_frame_location
 from datasets_api.version_store import (
     LiveVersionLister,
@@ -952,6 +956,25 @@ def test_a_rendering_the_rebuilt_head_cannot_make_refuses(monkeypatch: pytest.Mo
     assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
     # The head read sent the call to a rebuild, which fetched.
     assert len(shared.rig.sdmx_requests) > sdmx_requests
+
+
+def test_a_rebuild_to_the_named_frame_that_cannot_make_its_renderings_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame recorded under a cut and a summed cut whose head frame expired rebuilds to the
+    same version, and when neither rendering can be made from the rebuilt head the refresh
+    refuses `rendering_not_recorded` as a rendering the rebuild cannot make."""
+    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
+    shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
+    monkeypatch.setattr(refresh_module, "_rendering_frame", lambda **kwargs: None)
+    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+
+    resp = shared.rig.refresh(**named)
+
+    assert resp.status_code == 422, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+    assert resp.json()["detail"] == str(RenderingNotRecorded(**named, renderings=2, unmade=True))
+    assert shared.rig.frame_servable(**named)
 
 
 def test_a_rebuild_is_checked_against_its_own_head_when_another_writer_moves_it(
