@@ -371,6 +371,7 @@ async def _build(
         coverage_build_id=covered.manifest.build_id,
         build_commit=commit,
         examples_digest=examples.digest,
+        un_system_enabled=catalogue.un_system_enabled,
     )
     key = build_key(inputs)
     published, generation = read_pointer(settings.artifact_uri)
@@ -621,6 +622,7 @@ def _pointer_inputs(
         coverage_build_id=served,
         build_commit=commit,
         examples_digest=examples.digest,
+        un_system_enabled=CatalogueSettings().un_system_enabled,
     )
 
 

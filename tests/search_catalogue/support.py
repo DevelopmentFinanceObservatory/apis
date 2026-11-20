@@ -188,6 +188,7 @@ _INPUTS = BuildInputs(
     coverage_build_id="coverage-1",
     build_commit="abc123",
     examples_digest="digest",
+    un_system_enabled=True,
 )
 
 

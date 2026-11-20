@@ -23,12 +23,13 @@ catalogue build and one coverage index build.
   DFO variables, the coverage variables search serves on a facet of a DFO
   provenance, and the provenances whose origin is `dfo`. The data_commons
   group holds the base variables, the coverage variables search serves on a
-  facet of any other provenance, the UN variables of the origin catalogue's
+  facet of an admitted provenance of another origin, the UN variables of the origin catalogue's
   `un_variables.parquet` (none with the UN origin off) and the provenances of
   every other origin. Something both groups hold, such as a publisher with a
   dfo and a base provenance, counts in each, so the split can exceed the
-  global figure. The dfo and data_commons indicators together are the global
-  `indicators`.
+  global figure. The global `indicators` is the union of the two groups'
+  indicators, so a StatVar in both counts once there. A coverage facet with no
+  provenance, or one the catalogue does not admit, adds to neither group.
 - Variables (per country only): base variables with data there, plus
   coverage variables with a row naming it.
 """
@@ -196,7 +197,7 @@ def _coverage_by_country(
     datasets: Collection[str],
     parties: Mapping[str, PartyRow],
 ) -> _CoverageByCountry:
-    """Every country's coverage summary from seven grouped passes over the
+    """Every country's coverage summary from six grouped passes over the
     index: each role by facet and by variable, the variables by facet, and
     the donor and recipient pairs by facet."""
     provenance_of = {
@@ -267,9 +268,10 @@ def _coverage_by_country(
         _strings(by_variable_facet[FACET_COLUMN]),
         strict=True,
     ):
-        if provenance_of[facet] in catalogue.tables.dfo_provenances:
+        provenance = provenance_of.get(facet)
+        if provenance in catalogue.tables.dfo_provenances:
             dfo_covered.add(variable)
-        else:
+        elif provenance is not None and catalogue.is_admitted(provenance):
             base_covered.add(variable)
 
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)

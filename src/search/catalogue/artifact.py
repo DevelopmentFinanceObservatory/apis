@@ -95,13 +95,13 @@ class OriginSplit(_Model):
 class OriginCounts(_Model):
     """`Counts` split by origin. An indicator, dataset or publisher held by
     both groups counts in each, so the two groups can sum to more than the
-    global figure. The two indicator figures together cover the global
-    `indicators`."""
+    global figure. The global `indicators` is the union of the two indicator
+    figures."""
 
     dfo: OriginSplit = Field(
         description=(
             f"the {DFO.label} origin (`{DFO.id}`): DFO variables, the coverage "
-            "variables search serves, and the provenances of that origin"
+            "variables search serves on a facet of a DFO provenance, and the provenances of that origin"
         )
     )
     data_commons: OriginSplit = Field(
@@ -172,6 +172,9 @@ class BuildInputs(_Model):
     coverage_build_id: str
     build_commit: str
     examples_digest: str
+    un_system_enabled: bool = Field(
+        description="whether the origin catalogue admitted the UN origin, which moves the counts"
+    )
 
 
 class CatalogueArtifact(_Model):

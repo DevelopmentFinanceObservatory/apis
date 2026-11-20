@@ -136,19 +136,18 @@ class SearchCatalogueService:
                 self._loaded = _Loaded(artifact=old, checked_at=self._clock())
                 return
             loaded = self._loader(self._artifact_uri)
+            fields = {
+                "event": "search_catalogue_loaded",
+                "catalogue_version": loaded.catalogue_version,
+                "previous_catalogue_version": None if old is None else old.catalogue_version,
+                "counts": loaded.counts.model_dump(mode="json"),
+            }
             self._loaded = _Loaded(artifact=loaded, checked_at=self._clock())
         logger.info(
             "search catalogue: serving build %r (was %r)",
             loaded.catalogue_version,
             None if old is None else old.catalogue_version,
-            extra={
-                JSON_FIELDS_ATTR: {
-                    "event": "search_catalogue_loaded",
-                    "catalogue_version": loaded.catalogue_version,
-                    "previous_catalogue_version": None if old is None else old.catalogue_version,
-                    "counts": loaded.counts.model_dump(mode="json"),
-                }
-            },
+            extra={JSON_FIELDS_ATTR: fields},
         )
 
     def _record_reload_failure(self, exc: Exception) -> None:

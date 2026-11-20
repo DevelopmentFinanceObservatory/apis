@@ -258,13 +258,13 @@ def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
     coverage = CoverageIndex(
         table,
         {V1: roles, V5: roles},
-        {FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE)},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=WDI)},
         horizon=horizon,
     )
     counted = catalogue_counts(
         catalogue=replace(snapshot, tables=tables),
         coverage=coverage,
-        datasets={AID_TABLE},
+        datasets={WDI},
         parties={},
     )
     # Three base and DFO variables, and V1.
@@ -387,3 +387,19 @@ def test_the_trust_funds_count_as_a_donor_only_in_the_rows_where_they_total_no_o
     assert counted.counts.aid.donors == 1
     assert counted.places["country/GHA"].aid.donors == 1
     assert counted.places["country/KEN"].aid.donors == 0
+
+
+def test_a_facet_without_a_provenance_adds_to_neither_origin_group(tmp_path):
+    table, horizon = coverage_table([(V1, FACET_ACTUALS, "country/FRA", "country/ETH", [2018])])
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=None)},
+        horizon=horizon,
+    )
+    snapshot = origin_snapshot(tmp_path)
+    counted = catalogue_counts(catalogue=snapshot, coverage=coverage, datasets=set(), parties={})
+    tables = snapshot.tables
+    split = counted.counts.by_origin
+    assert split.dfo.indicators == len(tables.dfo_variables)
+    assert split.data_commons.indicators == len(tables.base_variables)
