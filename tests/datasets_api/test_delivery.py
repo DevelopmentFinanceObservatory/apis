@@ -66,6 +66,7 @@ _FIELDS = {
     "series_count",
     "rows_available",
     "rows_served",
+    "revalidated",
 }
 
 
