@@ -488,6 +488,87 @@ def test_a_get_after_the_worker_ran_an_over_budget_mint_is_a_head_hit(
     assert len(requests) == fetched
 
 
+def _head_check_rig(*, body: Callable[[], str] = lambda: _CSV_BODY):
+    """A minted spec served by the API and checked by the worker, on one clock. Each head check
+    the API submits waits in `runs` until the test runs it."""
+    clock = {"t": datetime(2026, 11, 20, 9, tzinfo=UTC)}
+    runs: list[Callable[[], None]] = []
+    requests: list[httpx.Request] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(requests, body)),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+    assert minted.status_code == 200, minted.text
+    return api_client, operation_store, forwarded, runs, clock, minted.json(), requests
+
+
+_PAST_RECHECK = timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds + 300)
+
+
+def test_a_head_past_the_window_is_served_at_once_and_checked_again_after_each_confirmation():
+    """A GET past the recheck window serves the head and submits its check. The worker confirms
+    the head, the next GET is current, and once the confirmed head passes the window again the
+    done check runs once more under a new submission."""
+    api_client, operation_store, forwarded, runs, clock, minted, requests = _head_check_rig()
+    url = f"/api/datasets/{minted['definition']['spec_id']}?bundle=false"
+    fetched = len(requests)
+    check_ids: list[str] = []
+
+    for submission in (0, 1):
+        clock["t"] += _PAST_RECHECK
+        served = api_client.get(url)
+        assert served.status_code == 200, served.text
+        assert served.headers["x-dfo-freshness"] == "pending"
+        assert served.json()["content_version"] == minted["content_version"]
+        operation_id, count = forwarded[-1]
+        assert (len(forwarded), count) == (submission + 1, submission)
+        check_ids.append(operation_id)
+
+        runs.pop()()
+
+        check = operation_store.get(operation_id)
+        assert check is not None and check.state == "done"
+        current = api_client.get(url)
+        assert current.headers["x-dfo-freshness"] == "current"
+        assert current.json()["trace"]["confirmed_at"] == clock["t"].isoformat()
+        assert current.json()["content_version"] == minted["content_version"]
+
+    assert check_ids[0] == check_ids[1]
+    # Both checks confirmed the head with a graph read and no fetch.
+    assert len(requests) == fetched
+
+
+def test_a_head_past_the_maximum_age_is_served_while_the_worker_rebuilds_it():
+    """A head a day old serves at once, and its check rebuilds it on the worker and advances the
+    head, so the next GET serves the new version."""
+    body = {"text": _CSV_BODY}
+    api_client, _operation_store, forwarded, runs, clock, minted, requests = _head_check_rig(
+        body=lambda: body["text"]
+    )
+    url = f"/api/datasets/{minted['definition']['spec_id']}?bundle=false"
+    body["text"] = _CSV_BODY.replace("2000", "2500")
+    fetched = len(requests)
+    clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 60)
+
+    served = api_client.get(url)
+
+    assert served.headers["x-dfo-freshness"] == "pending"
+    assert served.json()["content_version"] == minted["content_version"]
+    assert len(requests) == fetched
+    assert len(forwarded) == 1
+    runs.pop()()
+    rebuilt = api_client.get(url)
+    assert rebuilt.headers["x-dfo-freshness"] == "current"
+    assert rebuilt.json()["trace"]["served_from"] == "head"
+    assert rebuilt.json()["content_version"] != minted["content_version"]
+    assert rebuilt.headers["x-dfo-content-version"] == rebuilt.json()["content_version"]
+    assert len(requests) > fetched
+
+
 def test_a_worker_run_bound_to_a_swapped_out_release_takes_no_permit(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):

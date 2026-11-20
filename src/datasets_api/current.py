@@ -46,7 +46,10 @@ without its artifacts, and a rebuild records the version, its canonical frame an
 advances the head, rendering nothing. A head hit whose requested rendering is not linked
 renders it from the stored frame (`render.servable_frame_location`) under a materialise slot.
 `serve_fresh_head` answers from a current head alone and never renders, so it runs on the read
-executor and hands every other call to the work executor.
+executor and hands every other call to the work executor. `serve_stored_head`, which the GET uses,
+also answers from a head past the recheck window, up to `head_serve_stale_max_age_seconds` since
+its last materialisation, and submits the head's check to the worker as an operation
+(`operations.head_check`), whose run is `serve_current`.
 
 Each serve sets the `trigger` and `served_from` labels of the call's `datasets.timings` line, the
 `rebuild_reason` label of a rebuild, and starts the counts the clients, the store, the signer and
@@ -109,6 +112,7 @@ from datasets_api.operation_store import (
     OperationBacklogFull,
     OperationStore,
 )
+from datasets_api.operations.head_check import HeadFreshness, submit_head_check
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
@@ -1395,6 +1399,76 @@ def serve_fresh_head(
     return _labelled(served, trigger=trigger)
 
 
+@dataclass(frozen=True)
+class StoredHeadAnswer:
+    """A stored head's answer to `GET /api/datasets/{id}` and the `x-dfo-freshness` it states
+    (`serve_stored_head`)."""
+
+    manifest: Manifest
+    freshness: HeadFreshness
+
+
+def serve_stored_head(
+    stored: StoredDefinition,
+    *,
+    deps: DefinitionDeps,
+    options: MintOptions,
+    trigger: Trigger,
+    trace_id: str | None,
+    revoked_under: Sequence[str] = (),
+) -> StoredHeadAnswer | HeadRead:
+    """The head's answer when it holds the requested rendering and can serve without a check,
+    with its freshness, or the head it read. `revoked_under` is `load_stored`'s.
+
+    `serve_fresh_head` with a stale branch, for the GET alone. A head confirmed inside the
+    recheck window answers `current`. Past the window, a head whose import is not replaced and
+    whose `materialised_at` is younger than `head_serve_stale_max_age_seconds` answers too, past
+    `head_max_age` included, and its check runs on the worker as an operation
+    (`submit_head_check`): `pending` while it is pending or running, `stale` when it failed or
+    could not be submitted. No head, a replaced import, a head past that ceiling, a missing
+    rendering, or an uncounted year coverage (`_serve_head`) hand the call to the work executor,
+    as `serve_fresh_head` does. It reads no graph, renders nothing, and materialises nothing.
+    """
+    with phase("coverage"):
+        coverage_snapshot = deps.coverage.snapshot()
+    with phase("head_read"):
+        head = deps.head_store.read_head(stored.spec_id)
+    if head is None or _import_replaced(head):
+        return HeadRead(stored=stored, head=head)
+    now = deps.now()
+    fresh = _head_is_fresh(head, now=now, deps=deps)
+    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
+    if not fresh and now - head.materialised_at >= ceiling:
+        return HeadRead(stored=stored, head=head)
+    served = _serve_head(
+        head,
+        subject_id=stored.spec_id,
+        deps=deps,
+        coverage_snapshot=coverage_snapshot,
+        options=options,
+        trace_id=trace_id,
+        load_head=None,
+        render=False,
+        revoked_under=revoked_under,
+    )
+    if isinstance(served, str):
+        return HeadRead(stored=stored, head=head)
+    freshness: HeadFreshness = (
+        "current"
+        if fresh
+        else submit_head_check(
+            subject_id=stored.spec_id,
+            options=options,
+            coverage_stamp=coverage_snapshot.stamp,
+            operation_store=deps.operation_store,
+            task_client=deps.task_client,
+            backlog_max=deps.settings.operation_backlog_max,
+        )
+    )
+    label("freshness", freshness)
+    return StoredHeadAnswer(manifest=_labelled(served, trigger=trigger), freshness=freshness)
+
+
 def serve_current_head(
     stored: StoredDefinition,
     *,
@@ -1735,6 +1809,7 @@ __all__ = [
     "DefinitionDeps",
     "HeadLoader",
     "HeadRead",
+    "StoredHeadAnswer",
     "StoredRenderPlan",
     "StoredTraceMissingResolvedStatVars",
     "Trigger",
@@ -1745,6 +1820,7 @@ __all__ = [
     "serve_current_head",
     "serve_deps",
     "serve_fresh_head",
+    "serve_stored_head",
     "stamp_trace",
     "without_pointers",
 ]

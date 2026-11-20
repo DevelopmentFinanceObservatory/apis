@@ -28,6 +28,8 @@ import pytest
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from dataset_store.snapshot import LiveSnapshotReader
 from dataset_store.store import DatasetStore, Transaction
+from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.timings import count
@@ -52,9 +54,10 @@ _HEAD_HIT_TRANSACTIONS = 4
 _ALIAS_MINT_TRANSACTIONS = 8
 # A head hit under a non-canonical posted id adds the served definition's read and binding.
 _ALIAS_HEAD_HIT_TRANSACTIONS = 5
-# Past the recheck window a head hit also confirms the head: the definition read, the head read,
-# the confirmation, the version read and the retention read.
-_CONFIRMED_HEAD_HIT_TRANSACTIONS = 5
+# Past the recheck window a head hit also records the head's check and its dispatch, and confirms
+# nothing: the definition read, the head read, the version read, the check's record, its
+# dispatch and the retention read.
+_CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 6
 # The served ids the posted id of the version-addressed read is bound to.
 _BOUND_SERVED_IDS = 2
 # Past the 15-minute recheck window and inside the 24-hour maximum age.
@@ -148,6 +151,10 @@ def _built_surface(
         client=FakeGCSClient(),
     )
     registry = LiveSpecRegistry(store=spec_store)
+
+    def now() -> datetime:
+        return start + offset[0]
+
     client = make_client(
         registry=registry,
         spec_reader=LiveSpecReader(store=spec_store),
@@ -159,7 +166,9 @@ def _built_surface(
         snapshot_reader=LiveSnapshotReader(store=store),
         reference_writer=FakeArtifactReferenceWriter(),
         coverage=coverage,
-        now=lambda: start + offset[0],
+        operation_store=LiveOperationStore(store=store, now=now),
+        task_client=FakeTaskClient(),
+        now=now,
     )
     try:
         yield _Surface(client=client, budget=budget, registry=registry, offset=offset)
@@ -239,7 +248,7 @@ def test_a_head_hit_get_makes_at_most_four_transactions_and_signs_nothing(surfac
     assert budget.signings == 0
 
 
-def test_a_head_hit_past_the_recheck_window_adds_only_its_confirmation(surface):
+def test_a_head_hit_past_the_recheck_window_adds_only_its_check(surface):
     budget = surface.budget
     minted = surface.client.post("/api/datasets", json=_body(format="csv", bundle=False))
     assert minted.status_code == 200, minted.text
@@ -251,8 +260,12 @@ def test_a_head_hit_past_the_recheck_window_adds_only_its_confirmation(surface):
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["trace"]["served_from"] == "head"
-    assert len(budget.transactions) <= _CONFIRMED_HEAD_HIT_TRANSACTIONS, _counted(budget)
-    assert any("confirm_head" in caller for caller in budget.transactions), _counted(budget)
+    assert resp.headers["x-dfo-freshness"] == "pending"
+    assert len(budget.transactions) <= _CHECKED_LATER_HEAD_HIT_TRANSACTIONS, _counted(budget)
+    assert not any("confirm_head" in caller for caller in budget.transactions), _counted(budget)
+    # `LiveOperationStore` runs each statement under `_guarded`: the record and the dispatch.
+    operation_writes = [caller for caller in budget.transactions if "_guarded" in caller]
+    assert len(operation_writes) == 2, _counted(budget)
     assert budget.max_in_flight == 1, _counted(budget)
     assert budget.signings == 0
 

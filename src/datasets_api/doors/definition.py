@@ -35,11 +35,14 @@ identities. `MemberNotResolvable` is wrapped so retrieval issues omit the mint b
 
 `GET` and `/options` first run on the surface's read executor, which answers from a head
 confirmed inside the recheck window that holds the requested rendering (`serve_fresh_head`).
-Any other call moves to the work executor, where the freshness check compares the head's
-dependency fingerprint and rebuilds or serves the head, rendering a missing format from the
-stored frame. `/members` runs on the read executor and reports the served id. Admitted
-worker calls finish after a client timeout. The door reads its clients and stores from the
-surface's `Deps` (`datasets_api.deps`) and builds none.
+`GET` also answers there from such a head past the window, up to the serve-stale ceiling, and
+submits its check to the worker (`serve_stored_head`), stating the head's freshness in
+`x-dfo-freshness` with a strong ETag over the body and the freshness, `no-cache`, and 304 on a
+matching `If-None-Match`. Any other call moves to the work executor, where the freshness check
+compares the head's dependency fingerprint and rebuilds or serves the head, rendering a missing
+format from the stored frame. `/members` runs on the read executor and reports the served id.
+Admitted worker calls finish after a client timeout. The door reads its clients and stores from
+the surface's `Deps` (`datasets_api.deps`) and builds none.
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ from typing import Any
 from dfo_frame_grammar import FrameError
 from dfo_spec_kit.identity import IdentityError
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from artifact_store import ArtifactInventoryError, ArtifactRecordConflictError, ArtifactWriteError
 from dataset_store.snapshot import (
@@ -91,10 +94,12 @@ from datasets_api.current import (
     DefinitionDeps,
     HeadLoader,
     HeadRead,
+    StoredHeadAnswer,
     StoredTraceMissingResolvedStatVars,
     Trigger,
     serve_current,
     serve_fresh_head,
+    serve_stored_head,
     without_pointers,
 )
 from datasets_api.delivery import record_manifest
@@ -103,7 +108,14 @@ from datasets_api.door_executor import DoorExecutor
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.doors.register import classify_register_exception
-from datasets_api.headers import no_store_headers
+from datasets_api.headers import (
+    CONTENT_VERSION_HEADER,
+    FRESHNESS_HEADER,
+    etag_matches,
+    head_answer_etag,
+    head_answer_headers,
+    no_store_headers,
+)
 from datasets_api.kinds.spec_id import (
     EntityKindRefused,
     WindowOverCap,
@@ -130,7 +142,7 @@ from datasets_api.query_options import (
     pointer_for_key,
 )
 from datasets_api.render import check_options_supported, linked_under
-from datasets_api.retention import retaining
+from datasets_api.retention import retaining, with_retention
 from datasets_api.schema import MembersEnvelope, OperationResource, ServedMember
 from datasets_api.shape import StatVarShape
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -630,19 +642,33 @@ async def _run_retrieval[T](
 
 def _serve_spec_head(
     *, spec_id: str, options: MintOptions, deps: DefinitionDeps, trace_id: str | None
-) -> Manifest | HeadRead:
-    """The served definition's answer from a current head that holds the requested rendering,
-    or the head read for `serve_spec` (`serve_fresh_head`). The head honours revocations
-    under the served id and under `spec_id`, the id the request named."""
+) -> StoredHeadAnswer | HeadRead:
+    """The served definition's answer from a stored head that holds the requested rendering,
+    current or checked on the worker, or the head read for `serve_spec` (`serve_stored_head`).
+    The head honours revocations under the served id and under `spec_id`, the id the request
+    named."""
     with phase("resolve"):
         stored = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
-    return serve_fresh_head(
+    answer = serve_stored_head(
         stored,
         deps=deps,
         options=options,
         trigger="get",
         trace_id=trace_id,
         revoked_under=(spec_id,),
+    )
+    if isinstance(answer, HeadRead):
+        return answer
+    # The manifest carries its version's retention, as `retaining` gives the work executor's.
+    manifest = answer.manifest
+    return dataclasses.replace(
+        answer,
+        manifest=with_retention(
+            manifest,
+            subject_id=manifest.definition.spec_id,
+            reader=deps.snapshot_reader,
+            now=deps.now(),
+        ),
     )
 
 
@@ -676,8 +702,13 @@ def _serve_spec_options_head(
     return manifest if isinstance(manifest, HeadRead) else _to_options_envelope(manifest)
 
 
-async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSONResponse:
-    """Serve the spec from a fresh head on the read executor, else on the work executor."""
+async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> Response:
+    """Serve the spec from a stored head on the read executor, else on the work executor.
+
+    A 200 states the head's freshness (`x-dfo-freshness`) and content version
+    (`x-dfo-content-version`), with a strong ETag over the body and the freshness and
+    `no-cache`; an `If-None-Match` naming that ETag answers 304 with the same headers. An answer
+    the work executor checked or rebuilt is `current`. A 202 is `no-store`."""
     options = parse_query_options(request.query_params.multi_items())
     check_options_supported(options, code_index=deps.code_index)
     trace_id = get_trace_id()
@@ -687,30 +718,33 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
         try:
             head_answer = await _run_retrieval(
                 deps.read_executor,
-                retaining(_serve_spec_head, reader=deps.snapshot_reader, now=deps.now),
+                _serve_spec_head,
                 deps=request_deps,
                 timings=call.timings,
                 spec_id=id,
                 options=options,
                 trace_id=trace_id,
             )
-            manifest = (
-                await _run_retrieval(
-                    deps.work_executor,
-                    retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
-                    timings=call.timings,
-                    stored=head_answer.stored,
-                    options=options,
-                    trigger="get",
-                    deps=request_deps,
-                    trace_id=trace_id,
-                    head_read=head_answer,
-                    revoked_under=(id,),
+            answer = (
+                StoredHeadAnswer(
+                    manifest=await _run_retrieval(
+                        deps.work_executor,
+                        retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
+                        timings=call.timings,
+                        stored=head_answer.stored,
+                        options=options,
+                        trigger="get",
+                        deps=request_deps,
+                        trace_id=trace_id,
+                        head_read=head_answer,
+                        revoked_under=(id,),
+                    ),
+                    freshness="current",
                 )
                 if isinstance(head_answer, HeadRead)
                 else head_answer
             )
-            record_manifest(manifest)
+            record_manifest(answer.manifest)
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
             submitted_resource = operation_submitted_resource(submitted, now=deps.now())
@@ -726,12 +760,20 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             },
         )
     # The links name the requested id, so a click honours the revocations this request did.
-    return call.delivered(
-        JSONResponse(
-            linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
-            headers=no_store_headers(server_timing=call.server_timing),
-        )
+    response = JSONResponse(
+        linked_under(answer.manifest, id).model_dump(mode="json", exclude_none=True)
     )
+    etag = head_answer_etag(bytes(response.body), freshness=answer.freshness)
+    headers = head_answer_headers(
+        server_timing=call.server_timing,
+        etag=etag,
+        freshness=answer.freshness,
+        content_version=answer.manifest.content_version,
+    )
+    if etag_matches(request.headers.get("if-none-match"), etag):
+        return call.delivered(Response(status_code=304, headers=headers))
+    response.headers.update(headers)
+    return call.delivered(response)
 
 
 def _refuse_query_keys(request: Request, *, route: str) -> None:
@@ -968,6 +1010,37 @@ OPERATION_SUBMITTED_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 """The `202` the mint and definition routes answer when a build exceeds the inline budget."""
 
+_HEAD_ANSWER_HEADERS: dict[str, dict[str, Any]] = {
+    "ETag": {
+        "description": (
+            "Strong, over the body and `x-dfo-freshness`. A gzip-encoded body carries it weak."
+        ),
+        "schema": {"type": "string"},
+    },
+    FRESHNESS_HEADER: {
+        "description": (
+            "`current`: the head was confirmed inside the recheck window. `pending`: past it, "
+            "and its check is pending or running. `stale`: past it, and no check is running."
+        ),
+        "schema": {"type": "string", "enum": ["current", "pending", "stale"]},
+    },
+    CONTENT_VERSION_HEADER: {
+        "description": "The served content version.",
+        "schema": {"type": "string"},
+    },
+    "Cache-Control": {"description": "`no-cache`.", "schema": {"type": "string"}},
+}
+
+DEFINITION_GET_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {"headers": _HEAD_ANSWER_HEADERS},
+    304: {
+        "description": "`If-None-Match` names the current answer's ETag.",
+        "headers": _HEAD_ANSWER_HEADERS,
+    },
+    **OPERATION_SUBMITTED_RESPONSES,
+}
+"""The headers of the definition GET: `200`, `304` and `202`."""
+
 
 _EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     SpecNotFound(id="spec_exemplar"),
@@ -1053,9 +1126,9 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     @router.get(
         "/api/datasets/{id:dfo_spec_id}",
         response_model=Manifest,
-        responses=OPERATION_SUBMITTED_RESPONSES,
+        responses=DEFINITION_GET_RESPONSES,
     )
-    async def get_definition(id: str, request: Request) -> JSONResponse:
+    async def get_definition(id: str, request: Request) -> Response:
         return await _get_definition_impl(id, request, deps=deps.get())
 
     @router.get("/api/datasets/{id:dfo_spec_id}/options", response_model=OptionsEnvelope)

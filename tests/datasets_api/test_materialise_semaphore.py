@@ -456,15 +456,16 @@ class _FakeHeadStore:
         )
 
 
-# A 900 s age triggers a facet probe. A 24 h age forces rematerialisation before snapshot loading.
-# This fixture has no snapshot reader.
-_PAST_INTERVAL = timedelta(hours=25)
+# Past the 7-day serve-stale ceiling, so a GET rebuilds in the request rather than serving the
+# head and checking it on the worker. Past the 24 h maximum age, so it rematerialises before
+# snapshot loading. This fixture has no snapshot reader.
+_PAST_INTERVAL = timedelta(days=8)
 
 
 def test_stale_head_rebuild_waits_for_a_materialise_slot_and_times_out_as_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A GET of a head past its maximum age returns retryable 503 after the 0.1 s wait bound
+    """A GET of a head past the serve-stale ceiling returns retryable 503 after the 0.1 s wait bound
     while spec A holds the slot. Spec B fetches after release. Role-bearing probes read
     coverage.
     """

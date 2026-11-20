@@ -277,6 +277,10 @@ def test_over_budget_definition_retrieval_returns_202(monkeypatch: pytest.Monkey
     assert body["operation"]["operation_id"].startswith("op_")
     assert resp.headers["location"] == body["operation"]["poll"]
     assert resp.headers["retry-after"] == "2"
+    # A 202 is no answer to cache or revalidate.
+    assert resp.headers["cache-control"] == "no-store"
+    assert "etag" not in resp.headers
+    assert "x-dfo-freshness" not in resp.headers
 
 
 class _RaisingTaskClient:
