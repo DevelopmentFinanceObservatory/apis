@@ -506,7 +506,7 @@ def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
     expected = [
         statement.replace(
             f"NOT starts_with({column}, 'secret-sha256:')",
-            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}})$'",
+            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}}|conversation:[0-9a-f]{{32}})$'",
         )
         for statement, column in zip(
             _statements(migration), ("raw.principal", "raw.principal", "principal"), strict=True
