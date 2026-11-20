@@ -293,9 +293,9 @@ def test_indicator_hits_merge_by_score_above_the_floor(serve_catalogue, shared_r
     leg order, a candidate under the floor is dropped, and a ref keeps its first place."""
     serve_catalogue(FakeCatalogue())
     answers: dict[tuple[str, bool], _Answer] = {
-        ("custom_only", False): [("sv/0", _SV, 0.5), ("sv/1", _SV, 0.2), ("sv/2", _SV, 0.45)],
-        ("base_only", False): [("Count_Person", _SV, 0.8), ("sv/second", _SV, 0.5)],
-        ("custom_only", True): [("undata/sdg/SH_OOP", _SV, 0.6), ("sv/0", _SV, 0.4)],
+        ("custom_only", False): [("sv/0", _SV, 0.75), ("sv/1", _SV, 0.55), ("sv/2", _SV, 0.7)],
+        ("base_only", False): [("Count_Person", _SV, 0.9), ("sv/second", _SV, 0.75)],
+        ("custom_only", True): [("undata/sdg/SH_OOP", _SV, 0.8), ("sv/0", _SV, 0.65)],
     }
 
     with _client(shared_resolver, _Indicators(answers)) as client:
@@ -304,11 +304,11 @@ def test_indicator_hits_merge_by_score_above_the_floor(serve_catalogue, shared_r
     assert response.status_code == 200, response.text
     assert [(hit["ref"], hit["score"]) for hit in response.json()["hits"]] == [
         ("country/KEN", None),
-        ("Count_Person", 0.8),
-        ("undata/sdg/SH_OOP", 0.6),
-        ("sv/0", 0.5),
-        ("sv/second", 0.5),
-        ("sv/2", 0.45),
+        ("Count_Person", 0.9),
+        ("undata/sdg/SH_OOP", 0.8),
+        ("sv/0", 0.75),
+        ("sv/second", 0.75),
+        ("sv/2", 0.7),
     ]
 
 
@@ -319,7 +319,7 @@ def test_a_ref_typed_by_any_source_survives_an_untyped_better_score(
     stays when the graph names it but gives no type."""
     serve_catalogue(FakeCatalogue())
     answers: dict[tuple[str, bool], _Answer] = {
-        ("custom_only", False): [("sv/LabelOnly", _SV, 0.4)],
+        ("custom_only", False): [("sv/LabelOnly", _SV, 0.7)],
         ("custom_only", True): [("sv/LabelOnly", None, 0.9)],
     }
 
