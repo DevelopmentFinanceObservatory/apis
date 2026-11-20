@@ -5,7 +5,9 @@ Cloud Tasks call. A create that returns, or reports the task already exists, is 
 `mark_dispatched`. A create that fails or never returns leaves `dispatched_at` NULL. The
 operations poll then calls `dispatch_if_due` with `older_than`, so a row past the enqueue
 recovery window gets its task created again under the same name. Cloud Tasks deduplicates by
-name, so a repeated create never runs the operation twice.
+name, so a repeated create never runs the operation twice. A record that finds the submission
+already marked, or the row moved on, reads the row again, so the caller judges the row as it
+stands.
 """
 
 from __future__ import annotations
@@ -29,18 +31,21 @@ def dispatch_if_due(
     operation_store: OperationStore,
     task_client: TaskClient,
     older_than: datetime | None = None,
+    timeout: float = ENQUEUE_TIMEOUT_SECONDS,
 ) -> Operation:
-    """Creates the task for a `pending` row with no recorded dispatch and records it, returning
-    the updated row. With `older_than`, only a submission made before it is due. Any other row
-    is returned unchanged. Create and record failures are logged and leave the row for the next
-    poll.
+    """Creates the task for a `pending` row with no recorded dispatch, waiting at most
+    `timeout` seconds for the create, and records it, returning the updated row. With
+    `older_than`, only a submission made before it is due. Any other row is returned unchanged.
+    Create and record failures are logged and leave the row for the next poll.
     """
     if operation.state != "pending" or operation.dispatched_at is not None:
         return operation
     if older_than is not None and operation.submitted_at >= older_than:
         return operation
     try:
-        task_client.enqueue(operation_id=operation.id, submission_count=operation.submission_count)
+        task_client.enqueue(
+            operation_id=operation.id, submission_count=operation.submission_count, timeout=timeout
+        )
     except Exception:
         logger.warning(
             "Datasets operation %r: task create for submission %d had an unknown outcome; "
@@ -63,7 +68,21 @@ def dispatch_if_due(
             exc_info=True,
         )
         return operation
-    return marked if marked is not None else operation
+    if marked is not None:
+        return marked
+    # Another caller marked this submission first, or the row moved on since it was read.
+    try:
+        current = operation_store.get(operation.id)
+    except DatasetsStoreUnavailable:
+        logger.warning(
+            "Datasets operation %r: task for submission %d was created; reading the row back "
+            "failed",
+            operation.id,
+            operation.submission_count,
+            exc_info=True,
+        )
+        return operation
+    return current if current is not None else operation
 
 
 __all__ = ["ENQUEUE_RECOVERY_SECONDS", "dispatch_if_due"]

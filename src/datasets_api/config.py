@@ -177,6 +177,12 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # import carries.
     head_imported_data_max_age_seconds: int = Field(default=604_800, ge=1)
 
+    # Maximum age of a head `GET /api/datasets/{id}` serves at once past the recheck window,
+    # counted from its last materialisation, while a head check runs on the worker
+    # (`current.serve_stored_head`). An older head takes the checked path in the request.
+    # Always greater than `head_max_age_seconds`, so the worker makes the daily rebuild.
+    head_serve_stale_max_age_seconds: int = Field(default=604_800, ge=1)
+
     # New pinned copies the pin door and the share routes make per UTC day
     # (`datasets_api.retention_admission`), a budget spent as an allowance is
     # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy
@@ -262,6 +268,20 @@ class DatasetsBuildSettings(FoldCeilingSettings):
             raise ValueError(
                 "DATASETS_HEAD_RECHECK_SECONDS must be < DATASETS_HEAD_MAX_AGE_SECONDS "
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_serve_stale_past_max_age(self) -> DatasetsBuildSettings:
+        """Require the serve-stale ceiling to exceed the maximum head age and the recheck
+        interval."""
+        floor = max(self.head_max_age_seconds, self.head_recheck_seconds)
+        if self.head_serve_stale_max_age_seconds <= floor:
+            raise ValueError(
+                "DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS must be > "
+                f"DATASETS_HEAD_MAX_AGE_SECONDS ({self.head_max_age_seconds}) and "
+                f"DATASETS_HEAD_RECHECK_SECONDS ({self.head_recheck_seconds}), got "
+                f"{self.head_serve_stale_max_age_seconds}"
             )
         return self
 
