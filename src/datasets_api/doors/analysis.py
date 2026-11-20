@@ -19,15 +19,20 @@ storing nothing.
 
 A request with `verify` set computes the tree again at the versions its roots name and
 answers 200 `AnalysisVerified` (`analysis.verify_analysis`): `outcome` (`same`, `different`,
-`not_stored` or `roots_unavailable`), the pair the computation names and its frame `cv_`, the
-pair compared with and the `cv_` of the frame stored there, the execution identity that
-computed it and the one the stored recipe records, and `unavailable_roots`, each root that
-cannot be read at its version with its code, `artifact_expired` once its stored frame or its
-rendering's file has aged out. It reads no stored answer and writes nothing: no frame, recipe,
-answer, version record or rendering, and it pins nothing. It admits the caller holding the
-`verify` grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and refuses any other
-`verify_not_permitted` (403). It logs no `datasets.delivery` line, since it serves no
-frame. A `verify` request that also sets `latest`, or names a Spec root, refuses
+`not_stored` or `roots_unavailable`), the pair the computation names with its frame `cv_` and
+output digest, the pair compared with and the `cv_` of the frame stored there, the stored
+frame's output digest when the two `cv_`s differ, the execution identity that computed it and
+the one the stored recipe records, the refusal the computation met (`refusal_code`,
+`refusal_reason`), and `unavailable_roots`. An answer reproduces when the `cv_`s or the output
+digests match. An engine refusal or a cap the computation meets answers `different` when a
+frame is stored under the pair compared with. `unavailable_roots` names every root that cannot
+be read at its version with its code: `artifact_expired` once its stored frame has aged out,
+`snapshot_revoked` once its version is taken down. A root whose rendering's file has aged out
+is rendered in memory from its stored frame. A verification reads no stored answer and writes
+nothing: no frame, recipe, answer, version record or rendering, and it pins nothing. It admits
+the caller holding the `verify` grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and
+refuses any other `verify_not_permitted` (403). It logs no `datasets.delivery` line, since it
+serves no frame. A `verify` request that also sets `latest`, or names a Spec root, refuses
 `request_invalid` (400), since neither names a version.
 
 Both routes admit every caller and spend no allowance. The caller is resolved
@@ -175,10 +180,18 @@ class AnalysisVerified(BaseModel):
     output_digest: str | None = Field(pattern=r"^out_[0-9a-f]{32}$")
     stored: dict[str, str] | None = Field(description="the pair compared with")
     stored_frame_content_version: str | None = Field(pattern=r"^cv_[0-9a-f]{32}$")
+    stored_output_digest: str | None = Field(
+        pattern=r"^out_[0-9a-f]{32}$",
+        description="the stored frame's output digest, read when the two cv_s differ",
+    )
     stored_execution_identity: str | None = Field(
         description="the execution identity the stored frame's recipe records"
     )
     execution_identity: dict[str, str]
+    refusal_code: str | None = Field(
+        description="the engine's refusal code, or over_ceiling, the computation met"
+    )
+    refusal_reason: str | None
     unavailable_roots: list[UnavailableRootBody]
 
 

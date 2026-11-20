@@ -8,6 +8,7 @@ The door's roots come from a double source (`_analysis_doubles.FakeRootSource`) 
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
 import threading
 from typing import Any
@@ -16,15 +17,18 @@ import pytest
 from dfo_frame_grammar import Frame
 from fastapi.testclient import TestClient
 
+import datasets_api.analysis as analysis
 import datasets_api.doors.analysis as analysis_door
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
-from datasets_api.analysis import LocatedRoot, ResolvedRoot, RootExpired
+from dataset_store.snapshot import SnapshotRevoked
+from datasets_api.analysis import DatasetRoot, LocatedRoot, ResolvedRoot, RootExpired, SpecRoot
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.publish import PublishRecordMissing
 from datasets_api.version_store import LiveVersionLister
+from dfo_analysis_engine.frame_ref import FrameRef as EngineFrameRef
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from spec_registry import LiveSpecRegistry
 
@@ -516,17 +520,62 @@ def _writes(stores: Stores) -> tuple[int, int]:
 
 
 class _ExpiringSource(FakeRootSource):
-    """`base`, with each version in `expired` refused `RootExpired` as `locate` reads it."""
+    """`base`, with each version in `expired` refused `RootExpired` by the step `at` names
+    (`locate` or `read`), or each refused `SnapshotRevoked` as it resolves (`revoked`)."""
 
-    def __init__(self, base: FakeRootSource, *, expired: set[tuple[str, str]]) -> None:
+    def __init__(self, base: FakeRootSource, *, expired: set[tuple[str, str]], at: str) -> None:
         super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
         self.expired = expired
+        self.at = at
+
+    def resolve(
+        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+    ) -> ResolvedRoot:
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id)
+        pair = (resolved.dataset.spec_id, resolved.dataset.content_version)
+        if self.at == "revoked" and pair in self.expired:
+            raise SnapshotRevoked(id=pair[0], content_version=pair[1], reason="taken down")
+        return resolved
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         pair = (root.dataset.spec_id, root.dataset.content_version)
-        if pair in self.expired:
+        if self.at == "locate" and pair in self.expired:
             raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="aged out")
         return super().locate(root)
+
+    def read(self, root: LocatedRoot) -> Frame:
+        pair = (root.dataset.spec_id, root.dataset.content_version)
+        if self.at == "read" and pair in self.expired:
+            raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="file gone")
+        return super().read(root)
+
+
+class _RenamingSource(FakeRootSource):
+    """`base`, naming each root's frame under another pair once `renamed` is set, as an
+    earlier derivation of `analysis_roots.frame_ref_for` named it."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.renamed = False
+
+    def resolve(
+        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+    ) -> ResolvedRoot:
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id)
+        if not self.renamed:
+            return resolved
+        digest = hashlib.sha256(resolved.dataset.content_version.encode()).hexdigest()
+        frame = EngineFrameRef(
+            spec_id=resolved.dataset.spec_id, content_version=f"cv_{digest[:32]}"
+        )
+        record = {**resolved.record, "frame": frame.model_dump()}
+        return ResolvedRoot(
+            frame=frame,
+            dataset=resolved.dataset,
+            record=record,
+            rendering=resolved.rendering,
+            rows=resolved.rows,
+        )
 
 
 def _stored_pair(client: TestClient) -> dict[str, str]:
@@ -584,15 +633,25 @@ def test_verify_reports_a_frame_the_pinned_roots_no_longer_compute_as_different(
     assert _writes(stores) == writes
 
 
-def test_verify_names_every_root_whose_pinned_version_expired(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("at", "code"),
+    [
+        ("locate", "artifact_expired"),
+        ("read", "artifact_expired"),
+        ("revoked", "snapshot_revoked"),
+    ],
+)
+def test_verify_names_every_root_whose_pinned_version_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch, at: str, code: str
 ) -> None:
+    """Every root that cannot be read is named, whether its frame aged out before it is read,
+    its file went as it is read, or its version was taken down."""
     stores = Stores()
-    roots = _ExpiringSource(source(stores), expired=set())
+    roots = _ExpiringSource(source(stores), expired=set(), at=at)
     with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
         stored = _stored_pair(client)
         roots.expired = {(AID, AID_V1), (POPULATION, POPULATION_V1)}
-        reads = roots.reads
+        writes = _writes(stores)
         response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
 
     assert response.status_code == 200, response.text
@@ -603,11 +662,56 @@ def test_verify_names_every_root_whose_pinned_version_expired(
     assert sorted(
         (root["spec_id"], root["content_version"], root["code"])
         for root in body["unavailable_roots"]
-    ) == [
-        (AID, AID_V1, "artifact_expired"),
-        (POPULATION, POPULATION_V1, "artifact_expired"),
-    ]
-    assert roots.reads == reads
+    ) == [(AID, AID_V1, code), (POPULATION, POPULATION_V1, code)]
+    assert _writes(stores) == writes
+
+
+def test_verify_reports_a_stored_frame_whose_roots_it_named_under_older_pairs_as_the_same(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored run named its roots' frames under pairs this runner no longer derives, so the
+    `quotient_of` step's rows carry another `ops_` id and the frame `cv_`s differ. The output
+    digest names that variable by what was computed, so the answer reproduces."""
+    stores = Stores()
+    roots = _RenamingSource(source(stores))
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        roots.renamed = True
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["frame_content_version"] != body["stored_frame_content_version"]
+    assert body["outcome"] == "same"
+    assert body["stored_output_digest"] == body["output_digest"]
+
+
+@pytest.mark.parametrize("refusal", ["output-cap", "engine"])
+def test_verify_reports_a_refused_computation_as_different(
+    monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """The computation is refused, its output past the rows the publish door stores or the
+    engine declining a pinned root that now holds other data: the answer does not reproduce,
+    and the refusal is recorded, so the probe reads a result."""
+    stores = Stores()
+    roots = source(stores)
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        if refusal == "output-cap":
+            monkeypatch.setattr(analysis, "PUBLISH_MAX_ROWS", 1)
+        else:
+            roots.frames[(POPULATION, POPULATION_V1)] = aid_frame()
+        writes = _writes(stores)
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "different"
+    assert body["frame"] is None
+    assert body["stored_frame_content_version"] is not None
+    assert body["refusal_code"] == ("over_ceiling" if refusal == "output-cap" else "role_ambiguous")
+    assert body["refusal_reason"]
+    assert _writes(stores) == writes
 
 
 @pytest.mark.parametrize(

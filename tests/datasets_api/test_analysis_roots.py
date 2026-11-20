@@ -403,14 +403,17 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
     )
 
 
-def test_verify_names_a_root_whose_rendering_is_not_stored_and_renders_nothing() -> None:
-    """A run renders a root's groupby from its version's stored frame and stores the file. A
-    verification makes no file: it names the root, and the store holds no new row."""
+def test_verify_renders_a_root_whose_rendering_is_not_stored_in_memory_and_stores_nothing() -> None:
+    """A root's groupby file is not stored, as after its 30 days in the working tier, while its
+    version's stored frame is held. A verification renders the file in memory and computes the
+    frame a run then stores, writing no row and no object."""
     store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
     client = _client(
         graph=_graph(),
         sdmx_transport=_sdmx_transport(),
         version_store=store,
+        artifact_store=artifact_store,
         code_index=_hierarchical_code_index(),
         coverage=_coverage_service(),
         recipe_store=LiveRecipeStore(store=store),
@@ -431,23 +434,23 @@ def test_verify_names_a_root_whose_rendering_is_not_stored_and_renders_nothing()
         "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
         "inputs": {"data": root},
     }
-    changes = store.total_changes
+    probe = {"x-dfo-principal": "probe-secret"}
+    changes, objects = store.total_changes, len(artifact_store._objects)
     verified = client.post(
-        "/api/datasets/analysis",
-        json={"tree": tree, "verify": True},
-        headers={"x-dfo-principal": "probe-secret"},
+        "/api/datasets/analysis", json={"tree": tree, "verify": True}, headers=probe
     )
-    assert store.total_changes == changes
+    assert (store.total_changes, len(artifact_store._objects)) == (changes, objects)
     ran = client.post("/api/datasets/analysis", json={"tree": tree})
+    again = client.post(
+        "/api/datasets/analysis", json={"tree": tree, "verify": True}, headers=probe
+    )
 
     assert verified.status_code == 200, verified.text
     body = verified.json()
-    assert body["outcome"] == "roots_unavailable"
-    assert [(r["spec_id"], r["content_version"], r["code"]) for r in body["unavailable_roots"]] == [
-        (spec_id, raw, "artifact_expired")
-    ]
+    assert (body["outcome"], body["unavailable_roots"]) == ("not_stored", [])
     assert ran.status_code == 200, ran.text
-    assert store.total_changes > changes
+    assert body["frame_content_version"] == ran.json()["frame_content_version"]
+    assert again.json()["outcome"] == "same"
 
 
 def _summed_stat_vars(client, data: dict, *, latest: bool = False) -> dict:

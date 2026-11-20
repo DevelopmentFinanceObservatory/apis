@@ -332,14 +332,14 @@ MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
 
 MAX_LIVE_SHARE_DATA_CARDS = 20
+"""The most data cards, those that draw a frame, a live share holds. It matches the website's
+`LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
 SHARE_SAMPLE_MAX = 500
 """The most shares one sample draws."""
 
 SHARE_SAMPLE_DEFAULT = 100
 """The shares a sample draws when its request names no `limit`."""
-"""The most data cards, those that draw a frame, a live share holds. It matches the website's
-`LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
 _MAX_TITLE_LENGTH = 300
 

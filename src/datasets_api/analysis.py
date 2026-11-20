@@ -71,8 +71,9 @@ the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it
 recipe carries `left_out`, every series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
 (`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
 `verify_analysis` computes a `verify` request's tree at the versions its roots name, past any
-stored answer, compares its frame `cv_` with the frame stored under the tree's pair, and
-stores nothing; a root it cannot read at its version is named, not raised.
+stored answer, compares its frame with the frame stored under the tree's pair by `cv_` and by
+output digest, and stores nothing. It names every root it cannot read at its version in its
+answer, and records an engine refusal or a cap the computation meets as its outcome.
 
 A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
 request key (`request_key`) taken, a hash of the working tree as sent, each resolved root's
@@ -124,7 +125,12 @@ from pydantic import (
 
 from artifact_store import ArtifactStore
 from dataset_store.clock import Clock
-from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, read_servable_version
+from dataset_store.snapshot import (
+    SnapshotNotFound,
+    SnapshotReader,
+    SnapshotRevoked,
+    read_servable_version,
+)
 from datasets_api.doors.publish import (
     PUBLISH_MAX_ROWS,
     publish_built_frame,
@@ -1782,6 +1788,23 @@ def _evaluated(
             the publish door stores (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
     frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
+    return _evaluated_frames(working, resolved, frames, bounds=bounds, latest=latest)
+
+
+def _evaluated_frames(
+    working: dict[str, Any],
+    resolved: Sequence[LocatedRoot],
+    frames: Sequence[Frame],
+    *,
+    bounds: AnalysisBounds,
+    latest: bool,
+) -> Computed:
+    """Evaluate the working tree over `frames`, the frames of `resolved` in its order.
+
+    Raises:
+        AnalysisTooLarge: The frame passes the rows the publish door stores
+            (`PUBLISH_MAX_ROWS`), refused before it is digested.
+    """
     engine = _Engine(frames=frames, resolved=resolved)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
@@ -2007,7 +2030,8 @@ def run_analysis(
 @dataclass(frozen=True, kw_only=True)
 class UnavailableRoot:
     """A root a verification cannot read at the version it names: the Datasets code a run
-    refuses it with (`artifact_expired` once its stored frame or file has aged out), and why."""
+    refuses it with (`artifact_expired` once its stored frame or file has aged out,
+    `snapshot_revoked` once its version is taken down), and why."""
 
     spec_id: str
     content_version: str
@@ -2015,7 +2039,14 @@ class UnavailableRoot:
     reason: str
 
     @classmethod
-    def of(cls, refused: FrameUnavailable) -> UnavailableRoot:
+    def of(cls, refused: FrameUnavailable | SnapshotRevoked) -> UnavailableRoot:
+        if isinstance(refused, SnapshotRevoked):
+            return cls(
+                spec_id=refused.id,
+                content_version=refused.content_version,
+                code=refused.code,
+                reason=str(refused),
+            )
         return cls(
             spec_id=refused.spec_id,
             content_version=refused.content_version,
@@ -2030,12 +2061,15 @@ type VerifyOutcome = Literal["same", "different", "not_stored", "roots_unavailab
 @dataclass(frozen=True, kw_only=True)
 class Verification:
     """What `verify_analysis` found. `frame` and `frame_content_version` are the pair the
-    computation named and its frame's `cv_`, `None` when a root could not be read. `stored`
-    and `stored_frame_content_version` are the pair compared with and the `cv_` of the frame
-    stored under it, `None` when no frame file is served there; `stored_execution_identity` is
-    the execution identity its recipe records. `execution_identity` is the engine's that
-    computed `frame`. The outcome is `same` or `different` when both `cv_`s are known,
-    `roots_unavailable` when a root could not be read, else `not_stored`."""
+    computation named and its frame's `cv_`, `None` when a root could not be read or the
+    computation was refused. `stored` and `stored_frame_content_version` are the pair compared
+    with and the `cv_` of the frame stored under it, `None` when no frame file is served there;
+    `stored_execution_identity` is the execution identity its recipe records.
+    `stored_output_digest` is the stored frame's output digest, read when the two `cv_`s
+    differ, else `None`. `execution_identity` is the engine's that computed `frame`.
+    `refusal_code` and `refusal_reason` are the refusal the computation met, the engine's code
+    or `over_ceiling` with its ceiling kind, else `None`. See `verify_analysis` for the
+    outcome."""
 
     outcome: VerifyOutcome
     frame: FrameRef | None
@@ -2043,8 +2077,11 @@ class Verification:
     output_digest: str | None
     stored: FrameRef | None
     stored_frame_content_version: str | None
+    stored_output_digest: str | None
     stored_execution_identity: str | None
     execution_identity: dict[str, str]
+    refusal_code: str | None
+    refusal_reason: str | None
     unavailable_roots: tuple[UnavailableRoot, ...]
 
     def body(self) -> dict[str, Any]:
@@ -2058,27 +2095,125 @@ class Verification:
             "output_digest": self.output_digest,
             "stored": None if self.stored is None else pair(self.stored),
             "stored_frame_content_version": self.stored_frame_content_version,
+            "stored_output_digest": self.stored_output_digest,
             "stored_execution_identity": self.stored_execution_identity,
             "execution_identity": self.execution_identity,
+            "refusal_code": self.refusal_code,
+            "refusal_reason": self.refusal_reason,
             "unavailable_roots": [asdict(root) for root in self.unavailable_roots],
         }
 
 
+class _Unavailable:
+    """Every root a verification cannot read, each named once, in the order met."""
+
+    def __init__(self) -> None:
+        self._roots: dict[tuple[str, str], UnavailableRoot] = {}
+
+    def add(self, refused: FrameUnavailable | SnapshotRevoked) -> None:
+        root = UnavailableRoot.of(refused)
+        self._roots.setdefault((root.spec_id, root.content_version), root)
+
+    def __bool__(self) -> bool:
+        return bool(self._roots)
+
+    def roots(self) -> tuple[UnavailableRoot, ...]:
+        return tuple(self._roots.values())
+
+
 def _readable_roots(
-    roots: Sequence[SpecRoot | DatasetRoot], *, source: RootSource, trace_id: str | None
-) -> tuple[list[LocatedRoot], list[UnavailableRoot]]:
-    """Each root resolved at the version it names and located, and every root that refused
-    either step, each named once."""
+    roots: Sequence[SpecRoot | DatasetRoot],
+    *,
+    source: RootSource,
+    trace_id: str | None,
+    unavailable: _Unavailable,
+) -> list[LocatedRoot]:
+    """Each root resolved at the version it names and located. A root that refuses either
+    step, or whose version is taken down, is added to `unavailable` and the rest are still
+    resolved."""
     located: list[LocatedRoot] = []
-    unavailable: dict[tuple[str, str], UnavailableRoot] = {}
     for root in roots:
         try:
             located.append(source.locate(source.resolve(root, latest=False, trace_id=trace_id)))
+        except (FrameUnavailable, SnapshotRevoked) as refused:
+            unavailable.add(refused)
+    return located
+
+
+def _read_every_root(
+    located: Sequence[LocatedRoot], *, source: RootSource, cap: int, unavailable: _Unavailable
+) -> list[Frame]:
+    """The frames of `located`, read in turn, as `_read_roots` reads them. A root whose frame
+    is gone is added to `unavailable` and the rest are still read, so each is named; once one
+    is, the frames read are dropped, since nothing is computed.
+
+    Raises:
+        AnalysisTooLarge: The roots read hold more than `cap` rows.
+    """
+    frames: list[Frame] = []
+    read = 0
+    for root in located:
+        try:
+            frame = source.read(root)
         except FrameUnavailable as refused:
-            unavailable.setdefault(
-                (refused.spec_id, refused.content_version), UnavailableRoot.of(refused)
-            )
-    return located, list(unavailable.values())
+            unavailable.add(refused)
+            frames.clear()
+            continue
+        read += frame.num_rows
+        if read > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=read, cap=cap)
+        if not unavailable:
+            frames.append(frame)
+    return frames
+
+
+def _matched_root_variables(
+    records: Sequence[Mapping[str, Any]], computed: Computed
+) -> dict[int, frozenset[str]] | None:
+    """The `stat_var` values of each root of a stored recipe, by its index in the stored tree,
+    taken from the root the computation read under the same record, or `None` when a record
+    has no such root. Records are matched without their `frame` pair, which a stored run may
+    have named under an earlier derivation of `analysis_roots.frame_ref_for`."""
+
+    def unnamed(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in record.items() if key != "frame"}
+
+    read = [unnamed(root.record) for root in computed.roots]
+    variables: dict[int, frozenset[str]] = {}
+    for index, record in enumerate(records):
+        at = next((at for at, held in enumerate(read) if held == unnamed(record)), None)
+        if at is None:
+            return None
+        variables[index] = computed.root_variables[at]
+    return variables
+
+
+def _stored_output_digest(stores: AnalysisStores, ref: FrameRef, computed: Computed) -> str | None:
+    """The output digest of the frame stored under the pair `ref`, its minted variables named
+    by its stored recipe's tree over the variables of the roots `computed` read
+    (`output_digest.minted_variable_names`), or `None` when the pair holds no recipe, a recipe
+    root matches no root read, or no copy of its frame is held. Reads only.
+
+    Raises:
+        StoredFrameUnreadable: A copy of the stored frame does not decode and no other reads.
+    """
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    if recipe is None:
+        return None
+    body: Mapping[str, Any] = recipe.body
+    variables = _matched_root_variables(body["roots"], computed)
+    if variables is None:
+        return None
+    frame = linked_stored_frame(
+        stores.snapshot_reader.read_artifact_locations(ref.spec_id, ref.content_version),
+        artifact_store=stores.artifact_store,
+        now=stores.now(),
+    )
+    if frame is None:
+        return None
+    return output_digest(frame, minted_variable_names(body["tree"], variables))
 
 
 def _stored_frame(stores: AnalysisStores, ref: FrameRef) -> tuple[str | None, str | None]:
@@ -2097,6 +2232,13 @@ def _stored_frame(stores: AnalysisStores, ref: FrameRef) -> tuple[str | None, st
     return frame_content_version, identity if isinstance(identity, str) else None
 
 
+def _refusal_of(refused: AnalysisRefused | AnalysisTooLarge) -> tuple[str, str]:
+    """The code and reason a verification records for a refused computation."""
+    if isinstance(refused, AnalysisTooLarge):
+        return refused.code, f"{refused.ceiling_kind}: {refused}"
+    return refused.refusal.code.value, refused.refusal.message
+
+
 def verify_analysis(
     request: AnalysisRequest,
     *,
@@ -2107,15 +2249,28 @@ def verify_analysis(
     trace_id: str | None = None,
 ) -> Verification:
     """Compute `request`'s tree again at the versions its roots name, past any stored answer,
-    and compare its frame's `cv_` with the frame stored under the pair compared with: the
-    tree's own pair when the tree is a derived root, else the pair the computation names, or
-    failing a frame there the pair a recipe of its replay key is stored under. Writes nothing:
-    no frame, recipe, answer or version record. A root that cannot be read at its version is
-    named in `unavailable_roots`, every such root at once, and nothing is computed.
+    and compare it with the frame stored under the pair compared with: the tree's own pair when
+    the tree is a derived root, else the pair the computation names, or failing a frame there
+    the pair a recipe of its replay key is stored under. Writes nothing: no frame, recipe,
+    answer, version record or rendering (`analysis_roots.LiveRootSource` with `render` false).
+
+    The outcome is:
+
+    - `same`: the frame `cv_`s match, or the output digests do. A stored run that named a root
+      under an earlier derivation of `analysis_roots.frame_ref_for` wrote its minting steps'
+      rows under other `ops_` ids, so its bytes differ from a reproducing computation's while
+      its output digest, which names those variables by what was computed, matches.
+    - `different`: neither matches, or the computation is refused (the engine's refusal, or
+      `over_ceiling` for roots or an output past their caps) while a frame is stored under the
+      pair compared with. The refusal is recorded in `refusal_code` and `refusal_reason`.
+    - `roots_unavailable`: a root cannot be read at its version, its stored frame or file
+      aged out or its version taken down. Every such root is named in `unavailable_roots`, and
+      nothing is computed.
+    - `not_stored`: no frame file is served at the pair compared with.
 
     Raises:
-        AnalysisRefused: The engine refuses the tree.
-        SeveralMembers, AnalysisTooLarge: As their docstrings say.
+        SeveralMembers: As its docstring says.
+        AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
         FrameUnavailable: A derived root holds no stored recipe, or names a rendering this
             runner does not read.
         SnapshotRevoked: The pair compared with is taken down.
@@ -2127,31 +2282,46 @@ def verify_analysis(
         if isinstance(request.tree, DerivedRoot)
         else None
     )
-    located, unavailable = _readable_roots(roots, source=source, trace_id=trace_id)
+    unavailable = _Unavailable()
+    located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
     computed: Computed | None = None
+    refusal: tuple[str, str] | None = None
     if not unavailable:
-        recorded = sum(root.rows or 0 for root in located)
-        if recorded > bounds.max_root_rows:
-            raise AnalysisTooLarge(
-                ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
-            )
         try:
+            recorded = sum(root.rows or 0 for root in located)
+            if recorded > bounds.max_root_rows:
+                raise AnalysisTooLarge(
+                    ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
+                )
             with permit():
-                computed = _evaluated(working, located, source=source, bounds=bounds, latest=False)
-        except FrameUnavailable as refused:
-            unavailable = [UnavailableRoot.of(refused)]
+                frames = _read_every_root(
+                    located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
+                )
+                if not unavailable:
+                    computed = _evaluated_frames(
+                        working, located, frames, bounds=bounds, latest=False
+                    )
+        except (AnalysisRefused, AnalysisTooLarge) as refused:
+            refusal = _refusal_of(refused)
     if computed is None:
         stored_cv, stored_identity = (None, None) if named is None else _stored_frame(stores, named)
+        if unavailable:
+            outcome: VerifyOutcome = "roots_unavailable"
+        else:
+            outcome = "not_stored" if stored_cv is None else "different"
         return Verification(
-            outcome="roots_unavailable",
+            outcome=outcome,
             frame=None,
             frame_content_version=None,
             output_digest=None,
             stored=named,
             stored_frame_content_version=stored_cv,
+            stored_output_digest=None,
             stored_execution_identity=stored_identity,
             execution_identity=identity,
-            unavailable_roots=tuple(unavailable),
+            refusal_code=None if refusal is None else refusal[0],
+            refusal_reason=None if refusal is None else refusal[1],
+            unavailable_roots=unavailable.roots(),
         )
     evaluation = computed.evaluation
     compared = named if named is not None else evaluation.ref
@@ -2164,13 +2334,17 @@ def verify_analysis(
             compared = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
             stored_cv, stored_identity = _stored_frame(stores, compared)
     frame_content_version = str(evaluation.summary["frame_content_version"])
-    outcome: VerifyOutcome = (
-        "not_stored"
-        if stored_cv is None
-        else "same"
-        if stored_cv == frame_content_version
-        else "different"
+    stored_digest = (
+        _stored_output_digest(stores, compared, computed)
+        if stored_cv is not None and stored_cv != frame_content_version
+        else None
     )
+    if stored_cv is None:
+        outcome = "not_stored"
+    elif stored_cv == frame_content_version or stored_digest == computed.output_digest:
+        outcome = "same"
+    else:
+        outcome = "different"
     return Verification(
         outcome=outcome,
         frame=evaluation.ref,
@@ -2178,8 +2352,11 @@ def verify_analysis(
         output_digest=computed.output_digest,
         stored=compared,
         stored_frame_content_version=stored_cv,
+        stored_output_digest=stored_digest,
         stored_execution_identity=stored_identity,
         execution_identity=dict(evaluation.summary["execution_identity"]),
+        refusal_code=None,
+        refusal_reason=None,
         unavailable_roots=(),
     )
 
