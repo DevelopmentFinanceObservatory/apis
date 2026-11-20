@@ -37,7 +37,7 @@ from datasets_api.operations.submit import (
     poll_interval_ms,
     retry_after_headers,
 )
-from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, FakeTaskClient
 from datasets_api.render import artifact_rendering
 from datasets_api.schema import (
     Manifest,
@@ -1577,7 +1577,13 @@ class _RaisingTaskClient:
     def __init__(self) -> None:
         self.calls = 0
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         self.calls += 1
         raise TimeoutError("create_task deadline exceeded")
 
