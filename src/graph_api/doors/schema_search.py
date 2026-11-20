@@ -126,11 +126,11 @@ worker, so the resolve and node routes keep the rest."""
 INDICATOR_CANDIDATES = 10
 """The candidates each indicator leg keeps, in the resolver's order."""
 
-SCHEMA_SEARCH_SCORE_FLOOR = 0.30
-"""The least score an indicator candidate needs to be kept. It mirrors the search engine's
-`SEARCH_RECALL_SCORE_FLOOR` default (`search.engine.config.SearchSettings.recall_score_floor`),
-which this module does not import: that module builds the engine's settings at import and
-refuses without the engine's environment, such as `SEARCH_GRAPH_BASE`."""
+SCHEMA_SEARCH_SCORE_FLOOR = 0.60
+"""The least score an indicator candidate needs to be kept. On the dev graph, StatVars
+unrelated to the query score 0.50 to 0.59 (all ten UN hits for "WHO" score 0.54) and related
+ones 0.60 and above (the UN CO2 StatVars for "co2 emissions" score 0.61 to 0.64). The search
+engine's recall floor, `SearchSettings.recall_score_floor` (0.30), keeps both."""
 
 _STATVAR = "StatisticalVariable"
 _HIT_PROPERTIES = ("name", "typeOf")
