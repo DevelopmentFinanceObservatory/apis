@@ -324,8 +324,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
         }
         logger.info(
             "datasets.delivery door=%s spec_id=%s content_version=%s surface=%s "
-            "caller_source=%s admission=%s measure_count=%s rows_served=%s revalidated=%s "
-            "mcp_client=%s",
+            "caller_source=%s admission=%s measure_count=%s rows_served=%s revalidated=%s",
             door,
             delivery.spec_id,
             delivery.content_version,
@@ -335,7 +334,6 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             delivery.measure_count,
             delivery.rows_served,
             delivery.revalidated,
-            identity.mcp_client,
             extra={JSON_FIELDS_ATTR: fields},
         )
     except Exception as exc:

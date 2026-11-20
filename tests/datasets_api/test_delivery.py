@@ -248,7 +248,7 @@ def test_the_line_names_the_mcp_client_a_public_caller_used(
     (line,) = _lines(caplog)
     assert line["mcp_client"] == mcp_client
     (record,) = [r for r in caplog.records if r.name == _LOGGER]
-    assert record.getMessage().endswith(f"mcp_client={mcp_client}")
+    assert "mcp_client" not in record.getMessage()
 
 
 @pytest.mark.usefixtures("vouching")
