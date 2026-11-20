@@ -559,7 +559,7 @@ def test_a_dataset_card_renders_by_the_rendering_it_recorded_at_creation(
 ):
     """The card recorded the plain rendering when it was made. The stored version's records
     read as a collapse now, which alone would refuse a plain target."""
-    plain = StoredRendering(base_content_version=_STORED.content_version, minting=None)
+    plain = StoredRendering(base_content_version=_STORED.content_version)
     frame_store.put(
         resolved_frame=dataclasses.replace(_frame(_STORED), rendering=plain.to_record())
     )

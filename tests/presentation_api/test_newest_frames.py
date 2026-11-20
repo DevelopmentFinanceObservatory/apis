@@ -21,7 +21,13 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors import definition as definition_door
 from datasets_api.doors.analysis import RunningAnalyses
-from datasets_api.doors.refresh import FrameMoved, FramePair, FramePending, StoredRendering
+from datasets_api.doors.refresh import (
+    FrameMoved,
+    FramePair,
+    FramePending,
+    RenderingNotRecorded,
+    StoredRendering,
+)
 from datasets_api.recorded_rendering import MintingOptions
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from series_coverage.index import Estimate
@@ -108,7 +114,6 @@ def _newest() -> DatasetsNewestFrames:
 
 _CUT = StoredRendering(
     base_content_version=_DATASET.content_version,
-    minting=MintingOptions(without_party_totals=True),
     mintings=(MintingOptions(without_party_totals=True),),
 )
 
@@ -127,6 +132,17 @@ def test_a_dataset_frame_moves_as_the_frame_refresh_answers_under_its_recorded_r
     assert _newest().newest(_DATASET, rendering=rendering) == _DATASET_NOW
     assert calls.refresh == [(_DATASET.spec_id, _DATASET.content_version, recorded)]
     assert calls.prepared == []
+
+
+def test_a_card_record_naming_no_rendering_refuses_as_the_records_do(calls: _Calls):
+    """A dataset card whose recorded rendering names none refuses `rendering_not_recorded`, as
+    the render routes refuse every other frame for it, and asks the refresh nothing."""
+    record = {**StoredRendering(base_content_version=_DATASET.content_version).to_record()}
+    record["plain"] = False
+
+    with pytest.raises(RenderingNotRecorded):
+        _newest().newest(_DATASET, rendering=record)
+    assert calls.refresh == []
 
 
 def test_a_derived_frame_reruns_its_recipe_on_the_newest_data(calls: _Calls):

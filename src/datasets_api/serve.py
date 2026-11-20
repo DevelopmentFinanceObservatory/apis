@@ -970,13 +970,14 @@ def prewrite_definition(
 @dataclass(frozen=True)
 class ServedDefinition:
     """A serve's response, the head its run advanced to, `None` when a concurrent writer
-    advanced it first, and the member family the run's trace states. The response states that
-    family whatever version it serves, derived ones included, and whichever writer won the
-    head."""
+    advanced it first, the member family the run's trace states, and the raw version the run
+    materialised, which the response is or was derived from. The response states that family
+    whatever version it serves, derived ones included, and whichever writer won the head."""
 
     manifest: Manifest
     head: SubjectHead | None
     family: StatedFamily
+    content_version: str
 
 
 def serve_definition(
@@ -1050,7 +1051,10 @@ def serve_definition(
             ),
         )
         return ServedDefinition(
-            manifest=manifest, head=head, family=prewrite.result.trace.family_statement
+            manifest=manifest,
+            head=head,
+            family=prewrite.result.trace.family_statement,
+            content_version=prewrite.result.content_version,
         )
 
     with bounded_materialise_slot(
