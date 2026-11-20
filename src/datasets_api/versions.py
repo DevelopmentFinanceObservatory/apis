@@ -355,6 +355,28 @@ class ListedVersion:
 
 
 @dataclass(frozen=True)
+class HeadLink:
+    """One file linked under a version: its `rendering`, and the raw head its file was last made
+    from (`datasets.version_artifact.head_content_version`), `None` on a link no write named a
+    head for, as on every link under a raw version and every link written before links held
+    one."""
+
+    rendering: Mapping[str, object]
+    head_content_version: str | None
+
+
+@dataclass(frozen=True)
+class HeadVersion:
+    """A version a listing by head names (`VersionLister.list_head_versions`), with every file
+    linked under it (`links`), whichever head each names. `base_content_version` is the base its
+    record keeps, the one it was first recorded from."""
+
+    content_version: str
+    base_content_version: str | None
+    links: tuple[HeadLink, ...] = ()
+
+
+@dataclass(frozen=True)
 class VersionsPageKey:
     """Where a page of a versions listing ends: the last listed version's `recorded_at` and
     `content_version`, the listing's sort key."""
@@ -368,11 +390,12 @@ class VersionLister(Protocol):
         """Return the subject's stored versions, newest first. Empty when it holds none."""
         ...
 
-    def list_derived_versions(
-        self, subject_id: str, *, base_content_version: str
-    ) -> list[ListedVersion]:
-        """Return the subject's versions recorded as derived from `base_content_version`,
-        newest first. Empty when it holds none."""
+    def list_head_versions(
+        self, subject_id: str, *, head_content_version: str
+    ) -> list[HeadVersion]:
+        """Return the subject's versions that link a file made from `head_content_version` or
+        are recorded as derived from it, newest first, each with every file linked under it.
+        Empty when it holds none."""
         ...
 
     def list_servable_versions(

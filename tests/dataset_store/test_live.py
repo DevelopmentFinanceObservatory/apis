@@ -71,7 +71,6 @@ from datasets_api.version_store import (
     LiveHeadStore,
     LiveVersionLister,
     LiveVersionRecordWriter,
-    rendering_key,
 )
 from datasets_api.versions import (
     ArtifactRecord,
@@ -829,86 +828,114 @@ def test_read_version_state_reads_the_base_revocation_and_links_in_one_transacti
     assert not reader.artifact_inventoried(f"sha256:never-stored-{uuid4().hex}")
 
 
-def test_list_derived_versions_reads_the_versions_of_one_base_as_list_versions_does(live_store):
-    """`list_derived_versions` returns exactly the subject's versions recorded with the base it
-    names, each as `list_versions` reads it, with its linked renderings and the role columns of
-    its stored output profile, in the same order."""
-    subject_id = f"spec:test-live-derived-{uuid4().hex}"
-    other_id = f"spec:test-live-derived-other-{uuid4().hex}"
-    digests = {name: f"sha256:test-live-derived-{name}-{uuid4().hex}" for name in ("a", "b")}
-    profile = {"columns": [{"kind": "role", "name": "financingProvider"}]}
+def test_list_head_versions_reads_each_link_with_the_head_its_last_write_named(live_store):
+    """A derived version's write names its record's base as the head of each link it writes,
+    the last write's head winning even where the upsert kept the linked digest, and a raw
+    version's write names none. `list_head_versions` returns the subject's versions recorded
+    from the head or linking a file a write from it named, newest first, each with every link
+    under it and the head that link names, whether or not the file has a location."""
+    subject_id = f"spec:test-live-head-{uuid4().hex}"
+    other_id = f"spec:test-live-head-other-{uuid4().hex}"
+    digests = {name: f"sha256:test-live-head-{name}-{uuid4().hex}" for name in "abcde"}
+    groupby = {"format": "csv", "bundle": False, "groupby": {"by": ["recipient"]}}
+    cut = {**groupby, "without_party_totals": True}
+    plain = {"format": "csv", "bundle": False}
     started = datetime.now(UTC)
     with live_store.transaction() as tx:
-        rows = (
-            (subject_id, "cv_h1", None, None, 0),
-            (subject_id, "cv_h2", None, None, 1),
-            (subject_id, "cv_d1", "cv_h1", profile, 2),
-            (subject_id, "cv_d2", "cv_h1", None, 3),
-            (subject_id, "cv_d3", "cv_h2", None, 4),
-            (other_id, "cv_h1", None, None, 0),
-            (other_id, "cv_d9", "cv_h1", None, 5),
-        )
-        for recorded_under, content_version, base, output_profile, offset in rows:
-            tx.execute(
-                "INSERT INTO datasets.version_record "
-                "(subject_id, subject_kind, content_version, schema_version, "
-                "immutable_body, recorded_at, base_content_version) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
-                    recorded_under,
-                    "spec",
-                    content_version,
-                    1,
-                    # The record's trigger copies the body's output profile into its column.
-                    {**_LINEAGE_BODY, "output_profile": output_profile},
-                    started + timedelta(seconds=offset),
-                    base,
-                ),
-            )
-        for digest in digests.values():
+        for name, digest in digests.items():
             tx.execute(
                 "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) "
                 "VALUES (%s, %s)",
                 (digest, 7),
             )
-            tx.execute(
-                "INSERT INTO datasets.artifact_location "
-                "(artifact_digest, tier, bucket, object_name, stored_at) "
-                "VALUES (%s, %s, %s, %s, now())",
-                (digest, "working", "b", digest),
-            )
-        groupby = {"format": "csv", "bundle": False, "groupby": {"by": ["recipient"]}}
-        for content_version, digest, rendering in (
-            ("cv_d1", digests["a"], groupby),
-            ("cv_d1", digests["b"], {**groupby, "without_party_totals": True}),
-            ("cv_d3", digests["a"], groupby),
-        ):
-            tx.execute(
-                "INSERT INTO datasets.version_artifact "
-                "(subject_id, content_version, artifact_digest, rendering_key, rendering, "
-                "media_type) VALUES (%s, %s, %s, %s, %s, %s)",
-                (
-                    subject_id,
-                    content_version,
-                    digest,
-                    rendering_key(rendering),
-                    rendering,
-                    "text/csv",
+            if name != "e":
+                tx.execute(
+                    "INSERT INTO datasets.artifact_location "
+                    "(artifact_digest, tier, bucket, object_name, stored_at) "
+                    "VALUES (%s, %s, %s, %s, now())",
+                    (digest, "working", "b", digest),
+                )
+
+    def write(
+        offset: int,
+        content_version: str,
+        base: str | None,
+        *links: tuple[str, dict[str, object]],
+        subject: str = subject_id,
+    ) -> None:
+        LiveVersionRecordWriter(
+            store=live_store, now=lambda: started + timedelta(seconds=offset)
+        ).record_version(
+            VersionRecord(
+                subject_id=subject,
+                subject_kind="spec",
+                content_version=content_version,
+                schema_version=1,
+                facts=FrameLineage(input_content_versions=[]),
+                artifacts=tuple(
+                    ArtifactRecord(
+                        artifact_digest=digests[name], rendering=rendering, media_type="text/csv"
+                    )
+                    for name, rendering in links
                 ),
+                base_content_version=base,
+                frame_summed=None if base is None else True,
             )
+        )
+
+    write(0, "cv_h1", None, ("a", plain))
+    write(1, "cv_d1", "cv_h1", ("a", groupby))
+    # A later write from h2 makes cv_d1 again: the kept groupby link and the new cut link name
+    # h2, while the record keeps base h1.
+    write(2, "cv_d1", "cv_h2", ("b", groupby), ("c", cut))
+    write(3, "cv_d2", "cv_h2", ("d", groupby))
+    write(4, "cv_d3", "cv_h2", ("b", cut))
+    write(5, "cv_d3", "cv_h1", ("c", groupby))
+    write(6, "cv_d4", "cv_h1", ("e", groupby))
+    write(7, "cv_d9", "cv_h1", ("a", groupby), subject=other_id)
+    with live_store.transaction() as tx:
+        # A link written before links named a head.
+        tx.execute(
+            "UPDATE datasets.version_artifact SET head_content_version = NULL "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_d4"),
+        )
     lister = LiveVersionLister(store=live_store)
 
-    derived = lister.list_derived_versions(subject_id, base_content_version="cv_h1")
+    def listed(head: str) -> list[tuple[str, str | None, list[tuple[str, str | None]]]]:
+        return [
+            (
+                version.content_version,
+                version.base_content_version,
+                sorted(
+                    (json.dumps(link.rendering, sort_keys=True), link.head_content_version)
+                    for link in version.links
+                ),
+            )
+            for version in lister.list_head_versions(subject_id, head_content_version=head)
+        ]
 
-    assert [version.content_version for version in derived] == ["cv_d2", "cv_d1"]
-    assert derived == [
-        version
-        for version in lister.list_versions(subject_id)
-        if version.base_content_version == "cv_h1"
+    def links(*pairs: tuple[dict[str, object], str | None]) -> list[tuple[str, str | None]]:
+        return sorted((json.dumps(rendering, sort_keys=True), head) for rendering, head in pairs)
+
+    assert listed("cv_h1") == [
+        ("cv_d4", "cv_h1", links((groupby, None))),
+        ("cv_d3", "cv_h2", links((cut, "cv_h2"), (groupby, "cv_h1"))),
+        ("cv_d1", "cv_h1", links((groupby, "cv_h2"), (cut, "cv_h2"))),
     ]
-    assert [len(version.renderings) for version in derived] == [0, 2]
-    assert [version.holds_party_role for version in derived] == [None, True]
-    assert lister.list_derived_versions(subject_id, base_content_version="cv_none") == []
+    assert listed("cv_h2") == [
+        ("cv_d3", "cv_h2", links((cut, "cv_h2"), (groupby, "cv_h1"))),
+        ("cv_d2", "cv_h2", links((groupby, "cv_h2"))),
+        ("cv_d1", "cv_h1", links((groupby, "cv_h2"), (cut, "cv_h2"))),
+    ]
+    assert lister.list_head_versions(subject_id, head_content_version="cv_none") == []
+    with live_store.transaction() as tx:
+        raw = tx.fetch_all(
+            "SELECT head_content_version FROM datasets.version_artifact "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_h1"),
+        )
+    assert raw == [{"head_content_version": None}]
 
 
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):

@@ -60,6 +60,7 @@ CREATE TABLE datasets.version_artifact (
     rendering_key TEXT NOT NULL,
     rendering TEXT NOT NULL,
     media_type TEXT NOT NULL,
+    head_content_version TEXT,
     PRIMARY KEY (subject_id, content_version, rendering_key)
 );
 CREATE TABLE datasets.version_revocation (
