@@ -333,9 +333,10 @@ class LiveRootSource:
     whose file has aged out in memory from the version's stored frame (`current.render_unstored`),
     storing nothing, so a verification (`analysis.verify_analysis`) writes nothing and still
     reads a version whose stored frame is held. `max_root_rows` is then the most rows the roots
-    this source resolves hold together: a rendering that would take them past it is refused
+    this source has located hold together: a rendering that would take them past it is refused
     `AnalysisTooLarge` (`analysis_root_rows`) before it is rendered, counted at its version's
-    stored frame's rows, which bound the rendering's."""
+    stored frame's rows, which bound the rendering's. A root that resolves and then fails
+    `locate` counts nothing, since nothing of it is read."""
 
     def __init__(
         self,
@@ -349,28 +350,21 @@ class LiveRootSource:
         self._recipes = recipes
         self._render = render
         self._max_root_rows = max_root_rows
-        self._resolved_rows = 0
-
-    def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
-    ) -> ResolvedRoot:
-        resolved = self._resolve(root, latest=latest, trace_id=trace_id)
-        self._resolved_rows += resolved.rows or 0
-        return resolved
+        self._located_rows = 0
 
     def _refuse_rendering_past_bound(self, rows: int) -> None:
         """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
-        roots resolved past `max_root_rows`.
+        roots located past `max_root_rows`.
 
         Raises:
             AnalysisTooLarge: `analysis_root_rows`.
         """
         cap = self._max_root_rows
-        held = self._resolved_rows + rows
+        held = self._located_rows + rows
         if cap is not None and held > cap:
             raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=held, cap=cap)
 
-    def _resolve(
+    def resolve(
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
     ) -> ResolvedRoot:
         deps = self._deps
@@ -520,6 +514,11 @@ class LiveRootSource:
             RootExpired: The version has no servable stored frame.
             OverCeilingError: `bytes`, for a frame1 document past the bound.
         """
+        located = self._located(root)
+        self._located_rows += located.rows or 0
+        return located
+
+    def _located(self, root: ResolvedRoot) -> LocatedRoot:
         if isinstance(root.source, _Handle):
             return LocatedRoot.of(root)
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version

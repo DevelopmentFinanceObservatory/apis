@@ -29,6 +29,7 @@ from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.publish import PublishRecordMissing
 from datasets_api.version_store import LiveVersionLister
 from dfo_analysis_engine.frame_ref import FrameRef as EngineFrameRef
+from materialise.errors import OverCeilingError
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from spec_registry import LiveSpecRegistry
 
@@ -305,6 +306,35 @@ def test_a_verification_leaves_an_analysis_thread_free_for_runs(
     assert [answer.status_code for answer in answers] == [200, 200]
 
 
+def test_a_verification_leaves_the_last_materialise_permit_to_a_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two materialise permits, one held: a verification refuses 503 without taking the
+    other, and a run takes it."""
+    stores = Stores()
+    roots = source(stores)
+    shared = (DepsCell(), RunningAnalyses())
+    with _client(
+        stores,
+        roots,
+        monkeypatch,
+        shared=shared,
+        materialise_max_concurrency=2,
+        verify_principal=_PROBE_PRINCIPAL,
+    ) as client:
+        permits = shared[0].get().materialise_semaphore
+        assert permits.acquire_leaving(0)
+        try:
+            refused = client.post(_PATH, json={"tree": _TREE, "verify": True}, headers=_PROBE)
+            ran = client.post(_PATH, json={"tree": _TREE})
+        finally:
+            permits.release()
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert ran.status_code == 200, ran.text
+
+
 def test_a_full_analysis_pool_refuses_503(monkeypatch: pytest.MonkeyPatch) -> None:
     stores = Stores()
     roots = _BlockingSource(source(stores))
@@ -576,7 +606,8 @@ def _writes(stores: Stores) -> tuple[int, int]:
 
 class _ExpiringSource(FakeRootSource):
     """`base`, with each version in `expired` refused `RootExpired` by the step it maps to
-    (`locate` or `read`), or refused `SnapshotRevoked` as it resolves (`revoked`)."""
+    (`locate` or `read`), refused `SnapshotRevoked` as it resolves (`revoked`), or refused
+    `OverCeilingError` as it is located, a frame1 document past the decode bound (`decode`)."""
 
     def __init__(self, base: FakeRootSource) -> None:
         super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
@@ -595,6 +626,8 @@ class _ExpiringSource(FakeRootSource):
         pair = (root.dataset.spec_id, root.dataset.content_version)
         if self.expired.get(pair) == "locate":
             raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="aged out")
+        if self.expired.get(pair) == "decode":
+            raise OverCeilingError("frame1 too large", ceiling_kind="bytes", count=2, cap=1)
         return super().locate(root)
 
     def read(self, root: LocatedRoot) -> Frame:
@@ -724,6 +757,42 @@ def test_verify_names_every_root_whose_pinned_version_cannot_be_read(
         for root in body["unavailable_roots"]
     ) == [(AID, AID_V1, _CODES[aid_at]), (POPULATION, POPULATION_V1, _CODES[population_at])]
     assert _writes(stores) == writes
+
+
+@pytest.mark.parametrize(
+    ("aid_at", "outcome", "unavailable"),
+    [
+        (None, "different", []),
+        ("revoked", "roots_unavailable", [(AID, AID_V1, "snapshot_revoked")]),
+    ],
+)
+def test_verify_records_a_root_past_the_decode_bound_as_over_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    aid_at: str | None,
+    outcome: str,
+    unavailable: list[tuple[str, str, str]],
+) -> None:
+    """A root refused as located for a frame1 document past the decode bound ends the
+    verification with `over_ceiling` recorded, and a root found unreadable before it is still
+    named."""
+    stores = Stores()
+    roots = _ExpiringSource(source(stores))
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        roots.expired = {(POPULATION, POPULATION_V1): "decode"}
+        if aid_at is not None:
+            roots.expired[(AID, AID_V1)] = aid_at
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == outcome
+    assert body["refusal_code"] == "over_ceiling"
+    assert body["refusal_reason"].startswith("bytes: ")
+    assert [
+        (root["spec_id"], root["content_version"], root["code"])
+        for root in body["unavailable_roots"]
+    ] == unavailable
 
 
 def test_verify_reports_a_stored_frame_whose_roots_it_named_under_older_pairs_as_the_same(

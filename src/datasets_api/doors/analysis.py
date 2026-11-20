@@ -26,16 +26,18 @@ the one the stored recipe records, the refusal the computation met (`refusal_cod
 `refusal_reason`), and `unavailable_roots`. An answer reproduces when the `cv_`s or the output
 digests match. An engine refusal or a cap the computation meets answers `different` when a
 frame is stored under the pair compared with. `unavailable_roots` names every root that cannot
-be read at its version, up to the root-row bound (`over_ceiling` then), with its code: `artifact_expired` once its stored frame has aged out,
-`snapshot_revoked` once its version is taken down. A root whose rendering's file has aged out
-is rendered in memory from its stored frame. A verification reads no stored answer and writes
-nothing: no frame, recipe, answer, version record or rendering, and it pins nothing. It admits
-the caller holding the `verify` grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and
-refuses any other `verify_not_permitted` (403). It takes an analysis thread only while
-another stays free for runs and anchors, else refuses retryable `service_unavailable` (503), so
-verifications never hold the last thread. It logs no `datasets.delivery` line, since it
-serves no frame. A `verify` request that also sets `latest`, or names a Spec root, refuses
-`request_invalid` (400), since neither names a version.
+be read at its version, up to the root-row bound (`over_ceiling` then), with its code:
+`artifact_expired` once its stored frame has aged out, `snapshot_revoked` once its version is
+taken down. A root whose rendering's file has aged out is rendered in memory from its stored
+frame. A verification reads no stored answer and writes nothing: no frame, recipe, answer,
+version record or rendering, and it pins nothing. It admits the caller holding the `verify`
+grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and refuses any other
+`verify_not_permitted` (403). It takes an analysis thread and a materialise permit only while
+another of each stays free for runs, anchors and mints, else refuses retryable
+`service_unavailable` (503), so verifications never hold the last of either; settings that
+grant `verify` need two of each (`DatasetsBuildSettings`). It logs no `datasets.delivery`
+line, since it serves no frame. A `verify` request that also sets `latest`, or names a Spec
+root, refuses `request_invalid` (400), since neither names a version.
 
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
@@ -91,6 +93,7 @@ from datasets_api.analysis import (
     verify_analysis,
 )
 from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.background_admission import leaving_headroom
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes import CODE_CATALOG
 from datasets_api.codes_analysis import ANALYSIS_STATUSES
@@ -104,6 +107,7 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
+from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
@@ -353,27 +357,38 @@ class RunningAnalyses:
                 self._keys.discard(key)
 
 
-# The analysis threads a `verify` request leaves free for runs and anchors.
+# The analysis threads and materialise permits a `verify` request leaves free for runs,
+# anchors and mints.
 _VERIFY_HEADROOM = 1
 
 
 def _verify_job(
     *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
 ) -> dict[str, Any]:
+    """Verify `body`, taking each materialise permit only while `_VERIFY_HEADROOM` stay free
+    after it (`background_admission.leaving_headroom`).
+
+    Raises:
+        AnalysisBackpressure: A permit could be taken only by leaving fewer free.
+    """
     bounds = analysis_bounds(current)
-    verification = verify_analysis(
-        body,
-        source=LiveRootSource(
-            deps=deps,
-            recipes=current.recipe_store,
-            render=False,
-            max_root_rows=bounds.max_root_rows,
-        ),
-        stores=analysis_stores(current),
-        bounds=bounds,
-        permit=analysis_permit(current, deps),
-        trace_id=trace_id,
-    )
+    try:
+        with leaving_headroom(_VERIFY_HEADROOM):
+            verification = verify_analysis(
+                body,
+                source=LiveRootSource(
+                    deps=deps,
+                    recipes=current.recipe_store,
+                    render=False,
+                    max_root_rows=bounds.max_root_rows,
+                ),
+                stores=analysis_stores(current),
+                bounds=bounds,
+                permit=analysis_permit(current, deps),
+                trace_id=trace_id,
+            )
+    except MintBackgroundDeclined:
+        raise AnalysisBackpressure() from None
     return AnalysisVerified.model_validate(verification.body()).model_dump(mode="json")
 
 

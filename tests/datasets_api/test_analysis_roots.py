@@ -20,7 +20,14 @@ from dfo_frame_grammar.grammar import UnitRequest
 
 from artifact_store import LiveArtifactInventory
 from datasets_api import analysis_roots
-from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
+from datasets_api.analysis import (
+    AnalysisPending,
+    DatasetRoot,
+    RootExpired,
+    RootRendering,
+    RootRenderingUnreadable,
+    SpecRoot,
+)
 from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
@@ -229,6 +236,58 @@ def test_a_root_read_from_its_stored_frame_is_read_only_once_located(
 
     with pytest.raises(TypeError):
         roots.read(resolved)  # ty: ignore[invalid-argument-type] -- the unlocated read under test
+
+
+def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root of 1,500,000 rows resolves and then has no servable stored frame, so nothing of
+    it is read: a later root's in-memory rendering of 1,000,000 rows stays within the bound of
+    2,000,000 and is rendered."""
+    expired_cv, rendered_cv = "cv_" + "1" * 32, "cv_" + "2" * 32
+    rows = {expired_cv: 1_500_000, rendered_cv: 1_000_000}
+    renders: list[str] = []
+
+    def stored(*, content_version: str, **_: object) -> object:
+        coverage = CoverageModel(rows=rows[content_version], dimensions=[])
+        return SimpleNamespace(content_version=content_version, coverage=coverage, artifacts=[])
+
+    def render(*, content_version: str, **_: object) -> None:
+        renders.append(content_version)
+
+    monkeypatch.setattr(analysis_roots, "load_stored", stored)
+    monkeypatch.setattr(analysis_roots, "head_rendering", lambda **_: None)
+    monkeypatch.setattr(analysis_roots, "render_unstored", render)
+    deps = SimpleNamespace(
+        snapshot_reader=SimpleNamespace(
+            read_version=lambda *_: object(), read_artifact_locations=lambda *_: ()
+        ),
+        coverage=SimpleNamespace(snapshot=lambda: None),
+        now=lambda: datetime.now(UTC),
+    )
+    roots = LiveRootSource(
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        recipes=Unwired("recipes"),  # ty: ignore[invalid-argument-type]
+        render=False,
+        max_root_rows=2_000_000,
+    )
+    expired = roots.resolve(
+        DatasetRoot(spec_id=_SPEC, content_version=expired_cv, rendering=RootRendering(columns=())),
+        latest=False,
+        trace_id=None,
+    )
+    with pytest.raises(RootExpired):
+        roots.locate(expired)
+    summed = RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"})
+
+    # The fake renders nothing, so the root is refused as expired once it has been rendered.
+    with pytest.raises(RootExpired):
+        roots.resolve(
+            DatasetRoot(spec_id=_SPEC, content_version=rendered_cv, rendering=summed),
+            latest=False,
+            trace_id=None,
+        )
+    assert renders == [rendered_cv]
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:

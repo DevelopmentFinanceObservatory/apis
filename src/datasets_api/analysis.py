@@ -196,6 +196,7 @@ from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Refusal
 from dfo_platform.roles import role_key_axis
 from materialise import EnrichmentLookup
+from materialise.errors import OverCeilingError
 
 logger = logging.getLogger(__name__)
 
@@ -2239,9 +2240,11 @@ def _stored_frame(stores: AnalysisStores, ref: FrameRef) -> tuple[str | None, st
     return frame_content_version, identity if isinstance(identity, str) else None
 
 
-def _refusal_of(refused: AnalysisRefused | AnalysisTooLarge) -> tuple[str, str]:
+def _refusal_of(
+    refused: AnalysisRefused | AnalysisTooLarge | OverCeilingError,
+) -> tuple[str, str]:
     """The code and reason a verification records for a refused computation."""
-    if isinstance(refused, AnalysisTooLarge):
+    if isinstance(refused, AnalysisTooLarge | OverCeilingError):
         return refused.code, f"{refused.ceiling_kind}: {refused}"
     return refused.refusal.code.value, refused.refusal.message
 
@@ -2268,8 +2271,8 @@ def verify_analysis(
       rows under other `ops_` ids, so its bytes differ from a reproducing computation's while
       its output digest, which names those variables by what was computed, matches.
     - `different`: neither matches, or the computation is refused (the engine's refusal, or
-      `over_ceiling` for roots or an output past their caps) while a frame is stored under the
-      pair compared with. The refusal is recorded in `refusal_code` and `refusal_reason`.
+      `over_ceiling` for roots, a frame1 document or an output past their caps) while a frame
+      is stored under the pair compared with. The refusal is recorded in `refusal_code` and `refusal_reason`.
     - `roots_unavailable`: a root cannot be read at its version, its stored frame or file
       aged out or its version taken down, and nothing is computed. Every root is still
       resolved and read, the frames read dropped, so every such root is named in
@@ -2307,7 +2310,7 @@ def verify_analysis(
             )
             if not unavailable:
                 computed = _evaluated_frames(working, located, frames, bounds=bounds, latest=False)
-    except (AnalysisRefused, AnalysisTooLarge) as refused:
+    except (AnalysisRefused, AnalysisTooLarge, OverCeilingError) as refused:
         refusal = _refusal_of(refused)
     if computed is None:
         stored_cv, stored_identity = (None, None) if named is None else _stored_frame(stores, named)
