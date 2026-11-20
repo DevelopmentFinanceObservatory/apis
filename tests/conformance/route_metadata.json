@@ -686,6 +686,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_schema_search",
+    "operation_id": "graph_get_schema_search",
+    "path": "/api/graph/schema/search",
+    "summary": "Get Schema Search",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_schema_terms",
     "operation_id": "graph_get_schema_terms",
     "path": "/api/graph/schema/terms",

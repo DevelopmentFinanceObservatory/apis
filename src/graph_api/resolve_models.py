@@ -30,14 +30,15 @@ from entity_resolution.membership import Projection
 from graph_api.kinds import Kind
 from graph_api.refs import NodeRef
 
-_MAX_TEXT_LENGTH = 200
+RESOLVE_TEXT_MAX_LENGTH = 200
+"""The most characters one resolve text holds once stripped."""
 _MAX_TEXTS = 25
 
 MAX_INLINE_MEMBERS = 256
 """The most members `expand: ["members"]` puts inline in one result."""
 
 _ResolveText = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=_MAX_TEXT_LENGTH)
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=RESOLVE_TEXT_MAX_LENGTH)
 ]
 
 RESOLVE_KINDS: tuple[EntityKind, ...] = get_args(EntityKind)
@@ -66,7 +67,7 @@ class ResolveRequest(BaseModel):
 
     texts: list[_ResolveText] = Field(min_length=1, max_length=_MAX_TEXTS)
     kinds: list[EntityKind] = Field(default=list(DEFAULT_RESOLVE_KINDS), min_length=1)
-    code_system: str | None = Field(default=None, min_length=1, max_length=_MAX_TEXT_LENGTH)
+    code_system: str | None = Field(default=None, min_length=1, max_length=RESOLVE_TEXT_MAX_LENGTH)
     expand: list[Literal["members"]] = Field(default=[])
 
     @field_validator("code_system")

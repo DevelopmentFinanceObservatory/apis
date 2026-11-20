@@ -24,8 +24,8 @@ Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
 `GET /schema/terms/un_system`, `GET /schema/usage`, `GET /schema/usage/base`,
-`GET /schema/usage/un_system`, `GET /schema/node/{dcid}`, and `POST /schema/check`, all under
-`/api/graph`.
+`GET /schema/usage/un_system`, `GET /schema/node/{dcid}`, `GET /schema/search`, and
+`POST /schema/check`, all under `/api/graph`.
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
@@ -105,6 +105,13 @@ from graph_api.doors.schema import (
     new_schema_cache,
     warm_schema,
     warm_un_terms,
+)
+from graph_api.doors.schema_search import (
+    IndicatorResolver,
+    SchemaSearchCache,
+    SchemaSearchDeps,
+    build_schema_search_door,
+    new_search_executor,
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
@@ -211,6 +218,7 @@ def graph_surface(
     un_generation: GenerationProvider | None = None,
     view_graph: NodeViewReader | None = None,
     un_view_graph: NodeViewReader | None = None,
+    indicators: IndicatorResolver | None = None,
 ) -> Surface:
     """Build the Graph surface.
 
@@ -225,11 +233,14 @@ def graph_surface(
     resolver leaves the membership policy for its caller to publish. `un_graph` feeds the UN
     terms route for an injected graph. A live surface ignores it and reads the UN deployment's
     own client, and an injected graph without it serves no UN terms. `un_generation` stamps the
-    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`, and the UN node view
-    cache. `view_graph` and `un_view_graph` feed the node view route's mixer and UN reads for an
+    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`, the UN node view
+    cache and the search answers that read the UN deployment. `view_graph` and `un_view_graph` feed the node view route's mixer and UN reads for an
     injected graph. A live surface ignores them and reads the mixer's and the UN deployment's
     own clients. An injected graph without `view_graph` answers the route 503, and one without
-    `un_view_graph` reads no node view from the UN deployment.
+    `un_view_graph` reads no node view from the UN deployment. `indicators` feeds the search
+    route's indicator resolves for an injected graph. A live surface ignores it and resolves
+    through its own graph client, and an injected graph without it reports its indicator legs
+    unavailable.
     """
     catalogue = get_catalogue_service()
     release = get_release_service()
@@ -245,6 +256,7 @@ def graph_surface(
             build_resolve_door(),
             build_sources_door(),
             build_schema_door(),
+            build_schema_search_door(),
             build_members_door(),
             build_node_door(),
         )
@@ -273,6 +285,8 @@ def graph_surface(
         node_view_executor: ThreadPoolExecutor | None = None
         node_view_reads: ThreadPoolExecutor | None = None
         node_views_registration: RegistrationHandle | None = None
+        search_executor: DcpReadExecutor | None = None
+        search_registration: RegistrationHandle | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -307,6 +321,8 @@ def graph_surface(
                 await asyncio.to_thread(node_view_executor.shutdown, wait=True, cancel_futures=True)
             if node_view_reads is not None:
                 await asyncio.to_thread(node_view_reads.shutdown, wait=True, cancel_futures=True)
+            if search_executor is not None:
+                await asyncio.to_thread(search_executor.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -325,6 +341,8 @@ def graph_surface(
                 usage_registration.close()
             if node_views_registration is not None:
                 node_views_registration.close()
+            if search_registration is not None:
+                search_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -506,6 +524,18 @@ def graph_surface(
                     ),
                 )
 
+            search_executor = new_search_executor()
+            search_cache = SchemaSearchCache(generation=resolved_generation)
+            search_registration = resolved_generation.register(
+                "graph_api.schema_search", stats=search_cache.stats, clear=search_cache.clear
+            )
+            schema_search = SchemaSearchDeps(
+                indicators=live_reader if live_reader is not None else indicators,
+                executor=search_executor,
+                cache=search_cache,
+                un_generation=un_generation if un_generation is not None else UnGeneration(),
+            )
+
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
                 profile_cache = shared_profiles.cache
@@ -556,6 +586,7 @@ def graph_surface(
             un_terms=un_terms,
             origin_usage=origin_usage,
             node_views=node_views,
+            schema_search=schema_search,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,

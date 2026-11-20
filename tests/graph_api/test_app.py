@@ -338,6 +338,7 @@ def test_lifespan_passes_the_shared_generation_provider_to_the_entity_resolver_a
             "graph_api.node_entries",
             "graph_api.provenance_docs",
             "graph_api.schema",
+            "graph_api.schema_search",
         )
 
     # `graph` is injected here, so there is no real DCP base URL to
