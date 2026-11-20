@@ -552,6 +552,45 @@ def test_a_collapsed_frame_of_the_head_is_current_and_renders_nothing():
     assert collapsed.rig.artifact_store.put_calls == puts
 
 
+def test_a_collapse_another_caller_recorded_from_the_head_is_answered_without_a_render(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame recorded under one groupby answers `moved` to the collapse another caller's
+    mint recorded from the current head, read from the stored versions with no render."""
+    collapsed = _collapse_rig()
+    collapsed.rig.body["text"] = (
+        collapse_fixture._CSV_HEADER + _MEMBER_A_ROW.replace(",1000,", ",3000,") + _MEMBER_B_ROW
+    )
+    collapsed.rig.head_store.age_head(collapsed.spec_id, age=_PAST_MAX_AGE)
+    spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
+    recorded = collapse_fixture._mint(
+        collapsed.rig.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _GROUPBY},
+    )["content_version"]
+    assert recorded != collapsed.collapsed_content_version
+    real = refresh_module.head_rendering
+    renders: list[str] = []
+
+    def counting(**kwargs):
+        renders.append(kwargs["content_version"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(refresh_module, "head_rendering", counting)
+
+    resp = collapsed.rig.refresh(
+        spec_id=collapsed.spec_id, content_version=collapsed.collapsed_content_version
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "moved",
+        "frame": {"spec_id": collapsed.spec_id, "content_version": recorded},
+    }
+    assert renders == []
+
+
 def test_a_rebuild_moves_a_collapsed_frame_to_the_collapse_of_the_new_head():
     collapsed = _collapse_rig()
     collapsed.move_data()
@@ -1382,6 +1421,60 @@ def test_a_rebuild_that_remakes_the_named_frame_answers_current_once_its_renderi
         assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
 
 
+@pytest.mark.parametrize("summed_cut_first", [False, True], ids=["groupby-first", "cut-first"])
+def test_a_rendering_linked_under_a_derived_version_from_another_head_is_made_again(
+    summed_cut_first: bool,
+):
+    """At head A the groupby and the summed cut make different versions, Ag and D, recorded
+    from A. At head B, where the DAC total has no rows, both make D, so the groupby's file is
+    linked under D while D's record keeps base A. Back at A, the groupby makes Ag, not D, so a
+    refresh of D refuses `rendering_not_recorded`."""
+    rig = _cut_family_rig(dac_total_kind="total")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    groupby = {"bundle": False, "groupby": _KEEPS_TEST_AXIS}
+    summed_cut = {**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS}
+
+    def mint(options: dict) -> str:
+        return party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options=options)[
+            "content_version"
+        ]
+
+    body_a = _cut_family_body(_flows_value)
+    header, *rows = body_a.splitlines(keepends=True)
+    body_b = header + "".join(row for row in rows if f",{party_fixture._DAC_TOTAL}," not in row)
+    rig.body["text"] = body_a
+    made_at_a = {
+        name: mint(options)
+        for name, options in (
+            [("summed_cut", summed_cut), ("groupby", groupby)]
+            if summed_cut_first
+            else [("groupby", groupby), ("summed_cut", summed_cut)]
+        )
+    }
+    head_a = rig.head_store.head_for(spec_id).content_version
+    assert made_at_a["groupby"] != made_at_a["summed_cut"]
+    named = {"spec_id": spec_id, "content_version": made_at_a["summed_cut"]}
+    rig.body["text"] = body_b
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    assert mint(groupby) == named["content_version"]
+    assert rig.head_store.head_for(spec_id).content_version != head_a
+    # Another caller's plain mint brings the head back to A, fresh, so the refresh reads it.
+    rig.body["text"] = body_a
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    mint({"bundle": False})
+    assert rig.head_store.head_for(spec_id).content_version == head_a
+
+    resp = rig.refresh(**named)
+
+    assert resp.status_code == 422, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+
+
 def test_a_refresh_finds_the_version_its_rebuild_recorded(monkeypatch: pytest.MonkeyPatch):
     """A derived frame recorded under two renderings whose head and frame expired rebuilds on
     new data, and the check after the rebuild finds the groupby the rebuild recorded instead of
@@ -1568,12 +1661,13 @@ def test_a_collapse_a_rebuild_relinks_from_the_head_is_found(monkeypatch: pytest
     assert rendered == [(new_head, MintingOptions(groupby=groupby, without_party_totals=True))]
 
 
-def test_a_second_head_read_sees_what_another_rebuild_recorded(
+def test_a_second_head_read_of_two_renderings_makes_both_despite_a_recorded_collapse(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A head read that finds the head's frame expired, followed by another caller's rebuild of
-    the same head that records its collapse, and a second head read: the second read finds that
-    collapse and renders only the summed cut."""
+    the same head that records its collapse, and a second head read: for a frame recorded under
+    the groupby and the summed cut, the second read makes both renderings from the head rather
+    than take the recorded collapse, whose files may have been linked from another head."""
     rig = _cut_family_rig(dac_total_kind="party")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {
@@ -1625,7 +1719,10 @@ def test_a_second_head_read_sees_what_another_rebuild_recorded(
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "moved"
-    assert rendered == [(head, MintingOptions(groupby=groupby, without_party_totals=True))]
+    assert rendered == [
+        (head, MintingOptions(groupby=groupby)),
+        (head, MintingOptions(groupby=groupby, without_party_totals=True)),
+    ]
 
 
 def test_a_second_head_read_finds_the_collapse_the_first_read_made(
@@ -1726,10 +1823,13 @@ def test_a_rebuild_replaces_the_version_a_head_read_made_from_the_same_head(
     assert rig.head_store.head_for(spec_id).content_version == head
 
 
-def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPatch):
-    """A refresh of a derived frame recorded under two renderings, which looks up a derived
-    version of the new head for each, reads the versions derived from that head once and
-    lists no other version."""
+@pytest.mark.parametrize("renderings", [1, 2], ids=["one-rendering", "two-renderings"])
+def test_a_refresh_lists_the_dataset_versions_once(
+    renderings: int, monkeypatch: pytest.MonkeyPatch
+):
+    """A refresh of a derived frame recorded under one rendering, which looks up a derived
+    version of the new head, reads the versions derived from that head once and lists no other
+    version. A frame recorded under two renderings makes each from the head and lists none."""
     minting = _cut_family_rig(dac_total_kind="party")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {
@@ -1743,13 +1843,16 @@ def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPat
         sidecar=sidecar,
         options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
     )
-    party_fixture._mint(
-        minting.client,
-        spec_id=spec_id,
-        sidecar=sidecar,
-        options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
-    )
+    if renderings == 2:
+        party_fixture._mint(
+            minting.client,
+            spec_id=spec_id,
+            sidecar=sidecar,
+            options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
+        )
     _move_cut_family(minting, spec_id=spec_id, by=1)
+    # Another caller's plain mint moves the head, so the refresh reads it rather than rebuild.
+    party_fixture._mint(minting.client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
     listed: list[tuple[str, str | None]] = []
     real_derived = LiveVersionLister.list_derived_versions
     real_all = LiveVersionLister.list_versions
@@ -1770,7 +1873,7 @@ def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPat
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "moved"
     new_head = minting.head_store.head_for(spec_id).content_version
-    assert listed == [(spec_id, new_head)]
+    assert listed == ([(spec_id, new_head)] if renderings == 1 else [])
 
 
 def test_a_refresh_under_the_recorded_rendering_ignores_a_file_linked_later(

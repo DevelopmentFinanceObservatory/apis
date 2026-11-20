@@ -54,7 +54,11 @@ Concurrent refreshes and definition reads of one dataset share one rebuild
 
 For a derived frame the answer is the derived version under the current head with the same
 minting options. The door looks it up among the dataset's stored versions and, when none is
-recorded yet, mints it from the head's stored frame as a head-hit groupby read does.
+recorded yet, mints it from the head's stored frame as a head-hit groupby read does. A frame
+recorded under several renderings skips the stored versions and makes each derived rendering
+from the head, unless this call already made it: a file is linked under a version from
+whichever head made it, so a stored version derived from the head may link a file of a
+rendering that makes another version from that head.
 
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
@@ -264,7 +268,12 @@ class _DerivedVersions:
     with a query filtered by that head (`VersionLister.list_derived_versions`) on the first
     lookup after `reread`, and the version this refresh's renders and rebuild last made from it
     with each minting, which a record may name another base for. A lookup of another head
-    starts over."""
+    starts over.
+
+    A file is linked under a version from whichever head made it, and a version's record keeps
+    the base it was first recorded from, so a version read here may link a file of a minting
+    that made it from another head. A frame of several renderings therefore looks up only what
+    this refresh made (`made_only`)."""
 
     def __init__(self, *, spec_id: str, deps: DefinitionDeps) -> None:
         self._spec_id = spec_id
@@ -294,12 +303,15 @@ class _DerivedVersions:
             )
         return self._listed
 
-    def recorded(self, *, base_content_version: str, minting: MintingOptions) -> str | None:
+    def recorded(
+        self, *, base_content_version: str, minting: MintingOptions, made_only: bool = False
+    ) -> str | None:
         """The stored version derived from `base_content_version` with `minting`: the one this
-        refresh last made from it, else the first the read names, or `None`."""
+        refresh last made from it, else, unless `made_only`, the first the read names, or
+        `None`."""
         self._at(base_content_version)
         made = self._made.get(minting)
-        if made is not None:
+        if made is not None or made_only:
             return made
         return next(
             (cv for mintings, cv in self._recorded(base_content_version) if minting in mintings),
@@ -357,6 +369,7 @@ def _rendering_frame(
     deps: DefinitionDeps,
     trace_id: str | None,
     coverage_snapshot: CoverageSnapshot,
+    made_only: bool = False,
 ) -> _Frame | None:
     """The stored frame of the `minting` rendering under the head, or of the plain rendering
     when `minting` is `None`, answered only while its stored frame file is servable
@@ -365,13 +378,18 @@ def _rendering_frame(
     expired, the rendering is made from the head's stored frame, as a head-hit groupby read makes
     it. A version on record replays the party-totals cut its trace records
     (`recorded_rendering.recorded_party_cut`), so it renders to its own version whatever the code
-    index and the cut's rule now decide; with none on record the cut is derived afresh. A
+    index and the cut's rule now decide; with none on record the cut is derived afresh. With
+    `made_only`, set for a frame of several renderings, only a version this refresh made counts
+    as on record (`_DerivedVersions.recorded`), so a rendering is made from the head unless this
+    refresh made it, with its cut derived under the current code index. A
     rendering with a version of its own is recorded under it with its canonical frame, and one
     that leaves the frame unchanged is linked under the head. `None` sends the caller to a
     rebuild: the head's frame file has expired or cannot render it."""
     if minting is None:
         return _servable_frame(spec_id=spec_id, content_version=head_content_version, deps=deps)
-    recorded = derived.recorded(base_content_version=head_content_version, minting=minting)
+    recorded = derived.recorded(
+        base_content_version=head_content_version, minting=minting, made_only=made_only
+    )
     recorded_cut = None
     if recorded is not None:
         stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
@@ -441,8 +459,9 @@ def _agreed_frame(
     Every rendering is made from the head with the current code index, the first being the one
     the frame refreshes as; a frame recorded under one rendering is that rendering's frame. With
     several, each rendering is made again even when its file is already linked under the first
-    one's frame: a file may have been linked there from another head, and a version's record
-    keeps the base it was first recorded from. A plain file is linked under the head unless one
+    one's frame, and a derived rendering counts only the version this refresh made
+    (`_rendering_frame`'s `made_only`): a file may have been linked there from another head,
+    and a version's record keeps the base it was first recorded from. A plain file is linked under the head unless one
     is, and the frame answers once every rendering made the same
     version and that version links a file of each. Each check reads the files the frame's own
     read listed. When the plain rendering is one of them, the head is servable, so a rendering
@@ -464,6 +483,7 @@ def _agreed_frame(
             deps=deps,
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
+            made_only=len(renderings) > 1,
         )
 
     differ = RenderingNotRecorded(
