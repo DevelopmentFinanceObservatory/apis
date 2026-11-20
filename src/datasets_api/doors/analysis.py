@@ -26,12 +26,14 @@ the one the stored recipe records, the refusal the computation met (`refusal_cod
 `refusal_reason`), and `unavailable_roots`. An answer reproduces when the `cv_`s or the output
 digests match. An engine refusal or a cap the computation meets answers `different` when a
 frame is stored under the pair compared with. `unavailable_roots` names every root that cannot
-be read at its version with its code: `artifact_expired` once its stored frame has aged out,
+be read at its version, up to the root-row bound (`over_ceiling` then), with its code: `artifact_expired` once its stored frame has aged out,
 `snapshot_revoked` once its version is taken down. A root whose rendering's file has aged out
 is rendered in memory from its stored frame. A verification reads no stored answer and writes
 nothing: no frame, recipe, answer, version record or rendering, and it pins nothing. It admits
 the caller holding the `verify` grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and
-refuses any other `verify_not_permitted` (403). It logs no `datasets.delivery` line, since it
+refuses any other `verify_not_permitted` (403). It takes an analysis thread only while
+another stays free for runs and anchors, else refuses retryable `service_unavailable` (503), so
+verifications never hold the last thread. It logs no `datasets.delivery` line, since it
 serves no frame. A `verify` request that also sets `latest`, or names a Spec root, refuses
 `request_invalid` (400), since neither names a version.
 
@@ -351,14 +353,24 @@ class RunningAnalyses:
                 self._keys.discard(key)
 
 
+# The analysis threads a `verify` request leaves free for runs and anchors.
+_VERIFY_HEADROOM = 1
+
+
 def _verify_job(
     *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
 ) -> dict[str, Any]:
+    bounds = analysis_bounds(current)
     verification = verify_analysis(
         body,
-        source=LiveRootSource(deps=deps, recipes=current.recipe_store, render=False),
+        source=LiveRootSource(
+            deps=deps,
+            recipes=current.recipe_store,
+            render=False,
+            max_root_rows=bounds.max_root_rows,
+        ),
         stores=analysis_stores(current),
-        bounds=analysis_bounds(current),
+        bounds=bounds,
         permit=analysis_permit(current, deps),
         trace_id=trace_id,
     )
@@ -439,9 +451,11 @@ class _AnalysisRoutes:
         request: Request,
         body: BaseModel,
         record: Callable[[dict[str, Any]], None] | None = None,
+        headroom: int = 0,
     ) -> JSONResponse:
         """Run `job` as door `name`. A door given `record` delivers: `record` records its
-        answer for the call's `datasets.delivery` line."""
+        answer for the call's `datasets.delivery` line. `headroom` is the analysis threads
+        that must stay free after `job` takes one."""
         current = self._cell.get()
         _log_caller(request, current, route=name)
         deps = definition_deps(
@@ -455,6 +469,7 @@ class _AnalysisRoutes:
                     deps=deps,
                     timings=call.timings,
                     refuse=AnalysisBackpressure,
+                    headroom=headroom,
                     current=current,
                     body=body,
                     trace_id=get_trace_id(),
@@ -476,7 +491,13 @@ class _AnalysisRoutes:
         again at its pinned versions, storing nothing, for the `verify` grant's holder."""
         if body.verify:
             _admit_verify(request, self._cell.get().settings)
-            return await self._run(_verify_job, name="analysis_verify", request=request, body=body)
+            return await self._run(
+                _verify_job,
+                name="analysis_verify",
+                request=request,
+                body=body,
+                headroom=_VERIFY_HEADROOM,
+            )
         return await self._run(
             self._analysis_job,
             name="analysis",

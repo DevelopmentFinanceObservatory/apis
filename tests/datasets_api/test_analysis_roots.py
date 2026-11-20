@@ -453,6 +453,59 @@ def test_verify_renders_a_root_whose_rendering_is_not_stored_in_memory_and_store
     assert again.json()["outcome"] == "same"
 
 
+@pytest.mark.parametrize(("max_root_rows", "rendered"), [(2_000_000, 1), (1, 0)])
+def test_verify_renders_no_root_in_memory_past_the_root_row_bound(
+    monkeypatch: pytest.MonkeyPatch, max_root_rows: int, rendered: int
+) -> None:
+    """A root whose groupby file is not stored is rendered in memory only while its version's
+    stored frame keeps the roots within `analysis_max_root_rows`; past it the verification
+    refuses `over_ceiling` without rendering it."""
+    renders: list[str] = []
+    render_unstored = analysis_roots.render_unstored
+
+    def counted(**kwargs):
+        renders.append(kwargs["content_version"])
+        return render_unstored(**kwargs)
+
+    monkeypatch.setattr(analysis_roots, "render_unstored", counted)
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+        settings=DatasetsBuildSettings.from_env().model_copy(
+            update={"verify_principal": "probe-secret", "analysis_max_root_rows": max_root_rows}
+        ),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    root = {
+        "spec_id": spec_id,
+        "content_version": raw,
+        "rendering": {"columns": [], "groupby": _STAT_VARS_SUM},
+    }
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+    verified = client.post(
+        "/api/datasets/analysis",
+        json={"tree": tree, "verify": True},
+        headers={"x-dfo-principal": "probe-secret"},
+    )
+
+    assert verified.status_code == 200, verified.text
+    assert len(renders) == rendered
+    assert (verified.json()["refusal_code"] == "over_ceiling") is not rendered
+
+
 def _summed_stat_vars(client, data: dict, *, latest: bool = False) -> dict:
     """The ref member of a sum over `data`'s StatVars, which must answer."""
     tree = {

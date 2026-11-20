@@ -250,6 +250,61 @@ class _BlockingSource(FakeRootSource):
         return super().resolve(root, latest=latest, trace_id=trace_id)
 
 
+class _GatedSource(FakeRootSource):
+    """Holds every resolve until `release` is set, counting each that starts."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.started = threading.Semaphore(0)
+        self.release = threading.Event()
+
+    def resolve(self, root, *, latest, trace_id):
+        self.started.release()
+        assert self.release.wait(5)
+        return super().resolve(root, latest=latest, trace_id=trace_id)
+
+
+def test_a_verification_leaves_an_analysis_thread_free_for_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two analysis threads: a verification holding one refuses another 503, and a run still
+    starts beside it."""
+    stores = Stores()
+    roots = _GatedSource(source(stores))
+    roots.release.set()
+    with _client(
+        stores,
+        roots,
+        monkeypatch,
+        analysis_max_concurrency=2,
+        verify_principal=_PROBE_PRINCIPAL,
+    ) as client:
+        stored = _stored_pair(client)
+        roots.release.clear()
+        roots.started = threading.Semaphore(0)
+        verify = {"tree": stored, "verify": True}
+        answers: list[Any] = []
+        verifying = threading.Thread(
+            target=lambda: answers.append(client.post(_PATH, json=verify, headers=_PROBE))
+        )
+        verifying.start()
+        assert roots.started.acquire(timeout=5)
+        refused = client.post(_PATH, json=verify, headers=_PROBE)
+        running = threading.Thread(
+            target=lambda: answers.append(client.post(_PATH, json={"tree": _TREE}))
+        )
+        running.start()
+        run_started = roots.started.acquire(timeout=5)
+        roots.release.set()
+        verifying.join(5)
+        running.join(5)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert run_started
+    assert [answer.status_code for answer in answers] == [200, 200]
+
+
 def test_a_full_analysis_pool_refuses_503(monkeypatch: pytest.MonkeyPatch) -> None:
     stores = Stores()
     roots = _BlockingSource(source(stores))
@@ -520,32 +575,31 @@ def _writes(stores: Stores) -> tuple[int, int]:
 
 
 class _ExpiringSource(FakeRootSource):
-    """`base`, with each version in `expired` refused `RootExpired` by the step `at` names
-    (`locate` or `read`), or each refused `SnapshotRevoked` as it resolves (`revoked`)."""
+    """`base`, with each version in `expired` refused `RootExpired` by the step it maps to
+    (`locate` or `read`), or refused `SnapshotRevoked` as it resolves (`revoked`)."""
 
-    def __init__(self, base: FakeRootSource, *, expired: set[tuple[str, str]], at: str) -> None:
+    def __init__(self, base: FakeRootSource) -> None:
         super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
-        self.expired = expired
-        self.at = at
+        self.expired: dict[tuple[str, str], str] = {}
 
     def resolve(
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
     ) -> ResolvedRoot:
         resolved = super().resolve(root, latest=latest, trace_id=trace_id)
         pair = (resolved.dataset.spec_id, resolved.dataset.content_version)
-        if self.at == "revoked" and pair in self.expired:
+        if self.expired.get(pair) == "revoked":
             raise SnapshotRevoked(id=pair[0], content_version=pair[1], reason="taken down")
         return resolved
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         pair = (root.dataset.spec_id, root.dataset.content_version)
-        if self.at == "locate" and pair in self.expired:
+        if self.expired.get(pair) == "locate":
             raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="aged out")
         return super().locate(root)
 
     def read(self, root: LocatedRoot) -> Frame:
         pair = (root.dataset.spec_id, root.dataset.content_version)
-        if self.at == "read" and pair in self.expired:
+        if self.expired.get(pair) == "read":
             raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="file gone")
         return super().read(root)
 
@@ -633,24 +687,30 @@ def test_verify_reports_a_frame_the_pinned_roots_no_longer_compute_as_different(
     assert _writes(stores) == writes
 
 
+_CODES = {"locate": "artifact_expired", "read": "artifact_expired", "revoked": "snapshot_revoked"}
+
+
 @pytest.mark.parametrize(
-    ("at", "code"),
+    ("aid_at", "population_at"),
     [
-        ("locate", "artifact_expired"),
-        ("read", "artifact_expired"),
-        ("revoked", "snapshot_revoked"),
+        ("locate", "locate"),
+        ("read", "read"),
+        ("revoked", "revoked"),
+        ("revoked", "read"),
+        ("locate", "read"),
     ],
 )
 def test_verify_names_every_root_whose_pinned_version_cannot_be_read(
-    monkeypatch: pytest.MonkeyPatch, at: str, code: str
+    monkeypatch: pytest.MonkeyPatch, aid_at: str, population_at: str
 ) -> None:
     """Every root that cannot be read is named, whether its frame aged out before it is read,
-    its file went as it is read, or its version was taken down."""
+    its file went as it is read, or its version was taken down, and a root that fails as it
+    resolves leaves the others still read."""
     stores = Stores()
-    roots = _ExpiringSource(source(stores), expired=set(), at=at)
+    roots = _ExpiringSource(source(stores))
     with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
         stored = _stored_pair(client)
-        roots.expired = {(AID, AID_V1), (POPULATION, POPULATION_V1)}
+        roots.expired = {(AID, AID_V1): aid_at, (POPULATION, POPULATION_V1): population_at}
         writes = _writes(stores)
         response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
 
@@ -662,7 +722,7 @@ def test_verify_names_every_root_whose_pinned_version_cannot_be_read(
     assert sorted(
         (root["spec_id"], root["content_version"], root["code"])
         for root in body["unavailable_roots"]
-    ) == [(AID, AID_V1, code), (POPULATION, POPULATION_V1, code)]
+    ) == [(AID, AID_V1, _CODES[aid_at]), (POPULATION, POPULATION_V1, _CODES[population_at])]
     assert _writes(stores) == writes
 
 

@@ -66,6 +66,7 @@ from artifact_store.errors import ArtifactNotFoundError
 from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.analysis import (
     AnalysisPending,
+    AnalysisTooLarge,
     DatasetRoot,
     LocatedRoot,
     ResolvedRoot,
@@ -331,14 +332,45 @@ class LiveRootSource:
     `render` false reads a dataset root's rendering where its file is stored, and renders one
     whose file has aged out in memory from the version's stored frame (`current.render_unstored`),
     storing nothing, so a verification (`analysis.verify_analysis`) writes nothing and still
-    reads a version whose stored frame is held."""
+    reads a version whose stored frame is held. `max_root_rows` is then the most rows the roots
+    this source resolves hold together: a rendering that would take them past it is refused
+    `AnalysisTooLarge` (`analysis_root_rows`) before it is rendered, counted at its version's
+    stored frame's rows, which bound the rendering's."""
 
-    def __init__(self, *, deps: DefinitionDeps, recipes: RecipeReader, render: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        deps: DefinitionDeps,
+        recipes: RecipeReader,
+        render: bool = True,
+        max_root_rows: int | None = None,
+    ) -> None:
         self._deps = deps
         self._recipes = recipes
         self._render = render
+        self._max_root_rows = max_root_rows
+        self._resolved_rows = 0
 
     def resolve(
+        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+    ) -> ResolvedRoot:
+        resolved = self._resolve(root, latest=latest, trace_id=trace_id)
+        self._resolved_rows += resolved.rows or 0
+        return resolved
+
+    def _refuse_rendering_past_bound(self, rows: int) -> None:
+        """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
+        roots resolved past `max_root_rows`.
+
+        Raises:
+            AnalysisTooLarge: `analysis_root_rows`.
+        """
+        cap = self._max_root_rows
+        held = self._resolved_rows + rows
+        if cap is not None and held > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=held, cap=cap)
+
+    def _resolve(
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
     ) -> ResolvedRoot:
         deps = self._deps
@@ -389,6 +421,7 @@ class LiveRootSource:
                 render=self._render,
             )
             if rendered is None and not self._render:
+                self._refuse_rendering_past_bound(stored.coverage.rows)
                 unstored = render_unstored(
                     subject_id=spec_id,
                     content_version=content_version,

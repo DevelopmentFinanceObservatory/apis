@@ -2130,7 +2130,12 @@ def _readable_roots(
 ) -> list[LocatedRoot]:
     """Each root resolved at the version it names and located. A root that refuses either
     step, or whose version is taken down, is added to `unavailable` and the rest are still
-    resolved."""
+    resolved.
+
+    Raises:
+        AnalysisTooLarge: The roots resolved pass the root-row bound the source renders in
+            memory under (`analysis_roots.LiveRootSource` with `render` false).
+    """
     located: list[LocatedRoot] = []
     for root in roots:
         try:
@@ -2144,8 +2149,9 @@ def _read_every_root(
     located: Sequence[LocatedRoot], *, source: RootSource, cap: int, unavailable: _Unavailable
 ) -> list[Frame]:
     """The frames of `located`, read in turn, as `_read_roots` reads them. A root whose frame
-    is gone is added to `unavailable` and the rest are still read, so each is named; once one
-    is, the frames read are dropped, since nothing is computed.
+    is gone is added to `unavailable` and the rest are still read, so each is named. Once
+    `unavailable` names a root, from this read or from resolving, no frame is kept, since
+    nothing is computed: each frame read is dropped before the next read.
 
     Raises:
         AnalysisTooLarge: The roots read hold more than `cap` rows.
@@ -2164,6 +2170,7 @@ def _read_every_root(
             raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=read, cap=cap)
         if not unavailable:
             frames.append(frame)
+        del frame
     return frames
 
 
@@ -2264,8 +2271,10 @@ def verify_analysis(
       `over_ceiling` for roots or an output past their caps) while a frame is stored under the
       pair compared with. The refusal is recorded in `refusal_code` and `refusal_reason`.
     - `roots_unavailable`: a root cannot be read at its version, its stored frame or file
-      aged out or its version taken down. Every such root is named in `unavailable_roots`, and
-      nothing is computed.
+      aged out or its version taken down, and nothing is computed. Every root is still
+      resolved and read, the frames read dropped, so every such root is named in
+      `unavailable_roots`, until the roots pass `bounds.max_root_rows`. Then `refusal_code` is
+      `over_ceiling` and the roots past the bound are neither read nor named.
     - `not_stored`: no frame file is served at the pair compared with.
 
     Raises:
@@ -2283,26 +2292,23 @@ def verify_analysis(
         else None
     )
     unavailable = _Unavailable()
-    located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
     computed: Computed | None = None
     refusal: tuple[str, str] | None = None
-    if not unavailable:
-        try:
-            recorded = sum(root.rows or 0 for root in located)
-            if recorded > bounds.max_root_rows:
-                raise AnalysisTooLarge(
-                    ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
-                )
-            with permit():
-                frames = _read_every_root(
-                    located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
-                )
-                if not unavailable:
-                    computed = _evaluated_frames(
-                        working, located, frames, bounds=bounds, latest=False
-                    )
-        except (AnalysisRefused, AnalysisTooLarge) as refused:
-            refusal = _refusal_of(refused)
+    try:
+        located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
+        recorded = sum(root.rows or 0 for root in located)
+        if recorded > bounds.max_root_rows:
+            raise AnalysisTooLarge(
+                ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
+            )
+        with permit():
+            frames = _read_every_root(
+                located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
+            )
+            if not unavailable:
+                computed = _evaluated_frames(working, located, frames, bounds=bounds, latest=False)
+    except (AnalysisRefused, AnalysisTooLarge) as refused:
+        refusal = _refusal_of(refused)
     if computed is None:
         stored_cv, stored_identity = (None, None) if named is None else _stored_frame(stores, named)
         if unavailable:

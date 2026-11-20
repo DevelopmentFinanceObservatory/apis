@@ -134,7 +134,8 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
     # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
     # frames, computes and stores under one materialise permit, so at most
-    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    # `materialise_max_concurrency` runs hold frames at once across every frame path. A
+    # verification leaves one thread free, so at 1 every verification refuses 503.
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
