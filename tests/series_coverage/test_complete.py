@@ -1,7 +1,9 @@
 """The last complete year of a group of series (`series_coverage.complete`).
 
-The counts are families of the dev graph release read on 2026-11-18: the series of each family
-under one provenance holding each year.
+The counts model whole families under one provenance, the series holding each year: CRS flows
+with a preliminary final year, DAC1 ODA as a share of GNI with a final year most donors have
+reported, DAC1 mobilised commitments falling to a third, and IDS flows whose projections hold
+a third of the reported years' series.
 """
 
 from __future__ import annotations

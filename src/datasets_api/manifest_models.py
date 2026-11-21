@@ -98,6 +98,22 @@ class YearCoverage(BaseModel):
     role_counts: dict[str, int]
 
 
+class SourcePeriod(BaseModel):
+    """One source behind a frame's rows: its provenance, the last year it held complete for
+    the frame's variables when the version was minted
+    (`origin_catalogue.periods.last_complete_year`), and the last year its rows reach."""
+
+    model_config = ConfigDict(extra="forbid")
+    provenance: str
+    last_complete_year: int
+    last_year: int
+
+    @property
+    def partial(self) -> bool:
+        """Whether the source's rows reach past its last complete year."""
+        return self.last_year > self.last_complete_year
+
+
 class CoverageModel(BaseModel):
     """A frame's row and dimension counts and its applied window.
 
@@ -133,14 +149,17 @@ class CoverageModel(BaseModel):
             "year a latest window passes over"
         ),
     )
-    last_complete_years: dict[str, int] | None = Field(
+    last_complete_years: dict[str, list[SourcePeriod]] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            "the last complete year of each provenance the frame's rows come from, for the "
-            "variables it resolved, as the graph release held it when the version was minted: "
-            "a later year holds only part of that source's series. Empty when no source "
-            "states one, and absent on a version minted before the member existed"
+            "for each provenance the frame's rows carry, the sources behind them, each with "
+            "the last year it held complete for the frame's variables when the version was "
+            "minted and the last year its rows in the frame reach: rows past the complete "
+            "year hold only part of that source's series. A composite's rows list each "
+            "component's source. A source no year is known for is left out. Absent on a "
+            "version minted before the member existed or under a release that counted no "
+            "complete years"
         ),
     )
     fullest_year: YearCoverage | None = Field(

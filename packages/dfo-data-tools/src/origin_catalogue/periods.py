@@ -34,6 +34,13 @@ def declared_periods() -> Mapping[str, int]:
     return load_registry().declared_periods()
 
 
+def release_counts_periods() -> bool:
+    """Whether the bound release counts complete years (`ReleaseOrigin.complete_years`), so a
+    year it does not give is one its counts do not decide, and not one it never counted."""
+    release = bound_release_or_none()
+    return release is not None and bool(release.origin.complete_years)
+
+
 def last_complete_year(
     provenance: str,
     *,
@@ -98,4 +105,9 @@ def _matches(key: FamilyKey, shape: Mapping[str, str]) -> bool:
     )
 
 
-__all__ = ["declared_periods", "last_complete_year", "version_last_complete_period"]
+__all__ = [
+    "declared_periods",
+    "last_complete_year",
+    "release_counts_periods",
+    "version_last_complete_period",
+]

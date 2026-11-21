@@ -221,7 +221,7 @@ from dataset_store.snapshot import (
 from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
 from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS
-from datasets_api.derived import recipe_citation
+from datasets_api.derived import recipe_citation, recipe_periods
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
 from datasets_api.manifest import (
@@ -728,22 +728,28 @@ def _source_documents(
     record: DescriptionRecord | None,
     manifest: Mapping[str, object],
 ) -> dict[str, SourceDocumentFacts]:
-    """What each documented source's document says, by provenance dcid, as the Datasets
-    description door reads it: its publisher, its last download, its next release and the
-    last year it holds complete for the variables `manifest`'s trace resolved and `record`
-    names (`origin_catalogue.periods.version_last_complete_period`)."""
+    """What each cited source's document says, by provenance dcid, as the Datasets description
+    door reads it: its publisher, its last download and its next release, for a source the
+    read documents. Every source, documented or not, also carries the last year the bound
+    release holds it complete for the variables `manifest`'s trace resolved and `record`
+    names (`origin_catalogue.periods.version_last_complete_period`). A source with neither
+    has no entry."""
     variables = record.variables if record is not None else None
     resolved = _resolved_variables(manifest)
-    return {
-        ref: SourceDocumentFacts(
-            publisher=doc.source.ref if doc.source is not None else None,
-            last_downloaded=doc.last_update,
-            next_release=doc.next_expected_update,
-            last_complete_period=version_last_complete_period(ref, variables, resolved=resolved),
-        )
-        for ref, cited in live.items()
-        if (doc := cited.documentation) is not None
-    }
+    documents: dict[str, SourceDocumentFacts] = {}
+    for ref, cited in live.items():
+        complete = version_last_complete_period(ref, variables, resolved=resolved)
+        doc = cited.documentation
+        if doc is not None:
+            documents[ref] = SourceDocumentFacts(
+                publisher=doc.source.ref if doc.source is not None else None,
+                last_downloaded=doc.last_update,
+                next_release=doc.next_expected_update,
+                last_complete_period=complete,
+            )
+        elif complete is not None:
+            documents[ref] = SourceDocumentFacts(last_complete_period=complete)
+    return documents
 
 
 def _resolved_variables(manifest: Mapping[str, object]) -> list[str]:
@@ -1158,6 +1164,8 @@ class LiveFrameStore:
                 frame, stored_manifest=document, deadline=deadline
             )
             frame = replace(frame, manifest=manifest, source_documents=documents)
+            if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
+                frame = replace(frame, source_periods=self._roots_periods(frame_ref))
             citation_retry_at = None if citation_complete else now + _RECHECK
         if (
             cached is not None
@@ -1399,6 +1407,17 @@ class LiveFrameStore:
             _source_documents(live, record=frame.description_record, manifest=stored_manifest),
             _documented(live),
         )
+
+    def _roots_periods(self, frame_ref: FrameRef) -> dict[str, list[dict[str, object]]] | None:
+        """The sources behind each provenance a derived frame's rows carry, as its recipe roots
+        recorded them (`datasets_api.derived.recipe_periods`), or `None` when the store reads
+        no recipes or a root records none."""
+        if self._recipe_reader is None:
+            return None
+        record = self._recipe_reader.read_recipe(
+            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        )
+        return recipe_periods(self._snapshots, record)
 
     def _roots_citation(self, frame_ref: FrameRef) -> CitationModel | None:
         """A derived frame's citation as the derived manifest gives it, its recipe roots'

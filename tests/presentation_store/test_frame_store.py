@@ -100,7 +100,11 @@ from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
-from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES, SourceDocumentNotFound
+from materialise.provenance_doc import (
+    PROVENANCE_NAME_PROPERTIES,
+    SourceCitation,
+    SourceDocumentNotFound,
+)
 from origin_catalogue import BASE
 from presentation_store import frame_store
 from presentation_store.frame_store import (
@@ -108,6 +112,7 @@ from presentation_store.frame_store import (
     PRESENTATION_PIN_REFERENCE_KIND,
     LiveFrameStore,
     _CachedFrame,
+    _source_documents,
     frame_reads_bounded_by,
 )
 from spec_registry import recompute_identity
@@ -4808,6 +4813,75 @@ def _cited(manifest: Mapping[str, object]) -> list[tuple[str, str, str | None]]:
     return [
         (source["ref"], source["label"], source["license_type"]) for source in citation["sources"]
     ]
+
+
+@pytest.mark.parametrize(
+    ("recorded", "carried"),
+    [
+        pytest.param(
+            {
+                "src_oecd_dac": [
+                    {"provenance": "src_oecd_dac", "last_complete_year": 2024, "last_year": 2025}
+                ]
+            },
+            {
+                "src_oecd_dac": [
+                    {"provenance": "src_oecd_dac", "last_complete_year": 2024, "last_year": 2025}
+                ]
+            },
+            id="the-roots-recorded-years",
+        ),
+        pytest.param(None, None, id="a-root-recording-none-falls-back"),
+    ],
+)
+def test_load_carries_a_derived_frame_s_roots_recorded_last_complete_years(recorded, carried):
+    """A derived frame holds its roots' values as they were minted, so it carries the sources
+    and last complete years its roots recorded."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    root_ref = malaria_ethiopia_frame_ref()
+    root = snapshots.versions[(root_ref.spec_id, root_ref.content_version)]
+    if recorded is not None:
+        snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
+            root,
+            facts=replace(
+                root.facts, coverage={**root.facts.coverage, "last_complete_years": recorded}
+            ),
+        )
+    _put_recipe_over_the_root(recipes, frame_ref)
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+
+    assert store.load(frame_ref=frame_ref).source_periods == carried
+
+
+def test_an_undocumented_source_carries_today_s_last_complete_year():
+    """A version minted before it recorded its years falls back to the bound release's, which
+    holds for every cited source, documented or not. A source with neither has no entry."""
+    released = origin_release(
+        {
+            "Amount_Aid": {
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+                "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
+                "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+            }
+        },
+        series=[("Amount_Aid", "f", [2023, 2024, 2025]), *[("Amount_Aid", "f", [2023, 2024])] * 19],
+        facets={"f": "src_oecd_dac"},
+    )
+    live = {
+        ref: SourceCitation(dcid=ref, name=None, url=None, licence=None)
+        for ref in ("src_oecd_dac", "src_other")
+    }
+
+    with bound_release(released):
+        documents = _source_documents(
+            live,
+            record=None,
+            manifest={"trace": {"resolved_stat_vars": [{"ref": "dcid:Amount_Aid"}]}},
+        )
+
+    assert documents == {"src_oecd_dac": SourceDocumentFacts(last_complete_period="2024")}
 
 
 def test_load_cites_a_derived_frame_with_its_recipe_roots_sources_filled_from_the_graph():

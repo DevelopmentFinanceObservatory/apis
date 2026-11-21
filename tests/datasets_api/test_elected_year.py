@@ -26,6 +26,8 @@ import pytest
 
 from artifact_store import LiveArtifactInventory
 from assembler.mint.provenance import _partial_period
+from assembler.ports import FrameRef
+from assembler.testing import build_resolved_frame
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader, ManifestFacts
 from datasets_api.adapter import build_identity_document, to_materialisation_request
@@ -904,19 +906,35 @@ def test_a_version_minted_while_its_final_year_was_partial_stays_partial(version
     stored = rig.deps.snapshot_reader.read_version(rig.stored.spec_id, minted.content_version)
     assert stored is not None
     manifest = version_document(stored)
+    assert cast("dict[str, object]", manifest["coverage"])["last_complete_years"] == {
+        _PROVENANCE: [{"provenance": _PROVENANCE, "last_complete_year": 2024, "last_year": 2025}]
+    }
 
+    frame = build_resolved_frame(
+        frame_ref=FrameRef(spec_id=rig.stored.spec_id, content_version=minted.content_version),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": f"dcid:{_AID}",
+                "recipient": _MWI,
+                "time_period": "2025",
+                "value": 1.0,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": _PROVENANCE,
+            }
+        ],
+        manifest=manifest,
+    )
     with bound_release(_aid_release(reporting_2025=20)):
         today = version_last_complete_period(_PROVENANCE, None, resolved=[_AID])
-        documents = {_PROVENANCE: SourceDocumentFacts(last_complete_period=today)}
+        frame = replace(
+            frame, source_documents={_PROVENANCE: SourceDocumentFacts(last_complete_period=today)}
+        )
         sources = [{"ref": _PROVENANCE}]
 
-        assert cast("dict[str, object]", manifest["coverage"])["last_complete_years"] == {
-            _PROVENANCE: 2024
-        }
         assert today == "2025"
-        assert _partial_period(
-            data_through="2025", manifest=manifest, sources=sources, documents=documents
-        )
+        assert _partial_period(resolved_frame=frame, sources=sources, data_through="2025")
         assert not _partial_period(
-            data_through="2025", manifest={}, sources=sources, documents=documents
+            resolved_frame=replace(frame, manifest={}), sources=sources, data_through="2025"
         ), "a version minted before the member reads today's year"

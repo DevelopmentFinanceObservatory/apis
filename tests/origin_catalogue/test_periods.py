@@ -2,9 +2,8 @@
 bound release's family counts (`graph_release.origin.ReleaseOrigin.complete_years`) and the
 registry's declared years.
 
-The year counts scale down two families of the dev graph release read on 2026-11-18: CRS
-flows, whose preliminary 2025 holds 4 percent of 2024's series, and DAC1 ODA as a share of
-GNI, whose 2025 holds nine tenths of 2024's.
+The year counts scale down two families: CRS flows, whose preliminary final year holds one
+series in twenty, and DAC1 ODA as a share of GNI, whose final year holds nine in ten.
 """
 
 from __future__ import annotations

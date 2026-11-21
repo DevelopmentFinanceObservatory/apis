@@ -160,6 +160,12 @@ class ResolvedFrame:
     revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
     records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
     derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
+    `source_periods` holds, for each provenance a derived frame's rows carry, the sources
+    behind them as its recipe roots recorded them at their mints
+    (`datasets_api.derived.recipe_periods`): each source's `provenance`,
+    `last_complete_year` and `last_year`. It is `None` for a dataset frame, whose manifest's
+    `coverage.last_complete_years` records them, and for a derived frame whose roots record
+    none.
     """
 
     frame_ref: FrameRef
@@ -178,6 +184,7 @@ class ResolvedFrame:
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
     rendering: Mapping[str, object] | None = None
+    source_periods: Mapping[str, Sequence[Mapping[str, object]]] | None = None
 
 
 # Why a frame does not load. Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed

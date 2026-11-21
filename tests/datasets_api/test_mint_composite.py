@@ -34,8 +34,10 @@ from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
 from datasets_api.version_store import LiveHeadStore
+from graph_release.service import Release
 from materialise.reshape import RollupNotSummableError, Table
 from materialise.trace import RecordedFamily, StatedFamily, recorded_family_json
+from origin_catalogue.arc_tables import WireArcs
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import recompute_identity
 from spec_registry.reader import StoredDefinition
@@ -48,6 +50,7 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
 )
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.graph_release.support import origin_release, serving_release
 from tests.materialise import test_composite as composite_test
 
 from ._artifact_doubles import FakeArtifactStore
@@ -783,3 +786,49 @@ def test_a_dac2a_inclusive_sum_serves_the_line_a_cell_holds_where_it_lacks_the_o
         (_UGANDA, "2020"): 40,
         (_UGANDA, "2021"): 40,
     }
+
+
+def _family_release(populated: Mapping[str, tuple[str, int, tuple[int, ...]]]) -> Release:
+    """A release filing every populated member in one flow family, whose CRS series hold
+    2021 one in twenty times, a preliminary year, and whose imputed series hold it in full."""
+    arcs: WireArcs = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+        "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+    }
+    series = []
+    for dcid, (facet, _value, _years) in populated.items():
+        reaching = 1 if facet == _CRS_FACET else 20
+        series += [(dcid, facet, [2020, 2021] if n < reaching else [2020]) for n in range(20)]
+    return origin_release(
+        dict.fromkeys(populated, arcs),
+        series=series,
+        facets={facet: _SDMX_PROVENANCE[facet] for facet in (_CRS_FACET, _IMPUTED_FACET)},
+    )
+
+
+def test_a_composite_records_each_components_last_complete_year():
+    """The composite's rows carry its own provenance, which holds no series, so the version
+    records the sources behind them: CRS, whose 2021 is preliminary, and the imputed table,
+    complete through 2021."""
+    populated = _populated()
+    with serving_release(_family_release(populated)):
+        _artifacts, client = _composite_client(populated=populated)
+        minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    assert minted.json()["coverage"]["last_complete_years"] == {
+        _STACKED.provenance: [
+            {"provenance": CRS_PROVENANCE, "last_complete_year": 2020, "last_year": 2021},
+            {"provenance": IMPUTED_PROVENANCE, "last_complete_year": 2021, "last_year": 2021},
+        ]
+    }
+
+
+def test_a_mint_under_a_release_that_counts_no_complete_years_records_none():
+    with serving_release(origin_release({})):
+        _artifacts, client = _composite_client()
+        minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    assert "last_complete_years" not in minted.json()["coverage"]

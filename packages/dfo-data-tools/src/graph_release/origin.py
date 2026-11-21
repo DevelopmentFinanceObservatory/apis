@@ -228,25 +228,28 @@ def _complete_years(
         [provenance_code.get(provenance_of.get(facet, ""), -1) for facet in facet_ids.values],
         dtype=np.int64,
     )[facet_ids.codes]
-    groups = np.where(
+    pairs = np.where(
         (row_family >= 0) & (row_provenance >= 0), row_provenance * len(keys) + row_family, -1
     )
+    # Count only the (provenance, family) pairs some series holds.
+    held = pairs >= 0
+    occurring, groups = np.unique(pairs[held], return_inverse=True)
     masks = np.column_stack(
         [
             series[f"period_mask_{word}"]
             .fill_null(pa.scalar(0, pa.int64()))
-            .to_numpy()
+            .to_numpy()[held]
             .astype(np.uint64)
             for word in range(HORIZON.mask_words)
         ]
     )
-    counts = group_year_counts(
-        masks, groups, group_count=len(provenances) * len(keys), horizon=HORIZON
-    )
+    counts = group_year_counts(masks, groups, group_count=len(occurring), horizon=HORIZON)
     complete: dict[str, dict[FamilyKey, int]] = {}
-    for group, year in enumerate(last_complete_years(counts, horizon=HORIZON)):
+    for pair, year in zip(
+        occurring.tolist(), last_complete_years(counts, horizon=HORIZON), strict=True
+    ):
         if year is not None:
-            provenance, family = divmod(group, len(keys))
+            provenance, family = divmod(pair, len(keys))
             complete.setdefault(provenances[provenance], {})[keys[family]] = year
     return complete
 

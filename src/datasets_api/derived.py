@@ -228,6 +228,28 @@ def recipe_citation(reader: SnapshotReader, record: RecipeRecord | None) -> Cita
     return roots_citation(reader, stored_recipe_roots(record))
 
 
+def recipe_periods(
+    reader: SnapshotReader, record: RecipeRecord | None
+) -> dict[str, list[dict[str, object]]] | None:
+    """The `coverage.last_complete_years` of the roots of the derived frame whose stored recipe
+    is `record`, merged: for each provenance, every root's sources in root order, each once.
+    `None` for a frame with no recipe or no roots, and when a root's version records no such
+    member, so a reader falls back to the release it is bound to."""
+    roots = stored_recipe_roots(record)
+    if not roots:
+        return None
+    merged: dict[str, list[dict[str, object]]] = {}
+    for root in roots:
+        facts = _root_facts(reader, root)
+        recorded = None if facts is None else facts.coverage.get("last_complete_years")
+        if not isinstance(recorded, Mapping):
+            return None
+        for ref, sources in cast("Mapping[str, list[dict[str, object]]]", recorded).items():
+            held = merged.setdefault(ref, [])
+            held.extend(source for source in sources if source not in held)
+    return merged
+
+
 def full_recipe_citation(
     reader: SnapshotReader, record: RecipeRecord | None
 ) -> CitationModel | None:

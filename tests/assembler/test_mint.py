@@ -1802,27 +1802,68 @@ def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(rel
     assert envelope["provenance"]["sources"] == minted.provenance["sources"]
 
 
+def _period(provenance, complete, last):
+    return {"provenance": provenance, "last_complete_year": complete, "last_year": last}
+
+
 @pytest.mark.parametrize(
-    ("recorded", "documents", "partial"),
+    ("recorded", "carried", "documents", "partial"),
     [
-        pytest.param(None, {}, False, id="no-source-states-a-complete-year"),
-        pytest.param(None, {_WDI_REF: "2019"}, True, id="crs-preliminary-year-is-partial"),
-        pytest.param(None, {_WDI_REF: "2020"}, False, id="control-complete-final-year"),
-        pytest.param(None, {_WDI_REF: "2020", _UNCITED_REF: "2019"}, True, id="any-source-partial"),
-        pytest.param(None, {_WDI_REF: None}, False, id="unknown-year-reads-complete"),
+        pytest.param(None, None, {}, False, id="no-source-states-a-complete-year"),
+        pytest.param(None, None, {_WDI_REF: "2019"}, True, id="crs-preliminary-year-is-partial"),
+        pytest.param(None, None, {_WDI_REF: "2020"}, False, id="control-complete-final-year"),
         pytest.param(
-            {_WDI_REF: 2019}, {_WDI_REF: "2020"}, True, id="the-mints-year-wins-over-todays"
+            None, None, {_WDI_REF: "2020", _UNCITED_REF: "2019"}, True, id="any-source-partial"
         ),
-        pytest.param({}, {_WDI_REF: "2019"}, False, id="a-mint-recording-none-reads-complete"),
+        pytest.param(None, None, {_WDI_REF: None}, False, id="unknown-year-reads-complete"),
+        pytest.param(
+            {_WDI_REF: [_period(_WDI_REF, 2019, 2020)]},
+            None,
+            {_WDI_REF: "2020"},
+            True,
+            id="the-mints-year-wins-over-todays",
+        ),
+        pytest.param(
+            {}, None, {_WDI_REF: "2019"}, False, id="a-mint-recording-none-reads-complete"
+        ),
+        pytest.param(
+            {_WDI_REF: [_period(_WDI_REF, 2019, 2019)]},
+            None,
+            {},
+            False,
+            id="a-source-ending-at-its-complete-year-is-complete",
+        ),
+        pytest.param(
+            {_WDI_REF: [_period(_WDI_REF, 2020, 2021)]},
+            None,
+            {},
+            False,
+            id="rows-cut-before-the-partial-year-are-complete",
+        ),
+        pytest.param(
+            {_WDI_REF: [_period("provenance/A", 2020, 2020), _period("provenance/B", 2019, 2020)]},
+            None,
+            {},
+            True,
+            id="a-composites-partial-component",
+        ),
+        pytest.param(
+            None,
+            {_WDI_REF: [_period(_WDI_REF, 2019, 2020)]},
+            {_WDI_REF: "2020"},
+            True,
+            id="a-derived-frame-reads-its-roots-years",
+        ),
     ],
 )
 def test_freshness_data_through_is_the_manifest_window_s_end_year(
-    release, recorded, documents, partial
+    release, recorded, carried, documents, partial
 ):
-    """`partial_period` says the window's last year is later than the last complete year a
-    cited source held: the year the version recorded at its mint
-    (`coverage.last_complete_years`), else, for a version minted before it recorded one, the
-    year today's documents give (`SourceDocumentFacts.last_complete_period`)."""
+    """`partial_period` says a cited source's rows reach past the last year it held complete:
+    as the version recorded at its mint (`coverage.last_complete_years`), or a derived frame's
+    roots (`ResolvedFrame.source_periods`), else, for a version minted before either was
+    recorded, as today's documents give it (`SourceDocumentFacts.last_complete_period`). Both
+    sources' rows reach 2020."""
     coverage = {
         "rows": 2,
         "dimensions": [],
@@ -1835,6 +1876,7 @@ def test_freshness_data_through_is_the_manifest_window_s_end_year(
         source_documents={
             ref: SourceDocumentFacts(last_complete_period=year) for ref, year in documents.items()
         },
+        source_periods=carried,
     )
     minted = _mint_source_card(resolved_frame=frame, release=release)
 

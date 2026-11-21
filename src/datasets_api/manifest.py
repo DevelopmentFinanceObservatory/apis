@@ -71,6 +71,7 @@ from datasets_api.manifest_models import (
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
+    SourcePeriod,
     TransformationStepModel,
     WarningModel,
     YearCoverage,
@@ -114,7 +115,7 @@ from materialise.series_conversion import (
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
-from origin_catalogue.periods import last_complete_year
+from origin_catalogue.periods import last_complete_year, release_counts_periods
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -206,21 +207,72 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
 
 
 def last_complete_years(result: MaterialisationResult) -> dict[str, object]:
-    """The `last_complete_years` member of the `coverage` of the frame `result` holds: for each
-    provenance its rows come from (`provenance_refs_of`), the last year it held complete for
-    the variables the run resolved (`origin_catalogue.periods.last_complete_year`, read from
-    the release bound to the mint). A provenance nothing gives a year for is left out, and a
-    frame with none states an empty mapping, so a version minted before the member existed
-    reads apart from one minted with nothing to state."""
-    variables = [
-        bare_stat_var_ref(cast(str, entry["ref"])) for entry in result.trace.resolved_stat_vars
-    ]
-    years = {
-        provenance: year
-        for provenance in dict.fromkeys(provenance_refs_of(result.trace.facets))
-        if (year := last_complete_year(provenance, variables=variables)) is not None
-    }
-    return {"last_complete_years": years}
+    """The `last_complete_years` member of the `coverage` of the frame `result` holds, empty
+    when the bound release counts no complete years (`release_counts_periods`), so a later
+    read falls back to the release it is bound to.
+
+    Each provenance the rows carry (`provenance_refs_of`) lists the sources behind it with
+    the last year each held complete (`origin_catalogue.periods.last_complete_year`) and the
+    last year its rows reach. A plain definition's rows come from that provenance itself, for
+    the variables the run resolved, reaching the latest period its series reach
+    (`SeriesFigures.latest_by_source`). A composite's rows come from its components
+    (`trace.components`), each for its own members, reaching the last year it serves in the
+    frame. A source with no known year or no rows is left out."""
+    if not release_counts_periods():
+        return {}
+    refs = list(dict.fromkeys(provenance_refs_of(result.trace.facets)))
+    entries: dict[str, list[SourcePeriod]] = {}
+    if result.trace.components:
+        sources = [
+            (
+                cast(str, component["provenance"]),
+                [
+                    bare_stat_var_ref(cast(str, ref))
+                    for ref in cast("list[object]", component.get("stat_vars") or [])
+                ],
+                max(
+                    (
+                        cast("list[int]", span)[1]
+                        for span in cast("list[object]", component.get("periods") or [])
+                    ),
+                    default=None,
+                ),
+            )
+            for component in result.trace.components
+            if component.get("provenance") is not None
+        ]
+        for ref in refs:
+            entries[ref] = _source_periods(sources)
+    else:
+        variables = [
+            bare_stat_var_ref(cast(str, entry["ref"])) for entry in result.trace.resolved_stat_vars
+        ]
+        ends = result.series_statistics.figures.latest_by_source
+        for ref in refs:
+            entries[ref] = _source_periods([(ref, variables, _leading_year(ends.get(ref)))])
+    return {"last_complete_years": {ref: found for ref, found in entries.items() if found}}
+
+
+def _source_periods(sources: Sequence[tuple[str, Sequence[str], int | None]]) -> list[SourcePeriod]:
+    """A `SourcePeriod` for each `(provenance, variables, last year)` that has rows and a
+    known last complete year."""
+    periods: list[SourcePeriod] = []
+    for provenance, variables, last_year in sources:
+        if last_year is None:
+            continue
+        complete = last_complete_year(provenance, variables=variables)
+        if complete is not None:
+            periods.append(
+                SourcePeriod(
+                    provenance=provenance, last_complete_year=complete, last_year=last_year
+                )
+            )
+    return periods
+
+
+def _leading_year(period: str | None) -> int | None:
+    """The year `period` (`2025`, `2025-03`) starts with, or `None`."""
+    return int(period[:4]) if period is not None and period[:4].isdigit() else None
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
