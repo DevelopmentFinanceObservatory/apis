@@ -21,10 +21,12 @@ from code_index.types import (
     PartyRow,
     StatVarRow,
 )
+from search.engine.qualifier_match import QualifierSpan
 from search.engine.region.phase_rank_bind import _origin_party, _party_ranked
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
+from tests.engine.test_recall_reading_families import _code
 from tests.graph_release.support import serving_index
 
 _DAC2A = "provenance/OECDDAC2A"
@@ -101,13 +103,7 @@ def _arcs(constraints: dict[str, str]) -> dict:
     }
 
 
-def _shape(
-    shape_id: str,
-    dcid: str,
-    constraints: dict[str, str],
-    score: float,
-    labels: dict[str, str] | None = None,
-) -> ShapeDraft:
+def _shape(shape_id: str, dcid: str, constraints: dict[str, str], score: float) -> ShapeDraft:
     return ShapeDraft(
         shape_id=shape_id,
         label=shape_id,
@@ -119,7 +115,6 @@ def _shape(
         slot_keys=(),
         sv_arc_facts={dcid: _arcs(constraints)},
         representative_score=score,
-        value_labels=labels,
     )
 
 
@@ -129,7 +124,6 @@ _IDS_GRANTS = _shape(
     "TESTFIXTURE/Party/IdsIdaGrants",
     {"financialFlowType": "Disbursement", "financingType": _IDA_GRANT},
     0.70,
-    labels={_IDA_GRANT: "IDA grants"},
 )
 _IDS_LOANS = _shape(
     "ids_a_loans",
@@ -157,12 +151,10 @@ def _state(
     axis: str = "origin",
     stated: bool = True,
     party: str | None = None,
-    words: str | None = "IDA",
-    role_query: str = "IDA disbursements",
+    spans: tuple[QualifierSpan, ...] = (),
 ):
     return SimpleNamespace(
         variable=variable,
-        role_query=role_query,
         place_sets={
             _NAME: PlaceSet(
                 name=_NAME,
@@ -170,12 +162,10 @@ def _state(
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
             )
         },
-        entity_roles={
-            _NAME: [DoorRole(axis=axis, span=words or _NAME, stated=stated, party=party)]
-        },
-        entity_words={_NAME: words} if words else {},
-        entity_texts=(_NAME, words) if words else (_NAME,),
-        variable_spans_by_vocabulary={},
+        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated, party=party)]},
+        entity_words={_NAME: "IDA"},
+        # The test shapes declare no slots, so each reads the query in the empty vocabulary.
+        variable_spans_by_vocabulary={frozenset(): spans},
     )
 
 
@@ -192,38 +182,30 @@ _RECALL = ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]
     "state",
     [
         pytest.param(_state(), id="stated-provider"),
-        pytest.param(_state(words=None), id="provider-named-in-full"),
-        pytest.param(
-            _state(
-                stated=False,
-                party="source",
-                role_query="World Bank IDA disbursements to Kenya",
-            ),
-            id="raw-text-source-cued-by-its-name",
-        ),
+        pytest.param(_state(stated=False, party="source"), id="raw-text-source"),
     ],
 )
 def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot(state):
     """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
     disbursement of IDA grants that recall scored highest. IDS debt service measures
     otherwise and keeps the second slot, and the two IDS disbursements follow in recall
-    order in the slots left. "IDA" states nothing of the grants labelled "IDA grants" when
-    the request named the provider "International Development Association" alone, since
-    "IDA" is its alias. A raw-text provider whose cue is its own name states no direction,
-    and the source the door read stands."""
+    order in the slots left. A raw-text provider whose cue states no direction counts by
+    the source the door's extraction named."""
     assert _ranked(state) == _PROMOTED
 
 
-def test_a_series_the_query_names_keeps_its_slot():
-    """ "IDA grant disbursements" states the grant value the IDS series holds and DAC2a
-    lacks, so the grants keep the first slot; the IDS loans, which the words do not name,
-    yield theirs to DAC2a."""
-    assert _ranked(_state(variable="IDA grant disbursements")) == [
-        "ids_grants",
-        "ids_debt_service",
-        "dac2a",
-        "ids_a_loans",
-    ]
+def test_a_series_whose_code_the_query_names_keeps_its_slot():
+    """ "grant" in "IDA grant disbursements" is read as the grant code the IDS series holds
+    and DAC2a lacks, so the grants keep the first slot; the IDS loans, whose values the
+    query names none of, yield theirs to DAC2a."""
+    grant = QualifierSpan(
+        matched_text="grant",
+        start=4,
+        end=9,
+        rows=(_code(_IDA_GRANT, "financingType", "grant"),),
+    )
+    state = _state(variable="IDA grant disbursements", spans=(grant,))
+    assert _ranked(state) == ["ids_grants", "ids_debt_service", "dac2a", "ids_a_loans"]
 
 
 @pytest.mark.parametrize(
@@ -231,10 +213,6 @@ def test_a_series_the_query_names_keeps_its_slot():
     [
         pytest.param(_state(axis="destination"), id="organisation-as-recipient"),
         pytest.param(_state(stated=False), id="unstated-without-a-door-reading"),
-        pytest.param(
-            _state(stated=False, party="source", role_query="disbursements to IDA"),
-            id="door-reading-contradicted",
-        ),
         pytest.param(_state(kind="country"), id="not-an-organisation"),
     ],
 )

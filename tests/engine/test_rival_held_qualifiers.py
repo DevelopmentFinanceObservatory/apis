@@ -270,11 +270,11 @@ _CLIMATE_IDA = _flow(
 )
 
 
-def _resolve_ida(query: str, words: dict[str, str] | None, *, source: str | None = _CRS):
-    """The variable "IDA disbursements" on a part naming `source`, with IDA in the role
-    `query` states,
-    under an index whose climate family records a code labelled "IDA", as DAC1 records aid
-    type 2103, "multilateral contribution to the International Development Association"."""
+def _resolve_ida(query: str, *, source: str | None = _CRS):
+    """The variable "IDA disbursements" on a part naming `source`, with "IDA" the request's
+    words for IDA in the role `query` states, under an index whose climate family records a
+    code labelled "IDA", as DAC1 records aid type 2103, "multilateral contribution to the
+    International Development Association"."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
@@ -287,7 +287,7 @@ def _resolve_ida(query: str, words: dict[str, str] | None, *, source: str | None
             resolve_variable(
                 "IDA disbursements",
                 entities=[_IDA_NAME],
-                entity_words=words,
+                entity_words={_IDA_NAME: "IDA"},
                 date_request=None,
                 detect_query=query,
                 role_query=query,
@@ -319,19 +319,11 @@ def _ida_coverage() -> FakeCoverageService:
     )
 
 
-@pytest.mark.parametrize(
-    "words",
-    [
-        pytest.param({_IDA_NAME: "IDA"}, id="entity-words"),
-        pytest.param(None, id="entity-alias"),
-    ],
-)
-def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code(words):
-    """With IDA the provider, "IDA" in "IDA disbursements" is the provider, whether the
-    request gave "IDA" as the entity's words or named it "International Development
-    Association" alone, an alias the entity pack stores. The part refuses on no term and
-    answers from the CRS shape the binder elects."""
-    result = _resolve_ida("IDA disbursements from International Development Association", words)
+def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code():
+    """With IDA the provider, "IDA" in "IDA disbursements", the request's words for it, is
+    the provider. The part refuses on no term and answers from the CRS shape the binder
+    elects."""
+    result = _resolve_ida("IDA disbursements from International Development Association")
 
     assert result.status == "definite", result
     assert result.no_data_reason is None, result
@@ -344,9 +336,7 @@ def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code(words)
 def test_a_term_naming_the_recipient_stays_a_term():
     """With IDA the recipient, "IDA" may name the contribution to IDA, so the rival-held
     check reads it and the part refuses naming ONE Data Climate Finance."""
-    result = _resolve_ida(
-        "IDA disbursements to International Development Association", {_IDA_NAME: "IDA"}
-    )
+    result = _resolve_ida("IDA disbursements to International Development Association")
 
     assert result.no_data_reason == "qualifier_not_bound", result
     (unbound,) = result.unbound_qualifiers
@@ -359,9 +349,7 @@ def test_a_term_naming_the_provider_elects_no_family_that_records_it():
     the CRS five-tuple. "IDA" is the provider's word in every reading, so the climate family
     reads nothing more of the query and the CRS answers."""
     result = _resolve_ida(
-        "IDA disbursements from International Development Association",
-        {_IDA_NAME: "IDA"},
-        source=None,
+        "IDA disbursements from International Development Association", source=None
     )
 
     assert result.status == "definite", result
