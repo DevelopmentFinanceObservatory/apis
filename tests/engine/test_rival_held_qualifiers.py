@@ -19,7 +19,9 @@ from search.engine.binders import GeminiBinder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
+from series_coverage.schema import RoleNames
 from tests.engine._binders import elected_reply
+from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
@@ -34,6 +36,7 @@ from tests.engine.test_recall_reading_families import (
     _CRS,
     _CRS_HEALTH,
     _DAC1_COMMITMENTS,
+    _KEN,
     _ROWS,
     _TOTAL,
     _code,
@@ -267,20 +270,10 @@ _CLIMATE_IDA = _flow(
 )
 
 
-@pytest.mark.parametrize(
-    "words",
-    [
-        pytest.param({_IDA_NAME: "IDA"}, id="entity-words"),
-        pytest.param(None, id="entity-alias"),
-    ],
-)
-def test_a_term_naming_the_parts_entity_is_the_entity_not_a_rival_held_code(words):
-    """The climate family records a code labelled "IDA", as DAC1 records aid type 2103,
-    "multilateral contribution to the International Development Association". On a CRS part
-    with IDA as its provider, "IDA" in "IDA disbursements" is the provider, whether the
-    request gave "IDA" as the entity's words or named it "International Development
-    Association" alone, an alias the entity pack stores. The part refuses on no term."""
-    query = "IDA disbursements from International Development Association"
+def _resolve_ida(query: str, words: dict[str, str] | None):
+    """ "IDA disbursements" on a part naming the CRS, with IDA in the role `query` states,
+    under an index whose climate family records a code labelled "IDA", as DAC1 records aid
+    type 2103, "multilateral contribution to the International Development Association"."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
@@ -289,7 +282,7 @@ def test_a_term_naming_the_parts_entity_is_the_entity_not_a_rival_held_code(word
         nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
     )
     with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
-        result = asyncio.run(
+        return asyncio.run(
             resolve_variable(
                 "IDA disbursements",
                 entities=[_IDA_NAME],
@@ -305,10 +298,56 @@ def test_a_term_naming_the_parts_entity_is_the_entity_not_a_rival_held_code(word
                 binder=_ElectHolding(_CRS_HEALTH.dcid),
                 sdmx=FakeSdmxClient(observations={}),
                 base_timing={},
-                coverage=_coverage().snapshot(),
+                coverage=_ida_coverage().snapshot(),
                 source_scope=part_scope(named=_CRS),
             )
         )
 
-    assert result.no_data_reason != "qualifier_not_bound", result
+
+def _ida_coverage() -> FakeCoverageService:
+    """The CRS health series from IDA to Kenya in 2021 and 2022."""
+    return FakeCoverageService(
+        build_coverage_index(
+            [(_CRS_HEALTH.dcid, _CRS, _IDA, _KEN, [2021, 2022])],
+            role_names={
+                _CRS_HEALTH.dcid: RoleNames(
+                    donor="financingProvider", recipient="financingRecipient"
+                )
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        pytest.param({_IDA_NAME: "IDA"}, id="entity-words"),
+        pytest.param(None, id="entity-alias"),
+    ],
+)
+def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code(words):
+    """With IDA the provider, "IDA" in "IDA disbursements" is the provider, whether the
+    request gave "IDA" as the entity's words or named it "International Development
+    Association" alone, an alias the entity pack stores. The part refuses on no term and
+    answers from the CRS shape the binder elects."""
+    result = _resolve_ida("IDA disbursements from International Development Association", words)
+
+    assert result.status == "definite", result
+    assert result.no_data_reason is None, result
     assert result.unbound_qualifiers == ()
+    assert {member.ref.ref for spec in result.specs for member in spec.resolved.members} == {
+        _CRS_HEALTH.dcid
+    }
+
+
+def test_a_term_naming_the_recipient_stays_a_term():
+    """With IDA the recipient, "IDA" may name the contribution to IDA, so the rival-held
+    check reads it and the part refuses naming ONE Data Climate Finance."""
+    result = _resolve_ida(
+        "IDA disbursements to International Development Association", {_IDA_NAME: "IDA"}
+    )
+
+    assert result.no_data_reason == "qualifier_not_bound", result
+    (unbound,) = result.unbound_qualifiers
+    assert unbound.text == "IDA"
+    assert [ref.ref for ref in unbound.held_by] == [_CLIMATE]

@@ -101,7 +101,13 @@ def _arcs(constraints: dict[str, str]) -> dict:
     }
 
 
-def _shape(shape_id: str, dcid: str, constraints: dict[str, str], score: float) -> ShapeDraft:
+def _shape(
+    shape_id: str,
+    dcid: str,
+    constraints: dict[str, str],
+    score: float,
+    labels: dict[str, str] | None = None,
+) -> ShapeDraft:
     return ShapeDraft(
         shape_id=shape_id,
         label=shape_id,
@@ -113,14 +119,23 @@ def _shape(shape_id: str, dcid: str, constraints: dict[str, str], score: float) 
         slot_keys=(),
         sv_arc_facts={dcid: _arcs(constraints)},
         representative_score=score,
+        value_labels=labels,
     )
 
 
+_IDA_GRANT = "TESTFIXTURE/Party/IdaGrant"
 _IDS_GRANTS = _shape(
     "ids_grants",
     "TESTFIXTURE/Party/IdsIdaGrants",
-    {"financialFlowType": "Disbursement", "sourceIndicatorCode": "DT.DIS.IDAG.CD"},
+    {"financialFlowType": "Disbursement", "financingType": _IDA_GRANT},
     0.70,
+    labels={_IDA_GRANT: "IDA grants"},
+)
+_IDS_LOANS = _shape(
+    "ids_a_loans",
+    "TESTFIXTURE/Party/IdsIdaLoans",
+    {"financialFlowType": "Disbursement", "sourceIndicatorCode": "DT.DIS.MIDA.CD"},
+    0.60,
 )
 _IDS_DEBT_SERVICE = _shape(
     "ids_debt_service",
@@ -129,20 +144,32 @@ _IDS_DEBT_SERVICE = _shape(
     0.65,
 )
 _DAC2A_SHAPE = _shape("dac2a", _DAC2A_ROW.dcid, dict(_DAC2A_ROW.constraint_properties), 0.55)
-_SHAPES = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _DAC2A_SHAPE)
+# Recall order is grants, debt service, loans, DAC2a; listed otherwise, so an order the
+# rule leaves to the input shows.
+_SHAPES = (_DAC2A_SHAPE, _IDS_LOANS, _IDS_DEBT_SERVICE, _IDS_GRANTS)
+_NAME = "International Development Association"
 
 
-def _state(*, kind: str = "organisation", axis: str = "origin", stated: bool = True):
-    name = "International Development Association"
+def _state(
+    *,
+    variable: str = "IDA disbursements",
+    kind: str = "organisation",
+    axis: str = "origin",
+    stated: bool = True,
+):
     return SimpleNamespace(
+        variable=variable,
         place_sets={
-            name: PlaceSet(
-                name=name,
+            _NAME: PlaceSet(
+                name=_NAME,
                 kind="place",
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
             )
         },
-        entity_roles={name: [DoorRole(axis=axis, span="IDA", stated=stated)]},
+        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated)]},
+        entity_words={_NAME: "IDA"},
+        entity_texts=(_NAME, "IDA"),
+        variable_spans_by_vocabulary={},
     )
 
 
@@ -151,11 +178,24 @@ def _ranked(state) -> list[str]:
         return [shape.shape_id for shape in _party_ranked(state, _SHAPES)]
 
 
-def test_the_table_publishing_the_origin_organisation_ranks_first_among_its_measure():
-    """DAC2a publishes IDA as a provider, so it ranks above the IDS disbursement of IDA
-    grants that recall scored higher; IDS debt service measures otherwise and keeps its
-    place."""
-    assert _ranked(_state()) == ["ids_debt_service", "dac2a", "ids_grants"]
+def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot():
+    """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
+    disbursement of IDA grants that recall scored highest. IDS debt service measures
+    otherwise and keeps the second slot, and the two IDS disbursements follow in recall
+    order in the slots left."""
+    assert _ranked(_state()) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+
+
+def test_a_series_the_query_names_keeps_its_slot():
+    """ "IDA grant disbursements" states the grant value the IDS series holds and DAC2a
+    lacks, so the grants keep the first slot; the IDS loans, which the words do not name,
+    yield theirs to DAC2a."""
+    assert _ranked(_state(variable="IDA grant disbursements")) == [
+        "ids_grants",
+        "ids_debt_service",
+        "dac2a",
+        "ids_a_loans",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -168,4 +208,4 @@ def test_the_table_publishing_the_origin_organisation_ranks_first_among_its_meas
 )
 def test_recall_order_stands_without_a_stated_origin_organisation(state):
     """A part naming no organisation as the stated origin of its flow ranks by recall."""
-    assert _ranked(state) == ["ids_grants", "ids_debt_service", "dac2a"]
+    assert _ranked(state) == ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]

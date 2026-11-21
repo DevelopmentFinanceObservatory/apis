@@ -28,8 +28,8 @@ from code_index.types import (
     NotedWord,
     StatedWord,
 )
+from dfo_platform.roles import axis_for_role
 from entity_resolution.pack import organisations_named
-from materialise.roles import roles_by_axis
 from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
@@ -284,69 +284,122 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
 
 
 def _party_ranked(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
-    """`shapes` in rank order (`_rank_key`), where a shape that does not publish an
-    organisation the part names as the origin of its flow ranks straight after the best
-    ranked shape measuring alike that does (`_origin_publishers`, `_measures_alike`).
+    """`shapes` in rank order (`_rank_key`), where a shape that publishes an organisation
+    the part names as the origin of its flow (`_origin_publishers`) takes the best slot of
+    the shapes measuring alike that do not (`_measures_alike`), and those follow it in their
+    own rank order in the slots left. Every other shape keeps its slot. A shape holding a
+    value the query's words state and the publisher lacks (`_stated_values`) is no such
+    shape and keeps its slot.
 
     "IDA disbursements" with IDA stated as the provider recalls IDS's disbursements of IDA
-    grants above DAC2a's disbursements, which publish IDA as a provider: the IDS series
-    counts one instrument of IDA's lending, so DAC2a ranks first. A shape measuring
-    otherwise keeps its rank, so IDS debt service is no lower for a DAC2a disbursement."""
-    publishers = _origin_publishers(state, shapes)
+    grants above IDS debt service and DAC2a's disbursements, which publish IDA as a
+    provider: the IDS grants count one instrument of IDA's lending, so DAC2a takes their
+    first slot, debt service stays second and the grants come third. "IDA grant
+    disbursements" names the grants, so they keep the first slot."""
+    ranked = sorted(shapes, key=_rank_key)
+    publishers = _origin_publishers(state, ranked)
     if not publishers:
-        return sorted(shapes, key=_rank_key)
-    leads = {
-        id(shape): min(
-            (_rank_key(publisher) for publisher in publishers if _measures_alike(shape, publisher)),
-            default=None,
-        )
-        for shape in shapes
-        if not any(shape is publisher for publisher in publishers)
-    }
+        return ranked
+    stated = {id(shape): _stated_values(state, shape) for shape in ranked}
+    slots = list(ranked)
+    placed: set[int] = {id(publisher) for publisher in publishers}
+    for publisher in publishers:
+        held = {value for _prop, value in shape_constraint_values(publisher)}
+        group = [publisher] + [
+            shape
+            for shape in ranked
+            if id(shape) not in placed
+            and stated[id(shape)] <= held
+            and _measures_alike(shape, publisher)
+        ]
+        placed.update(id(shape) for shape in group)
+        positions = sorted(slots.index(shape) for shape in group)
+        for position, shape in zip(positions, group, strict=True):
+            slots[position] = shape
+    return slots
 
-    def key(shape: ShapeDraft) -> tuple[tuple[bool, bool, float, int, int, str], bool]:
-        own = _rank_key(shape)
-        lead = leads.get(id(shape))
-        if lead is None or lead <= own:
-            return own, False
-        return lead, True
 
-    return sorted(shapes, key=key)
-
-
-def _origin_publishers(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
-    """The shapes of `shapes` whose index family a dataset publishing it publishes, on the
-    origin axis, an organisation the part names with a stated origin role
-    (`source_choice.publishes_party`, the test the raw-text door's party reading applies).
-    None on a part naming no such organisation."""
-    index = get_index()
-    published: set[tuple[str, RoleAxis]] = set()
+def _origin_organisations(state: ResolveState) -> dict[str, str]:
+    """The dcid of each organisation the part binds whose origin role its words state, by
+    the request's name for it."""
+    organisations: dict[str, str] = {}
     for name, place_set in state.place_sets.items():
         node = place_set.node
         if node is None or node.kind != "organisation":
             continue
-        if not any(
-            role.axis == "origin" and role.stated for role in state.entity_roles.get(name, ())
-        ):
-            continue
-        if (party := index.parties.get(node.dcid)) is not None:
+        if any(role.axis == "origin" and role.stated for role in state.entity_roles.get(name, ())):
+            organisations[name] = node.dcid
+    return organisations
+
+
+def _origin_publishers(state: ResolveState, ranked: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """The shapes of `ranked`, in its order, whose index family a dataset publishing it
+    publishes, on the origin axis, an organisation the part names with a stated origin role
+    (`_origin_organisations`; `source_choice.publishes_party`, the test the raw-text door's
+    party reading applies). A family's axes are those of its rows' roles, read once per
+    family; a role naming no flow axis adds none. None on a part naming no such
+    organisation."""
+    index = get_index()
+    published: set[tuple[str, RoleAxis]] = set()
+    for dcid in _origin_organisations(state).values():
+        if (party := index.parties.get(dcid)) is not None:
             published.update(pair for pair in party.published if pair[1] == "origin")
     if not published:
         return []
+    families: dict[int, bool] = {}
     publishers = []
-    for shape in shapes:
+    for shape in ranked:
         family = shape_family(shape, index)
         if family is None:
             continue
-        recalled = RecalledFamily(
-            datasets=frozenset(family.datasets),
-            axes=frozenset(
-                axis for row in family.rows for axis in roles_by_axis(row.observation_properties)
-            ),
-        )
-        if publishes_party(recalled, published):
+        if id(family) not in families:
+            axes = {
+                axis
+                for row in family.rows
+                for role in row.observation_properties
+                if (axis := axis_for_role(role)) is not None
+            }
+            families[id(family)] = publishes_party(
+                RecalledFamily(datasets=frozenset(family.datasets), axes=frozenset(axes)),
+                published,
+            )
+        if families[id(family)]:
             publishers.append(shape)
     return publishers
+
+
+def _stated_values(state: ResolveState, shape: ShapeDraft) -> frozenset[str]:
+    """The constraint values of `shape` (`shape_constraint_values`) the variable's words
+    state: a code a span of the shape's own reading names, outside the words an entity owns
+    (`_entity_spans`), or a value the code index does not know whose graph label (`ShapeDraft.value_labels`) holds a word of the variable no
+    entity owns (`_entity_spans`), plurals folded (`fold_word`). "grant" in "IDA grant
+    disbursements" states an IDS series' grant value; "IDA", the provider's own word,
+    states none."""
+    index = get_index()
+    variable = state.variable
+    owned = _entity_spans(state, tokenize(variable))
+    read = {
+        row.dcid
+        for span in for_shape(state.variable_spans_by_vocabulary, shape)
+        if _unread_words(variable, span, owned)
+        for row in span.rows
+        if isinstance(row, CodeRow)
+    }
+    words = {
+        fold_word(word.text)
+        for word in word_tokens(variable)
+        if not any(start <= word.start and word.end <= end for start, end in owned)
+    } - FUNCTION_WORDS
+    labels = shape.value_labels or {}
+    return frozenset(
+        value
+        for _prop, value in shape_constraint_values(shape)
+        if value in read
+        or (
+            index.code_by_dcid(value) is None
+            and not words.isdisjoint(fold_word(w) for w in _casefolded_words(labels.get(value, "")))
+        )
+    )
 
 
 def _measures_alike(shape: ShapeDraft, other: ShapeDraft) -> bool:
@@ -381,16 +434,16 @@ def _country_breadth(shape: ShapeDraft) -> int:
     )
 
 
-def _role_bearing_outranks(eligible_shapes: Sequence[ShapeDraft]) -> bool:
+def _role_bearing_outranks(state: ResolveState, eligible_shapes: Sequence[ShapeDraft]) -> bool:
     """Whether a role-bearing shape among `eligible_shapes` outranks the subject-only ones:
-    the top-ranked shape (`_rank_key`) is role-bearing, or a role-bearing shape's own
+    the top-ranked shape (`_party_ranked`) is role-bearing, or a role-bearing shape's own
     measured score clears ``SEARCH_UNKNOWN_SCORE_THRESHOLD``. A role-bearing shape the index carries passes
     the floor whatever its score, so its presence alone says nothing of the query: two
     flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them. The
     rule is `flow_governance.governs`, which the raw-text door's organisation reading shares."""
     if not eligible_shapes:
         return False
-    top = min(eligible_shapes, key=_rank_key)
+    top = _party_ranked(state, eligible_shapes)[0]
     return any(
         is_role_bearing(s) and governs(top=s is top, score=s.measured_score)
         for s in eligible_shapes
@@ -499,24 +552,40 @@ def _entity_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[in
 def _without_entity_terms(
     state: ResolveState, spans: Sequence[QualifierSpan]
 ) -> tuple[QualifierSpan, ...]:
-    """`spans`, the variable read in every code system, less the terms the part's entities
-    own: a span every word of which an entity's text covers (`_entity_spans`), and a span
-    whose words the entity pack stores as a name of an organisation the part binds
-    (`entity_resolution.pack.organisations_named`). The entity reads those words, so no
+    """`spans`, the variable read in every code system, less the terms an organisation the
+    part names as the stated origin of its flow owns (`_origin_organisations`): a span every
+    word of which its name, the request's words for it or its role spans cover, and a span
+    whose words the entity pack stores as a name of it
+    (`entity_resolution.pack.organisations_named`). The provider reads those words, so no
     check reads them as a code the answer leaves unapplied: "IDA" in "IDA disbursements",
     DAC1 aid type 2103 ("multilateral contribution to the International Development
     Association"), is the provider IDA, whether the request wrote it as the entity's words or
-    named the entity "International Development Association" alone."""
+    named the entity "International Development Association" alone. With IDA the recipient,
+    "contributions to IDA" names aid type 2103 and stays a term the checks read."""
+    organisations = _origin_organisations(state)
+    if not organisations:
+        return tuple(spans)
     variable = state.variable
-    owned = _entity_spans(state, tokenize(variable))
-    bound = {place_set.node.dcid for place_set in state.place_sets.values() if place_set.node}
+    tokens = tokenize(variable)
+    owned = [
+        occurrence
+        for name in organisations
+        for text in (
+            name,
+            state.entity_words.get(name),
+            *(role.span for role in state.entity_roles.get(name, ())),
+        )
+        if text
+        for occurrence in token_occurrences(tokens, text)
+    ]
+    dcids = set(organisations.values())
 
-    def entity_term(span: QualifierSpan) -> bool:
+    def owned_term(span: QualifierSpan) -> bool:
         if not _unread_words(variable, span, owned):
             return True
-        return not organisations_named(variable[span.start : span.end]).isdisjoint(bound)
+        return not organisations_named(variable[span.start : span.end]).isdisjoint(dcids)
 
-    return tuple(span for span in spans if not entity_term(span))
+    return tuple(span for span in spans if not owned_term(span))
 
 
 def _quantity_phrase(state: ResolveState) -> str:
@@ -1023,7 +1092,12 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # Ethiopia" keeps its GDP shapes.
     named_class = measure_class(state.variable)
     state.role_bearing_outranks = _role_bearing_outranks(
-        [s for s in floored if named_class is None or shape_measure_class(s) in (None, named_class)]
+        state,
+        [
+            s
+            for s in floored
+            if named_class is None or shape_measure_class(s) in (None, named_class)
+        ],
     )
     judged = judge_measure_and_roles(state, floored)
     admissible = [i.shape for i in judged if i.admissible]
@@ -1078,7 +1152,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admitted = [i.shape for i in judged if i.admissible]
     if not admitted and state.interpretations.refusal_reason() is not None:
         return await _refuse_without_a_menu(
-            state, _refused_on_pinned(judged, excluding), pinned_part_read
+            state, _refused_on_pinned(state, judged, excluding), pinned_part_read
         )
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
@@ -1102,7 +1176,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # part that offers none holds nothing they read.
     with timed_step(state, "shape_rank"):
         offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
-    refused_on_pinned = _refused_on_pinned(judged, excluding)
+    refused_on_pinned = _refused_on_pinned(state, judged, excluding)
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
     # leaf or none (`seat_menu`), which is the order the status rule offers alternatives in.
@@ -1280,15 +1354,19 @@ def _meets_score_floor(shape: ShapeDraft) -> bool:
 
 
 def _refused_on_pinned(
-    judged: Sequence[Interpretation], excluding: SourceScope | None
+    state: ResolveState, judged: Sequence[Interpretation], excluding: SourceScope | None
 ) -> list[Interpretation]:
     """The not-electable list: the interpretations refused only on a pinned part, less
-    those an exclusion removes, seated as the menu is under the same seat count
-    (`seat_menu`), so a topic root is listed with every leaf or none and the leaves of one
-    large root do not fill the list ahead of a scored reading."""
-    ranked = sorted(
-        (i for i in judged if i.pinned_failure is not None), key=lambda i: _rank_key(i.shape)
-    )
+    those an exclusion removes, in the menu's rank order (`_party_ranked`), seated as the
+    menu is under the same seat count (`seat_menu`), so a topic root is listed with every
+    leaf or none and the leaves of one large root do not fill the list ahead of a scored
+    reading."""
+    pinned = [i for i in judged if i.pinned_failure is not None]
+    order = {
+        id(shape): position
+        for position, shape in enumerate(_party_ranked(state, [i.shape for i in pinned]))
+    }
+    ranked = sorted(pinned, key=lambda i: order[id(i.shape)])
     refused = ranked if excluding is None else _excluded_out(ranked, excluding)
     by_shape = {id(i.shape): i for i in refused}
     seated = seat_menu([i.shape for i in refused], settings().bind_top_k)
