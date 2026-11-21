@@ -16,10 +16,13 @@ from pathlib import Path
 
 import pytest
 
+from code_index.composites import provenance_datasets
 from code_index.declarations import (
     BROAD_READINGS,
     CODE_SYSTEMS,
     CONCEPT_GROUPS,
+    CRS_INCLUSIVE,
+    DAC2A_BILATERAL,
     DATASETS,
     MEASURE_VALUE_TEXT,
     PARTY_KIND_OVERRIDES,
@@ -36,6 +39,8 @@ from code_index.declarations import (
     WholeWindow,
 )
 from code_index.export import (
+    PARTY_KIND_UNRESOLVED,
+    WHOLE_MARKER_IN_COMPOSITE,
     CoverageJoin,
     ExportRefused,
     PartyPublication,
@@ -48,6 +53,7 @@ from code_index.export import (
     _verify_measure_label_named_values,
     _verify_measure_nouns,
     _verify_measure_partition_labels,
+    check_composite_whole_totals,
     content_hash,
     enumerate_statvar_dcids,
     export_code_system,
@@ -59,6 +65,7 @@ from code_index.export import (
     export_value_parents,
     stamp_counts,
     strip_system_suffix,
+    unkinded_reads,
 )
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.shared import get_index
@@ -3637,6 +3644,65 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
     assert publishing <= _REVIEWED_AGAINST[trust]
 
 
+@pytest.mark.parametrize(
+    ("datasets", "kind"),
+    [
+        pytest.param(("provenance/OECDDAC2A",), "total", id="dac2a"),
+        pytest.param((DAC2A_BILATERAL,), "total", id="dac2a-composite"),
+        pytest.param(("provenance/OECDCreditorReportingSystem",), "party", id="crs"),
+        pytest.param((), None, id="every-dataset"),
+    ],
+)
+def test_the_fixture_index_reads_a_trust_funds_kind_within_the_readers_datasets(
+    datasets: tuple[str, ...], kind: str | None
+):
+    """A DAC2a frame's rows carry the composite's provenance, which reads as DAC2A. Over every
+    dataset that publishes the fund there are two kinds."""
+    assert get_index().parties["IMFConcessionalTrustFunds"].kind_over("origin", datasets) == kind
+
+
+def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_readers_axis():
+    """A hypothetical fund, a donor only in the CRS and a total recipient only in DAC2A: a
+    donor read over DAC2A finds no donor there and borrows no kind from the CRS."""
+    row = PartyRow(
+        dcid="TrustFund",
+        kind="party",
+        published=(
+            ("provenance/OECDCreditorReportingSystem", "origin"),
+            ("provenance/OECDDAC2A", "destination"),
+        ),
+        dataset_kinds=(("provenance/OECDDAC2A", "total"),),
+    )
+    assert row.kinds_over("origin", ("provenance/OECDDAC2A",)) == frozenset()
+    assert row.kind_over("destination", (DAC2A_BILATERAL,)) == "total"
+
+
+def test_every_fixture_party_takes_one_kind_under_each_provenance_publishing_it():
+    assert unkinded_reads(get_index().parties.values()) == []
+
+
+def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on():
+    crs, imputed = provenance_datasets(CRS_INCLUSIVE)
+    with pytest.raises(ExportRefused) as refused:
+        _export_parties(
+            {"TrustFund": ("Organization",)},
+            kind_overrides={
+                "TrustFund": KindOverride(
+                    "total",
+                    "a fund",
+                    datasets=frozenset({imputed}),
+                    reviewed=frozenset({crs, imputed}),
+                )
+            },
+            axis="origin",
+            published_in=frozenset({crs, imputed}),
+        )
+    assert (refused.value.code, refused.value.rows) == (
+        PARTY_KIND_UNRESOLVED,
+        (("TrustFund", "origin", CRS_INCLUSIVE), ("TrustFund", "any", CRS_INCLUSIVE)),
+    )
+
+
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
 def test_the_fixture_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
     index = get_index()
@@ -4007,6 +4073,28 @@ _BOTH = frozenset({_TEST_PROVENANCE, _OTHER})
 
 def _window(*covers: PartyClass, first_year: int | None = None) -> WholeWindow:
     return WholeWindow(covers, first_year)
+
+
+def test_the_declared_whole_totals_mark_no_table_of_a_composite_of_several_tables():
+    """The export reads this before the graph, so a declaration edit fails here first."""
+    check_composite_whole_totals(WHOLE_POPULATION_TOTALS)
+
+
+def test_export_index_refuses_a_whole_total_marked_in_a_table_of_a_composite_of_several():
+    crs, imputed = provenance_datasets(CRS_INCLUSIVE)
+    with pytest.raises(ExportRefused) as refused:
+        _export_parties(
+            {"DACOfficialDonors": ("DACGroup",)},
+            whole_totals={
+                "DACOfficialDonors": WholePopulationTotal("origin", {crs: _window("official")}, "a")
+            },
+            axis="origin",
+            published_in=frozenset({crs, imputed}),
+        )
+    assert (refused.value.code, refused.value.rows) == (
+        WHOLE_MARKER_IN_COMPOSITE,
+        (("DACOfficialDonors", crs, CRS_INCLUSIVE),),
+    )
 
 
 def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(tmp_path: Path):

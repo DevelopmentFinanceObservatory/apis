@@ -20,6 +20,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 
+from code_index.composites import provenance_datasets
+from code_index.declarations import CRS_INCLUSIVE, WholePopulationTotal, WholeWindow
+from code_index.export import WHOLE_MARKER_IN_COMPOSITE
 from dc_graph import GraphClient
 from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
@@ -179,6 +182,16 @@ def test_a_platform_refusal_is_a_finding_under_its_own_code() -> None:
 
     assert _codes(result) == ["unsupported_observation_period"]
     assert not result.passed
+
+
+def test_a_platform_refusal_carries_its_steps_code_and_rows_into_the_report() -> None:
+    refusal = PlatformRefusal(
+        "code_index_export_refused", "x", detail_code="party_kind_unresolved", rows=(("A", "B"),)
+    )
+
+    (finding,) = refused(refusal).summary()["findings"]
+
+    assert (finding["detail_code"], finding["rows"]) == ("party_kind_unresolved", [["A", "B"]])
 
 
 def test_merge_keeps_every_finding_and_refuses_a_report_twice() -> None:
@@ -588,6 +601,26 @@ def test_a_dfo_rebuild_the_export_refuses_names_the_refusal(tmp_path):
     result = check_dfo_rebuild(parts, staged=staged, declarations=SLICE_DECLARATIONS)
     assert _codes(result) == ["dfo_rebuild_mismatch"]
     assert result[0].examples == ("code_index_export_refused",)
+
+
+def test_a_dfo_rebuild_the_export_refuses_carries_the_exports_code_and_rows(tmp_path):
+    parts, staged = _staged_release(tmp_path)
+    crs, _imputed = provenance_datasets(CRS_INCLUSIVE)
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS,
+        whole_totals={
+            "DACOfficialDonors": WholePopulationTotal(
+                "origin", {crs: WholeWindow(("official",), None)}, "a"
+            )
+        },
+    )
+
+    (finding,) = check_dfo_rebuild(parts, staged=staged, declarations=declarations)
+
+    assert (finding.detail_code, finding.rows) == (
+        WHOLE_MARKER_IN_COMPOSITE,
+        (("DACOfficialDonors", crs, CRS_INCLUSIVE),),
+    )
 
 
 def test_run_gate_reads_the_staged_files_and_never_passes_an_unavailable_dependency(tmp_path):

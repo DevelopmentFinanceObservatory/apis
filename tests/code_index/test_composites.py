@@ -9,7 +9,8 @@ import json
 
 import pytest
 
-from code_index import IndexFormatError
+import code_index.composites as composites_module
+from code_index import IndexFormatError, scope_conventions
 from code_index.composites import (
     CompositeNotServable,
     CompositeProvenanceRead,
@@ -20,10 +21,10 @@ from code_index.composites import (
     declared_composite_digest,
 )
 from code_index.declarations import COMPOSITES
-from code_index.loader import parse_index
+from code_index.loader import ServedCompositeUndeclared, parse_index
 from code_index.members import pinned_refs
 from code_index.query import CodeIndex
-from code_index.types import YearPeriod
+from code_index.types import CompositeReadUndeclared, YearPeriod, declared_composite_reads
 from tests.code_index.aid_identity import (
     AID_TYPE,
     CRS_PROVENANCE,
@@ -115,6 +116,28 @@ def test_the_fixture_index_serves_every_declared_composite():
 def test_the_loader_refuses_a_malformed_composite(composites, message):
     with pytest.raises(IndexFormatError, match=message):
         _parse(composites)
+
+
+@pytest.mark.parametrize(
+    ("composite", "read"),
+    [
+        pytest.param(
+            dataclasses.replace(_STACKED, provenance="provenance/Undeclared"),
+            None,
+            id="served-but-undeclared",
+        ),
+        pytest.param(
+            _with_component(_STACKED, "imputed", dataset=_STACKED.components[0].dataset),
+            tuple(recipe.dataset for recipe in _STACKED.components),
+            id="served-from-other-tables",
+        ),
+    ],
+)
+def test_the_loader_refuses_a_composite_party_reads_take_as_other_tables(composite, read):
+    with pytest.raises(ServedCompositeUndeclared) as refused:
+        _parse((composite,))
+
+    assert (refused.value.provenance, refused.value.read) == (composite.provenance, read)
 
 
 def test_a_composite_whose_component_table_the_index_lacks_is_not_served():
@@ -347,3 +370,37 @@ def test_binds_composite_reads_a_set_naming_one_as_a_composite(
 ) -> None:
     facets = {} if provenance is None else {"provenance": provenance}
     assert binds_composite({"facets": facets}) is binds
+
+
+@pytest.mark.parametrize(
+    ("bound", "code"),
+    [
+        pytest.param(("provenance/Unbound",), "bound_table_undeclared", id="table-undeclared"),
+        pytest.param(
+            ("provenance/OECDDAC2A", "provenance/Other"), "several_bound_totals", id="two-totals"
+        ),
+    ],
+)
+def test_a_composite_binding_destinations_a_party_cannot_read_refuses(
+    monkeypatch: pytest.MonkeyPatch, fresh_composite_reads: None, bound, code
+):
+    (source,) = scope_conventions.BILATERAL_SOURCES
+    monkeypatch.setattr(
+        scope_conventions,
+        "BILATERAL_SOURCES",
+        (source, dataclasses.replace(source, dataset="provenance/Other", rebound="OtherTotal")),
+    )
+    composite = dataclasses.replace(
+        _DAC2A_BILATERAL,
+        provenance="provenance/Bound",
+        components=tuple(
+            dataclasses.replace(_DAC2A_BILATERAL.components[0], role=f"part{at}", dataset=table)
+            for at, table in enumerate(bound)
+        ),
+    )
+    monkeypatch.setattr(composites_module, "DECLARED_COMPOSITES", {composite.provenance: composite})
+
+    with pytest.raises(CompositeReadUndeclared) as refused:
+        declared_composite_reads()
+
+    assert (refused.value.code, refused.value.composite) == (code, composite.provenance)

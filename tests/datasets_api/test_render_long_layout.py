@@ -22,6 +22,7 @@ from dfo_frame_grammar import Frame
 from dfo_frame_grammar.grammar import UnitRequest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
+from code_index.declarations import DAC2A, DAC2A_BILATERAL
 from code_index.shared import get_index
 from code_index.types import PartyRow, RoleAxis, StatVarRow, WholeMarker
 from datasets_api import render as render_module
@@ -959,6 +960,60 @@ def test_an_open_role_reads_a_party_s_kind_on_its_own_axis(total_in, named):
         list(
             movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=["p1", "p2"])
         )
+        == named
+    )
+
+
+@pytest.mark.parametrize(
+    ("datasets", "named"),
+    [
+        pytest.param(["p2"], ["financingProvider"], id="where-it-is-a-donor-total"),
+        pytest.param(["p1"], [], id="where-it-is-no-donor"),
+    ],
+)
+def test_a_bound_role_holds_a_total_only_where_a_read_dataset_publishes_it_on_the_axis(
+    datasets, named
+):
+    """A party that is a total only where p2 publishes it as a donor is no donor total in a
+    read of p1, which publishes it as a recipient alone, so a p1 file holds no donor row of it
+    to move."""
+    parties = {
+        **_PARTIES,
+        "MixedParty": PartyRow(
+            dcid="MixedParty",
+            kind="party",
+            party_class="official",
+            published=(("p1", "destination"), ("p2", "origin")),
+            dataset_kinds=(("p2", "total"),),
+        ),
+    }
+    identity = _spec({"entities": {"origin": ["MixedParty", "country/USA"]}})["identity"]
+
+    assert (
+        list(movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=datasets))
+        == named
+    )
+
+
+@pytest.mark.parametrize(
+    ("datasets", "named"),
+    [
+        pytest.param([DAC2A], ["financingRecipient"], id="the-table"),
+        pytest.param([DAC2A_BILATERAL], ["financingRecipient"], id="a-composite-of-the-table"),
+        pytest.param(["p1"], [], id="another-table"),
+    ],
+)
+def test_an_open_role_holds_a_total_its_composites_table_publishes(datasets, named):
+    """A DAC2a composite's rows carry its own provenance, which reads as DAC2A, where the
+    total is published."""
+    parties = {
+        "country/USA": _PARTIES["country/USA"],
+        "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", published=((DAC2A, "destination"),)),
+    }
+    identity = _OPEN_RECIPIENTS["identity"]
+
+    assert (
+        list(movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=datasets))
         == named
     )
 

@@ -45,6 +45,7 @@ from code_index.types import (
     WholeTotalSet,
     YearPeriod,
     covered_class,
+    declared_composite_tables,
     invalid_when_named_entry,
     marked_datasets,
 )
@@ -58,6 +59,23 @@ _LEGACY_PARTY_KEYS = frozenset({"datasets", "axes"})
 
 class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
+
+
+class ServedCompositeUndeclared(IndexFormatError):
+    """A composite the index serves from `tables` whose provenance party reads take as `read`,
+    the tables `code_index.composites.DECLARED_COMPOSITES` declares for it, or `None` where it
+    declares none, so a party cell on its rows would read other tables than its figures."""
+
+    def __init__(
+        self, *, provenance: str, tables: tuple[str, ...], read: tuple[str, ...] | None
+    ) -> None:
+        super().__init__(
+            f"composite {provenance!r} is served from tables {list(tables)!r}, but party reads "
+            f"take it as {'itself' if read is None else list(read)!r}"
+        )
+        self.provenance = provenance
+        self.tables = tables
+        self.read = read
 
 
 class ContentHashMismatch(IndexFormatError):
@@ -218,6 +236,7 @@ def _check_composites(
         tables = {recipe.dataset for recipe in composite.components}
         if not tables <= declared:
             continue
+        _check_declared_tables(composite)
         if composite.kind == "stacked":
             signatures = {frozenset(role_sets.get(table, set())) for table in sorted(tables)}
             if len(signatures) > 1:
@@ -227,6 +246,16 @@ def _check_composites(
                 )
         served.append(composite)
     return tuple(served)
+
+
+def _check_declared_tables(composite: CompositeDeclaration) -> None:
+    """Raise `ServedCompositeUndeclared` for a served composite whose component tables differ
+    from those a `PartyRow` reads its provenance as (`declared_composite_tables`), or that
+    declares none, so a party cell on its rows reads the tables the index serves it from."""
+    tables = tuple(dict.fromkeys(recipe.dataset for recipe in composite.components))
+    read = declared_composite_tables().get(composite.provenance)
+    if read != tables:
+        raise ServedCompositeUndeclared(provenance=composite.provenance, tables=tables, read=read)
 
 
 def _check_composite_declaration(composite: CompositeDeclaration, declared: set[str]) -> None:
