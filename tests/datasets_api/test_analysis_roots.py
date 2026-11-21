@@ -34,6 +34,7 @@ from datasets_api.analysis_roots import (
     frame_ref_for,
     mint_options,
     record_options,
+    summed_count,
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
@@ -260,7 +261,8 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
     monkeypatch.setattr(analysis_roots, "render_unstored", render)
     deps = SimpleNamespace(
         snapshot_reader=SimpleNamespace(
-            read_version=lambda *_: object(), read_artifact_locations=lambda *_: ()
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None),
+            read_artifact_locations=lambda *_: (),
         ),
         coverage=SimpleNamespace(snapshot=lambda: None),
         now=lambda: datetime.now(UTC),
@@ -288,6 +290,90 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
             trace_id=None,
         )
     assert renders == [rendered_cv]
+
+
+_TWO_COUNTED = {
+    "resolved_stat_vars": [
+        {"ref": "dcid:A", "observation_count": 3},
+        {"ref": "dcid:B", "observation_count": 2},
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "rendered", "count"),
+    [
+        pytest.param(None, None, 2, id="no-record-is-unknown"),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=None),
+            None,
+            2,
+            id="unrecorded-frame-summed-is-unknown",
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=True), 3, 3, id="renderer-count"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=False), 3, 0, id="a-cut-frame"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=None, frame_summed=None), 3, 0, id="no-derived"
+        ),
+    ],
+)
+def test_a_groupby_counts_the_stat_vars_it_summed_unless_its_record_says_none(
+    version: object, rendered: int | None, count: int
+) -> None:
+    """The renderer's count wins over the StatVars the trace counts (2 here)."""
+    assert summed_count(version, rendered=rendered, contributors=2) == count  # ty: ignore[invalid-argument-type]
+
+
+def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification renders a root's groupby in memory (`render` false), and the root names
+    the StatVars it summed as a stored rendering does."""
+    derived_cv = "cv_" + "2" * 32
+    monkeypatch.setattr(
+        analysis_roots,
+        "load_stored",
+        lambda **_: SimpleNamespace(
+            content_version=_CV,
+            coverage=CoverageModel(rows=2, dimensions=[]),
+            artifacts=[],
+            trace=_TWO_COUNTED,
+        ),
+    )
+    monkeypatch.setattr(analysis_roots, "head_rendering", lambda **_: None)
+    monkeypatch.setattr(
+        analysis_roots,
+        "render_unstored",
+        lambda **_: SimpleNamespace(
+            content_version=derived_cv, artifact=None, data=b"", rows=1, frame=None
+        ),
+    )
+    deps = SimpleNamespace(
+        snapshot_reader=SimpleNamespace(
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None)
+        ),
+        coverage=SimpleNamespace(snapshot=lambda: None),
+        code_index=_hierarchical_code_index(),
+    )
+    roots = LiveRootSource(
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        recipes=Unwired("recipes"),  # ty: ignore[invalid-argument-type]
+        render=False,
+    )
+    summed = RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"})
+
+    resolved = roots.resolve(
+        DatasetRoot(spec_id=_SPEC, content_version=_CV, rendering=summed),
+        latest=False,
+        trace_id=None,
+    )
+
+    assert resolved.dataset.content_version == derived_cv
+    assert (resolved.summed_count, resolved.stat_vars_summed) == (2, ("A", "B"))
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:

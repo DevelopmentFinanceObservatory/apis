@@ -334,13 +334,18 @@ class _Walk:
             parameters = _anchored(
                 parameters, period=self.periods.period, latest=self.policy.latest
             )
-        built = build_op_spec({**parameters, **pairs, "verb": op_spec["verb"]})
-        call = call_verb(
-            built,
-            inputs,
-            coverage_floor=self.policy.coverage_floor,
-            max_frame_rows=self.policy.max_frame_rows,
-        )
+        try:
+            built = build_op_spec({**parameters, **pairs, "verb": op_spec["verb"]})
+            call = call_verb(
+                built,
+                inputs,
+                coverage_floor=self.policy.coverage_floor,
+                max_frame_rows=self.policy.max_frame_rows,
+            )
+        except AnalysisRefused as refused:
+            if refused.roots is None:
+                refused.roots = tuple(sorted(set(_root_indices(node))))
+            raise
         tree = {"frame": pair(call.ref), "op_spec": call.canonical_op_spec, "inputs": trees}
         if anchors := node.get(_ANCHOR_ROOTS):
             tree[_ANCHOR_ROOTS] = [

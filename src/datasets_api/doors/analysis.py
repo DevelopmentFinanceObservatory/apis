@@ -140,6 +140,30 @@ class AnalysisBackpressure(Backpressure):
         super().__init__("the analysis door is at its concurrent capacity right now; retry")
 
 
+class StatVarsSummed(BaseModel):
+    """A root whose groupby summed its StatVars into one series, the version it summed into
+    and how many StatVars with data it summed (its `sum_variables` step's `summed.count`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str
+    count: int = Field(ge=2)
+
+
+class RootVersion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str = Field(description="the version the root reads")
+    base_content_version: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="the dataset version `content_version` renders, for a groupby sum or a "
+        "party-totals cut; absent when the root reads the dataset version itself",
+    )
+
+
 class AnalysisReady(BaseModel):
     """The stored frame of a computed tree."""
 
@@ -161,6 +185,18 @@ class AnalysisReady(BaseModel):
     execution_identity: dict[str, str]
     resolved_periods: list[dict[str, JsonValue]] = Field(
         description="each period the recipe states relative to the latest, with its period"
+    )
+    derived_roots: list[RootVersion] = Field(
+        default_factory=list,
+        description="each root the tree read whose rendering is a version of its own, a groupby "
+        "sum or a party-totals cut, with the dataset version it derives from, so a caller "
+        "matches it to the dataset version an anchor records",
+    )
+    stat_vars_summed: list[StatVarsSummed] = Field(
+        default_factory=list,
+        description="each root read summed over its StatVars, with how many it summed; a root "
+        "that states no groupby, holds several StatVars and is read under steps that name no "
+        "stat_var is summed by the service itself, keeping the summable axes the steps name",
     )
 
 
@@ -222,8 +258,9 @@ class AnchorAnswer(BaseModel):
     period: str
     rule: str
     left_out: list[LeftOutSeriesBody]
-    roots: list[dict[str, str]] = Field(
-        description="the dataset versions the period was taken over"
+    roots: list[RootVersion] = Field(
+        description="the dataset versions the period was taken over, each with the dataset "
+        "version its rendering derives from"
     )
 
 
@@ -444,7 +481,7 @@ def _anchor_job(
             LeftOutSeriesBody(root=series.root, coordinates=dict(series.coordinates))
             for series in anchor.left_out
         ],
-        roots=[root.dataset.model_dump() for root in roots],
+        roots=[RootVersion.model_validate(root.version()) for root in roots],
     ).model_dump(mode="json")
 
 

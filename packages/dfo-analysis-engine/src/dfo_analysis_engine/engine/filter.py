@@ -100,8 +100,16 @@ from dfo_frame_grammar.grammar import (
     UnitCell,
 )
 
-from dfo_analysis_engine.engine.columnar import frame_from_columns
-from dfo_analysis_engine.engine.common import Exclusions, Units, record_exclusion, role_columns
+from dfo_analysis_engine.engine.columnar import distinct, frame_from_columns
+from dfo_analysis_engine.engine.common import (
+    BREAKDOWN_PREFIX,
+    FACT_WHEN_SET,
+    Exclusions,
+    Units,
+    record_exclusion,
+    role_columns,
+    smallest_distinct,
+)
 from dfo_analysis_engine.place_type import levels_of
 from dfo_analysis_engine.time_grain import is_interval
 
@@ -165,6 +173,21 @@ class FilterPredicateValueTypeMismatchError(Exception):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class UnmatchedBreakdownValues:
+    """A `category_match` predicate on a `stat_var_<axis>` column, which a
+    summable groupby keeps and labels each cell of, whose `values` no row
+    holds, as a code such as `12220` given where the column holds labels
+    does. `labels` are the smallest of the column's distinct values, and
+    `labels_truncated` whether it holds more. The filter keeps no row for it,
+    as for any value no row holds; this names the labels beside that."""
+
+    column: str
+    values: tuple[str, ...]
+    labels: tuple[str, ...]
+    labels_truncated: bool
+
+
 class FilterPlaceLevelUnknownError(Exception):
     """A strict place-level predicate found entities with unknown typing."""
 
@@ -220,7 +243,9 @@ class FilterResult:
     and render the digest -- the frame is here for the store write and
     replay; the digest itself renders from `kept_row_summaries`, never
     `frame.rows`. `units` is every distinct unit the kept rows declare, with
-    `None` for rows that declare none."""
+    `None` for rows that declare none. `unmatched_breakdown_values` names each
+    predicate on a breakdown column that matched no row, a fact only when there
+    is one (`FACT_WHEN_SET`)."""
 
     frame: Frame
     total_row_count: int
@@ -229,6 +254,9 @@ class FilterResult:
     kept_row_summaries: tuple[FilterRowSummary, ...]
     exclusions: Exclusions = field(default_factory=Exclusions)
     units: tuple[UnitCell | None, ...] = ()
+    unmatched_breakdown_values: tuple[UnmatchedBreakdownValues, ...] = field(
+        default=(), metadata={FACT_WHEN_SET: True}
+    )
 
 
 def _predicate_columns(predicates: Sequence[Predicate]) -> tuple[str, ...]:
@@ -375,6 +403,30 @@ def _validate_predicate_types(
                 )
 
 
+def _unmatched_breakdown_values(
+    predicates: Sequence[Predicate], frame: Frame
+) -> tuple[UnmatchedBreakdownValues, ...]:
+    """Each `category_match` on a `stat_var_<axis>` column whose values no row
+    of `frame` holds, with the labels the column holds, so a code given for a
+    label is told apart from a value the data lacks."""
+    unmatched: list[UnmatchedBreakdownValues] = []
+    for predicate in predicates:
+        if predicate.kind != "category_match" or not predicate.column.startswith(BREAKDOWN_PREFIX):
+            continue
+        held = distinct(frame.table, predicate.column)
+        if held and not set(predicate.values).intersection(held):
+            labels, truncated = smallest_distinct(held)
+            unmatched.append(
+                UnmatchedBreakdownValues(
+                    column=predicate.column,
+                    values=tuple(predicate.values),
+                    labels=tuple(labels),
+                    labels_truncated=truncated,
+                )
+            )
+    return tuple(unmatched)
+
+
 def _predicate_mask(table: pa.Table, predicate: Predicate) -> pa.Array:
     """Whether each row of `table` satisfies `predicate`, with no nulls.
     Types are already validated by `_validate_predicate_types` before any
@@ -458,6 +510,7 @@ def run_filter(
         raise FilterUnknownColumnError(invalid, available=list(frame.columns))
 
     _validate_predicate_types(predicates, frame, span=span)
+    unmatched = _unmatched_breakdown_values(predicates, frame)
 
     table = frame.table
     keep = _keep_mask(table, predicates)
@@ -508,4 +561,5 @@ def run_filter(
         kept_row_summaries=kept_row_summaries,
         exclusions=exclusions,
         units=tuple(units.cells),
+        unmatched_breakdown_values=unmatched,
     )
