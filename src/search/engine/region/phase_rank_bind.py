@@ -340,21 +340,20 @@ def _origin_party(state: ResolveState) -> _OriginParty:
 
 def _origin_organisations(state: ResolveState) -> dict[str, str]:
     """The dcid of each organisation the part binds as the origin of its flow, by the
-    request's name for it: every role of it is on the origin axis, and each either states
-    its direction (`DoorRole.stated`) or carries the party the raw-text door's extraction
-    named for it (`DoorRole.party`). "World Bank IDA disbursements to Kenya" cites IDA's own
-    name as its cue, which states no direction, and the extraction names it the source. A
-    role the query's wording contradicts never reaches here: place binding refuses the part
-    ``role_not_resolved`` first (`place_roles._contradicted_names`)."""
+    request's name for it: every role the door gives it is on the origin axis, whether or
+    not the query's words state that direction (`DoorRole.stated`). The raw-text door keeps
+    a role only where the extraction cites a cue for it, so an unstated origin role is still
+    the extraction's reading of the request: "World Bank IDA disbursements to Kenya" cites
+    IDA's own name and "IDA's disbursements" a possessive, and each names IDA the provider.
+    A role the query's wording contradicts never reaches here: place binding refuses the
+    part ``role_not_resolved`` first (`place_roles._contradicted_names`)."""
     organisations: dict[str, str] = {}
     for name, place_set in state.place_sets.items():
         node = place_set.node
         if node is None or node.kind != "organisation":
             continue
         roles = state.entity_roles.get(name, ())
-        if roles and all(
-            role.axis == "origin" and (role.stated or role.party is not None) for role in roles
-        ):
+        if roles and all(role.axis == "origin" for role in roles):
             organisations[name] = node.dcid
     return organisations
 
@@ -380,10 +379,11 @@ def _owned_ranges(state: ResolveState, organisations: Mapping[str, str], text: s
 
 
 def _owns(text: str, owned: _Ranges, start: int, end: int) -> bool:
-    """Whether `owned` covers every word of `text[start:end]`."""
-    return all(
+    """Whether `text[start:end]` holds a word and `owned` covers every one."""
+    words = word_tokens(text[start:end])
+    return bool(words) and all(
         any(low <= start + word.start and start + word.end <= high for low, high in owned)
-        for word in word_tokens(text[start:end])
+        for word in words
     )
 
 

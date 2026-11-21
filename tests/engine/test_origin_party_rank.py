@@ -22,7 +22,7 @@ from code_index.types import (
     StatVarRow,
 )
 from search.engine.qualifier_match import QualifierSpan
-from search.engine.region.phase_rank_bind import _origin_party, _party_ranked
+from search.engine.region.phase_rank_bind import _origin_party, _owns, _party_ranked
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
@@ -182,15 +182,15 @@ _RECALL = ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]
     "state",
     [
         pytest.param(_state(), id="stated-provider"),
-        pytest.param(_state(stated=False, party="source"), id="raw-text-source"),
+        pytest.param(_state(stated=False, party="source"), id="unstated-origin"),
     ],
 )
 def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot(state):
     """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
     disbursement of IDA grants that recall scored highest. IDS debt service measures
     otherwise and keeps the second slot, and the two IDS disbursements follow in recall
-    order in the slots left. A raw-text provider whose cue states no direction counts by
-    the source the door's extraction named."""
+    order in the slots left. A raw-text provider whose cue states no direction, IDA's own
+    name, counts as the origin the extraction read."""
     assert _ranked(state) == _PROMOTED
 
 
@@ -212,10 +212,23 @@ def test_a_series_whose_code_the_query_names_keeps_its_slot():
     "state",
     [
         pytest.param(_state(axis="destination"), id="organisation-as-recipient"),
-        pytest.param(_state(stated=False), id="unstated-without-a-door-reading"),
         pytest.param(_state(kind="country"), id="not-an-organisation"),
     ],
 )
 def test_recall_order_stands_without_an_origin_organisation(state):
     """A part naming no organisation as the origin of its flow ranks by recall."""
     assert _ranked(state) == _RECALL
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "owns"),
+    [
+        pytest.param(0, 3, True, id="owned-word"),
+        pytest.param(4, 5, False, id="no-word"),
+        pytest.param(6, 9, False, id="unowned-word"),
+    ],
+)
+def test_owned_ranges_own_a_span_only_by_its_words(start, end, owns):
+    """A span is owned when it holds a word and the owned ranges cover every one; a span
+    holding no word, as the dash in "IDA - aid", is owned by nothing."""
+    assert _owns("IDA - aid", ((0, 5),), start, end) is owns

@@ -9,6 +9,7 @@ import importlib.resources
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
@@ -66,16 +67,23 @@ def query_aliases_path() -> Traversable:
     return importlib.resources.files(_PACKAGE) / _DATA_DIR / _QUERY_ALIASES_FILENAME
 
 
-_HYPHEN_RE = re.compile(r"\s*[-\u2010-\u2015]\s*")
+# Characters read as a hyphen besides the dash punctuation category (Pd): the minus sign
+# and the soft hyphen.
+_OTHER_HYPHENS = frozenset("\u2212\u00ad")
+
+
+def _is_hyphen(char: str) -> bool:
+    return unicodedata.category(char) == "Pd" or char in _OTHER_HYPHENS
 
 
 def fold_hyphens(normalized: str) -> str:
-    """`normalized` with every hyphen or dash, and the spaces around it, read as one space.
+    """`normalized` with every hyphen or dash (Unicode category Pd, the minus sign and the
+    soft hyphen), and the spaces around it, read as one space.
 
     "world bank-ida", "world bank - ida" and "world bank ida" give one form, so a name the
     records write with a hyphen matches the same name written with a space. Idempotent, so it
     folds a stored normal form and a query's alike."""
-    return _HYPHEN_RE.sub(" ", normalized).strip()
+    return " ".join("".join(" " if _is_hyphen(char) else char for char in normalized).split())
 
 
 def org_name_key(text: str, normalize: Callable[[str], str]) -> str:

@@ -470,6 +470,14 @@ def test_an_uncued_organisation_the_pack_names_is_contested(
             [("International Finance Corporation", (0,))],
         ),
         ("IFC investments in Kenya", ["investments"], ["Kenya"], [("IFC", (0,))]),
+        # A longer name a taken run overlaps gives way to the names inside it: "World Bank
+        # IDA" overlaps the entity "World Bank", and "IDA" after it is still an organisation.
+        (
+            "World Bank IDA concessional flows to Kenya",
+            ["concessional flows"],
+            ["World Bank", "Kenya"],
+            [("IDA", (0,))],
+        ),
         # A short name written as the pack stores it reads as one.
         ("Gavi disbursements to Kenya", ["disbursements"], ["Kenya"], [("Gavi", (0,))]),
         ("AfDB loans to Ghana", ["loans"], ["Ghana"], [("AfDB", (0,))]),
