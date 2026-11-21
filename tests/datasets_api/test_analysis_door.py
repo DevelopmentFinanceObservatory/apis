@@ -245,10 +245,10 @@ class _BlockingSource(FakeRootSource):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def resolve(self, root, *, latest, trace_id):
+    def resolve(self, root, *, latest, trace_id, path_words=None):
         self.entered.set()
         assert self.release.wait(5)
-        return super().resolve(root, latest=latest, trace_id=trace_id)
+        return super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
 
 
 class _GatedSource(FakeRootSource):
@@ -259,10 +259,10 @@ class _GatedSource(FakeRootSource):
         self.started = threading.Semaphore(0)
         self.release = threading.Event()
 
-    def resolve(self, root, *, latest, trace_id):
+    def resolve(self, root, *, latest, trace_id, path_words=None):
         self.started.release()
         assert self.release.wait(5)
-        return super().resolve(root, latest=latest, trace_id=trace_id)
+        return super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
 
 
 def test_a_verification_leaves_an_analysis_thread_free_for_runs(
@@ -614,9 +614,14 @@ class _ExpiringSource(FakeRootSource):
         self.expired: dict[tuple[str, str], str] = {}
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
-        resolved = super().resolve(root, latest=latest, trace_id=trace_id)
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
         pair = (resolved.dataset.spec_id, resolved.dataset.content_version)
         if self.expired.get(pair) == "revoked":
             raise SnapshotRevoked(id=pair[0], content_version=pair[1], reason="taken down")
@@ -646,9 +651,14 @@ class _RenamingSource(FakeRootSource):
         self.renamed = False
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
-        resolved = super().resolve(root, latest=latest, trace_id=trace_id)
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
         if not self.renamed:
             return resolved
         digest = hashlib.sha256(resolved.dataset.content_version.encode()).hexdigest()

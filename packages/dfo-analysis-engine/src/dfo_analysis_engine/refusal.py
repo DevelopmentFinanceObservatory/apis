@@ -379,6 +379,21 @@ class Refusal:
         )
 
     @classmethod
+    def rank_rows_unreduced(cls, *, rank_by: list[str], available: list[str]) -> Self:
+        """`role_ambiguous` for a `rank` left without `aggregation` whose entities hold
+        more than one row in the window. The rows need reducing, which `aggregation` (the
+        SDK's `how`) does, or a longer `rank_by` keeps apart."""
+        return cls(
+            code=RefusalCode.ROLE_AMBIGUOUS,
+            message=(
+                f"rank_by {rank_by} holds more than one row for an entity in the window, so "
+                "there is no one value to rank it by. Pass aggregation (how), such as "
+                f'"sum", to reduce the rows, or rank by more of {available}.'
+            ),
+            fix={"parameter": "rank_by", "columns": rank_by, "available": available},
+        )
+
+    @classmethod
     def paired_member_ambiguous(
         cls, *, side: str, members: list[str], entity: list[str], available: list[str]
     ) -> Self:
@@ -507,21 +522,34 @@ class Refusal:
 
     @classmethod
     def coverage_insufficient(
-        cls, *, realised_coverage_fraction: float, floor: float, skipped_cell_count: int
+        cls,
+        *,
+        realised_coverage_fraction: float,
+        floor: float,
+        skipped_cell_count: int,
+        breakdown_columns: Sequence[str] = (),
     ) -> Self:
-        return cls(
-            code=RefusalCode.COVERAGE_INSUFFICIENT,
-            message=(
-                f"Only {realised_coverage_fraction:.1%} of the expected grid is present "
-                f"({skipped_cell_count} cell(s) missing), below the {floor:.0%} floor. "
-                "Narrow group_by to a coarser grain and retry."
-            ),
-            fix={
-                "realised_coverage_fraction": realised_coverage_fraction,
-                "floor": floor,
-                "skipped_cell_count": skipped_cell_count,
-            },
+        """`breakdown_columns` are the `stat_var_<axis>` columns the grid counted. When there
+        are any, the message and `fix` name `allow_sparse_breakdowns`, which leaves them out."""
+        message = (
+            f"Only {realised_coverage_fraction:.1%} of the expected grid is present "
+            f"({skipped_cell_count} cell(s) missing), below the {floor:.0%} floor. "
+            "Narrow group_by to a coarser grain and retry."
         )
+        fix: dict[str, Any] = {
+            "realised_coverage_fraction": realised_coverage_fraction,
+            "floor": floor,
+            "skipped_cell_count": skipped_cell_count,
+        }
+        if breakdown_columns:
+            message += (
+                f" The grid counts the breakdown column(s) {list(breakdown_columns)}, whose "
+                "empty cells may be no gap: pass allow_sparse_breakdowns=true to count "
+                "coverage without them."
+            )
+            fix["breakdown_columns"] = list(breakdown_columns)
+            fix["allow_sparse_breakdowns"] = True
+        return cls(code=RefusalCode.COVERAGE_INSUFFICIENT, message=message, fix=fix)
 
     @classmethod
     def non_finite_result(cls, *, group_key: dict[str, str], aggregation: str) -> Self:
@@ -1358,10 +1386,13 @@ class Refusal:
 
 class AnalysisRefused(Exception):
     """The engine declined the call. `refusal` holds its code, retry mode,
-    message and `fix`."""
+    message and `fix`. `roots` names the root indices the refused node of a
+    recipe tree reads, through its inputs and theirs (`evaluate.evaluate`),
+    `None` for a refusal raised outside one node."""
 
-    def __init__(self, refusal: Refusal) -> None:
+    def __init__(self, refusal: Refusal, *, roots: tuple[int, ...] | None = None) -> None:
         self.refusal = refusal
+        self.roots = roots
         super().__init__(f"{refusal.code.value}: {refusal.message}")
 
     @property
@@ -1646,8 +1677,8 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
         case RankNoRowsInWindowError():
             return Refusal.stat_var_unresolved(reason=exc.reason, distinct_stat_vars=[])
         case RankAmbiguousEntityError():
-            return Refusal.role_ambiguous(
-                parameter="rank_by", columns=list(exc.rank_by), available=list(exc.available)
+            return Refusal.rank_rows_unreduced(
+                rank_by=list(exc.rank_by), available=list(exc.available)
             )
         case FilterUnknownColumnError():
             return Refusal.role_ambiguous(
