@@ -79,9 +79,9 @@ from code_index.types import (
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
-    WholeMarker,
     WholeTotalSet,
     covered_class,
+    declared_composite_tables,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -330,7 +330,8 @@ def export_parties(
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
     types give a kind other than `party`, a `whole_totals` row the parties contradict
-    (`_check_whole_population_totals`), and a party that gives no one kind or whole marker under a
+    (`_check_whole_population_totals`) or that marks a total in a table of a composite of
+    several tables (`check_composite_whole_totals`), and a party that takes no one kind under a
     provenance whose rows can hold it (`_check_provenance_reads`).
     """
     published = frozenset(parties)
@@ -340,6 +341,7 @@ def export_parties(
             f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
         )
     _check_override_datasets(kind_overrides, parties)
+    check_composite_whole_totals(whole_totals)
     arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name", "dacCode"))
     codes = {dcid: _dac_codes(arcs.get(dcid) or {}) for dcid in published}
     origins = [dcid for dcid in published if "origin" in parties[dcid].axes]
@@ -424,25 +426,48 @@ def export_parties(
 
 PARTY_KIND_UNRESOLVED = "party_kind_unresolved"
 """`ExportRefused.code` for a party that takes no one kind under a provenance publishing it."""
-WHOLE_MARKER_CONFLICT = "whole_marker_conflict"
-"""`ExportRefused.code` for a whole total whose tables under one provenance mark it differently."""
+WHOLE_MARKER_IN_COMPOSITE = "whole_marker_in_composite"
+"""`ExportRefused.code` for a whole total marked in a table of a composite of several tables."""
+
+
+def check_composite_whole_totals(whole_totals: Mapping[str, WholePopulationTotal]) -> None:
+    """Raises `ExportRefused` with code `WHOLE_MARKER_IN_COMPOSITE` for a `whole_totals` row
+    marking a total in a component table of a declared composite of several tables
+    (`declared_composite_tables`), its `rows` each `(party, dataset, composite)`. A table's
+    marker rests on a composition check of that table's rows alone, so it says nothing of the
+    composite's sum, and a reader takes no marker there (`PartyRow.marker_over`). The rule a
+    marker over several tables needs is on `CompositeDeclaration`. The check reads the
+    declarations alone, so it runs before any graph read."""
+    marked = sorted(
+        (dcid, dataset, composite)
+        for composite, tables in declared_composite_tables().items()
+        if len(tables) > 1
+        for dcid, whole in whole_totals.items()
+        for dataset in whole.datasets.keys() & set(tables)
+    )
+    if marked:
+        raise ExportRefused(
+            f"WHOLE_POPULATION_TOTALS marks totals in a table of a composite of several tables: "
+            f"{marked!r} (party, dataset, composite); declare the marker on the composite with "
+            "its own composition check",
+            code=WHOLE_MARKER_IN_COMPOSITE,
+            rows=marked,
+        )
 
 
 def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
-    """Raises `ExportRefused` for a party row that gives no one answer under a provenance whose
-    rows can hold it: a dataset that publishes it, or a declared composite one of whose
-    component tables does. The row gives no one kind there (`PartyRow.kind_over`) on an axis
-    the provenance publishes it on, or on either axis (`ANY_AXIS`, recorded as `any`), as a
-    reader of a role on no flow axis and the whole-total read take it, or its tables disagree
-    on its whole marker (`PartyRow.markers_over`). A frame's rows carry one of these
-    provenances, and a party cell with no answer leaves every sum and rank over the role
-    unavailable.
+    """Raises `ExportRefused` with code `PARTY_KIND_UNRESOLVED` for a party row that takes no
+    one kind (`PartyRow.kind_over`) under a provenance whose rows can hold it: a dataset that
+    publishes it, or a declared composite one of whose component tables does. It checks each
+    axis the provenance publishes the party on, and either axis (`ANY_AXIS`, recorded as
+    `any`), as a reader of a role on no flow axis and the whole-total read take it. A frame's
+    rows carry one of these provenances, and a party cell with no kind leaves every sum and
+    rank over the role unavailable.
 
     The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
     `PartyRow` reads them through (`code_index.composites.provenance_datasets`); the loader
     refuses to serve a composite whose tables differ (`code_index.loader._check_composites`)."""
     unkinded: list[tuple[str, str, str]] = []
-    unmarked: list[tuple[str, str, str]] = []
     for row in rows:
         party = _party_row(row)
         axes: list[RoleAxis | AnyAxis] = [*sorted({axis for _, axis in party.published}), ANY_AXIS]
@@ -456,11 +481,11 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
                 ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
             }
             label = axis.value if isinstance(axis, AnyAxis) else axis
-            for provenance in sorted(on_axis | composites):
-                if party.kind_over(axis, (provenance,)) is None:
-                    unkinded.append((party.dcid, label, provenance))
-                if axis is ANY_AXIS and len(party.markers_over(provenance)) > 1:
-                    unmarked.append((party.dcid, label, provenance))
+            unkinded.extend(
+                (party.dcid, label, provenance)
+                for provenance in sorted(on_axis | composites)
+                if party.kind_over(axis, (provenance,)) is None
+            )
     if unkinded:
         raise ExportRefused(
             f"parties take no one kind under provenances that publish them: {unkinded!r} "
@@ -469,31 +494,15 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
             code=PARTY_KIND_UNRESOLVED,
             rows=unkinded,
         )
-    if unmarked:
-        raise ExportRefused(
-            f"whole totals carry different markers in the tables of a composite that publishes "
-            f"them: {unmarked!r} (party, axis, provenance); mark the total alike in each of the "
-            "composite's tables in WHOLE_POPULATION_TOTALS",
-            code=WHOLE_MARKER_CONFLICT,
-            rows=unmarked,
-        )
 
 
 def _party_row(row: Mapping) -> PartyRow:
-    """The kind, publications, dataset kinds and whole markers of an exported party row, as
-    the reader parses them (`code_index.loader`)."""
+    """The kind, publications and dataset kinds of an exported party row, as the reader parses
+    them (`code_index.loader`)."""
     return PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
         published=tuple(sorted((entry["dataset"], entry["axis"]) for entry in row["published"])),
-        whole=tuple(
-            WholeMarker(
-                dataset=marker["dataset"],
-                covers=tuple(sorted(marker["covers"])),
-                years=tuple(marker["years"]) if "years" in marker else None,
-            )
-            for marker in row.get("whole", ())
-        ),
         dataset_kinds=tuple(
             sorted((entry["dataset"], entry["kind"]) for entry in row.get("dataset_kinds", ()))
         ),

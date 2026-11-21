@@ -262,7 +262,7 @@ def _dataset_pins(
 
 PARTY_READING_VERSION = 2
 """The version of the rules that read a party's cells from its row (`PartyRow.kinds_over`,
-`PartyRow.markers_over`, `PartyRow.publishes`), hashed into `CodeIndex.enrichment_digest`.
+`PartyRow.marker_over`, `PartyRow.publishes`), hashed into `CodeIndex.enrichment_digest`.
 Bump it when those rules change what a row reads, so every file holding party cells
 re-renders under the new reading although no row changed. Version 2 reads a composite
 provenance as its component tables."""

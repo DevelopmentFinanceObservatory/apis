@@ -61,6 +61,23 @@ class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
 
 
+class ServedCompositeUndeclared(IndexFormatError):
+    """A composite the index serves from `tables` whose provenance party reads take as `read`,
+    the tables `code_index.composites.DECLARED_COMPOSITES` declares for it, or `None` where it
+    declares none, so a party cell on its rows would read other tables than its figures."""
+
+    def __init__(
+        self, *, provenance: str, tables: tuple[str, ...], read: tuple[str, ...] | None
+    ) -> None:
+        super().__init__(
+            f"composite {provenance!r} is served from tables {list(tables)!r}, but party reads "
+            f"take it as {'itself' if read is None else list(read)!r}"
+        )
+        self.provenance = provenance
+        self.tables = tables
+        self.read = read
+
+
 class ContentHashMismatch(IndexFormatError):
     """A code index document whose data blocks hash to something other than the
     `content_hash` its stamp states, because the body was edited or cut short after export."""
@@ -232,17 +249,13 @@ def _check_composites(
 
 
 def _check_declared_tables(composite: CompositeDeclaration) -> None:
-    """Refuse a served composite whose component tables differ from those a `PartyRow` reads
-    its provenance as (`declared_composite_tables`), or that declares none, so a party cell on
-    its rows reads the tables the index serves it from."""
+    """Raise `ServedCompositeUndeclared` for a served composite whose component tables differ
+    from those a `PartyRow` reads its provenance as (`declared_composite_tables`), or that
+    declares none, so a party cell on its rows reads the tables the index serves it from."""
     tables = tuple(dict.fromkeys(recipe.dataset for recipe in composite.components))
     read = declared_composite_tables().get(composite.provenance)
     if read != tables:
-        raise IndexFormatError(
-            f"composite {composite.provenance!r} is served from tables {list(tables)!r}, but "
-            f"party reads take it as {'itself' if read is None else list(read)!r} "
-            "(code_index.composites.DECLARED_COMPOSITES)"
-        )
+        raise ServedCompositeUndeclared(provenance=composite.provenance, tables=tables, read=read)
 
 
 def _check_composite_declaration(composite: CompositeDeclaration, declared: set[str]) -> None:

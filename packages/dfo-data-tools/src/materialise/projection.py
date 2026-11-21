@@ -55,7 +55,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 from code_index.types import ANY_AXIS, PartyRow
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import PARTY_FIELDS, is_party_role, period_year, whole_state
+from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
 from materialise.recipe_bodies import DeflationBasis
 from materialise.reshape import Table, TableLike
@@ -145,16 +145,15 @@ def long_kind_cell(
     `period` and `provenance` cell `provenance`, in words for a reader of the file.
 
     A total reads `whole total` when it is a whole total for the row's dataset and year
-    (`materialise.enrichment.whole_state`) and `total` otherwise, and a residual reads
+    (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
     The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
     `PartyRow.class_of`), on the role's axis. A row with no `provenance` reads the kind of every
     dataset that publishes the party on that axis. `None` for
-    a ref the code index does not list, one that is not text, a party that takes no one kind
+    a ref the code index does not list, one that is not text, and a party that takes no one kind
     for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
-    with no `provenance`, and a total whose datasets for the row disagree on its whole marker
-    (`PartyRow.markers_over`), whose `party_whole` cell is empty too."""
+    with no `provenance`."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
@@ -166,9 +165,7 @@ def long_kind_cell(
     if kind is None:
         return None
     if kind == "total":
-        whole = whole_state(party, year=period_year(period), provenance=dataset)
-        if whole is None:
-            return None
+        whole = is_whole_total(party, year=period_year(period), provenance=dataset)
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
     if kind == "residual":
         return RESIDUAL_CELL

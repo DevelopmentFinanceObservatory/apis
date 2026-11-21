@@ -10,6 +10,7 @@ import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, get_args
 
 from dfo_platform.roles import FlowAccount, RoleAxis
@@ -535,7 +536,20 @@ class CompositeDeclaration:
     the words a sentence names its measure by. It follows the measure label of a stacked
     composite, whose components share the measure, and replaces it for a spliced one, whose
     measure changes between its periods. Each component table gives a provider's account of
-    a flow, and so does the composite."""
+    a flow, and so does the composite.
+
+    A composite of one table reads that table's whole markers (`PartyRow.marker_over`). A
+    composite of several tables declares no whole total, and the export refuses a whole marker
+    in any of its tables (`code_index.export.check_composite_whole_totals`), since a table's
+    marker rests on a composition check of that table's rows alone. A whole total over several
+    tables needs its own marker on the declaration, backed by its own composition check on
+    recorded data: the total's row equals the sum of its members' rows in the declared years.
+    For a stacked composite the party is whole in a year for some classes when every component
+    table that publishes a party of those classes on the axis marks the total for them, and
+    the year lies inside every such marker's window, so the window ends in the earliest last
+    year; a table that publishes the classes without the total makes it an ordinary total in
+    every year. For a spliced composite each year belongs to one component, and the year reads
+    that component table's marker."""
 
     provenance: str
     label: str
@@ -718,38 +732,14 @@ class PartyRow:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
 
-    def markers_over(self, provenance: str) -> tuple[WholeMarker | None, ...]:
-        """The distinct whole readings of the party on rows of `provenance`: for each dataset
-        that reads it (`provenance` itself, or a declared composite's component tables,
-        `code_index.composites.provenance_datasets`) and publishes the party, its marker there
-        (`marker`), or `None` where it has none. Markers are one reading when they cover the
-        same classes from the same first year, or with no window, which is what a declaration
-        states: a window's last year is the last year the dataset publishes the total, so it
-        differs between tables that mark the total alike. The reading's `years` then run from
-        that first year to the last year any of its tables holds the total, since a row of a
-        year holds a figure only from a table publishing the total then. Empty where no such
-        dataset publishes the party, one reading where they agree, and several where they
-        disagree, so a reader that needs one answer has none. A party with no marker reads
-        `(None,)`."""
-        if not self.whole:
-            return (None,)
-        publishing = {dataset for dataset, _ in self.published}
-        readings: dict[tuple[tuple[PartyClass, ...], int | None] | None, WholeMarker | None] = {}
-        for dataset in sorted(publishing & _component_datasets((provenance,))):
-            marker = self.marker(dataset)
-            if marker is None:
-                readings[None] = None
-                continue
-            key = (marker.covers, None if marker.years is None else marker.years[0])
-            held = readings.get(key)
-            if held is not None and held.years is not None and marker.years is not None:
-                marker = WholeMarker(
-                    dataset=held.dataset,
-                    covers=held.covers,
-                    years=(held.years[0], max(held.years[1], marker.years[1])),
-                )
-            readings[key] = marker
-        return tuple(readings.values())
+    def marker_over(self, provenance: str) -> WholeMarker | None:
+        """The party's whole marker on rows of `provenance`: its marker in `provenance` itself
+        (`marker`), or in the one component table of a declared composite
+        (`declared_composite_tables`). `None` where it has none there, and on a composite of
+        several tables, in none of which the export lets a party carry a marker
+        (`code_index.export.check_composite_whole_totals`)."""
+        tables = declared_composite_tables().get(provenance, (provenance,))
+        return self.marker(tables[0]) if len(tables) == 1 else None
 
     def kind_in(self, dataset: str) -> PartyKind:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
@@ -806,7 +796,7 @@ def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
     `code_index.composites` imports this module, so the import waits for the first read."""
     from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 
-    return {ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES}
+    return MappingProxyType({ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES})
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

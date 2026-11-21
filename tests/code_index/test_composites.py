@@ -20,7 +20,7 @@ from code_index.composites import (
     declared_composite_digest,
 )
 from code_index.declarations import COMPOSITES
-from code_index.loader import parse_index
+from code_index.loader import ServedCompositeUndeclared, parse_index
 from code_index.members import pinned_refs
 from code_index.query import CodeIndex
 from code_index.types import YearPeriod
@@ -110,21 +110,33 @@ def test_the_fixture_index_serves_every_declared_composite():
             "reads absence as zero",
             id="spliced-zero-absent",
         ),
-        pytest.param(
-            (dataclasses.replace(_STACKED, provenance="provenance/Undeclared"),),
-            "party reads take it as 'itself'",
-            id="served-but-undeclared",
-        ),
-        pytest.param(
-            (_with_component(_STACKED, "imputed", dataset=_STACKED.components[0].dataset),),
-            "party reads take it as",
-            id="served-from-other-tables",
-        ),
     ],
 )
 def test_the_loader_refuses_a_malformed_composite(composites, message):
     with pytest.raises(IndexFormatError, match=message):
         _parse(composites)
+
+
+@pytest.mark.parametrize(
+    ("composite", "read"),
+    [
+        pytest.param(
+            dataclasses.replace(_STACKED, provenance="provenance/Undeclared"),
+            None,
+            id="served-but-undeclared",
+        ),
+        pytest.param(
+            _with_component(_STACKED, "imputed", dataset=_STACKED.components[0].dataset),
+            tuple(recipe.dataset for recipe in _STACKED.components),
+            id="served-from-other-tables",
+        ),
+    ],
+)
+def test_the_loader_refuses_a_composite_party_reads_take_as_other_tables(composite, read):
+    with pytest.raises(ServedCompositeUndeclared) as refused:
+        _parse((composite,))
+
+    assert (refused.value.provenance, refused.value.read) == (composite.provenance, read)
 
 
 def test_a_composite_whose_component_table_the_index_lacks_is_not_served():

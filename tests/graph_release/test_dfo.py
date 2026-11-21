@@ -21,6 +21,9 @@ import pytest
 
 from code_index import declarations as code_index_declarations
 from code_index import scope_conventions
+from code_index.composites import provenance_datasets
+from code_index.declarations import CRS_INCLUSIVE, WholePopulationTotal, WholeWindow
+from code_index.export import WHOLE_MARKER_IN_COMPOSITE
 from code_index.loader import content_hash, parse_index
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
@@ -284,6 +287,27 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
         )
 
     assert refused.value.code == "code_index_export_refused"
+
+
+def test_dfo_parts_carry_the_export_refusals_code_and_rows() -> None:
+    crs, _imputed = provenance_datasets(CRS_INCLUSIVE)
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS,
+        whole_totals={
+            "DACOfficialDonors": WholePopulationTotal(
+                "origin", {crs: WholeWindow(("official",), None)}, "a"
+            )
+        },
+    )
+
+    with pytest.raises(PlatformRefusal) as refused:
+        build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), SLICE_BASE_PARTIES)
+
+    assert (refused.value.code, refused.value.detail_code, refused.value.rows) == (
+        "code_index_export_refused",
+        WHOLE_MARKER_IN_COMPOSITE,
+        (("DACOfficialDonors", crs, CRS_INCLUSIVE),),
+    )
 
 
 def test_dfo_parts_read_a_base_partys_donor_code_from_the_mixer() -> None:

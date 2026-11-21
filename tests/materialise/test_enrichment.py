@@ -258,16 +258,6 @@ _MARKED_IN_ONE_TABLE = PartyRow(
     published=((_CRS, "origin"), (_IMPUTED, "origin")),
     whole=(WholeMarker(dataset=_CRS, covers=("official",)),),
 )
-# Marked from 2010 in both tables, which stop publishing the total in different years.
-_MARKED_ALIKE = PartyRow(
-    dcid="W",
-    kind="total",
-    published=((_CRS, "origin"), (_IMPUTED, "origin")),
-    whole=(
-        WholeMarker(dataset=_CRS, covers=("official",), years=(2010, 2020)),
-        WholeMarker(dataset=_IMPUTED, covers=("official",), years=(2010, 2023)),
-    ),
-)
 
 
 @pytest.mark.parametrize(
@@ -285,11 +275,13 @@ _MARKED_ALIKE = PartyRow(
         pytest.param(_WINDOWED, 2021, DAC2A_BILATERAL, True, "true", id="a-composites-table"),
         pytest.param(_MARKED_IN_ONE_TABLE, 2021, _CRS, True, "true", id="the-marked-table"),
         pytest.param(
-            _MARKED_IN_ONE_TABLE, 2021, CRS_INCLUSIVE, False, "", id="a-composites-tables-disagree"
+            _MARKED_IN_ONE_TABLE,
+            2021,
+            CRS_INCLUSIVE,
+            False,
+            "false",
+            id="a-composite-of-several-tables-reads-no-marker",
         ),
-        pytest.param(_MARKED_ALIKE, 2022, CRS_INCLUSIVE, True, "true", id="a-later-tables-window"),
-        pytest.param(_MARKED_ALIKE, 2009, CRS_INCLUSIVE, False, "false", id="before-both-windows"),
-        pytest.param(_MARKED_ALIKE, 2022, _CRS, False, "false", id="after-one-tables-window"),
         pytest.param(_UNWINDOWED, None, _DAC2A, True, "true", id="no-window-needs-no-year"),
         pytest.param(_UNWINDOWED, 1960, _DAC2A, True, "true", id="no-window-in-an-early-year"),
         pytest.param(_UNWINDOWED, 2021, None, False, "", id="no-window-still-needs-a-dataset"),
