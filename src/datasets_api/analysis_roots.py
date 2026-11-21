@@ -10,6 +10,9 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   the version's stored frame (`current.head_rendering`). A `groupby` sum or a party-totals cut
   that changes the frame is a version of its own (`render.DerivedVersion`), and that version is
   the root's dataset, as it is the `dataset` of data-mcp's mint record.
+  Once a read has recorded that version, a later read of the same dataset version with the
+  same minting options finds it by the frame refresh's rule and reads it with no render
+  (`LiveRootSource._recorded_rendering`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
 - With `columns` the frame is the dataset version's frame-layout file of those columns, decoded
@@ -119,10 +122,12 @@ from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Mani
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
+from datasets_api.recorded_rendering import MintingOptions, head_mintings
 from datasets_api.render import (
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
     refuse_past_fold_ceiling,
+    resolved_rendering_keys,
     servable_frame_location,
 )
 from datasets_api.store_errors import (
@@ -137,6 +142,7 @@ from dfo_analysis_engine.place_type import (
 )
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.reshape import RollupNotSummableError
+from series_coverage.shared import CoverageSnapshot
 from spec_registry.reader import StoredDefinition
 
 logger = logging.getLogger(__name__)
@@ -869,7 +875,9 @@ class LiveRootSource:
         if options.keys() - _BASE_OPTIONS.keys():
             mint = MintOptions.model_validate(options)
             coverage_snapshot = deps.coverage.snapshot()
-            rendered = head_rendering(
+            rendered = self._recorded_rendering(
+                spec_id, content_version, mint, revoked_under=revoked_under
+            ) or head_rendering(
                 subject_id=spec_id,
                 content_version=content_version,
                 deps=deps,
@@ -912,16 +920,84 @@ class LiveRootSource:
             manifest=manifest,
         )
 
+    def _recorded_rendering(
+        self,
+        spec_id: str,
+        content_version: str,
+        options: MintOptions,
+        *,
+        revoked_under: Sequence[str],
+    ) -> Manifest | None:
+        """The stored version a minting rendering, a `groupby` sum or a party-totals cut, made
+        from the dataset version `content_version` with `options`, listing the file of that
+        rendering, or `None` for a rendering that mints nothing or one no stored version
+        records. A version counts by the frame refresh's rule (`head_mintings`), newest first,
+        while its stored frame file is servable and it is not revoked under `revoked_under`.
+        The code index is outside the rule, as it is for the refresh: a version recorded from
+        `content_version` stands until the dataset version moves. A root read with a sum or a
+        cut is thereby read from the version an earlier read rendered, with no render, so a
+        request repeated reads its stored answer.
+        """
+        deps = self._deps
+        lister = deps.version_lister
+        minting = MintingOptions(
+            groupby=options.groupby, without_party_totals=options.without_party_totals
+        )
+        if lister is None or (minting.groupby is None and not minting.without_party_totals):
+            return None
+        keys = resolved_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )
+        for version in lister.list_head_versions(spec_id, head_content_version=content_version):
+            if minting not in head_mintings(version, head_content_version=content_version):
+                continue
+            derived = version.content_version
+            locations = deps.snapshot_reader.read_artifact_locations(spec_id, derived)
+            if servable_frame_location(locations, now=deps.now()) is None:
+                continue
+            try:
+                manifest = load_stored(
+                    subject_id=spec_id,
+                    content_version=derived,
+                    deps=deps,
+                    include_artifacts=True,
+                    rendering_keys=keys,
+                    revoked_under=revoked_under,
+                )
+            except SnapshotRevoked:
+                continue
+            if _data_artifact(manifest) is not None:
+                return manifest
+        return None
+
     def _serve(
         self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
     ) -> Manifest:
         """The served definition's head in the rendering `options` names, honouring revocations
-        under `posted`, the id the root names, as a request naming that id does.
+        under `posted`, the id the root names, as a request naming that id does. The serve
+        judges the head's freshness as the definition door does, and a head it keeps answers
+        a minting rendering from the version recorded for it (`_recorded_rendering`) before
+        rendering one.
 
         Raises:
             AnalysisPending: A rebuild runs past the inline budget.
             RefreshRebuildFailed: The rebuild failed and will not be retried.
         """
+        revoked_under = (posted,)
+
+        def load_head(content_version: str, coverage_snapshot: CoverageSnapshot) -> Manifest | None:
+            return self._recorded_rendering(
+                served.spec_id, content_version, options, revoked_under=revoked_under
+            ) or head_rendering(
+                subject_id=served.spec_id,
+                content_version=content_version,
+                deps=self._deps,
+                options=options,
+                trace_id=trace_id,
+                coverage_snapshot=coverage_snapshot,
+                revoked_under=revoked_under,
+            )
+
         try:
             return serve_spec(
                 stored=served,
@@ -929,7 +1005,8 @@ class LiveRootSource:
                 trigger="get",
                 deps=self._deps,
                 trace_id=trace_id,
-                revoked_under=(posted,),
+                load_head=load_head,
+                revoked_under=revoked_under,
             )
         except OperationSubmitted as submitted:
             operation = submitted.operation

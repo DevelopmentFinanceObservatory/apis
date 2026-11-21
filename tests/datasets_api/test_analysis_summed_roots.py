@@ -6,6 +6,8 @@ derived record, and the refusal that names the summed read when no sum is read."
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,7 +18,7 @@ import pytest
 from artifact_store.errors import ArtifactNotFoundError
 from code_index import CodeIndex, CodeRow
 from dataset_store import snapshot
-from datasets_api import analysis_roots, current, store_errors
+from datasets_api import analysis, analysis_roots, current, store_errors
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -941,3 +943,87 @@ def test_a_party_totals_cut_root_names_no_dataset_version_as_its_base(route: str
 
     assert response.status_code == 200, response.text
     assert response.json()["derived_roots"] == []
+
+
+def _count_work(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
+    """A counter of the renders of a stored frame, which a root's sum is one of, and of the
+    runs that read root frames and evaluate a tree, from the call on."""
+    work: Counter[str] = Counter()
+
+    def counted(name: str, call: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            work[name] += 1
+            return call(*args, **kwargs)
+
+        return wrapped
+
+    for module, name in ((current, "_render_stored_rendering"), (analysis, "_evaluated")):
+        monkeypatch.setattr(module, name, counted(name, getattr(module, name)))
+    return work
+
+
+@pytest.mark.parametrize("kind", ["dataset", "spec"])
+@pytest.mark.parametrize(
+    "rendering",
+    [{"columns": []}, {"columns": [], "without_party_totals": True}, {}],
+    ids=["stored_frame", "cut", "default_columns"],
+)
+def test_a_repeated_request_over_a_summed_root_renders_and_evaluates_nothing(
+    monkeypatch: pytest.MonkeyPatch, kind: str, rendering: dict
+) -> None:
+    """The sum a root is read with is a version of its own, found by its base version and
+    minting once a request has rendered it, so the same request again reads its stored
+    answer: no sum is rendered, no root frame read and no tree evaluated."""
+    client, _, root = _rig()
+    root = {**root, "rendering": rendering}
+    if kind == "spec":
+        root = {key: value for key, value in root.items() if key != "content_version"}
+    tree = _aggregate(_filter(root), group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    assert [summed["count"] for summed in first.json()["stat_vars_summed"]] == [2]
+    # A cut can leave a period or an entity out, so a summed root that cuts names no base
+    # (conformance C121f).
+    assert len(first.json()["derived_roots"]) == (0 if rendering.get("without_party_totals") else 1)
+
+    work = _count_work(monkeypatch)
+    again = _post(client, tree)
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert work == Counter()
+
+
+def test_a_repeated_spec_root_request_reads_the_version_a_moved_head_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Spec root's repeat is answered from its stored answer while its head stands. Once the
+    head is past its age and the source holds other values, the repeat rebuilds and answers
+    the new version's sum."""
+    body = {"text": _CSV_BODY}
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=body["text"],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+    client, _, root = _rig(sdmx_transport=transport)
+    tree = _aggregate(
+        {"spec_id": root["spec_id"], "rendering": root["rendering"]}, group_by=["recipient"]
+    )
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    body["text"] = _CSV_BODY.replace(",2020,1000,", ",2020,600,")
+
+    standing = _post(client, tree)
+    monkeypatch.setattr(current, "_head_is_fresh", lambda head, *, now, deps: False)
+    monkeypatch.setattr(current, "_max_age", lambda head, *, deps: timedelta(0))
+    moved = _post(client, tree)
+
+    assert standing.json() == first.json()
+    assert moved.status_code == 200, moved.text
+    (before,) = first.json()["derived_roots"]
+    (after,) = moved.json()["derived_roots"]
+    assert after["base_content_version"] != before["base_content_version"]
+    assert moved.json()["frame_content_version"] != first.json()["frame_content_version"]
