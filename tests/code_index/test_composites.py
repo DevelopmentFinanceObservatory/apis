@@ -110,6 +110,16 @@ def test_the_fixture_index_serves_every_declared_composite():
             "reads absence as zero",
             id="spliced-zero-absent",
         ),
+        pytest.param(
+            (dataclasses.replace(_STACKED, provenance="provenance/Undeclared"),),
+            "party reads take it as 'itself'",
+            id="served-but-undeclared",
+        ),
+        pytest.param(
+            (_with_component(_STACKED, "imputed", dataset=_STACKED.components[0].dataset),),
+            "party reads take it as",
+            id="served-from-other-tables",
+        ),
     ],
 )
 def test_the_loader_refuses_a_malformed_composite(composites, message):

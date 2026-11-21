@@ -795,15 +795,15 @@ class PartyRow:
 
 def _component_datasets(datasets: Collection[str]) -> set[str]:
     """`datasets` with each declared composite replaced by its component tables."""
-    tables = _composite_tables()
+    tables = declared_composite_tables()
     return {table for ref in datasets for table in tables.get(ref, (ref,))}
 
 
 @functools.cache
-def _composite_tables() -> Mapping[str, tuple[str, ...]]:
+def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
     """Each declared composite's component tables (`code_index.composites.provenance_datasets`),
-    read once. `code_index.composites` imports this module, so the import waits for the first
-    read."""
+    the tables a `PartyRow` reads a composite provenance as. Read once:
+    `code_index.composites` imports this module, so the import waits for the first read."""
     from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 
     return {ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES}

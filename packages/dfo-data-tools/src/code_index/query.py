@@ -41,6 +41,7 @@ from code_index.types import (
     StatTypeWordDeclaration,
     StatVarRow,
     WholeTotalSet,
+    declared_composite_tables,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -268,16 +269,17 @@ provenance as its component tables."""
 
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `PARTY_READING_VERSION` and `parties`'
+    """The hex SHA-256 of `PARTY_READING_VERSION`, each declared composite's component tables
+    (`declared_composite_tables`, sorted by composite) and `parties`'
     `(dcid, kind, party_class, whole markers, dataset kinds, published)` rows, sorted by dcid,
     each marker as `(dataset, covers, years)`, each dataset kind as `(dataset, kind)` and each
     publication as `(dataset, axis)`. Neither row order nor a label or group change moves it.
     The markers are in it, windows included, because a whole total's frame cell depends on the
     row's dataset and on whether its year falls inside the window, and the dataset kinds
-    because a party's kind and class cells depend on the row's dataset. The publications are in
-    it for a row with dataset kinds or markers alone, where the datasets publishing the party
-    decide which kind or marker a reader takes; any other row takes its one kind wherever it is
-    published."""
+    because a party's kind and class cells depend on the row's dataset. The publications are
+    in it because they decide which kind or marker a reader takes and which roles can hold a
+    total (`PartyRow.publishes`), and the composites' tables because a composite provenance
+    reads as them."""
     rows = sorted(
         (
             party.dcid,
@@ -285,11 +287,12 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
             party.party_class,
             [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
             *([list(party.dataset_kinds)] if party.dataset_kinds else []),
-            *([list(party.published)] if party.dataset_kinds or party.whole else []),
+            list(party.published),
         )
         for party in parties
     )
-    payload = [PARTY_READING_VERSION, rows]
+    composites = sorted(declared_composite_tables().items())
+    payload = [PARTY_READING_VERSION, composites, rows]
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -581,8 +584,8 @@ class CodeIndex:
         `{role}_party_kind`, `{role}_party_class` and `{role}_party_whole` cells are read from
         (`_enrichment_digest`). A file holding such cells is linked under a key salted with it
         (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
-        kind, class, whole marker or deciding publication, under an unchanged reading, leaves
-        every link in place."""
+        kind, class, whole marker, publication or composite table, under an unchanged reading,
+        leaves every link in place."""
         self.whole_total_sets = tuple(whole_total_sets)
         """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
         order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""

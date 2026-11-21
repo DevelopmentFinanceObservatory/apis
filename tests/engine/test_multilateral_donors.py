@@ -208,6 +208,22 @@ def test_a_kind_on_the_other_axis_leaves_the_donor_s_facts_alone():
     assert party_facts(row, axis="destination", datasets=("A", "B")).kind == "total"
 
 
+def test_a_party_has_no_facts_where_no_read_dataset_publishes_it_on_the_axis():
+    """A trust fund a donor only in A and a total recipient only in B states no donor facts
+    for a read of B, which holds no donor row of it, and borrows none from A."""
+    row = PartyRow(
+        dcid="IMFConcessionalTrustFunds",
+        kind="party",
+        party_class="official",
+        published=(("A", "origin"), ("B", "destination")),
+        dataset_kinds=(("B", "total"),),
+        types=("Organization",),
+    )
+
+    assert party_facts(row, axis="origin", datasets=("B",)) == PartyFacts(None, None, None)
+    assert party_facts(row, axis="origin", datasets=("A",)).multilateral is True
+
+
 def test_a_field_ignoring_consumer_reads_the_entities_as_before():
     """Dropping the kind and class, and a false marker, leaves the shape the entities had
     before they stated them."""

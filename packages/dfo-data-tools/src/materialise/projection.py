@@ -55,7 +55,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 from code_index.types import ANY_AXIS, PartyRow
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
+from materialise.enrichment import PARTY_FIELDS, is_party_role, period_year, whole_state
 from materialise.errors import MaterialisationUsageError
 from materialise.recipe_bodies import DeflationBasis
 from materialise.reshape import Table, TableLike
@@ -145,7 +145,7 @@ def long_kind_cell(
     `period` and `provenance` cell `provenance`, in words for a reader of the file.
 
     A total reads `whole total` when it is a whole total for the row's dataset and year
-    (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
+    (`materialise.enrichment.whole_state`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
     The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
@@ -166,9 +166,9 @@ def long_kind_cell(
     if kind is None:
         return None
     if kind == "total":
-        if dataset is not None and len(party.markers_over(dataset)) > 1:
+        whole = whole_state(party, year=period_year(period), provenance=dataset)
+        if whole is None:
             return None
-        whole = is_whole_total(party, year=period_year(period), provenance=dataset)
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
     if kind == "residual":
         return RESIDUAL_CELL

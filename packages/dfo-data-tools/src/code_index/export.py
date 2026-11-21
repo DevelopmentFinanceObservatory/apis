@@ -60,7 +60,9 @@ from code_index.loader import content_hash
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize, word_tokens
 from code_index.types import (
+    ANY_AXIS,
     KIND_CLASSES,
+    AnyAxis,
     BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
@@ -427,32 +429,38 @@ WHOLE_MARKER_CONFLICT = "whole_marker_conflict"
 
 
 def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
-    """Raises `ExportRefused` for a party row that gives no one answer on an axis under a
-    provenance whose rows can hold it there: a dataset that publishes it on that axis, or a
-    declared composite one of whose component tables does. The row gives no one kind there
-    (`PartyRow.kind_over`) or its tables disagree on its whole marker
-    (`PartyRow.markers_over`). A frame's rows carry one of these provenances, and a party cell
-    with no answer leaves every sum and rank over the role unavailable.
+    """Raises `ExportRefused` for a party row that gives no one answer under a provenance whose
+    rows can hold it: a dataset that publishes it, or a declared composite one of whose
+    component tables does. The row gives no one kind there (`PartyRow.kind_over`) on an axis
+    the provenance publishes it on, or on either axis (`ANY_AXIS`, recorded as `any`), as a
+    reader of a role on no flow axis and the whole-total read take it, or its tables disagree
+    on its whole marker (`PartyRow.markers_over`). A frame's rows carry one of these
+    provenances, and a party cell with no answer leaves every sum and rank over the role
+    unavailable.
 
     The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
-    `PartyRow` reads them through (`code_index.composites.provenance_datasets`) whatever
-    composites `code_index.loader.parse_index` is given to serve."""
+    `PartyRow` reads them through (`code_index.composites.provenance_datasets`); the loader
+    refuses to serve a composite whose tables differ (`code_index.loader._check_composites`)."""
     unkinded: list[tuple[str, str, str]] = []
     unmarked: list[tuple[str, str, str]] = []
     for row in rows:
         party = _party_row(row)
-        for axis in sorted({axis for _, axis in party.published}):
+        axes: list[RoleAxis | AnyAxis] = [*sorted({axis for _, axis in party.published}), ANY_AXIS]
+        for axis in axes:
             on_axis = {
-                dataset for dataset, published_axis in party.published if published_axis == axis
+                dataset
+                for dataset, published_axis in party.published
+                if axis is ANY_AXIS or published_axis == axis
             }
             composites = {
                 ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
             }
+            label = axis.value if isinstance(axis, AnyAxis) else axis
             for provenance in sorted(on_axis | composites):
                 if party.kind_over(axis, (provenance,)) is None:
-                    unkinded.append((party.dcid, axis, provenance))
-                if len(party.markers_over(provenance)) > 1:
-                    unmarked.append((party.dcid, axis, provenance))
+                    unkinded.append((party.dcid, label, provenance))
+                if axis is ANY_AXIS and len(party.markers_over(provenance)) > 1:
+                    unmarked.append((party.dcid, label, provenance))
     if unkinded:
         raise ExportRefused(
             f"parties take no one kind under provenances that publish them: {unkinded!r} "

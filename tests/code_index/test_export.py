@@ -69,6 +69,7 @@ from code_index.export import (
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.shared import get_index
 from code_index.types import (
+    ANY_AXIS,
     BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
@@ -3683,9 +3684,11 @@ def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_reade
 def test_every_fixture_party_takes_one_kind_and_marker_under_each_provenance_publishing_it():
     unkinded = []
     for dcid, row in get_index().parties.items():
-        for axis in {axis for _, axis in row.published}:
+        for axis in [*{axis for _, axis in row.published}, ANY_AXIS]:
             on_axis = {
-                dataset for dataset, published_axis in row.published if published_axis == axis
+                dataset
+                for dataset, published_axis in row.published
+                if axis is ANY_AXIS or published_axis == axis
             }
             composites = {
                 ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
@@ -3717,7 +3720,7 @@ def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on
         )
     assert (refused.value.code, refused.value.rows) == (
         PARTY_KIND_UNRESOLVED,
-        (("TrustFund", "origin", CRS_INCLUSIVE),),
+        (("TrustFund", "origin", CRS_INCLUSIVE), ("TrustFund", "any", CRS_INCLUSIVE)),
     )
 
 
@@ -4106,7 +4109,7 @@ def test_export_index_refuses_a_whole_total_a_composites_tables_mark_differently
         )
     assert (refused.value.code, refused.value.rows) == (
         WHOLE_MARKER_CONFLICT,
-        (("DACOfficialDonors", "origin", CRS_INCLUSIVE),),
+        (("DACOfficialDonors", "any", CRS_INCLUSIVE),),
     )
 
 
