@@ -140,6 +140,17 @@ class AnalysisBackpressure(Backpressure):
         super().__init__("the analysis door is at its concurrent capacity right now; retry")
 
 
+class StatVarsSummed(BaseModel):
+    """A root whose groupby summed its StatVars into one series, the version it summed into
+    and how many StatVars with data it summed (its `sum_variables` step's `summed.count`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str
+    count: int = Field(ge=2)
+
+
 class AnalysisReady(BaseModel):
     """The stored frame of a computed tree."""
 
@@ -161,6 +172,12 @@ class AnalysisReady(BaseModel):
     execution_identity: dict[str, str]
     resolved_periods: list[dict[str, JsonValue]] = Field(
         description="each period the recipe states relative to the latest, with its period"
+    )
+    stat_vars_summed: list[StatVarsSummed] = Field(
+        default_factory=list,
+        description="each root read summed over its StatVars, with how many it summed; a root "
+        "that states no groupby, holds several StatVars and is read under steps that name no "
+        "stat_var is summed by the service itself, keeping the summable axes the steps name",
     )
 
 

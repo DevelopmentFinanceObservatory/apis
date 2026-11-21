@@ -1223,8 +1223,8 @@ def require_single_stat_var(frame: Frame) -> str:
     if len(stat_vars) > 1:
         raise StatVarUnresolvedError(
             reason=(
-                "the input frame carries more than one StatVar; narrow the input to a "
-                "frame_ref that carries only one"
+                "the input frame carries more than one StatVar; read it summed, or narrow "
+                "the input to a frame_ref that carries only one"
             ),
             distinct_stat_vars=stat_vars,
         )

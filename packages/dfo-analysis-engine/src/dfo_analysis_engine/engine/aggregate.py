@@ -307,8 +307,8 @@ def run_aggregate(
     if len(distinct_stat_vars) > 1 and STAT_VAR_COLUMN not in group_by:
         raise StatVarUnresolvedError(
             reason=(
-                "the input frame carries more than one StatVar; include 'stat_var' in "
-                "group_by, or narrow the input to a frame_ref that carries only one"
+                "the input frame carries more than one StatVar; read it summed, or include "
+                "'stat_var' in group_by to keep each StatVar apart"
             ),
             distinct_stat_vars=distinct_stat_vars,
         )

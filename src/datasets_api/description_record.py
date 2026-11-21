@@ -146,7 +146,7 @@ _CHOSEN_OVER_DISAGREEMENT = "most_observations_over_disagreement"
 # Conversion gaps a trace minted before conversions counted what they left out names only in
 # its warnings: a caveat points at the conversion, with no count.
 _CONVERSION_GAP_CODES = ("currency_unmapped_omitted", "deflator_missing_omitted")
-_MAX_SUMMED_NAMED = 64
+MAX_SUMMED_NAMED = 64
 _MAX_CHOICE_OTHERS = 32
 _DCID_PREFIX = "dcid:"
 _YEARS_DIMENSION = "years"
@@ -289,14 +289,14 @@ def _collapsed(
     )
     steps = base.known_steps
     if summed:
-        summed_refs = _summed_refs(facts.trace)
+        summed_variables = summed_refs(facts.trace)
         steps = collapse_steps(base.known_steps, trace=facts.trace)
         update: dict[str, object] = {
             "steps": None if base.steps is None else steps,
             "steps_after_unknown": steps if base.steps is None else MISSING,
             "caveats": None
             if base.caveats is None
-            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed_refs),
+            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed_variables),
         }
     else:
         update = {}
@@ -451,20 +451,20 @@ def _collapsed_caveats(
 def collapse_steps(steps: Sequence[Step], *, trace: Mapping[str, object]) -> list[Step]:
     """The steps of a multi-contributor collapse of a version whose steps are `steps`: those,
     then a `sum_variables` step naming the variables with data in the version's `trace`."""
-    summed = _summed_refs(trace)
+    summed = summed_refs(trace)
     sum_step = Step(
         id=_next_step_id(steps),
         op=_SUM_VARIABLES_OP,
         policy=_SUM_VARIABLES_POLICY,
         summed=Summed(
             count=len(summed),
-            variables=[StepRef(ref=ref) for ref in summed[:_MAX_SUMMED_NAMED]],
+            variables=[StepRef(ref=ref) for ref in summed[:MAX_SUMMED_NAMED]],
         ),
     )
     return [*steps, sum_step]
 
 
-def _summed_refs(trace: Mapping[str, object]) -> list[str]:
+def summed_refs(trace: Mapping[str, object]) -> list[str]:
     """The variables a collapse of a version with `trace` sums: those with data in it."""
     return [ref for ref, count in _resolved(trace) if count]
 
@@ -823,7 +823,7 @@ def _summed_step(
 ) -> None:
     if any(step.op == _SUM_VARIABLES_OP for step in steps):
         return
-    summed = _summed_refs(facts.trace)
+    summed = summed_refs(facts.trace)
     count = warning.get("contributing_member_count")
     steps.append(
         Step(
@@ -832,7 +832,7 @@ def _summed_step(
             policy=_SUM_VARIABLES_POLICY,
             summed=Summed(
                 count=count if isinstance(count, int) else len(summed),
-                variables=[StepRef(ref=ref) for ref in summed[:_MAX_SUMMED_NAMED]],
+                variables=[StepRef(ref=ref) for ref in summed[:MAX_SUMMED_NAMED]],
             ),
         )
     )

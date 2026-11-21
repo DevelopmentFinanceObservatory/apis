@@ -17,6 +17,14 @@ columns the dataset's roles take (`default_enrichment`), which the verbs need to
 totals out of a sum or rank. The rendering is part of the root's identity: its mint options
 are the root record's `options`, which the recipe's normal form names.
 
+A Spec, dataset or ref root that states no `groupby` is planned with the column words the steps
+over it name on its side (`PlannedRoot`, `_path_words`), and a root whose version holds more
+than one StatVar is read summed, keeping the summable axes those words name, unless they name
+`stat_var` (`analysis_roots.implied_groupby`). The sum is the root's `groupby`, so its record,
+the normal form and the ref state it, and the answer counts the StatVars it summed
+(`stat_vars_summed`). A word naming a summable axis reads the `stat_var_<axis>` column the sum
+keeps (`column_for`).
+
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
 `sum_of` and `join`, `frame_ref` and `denominator_frame_ref` for `share_of` and `quotient_of`, and
@@ -131,6 +139,7 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
     read_servable_version,
 )
+from datasets_api.description_record import MAX_SUMMED_NAMED
 from datasets_api.doors.publish import (
     PUBLISH_MAX_ROWS,
     publish_built_frame,
@@ -185,6 +194,7 @@ from dfo_analysis_engine.recipe import (
 )
 from dfo_analysis_engine.refusal import AnalysisRefused
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
+from dfo_analysis_engine.refusal import RefusalCode as EngineRefusalCode
 from dfo_analysis_engine.rolling import (
     PairingKeysUnstatedError,
     PopulationEmptyError,
@@ -202,6 +212,9 @@ logger = logging.getLogger(__name__)
 
 PLACE_ROLE_WORD = "place"
 PLACE_COLUMN = "observationAbout"
+STAT_VAR_WORD = "stat_var"
+# A groupby keeps a summable axis as `stat_var_<axis>` (conformance C115).
+STAT_VAR_PREFIX = "stat_var_"
 
 # The frame slots of each verb that `data` and `other` fill, in that order.
 _SLOTS: Mapping[str, tuple[str, str | None]] = {
@@ -616,7 +629,10 @@ class ResolvedRoot:
     else the pair `analysis_roots.frame_ref_for` derives from its rendering. `record` is the mint
     record a recipe's `roots` holds for it (`dataset`, `options`, and the rest).
     `rendering` is the ref format 2 root's rendering. `rows` is the frame's row count as its
-    version records it, `None` where the reader has none. `source` is the reader's own handle."""
+    version records it, `None` where the reader has none. `source` is the reader's own handle.
+    `stat_vars_summed` names the StatVars a groupby summed into the frame, as bare dcids, empty
+    where it sums none. `sum_refused` is the `{axis, precondition}` of the `rollup_not_summable`
+    a sum the planner implied met, the root then read unsummed (`RootSource.resolve`)."""
 
     frame: FrameRef
     dataset: FrameRef
@@ -624,6 +640,8 @@ class ResolvedRoot:
     rendering: Mapping[str, Any]
     rows: int | None = None
     source: object = field(default=None, compare=False)
+    stat_vars_summed: tuple[str, ...] = ()
+    sum_refused: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -641,9 +659,17 @@ class RootSource(Protocol):
     """Where the runner reads its roots from (`analysis_roots.LiveRootSource`)."""
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
-        """The version `root` is read at.
+        """The version `root` is read at. `path_words`, set on a request root that states no
+        `groupby`, are the words the steps over it name (`PlannedRoot`): a version whose
+        frame holds more than one StatVar is read summed, keeping the summable axes those
+        words name, unless they name `stat_var`.
 
         Raises:
             AnalysisPending: The root's dataset is still building.
@@ -766,6 +792,15 @@ class AnalysisResult:
             "time": summary["time"],
             "execution_identity": summary["execution_identity"],
             "resolved_periods": list(self.resolved_periods),
+            "stat_vars_summed": _unique(
+                {
+                    "spec_id": root.dataset.spec_id,
+                    "content_version": root.dataset.content_version,
+                    "count": len(root.stat_vars_summed),
+                }
+                for root in self.roots
+                if root.stat_vars_summed
+            ),
         }
 
 
@@ -785,17 +820,28 @@ def _sentence(evaluation: Evaluation) -> str:
 # --- The plan ------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, kw_only=True)
+class PlannedRoot:
+    """A root of the working tree. `path_words` are the column words the steps over it name on
+    its side, set only on a root the request states with no `groupby` (`_path_words`), so a
+    stored recipe's roots and a stated groupby are read as stated."""
+
+    root: SpecRoot | DatasetRoot
+    path_words: frozenset[str] | None = None
+
+
 @dataclass(kw_only=True)
 class _Plan:
     """The tree with every root numbered by its first reach, derived roots expanded. Nodes are
     counted as the walk reaches them, so a tree past `max_nodes` refuses at the first node over
-    it, before the rest is expanded or any further recipe is read."""
+    it, before the rest is expanded or any further recipe is read. A root reached under two
+    sets of path words is two roots until they resolve alike (`merged_roots`)."""
 
     max_nodes: int
     rolling_tree: bool = False
     nodes: int = 0
     indices: dict[str, int] = field(default_factory=dict)
-    roots: list[SpecRoot | DatasetRoot] = field(default_factory=list)
+    roots: list[PlannedRoot] = field(default_factory=list)
 
     def count(self) -> None:
         """Count one node.
@@ -809,13 +855,20 @@ class _Plan:
                 ceiling_kind="analysis_nodes", count=self.nodes, cap=self.max_nodes
             )
 
-    def root(self, root: SpecRoot | DatasetRoot) -> dict[str, Any]:
-        """Count `root` and number it, once per distinct root."""
+    def root(
+        self, root: SpecRoot | DatasetRoot, *, path_words: frozenset[str] | None = None
+    ) -> dict[str, Any]:
+        """Count `root` and number it, once per distinct root and path words. A root that
+        states a `groupby` keeps no path words."""
         self.count()
+        if root.rendering.groupby is not None:
+            path_words = None
         key = f"{type(root).__name__}:{root.model_dump_json()}"
+        if path_words is not None:
+            key += f":{sorted(path_words)}"
         if key not in self.indices:
             self.indices[key] = len(self.roots)
-            self.roots.append(root)
+            self.roots.append(PlannedRoot(root=root, path_words=path_words))
         return {"root": self.indices[key]}
 
 
@@ -832,21 +885,101 @@ def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
     )
 
 
-def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: str) -> Any:
+def _words(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return {word for word in value if isinstance(word, str)}
+    return set()
+
+
+def _path_words(step: StepNode) -> dict[str, set[str]]:
+    """The column words `step` names on each input, `data` and `other`, slot by slot as
+    `_translated` names its columns: `group_by`, `entity_by`, `rank_by`, `numerator_by`,
+    `join_keys` and each predicate's column on the verb's primary slot, an entity binding's
+    keys on its slot, and a pairing's keys on one side and its values on the other."""
+    data_slot, other_slot = _SLOTS[step.verb]
+    paired = step.inputs.other is not None
+    side_of = {data_slot: "data", other_slot: "other"} if paired else {}
+
+    def side(slot: str | None) -> str:
+        return side_of.get(slot or data_slot, "data")
+
+    words: dict[str, set[str]] = {"data": set(), "other": set()}
+    arguments = step.arguments
+    for name in ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys"):
+        words[side(_PRIMARY_SLOT)] |= _words(arguments.get(name))
+    for name, slot in (
+        ("left_entity", _PRIMARY_SLOT),
+        ("right_entity", "right_frame_ref"),
+        ("numerator_entity", _PRIMARY_SLOT),
+        ("denominator_entity", "denominator_frame_ref"),
+    ):
+        if isinstance(binding := arguments.get(name), dict):
+            words[side(slot)] |= set(binding)
+    for name, left in (
+        ("on", data_slot),
+        ("denominator_by", _PRIMARY_SLOT),
+        ("right_keys", _PRIMARY_SLOT),
+    ):
+        pairs = arguments.get(name)
+        if isinstance(pairs, list):
+            words[side(left)] |= _words(pairs)
+            words[side(other_slot)] |= _words(pairs)
+        elif isinstance(pairs, dict):
+            words[side(left)] |= set(pairs)
+            words[side(other_slot)] |= _words(list(pairs.values()))
+    predicates = arguments.get("predicates")
+    for predicate in predicates if isinstance(predicates, list) else ():
+        if isinstance(predicate, dict):
+            words[side(_PRIMARY_SLOT)] |= _words(predicate.get("column"))
+    return words
+
+
+# The verbs whose two sides hold one grain, so the words of the steps over them name both.
+_SYMMETRIC = frozenset({Verb.COMPARE, Verb.SUM_OF})
+
+
+def _plan_node(
+    node: Node,
+    plan: _Plan,
+    *,
+    source: RootSource,
+    verb: str,
+    side: str,
+    path_words: frozenset[str] = frozenset(),
+) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
     node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
-    the nodes it stands for."""
+    the nodes it stands for.
+
+    `path_words` are the words the steps above `node` name on its side. A step adds its own
+    (`_path_words`): its `data` input inherits the words above it, and its `other` input
+    inherits them under `compare` and `sum_of` only, whose sides hold one grain; under
+    `share_of`, `quotient_of` and `join` the other side is keyed by its own words."""
     match node:
         case StepNode():
             plan.count()
+            words = _path_words(node)
             inputs = {
                 "data": _plan_node(
-                    node.inputs.data, plan, source=source, verb=node.verb, side="data"
+                    node.inputs.data,
+                    plan,
+                    source=source,
+                    verb=node.verb,
+                    side="data",
+                    path_words=path_words | words["data"],
                 )
             }
             if node.inputs.other is not None:
+                inherited = path_words if node.verb in _SYMMETRIC else frozenset()
                 inputs["other"] = _plan_node(
-                    node.inputs.other, plan, source=source, verb=node.verb, side="other"
+                    node.inputs.other,
+                    plan,
+                    source=source,
+                    verb=node.verb,
+                    side="other",
+                    path_words=inherited | words["other"],
                 )
             return {"step": node, "inputs": inputs}
         case RefRoot():
@@ -861,6 +994,7 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
                 source=source,
                 verb=verb,
                 side=side,
+                path_words=path_words,
             )
         case DerivedRoot():
             stored = source.recipe(spec_id=node.spec_id, content_version=node.content_version)
@@ -873,7 +1007,7 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
             records = stored["roots"]
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
-            return plan.root(node)
+            return plan.root(node, path_words=path_words)
 
 
 def _expand(
@@ -915,6 +1049,7 @@ def role_columns(frame: Frame) -> tuple[str, ...]:
 
 def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
     """The column of `columns` that `word` names: itself when a column is so named, else
+    `stat_var_<word>` when a groupby kept the summable axis `word` as that column, else
     `observationAbout` for `place`, else the one column on the flow axis `origin` or
     `destination` names. Any other word passes through for the engine to judge.
 
@@ -923,6 +1058,8 @@ def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
     """
     if word in columns:
         return word
+    if (kept := f"{STAT_VAR_PREFIX}{word}") in columns:
+        return kept
     if word == PLACE_ROLE_WORD:
         return PLACE_COLUMN
     on_axis = [column for column in columns if role_key_axis(column) == word]
@@ -1401,17 +1538,20 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
     def walk(node: Mapping[str, Any]) -> str:
         if "root" in node:
             root = roots[node["root"]]
-            return emit(
-                node["frame"],
-                {
-                    "op": "retrieve",
-                    "input": {
-                        "id": root.dataset.spec_id,
-                        "content_version": root.dataset.content_version,
-                    },
-                    "options": dict(root.record.get("options") or {}),
+            retrieve: dict[str, Any] = {
+                "op": "retrieve",
+                "input": {
+                    "id": root.dataset.spec_id,
+                    "content_version": root.dataset.content_version,
                 },
-            )
+                "options": dict(root.record.get("options") or {}),
+            }
+            if root.stat_vars_summed:
+                retrieve["summed"] = {
+                    "count": len(root.stat_vars_summed),
+                    "variables": [{"ref": ref} for ref in root.stat_vars_summed[:MAX_SUMMED_NAMED]],
+                }
+            return emit(node["frame"], retrieve)
         built = next(calls).step
         # Every step was built: a `None` step returned above.
         assert built is not None
@@ -1679,8 +1819,9 @@ _DEFAULT_BOUNDS = AnalysisBounds()
 
 def plan_roots(
     request: AnalysisRequest, *, source: RootSource, bounds: AnalysisBounds
-) -> tuple[dict[str, Any], list[SpecRoot | DatasetRoot]]:
-    """The working tree of `request` and its roots, derived roots expanded.
+) -> tuple[dict[str, Any], list[PlannedRoot]]:
+    """The working tree of `request` and its roots, derived roots expanded, each request root
+    that states no `groupby` with the words the steps over it name (`PlannedRoot`).
 
     Raises:
         SeveralMembers: A ref input holds several members.
@@ -1697,7 +1838,7 @@ def plan_roots(
 
 
 def resolve_roots(
-    roots: Sequence[SpecRoot | DatasetRoot],
+    roots: Sequence[PlannedRoot],
     *,
     source: RootSource,
     latest: bool,
@@ -1711,9 +1852,9 @@ def resolve_roots(
     """
     resolved: list[ResolvedRoot] = []
     pending: list[AnalysisPending] = []
-    for root in roots:
+    for planned in roots:
         try:
-            resolved.append(source.resolve(root, latest=latest, trace_id=trace_id))
+            resolved.append(_resolve(planned, source=source, latest=latest, trace_id=trace_id))
         except AnalysisPending as waiting:
             pending.append(waiting)
     if pending:
@@ -1722,6 +1863,53 @@ def resolve_roots(
             retry_after_s=max(waiting.retry_after_s for waiting in pending),
         )
     return resolved
+
+
+def _resolve(
+    planned: PlannedRoot, *, source: RootSource, latest: bool, trace_id: str | None
+) -> ResolvedRoot:
+    """`planned` resolved, its path words passed only when it has them."""
+    if planned.path_words is None:
+        return source.resolve(planned.root, latest=latest, trace_id=trace_id)
+    return source.resolve(
+        planned.root, latest=latest, trace_id=trace_id, path_words=planned.path_words
+    )
+
+
+def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
+    """The working node `node` with each root renumbered by `index`."""
+    if not isinstance(node, Mapping):
+        return node
+    if "root" in node:
+        return {**node, "root": index[node["root"]]}
+    renumbered = dict(node)
+    renumbered["inputs"] = {
+        slot: _with_roots(child, index) for slot, child in node["inputs"].items()
+    }
+    if _ANCHOR_ROOTS in node:
+        renumbered[_ANCHOR_ROOTS] = [_with_roots(child, index) for child in node[_ANCHOR_ROOTS]]
+    return renumbered
+
+
+def merged_roots[R: ResolvedRoot](
+    working: dict[str, Any], resolved: Sequence[R]
+) -> tuple[dict[str, Any], list[R]]:
+    """`working` and `resolved` with the roots that resolved to one record made one root. A
+    root reached under two sets of path words is planned twice (`_Plan.root`), and reads one
+    frame when the words imply the same rendering, as they do for a root of one StatVar, so
+    the recipe, its ids and the rows read are those of a tree naming the root once."""
+    index: dict[int, int] = {}
+    kept: list[R] = []
+    first: dict[bytes, int] = {}
+    for at, root in enumerate(resolved):
+        key = rfc8785.dumps(dict(root.record))
+        if key not in first:
+            first[key] = len(kept)
+            kept.append(root)
+        index[at] = first[key]
+    if len(kept) == len(resolved):
+        return working, list(resolved)
+    return _with_roots(working, index), kept
 
 
 def locate_roots(
@@ -1820,9 +2008,14 @@ def _evaluated_frames(
         # A lifted reference sets a rolling overlay, so the tree has a latest period.
         assert anchor is not None
         _fill_literals(tree, anchor.period)
-    evaluation = evaluate(
-        tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
-    )
+    try:
+        evaluation = evaluate(
+            tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
+        )
+    except AnalysisRefused as refused:
+        if (named := _with_sum_refused(refused.refusal, ordered)) is None:
+            raise
+        raise AnalysisRefused(named) from refused
     rows = evaluation.frame.num_rows
     if rows > PUBLISH_MAX_ROWS:
         raise AnalysisTooLarge(
@@ -1836,6 +2029,32 @@ def _evaluated_frames(
         root_variables=root_variables,
         output_digest=output_digest(evaluation.frame, names),
     )
+
+
+def _with_sum_refused(
+    refusal: EngineRefusal, roots: Sequence[ResolvedRoot]
+) -> EngineRefusal | None:
+    """`refusal` with each sum the planner implied and the datasets door refused named in its
+    message and its `fix` as `groupby_refused` (`{spec_id, content_version, axis,
+    precondition}`), when it is a `stat_var_unresolved` and such a root was read, else
+    `None`."""
+    sums = [
+        {
+            "spec_id": root.dataset.spec_id,
+            "content_version": root.dataset.content_version,
+            **root.sum_refused,
+        }
+        for root in roots
+        if root.sum_refused is not None
+    ]
+    if refusal.code is not EngineRefusalCode.STAT_VAR_UNRESOLVED or not sums:
+        return None
+    preconditions = ", ".join(f"{one['axis']}: {one['precondition']}" for one in sums)
+    message = (
+        f"{refusal.message} DFO could not read it summed: the sum refused rollup_not_summable "
+        f"({preconditions})."
+    )
+    return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
 
 
 def compute_analysis(
@@ -1854,6 +2073,7 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    working, resolved = merged_roots(working, resolved)
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
@@ -1861,7 +2081,7 @@ def compute_analysis(
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
 # only a body of this format is answered. Raise it whenever the body changes.
-ANSWER_FORMAT = "analysis_answer/1"
+ANSWER_FORMAT = "analysis_answer/2"
 
 
 def _keyed_tree(node: object) -> object:
@@ -1917,6 +2137,7 @@ def prepare_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    working, resolved = merged_roots(working, resolved)
     return PreparedAnalysis(
         working=working,
         resolved=tuple(resolved),
@@ -2123,7 +2344,7 @@ class _Unavailable:
 
 
 def _readable_roots(
-    roots: Sequence[SpecRoot | DatasetRoot],
+    roots: Sequence[PlannedRoot],
     *,
     source: RootSource,
     trace_id: str | None,
@@ -2140,7 +2361,9 @@ def _readable_roots(
     located: list[LocatedRoot] = []
     for root in roots:
         try:
-            located.append(source.locate(source.resolve(root, latest=False, trace_id=trace_id)))
+            located.append(
+                source.locate(_resolve(root, source=source, latest=False, trace_id=trace_id))
+            )
         except (FrameUnavailable, SnapshotRevoked) as refused:
             unavailable.add(refused)
     return located
@@ -2299,6 +2522,8 @@ def verify_analysis(
     refusal: tuple[str, str] | None = None
     try:
         located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
+        if not unavailable:
+            working, located = merged_roots(working, located)
         recorded = sum(root.rows or 0 for root in located)
         if recorded > bounds.max_root_rows:
             raise AnalysisTooLarge(
@@ -2410,7 +2635,12 @@ def run_anchor(
         populations = _POPULATIONS.validate_python(canonical_populations(request.populations))
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail=f"populations: {exc}")) from exc
-    resolved = resolve_roots(request.roots, source=source, latest=request.latest, trace_id=trace_id)
+    resolved = resolve_roots(
+        [PlannedRoot(root=root) for root in request.roots],
+        source=source,
+        latest=request.latest,
+        trace_id=trace_id,
+    )
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         frames = _read_roots(located, source=source, cap=bounds.max_root_rows)
@@ -2440,6 +2670,7 @@ __all__ = [
     "DerivedRoot",
     "FrameUnavailable",
     "LocatedRoot",
+    "PlannedRoot",
     "PreparedAnalysis",
     "RefRoot",
     "ResolvedRoot",
@@ -2458,6 +2689,7 @@ __all__ = [
     "compute_analysis",
     "described_steps",
     "left_out_of",
+    "merged_roots",
     "plan_roots",
     "prepare_analysis",
     "recorded_dataset_root",

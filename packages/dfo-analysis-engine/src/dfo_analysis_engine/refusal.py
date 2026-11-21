@@ -33,9 +33,15 @@ latest period unestablished; `rolling_populations_differ` refuses a recipe
 whose rolling op-specs carry more than one population list, which no single
 latest period serves, even when the lists give the same period.
 
-`composite_refusal` turns a `stat_var_unresolved` over the members of a
-composite frame into the refusal naming its components and the `get_data`
-read that sums them.
+A `stat_var_unresolved` over a frame of several StatVars names the summed read
+that answers it: `fix["groupby"]`, the root rendering groupby that sums the
+reading's StatVars when it is read (`SUMMED_READ`). The Datasets analysis
+service applies that groupby itself to a root no step over it names
+`stat_var` on, so a caller reaches this refusal only by naming `stat_var`, by
+stating a groupby, or when the sum is refused.
+`composite_refusal` turns one over the members of a composite frame into the
+refusal naming its components, the `get_data` read that sums them and the same
+`groupby`.
 """
 
 from __future__ import annotations
@@ -125,6 +131,7 @@ from dfo_analysis_engine.units import unit_json, unit_name
 
 __all__ = [
     "RETRY_MODE_BY_CODE",
+    "SUMMED_READ",
     "AnalysisRefused",
     "CompositeComponent",
     "Refusal",
@@ -315,11 +322,14 @@ class Refusal:
 
     @classmethod
     def stat_var_unresolved(cls, *, reason: str, distinct_stat_vars: list[str]) -> Self:
-        return cls(
-            code=RefusalCode.STAT_VAR_UNRESOLVED,
-            message=f"Could not resolve a single StatVar to aggregate: {reason}.",
-            fix={"reason": reason, "distinct_stat_vars": distinct_stat_vars},
-        )
+        """A frame of no single StatVar. Over several, the message and `fix["groupby"]`
+        name the summed read (`SUMMED_READ`)."""
+        fix: dict[str, Any] = {"reason": reason, "distinct_stat_vars": distinct_stat_vars}
+        message = f"Could not resolve a single StatVar to aggregate: {reason}."
+        if len(distinct_stat_vars) > 1:
+            fix["groupby"] = _summed_read()
+            message += _SUMMED_READ_ADVICE
+        return cls(code=RefusalCode.STAT_VAR_UNRESOLVED, message=message, fix=fix)
 
     @classmethod
     def composite_stat_vars_unsummed(
@@ -339,12 +349,14 @@ class Refusal:
                 f"Could not resolve a single StatVar: {reason}. Read the spec again with "
                 'get_data stat_vars="sum", which adds every component\'s StatVars into one '
                 "series per party and year, and pass that frame_ref."
+                f"{_SUMMED_READ_ADVICE}"
             ),
             fix={
                 "reason": reason,
                 "distinct_stat_vars": distinct_stat_vars,
                 "components": components,
                 "get_data": {"stat_vars": "sum"},
+                "groupby": _summed_read(),
             },
         )
 
@@ -376,6 +388,21 @@ class Refusal:
                 f"Available: {available}."
             ),
             fix=fix,
+        )
+
+    @classmethod
+    def rank_rows_unreduced(cls, *, rank_by: list[str], available: list[str]) -> Self:
+        """`role_ambiguous` for a `rank` left without `aggregation` whose entities hold
+        more than one row in the window: the rows need reducing, which `aggregation` (the
+        SDK's `how`) does, or a longer `rank_by` keeps apart."""
+        return cls(
+            code=RefusalCode.ROLE_AMBIGUOUS,
+            message=(
+                f"rank_by {rank_by} holds more than one row for an entity in the window, so "
+                "there is no one value to rank it by. Pass aggregation (how), such as "
+                f'"sum", to reduce the rows, or rank by more of {available}.'
+            ),
+            fix={"parameter": "rank_by", "columns": rank_by, "available": available},
         )
 
     @classmethod
@@ -1356,6 +1383,23 @@ class Refusal:
         )
 
 
+SUMMED_READ: Mapping[str, Any] = {"by": ["time_period"], "op": "sum"}
+"""The root rendering groupby that sums a reading's StatVars when it is read, keeping its
+roles and periods: the read a `stat_var_unresolved` over several StatVars names. A
+summable axis named in `by` beside `time_period` stays apart as `stat_var_<axis>`."""
+
+
+def _summed_read() -> dict[str, Any]:
+    return {"by": list(SUMMED_READ["by"]), "op": SUMMED_READ["op"]}
+
+
+_SUMMED_READ_ADVICE = (
+    " Read the root summed: name no 'stat_var' in the steps over it, so DFO sums its"
+    ' StatVars when it is read, or give it the rendering groupby {"by": ["time_period"],'
+    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
+)
+
+
 class AnalysisRefused(Exception):
     """The engine declined the call. `refusal` holds its code, retry mode,
     message and `fix`."""
@@ -1646,8 +1690,8 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
         case RankNoRowsInWindowError():
             return Refusal.stat_var_unresolved(reason=exc.reason, distinct_stat_vars=[])
         case RankAmbiguousEntityError():
-            return Refusal.role_ambiguous(
-                parameter="rank_by", columns=list(exc.rank_by), available=list(exc.available)
+            return Refusal.rank_rows_unreduced(
+                rank_by=list(exc.rank_by), available=list(exc.available)
             )
         case FilterUnknownColumnError():
             return Refusal.role_ambiguous(
