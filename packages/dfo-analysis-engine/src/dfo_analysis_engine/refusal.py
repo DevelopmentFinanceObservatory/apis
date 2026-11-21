@@ -382,7 +382,7 @@ class Refusal:
     @classmethod
     def rank_rows_unreduced(cls, *, rank_by: list[str], available: list[str]) -> Self:
         """`role_ambiguous` for a `rank` left without `aggregation` whose entities hold
-        more than one row in the window: the rows need reducing, which `aggregation` (the
+        more than one row in the window. The rows need reducing, which `aggregation` (the
         SDK's `how`) does, or a longer `rank_by` keeps apart."""
         return cls(
             code=RefusalCode.ROLE_AMBIGUOUS,
@@ -1122,7 +1122,7 @@ class Refusal:
         cls, *, column: str, values: list[str], labels: list[str], truncated: bool
     ) -> Self:
         """A `category_match` on a `stat_var_<axis>` column naming no value it holds. The
-        column holds labels, so a code matches nothing: `fix["labels"]` lists the smallest of
+        column holds labels, so a code matches nothing. `fix["labels"]` lists the smallest of
         the labels it holds, `fix["labels_truncated"]` whether there are more."""
         return cls(
             code=RefusalCode.FILTER_PREDICATE_TYPE_MISMATCH,

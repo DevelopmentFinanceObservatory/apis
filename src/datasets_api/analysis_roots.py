@@ -283,8 +283,8 @@ def stat_vars_summed(version: StoredVersion | None, trace: Mapping[str, Any]) ->
     """The StatVars a groupby rendering summed into its version, whose record is `version` and
     whose trace is `trace`: the StatVars with data in it (`summed_refs`), the same ones the
     planner's sum decision counts, when there are several. None when the record says the
-    frame summed nothing: a version that is no derived one, or a derived one whose
-    `frame_summed` is false. A missing record or an unrecorded `frame_summed` is unknown, and
+    frame summed nothing, as for a version with no base version or a derived one whose
+    `frame_summed` is false. A missing record or an unrecorded `frame_summed` is unknown and
     reads as summed."""
     if version is not None and (
         version.base_content_version is None or version.frame_summed is False
@@ -300,7 +300,7 @@ _UNRECORDED = "unrecorded"
 
 
 def _rebuild_sum_refused(failed: RefreshRebuildFailed) -> dict[str, str]:
-    """The `{axis, precondition}` of the `rollup_not_summable` a queued rebuild met: the axis of
+    """The `{axis, precondition}` of the `rollup_not_summable` a queued rebuild met, taken from the axis of
     its recorded issue and its recorded detail, which names the precondition, as far as the
     operation records them."""
     refusal = failed.refusal

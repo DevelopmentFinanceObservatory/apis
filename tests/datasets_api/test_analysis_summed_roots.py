@@ -166,7 +166,7 @@ def test_an_aggregate_over_a_root_of_several_stat_vars_sums_them_when_it_is_read
     kind: str,
 ) -> None:
     """A root naming no groupby, under steps that name no `stat_var`, is read summed over its
-    StatVars: the ref and the recipe state the groupby, the answer and the derived record count
+    StatVars. The ref and the recipe state the groupby, the answer and the derived record count
     the StatVars it summed, and the frame is the one a root stating that groupby computes."""
     client, store, root = _rig()
     if kind == "spec":
@@ -338,9 +338,9 @@ def test_a_spec_root_whose_queued_sum_fails_not_summable_is_read_unsummed(
 
 
 def test_a_root_of_one_stat_var_keeps_its_recipe_ids() -> None:
-    """A root of one StatVar is read as it was before the planner implied sums: under two sets
-    of path words it is one root, its record states no groupby, and the frame keeps the ids a
-    run of this tree had then."""
+    """A root of one StatVar is read as stated, with no implied sum: under two sets of path
+    words it is one root, its record states no groupby, and the frame has the ids in
+    `_SOLE_IDS`."""
     client, _, root = _rig(sole=True)
     tree = {
         "verb": "share_of",
@@ -360,7 +360,7 @@ def test_a_root_of_one_stat_var_keeps_its_recipe_ids() -> None:
     assert (member["spec"], member["content_version"]) == _SOLE_IDS
 
 
-# The ids this tree's frame had before the planner implied sums.
+# The ids of this tree's frame, minted from a read that states no groupby.
 _SOLE_IDS = (
     {
         "spec_id": "ops_f810d2b04f345cbe4aa80ce276ad820c",

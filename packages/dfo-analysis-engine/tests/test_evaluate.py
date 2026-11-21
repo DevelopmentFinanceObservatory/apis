@@ -481,8 +481,8 @@ def test_a_refused_node_refuses_the_tree(
 
 
 def _breakdown_frame() -> Frame:
-    """Two recipients over 2020 to 2023, each year one of four purposes: every
-    (recipient, year) holds a row, and a quarter of the (recipient, purpose,
+    """Two recipients over 2020 to 2023, each year one of four purposes.
+    Every (recipient, year) holds a row, and a quarter of the (recipient, purpose,
     year) cells do."""
     return Frame.build(
         role_keys=["recipient", "stat_var_crsPurpose"],

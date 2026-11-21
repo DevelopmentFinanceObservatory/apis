@@ -20,8 +20,8 @@ is the number of group keys that actually appear; the difference is
 `skipped_cell_count`. This is exactly `sparse_coverage_frame`'s shape: some
 `(recipient, year)` cells are simply missing rows. With
 `allow_sparse_breakdowns` the grid leaves out the `stat_var_<axis>` columns
-in `group_by` (`engine.common.grid_columns`): a cell of the other columns is
-present when any of its breakdown cells is.
+in `group_by` (`engine.common.grid_columns`). A cell of the other columns is
+then present when any of its breakdown cells is.
 
 The reduction runs after `dfo_analysis_engine.engine.common.narrow_and_resolve`.
 On the pinned path, narrowing to `pinned_unit`'s own rows already excludes

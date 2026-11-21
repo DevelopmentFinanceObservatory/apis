@@ -971,10 +971,10 @@ def _plan_node(
 
     `path_words` are the words the steps above `node` name on its side. A step adds its own
     (`_path_words`): its `data` input inherits the words above it, and its `other` input
-    inherits them under `compare` and `sum_of` only, whose sides hold one grain; under
+    inherits them under `compare` and `sum_of` only, whose sides hold one grain. Under
     `share_of`, `quotient_of` and `join` the other side is keyed by its own words.
     `reduced` is whether a step above `node` is a verb other than `filter`, which reads one
-    StatVar: a root under `filter` steps alone selects rows and keeps every StatVar's, so it is
+    StatVar. A root under `filter` steps alone selects rows and keeps every StatVar's, so it is
     planned with no path words and read as stated."""
     match node:
         case StepNode():

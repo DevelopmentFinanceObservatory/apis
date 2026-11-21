@@ -1469,8 +1469,8 @@ def test_a_partitioned_per_period_rank_cuts_each_partition_in_each_period() -> N
 
 
 def test_allow_sparse_breakdowns_measures_each_entity_on_the_grid() -> None:
-    """Each purpose holds one of two years, so it covers half the window alone;
-    on the grid without the breakdown its reporter holds both years, so each
+    """Each purpose holds one of two years, so it covers half the window alone.
+    On the grid without the breakdown its reporter holds both years, so each
     entity's coverage is whole."""
     frame = _frame(
         [

@@ -1,5 +1,5 @@
-"""A rank partitioned by another role and the sparse-breakdown flag through the analysis route:
-the words `partition_by` names read the root summed by them, a partition naming a ranked column
+"""A rank partitioned by another role and the sparse-breakdown flag through the analysis route.
+The words `partition_by` names read the root summed by them, a partition naming a ranked column
 refuses, and an aggregate or rank that sets neither mints the ids an op-spec without the two
 fields mints."""
 

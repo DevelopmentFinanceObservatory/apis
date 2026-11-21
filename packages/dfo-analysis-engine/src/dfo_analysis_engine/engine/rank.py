@@ -61,16 +61,16 @@ a tie) for each recipient. Under `per_period` each (partition, period) pair
 is a ranking. Each output row names its partition beside its entity, and the
 partition roles keep their totals out as a keyed role does
 (`engine.common.without_party_totals`). Coverage counts each partition's own
-entities over the window's periods: an entity is a (partition, `rank_by`)
-pair that holds a row, so a donor that never gave to a recipient is no
-missing cell of that recipient's ranking. `beyond_limit` names an entity
+entities over the window's periods. An entity is a (partition, `rank_by`)
+pair that holds a row, so a donor that gave nothing to a recipient leaves no
+missing cell in that recipient's ranking. `beyond_limit` names an entity
 only when no partition keeps it.
 
 With `allow_sparse_breakdowns`, the `stat_var_<axis>` columns among
 `partition_by` and `rank_by` leave the overall coverage grid
-(`engine.common.grid_columns`): the grid's entities are the distinct values
-of the other columns, each present in a period when any of its breakdown
-cells holds a row then.
+(`engine.common.grid_columns`). The grid's entities are then the distinct
+values of the other columns, each present in a period when any of its
+breakdown cells holds a row.
 """
 
 from __future__ import annotations
@@ -260,8 +260,8 @@ def _beyond_limit_exclusion(
     `rank_by` column, only the entities `kept` leaves out whole, in every
     partition, and on each `partition_by` column the partitions that lost a
     cell. `entities` partitions the ranked rows, `members` holds them in
-    group order, and `entity_keys[g]` is group `g`'s key: its
-    `partition_by` values, then its `rank_by` values.
+    group order, and `entity_keys[g]` is group `g`'s key, its
+    `partition_by` values then its `rank_by` values.
 
     The count comes from the grouping and copies no row: an entity left
     out whole counts its group's size, and only a kept entity's period
@@ -602,7 +602,7 @@ def run_rank(
     # `entity_coverage`/`entity_present_periods` are entity-wide regardless
     # of `per_period` -- coverage is always measured against the whole
     # window, never one period at a time (see the module docstring's own
-    # coverage paragraph). Both read the grid's columns (`counted`): with
+    # coverage paragraph). Both read the grid's columns (`counted`). With
     # `allow_sparse_breakdowns` an entity holds a period when any entity
     # sharing its other columns does.
     counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)

@@ -722,7 +722,7 @@ class RankOpSpec(_OpSpecBase):
     (`WindowRolling`), and names only a bound that is set.
 
     `partition_by`, left empty, ranks every entity in one ranking. Set, it
-    names the role columns of each partition: the entities sharing a
+    names the role columns of each partition. The entities sharing a
     partition's values are ranked among themselves, and `limit` keeps the
     top of each partition ("the top 6 donors per recipient"). It names no
     column `rank_by` names.
