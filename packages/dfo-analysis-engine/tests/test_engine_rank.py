@@ -1351,3 +1351,117 @@ def test_a_rank_over_a_composed_unit_reduces_by_anything_but_a_sum(
     result = run_rank(frame, rank_by=["reporter"], aggregation=aggregation, **window)
     assert _frame_reporters(result) == ["dcid:GBR", "dcid:USA"]
     assert result.resolved_unit == _PER_HEAD
+
+
+# Partitions ----------------------------------------------------------------------
+
+
+def _partitioned_frame() -> Frame:
+    """Two recipients' reporters in 2020: R1's BBB and CCC tie at 40, R2 has
+    no DDD, and AAA leads R1 and trails R2."""
+    return _frame(
+        [
+            _row(recipient=recipient, reporter=reporter, value=value)
+            for recipient, reporter, value in (
+                ("dcid:R1", "dcid:AAA", 50.0),
+                ("dcid:R1", "dcid:BBB", 40.0),
+                ("dcid:R1", "dcid:CCC", 40.0),
+                ("dcid:R1", "dcid:DDD", 10.0),
+                ("dcid:R2", "dcid:AAA", 5.0),
+                ("dcid:R2", "dcid:BBB", 30.0),
+                ("dcid:R2", "dcid:CCC", 20.0),
+            )
+        ],
+        role_keys=["recipient", "reporter"],
+    )
+
+
+def _cells(result: RankResult, *columns: str) -> list[tuple[object, ...]]:
+    positions = [result.frame.columns.index(column) for column in columns]
+    return sorted(tuple(row[position] for position in positions) for row in result.frame.rows)
+
+
+def test_a_partitioned_limit_keeps_the_top_of_each_partition_with_its_ties() -> None:
+    """Each recipient ranks its own reporters, so rank numbers restart per
+    recipient, the tie at R1's second place keeps both, and the limit cuts
+    AAA from R2 while R1 keeps it. Only DDD, kept by no recipient, is named."""
+    result = run_rank(
+        _partitioned_frame(),
+        rank_by=("reporter",),
+        partition_by=("recipient",),
+        aggregation=None,
+        window_start=None,
+        window_end=None,
+        ascending=False,
+        limit=2,
+    )
+
+    assert [(dict(er.entity_key), er.rank) for er in result.entity_ranks] == [
+        ({"recipient": "dcid:R1", "reporter": "dcid:AAA"}, 1),
+        ({"recipient": "dcid:R1", "reporter": "dcid:BBB"}, 2),
+        ({"recipient": "dcid:R1", "reporter": "dcid:CCC"}, 2),
+        ({"recipient": "dcid:R1", "reporter": "dcid:DDD"}, 4),
+        ({"recipient": "dcid:R2", "reporter": "dcid:BBB"}, 1),
+        ({"recipient": "dcid:R2", "reporter": "dcid:CCC"}, 2),
+        ({"recipient": "dcid:R2", "reporter": "dcid:AAA"}, 3),
+    ]
+    assert _cells(result, "recipient", "reporter", "value") == [
+        ("dcid:R1", "dcid:AAA", 50.0),
+        ("dcid:R1", "dcid:BBB", 40.0),
+        ("dcid:R1", "dcid:CCC", 40.0),
+        ("dcid:R2", "dcid:BBB", 30.0),
+        ("dcid:R2", "dcid:CCC", 20.0),
+    ]
+    (record,) = [record for record in result.exclusions.records if record.reason == "beyond_limit"]
+    assert record.row_count == 2
+    assert record.entities == {"reporter": ("dcid:DDD",)}
+
+
+def test_a_partitioned_rank_counts_coverage_over_each_partitions_own_entities() -> None:
+    """R2 holds no DDD row, so its ranking expects three cells, not four."""
+    result = run_rank(
+        _partitioned_frame(),
+        rank_by=("reporter",),
+        partition_by=("recipient",),
+        aggregation=None,
+        window_start=None,
+        window_end=None,
+        ascending=False,
+    )
+
+    assert result.expected_cell_count == result.present_cell_count == 7
+    assert result.overall_coverage_fraction == 1.0
+
+
+def test_a_partitioned_per_period_rank_cuts_each_partition_in_each_period() -> None:
+    rows = [
+        _row(recipient=recipient, reporter=reporter, year=year, value=value)
+        for recipient, reporter, year, value in (
+            ("dcid:R1", "dcid:AAA", "2020", 50.0),
+            ("dcid:R1", "dcid:BBB", "2020", 40.0),
+            ("dcid:R1", "dcid:AAA", "2021", 10.0),
+            ("dcid:R1", "dcid:BBB", "2021", 20.0),
+            ("dcid:R2", "dcid:AAA", "2020", 1.0),
+            ("dcid:R2", "dcid:BBB", "2020", 2.0),
+            ("dcid:R2", "dcid:AAA", "2021", 4.0),
+            ("dcid:R2", "dcid:BBB", "2021", 3.0),
+        )
+    ]
+    result = run_rank(
+        _frame(rows, role_keys=["recipient", "reporter"]),
+        rank_by=("reporter",),
+        partition_by=("recipient",),
+        aggregation=None,
+        window_start=None,
+        window_end=None,
+        ascending=False,
+        per_period=True,
+        limit=1,
+    )
+
+    assert _cells(result, "recipient", "time_period", "reporter", "value") == [
+        ("dcid:R1", "2020", "dcid:AAA", 50.0),
+        ("dcid:R1", "2021", "dcid:BBB", 20.0),
+        ("dcid:R2", "2020", "dcid:BBB", 2.0),
+        ("dcid:R2", "2021", "dcid:AAA", 4.0),
+    ]

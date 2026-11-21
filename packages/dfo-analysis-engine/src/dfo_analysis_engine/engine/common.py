@@ -268,6 +268,25 @@ def require_one_place_level(frame: Frame, columns: Iterable[str]) -> None:
             raise PlaceLevelsMixedError(column=types, types=cells[:_PLACE_TYPE_CAP])
 
 
+# A summable groupby keeps each code axis it does not sum as a role column
+# `stat_var_<axis>`, a breakdown of the StatVars it summed.
+BREAKDOWN_PREFIX = f"{STAT_VAR_COLUMN}_"
+
+
+def breakdown_columns(columns: Iterable[str]) -> tuple[str, ...]:
+    """The `stat_var_<axis>` columns among `columns`, in order."""
+    return tuple(column for column in columns if column.startswith(BREAKDOWN_PREFIX))
+
+
+def grid_columns(columns: Sequence[str], *, allow_sparse_breakdowns: bool) -> tuple[str, ...]:
+    """The columns of `columns` a coverage grid counts: all of them, or, with
+    `allow_sparse_breakdowns`, all but the `stat_var_<axis>` columns, so a
+    breakdown cell no row fills is no missing cell. `stat_var` and every other
+    role always count."""
+    breakdowns = set(breakdown_columns(columns)) if allow_sparse_breakdowns else set()
+    return tuple(column for column in columns if column not in breakdowns)
+
+
 def without_party_totals(
     frame: Frame,
     columns: Iterable[str],

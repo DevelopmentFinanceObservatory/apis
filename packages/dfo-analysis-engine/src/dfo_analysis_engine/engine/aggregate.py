@@ -18,7 +18,10 @@ can only mean "skip grid cells the frame never materialised a row for."
 own distinct values across the (unit-resolved) input rows; `present_cell_count`
 is the number of group keys that actually appear; the difference is
 `skipped_cell_count`. This is exactly `sparse_coverage_frame`'s shape: some
-`(recipient, year)` cells are simply missing rows.
+`(recipient, year)` cells are simply missing rows. With
+`allow_sparse_breakdowns` the grid leaves out the `stat_var_<axis>` columns
+in `group_by` (`engine.common.grid_columns`): a cell of the other columns is
+present when any of its breakdown cells is.
 
 The reduction runs after `dfo_analysis_engine.engine.common.narrow_and_resolve`.
 On the pinned path, narrowing to `pinned_unit`'s own rows already excludes
@@ -74,6 +77,7 @@ from dfo_analysis_engine.engine.common import (
     entity_roles,
     facet_columns,
     frame_keeping_role_types,
+    grid_columns,
     narrow_and_resolve,
     pooled_parties,
     pooled_roles,
@@ -277,6 +281,7 @@ def run_aggregate(
     group_by: Sequence[str],
     aggregation: str,
     pinned_unit: UnitCell | None = None,
+    allow_sparse_breakdowns: bool = False,
 ) -> AggregateResult:
     """Group `frame`'s rows by `group_by` and reduce each group's `value` with
     `aggregation`. See the module docstring for the coverage and unit/facet
@@ -407,10 +412,15 @@ def run_aggregate(
     # would silently agree with the very undercount this fix exists to close
     # on that path.
     pre_exclusion_table = table_before_unitless_exclusion(frame, pinned_unit=pinned_unit)
+    counted = grid_columns(group_by, allow_sparse_breakdowns=allow_sparse_breakdowns)
     expected_cell_count = math.prod(
-        len(array_kernel("unique", pre_exclusion_table.column(column))) for column in group_by
+        len(array_kernel("unique", pre_exclusion_table.column(column))) for column in counted
     )
-    present_cell_count = groups.count
+    present_cell_count = (
+        groups.count
+        if counted == group_by
+        else group_rows(table, tuple(dict.fromkeys(counted))).count
+    )
     skipped_cell_count = max(expected_cell_count - present_cell_count, 0)
     realised_coverage_fraction = (
         present_cell_count / expected_cell_count if expected_cell_count else 1.0

@@ -478,3 +478,83 @@ def test_a_refused_node_refuses_the_tree(
         evaluate(tree, {0: RootFrame(ref=_ROOT, frame=frame)})
 
     assert refused.value.code is code
+
+
+def _breakdown_frame() -> Frame:
+    """Two recipients over 2020 to 2023, each year one of four purposes: every
+    (recipient, year) holds a row, and a quarter of the (recipient, purpose,
+    year) cells do."""
+    return Frame.build(
+        role_keys=["recipient", "stat_var_crsPurpose"],
+        rows=[
+            {
+                "stat_var": "dcid:X",
+                "recipient": recipient,
+                "stat_var_crsPurpose": f"P{offset}",
+                "time_period": str(2020 + offset),
+                "value": 1.0,
+            }
+            for recipient in ("dcid:R1", "dcid:R2")
+            for offset in range(4)
+        ],
+    )
+
+
+_BREAKDOWN_STEPS = {
+    "aggregate": {
+        "aggregation": "sum",
+        "group_by": ["recipient", "stat_var_crsPurpose", "time_period"],
+    },
+    "rank": {
+        "rank_by": ["stat_var_crsPurpose"],
+        "partition_by": ["recipient"],
+        "aggregation": "sum",
+        "ascending": False,
+    },
+}
+
+
+@pytest.mark.parametrize("verb", sorted(_BREAKDOWN_STEPS))
+def test_a_sparse_breakdown_refuses_coverage_and_names_the_flag(verb: str) -> None:
+    tree = _node(verb, {"frame_ref": _root(0)}, **_BREAKDOWN_STEPS[verb])
+
+    with pytest.raises(AnalysisRefused) as refused:
+        evaluate(tree, {0: RootFrame(ref=_ROOT, frame=_breakdown_frame())})
+
+    assert refused.value.code is RefusalCode.COVERAGE_INSUFFICIENT
+    assert refused.value.refusal.fix["realised_coverage_fraction"] == 0.25
+    assert refused.value.refusal.fix["breakdown_columns"] == ["stat_var_crsPurpose"]
+    assert refused.value.refusal.fix["allow_sparse_breakdowns"] is True
+
+
+@pytest.mark.parametrize("verb", sorted(_BREAKDOWN_STEPS))
+def test_allow_sparse_breakdowns_leaves_the_breakdown_out_of_the_coverage_grid(verb: str) -> None:
+    tree = _node(
+        verb, {"frame_ref": _root(0)}, **_BREAKDOWN_STEPS[verb], allow_sparse_breakdowns=True
+    )
+
+    evaluation = evaluate(tree, {0: RootFrame(ref=_ROOT, frame=_breakdown_frame())})
+
+    assert evaluation.frame.num_rows == 8
+
+
+def test_a_short_grid_without_a_breakdown_names_no_flag() -> None:
+    tree = _node(
+        "aggregate",
+        {"frame_ref": _root(0)},
+        aggregation="sum",
+        group_by=["recipient", "time_period"],
+    )
+    frame = Frame.build(
+        role_keys=["recipient"],
+        rows=[
+            {"stat_var": "dcid:X", "recipient": recipient, "time_period": year, "value": 1.0}
+            for recipient, year in (("dcid:R1", "2020"), ("dcid:R2", "2021"), ("dcid:R3", "2022"))
+        ],
+    )
+
+    with pytest.raises(AnalysisRefused) as refused:
+        evaluate(tree, {0: RootFrame(ref=_ROOT, frame=frame)})
+
+    assert refused.value.code is RefusalCode.COVERAGE_INSUFFICIENT
+    assert "allow_sparse_breakdowns" not in refused.value.refusal.fix

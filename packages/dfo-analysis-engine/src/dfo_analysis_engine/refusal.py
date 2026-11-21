@@ -534,21 +534,34 @@ class Refusal:
 
     @classmethod
     def coverage_insufficient(
-        cls, *, realised_coverage_fraction: float, floor: float, skipped_cell_count: int
+        cls,
+        *,
+        realised_coverage_fraction: float,
+        floor: float,
+        skipped_cell_count: int,
+        breakdown_columns: Sequence[str] = (),
     ) -> Self:
-        return cls(
-            code=RefusalCode.COVERAGE_INSUFFICIENT,
-            message=(
-                f"Only {realised_coverage_fraction:.1%} of the expected grid is present "
-                f"({skipped_cell_count} cell(s) missing), below the {floor:.0%} floor. "
-                "Narrow group_by to a coarser grain and retry."
-            ),
-            fix={
-                "realised_coverage_fraction": realised_coverage_fraction,
-                "floor": floor,
-                "skipped_cell_count": skipped_cell_count,
-            },
+        """`breakdown_columns` are the `stat_var_<axis>` columns the grid counted. When there
+        are any, the message and `fix` name `allow_sparse_breakdowns`, which leaves them out."""
+        message = (
+            f"Only {realised_coverage_fraction:.1%} of the expected grid is present "
+            f"({skipped_cell_count} cell(s) missing), below the {floor:.0%} floor. "
+            "Narrow group_by to a coarser grain and retry."
         )
+        fix: dict[str, Any] = {
+            "realised_coverage_fraction": realised_coverage_fraction,
+            "floor": floor,
+            "skipped_cell_count": skipped_cell_count,
+        }
+        if breakdown_columns:
+            message += (
+                f" The grid counts the breakdown column(s) {list(breakdown_columns)}, whose "
+                "empty cells may be no gap: pass allow_sparse_breakdowns=true to count "
+                "coverage without them."
+            )
+            fix["breakdown_columns"] = list(breakdown_columns)
+            fix["allow_sparse_breakdowns"] = True
+        return cls(code=RefusalCode.COVERAGE_INSUFFICIENT, message=message, fix=fix)
 
     @classmethod
     def non_finite_result(cls, *, group_key: dict[str, str], aggregation: str) -> Self:

@@ -30,8 +30,10 @@ A request root that states no `groupby` and whose version's frame holds more tha
 is read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
 `groupby` `{by: <the summable axes its steps name, else ["time_period"]>, op: "sum"}`, so its
 record, the recipe's normal form and the format 2 ref state the sum. When the sum refuses
-`rollup_not_summable` the root is read unsummed and records the refusal (`ResolvedRoot.sum_refused`).
-A root whose groupby summed StatVars names them (`ResolvedRoot.stat_vars_summed`).
+`rollup_not_summable` the root is read unsummed and records the refusal (`ResolvedRoot.sum_refused`),
+and so does a root read at its newest version whose summed rebuild ran as a queued operation that
+failed `rollup_not_summable`. A root whose groupby summed StatVars names them
+(`ResolvedRoot.stat_vars_summed`).
 
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
 newest version of the rendering, rebuilt when its head is stale, in one serve. A dataset root under `latest`
@@ -241,6 +243,22 @@ def implied_groupby(
 
 def _sum_refused(refused: RollupNotSummableError) -> dict[str, str]:
     return {"axis": refused.axis, "precondition": refused.precondition}
+
+
+# The precondition a queued rebuild's `rollup_not_summable` names when its operation records
+# no refusal body to read it from.
+_UNRECORDED = "unrecorded"
+
+
+def _rebuild_sum_refused(failed: RefreshRebuildFailed) -> dict[str, str]:
+    """The `{axis, precondition}` of the `rollup_not_summable` a queued rebuild met: the axis of
+    its recorded issue and its recorded detail, which names the precondition, as far as the
+    operation records them."""
+    refusal = failed.refusal
+    issues = (refusal.issues or []) if refusal is not None else []
+    axis = next((issue.axis for issue in issues if issue.axis), None)
+    detail = refusal.detail if refusal is not None else None
+    return {"axis": axis or _UNRECORDED, "precondition": detail or _UNRECORDED}
 
 
 @dataclass(frozen=True)
@@ -491,6 +509,11 @@ class LiveRootSource:
                 requested = summed
             except RollupNotSummableError as refused:
                 sum_refused = _sum_refused(refused)
+            except RefreshRebuildFailed as failed:
+                # A rebuild past the inline budget meets the same refusal on the worker.
+                if failed.refusal_code != RollupNotSummableError.code:
+                    raise
+                sum_refused = _rebuild_sum_refused(failed)
         # The mint resolved a default enrichment against the version it served.
         options = record_options(requested, coverage=manifest.coverage)
         resolved = self._resolved(
@@ -576,7 +599,9 @@ class LiveRootSource:
             operation = submitted.operation
             if operation.state == "failed":
                 raise RefreshRebuildFailed(
-                    operation_id=operation.id, refusal_code=operation.refusal_code
+                    operation_id=operation.id,
+                    refusal_code=operation.refusal_code,
+                    refusal=operation.refusal,
                 ) from None
             raise _pending(operation.id) from None
 

@@ -539,6 +539,11 @@ class AggregateOpSpec(_OpSpecBase):
     candidate units in the refusal's `fix["units"]`). A retry supplying one
     of those values here, a unit ref or the object of a converted or
     composed unit, pins the aggregate to that unit's rows.
+
+    `allow_sparse_breakdowns`, left `False`, counts every `group_by` column in
+    the coverage grid. Set, the `stat_var_<axis>` columns a summable groupby
+    keeps leave the grid, so a breakdown cell no row fills counts as no gap
+    (`dfo_analysis_engine.engine.common.grid_columns`).
     """
 
     verb: Literal[Verb.AGGREGATE] = Verb.AGGREGATE
@@ -547,6 +552,7 @@ class AggregateOpSpec(_OpSpecBase):
     ] = ()
     aggregation: str = Field(min_length=1, max_length=_MAX_AGGREGATION_NAME_CHARS)
     unit: PinnedUnit | None = None
+    allow_sparse_breakdowns: Annotated[bool, HASHED_WHEN_SET] = False
 
 
 _Column = Annotated[str, Field(min_length=1, max_length=_MAX_COLUMN_NAME_CHARS)]
@@ -714,6 +720,15 @@ class RankOpSpec(_OpSpecBase):
 
     `rolling` says which of the window's years follow the latest period
     (`WindowRolling`), and names only a bound that is set.
+
+    `partition_by`, left empty, ranks every entity in one ranking. Set, it
+    names the role columns of each partition: the entities sharing a
+    partition's values are ranked among themselves, and `limit` keeps the
+    top of each partition ("the top 6 donors per recipient"). It names no
+    column `rank_by` names.
+
+    `allow_sparse_breakdowns` is `AggregateOpSpec`'s, over the grid of
+    `partition_by` and `rank_by`.
     """
 
     verb: Literal[Verb.RANK] = Verb.RANK
@@ -728,6 +743,17 @@ class RankOpSpec(_OpSpecBase):
     per_period: bool = False
     limit: Annotated[int | None, HASHED_WHEN_SET] = Field(default=None, ge=1, le=MAX_RANK_LIMIT)
     rolling: Annotated[WindowRolling | None, HASHED_WHEN_SET] = None
+    partition_by: Annotated[
+        tuple[Annotated[str, Field(min_length=1, max_length=_MAX_COLUMN_NAME_CHARS)], ...],
+        HASHED_WHEN_SET,
+    ] = ()
+    allow_sparse_breakdowns: Annotated[bool, HASHED_WHEN_SET] = False
+
+    @model_validator(mode="after")
+    def _partition_is_apart_from_the_ranked(self) -> RankOpSpec:
+        if shared := sorted(set(self.partition_by) & set(self.rank_by)):
+            raise ValueError(f"partition_by names columns rank_by names too: {shared}")
+        return self
 
     @model_validator(mode="after")
     def _window_bounds_are_paired(self) -> RankOpSpec:

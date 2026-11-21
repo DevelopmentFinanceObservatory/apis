@@ -885,6 +885,10 @@ def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
     )
 
 
+# The arguments that list columns of a verb's primary slot.
+_COLUMN_LISTS = ("group_by", "entity_by", "rank_by", "partition_by", "numerator_by", "join_keys")
+
+
 def _words(value: object) -> set[str]:
     if isinstance(value, str):
         return {value}
@@ -895,9 +899,9 @@ def _words(value: object) -> set[str]:
 
 def _path_words(step: StepNode) -> dict[str, set[str]]:
     """The column words `step` names on each input, `data` and `other`, slot by slot as
-    `_translated` names its columns: `group_by`, `entity_by`, `rank_by`, `numerator_by`,
-    `join_keys` and each predicate's column on the verb's primary slot, an entity binding's
-    keys on its slot, and a pairing's keys on one side and its values on the other."""
+    `_translated` names its columns: each of `_COLUMN_LISTS` and each predicate's column on the
+    verb's primary slot, an entity binding's keys on its slot, and a pairing's keys on one side
+    and its values on the other."""
     data_slot, other_slot = _SLOTS[step.verb]
     paired = step.inputs.other is not None
     side_of = {data_slot: "data", other_slot: "other"} if paired else {}
@@ -907,7 +911,7 @@ def _path_words(step: StepNode) -> dict[str, set[str]]:
 
     words: dict[str, set[str]] = {"data": set(), "other": set()}
     arguments = step.arguments
-    for name in ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys"):
+    for name in _COLUMN_LISTS:
         words[side(_PRIMARY_SLOT)] |= _words(arguments.get(name))
     for name, slot in (
         ("left_entity", _PRIMARY_SLOT),
@@ -1111,7 +1115,7 @@ def _translated(verb: Verb, arguments: Mapping[str, Any], sides: _Sides) -> dict
     data_slot, other_slot = _SLOTS[verb]
     other = other_slot or data_slot
     out = copy.deepcopy(dict(arguments))
-    for name in ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys"):
+    for name in _COLUMN_LISTS:
         if name in out:
             out[name] = sides.names(_PRIMARY_SLOT, out[name], parameter=name)
     for name, slot in (

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from code_index import CodeIndex, CodeRow
+from datasets_api import analysis_roots
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -19,8 +20,11 @@ from datasets_api.analysis import (
     SpecRoot,
     plan_roots,
 )
+from datasets_api.mint_models import MintOptions
+from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from dfo_platform import ProblemIssue, ProblemSpec
 from spec_registry.identity import recompute_identity
 
 from ._analysis_doubles import FakeRootSource
@@ -29,6 +33,7 @@ from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_meta_doors import _operation
 from .test_serve_groupby_collapse import (
     _IDENTITY,
     _MEMBER_A,
@@ -247,6 +252,70 @@ def test_a_root_whose_sum_the_door_refuses_is_read_unsummed_and_names_the_refusa
             "precondition": "no_summable_axis",
         }
     ]
+
+
+_ROLLUP_DETAIL = "groupby axis 'stat_var' refused: no summable axis"
+
+
+@pytest.mark.parametrize(
+    ("refusal_code", "refusal", "status", "precondition"),
+    [
+        pytest.param(
+            "rollup_not_summable",
+            ProblemSpec(
+                status=422,
+                code="rollup_not_summable",
+                retryable=False,
+                detail=_ROLLUP_DETAIL,
+                issues=[ProblemIssue(axis="stat_var")],
+            ),
+            422,
+            {"axis": "stat_var", "precondition": _ROLLUP_DETAIL},
+            id="recorded",
+        ),
+        pytest.param(
+            "rollup_not_summable",
+            None,
+            422,
+            {"axis": "unrecorded", "precondition": "unrecorded"},
+            id="code-alone",
+        ),
+        pytest.param("over_ceiling", None, 500, None, id="another-failure-refuses"),
+    ],
+)
+def test_a_spec_root_whose_queued_sum_fails_not_summable_is_read_unsummed(
+    monkeypatch: pytest.MonkeyPatch,
+    refusal_code: str,
+    refusal: ProblemSpec | None,
+    status: int,
+    precondition: dict[str, str] | None,
+) -> None:
+    """A Spec root's summed rebuild that ran as a queued operation and failed
+    `rollup_not_summable` reads the root unsummed, as a sum refused inline does, so the engine
+    refuses `stat_var_unresolved` naming the refused sum. Any other failure still refuses."""
+    client, _, root = _rig()
+    spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
+    serve = analysis_roots.serve_spec
+
+    def queued_sum(*, options: MintOptions, **kwargs: Any) -> Any:
+        if options.groupby is None:
+            return serve(options=options, **kwargs)
+        failed = _operation(state="failed", refusal_code=refusal_code, refusal=refusal)
+        raise OperationSubmitted(operation=failed)
+
+    monkeypatch.setattr(analysis_roots, "serve_spec", queued_sum)
+
+    response = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+
+    assert response.status_code == status, response.text
+    problem = response.json()
+    if precondition is None:
+        assert problem["code"] == "internal_error"
+        return
+    assert problem["code"] == "stat_var_unresolved"
+    (refused,) = problem["fix"]["groupby_refused"]
+    assert refused["spec_id"] == root["spec_id"]
+    assert {key: refused[key] for key in ("axis", "precondition")} == precondition
 
 
 def test_a_root_of_one_stat_var_keeps_its_recipe_ids() -> None:
