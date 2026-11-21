@@ -802,6 +802,15 @@
   },
   {
     "has_description": true,
+    "method": "GET",
+    "name": "read_share_sample",
+    "operation_id": "presentation_read_share_sample",
+    "path": "/api/presentation/share-sample",
+    "summary": "Read Share Sample",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
     "method": "POST",
     "name": "create_share",
     "operation_id": "presentation_create_share",

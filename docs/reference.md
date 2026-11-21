@@ -153,6 +153,7 @@ Configuration variables load from environment variables or `.env` at boot.
 | `DATASETS_PIN_FIRST_PARTY_PRINCIPAL`  | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.                             |
 | `LIVE_REFRESH_PRINCIPAL`              | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame.                           |
 | `PRESENTATION_SHARE_IMPORT_PRINCIPAL` | `""`              | Authorized principal permitted to import a website share under its own id.                                                   |
+| `VERIFY_PRINCIPAL`                    | `""`              | Authorized principal permitted to verify an analysis frame and sample shares.                                                |
 | `DATASET_STORE_HOST`                  | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                                                         |
 | `DATASET_STORE_PORT`                  | `5432`            | PostgreSQL port for `dataset_store`.                                                                                         |
 | `DATASET_STORE_DATABASE`              | `datasets`        | PostgreSQL database name for `dataset_store`.                                                                                |

@@ -66,6 +66,7 @@ from artifact_store.errors import ArtifactNotFoundError
 from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.analysis import (
     AnalysisPending,
+    AnalysisTooLarge,
     DatasetRoot,
     LocatedRoot,
     ResolvedRoot,
@@ -75,7 +76,14 @@ from datasets_api.analysis import (
     SpecRoot,
     recorded_dataset_root,
 )
-from datasets_api.current import DefinitionDeps, head_rendering, load_stored
+from datasets_api.current import (
+    DefinitionDeps,
+    UnstoredFile,
+    UnstoredRendering,
+    head_rendering,
+    load_stored,
+    render_unstored,
+)
 from datasets_api.default_enrichment import (
     KIND_COLUMNS,
     coverage_roles,
@@ -198,7 +206,21 @@ class _LocatedFrame:
     location: StoredArtifactLocation
 
 
-_Handle = _FrameLayoutFile | _LocatedFrame
+@dataclass(frozen=True)
+class _UnstoredFrameLayout:
+    """A root read from the frame-layout bytes `data` a verification rendered in memory."""
+
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _UnstoredFrame:
+    """A root read from the canonical frame `file` a verification rendered in memory."""
+
+    file: UnstoredFile
+
+
+_Handle = _FrameLayoutFile | _LocatedFrame | _UnstoredFrameLayout | _UnstoredFrame
 """What `read` reads. `resolve` gives a root read from its stored frame no handle, so a root
 `locate` has not located holds none `read` accepts."""
 
@@ -262,14 +284,85 @@ def frame_from_frame_layout(data: bytes) -> Frame:
     return build_frame_from_arrow(table, role_keys=role_keys)
 
 
+def _root(
+    *,
+    spec_id: str,
+    content_version: str,
+    options: Mapping[str, Any],
+    artifact: ArtifactEntryModel | None,
+    rows: int,
+    source: object,
+) -> ResolvedRoot:
+    """The root read at `{spec_id, content_version}` with `options`, its frame named by
+    `frame_ref_for` and `artifact`'s enrichment stamp, read through `source`."""
+    columns = tuple(options.get("columns") or ())
+    stamp = artifact.enrichment_stamp if artifact is not None else None
+    frame = frame_ref_for(
+        spec_id=spec_id,
+        content_version=content_version,
+        columns=columns,
+        groupby=options.get("groupby"),
+        without_party_totals=options.get("without_party_totals") is True,
+        enrichment_stamp=stamp,
+    )
+    dataset = FrameRef(spec_id=spec_id, content_version=content_version)
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "frame": frame.model_dump(),
+        "dataset": dataset.model_dump(),
+        "options": dict(options),
+        "scope": {},
+    }
+    if stamp is not None and requests_kinds(columns):
+        record["enrichment_stamp"] = stamp
+    return ResolvedRoot(
+        frame=frame,
+        dataset=dataset,
+        record=record,
+        rendering=root_rendering(options),
+        rows=rows,
+        source=source,
+    )
+
+
 class LiveRootSource:
     """`analysis.RootSource` over the Datasets surface's stores, for one request.
 
-    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`)."""
+    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`).
+    `render` false reads a dataset root's rendering where its file is stored, and renders one
+    whose file has aged out in memory from the version's stored frame (`current.render_unstored`),
+    storing nothing, so a verification (`analysis.verify_analysis`) writes nothing and still
+    reads a version whose stored frame is held. `max_root_rows` is then the most rows the roots
+    this source has located hold together: a rendering that would take them past it is refused
+    `AnalysisTooLarge` (`analysis_root_rows`) before it is rendered, counted at its version's
+    stored frame's rows, which bound the rendering's. A root that resolves and then fails
+    `locate` counts nothing, since nothing of it is read."""
 
-    def __init__(self, *, deps: DefinitionDeps, recipes: RecipeReader) -> None:
+    def __init__(
+        self,
+        *,
+        deps: DefinitionDeps,
+        recipes: RecipeReader,
+        render: bool = True,
+        max_root_rows: int | None = None,
+    ) -> None:
         self._deps = deps
         self._recipes = recipes
+        self._render = render
+        self._max_root_rows = max_root_rows
+        self._located_rows = 0
+
+    def _refuse_rendering_past_bound(self, rows: int) -> None:
+        """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
+        roots located past `max_root_rows`.
+
+        Raises:
+            AnalysisTooLarge: `analysis_root_rows`.
+        """
+        cap = self._max_root_rows
+        held = self._located_rows + rows
+        if cap is not None and held > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=held, cap=cap)
 
     def resolve(
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
@@ -310,14 +403,29 @@ class LiveRootSource:
         options = record_options(mint_options(root.rendering), coverage=stored.coverage)
         manifest = stored
         if options.keys() - _BASE_OPTIONS.keys():
+            mint = MintOptions.model_validate(options)
+            coverage_snapshot = deps.coverage.snapshot()
             rendered = head_rendering(
                 subject_id=spec_id,
                 content_version=content_version,
                 deps=deps,
-                options=MintOptions.model_validate(options),
+                options=mint,
                 trace_id=trace_id,
-                coverage_snapshot=deps.coverage.snapshot(),
+                coverage_snapshot=coverage_snapshot,
+                render=self._render,
             )
+            if rendered is None and not self._render:
+                self._refuse_rendering_past_bound(stored.coverage.rows)
+                unstored = render_unstored(
+                    subject_id=spec_id,
+                    content_version=content_version,
+                    options=mint,
+                    manifest=stored,
+                    deps=deps,
+                    coverage_snapshot=coverage_snapshot,
+                )
+                if unstored is not None:
+                    return self._unstored(spec_id=spec_id, options=options, unstored=unstored)
             if rendered is None or _data_artifact(rendered) is None:
                 raise RootExpired(
                     spec_id=spec_id,
@@ -363,34 +471,38 @@ class LiveRootSource:
     def _resolved(
         self, *, spec_id: str, content_version: str, options: Mapping[str, Any], manifest: Manifest
     ) -> ResolvedRoot:
-        columns = tuple(options.get("columns") or ())
-        artifact = _data_artifact(manifest) if columns else None
-        stamp = artifact.enrichment_stamp if artifact is not None else None
-        frame = frame_ref_for(
+        artifact = _data_artifact(manifest) if options.get("columns") else None
+        return _root(
             spec_id=spec_id,
             content_version=content_version,
-            columns=columns,
-            groupby=options.get("groupby"),
-            without_party_totals=options.get("without_party_totals") is True,
-            enrichment_stamp=stamp,
-        )
-        dataset = FrameRef(spec_id=spec_id, content_version=content_version)
-        record: dict[str, Any] = {
-            "schema_version": 1,
-            "frame": frame.model_dump(),
-            "dataset": dataset.model_dump(),
-            "options": dict(options),
-            "scope": {},
-        }
-        if stamp is not None and requests_kinds(columns):
-            record["enrichment_stamp"] = stamp
-        return ResolvedRoot(
-            frame=frame,
-            dataset=dataset,
-            record=record,
-            rendering=root_rendering(options),
+            options=options,
+            artifact=artifact,
             rows=manifest.coverage.rows,
             source=None if artifact is None else _FrameLayoutFile(artifact),
+        )
+
+    @staticmethod
+    def _unstored(
+        *, spec_id: str, options: Mapping[str, Any], unstored: UnstoredRendering
+    ) -> ResolvedRoot:
+        """The root `unstored` renders: read from its frame-layout bytes when the root names
+        `columns`, else from the derived version's canonical frame it made, else, when the
+        rendering answers the version read, from that version's stored frame (`locate`)."""
+        columns = bool(options.get("columns"))
+        source: _Handle | None
+        if columns:
+            source = _UnstoredFrameLayout(unstored.data)
+        elif unstored.frame is not None:
+            source = _UnstoredFrame(unstored.frame)
+        else:
+            source = None
+        return _root(
+            spec_id=spec_id,
+            content_version=unstored.content_version,
+            options=options,
+            artifact=unstored.artifact if columns else None,
+            rows=unstored.rows,
+            source=source,
         )
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
@@ -402,6 +514,11 @@ class LiveRootSource:
             RootExpired: The version has no servable stored frame.
             OverCeilingError: `bytes`, for a frame1 document past the bound.
         """
+        located = self._located(root)
+        self._located_rows += located.rows or 0
+        return located
+
+    def _located(self, root: ResolvedRoot) -> LocatedRoot:
         if isinstance(root.source, _Handle):
             return LocatedRoot.of(root)
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
@@ -428,6 +545,11 @@ class LiveRootSource:
         handle = root.source
         if not isinstance(handle, _Handle):
             raise TypeError(f"a root is read only once `locate` locates it, not from {handle!r}")
+        if isinstance(handle, _UnstoredFrameLayout):
+            return frame_from_frame_layout(handle.data)
+        if isinstance(handle, _UnstoredFrame):
+            file = handle.file
+            return read_stored_frame(file.data, media_type=file.media_type, digest=file.digest)
         store = self._deps.artifact_store
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
         if isinstance(handle, _FrameLayoutFile):

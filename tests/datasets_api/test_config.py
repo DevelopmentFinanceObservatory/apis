@@ -94,6 +94,28 @@ def test_serve_stale_ceiling_at_or_under_max_age_fails_fast_naming_both_variable
         DatasetsBuildSettings.from_env()
 
 
+@pytest.mark.parametrize(
+    ("principal", "variable", "refused"),
+    [
+        ("probe-secret", "DATASETS_ANALYSIS_MAX_CONCURRENCY", True),
+        ("probe-secret", "DATASETS_MATERIALISE_MAX_CONCURRENCY", True),
+        ("", "DATASETS_ANALYSIS_MAX_CONCURRENCY", False),
+    ],
+)
+def test_a_verify_grant_with_one_analysis_thread_or_permit_fails_fast_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch, principal: str, variable: str, refused: bool
+) -> None:
+    """A verification leaves one analysis thread and one materialise permit free, so with
+    one of either it could never run."""
+    monkeypatch.setenv("VERIFY_PRINCIPAL", principal)
+    monkeypatch.setenv(variable, "1")
+    if not refused:
+        assert DatasetsBuildSettings.from_env().analysis_max_concurrency == 1
+        return
+    with pytest.raises(DatasetsConfigError, match=f"{variable}.*VERIFY_PRINCIPAL"):
+        DatasetsBuildSettings.from_env()
+
+
 _REQUIRED_SETTINGS_ENV = {
     "DATASETS_GRAPH_BASE_URL": "https://graph.example.org",
     "DATASETS_SDMX_BASE_URL": "https://sdmx.example.org",

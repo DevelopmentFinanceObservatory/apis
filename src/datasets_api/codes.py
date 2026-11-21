@@ -35,7 +35,8 @@ CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
 # `recipe_not_declared` and `rate_coverage_gap` are raised by `materialise.recipes` during
 # currency conversion and classified by the mint doors (`doors/conversion_errors.py`).
 # `refresh_not_permitted` is the frame refresh door's caller refusal, which the Presentation
-# render routes serve too. `allowance_exhausted` is the pin door's refusal of an open caller
+# render routes serve too. `verify_not_permitted` is the caller refusal of the analysis route's
+# `verify` mode, which the Presentation share sample serves too. `allowance_exhausted` is the pin door's refusal of an open caller
 # that has spent its daily pin allowance, and the exports door's too. `not_found` is the export
 # link's refusal of an unknown export id. Registry-binding tests use this served-code set.
 SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
@@ -56,6 +57,7 @@ SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
         "capability_unavailable",
         "upstream_version_changed",
         "refresh_not_permitted",
+        "verify_not_permitted",
         "allowance_exhausted",
         "not_found",
     }
