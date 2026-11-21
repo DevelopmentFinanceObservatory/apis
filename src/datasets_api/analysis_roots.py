@@ -70,6 +70,7 @@ from dfo_frame_grammar import (
     unit_cell_array,
 )
 from dfo_frame_grammar.grammar import (
+    STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
@@ -81,7 +82,7 @@ from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
 from code_index.query import CodeIndex
 from code_index.types import summable_axes
-from dataset_store.snapshot import StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation, StoredVersion
 from datasets_api.analysis import (
     STAT_VAR_PREFIX,
     STAT_VAR_WORD,
@@ -218,19 +219,18 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
 
 
 def implied_groupby(
-    trace: Mapping[str, Any], *, path_words: frozenset[str], code_index: CodeIndex
+    stat_vars: Sequence[str], *, path_words: frozenset[str], code_index: CodeIndex
 ) -> dict[str, Any] | None:
-    """The `groupby` a root read with no stated one is read with, from its version's `trace`
-    and the words the steps over it name: none when the words name `stat_var` or the frame
-    holds fewer than two StatVars with data (`summed_refs`), else `{by, op: "sum"}`, `by`
-    `time_period` and the summable axes the version's StatVars decode (`code_index`
-    declarations) that the words name, as the axis or as its `stat_var_<axis>` column, sorted
-    as `mint_options` sorts a stated `by`: the groupby a caller following the refusal's summed
-    read states. The datasets door sums every other
+    """The `groupby` a root read with no stated one is read with, from the StatVars with data
+    in its version, `stat_vars` as bare dcids (`LiveRootSource._contributing`), and the words
+    the steps over it name: none when the words name `stat_var` or there are fewer than two
+    StatVars, else `{by, op: "sum"}`, `by` `time_period` and the summable axes those StatVars
+    decode (`code_index` declarations) that the words name, as the axis or as its
+    `stat_var_<axis>` column, sorted as `mint_options` sorts a stated `by`: the groupby a
+    caller following the refusal's summed read states. The datasets door sums every other
     summable axis away, and `stat_var` with them (conformance C120)."""
     if STAT_VAR_WORD in path_words:
         return None
-    stat_vars = summed_refs(trace)
     if len(stat_vars) < 2:
         return None
     summable = summable_axes(code_index.declarations)
@@ -279,19 +279,52 @@ def _log_sum_refused(
     )
 
 
-def stat_vars_summed(version: StoredVersion | None, trace: Mapping[str, Any]) -> tuple[str, ...]:
-    """The StatVars a groupby rendering summed into its version, whose record is `version` and
-    whose trace is `trace`: the StatVars with data in it (`summed_refs`), the same ones the
-    planner's sum decision counts, when there are several. None when the record says the
-    frame summed nothing, as for a version with no base version or a derived one whose
-    `frame_summed` is false. A missing record or an unrecorded `frame_summed` is unknown and
-    reads as summed."""
+def summed_count(version: StoredVersion | None, *, rendered: int | None, contributors: int) -> int:
+    """How many StatVars a groupby rendering summed into its version, whose record is
+    `version`: the count a stored `stat_vars_summed` warning states (`rendered`), else
+    `contributors`, the StatVars with rows in the dataset version it renders, the ones the
+    renderer sums (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
+    when the record says the frame summed nothing, as for a version with no base version or a
+    derived one whose `frame_summed` is false. A missing record or an unrecorded
+    `frame_summed` is unknown and reads as summed."""
     if version is not None and (
         version.base_content_version is None or version.frame_summed is False
     ):
-        return ()
-    summed = tuple(summed_refs(trace))
-    return summed if len(summed) > 1 else ()
+        return 0
+    count = rendered if rendered is not None else contributors
+    return count if count > 1 else 0
+
+
+def _with_summed(root: ResolvedRoot, count: int, trace: Mapping[str, Any]) -> ResolvedRoot:
+    """`root` with the `count` StatVars its groupby summed, named as far as `trace` names
+    them."""
+    if not count:
+        return root
+    return replace(root, summed_count=count, stat_vars_summed=tuple(summed_refs(trace)))
+
+
+def _rendered_count(manifest: Manifest) -> int | None:
+    """The count of StatVars with rows the renderer summed into a groupby rendering, as the
+    `stat_vars_summed` warning a version stored while collapses raised one carries, `None`
+    when it carries none."""
+    return next(
+        (
+            warning.contributing_member_count
+            for warning in manifest.warnings
+            if warning.code == _SUMMED_WARNING
+        ),
+        None,
+    )
+
+
+_SUMMED_WARNING = "stat_vars_summed"
+_DCID = "dcid:"
+
+
+def _counts_recorded(trace: Mapping[str, Any]) -> bool:
+    """Whether every StatVar `trace` resolved records its observation count."""
+    entries = trace.get("resolved_stat_vars") or ()
+    return all(isinstance(entry.get("observation_count"), int) for entry in entries)
 
 
 # The precondition a queued rebuild's `rollup_not_summable` names when its operation records
@@ -410,9 +443,11 @@ def _root(
     artifact: ArtifactEntryModel | None,
     rows: int,
     source: object,
+    base_content_version: str | None = None,
 ) -> ResolvedRoot:
     """The root read at `{spec_id, content_version}` with `options`, its frame named by
-    `frame_ref_for` and `artifact`'s enrichment stamp, read through `source`."""
+    `frame_ref_for` and `artifact`'s enrichment stamp, read through `source`, rendered from the
+    dataset version `base_content_version`."""
     columns = tuple(options.get("columns") or ())
     stamp = artifact.enrichment_stamp if artifact is not None else None
     frame = frame_ref_for(
@@ -440,6 +475,7 @@ def _root(
         rendering=root_rendering(options),
         rows=rows,
         source=source,
+        base_content_version=base_content_version,
     )
 
 
@@ -527,7 +563,11 @@ class LiveRootSource:
         )
         options = record_options(mint_options(root.rendering), coverage=stored.coverage)
         read = partial(self._stored, root, stored, trace_id=trace_id, revoked_under=revoked_under)
-        groupby = self._implied(stored, path_words=path_words)
+        groupby = (
+            None
+            if path_words is None
+            else self._implied(spec_id, content_version, stored.trace, path_words=path_words)
+        )
         if groupby is None:
             return read(options=options)
         try:
@@ -540,15 +580,49 @@ class LiveRootSource:
             return replace(read(options=options), sum_refused=sum_refused)
 
     def _implied(
-        self, manifest: Manifest, *, path_words: frozenset[str] | None
+        self,
+        spec_id: str,
+        content_version: str,
+        trace: Mapping[str, Any],
+        *,
+        path_words: frozenset[str] | None,
     ) -> dict[str, Any] | None:
-        """The groupby the planner implies for a root of `manifest`'s version read under
-        `path_words` (`implied_groupby`), or `None` for a root it implies none for."""
+        """The groupby the planner implies for a root of the version `content_version`, whose
+        trace is `trace`, read under `path_words` (`implied_groupby`), or `None` for a root it
+        implies none for."""
         if path_words is None:
             return None
         return implied_groupby(
-            manifest.trace, path_words=path_words, code_index=self._deps.code_index
+            self._contributing(spec_id, content_version, trace),
+            path_words=path_words,
+            code_index=self._deps.code_index,
         )
+
+    def _contributing(
+        self, spec_id: str, content_version: str, trace: Mapping[str, Any]
+    ) -> list[str]:
+        """The StatVars with data in the dataset version `content_version`, as bare dcids:
+        those its `trace` counts observations for (`summed_refs`), or, for a trace that counts
+        none, as a version minted before traces counted them records, the distinct `stat_var`
+        cells of the version's stored frame. A version with no servable stored frame names
+        every StatVar its trace resolved."""
+        if _counts_recorded(trace):
+            return summed_refs(trace)
+        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
+        location = servable_frame_location(locations, now=self._deps.now())
+        if location is None:
+            return [
+                str(entry["ref"]).removeprefix(_DCID)
+                for entry in trace.get("resolved_stat_vars") or ()
+            ]
+        data = self._deps.artifact_store.get(
+            artifact_digest=location.artifact_digest, tier=Tier(location.tier)
+        )
+        frame = read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
+        cells = pc.unique(frame.table.column(STAT_VAR_COLUMN)).to_pylist()
+        return sorted(str(cell).removeprefix(_DCID) for cell in cells)
 
     def _newest(
         self,
@@ -597,8 +671,10 @@ class LiveRootSource:
         # The newest data is read in the rendering the root names, as a fresh root of
         # that rendering reads it, so a version recording two renderings stays readable.
         requested = mint_options(root.rendering)
-        head_trace = self._head_trace(served.spec_id, posted=root.spec_id, path_words=path_words)
-        groupby = None if head_trace is None else self._implied_by(head_trace, path_words)
+        head = self._head_version(served.spec_id, posted=root.spec_id, path_words=path_words)
+        groupby = (
+            None if head is None else self._implied(served.spec_id, *head, path_words=path_words)
+        )
         manifest: Manifest | None = None
         sum_refused: dict[str, str] | None = None
         operation_id: str | None = None
@@ -635,7 +711,16 @@ class LiveRootSource:
                 refused=sum_refused,
                 operation_id=operation_id,
             )
-        elif path_words is not None and self._implied_by(manifest.trace, path_words) != groupby:
+        elif (
+            path_words is not None
+            and self._implied(
+                served.spec_id,
+                self._base_version(served.spec_id, manifest.content_version),
+                manifest.trace,
+                path_words=path_words,
+            )
+            != groupby
+        ):
             return None
         # The mint resolved a default enrichment against the version it served.
         options = record_options(requested, coverage=manifest.coverage)
@@ -647,31 +732,30 @@ class LiveRootSource:
         )
         return replace(resolved, sum_refused=sum_refused)
 
-    def _implied_by(
-        self, trace: Mapping[str, Any], path_words: frozenset[str] | None
-    ) -> dict[str, Any] | None:
-        if path_words is None:
-            return None
-        return implied_groupby(trace, path_words=path_words, code_index=self._deps.code_index)
-
-    def _head_trace(
+    def _head_version(
         self, spec_id: str, *, posted: str, path_words: frozenset[str] | None
-    ) -> Mapping[str, Any] | None:
-        """The trace of the version the head of `spec_id` names, read from its record with no
-        rendering, or `None` for a root the planner implies no sum for or a subject with no
-        head."""
+    ) -> tuple[str, Mapping[str, Any]] | None:
+        """The version the head of `spec_id` names and its trace, read from its record with no
+        rendering, or `None` for a root the planner implies no sum for, a subject with no head,
+        or a head whose version is revoked. The trace only guesses the sum the serve reads; a
+        revoked head gives no guess, since the serve's freshness check may replace it, and the
+        version the serve reads is then judged, revocation included, as with no head."""
         if path_words is None:
             return None
         head = self._deps.head_store.read_head(spec_id)
         if head is None:
             return None
-        return load_stored(
-            subject_id=spec_id,
-            content_version=head.content_version,
-            deps=self._deps,
-            include_artifacts=False,
-            revoked_under=(posted,),
-        ).trace
+        try:
+            stored = load_stored(
+                subject_id=spec_id,
+                content_version=head.content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=(posted,),
+            )
+        except SnapshotRevoked:
+            return None
+        return head.content_version, stored.trace
 
     def _base_version(self, spec_id: str, content_version: str) -> str:
         """The dataset version `content_version` renders: its base for a derived version."""
@@ -781,10 +865,24 @@ class LiveRootSource:
             rows=manifest.coverage.rows,
             source=None if artifact is None else _FrameLayoutFile(artifact),
         )
+        if "groupby" not in options and not options.get("without_party_totals"):
+            return replace(root, base_content_version=content_version)
+        # A groupby or a party-totals cut can answer a version of its own, whose record names
+        # the dataset version it derives from.
+        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
+        base = (version.base_content_version if version is not None else None) or content_version
+        root = replace(root, base_content_version=base)
         if "groupby" not in options:
             return root
-        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
-        return replace(root, stat_vars_summed=stat_vars_summed(version, manifest.trace))
+        rendered = _rendered_count(manifest)
+        count = summed_count(
+            version,
+            rendered=rendered,
+            contributors=0
+            if rendered is not None
+            else len(self._contributing(spec_id, base, manifest.trace)),
+        )
+        return _with_summed(root, count, manifest.trace)
 
     def _unstored(
         self,
@@ -815,10 +913,13 @@ class LiveRootSource:
             artifact=unstored.artifact if columns else None,
             rows=unstored.rows,
             source=source,
+            base_content_version=content_version,
         )
         if "groupby" not in options or unstored.content_version == content_version:
             return root
-        return replace(root, stat_vars_summed=stat_vars_summed(None, stored.trace))
+        contributors = self._contributing(spec_id, content_version, stored.trace)
+        count = summed_count(None, rendered=None, contributors=len(contributors))
+        return _with_summed(root, count, stored.trace)
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root`, with the version's servable stored frame located when `read` reads it, and a

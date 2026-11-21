@@ -561,25 +561,57 @@ def test_a_short_grid_without_a_breakdown_names_no_flag() -> None:
 
 
 @pytest.mark.parametrize(
-    ("values", "rows"),
+    ("values", "rows", "unmatched"),
     [
-        pytest.param(["12220"], None, id="a-code-refuses-with-the-labels"),
-        pytest.param(["P1", "12220"], 2, id="a-held-label-keeps-its-rows"),
+        pytest.param(
+            ["12220"],
+            0,
+            [
+                {
+                    "column": "stat_var_crsPurpose",
+                    "values": ["12220"],
+                    "labels": ["P0", "P1", "P2", "P3"],
+                    "labels_truncated": False,
+                }
+            ],
+            id="a-code-answers-empty-and-names-the-labels",
+        ),
+        pytest.param(["P1", "12220"], 2, None, id="a-held-label-keeps-its-rows"),
     ],
 )
 def test_a_filter_on_a_breakdown_column_matching_no_row_names_its_labels(
-    values: list[str], rows: int | None
+    values: list[str], rows: int, unmatched: list[dict[str, object]] | None
 ) -> None:
+    """A value no row holds answers the empty result any filter gives, so the answer turns on
+    the data alone as the execution identity does, with the column's labels beside it."""
     predicate = {"kind": "category_match", "column": "stat_var_crsPurpose", "values": values}
     tree = _node("filter", {"frame_ref": _root(0)}, predicates=[predicate])
     inputs = {0: RootFrame(ref=_ROOT, frame=_breakdown_frame())}
 
-    if rows is not None:
-        assert evaluate(tree, inputs).frame.num_rows == rows
-        return
-    with pytest.raises(AnalysisRefused) as refused:
-        evaluate(tree, inputs)
+    evaluation = evaluate(tree, inputs)
 
-    assert refused.value.code is RefusalCode.FILTER_PREDICATE_TYPE_MISMATCH
-    assert refused.value.refusal.fix["column"] == "stat_var_crsPurpose"
-    assert refused.value.refusal.fix["labels"] == ["P0", "P1", "P2", "P3"]
+    assert evaluation.frame.num_rows == rows
+    assert evaluation.summary["result"].get("unmatched_breakdown_values") == unmatched
+
+
+def test_allow_sparse_breakdowns_publishes_the_groups_and_periods_the_data_holds() -> None:
+    """The relaxed grid decides the coverage floor alone: the aggregate's step counts the eight
+    (recipient, purpose) groups it wrote, and each ranked purpose holds the one year it has."""
+    frame = _breakdown_frame()
+    aggregate = _node(
+        "aggregate",
+        {"frame_ref": _root(0)},
+        aggregation="sum",
+        group_by=["recipient", "stat_var_crsPurpose"],
+        allow_sparse_breakdowns=True,
+    )
+    rank = _node(
+        "rank", {"frame_ref": _root(0)}, **_BREAKDOWN_STEPS["rank"], allow_sparse_breakdowns=True
+    )
+
+    (aggregated,) = evaluate(aggregate, {0: RootFrame(ref=_ROOT, frame=frame)}).steps
+    (ranked,) = evaluate(rank, {0: RootFrame(ref=_ROOT, frame=frame)}).steps
+
+    assert aggregated.step is not None and ranked.step is not None
+    assert aggregated.step.kept["groups"] == 8
+    assert {(entry.periods, entry.of) for entry in ranked.step.entity_coverage} == {(1, 4)}

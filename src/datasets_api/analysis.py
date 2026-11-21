@@ -118,7 +118,7 @@ import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.content_version import mint_content_version
-from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
+from dfo_frame_grammar.grammar import FACET_IDENTITY_COLUMNS, TIME_PERIOD_COLUMN, VALUE_COLUMN
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -631,8 +631,8 @@ class ResolvedRoot:
     record a recipe's `roots` holds for it (`dataset`, `options`, and the rest).
     `rendering` is the ref format 2 root's rendering. `rows` is the frame's row count as its
     version records it, `None` where the reader has none. `source` is the reader's own handle.
-    `stat_vars_summed` names the StatVars a groupby summed into the frame, as bare dcids, empty
-    where it sums none. `sum_refused` is the `{axis, precondition}` of the `rollup_not_summable`
+    `summed_count` is how many StatVars a groupby summed into the frame, 0 where it sums none,
+    and `stat_vars_summed` names them as bare dcids as far as its version's trace does. `sum_refused` is the `{axis, precondition}` of the `rollup_not_summable`
     a sum the planner implied met, the root then read unsummed (`RootSource.resolve`)."""
 
     frame: FrameRef
@@ -642,6 +642,19 @@ class ResolvedRoot:
     rows: int | None = None
     source: object = field(default=None, compare=False)
     stat_vars_summed: tuple[str, ...] = ()
+    summed_count: int = 0
+    base_content_version: str | None = None
+
+    def version(self) -> dict[str, str]:
+        """`{spec_id, content_version}`, the version the root reads, with
+        `base_content_version`, the dataset version its rendering derives from, when that is
+        another version, as for a groupby sum or a party-totals cut."""
+        read = {"spec_id": self.dataset.spec_id, "content_version": self.dataset.content_version}
+        base = self.base_content_version
+        if base is None or base == self.dataset.content_version:
+            return read
+        return {**read, "base_content_version": base}
+
     sum_refused: Mapping[str, str] | None = None
 
 
@@ -793,14 +806,19 @@ class AnalysisResult:
             "time": summary["time"],
             "execution_identity": summary["execution_identity"],
             "resolved_periods": list(self.resolved_periods),
+            "derived_roots": _unique(
+                version
+                for version in (root.version() for root in self.roots)
+                if "base_content_version" in version
+            ),
             "stat_vars_summed": _unique(
                 {
                     "spec_id": root.dataset.spec_id,
                     "content_version": root.dataset.content_version,
-                    "count": len(root.stat_vars_summed),
+                    "count": root.summed_count,
                 }
                 for root in self.roots
-                if root.stat_vars_summed
+                if root.summed_count
             ),
         }
 
@@ -951,6 +969,22 @@ def _path_words(step: StepNode) -> dict[str, set[str]]:
     return words
 
 
+# The columns a filter predicate on which keeps other rows of a frame's StatVars than of their
+# sum: the value, and the facets a sum across StatVars does not keep row by row.
+_OBSERVATION_COLUMNS = frozenset({VALUE_COLUMN, *FACET_IDENTITY_COLUMNS})
+
+
+def _reads_observations(step: StepNode) -> bool:
+    """Whether `step`, a `filter`, holds a predicate on one of `_OBSERVATION_COLUMNS`. A
+    predicate on a role, a kept `stat_var_<axis>` column, `time_period` or `unit` keeps the
+    same rows before a sum as after it."""
+    predicates = step.arguments.get("predicates")
+    return any(
+        isinstance(predicate, dict) and predicate.get("column") in _OBSERVATION_COLUMNS
+        for predicate in (predicates if isinstance(predicates, list) else ())
+    )
+
+
 # The verbs whose two sides hold one grain, so the words of the steps over them name both.
 _SYMMETRIC = frozenset({Verb.COMPARE, Verb.SUM_OF})
 
@@ -964,6 +998,7 @@ def _plan_node(
     side: str,
     path_words: frozenset[str] = frozenset(),
     reduced: bool = False,
+    value_filtered: bool = False,
 ) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
     node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
@@ -975,12 +1010,19 @@ def _plan_node(
     `share_of`, `quotient_of` and `join` the other side is keyed by its own words.
     `reduced` is whether a step above `node` is a verb other than `filter`, which reads one
     StatVar. A root under `filter` steps alone selects rows and keeps every StatVar's, so it is
-    planned with no path words and read as stated."""
+    planned with no path words and read as stated. `value_filtered` is whether a `filter`
+    between `node` and the nearest step above it that is no `filter` holds a predicate that
+    does not commute with a sum (`_reads_observations`): a threshold on `value` keeps other
+    rows of the StatVars than of their sum, so a root under one is read as stated too, as a
+    saved filter's root is."""
     match node:
         case StepNode():
             plan.count()
             words = _path_words(node)
             below = reduced or node.verb is not Verb.FILTER
+            filtered = (
+                value_filtered or _reads_observations(node) if node.verb is Verb.FILTER else False
+            )
             inputs = {
                 "data": _plan_node(
                     node.inputs.data,
@@ -990,6 +1032,7 @@ def _plan_node(
                     side="data",
                     path_words=path_words | words["data"],
                     reduced=below,
+                    value_filtered=filtered,
                 )
             }
             if node.inputs.other is not None:
@@ -1002,6 +1045,7 @@ def _plan_node(
                     side="other",
                     path_words=inherited | words["other"],
                     reduced=below,
+                    value_filtered=filtered,
                 )
             return {"step": node, "inputs": inputs}
         case RefRoot():
@@ -1018,6 +1062,7 @@ def _plan_node(
                 side=side,
                 path_words=path_words,
                 reduced=reduced,
+                value_filtered=value_filtered,
             )
         case DerivedRoot():
             stored = source.recipe(spec_id=node.spec_id, content_version=node.content_version)
@@ -1030,7 +1075,8 @@ def _plan_node(
             records = stored["roots"]
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
-            return plan.root(node, path_words=path_words if reduced else None)
+            summed = reduced and not value_filtered
+            return plan.root(node, path_words=path_words if summed else None)
 
 
 def _expand(
@@ -1569,9 +1615,9 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
                 },
                 "options": dict(root.record.get("options") or {}),
             }
-            if root.stat_vars_summed:
+            if root.summed_count:
                 retrieve["summed"] = {
-                    "count": len(root.stat_vars_summed),
+                    "count": root.summed_count,
                     "variables": [{"ref": ref} for ref in root.stat_vars_summed[:MAX_SUMMED_NAMED]],
                 }
             return emit(node["frame"], retrieve)
@@ -2040,9 +2086,14 @@ def _evaluated_frames(
             tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
         )
     except AnalysisRefused as refused:
-        if (named := _with_summed_read(refused.refusal, ordered)) is None:
+        reads = (
+            ordered
+            if refused.roots is None
+            else [ordered[index] for index in refused.roots if index < len(ordered)]
+        )
+        if (named := _with_summed_read(refused.refusal, reads)) is None:
             raise
-        raise AnalysisRefused(named) from refused
+        raise AnalysisRefused(named, roots=refused.roots) from refused
     rows = evaluation.frame.num_rows
     if rows > PUBLISH_MAX_ROWS:
         raise AnalysisTooLarge(
@@ -2073,14 +2124,18 @@ _SUMMED_READ_ADVICE = (
 def _with_summed_read(
     refusal: EngineRefusal, roots: Sequence[ResolvedRoot]
 ) -> EngineRefusal | None:
-    """`refusal`, a `stat_var_unresolved`, with the read that answers it, else `None`.
+    """`refusal`, a `stat_var_unresolved` over several StatVars of `roots`, the roots the
+    refused step reads, with the read that answers it, else `None`. A refusal over no
+    StatVars, as for a window that holds no row, names none: a summed read would not answer it.
 
-    When a sum the planner implied was refused by the datasets door, the refusal names each
-    such sum in its message and its `fix` as `groupby_refused` (`{spec_id, content_version,
-    axis, precondition}`), and offers no summed read, which would refuse again. Otherwise, over
-    several StatVars, it names the summed read in its message and `fix["groupby"]`
+    When a sum the planner implied for one of `roots` was refused by the datasets door, the
+    refusal names each such sum in its message and its `fix` as `groupby_refused`
+    (`{spec_id, content_version, axis, precondition}`), and offers no summed read, which would
+    refuse again. Otherwise it names the summed read in its message and `fix["groupby"]`
     (`SUMMED_READ`)."""
     if refusal.code is not EngineRefusalCode.STAT_VAR_UNRESOLVED:
+        return None
+    if len(refusal.fix.get("distinct_stat_vars") or ()) < 2:
         return None
     sums = [
         {
@@ -2098,8 +2153,6 @@ def _with_summed_read(
             f"rollup_not_summable ({preconditions})."
         )
         return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
-    if len(refusal.fix.get("distinct_stat_vars") or ()) < 2:
-        return None
     return replace(
         refusal,
         message=f"{refusal.message}{_SUMMED_READ_ADVICE}",

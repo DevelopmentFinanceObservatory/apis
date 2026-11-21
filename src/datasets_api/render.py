@@ -119,8 +119,10 @@ from datasets_api.groupby import (
     levels_in_frame,
     refuse_decode_gaps,
     refuse_provenance_disagreement,
+    refuse_shared_labels,
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
+    rekeys_stat_vars,
     roll_up_levels,
     sums_components,
     sums_stat_vars,
@@ -903,12 +905,15 @@ def _reshape_groupby(
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
     declared-summable axes absent from `by`. `groupby.levels` first rewrites each level axis's
     decoded labels to their depth ancestors' (`groupby.roll_up_levels`); a code above the depth
-    keeps its own label.
+    keeps its own label. A `by` that leaves out `stat_var` and keeps every decoded summable axis
+    collapses `stat_var` alone, each kept tuple holding one StatVar, so the frame is keyed by
+    the kept axes under one `stat_var` as any other sum's is (`groupby.rekeys_stat_vars`).
 
     For a collapse or a level roll-up, decode includes resolved StatVars with zero rows. It checks
     decode gaps, StatVar collisions, and provenance agreement before summing each axis in order,
     with `stat_var` first. Each sum uses its expected population and the source's
-    absent-observation rule. Naming all decoded axes in `by` with no level is a no-op. With no
+    absent-observation rule. Naming `stat_var` and all decoded axes in `by` with no level is a
+    no-op. With no
     summable axis, omitting `stat_var` with multiple contributors raises
     `RollupNotSummableError`.
 
@@ -953,11 +958,22 @@ def _reshape_groupby(
     components = sums_components(
         by=options.groupby.by, composite=_frame_composite(code_index, provenance_refs)
     )
-    if axes_to_collapse or levels or components:
+    rekeyed = rekeys_stat_vars(
+        by=options.groupby.by,
+        decoded_code_systems=decoded_code_systems,
+        declarations=code_index.declarations,
+    )
+    if axes_to_collapse or levels or components or rekeyed:
         kept = kept_axes(
             by=options.groupby.by,
             decoded_code_systems=decoded_code_systems,
             declarations=code_index.declarations,
+        )
+        refuse_shared_labels(
+            decode_plan.lookup if decode_plan is not None else {},
+            index=code_index,
+            kept=kept,
+            levels=levels,
         )
         current, decode_plan, collapse_info = _reshape_groupby_collapse(
             table,

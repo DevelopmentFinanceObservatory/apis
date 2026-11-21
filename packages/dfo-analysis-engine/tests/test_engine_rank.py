@@ -1468,10 +1468,9 @@ def test_a_partitioned_per_period_rank_cuts_each_partition_in_each_period() -> N
     ]
 
 
-def test_allow_sparse_breakdowns_measures_each_entity_on_the_grid() -> None:
-    """Each purpose holds one of two years, so it covers half the window alone.
-    On the grid without the breakdown its reporter holds both years, so each
-    entity's coverage is whole."""
+def test_allow_sparse_breakdowns_relaxes_the_floor_and_keeps_the_held_periods() -> None:
+    """Each purpose holds one of two years. Without the breakdown its reporter holds both,
+    so the floor reads a whole grid, while each purpose still reports the one year it holds."""
     frame = _frame(
         [
             _row(reporter="dcid:AAA", year=year, value=1.0, stat_var_crsPurpose=purpose)
@@ -1493,8 +1492,92 @@ def test_allow_sparse_breakdowns_measures_each_entity_on_the_grid() -> None:
 
     sparse, strict = ranked(True), ranked(False)
 
-    assert [er.coverage_fraction for er in sparse.entity_ranks] == [1.0, 1.0]
-    assert [er.period_count for er in sparse.entity_ranks] == [2, 2]
-    assert sparse.overall_coverage_fraction == 1.0
-    assert [er.coverage_fraction for er in strict.entity_ranks] == [0.5, 0.5]
-    assert strict.overall_coverage_fraction == 0.5
+    assert sparse.floor_grid is not None and sparse.floor_grid.fraction == 1.0
+    assert strict.floor_grid is None
+    assert [er.period_count for er in sparse.entity_ranks] == [1, 1]
+    assert sparse.entity_ranks == strict.entity_ranks
+    assert sparse.overall_coverage_fraction == strict.overall_coverage_fraction == 0.5
+
+
+_PARTY_ROLES = ["financingRecipient", "financingProvider", "financingProvider_party_kind"]
+_DONORS = (
+    ("country/AFG", "dcid:DAC", "total", 100.0),
+    ("country/AFG", "dcid:EU", "total", 50.0),
+    ("country/KEN", "country/DEU", "party", 30.0),
+    ("country/KEN", "dcid:DAC", "total", 90.0),
+)
+
+
+def _donor_frame(recipients: set[str]) -> Frame:
+    return _frame(
+        [
+            {
+                "stat_var": "dcid:X",
+                "financingRecipient": recipient,
+                "financingProvider": provider,
+                "financingProvider_party_kind": kind,
+                "time_period": "2024",
+                "value": value,
+            }
+            for recipient, provider, kind, value in _DONORS
+            if recipient in recipients
+        ],
+        role_keys=_PARTY_ROLES,
+    )
+
+
+def _top_donor(frame: Frame) -> list[tuple[str, str]]:
+    result = run_rank(
+        frame,
+        rank_by=("financingProvider",),
+        partition_by=("financingRecipient",),
+        aggregation="sum",
+        window_start=None,
+        window_end=None,
+        ascending=False,
+        limit=1,
+    )
+    return [
+        (dict(er.entity_key)["financingRecipient"], dict(er.entity_key)["financingProvider"])
+        for er in result.kept_ranks
+    ]
+
+
+def test_each_partition_keeps_its_party_totals_as_a_ranking_of_it_alone_does() -> None:
+    """AFG's donors are all totals, so ranked alone they rank as totals, while KEN's
+    individual donor leaves KEN's total out. Ranked together, each recipient keeps the
+    winner it has alone."""
+    both = _top_donor(_donor_frame({"country/AFG", "country/KEN"}))
+
+    assert both == [
+        *_top_donor(_donor_frame({"country/AFG"})),
+        *_top_donor(_donor_frame({"country/KEN"})),
+    ]
+    assert both == [("country/AFG", "dcid:DAC"), ("country/KEN", "country/DEU")]
+
+
+@pytest.mark.parametrize("per_period", [False, True], ids=["window", "per-period"])
+def test_a_rank_with_one_partition_per_row_ranks_each_row_first(per_period: bool) -> None:
+    """Each recipient holds one reporter, so every entity ranks first in its own partition,
+    and the limit keeps every row, in partition order, whatever the values."""
+    rows = [
+        _row(reporter=f"dcid:P{at % 3}", recipient=f"dcid:R{at:02d}", value=float(at % 4))
+        for at in range(12)
+    ]
+    result = run_rank(
+        _frame(rows, role_keys=["reporter", "recipient"]),
+        rank_by=("reporter",),
+        partition_by=("recipient",),
+        aggregation=None,
+        window_start=None,
+        window_end=None,
+        ascending=False,
+        limit=1,
+        per_period=per_period,
+    )
+
+    assert [(dict(er.entity_key)["recipient"], er.rank) for er in result.entity_ranks] == [
+        (f"dcid:R{at:02d}", 1) for at in range(12)
+    ]
+    assert result.frame.num_rows == 12
+    assert not [record for record in result.exclusions.records if record.reason == "beyond_limit"]

@@ -66,11 +66,12 @@ pair that holds a row, so a donor that gave nothing to a recipient leaves no
 missing cell in that recipient's ranking. `beyond_limit` names an entity
 only when no partition keeps it.
 
-With `allow_sparse_breakdowns`, the `stat_var_<axis>` columns among
-`partition_by` and `rank_by` leave the overall coverage grid
-(`engine.common.grid_columns`). The grid's entities are then the distinct
-values of the other columns, each present in a period when any of its
-breakdown cells holds a row.
+With `allow_sparse_breakdowns`, the coverage floor reads a grid without the
+`stat_var_<axis>` columns among `partition_by` and `rank_by`
+(`engine.common.grid_columns`, `RankResult.floor_grid`): its entities are the
+distinct values of the other columns, each present in a period when any of
+its breakdown entities holds a row then. The published counts and each
+entity's coverage still describe the periods each entity holds.
 """
 
 from __future__ import annotations
@@ -109,23 +110,26 @@ from dfo_analysis_engine.engine.columnar import (
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
+    NOT_A_FACT,
     Exclusions,
     FacetSelection,
+    FloorGrid,
     available_entity_columns,
     combine_exclusions,
     facet_columns,
+    floor_grid,
     frame_keeping_role_types,
     grid_columns,
     narrow_and_resolve,
     private_parties,
     record_counted_exclusion,
     record_exclusion,
-    require_one_place_level,
+    require_one_place_level_within,
     require_single_stat_var,
     role_columns,
     table_before_unitless_exclusion,
     validate_entity_columns,
-    without_party_totals,
+    without_party_totals_within,
 )
 from dfo_analysis_engine.time_grain import span_label
 
@@ -216,6 +220,7 @@ class RankResult:
     exclusions: Exclusions = field(default_factory=Exclusions)
     window_period_count: int = 0
     private_parties: tuple[tuple[str, str], ...] = ()
+    floor_grid: FloorGrid | None = field(default=None, metadata={NOT_A_FACT: True})
 
     @property
     def kept_ranks(self) -> tuple[EntityRank, ...]:
@@ -382,13 +387,33 @@ def _partitioned_rank(
 ) -> list[tuple[tuple[str, ...], float, int]]:
     """`_competition_rank` run apart on each partition of `values`, the keys
     sharing their first `width` values, partitions in `_tie_break_key` order
-    of those values. A `width` of 0 is one partition."""
-    partitions: dict[tuple[str, ...], dict[tuple[str, ...], float]] = {}
-    for key, value in values.items():
-        partitions.setdefault(key[:width], {})[key] = value
+    of those values. A `width` of 0 is one partition. One sort orders every
+    key by partition, then as `_competition_rank` does, and one scan numbers
+    the ranks, starting again at each partition, so no partition holds a
+    mapping of its own."""
+    if not width:
+        return _competition_rank(values, ascending=ascending)
+    ordered_keys = sorted(
+        values,
+        key=lambda key: (
+            _tie_break_key(key[:width]),
+            values[key] if ascending else -values[key],
+            _tie_break_key(key),
+        ),
+    )
     ranked: list[tuple[tuple[str, ...], float, int]] = []
-    for partition in sorted(partitions, key=_tie_break_key):
-        ranked.extend(_competition_rank(partitions[partition], ascending=ascending))
+    partition: tuple[str, ...] | None = None
+    position = current_rank = 0
+    previous_value: float | None = None
+    for key in ordered_keys:
+        value = values[key] + 0.0
+        if key[:width] != partition:
+            partition, position, previous_value = key[:width], 0, None
+        position += 1
+        if previous_value is None or value != previous_value:
+            current_rank = position
+        ranked.append((key, value, current_rank))
+        previous_value = value
     return ranked
 
 
@@ -534,13 +559,14 @@ def run_rank(
     stat_var = require_single_stat_var(frame)
     rank_by = validate_entity_columns(frame, rank_by)
     partition_by = validate_entity_columns(frame, partition_by)
-    require_one_place_level(frame, rank_by)
+    require_one_place_level_within(frame, rank_by, partition_by=partition_by)
     # A total of other parties is neither ranked beside them nor summed into
     # an entity's value, whether its role is ranked or pooled. A ranked role
     # holding only totals ("which regions receive the most?") ranks them, and
     # a ranked role holding parties leaves out its unallocated residuals.
-    frame, party_exclusions = without_party_totals(
-        frame, role_columns(frame), ranked=rank_by, keyed=partition_by
+    # Each partition is judged on its own rows, as a ranking of it alone is.
+    frame, party_exclusions = without_party_totals_within(
+        frame, role_columns(frame), partition_by=partition_by, ranked=rank_by
     )
     # `exclude_unitless=True`: `resolved.unit` labels every ranked entity's
     # output row alike. An entity whose rows leave `unit` unbound is excluded;
@@ -602,19 +628,11 @@ def run_rank(
     # `entity_coverage`/`entity_present_periods` are entity-wide regardless
     # of `per_period` -- coverage is always measured against the whole
     # window, never one period at a time (see the module docstring's own
-    # coverage paragraph). Both read the grid's columns (`counted`). With
-    # `allow_sparse_breakdowns` an entity holds a period when any entity
-    # sharing its other columns does.
-    counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)
-    positions = [key_names.index(column) for column in counted]
-    grid_codes: dict[tuple[str, ...], set[int]] = {}
-    for key, (_, period_codes) in entity_members.items():
-        grid_codes.setdefault(tuple(key[at] for at in positions), set()).update(period_codes)
+    # coverage paragraph).
     entity_coverage: dict[tuple[str, ...], float] = {}
     entity_present_periods: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for key in entity_members:
-        codes = grid_codes[tuple(key[at] for at in positions)]
-        present_periods = tuple(members.periods[code] for code in sorted(codes))
+    for key, (_, period_codes) in entity_members.items():
+        present_periods = tuple(members.periods[code] for code in sorted(set(period_codes)))
         entity_present_periods[key] = present_periods
         entity_coverage[key] = len(present_periods) / pre_exclusion_period_count
 
@@ -629,11 +647,24 @@ def run_rank(
     # shrank to fit. `pre_exclusion_period_count` was already computed
     # above, before the per-entity coverage loop, which needs the identical
     # denominator.
-    pre_exclusion_entity_count = group_rows(pre_exclusion_table, counted).count
+    pre_exclusion_entity_count = group_rows(pre_exclusion_table, entity_columns).count
     expected_cell_count = pre_exclusion_entity_count * pre_exclusion_period_count
-    present_cell_count = sum(len(codes) for codes in grid_codes.values())
+    present_cell_count = sum(len(periods) for periods in entity_present_periods.values())
     overall_coverage_fraction = (
         present_cell_count / expected_cell_count if expected_cell_count else 1.0
+    )
+    # With `allow_sparse_breakdowns` the floor reads the grid without the
+    # breakdown columns: an entity of the other columns holds a period when
+    # any of its breakdown entities does. The counts above, and each entity's
+    # own coverage, still describe the periods the entities hold.
+    counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)
+    relaxed = (
+        None
+        if counted == entity_columns
+        else floor_grid(
+            present=group_rows(table, (*counted, TIME_PERIOD_COLUMN)).count,
+            expected=group_rows(pre_exclusion_table, counted).count * pre_exclusion_period_count,
+        )
     )
 
     entity_ranks: list[EntityRank]
@@ -745,4 +776,5 @@ def run_rank(
         exclusions=exclusions,
         window_period_count=pre_exclusion_period_count,
         private_parties=private_parties(table, entity_columns),
+        floor_grid=relaxed,
     )

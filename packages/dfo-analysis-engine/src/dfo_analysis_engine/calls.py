@@ -67,10 +67,12 @@ from dfo_analysis_engine.artifact import Exclusion, Interval, Observation, Time
 from dfo_analysis_engine.call_steps import call_step
 from dfo_analysis_engine.engine.aggregate import run_aggregate
 from dfo_analysis_engine.engine.common import (
+    FACT_WHEN_SET,
     NOT_A_FACT,
     ExclusionReason,
     Exclusions,
     ExclusionSide,
+    FloorGrid,
     breakdown_columns,
 )
 from dfo_analysis_engine.engine.compare import run_compare
@@ -752,6 +754,7 @@ def _facts(value: object, *, top: bool = False) -> object:
             for item in dataclasses.fields(value)
             if not (top and isinstance(getattr(value, item.name), Frame))
             and not item.metadata.get(NOT_A_FACT)
+            and not (item.metadata.get(FACT_WHEN_SET) and not getattr(value, item.name))
         }
     if isinstance(value, Mapping):
         return {str(key): _facts(item) for key, item in value.items()}
@@ -775,10 +778,13 @@ def _aggregate(op_spec: AggregateOpSpec, frame: Input, *, coverage_floor: float)
         ),
         [frame],
     )
+    checked = result.floor_grid or FloorGrid(
+        fraction=result.realised_coverage_fraction, skipped_cell_count=result.skipped_cell_count
+    )
     _check_coverage(
-        result.realised_coverage_fraction,
+        checked.fraction,
         floor=coverage_floor,
-        skipped=result.skipped_cell_count,
+        skipped=checked.skipped_cell_count,
         columns=group_by,
         allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
     )
@@ -848,10 +854,14 @@ def _rank(op_spec: RankOpSpec, frame: Input, *, coverage_floor: float) -> _Outco
         ),
         [frame],
     )
+    checked = result.floor_grid or FloorGrid(
+        fraction=result.overall_coverage_fraction,
+        skipped_cell_count=result.expected_cell_count - result.present_cell_count,
+    )
     _check_coverage(
-        result.overall_coverage_fraction,
+        checked.fraction,
         floor=coverage_floor,
-        skipped=result.expected_cell_count - result.present_cell_count,
+        skipped=checked.skipped_cell_count,
         columns=(*partition_by, *rank_by),
         allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
     )

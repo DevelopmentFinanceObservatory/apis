@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 
+import httpx
 import pytest
 
 from code_index import CodeIndex, CodeRow
-from datasets_api import analysis_roots
+from datasets_api import analysis_roots, current
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -27,6 +29,7 @@ from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from dfo_platform import ProblemIssue, ProblemSpec
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from materialise.trace import ResolvedStatVar
 from spec_registry.identity import recompute_identity
 
 from ._analysis_doubles import FakeRootSource
@@ -37,6 +40,7 @@ from .test_definition_door import _client
 from .test_definition_door_groupby_collapse import _hierarchical_code_index
 from .test_meta_doors import _operation
 from .test_serve_groupby_collapse import (
+    _CSV_BODY,
     _IDENTITY,
     _MEMBER_A,
     _MEMBER_ARCS,
@@ -108,7 +112,7 @@ def _two_axis_spec_id_and_sidecar() -> tuple[str, dict]:
     }
 
 
-def _rig(*, code_index=None, sole: bool = False, two_axes: bool = False):
+def _rig(*, code_index=None, sole: bool = False, two_axes: bool = False, sdmx_transport=None):
     """A client over a minted dataset of two StatVars (one with `sole`), each 2020 value of one
     recipient, its version store, and the root naming that version with no enrichment. With
     `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`)."""
@@ -117,7 +121,8 @@ def _rig(*, code_index=None, sole: bool = False, two_axes: bool = False):
         code_index = _two_axis_code_index()
     client = _client(
         graph=_two_axis_graph() if two_axes else _graph(),
-        sdmx_transport=_sole_member_sdmx_transport() if sole else _sdmx_transport(),
+        sdmx_transport=sdmx_transport
+        or (_sole_member_sdmx_transport() if sole else _sdmx_transport()),
         version_store=store,
         head_writer=_FakeHeadStore(),
         code_index=code_index or _hierarchical_code_index(),
@@ -571,3 +576,130 @@ def test_a_spec_root_under_two_word_sets_serves_its_head_once(
     assert served[0]["by"] == ["testAxis", "time_period"]
     reads = response.json()["ref"]["members"][0]["roots"]
     assert len({read["content_version"] for read in reads}) == 2
+
+
+@pytest.mark.parametrize("stated", [False, True], ids=["inferred", "stated"])
+def test_a_version_whose_trace_counts_no_observations_is_summed_by_its_frame(
+    monkeypatch: pytest.MonkeyPatch, stated: bool
+) -> None:
+    """A version minted before traces counted each StatVar's observations is read summed when
+    its stored frame holds several StatVars, and the answer counts the StatVars the sum
+    added, inferred or stated."""
+    monkeypatch.setattr(
+        ResolvedStatVar,
+        "as_trace_entry",
+        lambda self: {"ref": self.ref, "roles": list(self.roles)},
+    )
+    client, _, root = _rig()
+    if stated:
+        root = {**root, "rendering": {"columns": [], "groupby": _SUMMED}}
+
+    response = _post(client, _aggregate(root, group_by=["recipient"]))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [summed["count"] for summed in body["stat_vars_summed"]] == [2]
+    assert body["rows"] == 1
+
+
+@pytest.mark.parametrize("route", ["analysis", "anchor"])
+def test_a_summed_root_names_the_dataset_version_its_rendering_derives_from(route: str) -> None:
+    """A summed rendering answers a version of its own. The answer and the anchor name, beside
+    it, the dataset version it derives from, so a caller holding that version, as an anchor
+    records it, matches the rendering to it."""
+    client, _, root = _rig()
+    summed = {**root, "rendering": {"columns": [], "groupby": _SUMMED}}
+    if route == "anchor":
+        populations = [{"spec_id": root["spec_id"], "bindings": {}}]
+        response = client.post(
+            "/api/datasets/analysis/anchor", json={"roots": [summed], "populations": populations}
+        )
+    else:
+        response = _post(client, _aggregate(root, group_by=["recipient"]))
+
+    assert response.status_code == 200, response.text
+    (read,) = response.json()["roots" if route == "anchor" else "derived_roots"]
+    assert read["spec_id"] == root["spec_id"]
+    assert read["content_version"] != root["content_version"]
+    assert read["base_content_version"] == root["content_version"]
+
+
+def _above(data: dict, threshold: float) -> dict:
+    """A filter keeping the rows whose value is above `threshold`."""
+    return {
+        "verb": "filter",
+        "arguments": {
+            "predicates": [
+                {"kind": "ordered_threshold", "column": "value", "op": "gt", "value": threshold}
+            ]
+        },
+        "inputs": {"data": data},
+    }
+
+
+def test_a_value_filter_under_a_sum_reads_as_a_saved_filter_does() -> None:
+    """The two StatVars hold 1,000 and 500. A value threshold keeps observations, so it runs
+    on the StatVars' own rows inline as it does saved: the sum over 750 is 1,000 both ways."""
+    client, _, root = _rig()
+
+    inline = _post(client, _aggregate(_above(root, 750.0), group_by=["recipient"]))
+    saved = _post(client, _above(root, 750.0))
+    assert saved.status_code == 200, saved.text
+    over_saved = _post(client, _aggregate({"ref": saved.json()["ref"]}, group_by=["recipient"]))
+
+    assert inline.status_code == over_saved.status_code == 200, (inline.text, over_saved.text)
+    assert inline.json()["frame_content_version"] == over_saved.json()["frame_content_version"]
+    assert inline.json()["stat_vars_summed"] == []
+
+
+@pytest.mark.parametrize("word", ["testAxis", "stat_var_testAxis"])
+def test_grouping_by_the_only_summable_axis_reads_one_row_per_axis_value(word: str) -> None:
+    """The frame's one summable axis is kept, so the sum adds nothing: each axis value holds
+    one StatVar. The read is still the single-measure frame keyed by that axis, so an
+    aggregate by it answers one row per value."""
+    client, _, root = _rig()
+
+    response = _post(client, _aggregate(root, group_by=[word]))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["rows"] == 2
+    assert "stat_var_testAxis" in body["role_keys"]
+
+
+def test_a_revoked_stale_head_reads_the_version_its_rebuild_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The head names a version since revoked and past its age, and the source now holds
+    other values. A Spec root reads the rebuilt version, summed, as a root of a dataset with
+    no head does; a root pinned to the revoked version still refuses."""
+    body = {"text": _CSV_BODY}
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=body["text"],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+    client, store, root = _rig(sdmx_transport=transport)
+    spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
+    assert _post(client, _filter(spec_root)).status_code == 200
+    with store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation "
+            "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, %s)",
+            (root["spec_id"], root["content_version"], "takedown", "2026-01-01T00:00:00+00:00"),
+        )
+    body["text"] = _CSV_BODY.replace(",2020,1000,", ",2020,600,")
+    monkeypatch.setattr(current, "_head_is_fresh", lambda head, *, now, deps: False)
+    monkeypatch.setattr(current, "_max_age", lambda head, *, deps: timedelta(0))
+
+    fresh = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+    pinned = _post(client, _aggregate(root, group_by=["recipient"]))
+
+    assert fresh.status_code == 200, fresh.text
+    (read,) = fresh.json()["ref"]["members"][0]["roots"]
+    assert read["rendering"] == {**_BARE, "groupby": _SUMMED}
+    assert [summed["count"] for summed in fresh.json()["stat_vars_summed"]] == [2]
+    assert pinned.status_code == 410, pinned.text
+    assert pinned.json()["code"] == "snapshot_revoked"

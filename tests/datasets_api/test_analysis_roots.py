@@ -32,10 +32,9 @@ from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
     frame_ref_for,
-    implied_groupby,
     mint_options,
     record_options,
-    stat_vars_summed,
+    summed_count,
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
@@ -301,43 +300,31 @@ _TWO_COUNTED = {
 
 
 @pytest.mark.parametrize(
-    ("version", "summed"),
+    ("version", "rendered", "count"),
     [
-        pytest.param(None, ("A", "B"), id="no-record-is-unknown"),
+        pytest.param(None, None, 2, id="no-record-is-unknown"),
         pytest.param(
             SimpleNamespace(base_content_version=_CV, frame_summed=None),
-            ("A", "B"),
+            None,
+            2,
             id="unrecorded-frame-summed-is-unknown",
         ),
         pytest.param(
-            SimpleNamespace(base_content_version=_CV, frame_summed=True), ("A", "B"), id="summed"
+            SimpleNamespace(base_content_version=_CV, frame_summed=True), 3, 3, id="renderer-count"
         ),
         pytest.param(
-            SimpleNamespace(base_content_version=_CV, frame_summed=False), (), id="a-cut-frame"
+            SimpleNamespace(base_content_version=_CV, frame_summed=False), 3, 0, id="a-cut-frame"
         ),
         pytest.param(
-            SimpleNamespace(base_content_version=None, frame_summed=None), (), id="no-derived"
+            SimpleNamespace(base_content_version=None, frame_summed=None), 3, 0, id="no-derived"
         ),
     ],
 )
-def test_a_groupby_names_the_stat_vars_it_summed_unless_its_record_says_none(
-    version: object, summed: tuple[str, ...]
+def test_a_groupby_counts_the_stat_vars_it_summed_unless_its_record_says_none(
+    version: object, rendered: int | None, count: int
 ) -> None:
-    assert stat_vars_summed(version, _TWO_COUNTED) == summed  # ty: ignore[invalid-argument-type]
-
-
-def test_a_version_whose_trace_counts_no_observations_implies_no_sum() -> None:
-    """The sum decision counts the StatVars a summed version would name
-    (`description_record.summed_refs`), so a trace recording no observation counts implies no
-    sum, as it would name none."""
-    uncounted = {"resolved_stat_vars": [{"ref": "dcid:A"}, {"ref": "dcid:B"}]}
-    index = SimpleNamespace(declarations={}, statvar_by_dcid=lambda _: None)
-
-    def implied(trace: dict) -> object:
-        return implied_groupby(trace, path_words=frozenset(), code_index=index)  # ty: ignore[invalid-argument-type]
-
-    assert implied(uncounted) is None
-    assert implied(_TWO_COUNTED) == {"by": ["time_period"], "op": "sum"}
+    """The renderer's count wins over the StatVars the trace counts (2 here)."""
+    assert summed_count(version, rendered=rendered, contributors=2) == count  # ty: ignore[invalid-argument-type]
 
 
 def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
@@ -382,7 +369,7 @@ def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
     )
 
     assert resolved.dataset.content_version == derived_cv
-    assert resolved.stat_vars_summed == ("A", "B")
+    assert (resolved.summed_count, resolved.stat_vars_summed) == (2, ("A", "B"))
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:

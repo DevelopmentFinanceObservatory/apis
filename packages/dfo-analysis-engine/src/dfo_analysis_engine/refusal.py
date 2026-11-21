@@ -75,7 +75,6 @@ from dfo_analysis_engine.engine.compare import (
     ComparisonPeriodsDisjointError,
 )
 from dfo_analysis_engine.engine.filter import (
-    FilterBreakdownValueUnmatchedError,
     FilterPlaceLevelUnknownError,
     FilterPredicateTypeMismatchError,
     FilterPredicateValueTypeMismatchError,
@@ -1118,29 +1117,6 @@ class Refusal:
         )
 
     @classmethod
-    def filter_breakdown_value_unmatched(
-        cls, *, column: str, values: list[str], labels: list[str], truncated: bool
-    ) -> Self:
-        """A `category_match` on a `stat_var_<axis>` column naming no value it holds. The
-        column holds labels, so a code matches nothing. `fix["labels"]` lists the smallest of
-        the labels it holds, `fix["labels_truncated"]` whether there are more."""
-        return cls(
-            code=RefusalCode.FILTER_PREDICATE_TYPE_MISMATCH,
-            message=(
-                f"A 'category_match' predicate on column {column!r} matches no row: the column "
-                f"holds the labels of its codes, not {values}. Retry with labels it holds, "
-                f"such as {labels[:3]}."
-            ),
-            fix={
-                "column": column,
-                "predicate_kind": "category_match",
-                "values": values,
-                "labels": labels,
-                "labels_truncated": truncated,
-            },
-        )
-
-    @classmethod
     def filter_predicate_value_type_mismatch(
         cls, *, column: str, actual_type: str, expected_type: str
     ) -> Self:
@@ -1410,10 +1386,13 @@ class Refusal:
 
 class AnalysisRefused(Exception):
     """The engine declined the call. `refusal` holds its code, retry mode,
-    message and `fix`."""
+    message and `fix`. `roots` names the root indices the refused node of a
+    recipe tree reads, through its inputs and theirs (`evaluate.evaluate`),
+    `None` for a refusal raised outside one node."""
 
-    def __init__(self, refusal: Refusal) -> None:
+    def __init__(self, refusal: Refusal, *, roots: tuple[int, ...] | None = None) -> None:
         self.refusal = refusal
+        self.roots = roots
         super().__init__(f"{refusal.code.value}: {refusal.message}")
 
     @property
@@ -1550,7 +1529,6 @@ _VERBS: Mapping[str, _Vocabulary] = {
             FilterPredicateValueTypeMismatchError,
             FilterPlaceLevelUnknownError,
             FilterUnitConversionUnsupportedError,
-            FilterBreakdownValueUnmatchedError,
         )
     ),
     "compare": _SLICE_PAIR,
@@ -1713,13 +1691,6 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
         case FilterPredicateValueTypeMismatchError():
             return Refusal.filter_predicate_value_type_mismatch(
                 column=exc.column, actual_type=exc.actual_type, expected_type=exc.expected_type
-            )
-        case FilterBreakdownValueUnmatchedError():
-            return Refusal.filter_breakdown_value_unmatched(
-                column=exc.column,
-                values=list(exc.values),
-                labels=list(exc.labels),
-                truncated=exc.truncated,
             )
         case FilterPlaceLevelUnknownError():
             return Refusal.filter_predicate_type_mismatch(
