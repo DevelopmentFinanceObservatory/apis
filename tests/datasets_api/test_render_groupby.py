@@ -11,7 +11,7 @@ from dataclasses import replace
 import pytest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
-from code_index.types import StatVarRow
+from code_index.types import DatasetDeclaration, StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
@@ -171,6 +171,7 @@ def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_co
     table = reshaped.table
 
     assert reshaped.collapse is not None
+    assert reshaped.collapse.adds
     assert reshaped.collapse.frame.columns == (
         "stat_var",
         "financingProvider",
@@ -213,6 +214,7 @@ def test_naming_every_declared_summable_axis_keys_the_frame_by_them():
 
     assert reshaped.collapse is not None
     assert reshaped.collapse.contributing_member_count == 3
+    assert not reshaped.collapse.adds
     stat_var_pos = table.columns.index("stat_var")
     purpose_pos = table.columns.index("stat_var_crsPurpose")
     finance_pos = table.columns.index("stat_var_crsTypeOfFinance")
@@ -435,3 +437,87 @@ def test_a_kept_axis_whose_codes_share_a_label_refuses_the_sum(
         )
 
     assert (refused.value.axis, refused.value.precondition) == ("crsPurpose", "labels_not_unique")
+
+
+def test_a_shared_label_refuses_with_stat_var_in_by() -> None:
+    """Two purposes roll up to ancestors that share a label. A `by` naming `stat_var` still
+    collapses `stat_var` under a level roll-up, so the rows would add into one: the sum
+    refuses as it does without `stat_var`."""
+    index = CodeIndex(
+        stamp=_STAMP,
+        declarations=_DECLARATIONS,
+        codes=(
+            _PARENT_ONE,
+            _PARENT_TWO,
+            replace(_PURPOSE_HEALTH, parent=_PARENT_ONE.dcid),
+            replace(_PURPOSE_MALARIA, parent=_PARENT_TWO.dcid),
+            _FINANCE_GRANT,
+            _FINANCE_LOAN,
+        ),
+        statvars=_INDEX.statvars,
+    )
+    options = MintOptions(
+        groupby=GroupbyOptions(by=["crsPurpose", "stat_var"], op="sum", levels={"crsPurpose": 0})
+    )
+
+    with pytest.raises(RollupNotSummableError) as refused:
+        _reshape(
+            _TABLE,
+            options=options,
+            entity_columns=_ENTITY_COLUMNS,
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
+            code_index=index,
+            resolved_stat_var_refs=(),
+            provenance_refs=("p1",),
+            subject_id=_SUBJECT_ID,
+            pivot_max_output_cells=5_000_000,
+        )
+
+    assert refused.value.precondition == "labels_not_unique"
+
+
+def test_a_code_sharing_a_label_with_a_stat_var_of_no_rows_keeps_the_sum() -> None:
+    """Malaria carries health's label, but its one StatVar, SV_C, is resolved with no rows in
+    a dataset whose absent observations read zero. A StatVar with no rows writes no label
+    cell, so nothing merges and the sum answers."""
+    index = CodeIndex(
+        stamp=_STAMP,
+        declarations=_DECLARATIONS,
+        codes=(
+            _PURPOSE_HEALTH,
+            replace(_PURPOSE_MALARIA, label=_PURPOSE_HEALTH.label),
+            _FINANCE_GRANT,
+            _FINANCE_LOAN,
+        ),
+        statvars=_INDEX.statvars,
+        datasets=(
+            DatasetDeclaration(
+                provenance="p1",
+                label="A test table",
+                description="A test table.",
+                opt_in=False,
+                absent_observation="zero",
+                account="provider",
+                rank=0,
+            ),
+        ),
+    )
+    table = Table(
+        columns=_TABLE_COLUMNS,
+        rows=tuple(row for row in _TABLE.rows if row[0] != "dcid:SV_C"),
+    )
+
+    reshaped = _reshape(
+        table,
+        options=MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum")),
+        entity_columns=_ENTITY_COLUMNS,
+        reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
+        code_index=index,
+        resolved_stat_var_refs=("dcid:SV_A", "dcid:SV_B", "dcid:SV_C"),
+        provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
+        pivot_max_output_cells=5_000_000,
+    )
+
+    assert reshaped.collapse is not None
+    assert reshaped.collapse.contributing_member_count == 2

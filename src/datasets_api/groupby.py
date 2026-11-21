@@ -292,20 +292,23 @@ def refuse_shared_labels(
     lookup: Mapping[str, Mapping[str, str]],
     *,
     index: CodeIndex,
+    contributors: Iterable[str],
     kept: Sequence[str],
     levels: Mapping[str, int],
 ) -> None:
     """Raise `RollupNotSummableError` (`precondition="labels_not_unique"`) when two distinct
-    codes of a `kept` axis carry one label in `lookup`, the decode a sum reads after
-    `roll_up_levels`: a code's own, or for a level axis its ancestor at that depth. A sum groups
-    a kept axis on its label cell, so the two codes would add into one row. This guards the
-    label cells `stat_var_<axis>` holds until it holds codes."""
-    statvar_by_dcid = {row.dcid: row for row in index.statvars}
+    codes of a `kept` axis, held by StatVars with rows (`contributors`, `dcid:` refs), carry
+    one label in `lookup`, the decode a sum reads after `roll_up_levels`: a code's own, or for
+    a level axis its ancestor at that depth. A sum groups a kept axis on its label cell, so the
+    two codes would add into one row; a StatVar with no rows writes no cell and merges
+    nothing. A `by` naming `stat_var` still collapses it under a level roll-up, so the check
+    holds there too. This guards the label cells `stat_var_<axis>` holds until it holds codes."""
+    refs = sorted(contributors)
     for axis in kept:
         codes_by_label: dict[str, set[str]] = {}
-        for ref, cells in lookup.items():
-            label = cells.get(axis)
-            statvar = statvar_by_dcid.get(_bare_dcid(ref))
+        for ref in refs:
+            label = lookup.get(ref, {}).get(axis)
+            statvar = index.statvar_by_dcid(_bare_dcid(ref))
             code = statvar.constraint_properties.get(axis) if statvar is not None else None
             if label is None or code is None:
                 continue
@@ -320,6 +323,31 @@ def refuse_shared_labels(
                 axis=axis,
                 precondition="labels_not_unique",
             )
+
+
+def adds_stat_vars(
+    contributors: Iterable[str],
+    *,
+    index: CodeIndex,
+    kept: Sequence[str],
+    levels: Mapping[str, int],
+    components: bool,
+) -> bool:
+    """Whether a groupby collapse adds StatVars together: a level roll-up or a component sum
+    ran, or two of `contributors` (`dcid:` refs or bare dcids), the StatVars with rows, hold
+    one tuple of codes on the `kept` axes. A collapse where each kept tuple holds one StatVar
+    re-keys the frame under one `stat_var` and adds nothing (`rekeys_stat_vars`)."""
+    if levels or components:
+        return True
+    seen: set[tuple[str | None, ...]] = set()
+    for ref in contributors:
+        statvar = index.statvar_by_dcid(_bare_dcid(ref))
+        codes = statvar.constraint_properties if statvar is not None else {}
+        key = tuple(codes.get(axis) for axis in kept)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
 
 
 def _one_per_component(

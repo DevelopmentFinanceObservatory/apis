@@ -118,7 +118,12 @@ import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.content_version import mint_content_version
-from dfo_frame_grammar.grammar import FACET_IDENTITY_COLUMNS, TIME_PERIOD_COLUMN, VALUE_COLUMN
+from dfo_frame_grammar.grammar import (
+    FACET_IDENTITY_COLUMNS,
+    STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
+    VALUE_COLUMN,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -644,11 +649,13 @@ class ResolvedRoot:
     stat_vars_summed: tuple[str, ...] = ()
     summed_count: int = 0
     base_content_version: str | None = None
+    # Whether the steps over the root named `stat_var`, which left it unsummed (`_resolve`).
+    stat_var_named: bool = False
 
     def version(self) -> dict[str, str]:
         """`{spec_id, content_version}`, the version the root reads, with
-        `base_content_version`, the dataset version its rendering derives from, when that is
-        another version, as for a groupby sum or a party-totals cut."""
+        `base_content_version`, the dataset version a StatVar sum read, when that is another
+        version; a rendering that cuts party totals names none (conformance C121f)."""
         read = {"spec_id": self.dataset.spec_id, "content_version": self.dataset.content_version}
         base = self.base_content_version
         if base is None or base == self.dataset.content_version:
@@ -970,8 +977,8 @@ def _path_words(step: StepNode) -> dict[str, set[str]]:
 
 
 # The columns a filter predicate on which keeps other rows of a frame's StatVars than of their
-# sum: the value, and the facets a sum across StatVars does not keep row by row.
-_OBSERVATION_COLUMNS = frozenset({VALUE_COLUMN, *FACET_IDENTITY_COLUMNS})
+# sum: the value, its status, and the facets a sum across StatVars does not keep row by row.
+_OBSERVATION_COLUMNS = frozenset({VALUE_COLUMN, STATUS_COLUMN, *FACET_IDENTITY_COLUMNS})
 
 
 def _reads_observations(step: StepNode) -> bool:
@@ -1937,12 +1944,16 @@ def resolve_roots(
 def _resolve(
     planned: PlannedRoot, *, source: RootSource, latest: bool, trace_id: str | None
 ) -> ResolvedRoot:
-    """`planned` resolved, its path words passed only when it has them."""
+    """`planned` resolved, its path words passed only when it has them, and marked when they
+    name `stat_var`."""
     if planned.path_words is None:
         return source.resolve(planned.root, latest=latest, trace_id=trace_id)
-    return source.resolve(
+    resolved = source.resolve(
         planned.root, latest=latest, trace_id=trace_id, path_words=planned.path_words
     )
+    if STAT_VAR_WORD in planned.path_words:
+        return replace(resolved, stat_var_named=True)
+    return resolved
 
 
 def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
@@ -1968,7 +1979,8 @@ def merged_roots[R: ResolvedRoot](
     words is planned twice (`_Plan.root`), and reads one frame when the words imply the same
     rendering, as they do for a root of one StatVar, so the recipe, its ids and the rows read
     are those of a tree naming the root once. Two request roots that resolve alike stay two.
-    A merged root keeps the first `sum_refused` among those it merges."""
+    A merged root keeps the first `sum_refused` among those it merges, and names `stat_var`
+    when any of them did (`ResolvedRoot.stat_var_named`)."""
     index: dict[int, int] = {}
     kept: list[R] = []
     first: dict[tuple[str, bytes], int] = {}
@@ -1977,8 +1989,13 @@ def merged_roots[R: ResolvedRoot](
         if key not in first:
             first[key] = len(kept)
             kept.append(root)
-        elif kept[first[key]].sum_refused is None and root.sum_refused is not None:
-            kept[first[key]] = replace(kept[first[key]], sum_refused=root.sum_refused)
+        else:
+            held = kept[first[key]]
+            kept[first[key]] = replace(
+                held,
+                sum_refused=held.sum_refused or root.sum_refused,
+                stat_var_named=held.stat_var_named or root.stat_var_named,
+            )
         index[at] = first[key]
     if len(kept) == len(resolved):
         return working, list(resolved)
@@ -2119,6 +2136,12 @@ _SUMMED_READ_ADVICE = (
     ' StatVars when it is read, or give it the rendering groupby {"by": ["time_period"],'
     ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
 )
+# The advice for a root left unsummed by anything but its steps naming `stat_var`: a filter on
+# observations below it, a stored recipe's root, or a stated groupby.
+_STATED_SUMMED_READ_ADVICE = (
+    ' Read the root summed: give it the rendering groupby {"by": ["time_period"],'
+    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
+)
 
 
 def _with_summed_read(
@@ -2155,7 +2178,12 @@ def _with_summed_read(
         return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
     return replace(
         refusal,
-        message=f"{refusal.message}{_SUMMED_READ_ADVICE}",
+        message=refusal.message
+        + (
+            _SUMMED_READ_ADVICE
+            if any(root.stat_var_named for root in roots)
+            else _STATED_SUMMED_READ_ADVICE
+        ),
         fix={**refusal.fix, "groupby": copy.deepcopy(dict(SUMMED_READ))},
     )
 

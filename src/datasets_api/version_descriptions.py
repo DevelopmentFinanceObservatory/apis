@@ -143,6 +143,7 @@ class CollapseDescriber:
     labels: Mapping[str, str]
     read: datetime.date
     summed: bool = True
+    adds: bool = True
 
     def describe(
         self, version: VersionRecord, *, base: DescriptionRecord | None
@@ -156,7 +157,9 @@ class CollapseDescriber:
                 version.base_content_version,
             )
             return None
-        record = collapsed_record(base, version, figures=self.figures, summed=self.summed)
+        record = collapsed_record(
+            base, version, figures=self.figures, summed=self.summed, adds=self.adds
+        )
         return with_labels(record, self.labels, read=self.read)
 
     def settle(self, stored: DescriptionRecord, *, version: VersionRecord) -> LateFields | None:
@@ -181,6 +184,7 @@ def mint_describers(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     collapsed_summed: bool = True,
+    collapsed_adds: bool = True,
 ) -> MintDescribers:
     """The describers of a mint of `version`, and of the derived version it renders, which
     `collapsed_summed` says sums the definition's variables, with the labels both records name
@@ -192,6 +196,7 @@ def mint_describers(
             figures=figures,
             collapsed=collapsed,
             collapsed_summed=collapsed_summed,
+            collapsed_adds=collapsed_adds,
             code_index=code_index,
             enrichment=enrichment,
             deadline=deadline,
@@ -210,6 +215,7 @@ def _mint_describers(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     collapsed_summed: bool,
+    collapsed_adds: bool = True,
 ) -> MintDescribers:
     provisional = mint_record(version, figures=figures, code_index=code_index, title=None)
     refs = named_refs(provisional)
@@ -221,6 +227,7 @@ def _mint_describers(
                 collapsed_version,
                 figures=collapsed_figures,
                 summed=collapsed_summed,
+                adds=collapsed_adds,
             )
         )
     labels = read_labels(enrichment, refs, deadline=deadline)
@@ -235,7 +242,11 @@ def _mint_describers(
         collapsed=None
         if collapsed is None
         else CollapseDescriber(
-            figures=collapsed[1], labels=labels, read=read, summed=collapsed_summed
+            figures=collapsed[1],
+            labels=labels,
+            read=read,
+            summed=collapsed_summed,
+            adds=collapsed_adds,
         ),
     )
 
@@ -248,6 +259,7 @@ def collapse_describer(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     summed: bool = True,
+    adds: bool = True,
 ) -> CollapseDescriber | None:
     """The describer of a head's derived `version`, which `summed` says sums the definition's
     variables, with the labels of what it names, or `None` when building it failed. The
@@ -255,12 +267,15 @@ def collapse_describer(
 
     def build() -> CollapseDescriber:
         base = mint_record(version, figures=figures, code_index=code_index, title=None)
-        refs = named_refs(collapsed_record(base, version, figures=figures, summed=summed))
+        refs = named_refs(
+            collapsed_record(base, version, figures=figures, summed=summed, adds=adds)
+        )
         return CollapseDescriber(
             figures=figures,
             labels=read_labels(enrichment, refs, deadline=deadline),
             read=utc_now().date(),
             summed=summed,
+            adds=adds,
         )
 
     return _guarded(version, build)

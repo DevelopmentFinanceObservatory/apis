@@ -261,7 +261,8 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
     monkeypatch.setattr(analysis_roots, "render_unstored", render)
     deps = SimpleNamespace(
         snapshot_reader=SimpleNamespace(
-            read_version=lambda *_: object(), read_artifact_locations=lambda *_: ()
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None),
+            read_artifact_locations=lambda *_: (),
         ),
         coverage=SimpleNamespace(snapshot=lambda: None),
         now=lambda: datetime.now(UTC),
@@ -352,8 +353,11 @@ def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
         ),
     )
     deps = SimpleNamespace(
-        snapshot_reader=SimpleNamespace(read_version=lambda *_: object()),
+        snapshot_reader=SimpleNamespace(
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None)
+        ),
         coverage=SimpleNamespace(snapshot=lambda: None),
+        code_index=_hierarchical_code_index(),
     )
     roots = LiveRootSource(
         deps=deps,  # ty: ignore[invalid-argument-type]

@@ -234,9 +234,12 @@ def collapsed_record(
     *,
     figures: SeriesFigures,
     summed: bool = True,
+    adds: bool = True,
 ) -> DescriptionRecord:
     """The record of a derived version (`datasets_api.render.DerivedVersion`), derived from
-    its base version's record.
+    its base version's record. A `summed` version that `adds` nothing, a re-key keeping each
+    StatVar in a tuple of its own (`groupby.adds_stat_vars`), holds no `sum_variables` step and
+    keeps the base's steps and caveats.
 
     It keeps the base's population, sources and builds, takes its series facts and its
     dimensions from the derived version's own figures and coverage (`_collapsed_variables`).
@@ -265,6 +268,7 @@ def collapsed_record(
         ),
         columns=_collapse_columns(facts, figures),
         summed=summed,
+        adds=adds,
     )
 
 
@@ -276,9 +280,11 @@ def _collapsed(
     series: SeriesFacts,
     columns: Mapping[str, RoleFigure | None] | None,
     summed: bool,
+    adds: bool = True,
 ) -> DescriptionRecord:
     """`base` as the record of the derived version `content_version`, holding `series` and the
-    dimensions its role `columns` keep. A `summed` version adds, after the base's steps, a
+    dimensions its role `columns` keep. A `summed` version that `adds` StatVars adds, after the
+    base's steps, a
     `sum_variables` step naming the variables with data in the trace (`collapse_steps`), and
     where the base's steps are unknown the sum is the step known to follow them. Any other
     keeps the base's steps and caveats."""
@@ -288,7 +294,7 @@ def _collapsed(
         else _collapsed_variables(base.variables, columns=columns, summed=summed)
     )
     steps = base.known_steps
-    if summed:
+    if summed and adds:
         summed_variables = summed_refs(facts.trace)
         steps = collapse_steps(base.known_steps, trace=facts.trace)
         update: dict[str, object] = {

@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
 
+from artifact_store.errors import ArtifactNotFoundError
 from code_index import CodeIndex, CodeRow
-from datasets_api import analysis_roots, current
+from dataset_store import snapshot
+from datasets_api import analysis_roots, current, store_errors
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -23,6 +25,7 @@ from datasets_api.analysis import (
     SpecRoot,
     plan_roots,
 )
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
@@ -32,6 +35,7 @@ from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.trace import ResolvedStatVar
 from spec_registry.identity import recompute_identity
 
+from . import test_serve_party_totals as party_totals
 from ._analysis_doubles import FakeRootSource
 from ._description_doubles import _FakeHeadStore, read_record
 from ._graph_doubles import FakeMintGraphReader
@@ -56,6 +60,7 @@ from .test_serve_groupby_collapse import (
     _spec_id_and_sidecar,
     _spec_id_and_sidecar_sole_member,
 )
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 _BARE = {"format": "parquet", "bundle": False, "layout": "frame"}
 _SUMMED = {"by": ["time_period"], "op": "sum"}
@@ -112,7 +117,14 @@ def _two_axis_spec_id_and_sidecar() -> tuple[str, dict]:
     }
 
 
-def _rig(*, code_index=None, sole: bool = False, two_axes: bool = False, sdmx_transport=None):
+def _rig(
+    *,
+    code_index=None,
+    sole: bool = False,
+    two_axes: bool = False,
+    sdmx_transport=None,
+    settings=None,
+):
     """A client over a minted dataset of two StatVars (one with `sole`), each 2020 value of one
     recipient, its version store, and the root naming that version with no enrichment. With
     `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`)."""
@@ -129,6 +141,7 @@ def _rig(*, code_index=None, sole: bool = False, two_axes: bool = False, sdmx_tr
         coverage=_coverage_service(stat_vars=(_MEMBER_A,) if sole else (_MEMBER_A, _MEMBER_B)),
         recipe_store=LiveRecipeStore(store=store),
         version_lister=LiveVersionLister(store=store),
+        settings=settings,
     )
     if two_axes:
         spec_id, sidecar = _two_axis_spec_id_and_sidecar()
@@ -543,12 +556,12 @@ def test_a_root_merged_under_two_word_sets_keeps_the_refused_sum() -> None:
     assert [one["axis"] for one in problem["fix"]["groupby_refused"]] == ["stat_var"]
 
 
-def test_a_spec_root_under_two_word_sets_serves_its_head_once(
+def test_a_spec_root_under_two_word_sets_reads_one_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Spec root reached under two sets of words is served once, in the summed rendering the
-    stored head's trace implies, and its other reading renders from the version that serve
-    read, so one request reads one version of the dataset."""
+    """A Spec root reached under two sets of words is served in each summed rendering the
+    stored head's trace implies, both at the version the first serve read, so one request
+    reads one version of the dataset."""
     client, _, root = _rig(two_axes=True)
     spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
     assert _post(client, _filter(spec_root)).status_code == 200
@@ -572,10 +585,15 @@ def test_a_spec_root_under_two_word_sets_serves_its_head_once(
     response = _post(client, tree)
 
     assert response.status_code == 200, response.text
-    assert len(served) == 1
-    assert served[0]["by"] == ["testAxis", "time_period"]
+    assert served == [
+        {"by": ["testAxis", "time_period"], "op": "sum", "levels": None},
+        {"by": ["time_period"], "op": "sum", "levels": None},
+    ]
     reads = response.json()["ref"]["members"][0]["roots"]
     assert len({read["content_version"] for read in reads}) == 2
+    derived = response.json()["derived_roots"]
+    assert len(derived) == 2
+    assert len({one["base_content_version"] for one in derived}) == 1
 
 
 @pytest.mark.parametrize("stated", [False, True], ids=["inferred", "stated"])
@@ -584,7 +602,7 @@ def test_a_version_whose_trace_counts_no_observations_is_summed_by_its_frame(
 ) -> None:
     """A version minted before traces counted each StatVar's observations is read summed when
     its stored frame holds several StatVars, and the answer counts the StatVars the sum
-    added, inferred or stated."""
+    added, inferred or stated. The frame's `stat_var` column is read once, and alone."""
     monkeypatch.setattr(
         ResolvedStatVar,
         "as_trace_entry",
@@ -593,6 +611,14 @@ def test_a_version_whose_trace_counts_no_observations_is_summed_by_its_frame(
     client, _, root = _rig()
     if stated:
         root = {**root, "rendering": {"columns": [], "groupby": _SUMMED}}
+    projected: list[object] = []
+    read = store_errors.formats.read_canonical_frame_table
+
+    def counted(data: bytes, *, columns=None):
+        projected.append(columns)
+        return read(data, columns=columns)
+
+    monkeypatch.setattr(store_errors.formats, "read_canonical_frame_table", counted)
 
     response = _post(client, _aggregate(root, group_by=["recipient"]))
 
@@ -600,6 +626,60 @@ def test_a_version_whose_trace_counts_no_observations_is_summed_by_its_frame(
     body = response.json()
     assert [summed["count"] for summed in body["stat_vars_summed"]] == [2]
     assert body["rows"] == 1
+    assert projected == [["stat_var"]]
+
+
+def test_a_version_whose_trace_counts_no_observations_and_whose_frame_is_gone_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the stored frame gone, the StatVars of an old trace are its resolved list, and the
+    sum that needs the frame refuses as an expired root does, never a server error."""
+    monkeypatch.setattr(
+        ResolvedStatVar,
+        "as_trace_entry",
+        lambda self: {"ref": self.ref, "roles": list(self.roles)},
+    )
+    client, _, root = _rig()
+
+    def gone(self, *, artifact_digest: str, tier: object) -> bytes:
+        raise ArtifactNotFoundError(digest=artifact_digest, tier=tier)
+
+    monkeypatch.setattr(_InventoryRecordingArtifactStore, "get", gone)
+
+    response = _post(client, _aggregate(root, group_by=["recipient"]))
+
+    assert response.status_code == 410, response.text
+    assert response.json()["code"] == "artifact_expired"
+
+
+def test_a_version_whose_trace_counts_no_observations_past_the_fold_bound_decodes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counting the StatVars of an old trace from a stored frame past `groupby_fold_max_rows`,
+    the bound of the sum that would read it, refuses on the frame's Parquet row count before
+    any of its cells is decoded."""
+    monkeypatch.setattr(
+        ResolvedStatVar,
+        "as_trace_entry",
+        lambda self: {"ref": self.ref, "roles": list(self.roles)},
+    )
+    client, _, root = _rig(
+        settings=DatasetsBuildSettings.from_env().model_copy(update={"groupby_fold_max_rows": 1})
+    )
+    decoded: list[object] = []
+    read = store_errors.formats._checked_canonical_table
+
+    def counted(data: bytes, *, columns, dictionary: bool):
+        decoded.append(columns)
+        return read(data, columns=columns, dictionary=dictionary)
+
+    monkeypatch.setattr(store_errors.formats, "_checked_canonical_table", counted)
+
+    response = _post(client, _aggregate(root, group_by=["recipient"]))
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "over_ceiling"
+    assert decoded == []
 
 
 @pytest.mark.parametrize("route", ["analysis", "anchor"])
@@ -656,8 +736,9 @@ def test_a_value_filter_under_a_sum_reads_as_a_saved_filter_does() -> None:
 def test_grouping_by_the_only_summable_axis_reads_one_row_per_axis_value(word: str) -> None:
     """The frame's one summable axis is kept, so the sum adds nothing: each axis value holds
     one StatVar. The read is still the single-measure frame keyed by that axis, so an
-    aggregate by it answers one row per value."""
-    client, _, root = _rig()
+    aggregate by it answers one row per value. A re-key sums nothing, so the answer counts no
+    StatVars summed and the version's record holds no `sum_variables` step."""
+    client, store, root = _rig()
 
     response = _post(client, _aggregate(root, group_by=[word]))
 
@@ -665,6 +746,13 @@ def test_grouping_by_the_only_summable_axis_reads_one_row_per_axis_value(word: s
     body = response.json()
     assert body["rows"] == 2
     assert "stat_var_testAxis" in body["role_keys"]
+    assert body["stat_vars_summed"] == []
+    (derived,) = body["derived_roots"]
+    record = read_record(
+        store, subject_id=derived["spec_id"], content_version=derived["content_version"]
+    )
+    assert record is not None and record.steps is not None
+    assert "sum_variables" not in [step.op for step in record.steps]
 
 
 def test_a_revoked_stale_head_reads_the_version_its_rebuild_serves(
@@ -703,3 +791,153 @@ def test_a_revoked_stale_head_reads_the_version_its_rebuild_serves(
     assert [summed["count"] for summed in fresh.json()["stat_vars_summed"]] == [2]
     assert pinned.status_code == 410, pinned.text
     assert pinned.json()["code"] == "snapshot_revoked"
+
+
+def test_a_later_newest_root_of_a_dataset_whose_frame_expired_is_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two readings of one Spec root, with the head's stored frame expired. The first root's
+    serve rebuilds what it reads, and the second root is served at the version that serve
+    read, rebuilding what it needs as the first did, so neither root refuses as expired."""
+    client, _, root = _rig(two_axes=True)
+    spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
+    assert _post(client, _filter(spec_root)).status_code == 200
+    cutoff = datetime.now(UTC)
+    monkeypatch.setattr(
+        snapshot, "working_tier_expired", lambda stored_at, *, now: stored_at <= cutoff
+    )
+    tree = {
+        "verb": "share_of",
+        "arguments": {"on": ["recipient"]},
+        "inputs": {
+            "data": _aggregate(spec_root, group_by=["recipient", "testAxis"]),
+            "other": _aggregate(spec_root, group_by=["recipient"]),
+        },
+    }
+
+    response = _post(client, tree)
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize(
+    ("predicate", "summed"),
+    [
+        pytest.param(
+            {"kind": "ordered_threshold", "column": "value", "op": "gt", "value": 750.0},
+            False,
+            id="value",
+        ),
+        pytest.param(
+            {"kind": "category_match", "column": "status", "values": ["E"]}, False, id="status"
+        ),
+        pytest.param(
+            {"kind": "category_match", "column": "measurementMethod", "values": ["M"]},
+            False,
+            id="measurement-method",
+        ),
+        pytest.param(
+            {"kind": "category_match", "column": "recipient", "values": ["country/KEN"]},
+            True,
+            id="a-role",
+        ),
+    ],
+)
+def test_a_filter_on_an_observation_column_under_a_sum_reads_the_root_as_stated(
+    predicate: dict, summed: bool
+) -> None:
+    """A predicate on a column each observation holds apart, its value, status or facets,
+    keeps other rows before a sum than after it, so the root under it is read as stated. A
+    predicate on a role keeps the same rows either way, and the sum stays."""
+    root = SpecRoot(spec_id="spec_" + "a" * 32).model_dump()
+    tree = _aggregate(
+        {"verb": "filter", "arguments": {"predicates": [predicate]}, "inputs": {"data": root}},
+        group_by=["recipient"],
+    )
+
+    _, (planned,) = plan_roots(
+        AnalysisRequest.model_validate({"tree": tree}),
+        source=FakeRootSource(frames={}, newest={}),
+        bounds=AnalysisBounds(),
+    )
+
+    assert (planned.path_words is not None) is summed
+
+
+@pytest.mark.parametrize(
+    ("predicate", "names_stat_var"),
+    [
+        pytest.param(
+            {
+                "kind": "category_match",
+                "column": "stat_var",
+                "values": [f"dcid:{_MEMBER_A}", f"dcid:{_MEMBER_B}"],
+            },
+            True,
+            id="words-name-stat-var",
+        ),
+        pytest.param(
+            {"kind": "ordered_threshold", "column": "value", "op": "gt", "value": 1.0},
+            False,
+            id="a-value-filter",
+        ),
+    ],
+)
+def test_the_summed_read_advice_names_the_cause_that_left_the_root_unsummed(
+    predicate: dict, names_stat_var: bool
+) -> None:
+    """A root left unsummed over two StatVars is told to read them summed. Only a root whose
+    steps name `stat_var` is told to stop naming it; any other is given the groupby alone."""
+    client, _, root = _rig()
+    tree = _aggregate(
+        {"verb": "filter", "arguments": {"predicates": [predicate]}, "inputs": {"data": root}},
+        group_by=["recipient"],
+    )
+
+    response = _post(client, tree)
+
+    assert response.status_code == 422, response.text
+    problem = response.json()
+    assert problem["code"] == "stat_var_unresolved", problem
+    assert problem["fix"].get("groupby") == _SUMMED, problem
+    assert ("name no 'stat_var'" in problem["detail"]) is names_stat_var
+
+
+@pytest.mark.parametrize("route", ["analysis", "anchor"])
+def test_a_party_totals_cut_root_names_no_dataset_version_as_its_base(route: str) -> None:
+    """A cut that leaves totals out answers a version of its own, and a cut can leave a
+    period out, so it stands in for no dataset version: the answer and the anchor list no
+    base for it, and a caller matching an anchor of the raw version refuses it."""
+    store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=party_totals._graph(),
+        sdmx_transport=party_totals._sdmx_transport(),
+        version_store=store,
+        code_index=party_totals._code_index(),
+        coverage=party_totals._coverage_service(),
+        head_writer=_FakeHeadStore(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = party_totals._spec_id_and_sidecar()
+    raw = party_totals._mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)
+    root = {
+        "spec_id": spec_id,
+        "content_version": raw["content_version"],
+        "rendering": {"columns": [], "without_party_totals": True},
+    }
+
+    if route == "anchor":
+        populations = [{"spec_id": spec_id, "bindings": {}}]
+        response = client.post(
+            "/api/datasets/analysis/anchor", json={"roots": [root], "populations": populations}
+        )
+        assert response.status_code == 200, response.text
+        (read,) = response.json()["roots"]
+        assert read["content_version"] != raw["content_version"]
+        assert "base_content_version" not in read
+        return
+    response = _post(client, _aggregate(root, group_by=["time_period"]))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["derived_roots"] == []

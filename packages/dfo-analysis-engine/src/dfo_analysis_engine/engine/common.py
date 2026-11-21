@@ -456,7 +456,8 @@ def without_party_totals_within(
 
 def _merged_records(records: Sequence[ExclusionRecord]) -> Exclusions:
     """`records` with those of one reason, side and named roles made one: their rows
-    summed, and their entities and parties the smallest distinct of all of them."""
+    summed, their entities the smallest distinct of all of them, and their parties every one
+    of them, sorted."""
     merged: dict[
         tuple[ExclusionReason, ExclusionSide | None, tuple[str, ...]], list[ExclusionRecord]
     ] = {}
@@ -469,10 +470,12 @@ def _merged_records(records: Sequence[ExclusionRecord]) -> Exclusions:
             role: smallest_distinct(value for record in group for value in record.entities[role])
             for role in roles
         }
+        # Every party left out is named, as `without_party_totals` names them; only the
+        # entities are capped.
         parties = (
             None
             if all(record.parties is None for record in group)
-            else smallest_distinct(party for record in group for party in record.parties or ())[0]
+            else tuple(sorted({party for record in group for party in record.parties or ()}))
         )
         out.append(
             ExclusionRecord(

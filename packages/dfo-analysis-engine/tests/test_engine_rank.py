@@ -1581,3 +1581,33 @@ def test_a_rank_with_one_partition_per_row_ranks_each_row_first(per_period: bool
     ]
     assert result.frame.num_rows == 12
     assert not [record for record in result.exclusions.records if record.reason == "beyond_limit"]
+
+
+def test_a_partitioned_rank_names_every_party_total_it_left_out() -> None:
+    """Each of 25 recipients leaves out its own donor total beside a donor. The merged record
+    names all 25 totals, as a ranking without partitions names every total it leaves out."""
+    rows = [
+        {
+            "stat_var": "dcid:X",
+            "financingRecipient": f"dcid:R{at:02d}",
+            "financingProvider": provider,
+            "financingProvider_party_kind": kind,
+            "time_period": "2024",
+            "value": 1.0,
+        }
+        for at in range(25)
+        for provider, kind in (("country/DEU", "party"), (f"dcid:T{at:02d}", "total"))
+    ]
+    result = run_rank(
+        _frame(rows, role_keys=_PARTY_ROLES),
+        rank_by=("financingProvider",),
+        partition_by=("financingRecipient",),
+        aggregation="sum",
+        window_start=None,
+        window_end=None,
+        ascending=False,
+    )
+
+    (record,) = [record for record in result.exclusions.records if record.reason == "party_total"]
+    assert record.row_count == 25
+    assert record.parties == tuple(f"dcid:T{at:02d}" for at in range(25))

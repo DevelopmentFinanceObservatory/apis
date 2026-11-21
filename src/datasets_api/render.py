@@ -112,6 +112,7 @@ from datasets_api.decode import build_decode_plan
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.failures import FoldPermitWaitExpired
 from datasets_api.groupby import (
+    adds_stat_vars,
     collapse_axes,
     contributing_dcids,
     declared_axes_present,
@@ -301,7 +302,8 @@ class GroupbyCollapseRendering:
     from that hash alone, or the base version's own token when `frame` is the base frame
     (`render_and_store`).
     `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
-    sums."""
+    sums. `adds` says whether the collapse added StatVars together (`groupby.adds_stat_vars`);
+    a re-key that keeps each StatVar in a tuple of its own adds none."""
 
     frame: Frame
     role_columns: tuple[str, ...]
@@ -309,6 +311,7 @@ class GroupbyCollapseRendering:
     content_version: str
     stat_var_ref: str
     contributing_member_count: int
+    adds: bool = True
 
 
 _KEPT_AXIS_PREFIX = f"{_STAT_VAR_COLUMN}_"
@@ -344,7 +347,8 @@ class DerivedVersion:
     `frame_sha256` hashes the frame and `content_version` is minted from that hash alone.
     `summed` is set when the frame is a collapse, which sums the definition's variables.
     `party_totals_left_out` holds the trace entries of the totals the cut left out
-    (`PartyTotalsCut.trace_entries`), empty when none."""
+    (`PartyTotalsCut.trace_entries`), empty when none. `adds` says whether a collapse added
+    StatVars together (`GroupbyCollapseRendering.adds`)."""
 
     frame_chunks: Callable[[], Iterator[Frame]]
     role_columns: tuple[str, ...]
@@ -354,6 +358,7 @@ class DerivedVersion:
     content_version: str
     summed: bool
     party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
+    adds: bool = True
 
 
 class FrameMode(StrEnum):
@@ -548,7 +553,7 @@ def _fold_permit(deadline: float | None) -> Iterator[None]:
         permits.release()
 
 
-def _refuse_past_fold_ceiling(rows: int, *, cap: int) -> None:
+def refuse_past_fold_ceiling(rows: int, *, cap: int) -> None:
     """Raises `OverCeilingError` (`rows`) when a frame of `rows` rows is past `cap`, the frame
     rows a groupby that sums a frame may fold."""
     if rows > cap:
@@ -623,7 +628,7 @@ def _within_fold_ceiling(chunks: Iterable[Table], *, cap: int) -> Iterator[Table
     rows = 0
     for chunk in chunks:
         rows += cast(_FrameSlice, chunk).table.num_rows
-        _refuse_past_fold_ceiling(rows, cap=cap)
+        refuse_past_fold_ceiling(rows, cap=cap)
         yield chunk
 
 
@@ -703,6 +708,8 @@ def _reshape_groupby_collapse(
     frame_chunks: Iterable[Table] | None,
     warnings: list[MaterialisationWarning],
     deadline: float | None,
+    levels: Mapping[str, int] | None = None,
+    components: bool = False,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
     `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
@@ -838,6 +845,12 @@ def _reshape_groupby_collapse(
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
         current = cast(Table, rows_table(collapsed))
 
+    refuse_shared_labels(
+        decode_lookup, index=code_index, contributors=contributors, kept=kept, levels=levels or {}
+    )
+    adds = adds_stat_vars(
+        contributors, index=code_index, kept=kept, levels=levels or {}, components=components
+    )
     if not grammar_frame:
         return current, decode_plan, None
 
@@ -885,6 +898,7 @@ def _reshape_groupby_collapse(
         content_version=mint_version_from_digest(collapsed_frame_sha256),
         stat_var_ref=stat_var_ref,
         contributing_member_count=len(contributors),
+        adds=adds,
     )
     return current, decode_plan, collapse_info
 
@@ -969,12 +983,6 @@ def _reshape_groupby(
             decoded_code_systems=decoded_code_systems,
             declarations=code_index.declarations,
         )
-        refuse_shared_labels(
-            decode_plan.lookup if decode_plan is not None else {},
-            index=code_index,
-            kept=kept,
-            levels=levels,
-        )
         current, decode_plan, collapse_info = _reshape_groupby_collapse(
             table,
             current,
@@ -995,6 +1003,8 @@ def _reshape_groupby(
             frame_chunks=frame_chunks,
             warnings=warnings,
             deadline=deadline,
+            levels=levels,
+            components=components,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
@@ -2768,7 +2778,7 @@ def _reshape_stream(
 
     if will_stream_groupby_collapse and first_chunk is not None:
         if frame_rows is not None:
-            _refuse_past_fold_ceiling(frame_rows, cap=fold_max_rows)
+            refuse_past_fold_ceiling(frame_rows, cap=fold_max_rows)
         # `_reshape` recomputes this decision from the same inputs. A chained pivot runs on the
         # reduced output groups.
         result = _reshape(
@@ -3316,6 +3326,7 @@ def _derived_version(
             content_version=collapse.content_version,
             summed=True,
             party_totals_left_out=left_out,
+            adds=collapse.adds,
         )
     if cut is None or cut_version is None:
         return None
