@@ -661,8 +661,9 @@ def _recalled(
     """The family each series of `hits` stands for, in their order, with its hit's score; a
     topic stands for none. An index row's family is published by its family's datasets
     (`CodeIndex.family_by_dcid`), else by the row's provenances, and declares the flow axes
-    of the row's roles (`publishing_datasets`). Any other series is published by the provenances the catalogue
-    knows to hold it, else by `unrecorded`, and declares no axis the index records."""
+    of the row's roles (`publishing_datasets`). Any other series is published by the
+    provenances the catalogue knows to hold it, else by `unrecorded`, and declares no axis
+    the index records."""
     recalled: list[RecalledFamily] = []
     for hit in hits:
         if is_topic_candidate(hit.dcid, hit.type_of):

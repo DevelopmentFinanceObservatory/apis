@@ -4,8 +4,8 @@ the seated menu among the shapes measuring alike (`phase_rank_bind._promoted`).
 The shapes are built from rows of the recorded dev code index. IDA publishes on the origin
 axis in the CRS, DAC2a and DAC2b, which give the provider's account of their flows, and in
 World Bank IDS, which the index lists without a declared dataset. Recall ranks IDS's series
-of IDA grants, debt service and concessional loans above DAC2a's disbursements, as Studio
-saw it for "IDA disbursements".
+of IDA grants, debt service and concessional loans above DAC2a's disbursements for "IDA
+disbursements".
 """
 
 from __future__ import annotations

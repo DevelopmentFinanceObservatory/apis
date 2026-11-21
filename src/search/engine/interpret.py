@@ -427,8 +427,8 @@ async def recall(
     surfaces = entity_surfaces or {}
 
     canonical = _canonicalize_acronyms(detect_query)
-    # The graph's detection, still to be joined by the families the variable reads once the
-    # names resolve, where an organisation may own words of the variable.
+    # The graph's detection, joined by the families the variable reads once the names
+    # resolve, where an organisation may own words of the variable.
     searched: Detection | None = None
     if members is not None:
         detection = _member_detection(members)
