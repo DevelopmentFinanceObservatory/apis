@@ -117,16 +117,35 @@ def sums_stat_vars(
     composite: CompositeDeclaration | None = None,
 ) -> bool:
     """Return true when the groupby sums this frame's StatVars: a decoded summable axis
-    collapses, a kept axis rolls up to a level, or the frame's stacked composite adds its
-    components (`sums_components`)."""
+    collapses, `by` leaves out `stat_var` on a frame decoding a summable axis
+    (`rekeys_stat_vars`), a kept axis rolls up to a level, or the frame's stacked composite adds
+    its components (`sums_components`)."""
     return (
         bool(
             collapse_axes(
                 by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
             )
         )
+        or rekeys_stat_vars(
+            by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
+        )
         or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
         or sums_components(by=by, composite=composite)
+    )
+
+
+def rekeys_stat_vars(
+    *,
+    by: Sequence[str],
+    decoded_code_systems: Sequence[str],
+    declarations: Mapping[str, CodeSystemDeclaration],
+) -> bool:
+    """Return true when `by` leaves out `stat_var` and the frame decodes a declared-summable
+    axis: the groupby reads one `stat_var` keyed by the axes `by` keeps, summing those it
+    leaves out. With every such axis kept it sums nothing, each kept tuple holding one StatVar,
+    and still reads the frame keyed by them (conformance C118)."""
+    return _STAT_VAR_COLUMN not in by and bool(
+        declared_axes_present(decoded_code_systems=decoded_code_systems, declarations=declarations)
     )
 
 
@@ -267,6 +286,68 @@ def refuse_stat_var_collision(
                 axis=_STAT_VAR_COLUMN,
                 precondition="stat_var_ambiguous",
             )
+
+
+def refuse_shared_labels(
+    lookup: Mapping[str, Mapping[str, str]],
+    *,
+    index: CodeIndex,
+    contributors: Iterable[str],
+    kept: Sequence[str],
+    levels: Mapping[str, int],
+) -> None:
+    """Raise `RollupNotSummableError` (`precondition="labels_not_unique"`) when two distinct
+    codes of a `kept` axis, held by StatVars with rows (`contributors`, `dcid:` refs), carry
+    one label in `lookup`, the decode a sum reads after `roll_up_levels`: a code's own, or for
+    a level axis its ancestor at that depth. A sum groups a kept axis on its label cell, so the
+    two codes would add into one row; a StatVar with no rows writes no cell and merges
+    nothing. A `by` naming `stat_var` still collapses it under a level roll-up, so the check
+    holds there too. This guards the label cells `stat_var_<axis>` holds until it holds codes."""
+    refs = sorted(contributors)
+    for axis in kept:
+        codes_by_label: dict[str, set[str]] = {}
+        for ref in refs:
+            label = lookup.get(ref, {}).get(axis)
+            statvar = index.statvar_by_dcid(_bare_dcid(ref))
+            code = statvar.constraint_properties.get(axis) if statvar is not None else None
+            if label is None or code is None:
+                continue
+            if axis in levels:
+                code = index.ancestor_at_depth(code, levels[axis]) or code
+            codes_by_label.setdefault(label, set()).add(code)
+        shared = sorted(label for label, codes in codes_by_label.items() if len(codes) > 1)
+        if shared:
+            raise RollupNotSummableError(
+                f"groupby axis {axis!r} refused: label(s) {shared!r} name more than one "
+                f"{axis} code, so a sum keeping the axis would add those codes into one row",
+                axis=axis,
+                precondition="labels_not_unique",
+            )
+
+
+def adds_stat_vars(
+    contributors: Iterable[str],
+    *,
+    index: CodeIndex,
+    kept: Sequence[str],
+    levels: Mapping[str, int],
+    components: bool,
+) -> bool:
+    """Whether a groupby collapse adds StatVars together: a level roll-up or a component sum
+    ran, or two of `contributors` (`dcid:` refs or bare dcids), the StatVars with rows, hold
+    one tuple of codes on the `kept` axes. A collapse where each kept tuple holds one StatVar
+    re-keys the frame under one `stat_var` and adds nothing (`rekeys_stat_vars`)."""
+    if levels or components:
+        return True
+    seen: set[tuple[str | None, ...]] = set()
+    for ref in contributors:
+        statvar = index.statvar_by_dcid(_bare_dcid(ref))
+        codes = statvar.constraint_properties if statvar is not None else {}
+        key = tuple(codes.get(axis) for axis in kept)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
 
 
 def _one_per_component(

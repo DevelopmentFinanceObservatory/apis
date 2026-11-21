@@ -53,6 +53,25 @@ and `RankResult.entity_ranks` describe the whole ranked population; the
 input rows behind the cells the limit leaves out are recorded as a
 `beyond_limit` exclusion, which names only the entities left out of every
 period, since an entity kept in one period is still in the frame.
+
+`partition_by` ranks within each partition: the entities sharing the values
+of its role columns form one ranking, with its own rank numbers, ties and
+`limit`, so "the top 6 donors per recipient" keeps up to six donors (more on
+a tie) for each recipient. Under `per_period` each (partition, period) pair
+is a ranking. Each output row names its partition beside its entity, and the
+partition roles keep their totals out as a keyed role does
+(`engine.common.without_party_totals`). Coverage counts each partition's own
+entities over the window's periods. An entity is a (partition, `rank_by`)
+pair that holds a row, so a donor that gave nothing to a recipient leaves no
+missing cell in that recipient's ranking. `beyond_limit` names an entity
+only when no partition keeps it.
+
+With `allow_sparse_breakdowns`, the coverage floor reads a grid without the
+`stat_var_<axis>` columns among `partition_by` and `rank_by`
+(`engine.common.grid_columns`, `RankResult.floor_grid`): its entities are the
+distinct values of the other columns, each present in a period when any of
+its breakdown entities holds a row then. The published counts and each
+entity's coverage still describe the periods each entity holds.
 """
 
 from __future__ import annotations
@@ -91,22 +110,26 @@ from dfo_analysis_engine.engine.columnar import (
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
+    NOT_A_FACT,
     Exclusions,
     FacetSelection,
+    FloorGrid,
     available_entity_columns,
     combine_exclusions,
     facet_columns,
+    floor_grid,
     frame_keeping_role_types,
+    grid_columns,
     narrow_and_resolve,
     private_parties,
     record_counted_exclusion,
     record_exclusion,
-    require_one_place_level,
+    require_one_place_level_within,
     require_single_stat_var,
     role_columns,
     table_before_unitless_exclusion,
     validate_entity_columns,
-    without_party_totals,
+    without_party_totals_within,
 )
 from dfo_analysis_engine.time_grain import span_label
 
@@ -197,6 +220,7 @@ class RankResult:
     exclusions: Exclusions = field(default_factory=Exclusions)
     window_period_count: int = 0
     private_parties: tuple[tuple[str, str], ...] = ()
+    floor_grid: FloorGrid | None = field(default=None, metadata={NOT_A_FACT: True})
 
     @property
     def kept_ranks(self) -> tuple[EntityRank, ...]:
@@ -229,6 +253,7 @@ def _beyond_limit_exclusion(
     members: GroupMembers,
     entity_keys: Sequence[tuple[str, ...]],
     rank_by: Sequence[str],
+    partition_by: Sequence[str],
     kept: Sequence[EntityRank],
     per_period: bool,
 ) -> Exclusions:
@@ -237,38 +262,50 @@ def _beyond_limit_exclusion(
     (entity, period) pair under `per_period`, so an entity kept in one
     period still loses its rows in the periods where it ranked beyond the
     limit, while the frame still holds it. The record names, on each
-    `rank_by` column, only the entities `kept` leaves out whole.
-    `entities` partitions the ranked rows, `members` holds them in group
-    order, and `entity_keys[g]` is group `g`'s key.
+    `rank_by` column, only the entities `kept` leaves out whole, in every
+    partition, and on each `partition_by` column the partitions that lost a
+    cell. `entities` partitions the ranked rows, `members` holds them in
+    group order, and `entity_keys[g]` is group `g`'s key, its
+    `partition_by` values then its `rank_by` values.
 
     The count comes from the grouping and copies no row: an entity left
     out whole counts its group's size, and only a kept entity's period
     codes are read, to count the cells it lost under `per_period`."""
     kept_entities = {tuple(value for _, value in er.entity_key) for er in kept}
     kept_cells = {(tuple(value for _, value in er.entity_key), er.time_period) for er in kept}
+    width = len(partition_by)
     row_count = 0
+    cut_partitions: set[tuple[str, ...]] = set()
     for group, key in enumerate(entity_keys):
         start, end = entities.offsets[group], entities.offsets[group + 1]
         if key not in kept_entities:
-            row_count += end - start
+            cut = end - start
         elif per_period:
-            row_count += sum(
+            cut = sum(
                 (key, members.periods[code]) not in kept_cells
                 for code in members.period_codes[start:end]
             )
+        else:
+            cut = 0
+        row_count += cut
+        if cut:
+            cut_partitions.add(key[:width])
+
+    kept_members = {key[width:] for key in kept_entities}
 
     def left_out(position: int) -> Iterator[str]:
-        return (key[position] for key in entity_keys if key not in kept_entities)
+        return (key[width + position] for key in entity_keys if key[width:] not in kept_members)
 
+    def cut_in(position: int) -> Iterator[str]:
+        return (partition[position] for partition in cut_partitions)
+
+    roles = role_columns(frame)
+    named = {
+        column: cut_in(partition_by.index(column)) for column in roles if column in partition_by
+    }
+    named |= {column: left_out(rank_by.index(column)) for column in roles if column in rank_by}
     return record_counted_exclusion(
-        exclusions,
-        reason="beyond_limit",
-        row_count=row_count,
-        entities={
-            column: left_out(rank_by.index(column))
-            for column in role_columns(frame)
-            if column in rank_by
-        },
+        exclusions, reason="beyond_limit", row_count=row_count, entities=named
     )
 
 
@@ -345,6 +382,41 @@ def _competition_rank(
     return ranked
 
 
+def _partitioned_rank(
+    values: dict[tuple[str, ...], float], *, width: int, ascending: bool
+) -> list[tuple[tuple[str, ...], float, int]]:
+    """`_competition_rank` run apart on each partition of `values`, the keys
+    sharing their first `width` values, partitions in `_tie_break_key` order
+    of those values. A `width` of 0 is one partition. One sort orders every
+    key by partition, then as `_competition_rank` does, and one scan numbers
+    the ranks, starting again at each partition, so no partition holds a
+    mapping of its own."""
+    if not width:
+        return _competition_rank(values, ascending=ascending)
+    ordered_keys = sorted(
+        values,
+        key=lambda key: (
+            _tie_break_key(key[:width]),
+            values[key] if ascending else -values[key],
+            _tie_break_key(key),
+        ),
+    )
+    ranked: list[tuple[tuple[str, ...], float, int]] = []
+    partition: tuple[str, ...] | None = None
+    position = current_rank = 0
+    previous_value: float | None = None
+    for key in ordered_keys:
+        value = values[key] + 0.0
+        if key[:width] != partition:
+            partition, position, previous_value = key[:width], 0, None
+        position += 1
+        if previous_value is None or value != previous_value:
+            current_rank = position
+        ranked.append((key, value, current_rank))
+        previous_value = value
+    return ranked
+
+
 def _reduced_cell_value(
     *,
     members: _Members,
@@ -385,6 +457,8 @@ def _rank_per_period(
     entity_coverage: dict[tuple[str, ...], float],
     entity_present_periods: dict[tuple[str, ...], tuple[str, ...]],
     rank_by: Sequence[str],
+    key_names: Sequence[str],
+    width: int,
     aggregation: str | None,
     ascending: bool,
 ) -> list[EntityRank]:
@@ -399,7 +473,8 @@ def _rank_per_period(
     one period cannot affect another's. Row counts, `entity_coverage` and
     `entity_present_periods` stay entity-wide -- unaffected by this per-period grouping, since
     coverage is still measured against the whole window, not one period at
-    a time. `periods` names the period codes in `entity_members`.
+    a time. `periods` names the period codes in `entity_members`, whose keys
+    hold the values of `key_names`, the first `width` of them a partition's.
 
     Returns one `EntityRank` per (entity, period), whose `time_period` is
     the period it was ranked in.
@@ -419,15 +494,17 @@ def _rank_per_period(
         for key, members in cell_members[code].items():
             ranked_values[key] = _reduced_cell_value(
                 members=members,
-                entity_key_map=dict(zip(rank_by, key, strict=True)),
+                entity_key_map=dict(zip(key_names, key, strict=True)),
                 rank_by=rank_by,
                 available=available,
                 aggregation=aggregation,
             )
-        for key, value, rank_number in _competition_rank(ranked_values, ascending=ascending):
+        for key, value, rank_number in _partitioned_rank(
+            ranked_values, width=width, ascending=ascending
+        ):
             entity_ranks.append(
                 EntityRank(
-                    entity_key=tuple(zip(rank_by, key, strict=True)),
+                    entity_key=tuple(zip(key_names, key, strict=True)),
                     value=value,
                     rank=rank_number,
                     row_count=len(entity_members[key][0]),
@@ -450,6 +527,8 @@ def run_rank(
     pinned_unit: UnitCell | None = None,
     per_period: bool = False,
     limit: int | None = None,
+    partition_by: Sequence[str] = (),
+    allow_sparse_breakdowns: bool = False,
 ) -> RankResult:
     """Rank entities identified by `rank_by`, optionally reducing each
     entity's own rows with `aggregation` first. See the module docstring for
@@ -469,18 +548,26 @@ def run_rank(
     `limit` cuts the output frame to `RankResult.kept_ranks`, and its
     `value` column carries the measured value in both modes; see the module
     docstring.
+
+    `partition_by` ranks within each partition, and each `EntityRank.entity_key`
+    names its partition's values before its `rank_by` values; see the module
+    docstring, as for `allow_sparse_breakdowns`.
     """
     if aggregation is not None and aggregation not in AGGREGATIONS:
         raise UnsupportedAggregationError(aggregation)
 
     stat_var = require_single_stat_var(frame)
     rank_by = validate_entity_columns(frame, rank_by)
-    require_one_place_level(frame, rank_by)
+    partition_by = validate_entity_columns(frame, partition_by)
+    require_one_place_level_within(frame, rank_by, partition_by=partition_by)
     # A total of other parties is neither ranked beside them nor summed into
     # an entity's value, whether its role is ranked or pooled. A ranked role
     # holding only totals ("which regions receive the most?") ranks them, and
     # a ranked role holding parties leaves out its unallocated residuals.
-    frame, party_exclusions = without_party_totals(frame, role_columns(frame), ranked=rank_by)
+    # Each partition is judged on its own rows, as a ranking of it alone is.
+    frame, party_exclusions = without_party_totals_within(
+        frame, role_columns(frame), partition_by=partition_by, ranked=rank_by
+    )
     # `exclude_unitless=True`: `resolved.unit` labels every ranked entity's
     # output row alike. An entity whose rows leave `unit` unbound is excluded;
     # it must not be ranked alongside entities denominated in a real unit.
@@ -513,13 +600,16 @@ def run_rank(
         )
         raise RankNoRowsInWindowError(reason=reason)
 
-    # A column named twice in `rank_by` groups once.
-    entity_columns = tuple(dict.fromkeys(rank_by))
+    # An entity is keyed by its partition's values, then its own. A column
+    # named twice groups once.
+    key_names = (*partition_by, *rank_by)
+    width = len(partition_by)
+    entity_columns = tuple(dict.fromkeys(key_names))
     entities = group_rows(table, entity_columns)
     members = group_members(table, entities)
     periods_in_window = tuple(members.periods)
     key_columns = [
-        cast("list[str]", entities.keys.column(column).to_pylist()) for column in rank_by
+        cast("list[str]", entities.keys.column(column).to_pylist()) for column in key_names
     ]
     entity_keys = [
         tuple(values[entity] for values in key_columns) for entity in range(entities.count)
@@ -563,6 +653,19 @@ def run_rank(
     overall_coverage_fraction = (
         present_cell_count / expected_cell_count if expected_cell_count else 1.0
     )
+    # With `allow_sparse_breakdowns` the floor reads the grid without the
+    # breakdown columns: an entity of the other columns holds a period when
+    # any of its breakdown entities does. The counts above, and each entity's
+    # own coverage, still describe the periods the entities hold.
+    counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)
+    relaxed = (
+        None
+        if counted == entity_columns
+        else floor_grid(
+            present=group_rows(table, (*counted, TIME_PERIOD_COLUMN)).count,
+            expected=group_rows(pre_exclusion_table, counted).count * pre_exclusion_period_count,
+        )
+    )
 
     entity_ranks: list[EntityRank]
     if per_period:
@@ -573,6 +676,8 @@ def run_rank(
             entity_coverage=entity_coverage,
             entity_present_periods=entity_present_periods,
             rank_by=rank_by,
+            key_names=key_names,
+            width=width,
             aggregation=aggregation,
             ascending=ascending,
         )
@@ -582,7 +687,7 @@ def run_rank(
         for key, entity_member_values in entity_members.items():
             entity_values[key] = _reduced_cell_value(
                 members=entity_member_values,
-                entity_key_map=dict(zip(rank_by, key, strict=True)),
+                entity_key_map=dict(zip(key_names, key, strict=True)),
                 rank_by=rank_by,
                 available=available,
                 aggregation=aggregation,
@@ -594,10 +699,12 @@ def run_rank(
         # frame.
         window_label = span_label(periods_in_window)
         entity_ranks = []
-        for key, value, rank_number in _competition_rank(entity_values, ascending=ascending):
+        for key, value, rank_number in _partitioned_rank(
+            entity_values, width=width, ascending=ascending
+        ):
             entity_ranks.append(
                 EntityRank(
-                    entity_key=tuple(zip(rank_by, key, strict=True)),
+                    entity_key=tuple(zip(key_names, key, strict=True)),
                     value=value,
                     rank=rank_number,
                     row_count=len(entity_members[key][0]),
@@ -623,6 +730,7 @@ def run_rank(
             members=members,
             entity_keys=entity_keys,
             rank_by=rank_by,
+            partition_by=partition_by,
             kept=kept,
             per_period=per_period,
         )
@@ -646,9 +754,9 @@ def run_rank(
     }
     if not ordinal:
         columns[UNIT_COLUMN] = unit_column(table, count=count)
-    for position, column in enumerate(rank_by):
+    for position, column in enumerate(key_names):
         columns[column] = pa.array([er.entity_key[position][1] for er in kept], type=pa.string())
-    output_frame = frame_keeping_role_types(columns, role_keys=rank_by, source=frame)
+    output_frame = frame_keeping_role_types(columns, role_keys=entity_columns, source=frame)
 
     return RankResult(
         frame=output_frame,
@@ -668,4 +776,5 @@ def run_rank(
         exclusions=exclusions,
         window_period_count=pre_exclusion_period_count,
         private_parties=private_parties(table, entity_columns),
+        floor_grid=relaxed,
     )

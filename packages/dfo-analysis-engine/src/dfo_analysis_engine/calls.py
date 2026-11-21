@@ -67,10 +67,13 @@ from dfo_analysis_engine.artifact import Exclusion, Interval, Observation, Time
 from dfo_analysis_engine.call_steps import call_step
 from dfo_analysis_engine.engine.aggregate import run_aggregate
 from dfo_analysis_engine.engine.common import (
+    FACT_WHEN_SET,
     NOT_A_FACT,
     ExclusionReason,
     Exclusions,
     ExclusionSide,
+    FloorGrid,
+    breakdown_columns,
 )
 from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
@@ -412,11 +415,23 @@ def _require_measured(inputs: Sequence[tuple[str, Input]]) -> None:
             )
 
 
-def _check_coverage(fraction: float, *, floor: float, skipped: int) -> None:
+def _check_coverage(
+    fraction: float,
+    *,
+    floor: float,
+    skipped: int,
+    columns: Sequence[str],
+    allow_sparse_breakdowns: bool,
+) -> None:
+    """Refuse `coverage_insufficient` below `floor`, naming `allow_sparse_breakdowns` when the
+    grid over `columns` counts a `stat_var_<axis>` column it would leave out."""
     if fraction < floor:
         raise AnalysisRefused(
             Refusal.coverage_insufficient(
-                realised_coverage_fraction=fraction, floor=floor, skipped_cell_count=skipped
+                realised_coverage_fraction=fraction,
+                floor=floor,
+                skipped_cell_count=skipped,
+                breakdown_columns=() if allow_sparse_breakdowns else breakdown_columns(columns),
             )
         )
 
@@ -739,6 +754,7 @@ def _facts(value: object, *, top: bool = False) -> object:
             for item in dataclasses.fields(value)
             if not (top and isinstance(getattr(value, item.name), Frame))
             and not item.metadata.get(NOT_A_FACT)
+            and not (item.metadata.get(FACT_WHEN_SET) and not getattr(value, item.name))
         }
     if isinstance(value, Mapping):
         return {str(key): _facts(item) for key, item in value.items()}
@@ -758,11 +774,19 @@ def _aggregate(op_spec: AggregateOpSpec, frame: Input, *, coverage_floor: float)
             group_by=group_by,
             aggregation=op_spec.aggregation,
             pinned_unit=op_spec.unit,
+            allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
         ),
         [frame],
     )
+    checked = result.floor_grid or FloorGrid(
+        fraction=result.realised_coverage_fraction, skipped_cell_count=result.skipped_cell_count
+    )
     _check_coverage(
-        result.realised_coverage_fraction, floor=coverage_floor, skipped=result.skipped_cell_count
+        checked.fraction,
+        floor=coverage_floor,
+        skipped=checked.skipped_cell_count,
+        columns=group_by,
+        allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
     )
     collapses = result.period_label is not None and len(result.collapsed_periods) > 1
     return _Outcome(
@@ -811,6 +835,7 @@ def _growth(op_spec: GrowthOpSpec, frame: Input) -> _Outcome:
 
 def _rank(op_spec: RankOpSpec, frame: Input, *, coverage_floor: float) -> _Outcome:
     rank_by = canonical_columns(op_spec.rank_by, description="rank_by")
+    partition_by = canonical_columns(op_spec.partition_by, description="partition_by")
     _require_measured([("this frame_ref", frame)])
     result = _run(
         "rank",
@@ -824,13 +849,21 @@ def _rank(op_spec: RankOpSpec, frame: Input, *, coverage_floor: float) -> _Outco
             pinned_unit=op_spec.unit,
             per_period=op_spec.per_period,
             limit=op_spec.limit,
+            partition_by=partition_by,
+            allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
         ),
         [frame],
     )
+    checked = result.floor_grid or FloorGrid(
+        fraction=result.overall_coverage_fraction,
+        skipped_cell_count=result.expected_cell_count - result.present_cell_count,
+    )
     _check_coverage(
-        result.overall_coverage_fraction,
+        checked.fraction,
         floor=coverage_floor,
-        skipped=result.expected_cell_count - result.present_cell_count,
+        skipped=checked.skipped_cell_count,
+        columns=(*partition_by, *rank_by),
+        allow_sparse_breakdowns=op_spec.allow_sparse_breakdowns,
     )
     window = result.periods_in_window
     collapses = not result.per_period and len(window) > 1

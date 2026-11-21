@@ -51,6 +51,7 @@ from ._analysis_doubles import (
     AID_V2,
     POPULATION,
     POPULATION_V1,
+    FakeRootSource,
     Stores,
     aid_frame,
     dataset,
@@ -1132,3 +1133,85 @@ def test_a_step_the_engine_could_not_build_publishes_the_frame_without_steps(
 
     assert _stored_steps(stores, result) is None
     jsonschema.validate(result.ref(), _REF_SCHEMA)
+
+
+class _PopulationSumRefused(FakeRootSource):
+    """`FakeRootSource` reading every population root with a sum the datasets door refused."""
+
+    def resolve(self, root, *, latest, trace_id, path_words=None):
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
+        if root.spec_id != POPULATION:
+            return resolved
+        refused = {"axis": "stat_var", "precondition": "no_summable_axis"}
+        return dataclasses.replace(resolved, sum_refused=refused)
+
+
+def _two_stat_var_aid_frame() -> Frame:
+    rows = [
+        {
+            "stat_var": stat_var,
+            "financingRecipient": "country/KEN",
+            "financingRecipient_party_kind": "party",
+            "origin": "country/DEU",
+            "time_period": "2021",
+            "value": 1.0,
+            "unit": "USDollar",
+        }
+        for stat_var in ("dcid:Amount_A", "dcid:Amount_B")
+    ]
+    return build_frame(
+        role_keys=["financingRecipient", "financingRecipient_party_kind", "origin"], rows=rows
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "summed_read"),
+    [
+        pytest.param(
+            step(
+                "rank",
+                dataset(AID, AID_V2),
+                rank_by=["financingRecipient"],
+                aggregation="sum",
+                window_start="1990",
+                window_end="1991",
+            ),
+            False,
+            id="an-empty-window",
+        ),
+        pytest.param(
+            step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["origin"]),
+            True,
+            id="another-root-s-stat-vars",
+        ),
+    ],
+)
+def test_a_refused_sum_is_named_only_on_a_refusal_of_the_root_it_belongs_to(
+    data: dict, summed_read: bool
+) -> None:
+    """The population's sum was refused. A refusal of the aid side, for an empty window over
+    one StatVar or for another aid frame's two StatVars, names no refused sum; the second
+    names the summed read of the aid root, whose StatVars it is about."""
+    stores = Stores()
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): _two_stat_var_aid_frame(),
+            (AID, AID_V2): aid_frame(),
+            (POPULATION, POPULATION_V1): population_frame(),
+        },
+    )
+    roots.__class__ = _PopulationSumRefused
+    tree = step(
+        "quotient_of",
+        data,
+        dataset(POPULATION, POPULATION_V1),
+        on={"financingRecipient": "observationAbout"},
+    )
+
+    with pytest.raises(AnalysisRefused) as refused:
+        _run(stores, tree, root_source=roots)
+
+    assert refused.value.code is RefusalCode.STAT_VAR_UNRESOLVED
+    assert "groupby_refused" not in refused.value.refusal.fix
+    assert ("groupby" in refused.value.refusal.fix) is summed_read

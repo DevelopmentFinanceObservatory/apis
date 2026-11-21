@@ -1108,6 +1108,7 @@ def _describers(
         figures=prewrite.result.series_statistics.figures,
         collapsed=collapsed,
         collapsed_summed=rendered is None or rendered.collapsed_summed,
+        collapsed_adds=rendered is None or rendered.collapsed_adds,
         code_index=deps.code_index,
         enrichment=deps.enrichment,
         deadline=deps.deadline,
@@ -1334,6 +1335,8 @@ class _RenderPass:
     collapsed: VersionRecord | None
     collapsed_figures: SeriesFigures | None
     collapsed_summed: bool = True
+    # Whether that collapse added StatVars together (`render.DerivedVersion.adds`).
+    collapsed_adds: bool = True
 
     def write(
         self,
@@ -1584,6 +1587,7 @@ def _render_pass(
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,
+        collapsed_adds=derived.adds,
     )
 
 

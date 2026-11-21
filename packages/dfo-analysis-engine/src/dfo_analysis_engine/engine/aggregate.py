@@ -18,7 +18,12 @@ can only mean "skip grid cells the frame never materialised a row for."
 own distinct values across the (unit-resolved) input rows; `present_cell_count`
 is the number of group keys that actually appear; the difference is
 `skipped_cell_count`. This is exactly `sparse_coverage_frame`'s shape: some
-`(recipient, year)` cells are simply missing rows.
+`(recipient, year)` cells are simply missing rows. With
+`allow_sparse_breakdowns` the floor reads a grid without the
+`stat_var_<axis>` columns in `group_by` (`engine.common.grid_columns`,
+`AggregateResult.floor_grid`): a cell of the other columns is present when
+any of its breakdown cells is. The published counts still describe the
+groups the result holds.
 
 The reduction runs after `dfo_analysis_engine.engine.common.narrow_and_resolve`.
 On the pinned path, narrowing to `pinned_unit`'s own rows already excludes
@@ -67,13 +72,17 @@ from dfo_analysis_engine.engine.columnar import (
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
+    NOT_A_FACT,
     Exclusions,
     FacetSelection,
+    FloorGrid,
     PooledParties,
     combine_exclusions,
     entity_roles,
     facet_columns,
+    floor_grid,
     frame_keeping_role_types,
+    grid_columns,
     narrow_and_resolve,
     pooled_parties,
     pooled_roles,
@@ -269,6 +278,12 @@ class AggregateResult:
     period_entities: tuple[tuple[str, int], ...] = ()
     exclusions: Exclusions = field(default_factory=Exclusions)
     pooled_parties: tuple[PooledParties, ...] = ()
+    floor_grid: FloorGrid | None = field(default=None, metadata={NOT_A_FACT: True})
+
+
+def _grid_size(table: pa.Table, columns: Sequence[str]) -> int:
+    """The cells of the grid of `columns`: the product of their distinct counts in `table`."""
+    return math.prod(len(array_kernel("unique", table.column(column))) for column in columns)
 
 
 def run_aggregate(
@@ -277,6 +292,7 @@ def run_aggregate(
     group_by: Sequence[str],
     aggregation: str,
     pinned_unit: UnitCell | None = None,
+    allow_sparse_breakdowns: bool = False,
 ) -> AggregateResult:
     """Group `frame`'s rows by `group_by` and reduce each group's `value` with
     `aggregation`. See the module docstring for the coverage and unit/facet
@@ -307,8 +323,8 @@ def run_aggregate(
     if len(distinct_stat_vars) > 1 and STAT_VAR_COLUMN not in group_by:
         raise StatVarUnresolvedError(
             reason=(
-                "the input frame carries more than one StatVar; include 'stat_var' in "
-                "group_by, or narrow the input to a frame_ref that carries only one"
+                "the input frame carries more than one StatVar; read it summed, or include "
+                "'stat_var' in group_by to keep each StatVar apart"
             ),
             distinct_stat_vars=distinct_stat_vars,
         )
@@ -407,13 +423,22 @@ def run_aggregate(
     # would silently agree with the very undercount this fix exists to close
     # on that path.
     pre_exclusion_table = table_before_unitless_exclusion(frame, pinned_unit=pinned_unit)
-    expected_cell_count = math.prod(
-        len(array_kernel("unique", pre_exclusion_table.column(column))) for column in group_by
-    )
+    expected_cell_count = _grid_size(pre_exclusion_table, group_by)
     present_cell_count = groups.count
     skipped_cell_count = max(expected_cell_count - present_cell_count, 0)
     realised_coverage_fraction = (
         present_cell_count / expected_cell_count if expected_cell_count else 1.0
+    )
+    # With `allow_sparse_breakdowns` the floor reads the grid without the
+    # breakdown columns, and the counts above still describe the groups held.
+    counted = grid_columns(group_by, allow_sparse_breakdowns=allow_sparse_breakdowns)
+    relaxed = (
+        None
+        if counted == group_by
+        else floor_grid(
+            present=group_rows(table, tuple(dict.fromkeys(counted))).count,
+            expected=_grid_size(pre_exclusion_table, counted),
+        )
     )
 
     roles = entity_roles(frame)
@@ -438,4 +463,5 @@ def run_aggregate(
         period_entities=tuple((period, per_period[(period,)]) for period in members.periods),
         exclusions=exclusions,
         pooled_parties=summed_parties,
+        floor_grid=relaxed,
     )
