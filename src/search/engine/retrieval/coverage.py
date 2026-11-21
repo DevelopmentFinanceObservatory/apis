@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from code_index.shared import get_index
-from materialise.enrichment import party_count
+from materialise.enrichment import party_split
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -123,7 +123,7 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     served series, in series order. An answer lists it as its scope (`ResolvedSpec.scope`),
     totals included. Coverage's open-role breadth dimension, the `role_scope_defaulted`
     warning and the role's `RoleAxisFact.member_count` count its parties
-    (`enrichment.party_count`), so the three agree."""
+    (`enrichment.party_split`), so the three agree."""
     if isinstance(plan, BulkPlan):
         members: set[str] = set()
         for _sv, c, (first, last) in plan.member_pairs():
@@ -142,16 +142,16 @@ def _scope_party_count(
     members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
 ) -> int:
     """How many of an open `role`'s `members` are parties on its axis
-    (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`, `enrichment.party_count`), read in the
-    datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
-    holds, as the role's heading and warning count them."""
+    (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`, `enrichment.party_split`), read in
+    the datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
+    holds beside its residual members, as the role's heading and warning count them."""
     index = get_index()
-    return party_count(
+    return party_split(
         members,
         axis=COVERAGE_ROLE_AXES[role],
         parties=index.parties,
         datasets=index.statvar_provenances(sv_dcids),
-    )
+    ).member_count
 
 
 def _variables_dim(count: int) -> BreadthDim:

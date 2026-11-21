@@ -76,6 +76,7 @@ from search.engine.unit.conversion_catalogue import (
     conversion_catalogue_unavailable,
     current_conversion_catalogue,
 )
+from search.engine.unit.price_bases import with_price_bases
 from search.models import (
     ConversionCurrency,
     EntityRoleKey,
@@ -384,14 +385,15 @@ def with_unit_conversion(
     spec: Spec, *, members: Sequence[MemberFacts], plans: Sequence[ReadPlan]
 ) -> Spec:
     """A copy of `spec` stating the conversions it offers under the request's catalogue
-    (`current_conversion_catalogue`), or `spec` itself when it offers none."""
+    (`current_conversion_catalogue`), and the price bases its part serves with them
+    (`price_bases.with_price_bases`)."""
     offer = unit_conversion(
         spec, members=members, plans=plans, catalogue=current_conversion_catalogue()
     )
-    if offer is None:
-        return spec
-    resolved = spec.resolved.model_copy(update={"unit_conversion": offer})
-    return spec.model_copy(update={"resolved": resolved})
+    if offer is not None:
+        resolved = spec.resolved.model_copy(update={"unit_conversion": offer})
+        spec = spec.model_copy(update={"resolved": resolved})
+    return with_price_bases(spec)
 
 
 def conversion_unavailable_warning(spec: Spec) -> Warning | None:

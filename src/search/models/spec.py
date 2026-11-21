@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, Protocol
 
 from dfo_frame_grammar import DeflationBasis
 from pydantic import (
@@ -401,16 +401,29 @@ class RoleAxisFact(StrictModel):
     role: RoleAxis = Field(description="which flow axis this fact is about")
     member_count: int | None = Field(
         description=(
-            "how many entities this axis' open scope resolves to, leaving out the "
+            "how many countable parties this axis' open scope resolves to, leaving out the "
             "group totals the code index declares beside their members (party_kind "
-            "total), as the default download leaves them out; a scope of totals alone "
-            "counts them all. None when the "
+            "total), as the default download leaves them out, and the residual members "
+            "residual_count counts; a scope of totals alone counts them all. The "
+            "download's frame keeps the residual members' rows, so member_count plus "
+            "residual_count is the number of members on the frame's column for the axis. "
+            "None when the "
             "count could not be established without a read this response chose not "
             "to make (e.g. a discovered opposite axis whose own role index was "
             "omitted after a cap trip); the fact still publishes in that case, "
             "naming the axis as open with an explicit unknown rather than staying "
             "silent about it"
         )
+    )
+    residual_count: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "how many members of this axis' open scope hold figures no single party does "
+            "(party_kind residual, such as the DAC's 'Africa, unallocated by country'), "
+            "which member_count leaves out and the download's frame keeps. Absent where "
+            "the scope holds none, and where member_count is None"
+        ),
     )
     members_available: bool = Field(
         description=(
@@ -429,6 +442,28 @@ class RoleAxisFact(StrictModel):
             "on the axis: true for the CRS's donors. Absent for the destination axis"
         ),
     )
+
+    def counting(self, split: CountedMembers) -> RoleAxisFact:
+        """This fact counting `split`, the members of its axis
+        (`materialise.enrichment.party_split`): its parties as `member_count` and its
+        residual members as `residual_count`, absent where there are none."""
+        return self.model_copy(
+            update={
+                "member_count": split.member_count,
+                "residual_count": split.residual_count or None,
+            }
+        )
+
+
+class CountedMembers(Protocol):
+    """The counts of an open role's members a `RoleAxisFact` states
+    (`materialise.enrichment.PartySplit`)."""
+
+    @property
+    def member_count(self) -> int: ...
+
+    @property
+    def residual_count(self) -> int: ...
 
 
 class DownloadLicence(StrictModel):
@@ -962,6 +997,23 @@ class ResolvedSpec(StrictModel):
             "declares no recipe), the recipe's tables lack the native currency's rate in a "
             "served year, so nothing converts, or no conversion catalogue is loaded, which "
             "the part's unit_conversion_unavailable warning states. Never a member of "
+            "BaseIdentity, never hashed."
+        ),
+    )
+    price_bases: list[Literal["current", "constant"]] = Field(
+        default_factory=list,
+        description=(
+            "the price bases this part can serve, 'current' before 'constant': the basis "
+            "of the answer's own unit (a unit request's prices; else the unit's or the "
+            "measurementQualifier's; else current prices for a currency unit that states "
+            "none, as US dollars do), the basis of each 'unit' entry of "
+            "alternative_measures, and each basis a currency of unit_conversion converts at "
+            "least one served year at (current_years, constant_years). A basis listed only "
+            "through unit_conversion shows the years that conversion states. [] when the "
+            "answer's unit is no currency and no unit option or conversion states a basis. "
+            "A part with no unit option and no conversion recipe lists its own basis "
+            "alone, and while no conversion catalogue is loaded (unit_conversion_unavailable) "
+            "the list omits the bases only a conversion serves. Never a member of "
             "BaseIdentity, never hashed."
         ),
     )

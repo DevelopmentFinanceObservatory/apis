@@ -761,15 +761,19 @@ def _open_role_reading(
 
     A scope of one member on that axis names that member. Otherwise the count comes from
     the role's `RoleAxisFact`, then the scope, then a coverage dimension counting it, and
-    reads "{n} {plural}". A count of one with no name says nothing, so it reads nothing.
-    With no count, ``states_all`` reads the role as every entity in it ("all creditors").
+    reads "{n} {plural}". A fact counting residual members adds them as amounts left
+    unallocated to one party ("81 recipients and 10 unallocated amounts", "1 recipient and 2
+    unallocated amounts"), since the answer's figures hold their rows beside the parties'.
+    Otherwise a count of one with no name says nothing, so it reads nothing. With no count, ``states_all`` reads the role as every
+    entity in it ("all creditors").
     """
     members = list(scope.members) if scope is not None and scope.axis == axis else []
     if len(members) == 1:
         member = members[0]
         entity = _NormalizedEntity(dcid=member.ref, label=member.label, axis=axis)
         return _entity_name(member.ref, member.label), [entity]
-    counts = [fact.member_count for fact in role_axis_facts if fact.role == axis]
+    axis_facts = [fact for fact in role_axis_facts if fact.role == axis]
+    counts = [fact.member_count for fact in axis_facts]
     if members:
         counts.append(len(members))
     if isinstance(coverage, (CoverageExact, CoverageBreadth)):
@@ -780,7 +784,13 @@ def _open_role_reading(
         )
     count = next((count for count in counts if count is not None), None)
     if count is not None:
-        return (f"{count} {noun.plural}", []) if count > 1 else None
+        residuals = next(
+            (fact.residual_count for fact in axis_facts if fact.member_count is not None), None
+        )
+        if not residuals:
+            return (f"{count} {noun.plural}", []) if count > 1 else None
+        parties = f"{count} {noun.singular if count == 1 else noun.plural} and " if count else ""
+        return f"{parties}{residuals} unallocated amount{'' if residuals == 1 else 's'}", []
     if states_all:
         return f"all {noun.plural}", []
     return None
