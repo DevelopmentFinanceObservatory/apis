@@ -1177,19 +1177,14 @@ def test_a_newest_recorded_sum_that_cannot_serve_renders_in_place_of_an_older_on
     assert work["_render_stored_rendering"] == 1
 
 
-@pytest.mark.parametrize(
-    ("expired", "status"),
-    [("file", 200), ("every_file", 410)],
-    ids=["its_file", "its_frame_too"],
-)
+@pytest.mark.parametrize("expired", ["file", "every_file"], ids=["its_file", "its_frame_too"])
 def test_a_recorded_sum_whose_files_expired_is_rendered_again(
-    monkeypatch: pytest.MonkeyPatch, expired: str, status: int
+    monkeypatch: pytest.MonkeyPatch, expired: str
 ) -> None:
     """A recorded sum past its working tier, its dataset version still servable, is not read:
-    the root renders. With only its file expired the render links a new one and the answer
-    stands. With its stored frame expired too, the render makes the same version, whose frame
-    a render does not store again, so the root refuses `artifact_expired` as it did before
-    sums were recorded."""
+    the root renders. With only its file expired the render links a new one. With its stored
+    frame expired too, the render makes the same version and stores its frame again, which
+    renews the frame's location (`<digest>#r<n>`), so the answer stands either way."""
     client, store, root = _rig()
     tree = _aggregate(root, group_by=["recipient"])
     first = _post(client, tree)
@@ -1210,12 +1205,21 @@ def test_a_recorded_sum_whose_files_expired_is_rendered_again(
     work = _count_work(monkeypatch)
     again = _post(client, tree)
 
-    assert again.status_code == status, again.text
-    if status == 200:
-        assert again.json() == first.json()
-    else:
-        assert again.json()["code"] == "artifact_expired"
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
     assert work["_render_stored_rendering"] == 1
+    if expired == "every_file":
+        with store.transaction() as tx:
+            renewals = {
+                row["renewal"]
+                for row in tx.fetch_all(
+                    "SELECT renewal FROM datasets.artifact_location WHERE artifact_digest IN ("
+                    "SELECT artifact_digest FROM datasets.version_artifact "
+                    'WHERE content_version = %s AND rendering LIKE \'%"format": "frame"%\')',
+                    (derived,),
+                )
+            }
+        assert renewals == {1}
 
 
 def test_a_revoked_recorded_sum_is_passed_over_and_the_root_renders(
@@ -1271,15 +1275,18 @@ def _moved_head_of_the_same_sum(
     return client, store, spec_root, recorded["content_version"], new_head
 
 
+@pytest.mark.parametrize("tree", ["filtered", "repeated"])
 def test_a_spec_root_read_from_a_recorded_sum_names_the_head_it_was_read_through(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tree: str
 ) -> None:
     """A Spec root read from a recorded version through a head other than the base its record
-    keeps names that head as the dataset version it sums."""
+    keeps names that head as the dataset version it sums. The tree the first head answered,
+    repeated, answers under another key, since the key holds each root's base version, so no
+    stored body names the first head."""
     client, _, spec_root, recorded, new_head = _moved_head_of_the_same_sum(monkeypatch)
+    data = _filter(spec_root) if tree == "filtered" else spec_root
 
-    # Another tree over the same root, so no stored answer replays an earlier body.
-    standing = _post(client, _aggregate(_filter(spec_root), group_by=["recipient"]))
+    standing = _post(client, _aggregate(data, group_by=["recipient"]))
 
     assert standing.status_code == 200, standing.text
     assert standing.json()["frame_content_version"] == recorded

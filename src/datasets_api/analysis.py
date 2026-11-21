@@ -86,8 +86,8 @@ answer, and records an engine refusal or a cap the computation meets as its outc
 
 A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
 request key (`request_key`) taken, a hash of the working tree as sent, each resolved root's
-record, `latest`, the engine's execution identity and the answer format (`ANSWER_FORMAT`). The
-run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
+record and version (with the base version a sum read), `latest`, the engine's execution
+identity and the answer format (`ANSWER_FORMAT`). The run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
 frame is stored, so a later request with the same key answers the stored body
 (`stored_answer`) while the frame file it names is still served, reading no frame. A taken-down
 output pair refuses `snapshot_revoked` on both paths, a stored answer and a run that would reuse
@@ -2212,7 +2212,7 @@ def compute_analysis(
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
 # only a body of this format is answered. Raise it whenever the body changes.
-ANSWER_FORMAT = "analysis_answer/2"
+ANSWER_FORMAT = "analysis_answer/3"
 
 
 def _keyed_tree(node: object) -> object:
@@ -2230,12 +2230,15 @@ def request_key(
     working: Mapping[str, Any], resolved: Sequence[ResolvedRoot], *, latest: bool
 ) -> str:
     """The key a run's answer is stored under: the sha256 of the canonical JSON of the working
-    tree, each resolved root's record, `latest`, the execution identity and `ANSWER_FORMAT`.
-    Two requests under one key compute one frame and answer one body."""
+    tree, each resolved root's record and the version it reads (`ResolvedRoot.version`, with
+    the base version a sum read), `latest`, the execution identity and `ANSWER_FORMAT`. Two
+    requests under one key compute one frame and answer one body, so a body's `derived_roots`
+    names the base each root was read through."""
     preimage = {
         "answer_format": ANSWER_FORMAT,
         "tree": _keyed_tree(working),
         "roots": [dict(root.record) for root in resolved],
+        "versions": [root.version() for root in resolved],
         "latest": latest,
         "execution_identity": current_execution_identity().canonical_string(),
     }
