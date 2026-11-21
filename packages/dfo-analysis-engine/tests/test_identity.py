@@ -356,17 +356,42 @@ def _normal_form_of(op_spec: dict[str, object]) -> dict[str, object]:
     return normal_form(tree, [{"dataset": {"spec_id": "spec_" + "a" * 32}, "options": {}}])
 
 
-def test_an_unset_rank_limit_stays_out_of_the_preimage_and_a_set_one_enters() -> None:
-    unlimited = OpSpecAdapter.validate_python(
-        {"verb": "rank", "frame_ref": SNAPSHOT_REF, "rank_by": ["reporter"]}
-    )
-    limited = OpSpecAdapter.validate_python(
-        {"verb": "rank", "frame_ref": SNAPSHOT_REF, "rank_by": ["reporter"], "limit": 3}
+@pytest.mark.parametrize(
+    ("verb", "base", "name", "value"),
+    [
+        ("rank", {"rank_by": ["reporter"]}, "limit", 3),
+        ("rank", {"rank_by": ["reporter"]}, "partition_by", ["recipient"]),
+        ("rank", {"rank_by": ["reporter"]}, "allow_sparse_breakdowns", True),
+        ("aggregate", {"aggregation": "sum"}, "allow_sparse_breakdowns", True),
+    ],
+)
+def test_an_unset_added_parameter_stays_out_of_the_preimage_and_a_set_one_enters(
+    verb: str, base: dict[str, object], name: str, value: object
+) -> None:
+    unset = OpSpecAdapter.validate_python({"verb": verb, "frame_ref": SNAPSHOT_REF, **base})
+    set_ = OpSpecAdapter.validate_python(
+        {"verb": verb, "frame_ref": SNAPSHOT_REF, **base, name: value}
     )
 
-    assert "limit" not in build_op_spec_preimage(unlimited)["parameters"]
-    assert build_op_spec_preimage(limited)["parameters"]["limit"] == 3
-    assert op_spec_hash_for(limited) != op_spec_hash_for(unlimited)
+    assert name not in build_op_spec_preimage(unset)["parameters"]
+    assert build_op_spec_preimage(set_)["parameters"][name] == value
+    assert op_spec_hash_for(set_) != op_spec_hash_for(unset)
+
+
+def test_partition_by_is_sorted_before_minting() -> None:
+    def ranked(partition_by: list[str]) -> str:
+        return op_spec_hash_for(
+            OpSpecAdapter.validate_python(
+                {
+                    "verb": "rank",
+                    "frame_ref": SNAPSHOT_REF,
+                    "rank_by": ["reporter"],
+                    "partition_by": partition_by,
+                }
+            )
+        )
+
+    assert ranked(["recipient", "sector"]) == ranked(["sector", "recipient"])
 
 
 class TestToolkitContentVersionVectors:

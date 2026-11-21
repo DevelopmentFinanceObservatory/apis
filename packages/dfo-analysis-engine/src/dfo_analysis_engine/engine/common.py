@@ -163,6 +163,11 @@ type SeriesRows = tuple[tuple[tuple[str, str], ...], int]
 # result's JSON facts (`dfo_analysis_engine.calls.VerbCall.summary`).
 NOT_A_FACT = "not_a_fact"
 
+# The `dataclasses.field` metadata key that keeps a field out of an engine
+# result's JSON facts while it holds its empty default, so a result that adds
+# one states it only where it says something.
+FACT_WHEN_SET = "fact_when_set"
+
 # Per-role-column cap `smallest_distinct` applies, mirroring
 # `dfo_analysis_engine.artifact.ENTITY_CAP` (the engine layer does not import the
 # pydantic model layer).
@@ -259,13 +264,112 @@ def require_one_place_level(frame: Frame, columns: Iterable[str]) -> None:
     `PlaceLevelsMixedError`). A role with no such column, a role holding one
     place, and a frame with no rows pass, and so does a flow party role,
     which `without_party_totals` reads instead."""
+    _require_one_place_level_in(frame.table, columns)
+
+
+def require_one_place_level_within(
+    frame: Frame, columns: Sequence[str], *, partition_by: Sequence[str]
+) -> None:
+    """`require_one_place_level` on `columns` over each partition's rows apart,
+    the rows sharing their `partition_by` values, so places ranked in one
+    partition need share a level only with each other. A partition holding
+    one place in each of `columns` passes unread (`partitions_holding_several`)."""
+    if not partition_by:
+        require_one_place_level(frame, columns)
+        return
+    for rows in partitions_holding_several(frame.table, partition_by, columns):
+        _require_one_place_level_in(frame.table.take(rows), columns)
+
+
+def _require_one_place_level_in(table: pa.Table, columns: Iterable[str]) -> None:
     for column in columns:
         types = type_column(column)
-        if column in PARTY_ROLES or types not in frame.columns:
+        if column in PARTY_ROLES or types not in table.column_names:
             continue
-        cells = distinct(frame.table, types)
-        if not at_one_level(cells, place_count=partial(count_distinct, frame.table, column)):
+        cells = distinct(table, types)
+        if not at_one_level(cells, place_count=partial(count_distinct, table, column)):
             raise PlaceLevelsMixedError(column=types, types=cells[:_PLACE_TYPE_CAP])
+
+
+def partitions_holding_several(
+    table: pa.Table, partition_by: Sequence[str], columns: Iterable[str]
+) -> list[pa.Array]:
+    """The row positions of each partition of `table`, the rows sharing their
+    `partition_by` values, that holds two or more distinct values in one of
+    `columns`, in first-row order. A partition holding one value in each
+    passes every per-partition check on them, so a frame of many partitions
+    is read apart only where a check can refuse or cut rows."""
+    present = [column for column in dict.fromkeys(columns) if column in table.column_names]
+    if not present or not table.num_rows:
+        return []
+    groups = group_rows(table, partition_by)
+    # `group_rows` numbers its groups as `unit_codes` numbers the partition values.
+    codes = unit_codes(
+        pa.StructArray.from_arrays(
+            [table.column(key).combine_chunks() for key in partition_by], names=list(partition_by)
+        )
+    ).codes
+    counted = (
+        pa.table(
+            {"partition": codes, **{f"c{at}": table.column(c) for at, c in enumerate(present)}}
+        )
+        .group_by("partition", use_threads=False)
+        .aggregate([(f"c{at}", "count_distinct") for at in range(len(present))])  # ty: ignore[invalid-argument-type]  # pyarrow-stubs
+        .combine_chunks()
+    )
+    several = pa.array([False] * counted.num_rows)
+    for at in range(len(present)):
+        several = array_kernel(
+            "or",
+            several,
+            array_kernel("greater", counted.column(f"c{at}_count_distinct").chunk(0), 1),
+        )
+    held = sorted(
+        cast("list[int]", counted.column("partition").chunk(0).filter(several).to_pylist())
+    )
+    return [
+        groups.indices.slice(
+            groups.offsets[group], groups.offsets[group + 1] - groups.offsets[group]
+        )
+        for group in held
+    ]
+
+
+# A summable groupby keeps each code axis it does not sum as a role column
+# `stat_var_<axis>`, a breakdown of the StatVars it summed.
+BREAKDOWN_PREFIX = f"{STAT_VAR_COLUMN}_"
+
+
+@dataclass(frozen=True, kw_only=True)
+class FloorGrid:
+    """The coverage the floor reads when `allow_sparse_breakdowns` leaves the
+    `stat_var_<axis>` columns out of the grid (`grid_columns`): the share of
+    that grid's cells present and how many are missing. A result's published
+    counts describe the cells it holds; this decides only the floor."""
+
+    fraction: float
+    skipped_cell_count: int
+
+
+def floor_grid(*, present: int, expected: int) -> FloorGrid:
+    return FloorGrid(
+        fraction=present / expected if expected else 1.0,
+        skipped_cell_count=max(expected - present, 0),
+    )
+
+
+def breakdown_columns(columns: Iterable[str]) -> tuple[str, ...]:
+    """The `stat_var_<axis>` columns among `columns`, in order."""
+    return tuple(column for column in columns if column.startswith(BREAKDOWN_PREFIX))
+
+
+def grid_columns(columns: Sequence[str], *, allow_sparse_breakdowns: bool) -> tuple[str, ...]:
+    """The columns of `columns` a coverage grid counts: all of them, or, with
+    `allow_sparse_breakdowns`, all but the `stat_var_<axis>` columns, so a
+    breakdown cell no row fills is no missing cell. `stat_var` and every other
+    role always count."""
+    breakdowns = set(breakdown_columns(columns)) if allow_sparse_breakdowns else set()
+    return tuple(column for column in columns if column not in breakdowns)
 
 
 def without_party_totals(
@@ -299,8 +403,108 @@ def without_party_totals(
     a role outside `ranked` holds only totals, unless every one is whole, and
     when a whole total beside members on a pooled role may hold some of them.
     """
+    kept, exclusions = _party_rows_kept(
+        frame, frame.table, columns, ranked=ranked, keyed=keyed, side=side
+    )
+    if kept is None:
+        return frame, exclusions
+    return Frame.from_table(columns=frame.columns, table=frame.table.take(kept)), exclusions
+
+
+def without_party_totals_within(
+    frame: Frame,
+    columns: Iterable[str],
+    *,
+    partition_by: Sequence[str],
+    ranked: Collection[str] = (),
+) -> tuple[Frame, Exclusions]:
+    """`without_party_totals` run apart on each partition of `frame`, the rows
+    sharing their `partition_by` values, with the partition roles `keyed`: a
+    partition keeps or leaves out its totals as a frame of its rows alone
+    would, so one partition's parties never decide another's. The rows kept
+    stay in `frame`'s order. Each partition's exclusions are merged into one
+    record per reason and role. No `partition_by` is `without_party_totals`."""
+    if not partition_by:
+        return without_party_totals(frame, columns, ranked=ranked)
+    columns = tuple(columns)
     table = frame.table
+    dropped_rows: list[pa.Array] = []
+    records: list[ExclusionRecord] = []
+    parties = [column for column in columns if column in PARTY_ROLES]
+    for rows in partitions_holding_several(table, partition_by, parties):
+        held, dropped = _party_rows_kept(
+            frame, table.take(rows), columns, ranked=ranked, keyed=partition_by, side=None
+        )
+        if held is not None:
+            is_held = array_kernel("is_in", pa.array(range(len(rows)), type=pa.int64()), held)
+            dropped_rows.append(rows.filter(array_kernel("invert", is_held)))
+        records.extend(dropped.records)
+    if not any(len(rows) for rows in dropped_rows):
+        return frame, _merged_records(records)
+    keep = array_kernel(
+        "invert",
+        array_kernel(
+            "is_in",
+            pa.array(range(table.num_rows), type=pa.int64()),
+            pa.concat_arrays(dropped_rows),
+        ),
+    )
+    return Frame.from_table(columns=frame.columns, table=table.filter(keep)), _merged_records(
+        records
+    )
+
+
+def _merged_records(records: Sequence[ExclusionRecord]) -> Exclusions:
+    """`records` with those of one reason, side and named roles made one: their rows
+    summed, their entities the smallest distinct of all of them, and their parties every one
+    of them, sorted."""
+    merged: dict[
+        tuple[ExclusionReason, ExclusionSide | None, tuple[str, ...]], list[ExclusionRecord]
+    ] = {}
+    for record in records:
+        key = (record.reason, record.side, tuple(record.entities))
+        merged.setdefault(key, []).append(record)
+    out: list[ExclusionRecord] = []
+    for (reason, side, roles), group in merged.items():
+        named = {
+            role: smallest_distinct(value for record in group for value in record.entities[role])
+            for role in roles
+        }
+        # Every party left out is named, as `without_party_totals` names them; only the
+        # entities are capped.
+        parties = (
+            None
+            if all(record.parties is None for record in group)
+            else tuple(sorted({party for record in group for party in record.parties or ()}))
+        )
+        out.append(
+            ExclusionRecord(
+                reason=reason,
+                row_count=sum(record.row_count for record in group),
+                entities={role: values for role, (values, _) in named.items()},
+                entities_truncated=any(record.entities_truncated for record in group)
+                or any(truncated for _, truncated in named.values()),
+                side=side,
+                parties=parties,
+            )
+        )
+    return Exclusions(records=tuple(out))
+
+
+def _party_rows_kept(
+    frame: Frame,
+    table: pa.Table,
+    columns: Iterable[str],
+    *,
+    ranked: Collection[str],
+    keyed: Collection[str],
+    side: ExclusionSide | None,
+) -> tuple[pa.Array | None, Exclusions]:
+    """The positions of `table`, rows of `frame`, that `without_party_totals`
+    keeps, `None` when it keeps all of them, and its exclusions."""
+    positions = pa.array(range(table.num_rows), type=pa.int64())
     exclusions = Exclusions()
+    original = table
     for column in dict.fromkeys(columns):
         if column not in PARTY_ROLES or count_distinct(table, column) < 2:
             continue
@@ -337,10 +541,12 @@ def without_party_totals(
                 parties=tuple(parties),
                 side=side,
             )
-            table = table.filter(array_kernel("invert", is_dropped))
-    if table is frame.table:
-        return frame, exclusions
-    return Frame.from_table(columns=frame.columns, table=table), exclusions
+            keep = array_kernel("invert", is_dropped)
+            table = table.filter(keep)
+            positions = positions.filter(keep)
+    if table is original:
+        return None, exclusions
+    return positions, exclusions
 
 
 def _totals_left_out(table: pa.Table, *, role: str, is_total: pa.Array, keyed: bool) -> pa.Array:
@@ -1223,8 +1429,8 @@ def require_single_stat_var(frame: Frame) -> str:
     if len(stat_vars) > 1:
         raise StatVarUnresolvedError(
             reason=(
-                "the input frame carries more than one StatVar; narrow the input to a "
-                "frame_ref that carries only one"
+                "the input frame carries more than one StatVar; read it summed, or narrow "
+                "the input to a frame_ref that carries only one"
             ),
             distinct_stat_vars=stat_vars,
         )

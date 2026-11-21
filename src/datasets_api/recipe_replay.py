@@ -137,8 +137,15 @@ class StoredRootSource:
         return root
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
+        """`root` as its stored recipe's record names it. A recipe's roots carry no path words
+        (`analysis.PlannedRoot`), so `path_words` stays `None`."""
         record = next((held for seen, held in self._records if seen == root), None)
         if record is None or latest:
             raise RootRenderingUnreadable(

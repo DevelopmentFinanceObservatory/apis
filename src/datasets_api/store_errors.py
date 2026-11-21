@@ -9,8 +9,9 @@ non-retryable 500 responses. Other failures map to retryable 503 responses.
 A spec registry read or write that fails in its store raises
 `SpecRegistryStoreError`, which maps to a retryable 503 response on every door.
 
-A Datasets reader takes a version's stored frame through `read_stored_frame`, or its rows
-through `stored_frame_rows`, and both refuse a stored frame that does not read as one with
+A Datasets reader takes a version's stored frame through `read_stored_frame`, its rows
+through `stored_frame_rows`, or one column's distinct cells through `stored_frame_distinct`
+(after `stored_frame_row_count` has bounded them), and each refuses a stored frame that does not read as one with
 `StoredFrameUnreadable`.
 """
 
@@ -19,6 +20,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from dfo_frame_grammar import STATUS_COLUMN
 
 from dfo_platform import ProblemSpec
@@ -80,6 +84,39 @@ def read_stored_frame(data: bytes, *, media_type: str, digest: str) -> Frame:
     """
     with _decoding(digest):
         return formats.read_stored_frame(data, media_type=media_type)
+
+
+def stored_frame_row_count(data: bytes, *, media_type: str, digest: str) -> int | None:
+    """The rows of a version's stored canonical frame `data`, at `digest`, from its Parquet
+    metadata alone, with no cell decoded. `None` for a frame1 document, whose rows are known
+    only once it is decoded.
+
+    Raises:
+        StoredFrameUnreadable: The bytes do not read as Parquet (`_decoding`).
+    """
+    if media_type == formats.FRAME1_MEDIA_TYPE:
+        return None
+    with _decoding(digest):
+        return pq.ParquetFile(pa.BufferReader(data)).metadata.num_rows
+
+
+def stored_frame_distinct(
+    data: bytes, *, media_type: str, digest: str, column: str
+) -> list[object]:
+    """The distinct cells of `column` in a version's stored frame `data`, at `digest`: of its
+    frame1 document read by `read_frame1`, or of its canonical frame's `column` alone.
+
+    Raises:
+        StoredFrameUnreadable: The bytes do not decode as a stored frame (`_decoding`).
+    """
+    with _decoding(digest):
+        if media_type == formats.FRAME1_MEDIA_TYPE:
+            cells = formats.read_frame1(data).table.column(column)
+        else:
+            cells = formats.read_canonical_frame_table(data, columns=[column]).column(column)
+        if pa.types.is_dictionary(cells.type):
+            cells = cells.cast(cells.type.value_type)
+        return pc.unique(cells).to_pylist()
 
 
 def stored_frame_rows(
