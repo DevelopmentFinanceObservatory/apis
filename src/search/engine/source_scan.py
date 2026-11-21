@@ -368,10 +368,13 @@ def find_organisations(
     At each word the longest run of whole words the entity pack stores as an
     organisation's name or alias (`entity_resolution.pack.organisations_named`) is one,
     then the scan moves past it, where the query writes it as a name
-    (`_names_an_organisation`). A run is passed over where it overlaps a source key the
-    query writes (`_key_runs`) or an entity's words, lies inside a longer code label, or is a
-    whole measure: "Global Fund" in "Global Fund disbursements to Kenya" is one, "World
-    Bank" is a source key and "IDA" in the entity "World Bank IDA" is that entity's."""
+    (`_names_an_organisation`). A run is passed over where it lies inside a longer code
+    label or is a whole measure, and the scan moves past it. A run that overlaps a source key
+    the query writes (`_key_runs`) or an entity's words is passed over too, and the scan
+    moves one word on, so a name after the taken words still reads: "Global Fund" in
+    "Global Fund disbursements to Kenya" is one, "World Bank" is a source key, "IDA" in the
+    entity "World Bank IDA" is that entity's, and with "World Bank" the entity, "IDA" in
+    "World Bank IDA" is one."""
     words = _words(query)
     taken = [
         (words[first].start, words[first + len(key) - 1].end)
@@ -398,14 +401,13 @@ def find_organisations(
             cursor += 1
             continue
         run = words[cursor : cursor + width]
-        cursor += width
         start, end = run[0].start, run[-1].end
         key = tuple(word.folded for word in run)
-        if (
-            any(s < end and start < e for s, e in taken)
-            or _inside_longer(start, end, codes)
-            or key in measure_words
-        ):
+        if any(s < end and start < e for s, e in taken):
+            cursor += 1
+            continue
+        cursor += width
+        if _inside_longer(start, end, codes) or key in measure_words:
             continue
         targets = _attach(key, start, end, measure_words, measure_spans)
         found.append(OrganisationMention(start, end, query[start:end], targets))

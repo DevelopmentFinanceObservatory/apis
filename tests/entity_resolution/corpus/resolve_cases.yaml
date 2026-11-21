@@ -458,6 +458,28 @@ cases:
     graph:
       held: { InternationalDevelopmentAssociation: Organization }
     note: "An organisation abbreviation resolves to the organisation."
+  - text: World Bank IDA
+    expect:
+      {
+        status: resolved,
+        ref: InternationalDevelopmentAssociation,
+        kind: organisation,
+        matched_as: alias,
+      }
+    graph:
+      held: { InternationalDevelopmentAssociation: Organization }
+    note: "A stored alias written with a space where the records hold a hyphen (World Bank-IDA) resolves to its organisation."
+  - text: Inter American Development Bank
+    expect:
+      {
+        status: resolved,
+        ref: InterAmericanDevelopmentBank,
+        kind: organisation,
+        matched_as: name,
+      }
+    graph:
+      held: { InterAmericanDevelopmentBank: Organization }
+    note: "A canonical name written with a space where the records hold a hyphen resolves to its organisation."
   - text: IBRD
     expect:
       {

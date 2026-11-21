@@ -97,7 +97,9 @@ async def _phase_recall(state: ResolveState) -> None:
     """Run recall and record its candidates for place-set resolution. Recall searches the
     part's text without each word that names a party on an axis the request leaves unnamed
     (`place_roles.stated_party_words`). A detection the door made of the part's text under
-    its scope (`ResolveState.detected`) stands in for recall's own (`interpret.recall`)."""
+    its scope (`ResolveState.detected`) stands in for recall's own (`interpret.recall`). The
+    part's door roles and its words for each entity mark the words an origin organisation
+    owns, which pull in no family (`origin_words.owned_ranges`)."""
     t0 = now_ms()
     rcl: Recall = await recall(
         state.variable,
@@ -110,6 +112,8 @@ async def _phase_recall(state: ResolveState) -> None:
         members=None if state.source_code is None else state.source_code.dcids,
         party_words=frozenset(named.word for named in stated_party_words(state)),
         detected=state.detected,
+        entity_roles=state.entity_roles,
+        entity_words=state.entity_words,
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0
