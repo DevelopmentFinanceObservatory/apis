@@ -270,8 +270,9 @@ _CLIMATE_IDA = _flow(
 )
 
 
-def _resolve_ida(query: str, words: dict[str, str] | None):
-    """ "IDA disbursements" on a part naming the CRS, with IDA in the role `query` states,
+def _resolve_ida(query: str, words: dict[str, str] | None, *, source: str | None = _CRS):
+    """The variable "IDA disbursements" on a part naming `source`, with IDA in the role
+    `query` states,
     under an index whose climate family records a code labelled "IDA", as DAC1 records aid
     type 2103, "multilateral contribution to the International Development Association"."""
     rows = (*_ROWS, _CLIMATE_IDA)
@@ -299,7 +300,7 @@ def _resolve_ida(query: str, words: dict[str, str] | None):
                 sdmx=FakeSdmxClient(observations={}),
                 base_timing={},
                 coverage=_ida_coverage().snapshot(),
-                source_scope=part_scope(named=_CRS),
+                source_scope=None if source is None else part_scope(named=source),
             )
         )
 
@@ -351,3 +352,19 @@ def test_a_term_naming_the_recipient_stays_a_term():
     (unbound,) = result.unbound_qualifiers
     assert unbound.text == "IDA"
     assert [ref.ref for ref in unbound.held_by] == [_CLIMATE]
+
+
+def test_a_term_naming_the_provider_elects_no_family_that_records_it():
+    """With no source named, the climate family recording "IDA" competes in the election of
+    the CRS five-tuple. "IDA" is the provider's word in every reading, so the climate family
+    reads nothing more of the query and the CRS answers."""
+    result = _resolve_ida(
+        "IDA disbursements from International Development Association",
+        {_IDA_NAME: "IDA"},
+        source=None,
+    )
+
+    assert result.status == "definite", result
+    assert {member.ref.ref for spec in result.specs for member in spec.resolved.members} == {
+        _CRS_HEALTH.dcid
+    }

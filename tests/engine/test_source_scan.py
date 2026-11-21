@@ -1972,7 +1972,7 @@ def test_a_party_reading_the_pass_admits_no_flow_for_refuses_and_says_so(
         role_stated=True,
     )
     with bound_catalogue(catalogue):
-        outranks = _role_bearing_outranks(SimpleNamespace(place_sets={}, entity_roles={}), admitted)
+        outranks = _role_bearing_outranks(admitted)
     refused = dataclasses.replace(
         _refusal("debt service", "entity_role_not_admitted"),
         role_not_admitted_entities=(

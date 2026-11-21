@@ -21,6 +21,7 @@ from search.engine.interpretation import Interpretation
 from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import (
     _declined_terminal,
+    _OriginParty,
     _phase_prune_and_rank,
     _refused_on_pinned,
 )
@@ -44,8 +45,9 @@ from tests.origin_catalogue.fake_catalogue import (
 
 # derive_shapes: expansion rank stamping and pool order
 
-# A part naming no organisation as the origin of its flow, which `_party_ranked` reads.
-_NO_PARTY = SimpleNamespace(place_sets={}, entity_roles={})
+# A part naming no organisation as the origin of its flow, as `_party_ranked` reads it.
+_NO_PARTY = _OriginParty(organisations={}, published=frozenset(), owned=())
+_NO_STATE = SimpleNamespace()
 _STRONG_ROOT = "dc/topic/Strong"
 _WDI = "dc/base/WorldDevelopmentIndicators"
 _EUROSTAT = "dc/base/EurostatData_GDP"
@@ -362,7 +364,7 @@ class TestMenuSeatsWholeRoots:
         measure_class_refusal = Interpretation(
             shape=_shape("other_class", score=0.9), reason="variable_not_resolved"
         )
-        seated = _refused_on_pinned(_NO_PARTY, [*refused, measure_class_refusal], None)
+        seated = _refused_on_pinned(_NO_PARTY, _NO_STATE, [*refused, measure_class_refusal], None)
         assert [i.shape.shape_id for i in seated] == ["flow", "small0", "small1", "ratio"]
         assert all(i.pinned_failure == "form" for i in seated)
 

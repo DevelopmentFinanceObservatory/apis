@@ -21,7 +21,7 @@ from code_index.types import (
     PartyRow,
     StatVarRow,
 )
-from search.engine.region.phase_rank_bind import _party_ranked
+from search.engine.region.phase_rank_bind import _origin_party, _party_ranked
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
@@ -156,9 +156,13 @@ def _state(
     kind: str = "organisation",
     axis: str = "origin",
     stated: bool = True,
+    party: str | None = None,
+    words: str | None = "IDA",
+    role_query: str = "IDA disbursements",
 ):
     return SimpleNamespace(
         variable=variable,
+        role_query=role_query,
         place_sets={
             _NAME: PlaceSet(
                 name=_NAME,
@@ -166,24 +170,48 @@ def _state(
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
             )
         },
-        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated)]},
-        entity_words={_NAME: "IDA"},
-        entity_texts=(_NAME, "IDA"),
+        entity_roles={
+            _NAME: [DoorRole(axis=axis, span=words or _NAME, stated=stated, party=party)]
+        },
+        entity_words={_NAME: words} if words else {},
+        entity_texts=(_NAME, words) if words else (_NAME,),
         variable_spans_by_vocabulary={},
     )
 
 
 def _ranked(state) -> list[str]:
     with serving_index(_index()):
-        return [shape.shape_id for shape in _party_ranked(state, _SHAPES)]
+        return [shape.shape_id for shape in _party_ranked(_origin_party(state), state, _SHAPES)]
 
 
-def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot():
+_PROMOTED = ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+_RECALL = ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param(_state(), id="stated-provider"),
+        pytest.param(_state(words=None), id="provider-named-in-full"),
+        pytest.param(
+            _state(
+                stated=False,
+                party="source",
+                role_query="World Bank IDA disbursements to Kenya",
+            ),
+            id="raw-text-source-cued-by-its-name",
+        ),
+    ],
+)
+def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot(state):
     """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
     disbursement of IDA grants that recall scored highest. IDS debt service measures
     otherwise and keeps the second slot, and the two IDS disbursements follow in recall
-    order in the slots left."""
-    assert _ranked(_state()) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+    order in the slots left. "IDA" states nothing of the grants labelled "IDA grants" when
+    the request named the provider "International Development Association" alone, since
+    "IDA" is its alias. A raw-text provider whose cue is its own name states no direction,
+    and the source the door read stands."""
+    assert _ranked(state) == _PROMOTED
 
 
 def test_a_series_the_query_names_keeps_its_slot():
@@ -202,10 +230,14 @@ def test_a_series_the_query_names_keeps_its_slot():
     "state",
     [
         pytest.param(_state(axis="destination"), id="organisation-as-recipient"),
-        pytest.param(_state(stated=False), id="role-not-stated"),
+        pytest.param(_state(stated=False), id="unstated-without-a-door-reading"),
+        pytest.param(
+            _state(stated=False, party="source", role_query="disbursements to IDA"),
+            id="door-reading-contradicted",
+        ),
         pytest.param(_state(kind="country"), id="not-an-organisation"),
     ],
 )
-def test_recall_order_stands_without_a_stated_origin_organisation(state):
-    """A part naming no organisation as the stated origin of its flow ranks by recall."""
-    assert _ranked(state) == ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]
+def test_recall_order_stands_without_an_origin_organisation(state):
+    """A part naming no organisation as the origin of its flow ranks by recall."""
+    assert _ranked(state) == _RECALL
