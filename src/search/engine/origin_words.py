@@ -6,7 +6,9 @@ DAC1 aid type 2103 ("multilateral contribution to the International Development
 Association"). The word is the provider's, so no reader of the variable takes it as a code:
 recall pulls in no family for it (`interpret.recall`) and the bind phase neither elects,
 binds nor refuses on it (`phase_rank_bind._without_owned_terms`). Both read the owned words
-through `owned_ranges`, from the request's own words for the organisation.
+through `owned_ranges`, from the request's own words for the organisation. Only a
+door whose caller states each entity's role marks the owned words
+(`origin_organisations`).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from code_index.tokens import tokenize, word_tokens
 from entity_resolution.types import Kind
 from search.engine.qualifier_match import token_occurrences
 from search.engine.role_text import DoorRole
+from search.models.vocab import EntryPath
 
 type Ranges = tuple[tuple[int, int], ...]
 """Character ranges of a text, each `(start, end)`."""
@@ -25,17 +28,20 @@ type Ranges = tuple[tuple[int, int], ...]
 def origin_organisations(
     nodes: Mapping[str, tuple[str, Kind | None]],
     entity_roles: Mapping[str, Sequence[DoorRole]],
+    *,
+    door: EntryPath,
 ) -> dict[str, str]:
     """The dcid of each organisation of `nodes` (the resolved dcid and kind of each name the
     part gives) that the part binds as the origin of its flow, by the request's name for it:
-    every role the door gives it (`entity_roles`) is on the origin axis, whether or not the
-    query's words state that direction (`DoorRole.stated`).
+    every role the door gives it (`entity_roles`) is on the origin axis.
 
-    The raw-text door keeps a role only where the extraction cites a cue for it, so an
-    unstated origin role is still the extraction's reading of the request: "World Bank IDA
-    disbursements to Kenya" cites IDA's own name and "IDA's disbursements" a possessive, and
-    each names IDA the provider. A role the query's wording contradicts never answers: place
-    binding refuses the part ``role_not_resolved`` (`place_roles._contradicted_names`)."""
+    The parsed door, and the dataset_resubmit door's parsed entries, take each role from the
+    caller. The raw-text door names none: its roles are the extraction's reading of the
+    request, and its source choice reads the variable before any name resolves
+    (`source_choice.read_organisations`), so a part it posts reads every word of its
+    variable."""
+    if door == "raw_text":
+        return {}
     organisations: dict[str, str] = {}
     for name, (dcid, kind) in nodes.items():
         if kind != "organisation":

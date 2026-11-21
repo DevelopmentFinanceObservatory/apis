@@ -13,8 +13,8 @@ from search.engine.clients.graph import DetectedSV, Detection, settled_un
 from search.engine.errors import GraphInfraError
 from search.engine.interpret import (
     Recall,
+    _detect,
     _pooled,
-    _search,
     _states_a_word,
     _without_stated_words,
     detect_measure,
@@ -714,4 +714,4 @@ class TestStatedWordSearch:
         graph = _FailingGraph(fails_on)
 
         with pytest.raises(GraphInfraError):
-            run(_search(graph, "bilateral ODA to Kenya"))
+            run(_detect(graph, "bilateral ODA to Kenya", variable="bilateral ODA to Kenya"))

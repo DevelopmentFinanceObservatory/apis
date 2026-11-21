@@ -469,6 +469,17 @@ cases:
     graph:
       held: { InternationalDevelopmentAssociation: Organization }
     note: "A stored alias written with a space where the records hold a hyphen (World Bank-IDA) resolves to its organisation."
+  - text: World Bank MIGA
+    expect:
+      {
+        status: resolved,
+        ref: MultilateralInvestmentGuaranteeAgency,
+        kind: organisation,
+        matched_as: alias,
+      }
+    graph:
+      held: { MultilateralInvestmentGuaranteeAgency: Organization }
+    note: "A stored alias written with a space where the records hold a hyphen (World Bank-MIGA) resolves to its organisation."
   - text: Inter American Development Bank
     expect:
       {

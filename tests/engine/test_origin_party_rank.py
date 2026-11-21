@@ -60,6 +60,22 @@ _DAC2A_NET_ROW = StatVarRow(
     provenances=(_DAC2A,),
 )
 
+# A row the index lists without a declared dataset, so it belongs to no index family.
+_IDS_LISTED_ROW = StatVarRow(
+    dcid="TESTFIXTURE/Party/IdsIdaListedGrants",
+    population_type="FinancialFlow",
+    measured_property="amount",
+    stat_type="measuredValue",
+    measurement_qualifier="Nominal",
+    measurement_denominator=None,
+    observation_properties=("creditor", "debtor"),
+    constraint_properties={
+        "financialFlowType": "Disbursement",
+        "sourceIndicatorCode": "DT.DIS.IDAG.LISTED",
+    },
+    provenances=(_IDS,),
+)
+
 
 def _index() -> CodeIndex:
     return CodeIndex(
@@ -82,6 +98,7 @@ def _index() -> CodeIndex:
         ),
         codes=(),
         statvars=(_DAC2A_ROW, _DAC2A_NET_ROW),
+        listed_statvars=(_IDS_LISTED_ROW,),
         datasets=(
             DatasetDeclaration(
                 provenance=_DAC2A,
@@ -151,6 +168,9 @@ _IDS_DEBT_SERVICE = _shape(
     0.65,
 )
 _DAC2A_SHAPE = _shape("dac2a", _DAC2A_ROW.dcid, dict(_DAC2A_ROW.constraint_properties), 0.55)
+_IDS_LISTED = _shape(
+    "ids_listed", _IDS_LISTED_ROW.dcid, dict(_IDS_LISTED_ROW.constraint_properties), 0.62
+)
 _DAC2A_NET_SHAPE = _shape(
     "dac2a_net", _DAC2A_NET_ROW.dcid, dict(_DAC2A_NET_ROW.constraint_properties), 0.50
 )
@@ -159,8 +179,9 @@ _MENU = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _IDS_LOANS, _DAC2A_SHAPE)
 _NAME = "International Development Association"
 
 
-def _state(*, kind: str = "organisation", axis: str = "origin", stated: bool = True):
+def _state(*, kind: str = "organisation", axis: str = "origin", door: str = "parsed"):
     return SimpleNamespace(
+        door=door,
         variable="IDA disbursements",
         place_sets={
             _NAME: PlaceSet(
@@ -169,7 +190,7 @@ def _state(*, kind: str = "organisation", axis: str = "origin", stated: bool = T
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
             )
         },
-        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated)]},
+        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA")]},
         entity_words={_NAME: "IDA"},
     )
 
@@ -179,20 +200,11 @@ def _promoted_ids(state, menu=_MENU) -> list[str]:
         return [shape.shape_id for shape in _promoted(_origin_party(state), menu)]
 
 
-@pytest.mark.parametrize(
-    "state",
-    [
-        pytest.param(_state(), id="stated-provider"),
-        pytest.param(_state(stated=False), id="unstated-origin"),
-    ],
-)
-def test_the_table_publishing_the_origin_organisation_takes_its_measures_first_slot(state):
+def test_the_table_publishing_the_origin_organisation_takes_its_measures_first_slot():
     """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
     disbursement of IDA grants. IDS debt service measures otherwise and keeps the second
-    slot, and the two IDS disbursements follow in their order in the slots left. A raw-text
-    provider whose cue states no direction, IDA's own name, counts as the origin the
-    extraction read."""
-    assert _promoted_ids(state) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+    slot, and the two IDS disbursements follow in their order in the slots left."""
+    assert _promoted_ids(_state()) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
 
 
 def test_every_publisher_of_a_measure_leads_the_shapes_measuring_alike():
@@ -208,11 +220,24 @@ def test_every_publisher_of_a_measure_leads_the_shapes_measuring_alike():
     [
         pytest.param(_state(axis="destination"), id="organisation-as-recipient"),
         pytest.param(_state(kind="country"), id="not-an-organisation"),
+        pytest.param(_state(door="raw_text"), id="raw-text-door"),
     ],
 )
 def test_the_menu_stands_without_an_origin_organisation(state):
-    """A part naming no organisation as the origin of its flow keeps its seated order."""
+    """A part naming no organisation as the origin of its flow keeps its seated order, and
+    its origin organisations own no word of its variable. The raw-text door names none: its
+    roles are the extraction's reading, not the caller's."""
     assert _promoted_ids(state) == [shape.shape_id for shape in _MENU]
+    with serving_index(_index()):
+        assert _origin_party(state).owned == ()
+
+
+def test_a_table_in_no_index_family_publishes_by_its_rows_provenances():
+    """The index lists the IDS row without a declared dataset, so it belongs to no index
+    family and IDS, its provenance, publishes it, as the raw-text door's source choice reads
+    a recalled row (`source_choice._recalled`). IDS publishes IDA as a creditor, so that
+    shape leads the IDS grants it measures alike with."""
+    assert _promoted_ids(_state(), (_IDS_GRANTS, _IDS_LISTED)) == ["ids_listed", "ids_grants"]
 
 
 def test_a_publisher_seated_as_a_topic_leaf_still_leads_the_menu(monkeypatch):

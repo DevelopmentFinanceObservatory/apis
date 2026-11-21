@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from code_index.composites import provenance_datasets
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, IndexFamily
 from code_index.shared import get_index
+from code_index.types import StatVarRow
 from materialise.roles import RoleAxis, roles_by_axis
 from origin_catalogue import UN_SYSTEM, Catalogue, current_catalogue, scoped_reads
 from search.engine.clients.graph import DetectedSV, EngineGraphClient
@@ -415,6 +416,16 @@ def publishes_party(family: RecalledFamily, published: AbstractSet[tuple[str, Ro
     return any((dataset, axis) in published for dataset in family.datasets for axis in family.axes)
 
 
+def publishing_datasets(family: IndexFamily | None, rows: Iterable[StatVarRow]) -> frozenset[str]:
+    """The datasets publishing the family the index rows `rows` stand for: the datasets of
+    `family`, their index family, where it has any, else the provenances of `rows`. A row
+    the index lists without a declared dataset (`CodeIndex.listed_statvars`) belongs to no
+    family: IDS's disbursements of IDA grants are published by IDS."""
+    if family is not None and family.datasets:
+        return frozenset(family.datasets)
+    return frozenset(provenance for row in rows for provenance in row.provenances)
+
+
 def choose_readings(
     organisations: Sequence[OrganisationEvidence],
     *,
@@ -650,7 +661,7 @@ def _recalled(
     """The family each series of `hits` stands for, in their order, with its hit's score; a
     topic stands for none. An index row's family is published by its family's datasets
     (`CodeIndex.family_by_dcid`), else by the row's provenances, and declares the flow axes
-    of the row's roles. Any other series is published by the provenances the catalogue
+    of the row's roles (`publishing_datasets`). Any other series is published by the provenances the catalogue
     knows to hold it, else by `unrecorded`, and declares no axis the index records."""
     recalled: list[RecalledFamily] = []
     for hit in hits:
@@ -665,10 +676,9 @@ def _recalled(
                 )
             )
             continue
-        family = index.family_by_dcid.get(hit.dcid)
         recalled.append(
             RecalledFamily(
-                datasets=frozenset(family.datasets if family is not None else row.provenances),
+                datasets=publishing_datasets(index.family_by_dcid.get(hit.dcid), (row,)),
                 axes=frozenset(roles_by_axis(row.observation_properties)),
                 score=hit.score,
             )

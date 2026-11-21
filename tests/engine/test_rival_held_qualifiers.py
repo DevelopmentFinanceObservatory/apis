@@ -20,6 +20,7 @@ from search.engine.interpret import recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
+from search.models.vocab import EntryPath
 from series_coverage.schema import RoleNames
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -271,11 +272,11 @@ _CLIMATE_IDA = _flow(
 )
 
 
-def _resolve_ida(query: str, *, source: str | None = _CRS):
-    """The variable "IDA disbursements" on a part naming `source`, with "IDA" the request's
-    words for IDA in the role `query` states, under an index whose climate family records a
-    code labelled "IDA", as DAC1 records aid type 2103, "multilateral contribution to the
-    International Development Association"."""
+def _resolve_ida(query: str, *, source: str | None = _CRS, door: EntryPath = "parsed"):
+    """The variable "IDA disbursements" posted on `door` on a part naming `source`, with
+    "IDA" the request's words for IDA in the role `query` states, under an index whose
+    climate family records a code labelled "IDA", as DAC1 records aid type 2103,
+    "multilateral contribution to the International Development Association"."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
@@ -302,6 +303,7 @@ def _resolve_ida(query: str, *, source: str | None = _CRS):
                 base_timing={},
                 coverage=_ida_coverage().snapshot(),
                 source_scope=None if source is None else part_scope(named=source),
+                door=door,
             )
         )
 
@@ -334,10 +336,27 @@ def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code():
     }
 
 
-def test_a_term_naming_the_recipient_stays_a_term():
+@pytest.mark.parametrize(
+    ("query", "door"),
+    [
+        pytest.param(
+            "IDA disbursements to International Development Association",
+            "parsed",
+            id="parsed-recipient",
+        ),
+        pytest.param(
+            "IDA disbursements from International Development Association",
+            "raw_text",
+            id="raw-text-provider",
+        ),
+    ],
+)
+def test_a_term_the_caller_does_not_state_as_the_providers_stays_a_term(query, door):
     """With IDA the recipient, "IDA" may name the contribution to IDA, so the rival-held
-    check reads it and the part refuses naming ONE Data Climate Finance."""
-    result = _resolve_ida("IDA disbursements to International Development Association")
+    check reads it and the part refuses naming ONE Data Climate Finance. A raw-text part
+    reads every word of its variable, its roles being the extraction's reading of the
+    request, so with IDA the provider it refuses alike."""
+    result = _resolve_ida(query, door=door)
 
     assert result.no_data_reason == "qualifier_not_bound", result
     (unbound,) = result.unbound_qualifiers
@@ -360,21 +379,33 @@ def test_a_term_naming_the_provider_elects_no_family_that_records_it():
 
 
 @pytest.mark.parametrize(
-    ("query", "injected"),
+    ("query", "door", "injected"),
     [
         pytest.param(
-            "IDA disbursements from International Development Association", False, id="provider"
+            "IDA disbursements from International Development Association",
+            "parsed",
+            False,
+            id="provider",
         ),
         pytest.param(
-            "IDA disbursements to International Development Association", True, id="recipient"
+            "IDA disbursements to International Development Association",
+            "parsed",
+            True,
+            id="recipient",
+        ),
+        pytest.param(
+            "IDA disbursements from International Development Association",
+            "raw_text",
+            True,
+            id="raw-text-provider",
         ),
     ],
 )
-def test_recall_reads_no_family_for_the_providers_words(query, injected):
+def test_recall_reads_no_family_for_the_providers_words(query, door, injected):
     """Recall adds a row of each family of a recalled five-tuple that reads a code of the
     variable no recalled family reads. "IDA" is the provider's word, so the climate family
     recording "IDA" joins no pool; with IDA the recipient the word stays a code and the
-    family joins."""
+    family joins. A raw-text part reads every word of its variable."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
@@ -390,6 +421,7 @@ def test_recall_reads_no_family_for_the_providers_words(query, injected):
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query=query,
+                door=door,
                 entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
                 entity_words={_IDA_NAME: "IDA"},
             )
