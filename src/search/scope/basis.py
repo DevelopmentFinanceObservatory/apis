@@ -634,7 +634,9 @@ def basis_label(
     (`deflated_by`, `deflation_phrase`), and one converted to a role's currency "net
     disbursements, current donor currency". Without one, the prices are the shape's price
     basis (`PRICES_BY_QUALIFIER`) in the conventions' currency (`CONVENTION_CURRENCY`), and
-    the words stand alone when the shape states no price basis."""
+    the words stand alone when the shape states no price basis or is a quotient (it has a
+    `measurement_denominator`): a ratio has no currency or price basis of its own, whatever
+    qualifier its numerator's family carries."""
     unit = (identity.facets or {}).get("unit")
     if isinstance(unit, IdentityFacetValueRequest):
         request = unit.request
@@ -652,8 +654,9 @@ def basis_label(
         return label
     shape = identity.shape
     qualifier = shape.measurement_qualifier if isinstance(shape, IdentityShapeSchema) else None
+    is_ratio = isinstance(shape, IdentityShapeSchema) and shape.measurement_denominator is not None
     qualified = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
-    if qualified is None:
+    if qualified is None or is_ratio:
         return OPTION_LABELS.measure_basis_unpriced.format(words=row.words)
     return OPTION_LABELS.measure_basis.format(
         words=row.words, prices=qualified, currency=CONVENTION_CURRENCY
