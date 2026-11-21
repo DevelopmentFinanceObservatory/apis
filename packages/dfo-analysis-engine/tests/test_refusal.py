@@ -175,29 +175,9 @@ def test_a_composite_refusal_names_its_components(
 
     assert refusal.code is RefusalCode.STAT_VAR_UNRESOLVED
     assert ("components" in refusal.fix) is rewritten
-    # Either way the refusal names the summed read, the root groupby.
-    assert refusal.fix["groupby"] == {"by": ["time_period"], "op": "sum"}
     if rewritten:
         assert refusal.fix["components"] == [
             {"role": "bilateral", "stat_vars": 1},
             {"role": "imputed", "stat_vars": 2},
         ]
         assert refusal.fix["get_data"] == {"stat_vars": "sum"}
-
-
-@pytest.mark.parametrize(
-    ("distinct", "groupby"),
-    [
-        pytest.param(["dcid:A", "dcid:B"], True, id="several-stat-vars"),
-        pytest.param([], False, id="no-rows"),
-    ],
-)
-def test_a_stat_var_refusal_names_the_summed_read_over_several_stat_vars(
-    distinct: list[str], groupby: bool
-) -> None:
-    refusal = refusal_for_engine_error(
-        "growth", StatVarUnresolvedError(reason="r", distinct_stat_vars=distinct)
-    )
-
-    assert refusal is not None
-    assert ("groupby" in refusal.fix) is groupby

@@ -248,7 +248,7 @@ def _beyond_limit_exclusion(
     members: GroupMembers,
     entity_keys: Sequence[tuple[str, ...]],
     rank_by: Sequence[str],
-    width: int,
+    partition_by: Sequence[str],
     kept: Sequence[EntityRank],
     per_period: bool,
 ) -> Exclusions:
@@ -258,40 +258,49 @@ def _beyond_limit_exclusion(
     period still loses its rows in the periods where it ranked beyond the
     limit, while the frame still holds it. The record names, on each
     `rank_by` column, only the entities `kept` leaves out whole, in every
-    partition. `entities` partitions the ranked rows, `members` holds them in
-    group order, and `entity_keys[g]` is group `g`'s key: its `width`
-    partition values, then its `rank_by` values.
+    partition, and on each `partition_by` column the partitions that lost a
+    cell. `entities` partitions the ranked rows, `members` holds them in
+    group order, and `entity_keys[g]` is group `g`'s key: its
+    `partition_by` values, then its `rank_by` values.
 
     The count comes from the grouping and copies no row: an entity left
     out whole counts its group's size, and only a kept entity's period
     codes are read, to count the cells it lost under `per_period`."""
     kept_entities = {tuple(value for _, value in er.entity_key) for er in kept}
     kept_cells = {(tuple(value for _, value in er.entity_key), er.time_period) for er in kept}
+    width = len(partition_by)
     row_count = 0
+    cut_partitions: set[tuple[str, ...]] = set()
     for group, key in enumerate(entity_keys):
         start, end = entities.offsets[group], entities.offsets[group + 1]
         if key not in kept_entities:
-            row_count += end - start
+            cut = end - start
         elif per_period:
-            row_count += sum(
+            cut = sum(
                 (key, members.periods[code]) not in kept_cells
                 for code in members.period_codes[start:end]
             )
+        else:
+            cut = 0
+        row_count += cut
+        if cut:
+            cut_partitions.add(key[:width])
 
     kept_members = {key[width:] for key in kept_entities}
 
     def left_out(position: int) -> Iterator[str]:
         return (key[width + position] for key in entity_keys if key[width:] not in kept_members)
 
+    def cut_in(position: int) -> Iterator[str]:
+        return (partition[position] for partition in cut_partitions)
+
+    roles = role_columns(frame)
+    named = {
+        column: cut_in(partition_by.index(column)) for column in roles if column in partition_by
+    }
+    named |= {column: left_out(rank_by.index(column)) for column in roles if column in rank_by}
     return record_counted_exclusion(
-        exclusions,
-        reason="beyond_limit",
-        row_count=row_count,
-        entities={
-            column: left_out(rank_by.index(column))
-            for column in role_columns(frame)
-            if column in rank_by
-        },
+        exclusions, reason="beyond_limit", row_count=row_count, entities=named
     )
 
 
@@ -593,11 +602,19 @@ def run_rank(
     # `entity_coverage`/`entity_present_periods` are entity-wide regardless
     # of `per_period` -- coverage is always measured against the whole
     # window, never one period at a time (see the module docstring's own
-    # coverage paragraph).
+    # coverage paragraph). Both read the grid's columns (`counted`): with
+    # `allow_sparse_breakdowns` an entity holds a period when any entity
+    # sharing its other columns does.
+    counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)
+    positions = [key_names.index(column) for column in counted]
+    grid_codes: dict[tuple[str, ...], set[int]] = {}
+    for key, (_, period_codes) in entity_members.items():
+        grid_codes.setdefault(tuple(key[at] for at in positions), set()).update(period_codes)
     entity_coverage: dict[tuple[str, ...], float] = {}
     entity_present_periods: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for key, (_, period_codes) in entity_members.items():
-        present_periods = tuple(members.periods[code] for code in sorted(set(period_codes)))
+    for key in entity_members:
+        codes = grid_codes[tuple(key[at] for at in positions)]
+        present_periods = tuple(members.periods[code] for code in sorted(codes))
         entity_present_periods[key] = present_periods
         entity_coverage[key] = len(present_periods) / pre_exclusion_period_count
 
@@ -612,14 +629,9 @@ def run_rank(
     # shrank to fit. `pre_exclusion_period_count` was already computed
     # above, before the per-entity coverage loop, which needs the identical
     # denominator.
-    counted = grid_columns(entity_columns, allow_sparse_breakdowns=allow_sparse_breakdowns)
     pre_exclusion_entity_count = group_rows(pre_exclusion_table, counted).count
     expected_cell_count = pre_exclusion_entity_count * pre_exclusion_period_count
-    present_cell_count = (
-        sum(len(periods) for periods in entity_present_periods.values())
-        if counted == entity_columns
-        else group_rows(table, (*counted, TIME_PERIOD_COLUMN)).count
-    )
+    present_cell_count = sum(len(codes) for codes in grid_codes.values())
     overall_coverage_fraction = (
         present_cell_count / expected_cell_count if expected_cell_count else 1.0
     )
@@ -687,7 +699,7 @@ def run_rank(
             members=members,
             entity_keys=entity_keys,
             rank_by=rank_by,
-            width=width,
+            partition_by=partition_by,
             kept=kept,
             per_period=per_period,
         )

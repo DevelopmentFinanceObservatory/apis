@@ -32,8 +32,10 @@ from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
     frame_ref_for,
+    implied_groupby,
     mint_options,
     record_options,
+    stat_vars_summed,
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
@@ -288,6 +290,99 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
             trace_id=None,
         )
     assert renders == [rendered_cv]
+
+
+_TWO_COUNTED = {
+    "resolved_stat_vars": [
+        {"ref": "dcid:A", "observation_count": 3},
+        {"ref": "dcid:B", "observation_count": 2},
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "summed"),
+    [
+        pytest.param(None, ("A", "B"), id="no-record-is-unknown"),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=None),
+            ("A", "B"),
+            id="unrecorded-frame-summed-is-unknown",
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=True), ("A", "B"), id="summed"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=False), (), id="a-cut-frame"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=None, frame_summed=None), (), id="no-derived"
+        ),
+    ],
+)
+def test_a_groupby_names_the_stat_vars_it_summed_unless_its_record_says_none(
+    version: object, summed: tuple[str, ...]
+) -> None:
+    assert stat_vars_summed(version, _TWO_COUNTED) == summed  # ty: ignore[invalid-argument-type]
+
+
+def test_a_version_whose_trace_counts_no_observations_implies_no_sum() -> None:
+    """The sum decision counts the StatVars a summed version would name
+    (`description_record.summed_refs`), so a trace recording no observation counts implies no
+    sum, as it would name none."""
+    uncounted = {"resolved_stat_vars": [{"ref": "dcid:A"}, {"ref": "dcid:B"}]}
+    index = SimpleNamespace(declarations={}, statvar_by_dcid=lambda _: None)
+
+    def implied(trace: dict) -> object:
+        return implied_groupby(trace, path_words=frozenset(), code_index=index)  # ty: ignore[invalid-argument-type]
+
+    assert implied(uncounted) is None
+    assert implied(_TWO_COUNTED) == {"by": ["time_period"], "op": "sum"}
+
+
+def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification renders a root's groupby in memory (`render` false), and the root names
+    the StatVars it summed as a stored rendering does."""
+    derived_cv = "cv_" + "2" * 32
+    monkeypatch.setattr(
+        analysis_roots,
+        "load_stored",
+        lambda **_: SimpleNamespace(
+            content_version=_CV,
+            coverage=CoverageModel(rows=2, dimensions=[]),
+            artifacts=[],
+            trace=_TWO_COUNTED,
+        ),
+    )
+    monkeypatch.setattr(analysis_roots, "head_rendering", lambda **_: None)
+    monkeypatch.setattr(
+        analysis_roots,
+        "render_unstored",
+        lambda **_: SimpleNamespace(
+            content_version=derived_cv, artifact=None, data=b"", rows=1, frame=None
+        ),
+    )
+    deps = SimpleNamespace(
+        snapshot_reader=SimpleNamespace(read_version=lambda *_: object()),
+        coverage=SimpleNamespace(snapshot=lambda: None),
+    )
+    roots = LiveRootSource(
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        recipes=Unwired("recipes"),  # ty: ignore[invalid-argument-type]
+        render=False,
+    )
+    summed = RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"})
+
+    resolved = roots.resolve(
+        DatasetRoot(spec_id=_SPEC, content_version=_CV, rendering=summed),
+        latest=False,
+        trace_id=None,
+    )
+
+    assert resolved.dataset.content_version == derived_cv
+    assert resolved.stat_vars_summed == ("A", "B")
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:

@@ -558,3 +558,28 @@ def test_a_short_grid_without_a_breakdown_names_no_flag() -> None:
 
     assert refused.value.code is RefusalCode.COVERAGE_INSUFFICIENT
     assert "allow_sparse_breakdowns" not in refused.value.refusal.fix
+
+
+@pytest.mark.parametrize(
+    ("values", "rows"),
+    [
+        pytest.param(["12220"], None, id="a-code-refuses-with-the-labels"),
+        pytest.param(["P1", "12220"], 2, id="a-held-label-keeps-its-rows"),
+    ],
+)
+def test_a_filter_on_a_breakdown_column_matching_no_row_names_its_labels(
+    values: list[str], rows: int | None
+) -> None:
+    predicate = {"kind": "category_match", "column": "stat_var_crsPurpose", "values": values}
+    tree = _node("filter", {"frame_ref": _root(0)}, predicates=[predicate])
+    inputs = {0: RootFrame(ref=_ROOT, frame=_breakdown_frame())}
+
+    if rows is not None:
+        assert evaluate(tree, inputs).frame.num_rows == rows
+        return
+    with pytest.raises(AnalysisRefused) as refused:
+        evaluate(tree, inputs)
+
+    assert refused.value.code is RefusalCode.FILTER_PREDICATE_TYPE_MISMATCH
+    assert refused.value.refusal.fix["column"] == "stat_var_crsPurpose"
+    assert refused.value.refusal.fix["labels"] == ["P0", "P1", "P2", "P3"]

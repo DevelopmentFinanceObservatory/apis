@@ -26,19 +26,23 @@ columns from the roles the version's frame holds, and its record keeps the resol
 (`record_options`). The verbs read them to keep group totals out of a sum or rank and to rank
 places at one level.
 
-A request root that states no `groupby` and whose version's frame holds more than one StatVar
-is read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
-`groupby` `{by: <the summable axes its steps name, else ["time_period"]>, op: "sum"}`, so its
+A request root that states no `groupby`, under a step other than `filter`, and whose
+version's frame holds more than one StatVar with data (`description_record.summed_refs`) is
+read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
+`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, so its
 record, the recipe's normal form and the format 2 ref state the sum. When the sum refuses
-`rollup_not_summable` the root is read unsummed and records the refusal (`ResolvedRoot.sum_refused`),
-and so does a root read at its newest version whose summed rebuild ran as a queued operation that
-failed `rollup_not_summable`. A root whose groupby summed StatVars names them
+`rollup_not_summable`, inline or as a queued rebuild that failed with that code, the root is
+read unsummed, records the refusal (`ResolvedRoot.sum_refused`) and logs one
+`datasets_analysis_root_sum_refused` line. A root whose groupby summed StatVars names them
 (`ResolvedRoot.stat_vars_summed`).
 
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
-newest version of the rendering, rebuilt when its head is stale, in one serve. A dataset root under `latest`
-is served the same way with the rendering it records, so it is read by its rendering, since its
-version alone can record two renderings that the newest data splits. A rebuild
+newest version of the rendering, rebuilt when its head is stale, in one serve, summed as the
+stored head's trace implies so no other rendering is made. A dataset root under `latest` is
+served the same way with the rendering it records, so it is read by its rendering, since its
+version alone can record two renderings that the newest data splits. A request reads one
+version of a dataset: a later root of a dataset an earlier root served renders from the
+version that serve read. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
 and will not be retried refuses as the refresh door refuses it (`RefreshRebuildFailed`).
 `newest_spec_version` names the dataset version a Spec root reads.
@@ -48,8 +52,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, cast
 
 import pyarrow as pa
@@ -65,6 +71,7 @@ from dfo_frame_grammar import (
 )
 from dfo_frame_grammar.grammar import (
     STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     UnitRequest,
     unit_cell_from_json,
@@ -74,7 +81,7 @@ from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
 from code_index.query import CodeIndex
 from code_index.types import summable_axes
-from dataset_store.snapshot import StoredArtifactLocation
+from dataset_store.snapshot import StoredArtifactLocation, StoredVersion
 from datasets_api.analysis import (
     STAT_VAR_PREFIX,
     STAT_VAR_WORD,
@@ -121,8 +128,11 @@ from dfo_analysis_engine.place_type import (
     UNTYPED,
     enrichment_role,
 )
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.reshape import RollupNotSummableError
 from spec_registry.reader import StoredDefinition
+
+logger = logging.getLogger(__name__)
 
 # The bare frame-layout Parquet data-mcp mints a frame with.
 _BASE_OPTIONS: Mapping[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
@@ -207,29 +217,20 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
     return resolved
 
 
-def _contributing_stat_vars(trace: Mapping[str, Any]) -> list[str]:
-    """The bare dcids of the StatVars a version's `trace` resolved and its frame holds: each
-    `resolved_stat_vars` entry but one recording no observations."""
-    entries = trace.get("resolved_stat_vars") or ()
-    return [
-        str(entry["ref"]).removeprefix("dcid:")
-        for entry in entries
-        if entry.get("observation_count") != 0
-    ]
-
-
 def implied_groupby(
     trace: Mapping[str, Any], *, path_words: frozenset[str], code_index: CodeIndex
 ) -> dict[str, Any] | None:
     """The `groupby` a root read with no stated one is read with, from its version's `trace`
     and the words the steps over it name: none when the words name `stat_var` or the frame
-    holds one StatVar, else `{by, op: "sum"}`, `by` the summable axes the version's StatVars
-    decode (`code_index` declarations) that the words name, as the axis or as its
-    `stat_var_<axis>` column, else `["time_period"]`. The datasets door sums every other
+    holds fewer than two StatVars with data (`summed_refs`), else `{by, op: "sum"}`, `by`
+    `time_period` and the summable axes the version's StatVars decode (`code_index`
+    declarations) that the words name, as the axis or as its `stat_var_<axis>` column, sorted
+    as `mint_options` sorts a stated `by`: the groupby a caller following the refusal's summed
+    read states. The datasets door sums every other
     summable axis away, and `stat_var` with them (conformance C120)."""
     if STAT_VAR_WORD in path_words:
         return None
-    stat_vars = _contributing_stat_vars(trace)
+    stat_vars = summed_refs(trace)
     if len(stat_vars) < 2:
         return None
     summable = summable_axes(code_index.declarations)
@@ -238,11 +239,59 @@ def implied_groupby(
         if (row := code_index.statvar_by_dcid(dcid)) is not None:
             axes.update(summable.intersection(row.constraint_properties))
     named = {word.removeprefix(STAT_VAR_PREFIX) for word in path_words} & axes
-    return {"by": sorted(named) or ["time_period"], "op": "sum"}
+    return {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
 
 
 def _sum_refused(refused: RollupNotSummableError) -> dict[str, str]:
     return {"axis": refused.axis, "precondition": refused.precondition}
+
+
+_SUM_REFUSED_EVENT = "datasets_analysis_root_sum_refused"
+"""The `event` of the line logged when the datasets door refuses a sum the planner implied for
+an analysis root, which is then read unsummed."""
+
+
+def _log_sum_refused(
+    *,
+    spec_id: str,
+    content_version: str,
+    by: Mapping[str, Any],
+    refused: Mapping[str, str],
+    operation_id: str | None = None,
+) -> None:
+    logger.info(
+        "analysis root read unsummed spec_id=%s content_version=%s axis=%s precondition=%s",
+        spec_id,
+        content_version,
+        refused["axis"],
+        refused["precondition"],
+        extra={
+            JSON_FIELDS_ATTR: {
+                "event": _SUM_REFUSED_EVENT,
+                "spec_id": spec_id,
+                "content_version": content_version,
+                "by": list(by["by"]),
+                "axis": refused["axis"],
+                "precondition": refused["precondition"],
+                "operation_id": operation_id,
+            }
+        },
+    )
+
+
+def stat_vars_summed(version: StoredVersion | None, trace: Mapping[str, Any]) -> tuple[str, ...]:
+    """The StatVars a groupby rendering summed into its version, whose record is `version` and
+    whose trace is `trace`: the StatVars with data in it (`summed_refs`), the same ones the
+    planner's sum decision counts, when there are several. None when the record says the
+    frame summed nothing: a version that is no derived one, or a derived one whose
+    `frame_summed` is false. A missing record or an unrecorded `frame_summed` is unknown, and
+    reads as summed."""
+    if version is not None and (
+        version.base_content_version is None or version.frame_summed is False
+    ):
+        return ()
+    summed = tuple(summed_refs(trace))
+    return summed if len(summed) > 1 else ()
 
 
 # The precondition a queued rebuild's `rollup_not_summable` names when its operation records
@@ -420,6 +469,8 @@ class LiveRootSource:
         self._render = render
         self._max_root_rows = max_root_rows
         self._located_rows = 0
+        # The version each served definition's first newest root read, by its spec id.
+        self._newest_versions: dict[str, str] = {}
 
     def _refuse_rendering_past_bound(self, rows: int) -> None:
         """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
@@ -453,21 +504,40 @@ class LiveRootSource:
             )
         if isinstance(root, SpecRoot) or latest:
             return self._newest(root, path_words=path_words, trace_id=trace_id)
+        return self._at_version(root, path_words=path_words, trace_id=trace_id)
+
+    def _at_version(
+        self,
+        root: DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        revoked_under: Sequence[str] = (),
+    ) -> ResolvedRoot:
+        """The version `root` names, read in the rendering it names, summed as the planner
+        implies (`_implied`) from the version's trace. A sum the door refuses reads the
+        version unsummed. `revoked_under` is `load_stored`'s."""
         spec_id, content_version = root.spec_id, root.content_version
         stored = load_stored(
-            subject_id=spec_id, content_version=content_version, deps=deps, include_artifacts=False
+            subject_id=spec_id,
+            content_version=content_version,
+            deps=self._deps,
+            include_artifacts=False,
+            revoked_under=revoked_under,
         )
         options = record_options(mint_options(root.rendering), coverage=stored.coverage)
+        read = partial(self._stored, root, stored, trace_id=trace_id, revoked_under=revoked_under)
         groupby = self._implied(stored, path_words=path_words)
         if groupby is None:
-            return self._stored(root, stored, options=options, trace_id=trace_id)
+            return read(options=options)
         try:
-            return self._stored(
-                root, stored, options={**options, "groupby": groupby}, trace_id=trace_id
-            )
+            return read(options={**options, "groupby": groupby})
         except RollupNotSummableError as refused:
-            unsummed = self._stored(root, stored, options=options, trace_id=trace_id)
-            return replace(unsummed, sum_refused=_sum_refused(refused))
+            sum_refused = _sum_refused(refused)
+            _log_sum_refused(
+                spec_id=spec_id, content_version=content_version, by=groupby, refused=sum_refused
+            )
+            return replace(read(options=options), sum_refused=sum_refused)
 
     def _implied(
         self, manifest: Manifest, *, path_words: frozenset[str] | None
@@ -488,25 +558,59 @@ class LiveRootSource:
         trace_id: str | None,
     ) -> ResolvedRoot:
         """`root` read at its dataset's newest version, in the rendering it names, summed as
-        the planner implies (`_implied`)."""
+        the planner implies (`_implied`).
+
+        One request reads one version of a dataset. The first root of a dataset is served
+        (`_serve_newest`), which rebuilds a stale head, and every later root of it renders
+        from the version that serve read (`_at_version`), so a head that moves during the
+        request is not read twice."""
+        served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
+        if served.spec_id not in self._newest_versions:
+            first = self._serve_newest(served, root, path_words=path_words, trace_id=trace_id)
+            if first is not None:
+                return first
+        version = DatasetRoot(
+            spec_id=served.spec_id,
+            content_version=self._base_version(
+                served.spec_id, self._newest_versions[served.spec_id]
+            ),
+            rendering=root.rendering,
+        )
+        return self._at_version(
+            version, path_words=path_words, trace_id=trace_id, revoked_under=(root.spec_id,)
+        )
+
+    def _serve_newest(
+        self,
+        served: StoredDefinition,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+    ) -> ResolvedRoot | None:
+        """The first root of `served` this request reads at its newest version, served in the
+        one rendering it reads: summed as the planner implies from the stored head's trace
+        (`_head_trace`), so no rendering is made only to read a trace. Records the version the
+        serve read (`_newest_versions`). `None` when that version implies another sum than
+        the head did, as when the serve rebuilt the head or there was none: the root is then
+        read from the version served."""
         # The newest data is read in the rendering the root names, as a fresh root of
         # that rendering reads it, so a version recording two renderings stays readable.
-        served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
         requested = mint_options(root.rendering)
-        manifest = self._serve(
-            served, MintOptions.model_validate(requested), posted=root.spec_id, trace_id=trace_id
-        )
+        head_trace = self._head_trace(served.spec_id, posted=root.spec_id, path_words=path_words)
+        groupby = None if head_trace is None else self._implied_by(head_trace, path_words)
+        manifest: Manifest | None = None
         sum_refused: dict[str, str] | None = None
-        if (groupby := self._implied(manifest, path_words=path_words)) is not None:
-            summed = {**requested, "groupby": groupby}
+        operation_id: str | None = None
+        if groupby is not None:
             try:
                 manifest = self._serve(
                     served,
-                    MintOptions.model_validate(summed),
+                    MintOptions.model_validate({**requested, "groupby": groupby}),
                     posted=root.spec_id,
                     trace_id=trace_id,
                 )
-                requested = summed
+                requested = {**requested, "groupby": groupby}
             except RollupNotSummableError as refused:
                 sum_refused = _sum_refused(refused)
             except RefreshRebuildFailed as failed:
@@ -514,6 +618,25 @@ class LiveRootSource:
                 if failed.refusal_code != RollupNotSummableError.code:
                     raise
                 sum_refused = _rebuild_sum_refused(failed)
+                operation_id = failed.operation_id
+        if manifest is None:
+            manifest = self._serve(
+                served,
+                MintOptions.model_validate(requested),
+                posted=root.spec_id,
+                trace_id=trace_id,
+            )
+        self._newest_versions[served.spec_id] = manifest.content_version
+        if groupby is not None and sum_refused is not None:
+            _log_sum_refused(
+                spec_id=served.spec_id,
+                content_version=manifest.content_version,
+                by=groupby,
+                refused=sum_refused,
+                operation_id=operation_id,
+            )
+        elif path_words is not None and self._implied_by(manifest.trace, path_words) != groupby:
+            return None
         # The mint resolved a default enrichment against the version it served.
         options = record_options(requested, coverage=manifest.coverage)
         resolved = self._resolved(
@@ -524,6 +647,39 @@ class LiveRootSource:
         )
         return replace(resolved, sum_refused=sum_refused)
 
+    def _implied_by(
+        self, trace: Mapping[str, Any], path_words: frozenset[str] | None
+    ) -> dict[str, Any] | None:
+        if path_words is None:
+            return None
+        return implied_groupby(trace, path_words=path_words, code_index=self._deps.code_index)
+
+    def _head_trace(
+        self, spec_id: str, *, posted: str, path_words: frozenset[str] | None
+    ) -> Mapping[str, Any] | None:
+        """The trace of the version the head of `spec_id` names, read from its record with no
+        rendering, or `None` for a root the planner implies no sum for or a subject with no
+        head."""
+        if path_words is None:
+            return None
+        head = self._deps.head_store.read_head(spec_id)
+        if head is None:
+            return None
+        return load_stored(
+            subject_id=spec_id,
+            content_version=head.content_version,
+            deps=self._deps,
+            include_artifacts=False,
+            revoked_under=(posted,),
+        ).trace
+
+    def _base_version(self, spec_id: str, content_version: str) -> str:
+        """The dataset version `content_version` renders: its base for a derived version."""
+        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
+        if version is None or version.base_content_version is None:
+            return content_version
+        return version.base_content_version
+
     def _stored(
         self,
         root: DatasetRoot,
@@ -531,6 +687,7 @@ class LiveRootSource:
         *,
         options: Mapping[str, Any],
         trace_id: str | None,
+        revoked_under: Sequence[str] = (),
     ) -> ResolvedRoot:
         """The version `root` names, whose manifest is `stored`, read with `options`: its
         stored frame, or the rendering those options make of it."""
@@ -548,6 +705,7 @@ class LiveRootSource:
                 trace_id=trace_id,
                 coverage_snapshot=coverage_snapshot,
                 render=self._render,
+                revoked_under=revoked_under,
             )
             if rendered is None and not self._render:
                 self._refuse_rendering_past_bound(stored.coverage.rows)
@@ -560,7 +718,13 @@ class LiveRootSource:
                     coverage_snapshot=coverage_snapshot,
                 )
                 if unstored is not None:
-                    return self._unstored(spec_id=spec_id, options=options, unstored=unstored)
+                    return self._unstored(
+                        spec_id=spec_id,
+                        content_version=content_version,
+                        options=options,
+                        unstored=unstored,
+                        stored=stored,
+                    )
             if rendered is None or _data_artifact(rendered) is None:
                 raise RootExpired(
                     spec_id=spec_id,
@@ -619,25 +783,23 @@ class LiveRootSource:
         )
         if "groupby" not in options:
             return root
-        return replace(root, stat_vars_summed=self._summed(spec_id, content_version, manifest))
-
-    def _summed(self, spec_id: str, content_version: str, manifest: Manifest) -> tuple[str, ...]:
-        """The StatVars the groupby collapse `{spec_id, content_version}` summed, as its
-        description record's `sum_variables` step names them (`summed_refs`), or none for a
-        version that is no collapse of several."""
         version = self._deps.snapshot_reader.read_version(spec_id, content_version)
-        if version is None or not version.frame_summed:
-            return ()
-        summed = tuple(summed_refs(manifest.trace))
-        return summed if len(summed) > 1 else ()
+        return replace(root, stat_vars_summed=stat_vars_summed(version, manifest.trace))
 
-    @staticmethod
     def _unstored(
-        *, spec_id: str, options: Mapping[str, Any], unstored: UnstoredRendering
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        options: Mapping[str, Any],
+        unstored: UnstoredRendering,
+        stored: Manifest,
     ) -> ResolvedRoot:
-        """The root `unstored` renders: read from its frame-layout bytes when the root names
-        `columns`, else from the derived version's canonical frame it made, else, when the
-        rendering answers the version read, from that version's stored frame (`locate`)."""
+        """The root `unstored`, a rendering of the version `content_version` whose manifest is
+        `stored`, renders: read from its frame-layout bytes when the root names `columns`, else
+        from the derived version's canonical frame it made, else, when the rendering answers
+        the version read, from that version's stored frame (`locate`). A groupby names the
+        StatVars it summed as a stored rendering does (`stat_vars_summed`)."""
         columns = bool(options.get("columns"))
         source: _Handle | None
         if columns:
@@ -646,7 +808,7 @@ class LiveRootSource:
             source = _UnstoredFrame(unstored.frame)
         else:
             source = None
-        return _root(
+        root = _root(
             spec_id=spec_id,
             content_version=unstored.content_version,
             options=options,
@@ -654,6 +816,9 @@ class LiveRootSource:
             rows=unstored.rows,
             source=source,
         )
+        if "groupby" not in options or unstored.content_version == content_version:
+            return root
+        return replace(root, stat_vars_summed=stat_vars_summed(None, stored.trace))
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root`, with the version's servable stored frame located when `read` reads it, and a

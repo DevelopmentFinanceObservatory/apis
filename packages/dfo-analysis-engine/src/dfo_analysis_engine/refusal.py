@@ -33,15 +33,9 @@ latest period unestablished; `rolling_populations_differ` refuses a recipe
 whose rolling op-specs carry more than one population list, which no single
 latest period serves, even when the lists give the same period.
 
-A `stat_var_unresolved` over a frame of several StatVars names the summed read
-that answers it: `fix["groupby"]`, the root rendering groupby that sums the
-reading's StatVars when it is read (`SUMMED_READ`). The Datasets analysis
-service applies that groupby itself to a root no step over it names
-`stat_var` on, so a caller reaches this refusal only by naming `stat_var`, by
-stating a groupby, or when the sum is refused.
-`composite_refusal` turns one over the members of a composite frame into the
-refusal naming its components, the `get_data` read that sums them and the same
-`groupby`.
+`composite_refusal` turns a `stat_var_unresolved` over the members of a
+composite frame into the refusal naming its components and the `get_data`
+read that sums them.
 """
 
 from __future__ import annotations
@@ -81,6 +75,7 @@ from dfo_analysis_engine.engine.compare import (
     ComparisonPeriodsDisjointError,
 )
 from dfo_analysis_engine.engine.filter import (
+    FilterBreakdownValueUnmatchedError,
     FilterPlaceLevelUnknownError,
     FilterPredicateTypeMismatchError,
     FilterPredicateValueTypeMismatchError,
@@ -131,7 +126,6 @@ from dfo_analysis_engine.units import unit_json, unit_name
 
 __all__ = [
     "RETRY_MODE_BY_CODE",
-    "SUMMED_READ",
     "AnalysisRefused",
     "CompositeComponent",
     "Refusal",
@@ -322,14 +316,11 @@ class Refusal:
 
     @classmethod
     def stat_var_unresolved(cls, *, reason: str, distinct_stat_vars: list[str]) -> Self:
-        """A frame of no single StatVar. Over several, the message and `fix["groupby"]`
-        name the summed read (`SUMMED_READ`)."""
-        fix: dict[str, Any] = {"reason": reason, "distinct_stat_vars": distinct_stat_vars}
-        message = f"Could not resolve a single StatVar to aggregate: {reason}."
-        if len(distinct_stat_vars) > 1:
-            fix["groupby"] = _summed_read()
-            message += _SUMMED_READ_ADVICE
-        return cls(code=RefusalCode.STAT_VAR_UNRESOLVED, message=message, fix=fix)
+        return cls(
+            code=RefusalCode.STAT_VAR_UNRESOLVED,
+            message=f"Could not resolve a single StatVar to aggregate: {reason}.",
+            fix={"reason": reason, "distinct_stat_vars": distinct_stat_vars},
+        )
 
     @classmethod
     def composite_stat_vars_unsummed(
@@ -349,14 +340,12 @@ class Refusal:
                 f"Could not resolve a single StatVar: {reason}. Read the spec again with "
                 'get_data stat_vars="sum", which adds every component\'s StatVars into one '
                 "series per party and year, and pass that frame_ref."
-                f"{_SUMMED_READ_ADVICE}"
             ),
             fix={
                 "reason": reason,
                 "distinct_stat_vars": distinct_stat_vars,
                 "components": components,
                 "get_data": {"stat_vars": "sum"},
-                "groupby": _summed_read(),
             },
         )
 
@@ -1129,6 +1118,29 @@ class Refusal:
         )
 
     @classmethod
+    def filter_breakdown_value_unmatched(
+        cls, *, column: str, values: list[str], labels: list[str], truncated: bool
+    ) -> Self:
+        """A `category_match` on a `stat_var_<axis>` column naming no value it holds. The
+        column holds labels, so a code matches nothing: `fix["labels"]` lists the smallest of
+        the labels it holds, `fix["labels_truncated"]` whether there are more."""
+        return cls(
+            code=RefusalCode.FILTER_PREDICATE_TYPE_MISMATCH,
+            message=(
+                f"A 'category_match' predicate on column {column!r} matches no row: the column "
+                f"holds the labels of its codes, not {values}. Retry with labels it holds, "
+                f"such as {labels[:3]}."
+            ),
+            fix={
+                "column": column,
+                "predicate_kind": "category_match",
+                "values": values,
+                "labels": labels,
+                "labels_truncated": truncated,
+            },
+        )
+
+    @classmethod
     def filter_predicate_value_type_mismatch(
         cls, *, column: str, actual_type: str, expected_type: str
     ) -> Self:
@@ -1396,23 +1408,6 @@ class Refusal:
         )
 
 
-SUMMED_READ: Mapping[str, Any] = {"by": ["time_period"], "op": "sum"}
-"""The root rendering groupby that sums a reading's StatVars when it is read, keeping its
-roles and periods: the read a `stat_var_unresolved` over several StatVars names. A
-summable axis named in `by` beside `time_period` stays apart as `stat_var_<axis>`."""
-
-
-def _summed_read() -> dict[str, Any]:
-    return {"by": list(SUMMED_READ["by"]), "op": SUMMED_READ["op"]}
-
-
-_SUMMED_READ_ADVICE = (
-    " Read the root summed: name no 'stat_var' in the steps over it, so DFO sums its"
-    ' StatVars when it is read, or give it the rendering groupby {"by": ["time_period"],'
-    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
-)
-
-
 class AnalysisRefused(Exception):
     """The engine declined the call. `refusal` holds its code, retry mode,
     message and `fix`."""
@@ -1555,6 +1550,7 @@ _VERBS: Mapping[str, _Vocabulary] = {
             FilterPredicateValueTypeMismatchError,
             FilterPlaceLevelUnknownError,
             FilterUnitConversionUnsupportedError,
+            FilterBreakdownValueUnmatchedError,
         )
     ),
     "compare": _SLICE_PAIR,
@@ -1717,6 +1713,13 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
         case FilterPredicateValueTypeMismatchError():
             return Refusal.filter_predicate_value_type_mismatch(
                 column=exc.column, actual_type=exc.actual_type, expected_type=exc.expected_type
+            )
+        case FilterBreakdownValueUnmatchedError():
+            return Refusal.filter_breakdown_value_unmatched(
+                column=exc.column,
+                values=list(exc.values),
+                labels=list(exc.labels),
+                truncated=exc.truncated,
             )
         case FilterPlaceLevelUnknownError():
             return Refusal.filter_predicate_type_mismatch(

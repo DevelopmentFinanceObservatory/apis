@@ -1384,7 +1384,8 @@ def _cells(result: RankResult, *columns: str) -> list[tuple[object, ...]]:
 def test_a_partitioned_limit_keeps_the_top_of_each_partition_with_its_ties() -> None:
     """Each recipient ranks its own reporters, so rank numbers restart per
     recipient, the tie at R1's second place keeps both, and the limit cuts
-    AAA from R2 while R1 keeps it. Only DDD, kept by no recipient, is named."""
+    AAA from R2 while R1 keeps it. The record names both recipients, each of
+    which lost a reporter, and DDD alone, the reporter no recipient keeps."""
     result = run_rank(
         _partitioned_frame(),
         rank_by=("reporter",),
@@ -1414,7 +1415,7 @@ def test_a_partitioned_limit_keeps_the_top_of_each_partition_with_its_ties() -> 
     ]
     (record,) = [record for record in result.exclusions.records if record.reason == "beyond_limit"]
     assert record.row_count == 2
-    assert record.entities == {"reporter": ("dcid:DDD",)}
+    assert record.entities == {"recipient": ("dcid:R1", "dcid:R2"), "reporter": ("dcid:DDD",)}
 
 
 def test_a_partitioned_rank_counts_coverage_over_each_partitions_own_entities() -> None:
@@ -1465,3 +1466,35 @@ def test_a_partitioned_per_period_rank_cuts_each_partition_in_each_period() -> N
         ("dcid:R2", "2020", "dcid:BBB", 2.0),
         ("dcid:R2", "2021", "dcid:AAA", 4.0),
     ]
+
+
+def test_allow_sparse_breakdowns_measures_each_entity_on_the_grid() -> None:
+    """Each purpose holds one of two years, so it covers half the window alone;
+    on the grid without the breakdown its reporter holds both years, so each
+    entity's coverage is whole."""
+    frame = _frame(
+        [
+            _row(reporter="dcid:AAA", year=year, value=1.0, stat_var_crsPurpose=purpose)
+            for year, purpose in (("2020", "P1"), ("2021", "P2"))
+        ],
+        role_keys=["reporter", "stat_var_crsPurpose"],
+    )
+
+    def ranked(allow_sparse_breakdowns: bool) -> RankResult:
+        return run_rank(
+            frame,
+            rank_by=("reporter", "stat_var_crsPurpose"),
+            aggregation="sum",
+            window_start=None,
+            window_end=None,
+            ascending=False,
+            allow_sparse_breakdowns=allow_sparse_breakdowns,
+        )
+
+    sparse, strict = ranked(True), ranked(False)
+
+    assert [er.coverage_fraction for er in sparse.entity_ranks] == [1.0, 1.0]
+    assert [er.period_count for er in sparse.entity_ranks] == [2, 2]
+    assert sparse.overall_coverage_fraction == 1.0
+    assert [er.coverage_fraction for er in strict.entity_ranks] == [0.5, 0.5]
+    assert strict.overall_coverage_fraction == 0.5

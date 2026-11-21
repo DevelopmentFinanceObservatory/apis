@@ -1,6 +1,7 @@
 """A rank partitioned by another role and the sparse-breakdown flag through the analysis route:
 the words `partition_by` names read the root summed by them, a partition naming a ranked column
-refuses, and an aggregate or rank that sets neither keeps the ids it had before both existed."""
+refuses, and an aggregate or rank that sets neither mints the ids an op-spec without the two
+fields mints."""
 
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ def test_a_partition_naming_a_ranked_column_refuses() -> None:
 
 def test_an_aggregate_and_rank_setting_no_new_parameter_keep_their_recipe_ids() -> None:
     """A rank over an aggregate that sets neither `partition_by` nor `allow_sparse_breakdowns`
-    keeps the ids this tree had before either parameter existed."""
+    leaves both out of its op-spec preimages (`HASHED_WHEN_SET`), so its ids are `_RANK_IDS`."""
     client, _, root = _rig(sole=True)
     tree = _rank(_aggregate(root, group_by=["recipient", "time_period"]), rank_by=["recipient"])
 
@@ -55,7 +56,8 @@ def test_an_aggregate_and_rank_setting_no_new_parameter_keep_their_recipe_ids() 
     assert (member["spec"], member["content_version"]) == _RANK_IDS
 
 
-# The ids this tree's frame had before `partition_by` and `allow_sparse_breakdowns` existed.
+# The recipe ids and content version of a rank over an aggregate of the one-StatVar rig root,
+# minted over op-specs that hold no `partition_by` or `allow_sparse_breakdowns` key.
 _RANK_IDS = (
     {
         "spec_id": "ops_77858a33592f5e1e3650e3652ccff52b",

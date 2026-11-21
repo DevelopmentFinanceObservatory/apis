@@ -17,13 +17,14 @@ columns the dataset's roles take (`default_enrichment`), which the verbs need to
 totals out of a sum or rank. The rendering is part of the root's identity: its mint options
 are the root record's `options`, which the recipe's normal form names.
 
-A Spec, dataset or ref root that states no `groupby` is planned with the column words the steps
-over it name on its side (`PlannedRoot`, `_path_words`), and a root whose version holds more
-than one StatVar is read summed, keeping the summable axes those words name, unless they name
-`stat_var` (`analysis_roots.implied_groupby`). The sum is the root's `groupby`, so its record,
-the normal form and the ref state it, and the answer counts the StatVars it summed
-(`stat_vars_summed`). A word naming a summable axis reads the `stat_var_<axis>` column the sum
-keeps (`column_for`).
+A Spec, dataset or ref root that states no `groupby`, under a step other than `filter`, is
+planned with the column words the steps over it name on its side (`PlannedRoot`, `_path_words`),
+and a root whose version holds more than one StatVar is read summed, keeping the summable axes
+those words name, unless they name `stat_var` (`analysis_roots.implied_groupby`). The sum is
+the root's `groupby`, so its record, the normal form and the ref state it, and the answer counts
+the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads the
+`stat_var_<axis>` column the sum keeps (`column_for`). A `stat_var_unresolved` names the
+summed read, or the sum the datasets door refused (`_with_summed_read`).
 
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
@@ -823,8 +824,9 @@ def _sentence(evaluation: Evaluation) -> str:
 @dataclass(frozen=True, kw_only=True)
 class PlannedRoot:
     """A root of the working tree. `path_words` are the column words the steps over it name on
-    its side, set only on a root the request states with no `groupby` (`_path_words`), so a
-    stored recipe's roots and a stated groupby are read as stated."""
+    its side, set only on a root the request states with no `groupby` under a step other than
+    `filter` (`_path_words`, `_plan_node`), so a stored recipe's roots, a stated groupby and a
+    root under filters alone are read as stated."""
 
     root: SpecRoot | DatasetRoot
     path_words: frozenset[str] | None = None
@@ -863,13 +865,18 @@ class _Plan:
         self.count()
         if root.rendering.groupby is not None:
             path_words = None
-        key = f"{type(root).__name__}:{root.model_dump_json()}"
+        key = _root_key(root)
         if path_words is not None:
             key += f":{sorted(path_words)}"
         if key not in self.indices:
             self.indices[key] = len(self.roots)
             self.roots.append(PlannedRoot(root=root, path_words=path_words))
         return {"root": self.indices[key]}
+
+
+def _root_key(root: SpecRoot | DatasetRoot) -> str:
+    """The key that tells request roots apart: their kind and JSON form."""
+    return f"{type(root).__name__}:{root.model_dump_json()}"
 
 
 def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
@@ -900,8 +907,9 @@ def _words(value: object) -> set[str]:
 def _path_words(step: StepNode) -> dict[str, set[str]]:
     """The column words `step` names on each input, `data` and `other`, slot by slot as
     `_translated` names its columns: each of `_COLUMN_LISTS` and each predicate's column on the
-    verb's primary slot, an entity binding's keys on its slot, and a pairing's keys on one side
-    and its values on the other."""
+    verb's primary slot, an entity binding's keys on its slot, a pairing's keys on one side
+    and its values on the other, and a join's `join_keys` on its other side too when it states
+    no `right_keys`."""
     data_slot, other_slot = _SLOTS[step.verb]
     paired = step.inputs.other is not None
     side_of = {data_slot: "data", other_slot: "other"} if paired else {}
@@ -937,6 +945,9 @@ def _path_words(step: StepNode) -> dict[str, set[str]]:
     for predicate in predicates if isinstance(predicates, list) else ():
         if isinstance(predicate, dict):
             words[side(_PRIMARY_SLOT)] |= _words(predicate.get("column"))
+    if step.verb is Verb.JOIN and not arguments.get("right_keys"):
+        # With no `right_keys`, each `join_keys` column keys both sides under its own name.
+        words[side(other_slot)] |= _words(arguments.get("join_keys"))
     return words
 
 
@@ -952,6 +963,7 @@ def _plan_node(
     verb: str,
     side: str,
     path_words: frozenset[str] = frozenset(),
+    reduced: bool = False,
 ) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
     node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
@@ -960,11 +972,15 @@ def _plan_node(
     `path_words` are the words the steps above `node` name on its side. A step adds its own
     (`_path_words`): its `data` input inherits the words above it, and its `other` input
     inherits them under `compare` and `sum_of` only, whose sides hold one grain; under
-    `share_of`, `quotient_of` and `join` the other side is keyed by its own words."""
+    `share_of`, `quotient_of` and `join` the other side is keyed by its own words.
+    `reduced` is whether a step above `node` is a verb other than `filter`, which reads one
+    StatVar: a root under `filter` steps alone selects rows and keeps every StatVar's, so it is
+    planned with no path words and read as stated."""
     match node:
         case StepNode():
             plan.count()
             words = _path_words(node)
+            below = reduced or node.verb is not Verb.FILTER
             inputs = {
                 "data": _plan_node(
                     node.inputs.data,
@@ -973,6 +989,7 @@ def _plan_node(
                     verb=node.verb,
                     side="data",
                     path_words=path_words | words["data"],
+                    reduced=below,
                 )
             }
             if node.inputs.other is not None:
@@ -984,6 +1001,7 @@ def _plan_node(
                     verb=node.verb,
                     side="other",
                     path_words=inherited | words["other"],
+                    reduced=below,
                 )
             return {"step": node, "inputs": inputs}
         case RefRoot():
@@ -999,6 +1017,7 @@ def _plan_node(
                 verb=verb,
                 side=side,
                 path_words=path_words,
+                reduced=reduced,
             )
         case DerivedRoot():
             stored = source.recipe(spec_id=node.spec_id, content_version=node.content_version)
@@ -1011,7 +1030,7 @@ def _plan_node(
             records = stored["roots"]
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
-            return plan.root(node, path_words=path_words)
+            return plan.root(node, path_words=path_words if reduced else None)
 
 
 def _expand(
@@ -1896,20 +1915,24 @@ def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
 
 
 def merged_roots[R: ResolvedRoot](
-    working: dict[str, Any], resolved: Sequence[R]
+    working: dict[str, Any], resolved: Sequence[R], planned: Sequence[PlannedRoot]
 ) -> tuple[dict[str, Any], list[R]]:
-    """`working` and `resolved` with the roots that resolved to one record made one root. A
-    root reached under two sets of path words is planned twice (`_Plan.root`), and reads one
-    frame when the words imply the same rendering, as they do for a root of one StatVar, so
-    the recipe, its ids and the rows read are those of a tree naming the root once."""
+    """`working` and `resolved`, planned as `planned`, with the roots planned from one request
+    root that resolved to one record made one root. A root reached under two sets of path
+    words is planned twice (`_Plan.root`), and reads one frame when the words imply the same
+    rendering, as they do for a root of one StatVar, so the recipe, its ids and the rows read
+    are those of a tree naming the root once. Two request roots that resolve alike stay two.
+    A merged root keeps the first `sum_refused` among those it merges."""
     index: dict[int, int] = {}
     kept: list[R] = []
-    first: dict[bytes, int] = {}
-    for at, root in enumerate(resolved):
-        key = rfc8785.dumps(dict(root.record))
+    first: dict[tuple[str, bytes], int] = {}
+    for at, (root, plan) in enumerate(zip(resolved, planned, strict=True)):
+        key = (_root_key(plan.root), rfc8785.dumps(dict(root.record)))
         if key not in first:
             first[key] = len(kept)
             kept.append(root)
+        elif kept[first[key]].sum_refused is None and root.sum_refused is not None:
+            kept[first[key]] = replace(kept[first[key]], sum_refused=root.sum_refused)
         index[at] = first[key]
     if len(kept) == len(resolved):
         return working, list(resolved)
@@ -2017,7 +2040,7 @@ def _evaluated_frames(
             tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
         )
     except AnalysisRefused as refused:
-        if (named := _with_sum_refused(refused.refusal, ordered)) is None:
+        if (named := _with_summed_read(refused.refusal, ordered)) is None:
             raise
         raise AnalysisRefused(named) from refused
     rows = evaluation.frame.num_rows
@@ -2035,13 +2058,30 @@ def _evaluated_frames(
     )
 
 
-def _with_sum_refused(
+SUMMED_READ: Mapping[str, Any] = {"by": ["time_period"], "op": "sum"}
+"""The root rendering groupby that sums a reading's StatVars when it is read, keeping its roles
+and periods. A summable axis named in `by` beside `time_period` stays apart as
+`stat_var_<axis>`."""
+
+_SUMMED_READ_ADVICE = (
+    " Read the root summed: name no 'stat_var' in the steps over it, so DFO sums its"
+    ' StatVars when it is read, or give it the rendering groupby {"by": ["time_period"],'
+    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
+)
+
+
+def _with_summed_read(
     refusal: EngineRefusal, roots: Sequence[ResolvedRoot]
 ) -> EngineRefusal | None:
-    """`refusal` with each sum the planner implied and the datasets door refused named in its
-    message and its `fix` as `groupby_refused` (`{spec_id, content_version, axis,
-    precondition}`), when it is a `stat_var_unresolved` and such a root was read, else
-    `None`."""
+    """`refusal`, a `stat_var_unresolved`, with the read that answers it, else `None`.
+
+    When a sum the planner implied was refused by the datasets door, the refusal names each
+    such sum in its message and its `fix` as `groupby_refused` (`{spec_id, content_version,
+    axis, precondition}`), and offers no summed read, which would refuse again. Otherwise, over
+    several StatVars, it names the summed read in its message and `fix["groupby"]`
+    (`SUMMED_READ`)."""
+    if refusal.code is not EngineRefusalCode.STAT_VAR_UNRESOLVED:
+        return None
     sums = [
         {
             "spec_id": root.dataset.spec_id,
@@ -2051,14 +2091,20 @@ def _with_sum_refused(
         for root in roots
         if root.sum_refused is not None
     ]
-    if refusal.code is not EngineRefusalCode.STAT_VAR_UNRESOLVED or not sums:
+    if sums:
+        preconditions = ", ".join(f"{one['axis']}: {one['precondition']}" for one in sums)
+        message = (
+            f"{refusal.message} DFO could not read it summed: the sum refused "
+            f"rollup_not_summable ({preconditions})."
+        )
+        return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
+    if len(refusal.fix.get("distinct_stat_vars") or ()) < 2:
         return None
-    preconditions = ", ".join(f"{one['axis']}: {one['precondition']}" for one in sums)
-    message = (
-        f"{refusal.message} DFO could not read it summed: the sum refused rollup_not_summable "
-        f"({preconditions})."
+    return replace(
+        refusal,
+        message=f"{refusal.message}{_SUMMED_READ_ADVICE}",
+        fix={**refusal.fix, "groupby": copy.deepcopy(dict(SUMMED_READ))},
     )
-    return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
 
 
 def compute_analysis(
@@ -2077,7 +2123,7 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-    working, resolved = merged_roots(working, resolved)
+    working, resolved = merged_roots(working, resolved, roots)
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
@@ -2141,7 +2187,7 @@ def prepare_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-    working, resolved = merged_roots(working, resolved)
+    working, resolved = merged_roots(working, resolved, roots)
     return PreparedAnalysis(
         working=working,
         resolved=tuple(resolved),
@@ -2527,7 +2573,7 @@ def verify_analysis(
     try:
         located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
         if not unavailable:
-            working, located = merged_roots(working, located)
+            working, located = merged_roots(working, located, roots)
         recorded = sum(root.rows or 0 for root in located)
         if recorded > bounds.max_root_rows:
             raise AnalysisTooLarge(

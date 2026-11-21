@@ -100,8 +100,15 @@ from dfo_frame_grammar.grammar import (
     UnitCell,
 )
 
-from dfo_analysis_engine.engine.columnar import frame_from_columns
-from dfo_analysis_engine.engine.common import Exclusions, Units, record_exclusion, role_columns
+from dfo_analysis_engine.engine.columnar import distinct, frame_from_columns
+from dfo_analysis_engine.engine.common import (
+    BREAKDOWN_PREFIX,
+    Exclusions,
+    Units,
+    record_exclusion,
+    role_columns,
+    smallest_distinct,
+)
 from dfo_analysis_engine.place_type import levels_of
 from dfo_analysis_engine.time_grain import is_interval
 
@@ -163,6 +170,23 @@ class FilterPredicateValueTypeMismatchError(Exception):
             f"an ordered_threshold predicate's value on column {column!r} must be "
             f"{expected_type}, not {actual_type}"
         )
+
+
+class FilterBreakdownValueUnmatchedError(Exception):
+    """A `category_match` predicate on a `stat_var_<axis>` column, which a
+    summable groupby keeps and labels each cell of, names no value any row
+    holds, as a code such as `12220` given where the column holds labels
+    does. `labels` are the smallest of the column's distinct values, and
+    `truncated` whether it holds more."""
+
+    def __init__(
+        self, *, column: str, values: Sequence[str], labels: Sequence[str], truncated: bool
+    ) -> None:
+        self.column = column
+        self.values = tuple(values)
+        self.labels = tuple(labels)
+        self.truncated = truncated
+        super().__init__(f"category_match on {column!r} matches no row: {list(values)!r}")
 
 
 class FilterPlaceLevelUnknownError(Exception):
@@ -375,6 +399,25 @@ def _validate_predicate_types(
                 )
 
 
+def _refuse_unmatched_breakdown_values(predicates: Sequence[Predicate], frame: Frame) -> None:
+    """Refuse (`FilterBreakdownValueUnmatchedError`) a `category_match` on a
+    `stat_var_<axis>` column whose values no row holds, naming the labels the
+    column holds, so a code given for a label is told apart from a value the
+    data lacks."""
+    for predicate in predicates:
+        if predicate.kind != "category_match" or not predicate.column.startswith(BREAKDOWN_PREFIX):
+            continue
+        held = distinct(frame.table, predicate.column)
+        if held and not set(predicate.values).intersection(held):
+            labels, truncated = smallest_distinct(held)
+            raise FilterBreakdownValueUnmatchedError(
+                column=predicate.column,
+                values=predicate.values,
+                labels=labels,
+                truncated=truncated,
+            )
+
+
 def _predicate_mask(table: pa.Table, predicate: Predicate) -> pa.Array:
     """Whether each row of `table` satisfies `predicate`, with no nulls.
     Types are already validated by `_validate_predicate_types` before any
@@ -458,6 +501,7 @@ def run_filter(
         raise FilterUnknownColumnError(invalid, available=list(frame.columns))
 
     _validate_predicate_types(predicates, frame, span=span)
+    _refuse_unmatched_breakdown_values(predicates, frame)
 
     table = frame.table
     keep = _keep_mask(table, predicates)
