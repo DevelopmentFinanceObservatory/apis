@@ -35,7 +35,8 @@ The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` 
 `share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
 retryable. A card create or revise and a share create refuse
 the platform's `allowance_exhausted`, not retryable either, with `Retry-After` naming
-the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
+the reset, and the share sample refuses a caller without the verify principal the platform's
+`verify_not_permitted` (403) (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
 none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
 serves.
 
@@ -172,9 +173,12 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
     }
 )
 
-# Platform codes the card and share writes render that the component catalogue's manifest
-# does not list. Today that is the daily allowance's refusal.
-WRITE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
+# Platform codes the card and share routes render that the component catalogue's manifest
+# does not list: the daily allowance's refusal, and the share sample's caller refusal, shared
+# with the Datasets analysis route's `verify` mode.
+WRITE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
+    {"allowance_exhausted", "verify_not_permitted"}
+)
 
 PRESENTATION_SERVED_CODES: frozenset[str] = (
     frozenset(PRESENTATION_CODE_CATALOGUE)

@@ -134,7 +134,9 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
     # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
     # frames, computes and stores under one materialise permit, so at most
-    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    # `materialise_max_concurrency` runs hold frames at once across every frame path. A
+    # verification leaves one thread and one materialise permit free, so settings that set
+    # `verify_principal` refuse to load with either below 2.
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
@@ -233,6 +235,11 @@ class DatasetsBuildSettings(FoldCeilingSettings):
         default="", validation_alias="presentation_share_import_principal"
     )
 
+    # Sole principal of verification: an analysis request with `verify` set and the
+    # Presentation share sample. Read from `VERIFY_PRINCIPAL`. Empty denies all. It opens no
+    # other route.
+    verify_principal: str = Field(default="", validation_alias="verify_principal")
+
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
     operation_max_attempts: int = Field(default=3, ge=1)
@@ -269,6 +276,23 @@ class DatasetsBuildSettings(FoldCeilingSettings):
                 "DATASETS_HEAD_RECHECK_SECONDS must be < DATASETS_HEAD_MAX_AGE_SECONDS "
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_verify_leaves_capacity(self) -> DatasetsBuildSettings:
+        """Require two analysis threads and two materialise permits when `verify` is granted,
+        since a verification leaves one of each free and could never run with one."""
+        if not self.verify_principal:
+            return self
+        for name, value in (
+            ("DATASETS_ANALYSIS_MAX_CONCURRENCY", self.analysis_max_concurrency),
+            ("DATASETS_MATERIALISE_MAX_CONCURRENCY", self.materialise_max_concurrency),
+        ):
+            if value < 2:
+                raise ValueError(
+                    f"{name} must be >= 2 when VERIFY_PRINCIPAL is set, since a verification "
+                    f"leaves one free, got {value}"
+                )
         return self
 
     @model_validator(mode="after")

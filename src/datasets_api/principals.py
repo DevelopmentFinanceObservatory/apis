@@ -14,6 +14,9 @@ Each configured secret holds one grant:
 - `PRESENTATION_SHARE_IMPORT_PRINCIPAL` holds `share_import`, which opens the Presentation share
   import route, whose door refuses a caller lacking it with its own refusal. The website's share
   migration job sends it.
+- `VERIFY_PRINCIPAL` holds `verify`, which opens an analysis request with `verify` set and the
+  Presentation share sample, both refusing a caller lacking it with `verify_not_permitted`.
+  The replay probe sends it.
 
 A secret configured under two names holds both grants, and an empty secret holds none.
 `Principals.parse` reads one request's header into a `Principal`, comparing the value with every
@@ -47,6 +50,7 @@ class Grant(StrEnum):
     pin = "pin"
     refresh = "refresh"
     share_import = "share_import"
+    verify = "verify"
 
 
 class PublishNotPermitted(Refusal):
@@ -70,6 +74,19 @@ class RefreshNotPermitted(Refusal):
     def __init__(self, *, presented: bool = False) -> None:
         self.presented = presented
         detail = "live refresh is restricted to its first-party principal"
+        if not presented:
+            detail = f"no principal header was presented; {detail}"
+        super().__init__(detail)
+
+
+class VerifyNotPermitted(Refusal):
+    """The caller lacks the `verify` grant."""
+
+    code = "verify_not_permitted"
+
+    def __init__(self, *, presented: bool = False) -> None:
+        self.presented = presented
+        detail = "verification is restricted to its first-party principal"
         if not presented:
             detail = f"no principal header was presented; {detail}"
         super().__init__(detail)
@@ -101,6 +118,8 @@ class Principal:
                 raise ValueError("the pin route admits every caller, so no route requires `pin`")
             case Grant.refresh:
                 return RefreshNotPermitted(presented=self.presented is not None)
+            case Grant.verify:
+                return VerifyNotPermitted(presented=self.presented is not None)
             case Grant.share_import:
                 raise ValueError(
                     "the share import route raises its own refusal "
@@ -125,6 +144,7 @@ class Principals:
         pin: frozenset[str] | None = None,
         refresh: frozenset[str] | None = None,
         share_import: frozenset[str] | None = None,
+        verify: frozenset[str] | None = None,
     ) -> Self:
         """Default the header and each grant's secrets to `settings`."""
         by_grant = {
@@ -136,6 +156,7 @@ class Principals:
                 if share_import is not None
                 else {settings.presentation_share_import_principal}
             ),
+            Grant.verify: verify if verify is not None else {settings.verify_principal},
         }
         return cls(
             header=principal_header if principal_header is not None else settings.principal_header,
@@ -170,7 +191,8 @@ class Principals:
         returns the caller's `Principal`.
 
         Raises:
-            PublishNotPermitted, RefreshNotPermitted: The caller lacks `grant`.
+            PublishNotPermitted, RefreshNotPermitted, VerifyNotPermitted: The caller lacks
+                `grant`.
         """
 
         def check(request: Request) -> Principal:
@@ -206,5 +228,6 @@ __all__ = [
     "Principals",
     "PublishNotPermitted",
     "RefreshNotPermitted",
+    "VerifyNotPermitted",
     "granted_route_class",
 ]

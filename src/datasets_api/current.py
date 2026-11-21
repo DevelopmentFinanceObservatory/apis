@@ -67,13 +67,16 @@ for a head keyed on an import the bound release no longer carries, `max_age`, `n
 from __future__ import annotations
 
 import functools
+import hashlib
+import io
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import cast
 
-from artifact_store import ArtifactStore, Tier
+from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
@@ -123,6 +126,7 @@ from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     DerivedVersion,
     FrameMode,
+    RenderedDefinition,
     entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
@@ -722,48 +726,23 @@ def _stored_xlsx_splits_totals(
     )
 
 
-def _render_frame(
+def _rendered_from_frame(
     *,
     subject_id: str,
     content_version: str,
     options: MintOptions,
     manifest: Manifest,
     deps: DefinitionDeps,
-    trace_id: str | None,
     coverage_index: CoverageIndex,
     frame: StoredFrame,
     plan: StoredRenderPlan,
-    recorded_cut: PartyTotalsCut | None = None,
-) -> Manifest | None:
-    """Render a missing request format from the stored frame `frame` on a head hit. The caller
-    holds a materialise permit from before it read `frame` to after this returns.
-
-    Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
-    fresh rendering. The full population keeps `groupby` completeness checks consistent,
-    including zero-row members. `plan` is what `plan_stored_render` read from the stored
-    version: a pivot reads its stored output profile, a groupby compares its collapse with the
-    recorded frame hash, and its frame mode says how the render reads `frame`. `recorded_cut`
-    is the party-totals cut a derived version rendered from this base frame replays
-    (`render.render_and_store`).
-
-    Return the derived version's manifest when groupby or a party-totals cut changes the frame
-    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
-    other than `RAW`) renders under the version itself. A render of it that gives another
-    version records nothing and returns `None`, so the caller falls back to the base frame.
-    That happens when the code index changed since the mint, and recording it would let a
-    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
-    unchanged is the base version, whatever frame grammar minted its token
-    (`render_and_store`). Record its artifact, and every other one, under the base version
-    and add it to the manifest. A party-totals cut
-    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
-    shared classifier.
-
-    A bundle cites the stored citation with its empty fields filled by a live read
-    (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
-    (`incomplete_artifact`). The response lists the artifact linked under the request's
-    rendering key when a concurrent call linked one first (`with_linked_artifacts`).
-    """
-    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    artifact_store: ArtifactStore,
+    recorded_cut: PartyTotalsCut | None,
+) -> tuple[RenderedDefinition, bool]:
+    """The rendering `options` names, rendered from the stored frame `frame` of the version
+    `manifest` and written to `artifact_store`, and whether its bundle documentation is
+    complete. `_render_frame` describes the render."""
+    # The callers read no frame of a version its own frame does not serve.
     assert plan.frame_mode is not None
     table = frame.frame
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
@@ -809,7 +788,7 @@ def _render_frame(
         content_version=content_version,
         prepared_at=manifest.prepared_at,
         site=deps.settings.site,
-        artifact_store=deps.artifact_store,
+        artifact_store=artifact_store,
         entity_columns=entity_columns,
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
@@ -828,6 +807,64 @@ def _render_frame(
             else None
         ),
         frame_mode=plan.frame_mode,
+        recorded_cut=recorded_cut,
+    )
+    return rendered, documentation_complete
+
+
+def _render_frame(
+    *,
+    subject_id: str,
+    content_version: str,
+    options: MintOptions,
+    manifest: Manifest,
+    deps: DefinitionDeps,
+    trace_id: str | None,
+    coverage_index: CoverageIndex,
+    frame: StoredFrame,
+    plan: StoredRenderPlan,
+    recorded_cut: PartyTotalsCut | None = None,
+) -> Manifest | None:
+    """Render a missing request format from the stored frame `frame` on a head hit. The caller
+    holds a materialise permit from before it read `frame` to after this returns.
+
+    Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
+    fresh rendering. The full population keeps `groupby` completeness checks consistent,
+    including zero-row members. `plan` is what `plan_stored_render` read from the stored
+    version: a pivot reads its stored output profile, a groupby compares its collapse with the
+    recorded frame hash, and its frame mode says how the render reads `frame`. `recorded_cut`
+    is the party-totals cut a derived version rendered from this base frame replays
+    (`render.render_and_store`).
+
+    Return the derived version's manifest when groupby or a party-totals cut changes the frame
+    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
+    other than `RAW`) renders under the version itself. A render of it that gives another
+    version records nothing and returns `None`, so the caller falls back to the base frame.
+    That happens when the code index changed since the mint, and recording it would let a
+    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
+    unchanged is the base version, whatever frame grammar minted its token
+    (`render_and_store`). Record its artifact, and every other one, under the base version
+    and add it to the manifest. A party-totals cut
+    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
+    shared classifier.
+
+    A bundle cites the stored citation with its empty fields filled by a live read
+    (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
+    (`incomplete_artifact`). The response lists the artifact linked under the request's
+    rendering key when a concurrent call linked one first (`with_linked_artifacts`).
+    """
+    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    assert plan.frame_mode is not None
+    rendered, documentation_complete = _rendered_from_frame(
+        subject_id=subject_id,
+        content_version=content_version,
+        options=options,
+        manifest=manifest,
+        deps=deps,
+        coverage_index=coverage_index,
+        frame=frame,
+        plan=plan,
+        artifact_store=deps.artifact_store,
         recorded_cut=recorded_cut,
     )
     artifact, reshape_warnings, derived = (
@@ -851,7 +888,9 @@ def _render_frame(
             artifact,
             subject_id=subject_id,
             content_version=rendered_content_version,
-            refs=provenance_refs,
+            refs=provenance_refs_of(
+                cast("list[dict[str, object]]", manifest.trace.get("facets", []))
+            ),
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
@@ -1042,6 +1081,169 @@ def _render_stored_rendering(
             plan=decided,
             recorded_cut=recorded_cut,
         )
+
+
+class _MemorySink(io.BytesIO):
+    """An `ArtifactSink` that keeps its bytes (`_HeldInMemory`)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stored: StoredArtifact | None = None
+
+    def result(self) -> StoredArtifact:
+        if self.stored is None:
+            raise RuntimeError("result() is read once the open_put block commits")
+        return self.stored
+
+
+class _HeldInMemory:
+    """The write half of an `ArtifactStore` that keeps each object in `objects` by digest, so
+    a render written through it stores nothing (`render_unstored`). `render.render_and_store`
+    and `render.render_and_store_canonical_frame` write through `open_put` alone."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    @contextmanager
+    def open_put(self, *, tier: Tier) -> Iterator[ArtifactSink]:
+        sink = _MemorySink()
+        yield sink
+        data = sink.getvalue()
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        self.objects[digest] = data
+        sink.stored = StoredArtifact(
+            digest=digest,
+            tier=tier,
+            bucket="",
+            object_name=digest,
+            size_bytes=len(data),
+            deduplicated=False,
+        )
+
+
+@dataclass(frozen=True)
+class UnstoredFile:
+    """A stored frame `render_unstored` made in memory: its media type, digest and bytes."""
+
+    media_type: str
+    digest: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class UnstoredRendering:
+    """A rendering `render_unstored` made in memory. `content_version` is the version it
+    answers: the derived one (`render.DerivedVersion`) when a groupby collapse or a
+    party-totals cut changes the frame, else the version read. `artifact` is the rendering's
+    entry and `data` its bytes. `rows` counts the rows of the version it answers. `frame` is
+    the derived version's canonical frame, `None` when the rendering answers the version
+    read."""
+
+    content_version: str
+    artifact: ArtifactEntryModel
+    data: bytes
+    rows: int
+    frame: UnstoredFile | None
+
+
+def render_unstored(
+    *,
+    subject_id: str,
+    content_version: str,
+    options: MintOptions,
+    manifest: Manifest,
+    deps: DefinitionDeps,
+    coverage_snapshot: CoverageSnapshot,
+) -> UnstoredRendering | None:
+    """The rendering `options` names of the stored version `manifest`, rendered in memory from
+    its servable stored frame as `_render_stored_rendering` renders it. It stores and records
+    nothing: no artifact, link or derived version. Its reads move no object between tiers
+    (`ArtifactStore.get`).
+
+    Returns `None` when the version has no servable stored frame, the frame's bytes are gone or
+    corrupt, the version's own frame does not serve the rendering, or a derived version's own
+    frame renders another version (`_render_frame` falls back to the base frame then). It
+    refuses what `plan_stored_render` decides and a frame1 document past the decode bound
+    before its permit, and takes one materialise permit for the frame read and the render.
+
+    Raises:
+        As `_render_stored_rendering`.
+    """
+    options = resolve_enrichment(options, coverage=manifest.coverage)
+    locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
+    location = servable_frame_location(locations, now=deps.now())
+    if location is None:
+        return None
+    plan = plan_stored_render(
+        manifest,
+        options=options,
+        subject_id=subject_id,
+        content_version=content_version,
+        read_version=functools.partial(
+            deps.snapshot_reader.read_version, subject_id, content_version
+        ),
+        read_locations=lambda: locations,
+        deps=deps,
+    )
+    if plan.frame_mode is None:
+        return None
+    refuse_located_frame_past_decode_bound(location, options=options, plan=plan, deps=deps)
+
+    def read() -> bytes | None:
+        try:
+            return deps.artifact_store.get(
+                artifact_digest=location.artifact_digest, tier=Tier(location.tier)
+            )
+        except (ArtifactNotFoundError, ArtifactIntegrityError):
+            return None
+
+    held = _HeldInMemory()
+    # The render writes through `open_put` alone, which `_HeldInMemory` keeps in memory.
+    memory = cast("ArtifactStore", held)
+    with bounded_materialise_slot(
+        deps.materialise_semaphore,
+        wait_seconds=deps.settings.materialise_wait_seconds,
+        deadline=deps.deadline,
+    ):
+        stored_frame = read_located_frame(location, read=read)
+        if stored_frame is None:
+            return None
+        rendered, _ = _rendered_from_frame(
+            subject_id=subject_id,
+            content_version=content_version,
+            options=options,
+            manifest=manifest,
+            deps=deps,
+            coverage_index=coverage_snapshot.index,
+            frame=stored_frame,
+            plan=plan,
+            artifact_store=memory,
+            recorded_cut=None,
+        )
+        derived = rendered.derived
+        if derived is None:
+            frame = None
+        elif plan.frame_mode is not FrameMode.RAW:
+            return None
+        else:
+            record = render_and_store_canonical_frame(
+                frame_chunks=derived.frame_chunks(),
+                subject_id=subject_id,
+                content_version=derived.content_version,
+                artifact_store=memory,
+            )
+            frame = UnstoredFile(
+                media_type=record.media_type,
+                digest=record.artifact_digest,
+                data=held.objects[record.artifact_digest],
+            )
+    return UnstoredRendering(
+        content_version=content_version if derived is None else derived.content_version,
+        artifact=rendered.artifact,
+        data=held.objects[rendered.artifact.artifact_digest],
+        rows=manifest.coverage.rows if derived is None else derived.rows,
+        frame=frame,
+    )
 
 
 def head_rendering(
@@ -1815,9 +2017,12 @@ __all__ = [
     "StoredRenderPlan",
     "StoredTraceMissingResolvedStatVars",
     "Trigger",
+    "UnstoredFile",
+    "UnstoredRendering",
     "head_rendering",
     "load_stored",
     "plan_stored_render",
+    "render_unstored",
     "serve_current",
     "serve_current_head",
     "serve_deps",
