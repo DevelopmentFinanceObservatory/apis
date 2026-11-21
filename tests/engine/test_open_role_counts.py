@@ -8,6 +8,7 @@ amounts."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
@@ -340,5 +341,14 @@ def test_a_heading_splits_its_scope_in_the_datasets_of_the_served_stat_vars() ->
     the served StatVars, whatever sources the byline cites."""
     facts = SentenceFacts(members=[GraphRef(ref=_SV, label="Flow")], constraint_properties=[])
 
+    read: list[frozenset[str]] = []
+
+    def provenances(svs: Iterable[str]) -> tuple[str, ...]:
+        read.append(frozenset(svs))
+        return (_DAC2A, _IDS)
+
+    heading.get_index().statvar_provenances = provenances
+
     assert heading._served_datasets(facts, ()) == (_DAC2A, _IDS)
     assert heading._served_datasets(None, [_SV]) == (_DAC2A, _IDS)
+    assert read == [frozenset({_SV}), frozenset({_SV})]
