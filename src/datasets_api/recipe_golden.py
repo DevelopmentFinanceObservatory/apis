@@ -173,8 +173,15 @@ class FixtureRootSource:
         return root
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
+        """`root` as its stored recipe's record names it. A recipe's roots carry no path words
+        (`analysis.PlannedRoot`), so `path_words` stays `None`."""
         held = next(held for seen, held in self._seen if seen == root)
         record = {key: value for key, value in held.items() if key != "file"}
         return ResolvedRoot(

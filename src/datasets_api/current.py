@@ -516,6 +516,7 @@ def _record_head_hit_derived(
             enrichment=deps.enrichment,
             deadline=deps.deadline,
             summed=derived.summed,
+            adds=derived.adds,
         ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):
