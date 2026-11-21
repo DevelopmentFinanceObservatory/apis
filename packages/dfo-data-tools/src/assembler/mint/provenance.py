@@ -407,9 +407,10 @@ def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
 def recorded_incomplete_after(
     manifest: Mapping[str, object],
 ) -> list[Mapping[str, object]] | None:
-    """The entries stating how complete a frame's rows are, as its version stored them (`datasets_api.manifest.version_document`'s `incomplete_after`): a
-    dataset version's as its mint judged them, a computed version's as its publish derived
-    them (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
+    """The entries stating how complete a frame's rows are, as its version stored them
+    (`incomplete_after` of `datasets_api.manifest.version_document`). A dataset version's are
+    as its mint judged them, a computed version's as its publish derived them
+    (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
     completeness is unknown."""
     held = manifest.get("incomplete_after")
     return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))

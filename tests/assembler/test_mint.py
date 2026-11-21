@@ -1958,7 +1958,7 @@ def test_partial_period_judges_the_rows_a_card_draws():
 
 
 def test_each_series_draws_its_own_observed_periods():
-    """A line chart observes 2021 and 2022 across its series; the series without a 2022 value
+    """A line chart observes 2021 and 2022 across its series. The series without a 2022 value
     draws 2021 alone."""
 
     def bound(id_, **values):

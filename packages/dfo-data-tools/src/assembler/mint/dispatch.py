@@ -170,8 +170,8 @@ def _drawn_periods(
     bound_series: Sequence[BoundSeries],
     observed_periods: frozenset[str],
 ) -> dict[str, frozenset[str]]:
-    """The periods of each bound series the card draws: for a stat card, its headline period
-    and its change's basis periods of its primary series alone; for any other card, each
+    """The periods of each bound series the card draws. A stat card draws its headline period
+    and its change's basis periods of its primary series alone. Any other card draws each
     series' own points holding a value among the periods its builder observed
     (`observed_periods`), such as an entity-mode bar chart's one shared period."""
     if member == "stat_card":

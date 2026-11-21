@@ -32,8 +32,8 @@ def reaches(period: str, mark: str) -> bool | None:
 
 def start_of(mark: str) -> str:
     """The first day `mark` holds at its own grain (`2025-06` for `2025-06`, `2025` for
-    `2025`), so marks of different grains order by when they start; `mark` itself when the
-    frame grammar cannot read it."""
+    `2025`), so marks of different grains order by when they start. Returns `mark` itself
+    when the frame grammar cannot read it."""
     try:
         return parse_time_period(mark).start
     except FrameError:

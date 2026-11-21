@@ -1065,9 +1065,9 @@ def test_freshness_states_the_partial_periods_its_version_records(
     marked: list[dict[str, object]] | None,
     stated: list[dict[str, object]] | None,
 ) -> None:
-    """Each source the record marks partial, once per period; an unknown cell states
-    nothing. The pinned description schema gains the member with the kit's
-    `freshness.partial_periods`, which the description states only then."""
+    """Each source the record marks partial, once per period. An unknown cell states
+    nothing. The test forces `STATES_PARTIAL_PERIODS` on, since a description states the
+    member only when the pinned schema holds `freshness.partial_periods`."""
     monkeypatch.setattr(description_blocks, "STATES_PARTIAL_PERIODS", True)
     version = _Described(kind)
     _marking(version, marked)

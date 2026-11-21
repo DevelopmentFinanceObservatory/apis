@@ -930,7 +930,7 @@ class LiveFrameStore:
     def _with_stored_record(
         self, cache_key: tuple[str, str], frame: ResolvedFrame, stored: StoredVersion
     ) -> ResolvedFrame:
-        """`frame` with the `incomplete_after` its version stores now, read with the version
+        """`frame` with the `incomplete_after` its version stores, read with the version
         every load reads. A later mint of a dataset version replaces it
         (`datasets_api.version_store`), so a cached frame takes the new record on its next
         load, as it takes a version's changed continuations, and the cache keeps the frame

@@ -119,8 +119,8 @@ def test_a_frame_ending_before_its_source_s_partial_year_records_none(
 def test_the_prod_graph_s_unmarked_sources_record_an_empty_list(
     version_store: FakeVersionRecordDatasetStore,
 ) -> None:
-    """Prod states no `partialObservationDate` and serves no 2025 rows: the version is
-    judged, and nothing is partial."""
+    """Prod states no `partialObservationDate` and serves no 2025 rows, so the version is
+    judged and nothing is partial."""
     rig = _Rig(version_store, indexed={_AID: _MALAWI})
 
     with bound_catalogue(_source_as(_DAC2A, marked=False)):

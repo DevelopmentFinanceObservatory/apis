@@ -1014,8 +1014,8 @@ def test_documentation_states_the_partial_period_the_dev_graph_marks(
     provenance: str, partial: str | None
 ) -> None:
     """The documentation of each recorded dev Provenance node states its
-    `partialObservationDate` as the pipeline wrote it, and DAC1, which the pipeline never
-    marks, states none."""
+    `partialObservationDate` as the pipeline wrote it, and DAC1, which the pipeline leaves
+    unmarked, states none."""
     arcs = dev_provenance_nodes()[provenance]
 
     documentation = source_documentation_of({provenance: arcs}, publisher=None)

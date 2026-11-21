@@ -265,7 +265,7 @@ def test_a_computation_over_no_inputs_records_nothing() -> None:
 
 def test_a_republished_computed_version_takes_the_record_derived_then() -> None:
     """The root was recorded before versions stored a record, so the first publish stores
-    none; the root's record lands, and publishing the same version again stores the one
+    none. The root's record then lands, and publishing the same version again stores the one
     derived from it."""
     store = FakeVersionRecordDatasetStore()
     _record_root(store, recorded=None)

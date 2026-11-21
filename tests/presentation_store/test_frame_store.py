@@ -5601,7 +5601,7 @@ def test_a_frame_s_partial_flag_needs_no_read_beyond_its_stored_record(fixture, 
     the snapshot and recipe readers raising, no graph release bound and a catalogue marking
     every year of the source partial, the loaded frame's flag stands. A version recorded
     before versions stored the member reads as unknown, so its 2024 rows are not flagged
-    whatever the catalogue now marks."""
+    whatever the catalogue marks."""
     snapshots, artifacts, frame_ref, _ = fixture()
     key = (frame_ref.spec_id, frame_ref.content_version)
     version = snapshots.versions[key]
