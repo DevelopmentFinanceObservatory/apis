@@ -138,20 +138,24 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     return list(dict.fromkeys(s.role_tuple[0][1] for s in plan.served))
 
 
-def _scope_party_count(
-    members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
-) -> int:
-    """How many of an open `role`'s `members` a frame minted `without_party_totals` holds on
-    its axis (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`), its parties and residual
-    members together (`enrichment.party_split`), read in the datasets that publish
-    `sv_dcids`, as the role's axis fact and warning count them."""
+def _open_role_dim(
+    label: str, members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
+) -> BreadthDim:
+    """The breadth dimension of an open `role`: how many of its `members` a frame minted
+    `without_party_totals` holds on its axis (`series_coverage.coverage_types.
+    COVERAGE_ROLE_AXES`), its parties and residual members together, and how many of them
+    are residual (`enrichment.party_split`), read in the datasets that publish `sv_dcids`,
+    as the role's axis fact and warning count them."""
     index = get_index()
-    return party_split(
+    split = party_split(
         members,
         axis=COVERAGE_ROLE_AXES[role],
         parties=index.parties,
         datasets=index.statvar_provenances(sv_dcids),
-    ).member_count
+    )
+    return BreadthDim(
+        label=label, count=split.member_count, residual_count=split.residual_count or None
+    )
 
 
 def _variables_dim(count: int) -> BreadthDim:
@@ -219,13 +223,11 @@ def _pair_coverage(
             has_data=bool(served),
             window=window,
             dimensions=[
-                BreadthDim(
-                    label=label,
-                    count=_scope_party_count(
-                        scope_members(plan, form),
-                        role=role,
-                        sv_dcids={s.stat_var for s in served},
-                    ),
+                _open_role_dim(
+                    label,
+                    scope_members(plan, form),
+                    role=role,
+                    sv_dcids={s.stat_var for s in served},
                 ),
                 facet_dim,
                 *variables,
@@ -258,12 +260,7 @@ def _bulk_coverage(plan: BulkPlan, form: CoverageForm) -> CoverageExact | Covera
             has_data=plan.population > 0,
             window=window,
             dimensions=[
-                BreadthDim(
-                    label=label,
-                    count=_scope_party_count(
-                        scope_members(plan, form), role=role, sv_dcids=served_svs
-                    ),
-                ),
+                _open_role_dim(label, scope_members(plan, form), role=role, sv_dcids=served_svs),
                 facet_dim,
                 *variables,
             ],

@@ -392,8 +392,8 @@ def with_unit_conversion(
     if offer is not None:
         resolved = spec.resolved.model_copy(update={"unit_conversion": offer})
         spec = spec.model_copy(update={"resolved": resolved})
-    # With no catalogue the conversion is unknown, so the bases stay unstated rather than
-    # understated.
+    # A loaded catalogue tells what the conversion serves, so the bases are stated only
+    # where one is bound.
     return spec if catalogue is None else with_price_bases(spec)
 
 

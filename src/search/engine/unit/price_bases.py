@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Literal
 
 from code_index.labels import PRICE_BASIS_AXIS, PRICES_BY_QUALIFIER
+from materialise.facets import nominal_currency
 from search.models import IdentityFacetValueRequest, ResolvedSpec, Spec
 from unit_words.price_basis import price_basis
 from unit_words.unit_class import classify_unit
@@ -23,18 +24,20 @@ type PriceBasis = Literal["current", "constant"]
 _ORDER: tuple[PriceBasis, ...] = ("current", "constant")
 
 
-def servable_price_bases(spec: Spec) -> list[PriceBasis]:
+def servable_price_bases(spec: Spec) -> list[PriceBasis] | None:
     """The price bases `spec`'s part can serve, current before constant: a unit request's,
     the served series' own (`_native_prices`), each unit option's, and each a currency of
-    its conversion converts at least one served year at. Empty when none states a basis, as
-    for a count or a share."""
+    its conversion converts at least one served year at. Empty when the served units are
+    no money, as for a count or a share. None where the series' own basis cannot be told
+    (`_native_prices`), since the list would then understate."""
     resolved = spec.resolved
-    bases: set[PriceBasis] = set()
+    native = _native_prices(resolved)
+    if native is None:
+        return None
+    bases: set[PriceBasis] = set(native)
     unit_binding = (spec.definition.identity.facets or {}).get("unit")
     if isinstance(unit_binding, IdentityFacetValueRequest):
         bases.add(unit_binding.request.prices)
-    if (native := _native_prices(resolved)) is not None:
-        bases.add(native)
     for alternative in resolved.alternative_measures or ():
         if alternative.axis != "unit":
             continue
@@ -58,27 +61,56 @@ def with_price_bases(spec: Spec) -> Spec:
     return spec.model_copy(update={"resolved": resolved})
 
 
-def _native_prices(resolved: ResolvedSpec) -> PriceBasis | None:
-    """The basis the served series are published in, whatever unit request converts them:
-    the basis the byline's unit token reads from the series (`unit_words.price_basis.
-    price_basis`: the unit's own, then the `measurementQualifier` of the shape or the served
-    partition), else current prices for a currency unit that states none (`USDollar`), which
-    a conversion reads as nominal (`materialise.facets.nominal_currency`). None for a unit
-    that is no money."""
+def _native_prices(resolved: ResolvedSpec) -> frozenset[PriceBasis] | None:
+    """The bases the served series are published in, whatever unit request converts them.
+
+    Each served unit, the unit facet's one `ref` or each of its per-series `refs`, reads as
+    the byline's unit token reads it (`_unit_prices`). A unit that is no money adds none, so
+    series all in units that are no money give the empty set. With no unit facet the
+    `measurementQualifier` of the shape or the served partition states the basis
+    (`PRICES_BY_QUALIFIER`). None where neither tells it: no unit facet and no priced
+    qualifier, or per-series units the facet does not list."""
     unit = resolved.facets.get("unit")
-    if unit is None or unit.ref is None:
+    qualifier = _qualifier(resolved)
+    if unit is None:
+        prices = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
+        return None if prices is None else frozenset({prices})
+    if unit.ref is not None:
+        refs: list[str] = [unit.ref]
+    elif unit.selection == "per_series" and unit.refs is not None:
+        refs = list(unit.refs)
+    else:
         return None
     denominator = resolved.shape.measurement_denominator
-    unit_class = classify_unit(
-        unit=unit.ref,
-        denominator=denominator.ref if denominator is not None else None,
-        currency_units={unit.ref: unit.currency} if unit.currency is not None else {},
+    currency_units = (
+        {unit.ref: unit.currency} if unit.ref is not None and unit.currency is not None else {}
     )
-    if unit_class.currency is None and unit_class.prices is None:
+    return frozenset(
+        prices
+        for ref in refs
+        if (
+            prices := _unit_prices(
+                ref,
+                denominator=denominator.ref if denominator is not None else None,
+                currency_units=currency_units,
+                qualifier=qualifier,
+            )
+        )
+        is not None
+    )
+
+
+def _unit_prices(
+    ref: str, *, denominator: str | None, currency_units: dict[str, str], qualifier: str | None
+) -> PriceBasis | None:
+    """The basis of a series in unit `ref`: the unit's own, then `qualifier`'s
+    (`unit_words.price_basis.price_basis`), else current prices for a currency unit that
+    states none (`USDollar`), which a conversion reads as nominal
+    (`materialise.facets.nominal_currency`). None for a unit that is no money."""
+    unit_class = classify_unit(unit=ref, denominator=denominator, currency_units=currency_units)
+    if unit_class.currency is None and unit_class.prices is None and nominal_currency(ref) is None:
         return None
-    basis = price_basis(
-        requested=None, unit_class=unit_class, measurement_qualifier=_qualifier(resolved)
-    )
+    basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=qualifier)
     return "current" if basis is None else basis.prices
 
 

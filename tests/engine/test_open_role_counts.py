@@ -18,7 +18,13 @@ from dfo_platform.roles import GENERIC_ROLE_WORDING, ROLE_WORDING
 from search.engine.region import grounding
 from search.engine.retrieval import coverage
 from search.engine.spec_build import RoleAxisFactInput, _role_axis_facts
-from search.models import ResolvedEntity, ResolvedScope, RoleAxisFact
+from search.models import (
+    BreadthDim,
+    CoverageBreadth,
+    ResolvedEntity,
+    ResolvedScope,
+    RoleAxisFact,
+)
 from search.render import heading
 from search.render.heading import _open_role_reading
 from search.scope.composite import CompositeMint
@@ -83,7 +89,7 @@ def _warning(axis: RoleAxis, members: tuple[str, ...] | frozenset[str]) -> str:
 
 def test_every_surface_counts_91_members_of_which_10_are_residual() -> None:
     fact = _fact("destination", _MEMBERS)
-    coverage_count = coverage._scope_party_count(_MEMBERS, role="recipient", sv_dcids=[_SV])
+    dim = coverage._open_role_dim("recipients", _MEMBERS, role="recipient", sv_dcids=[_SV])
     snapshot: Any = SimpleNamespace(
         _held_parties={"recipient": _MEMBERS, "donor": frozenset()},
         facts=SimpleNamespace(index=SimpleNamespace(parties=_PARTIES)),
@@ -95,7 +101,7 @@ def test_every_surface_counts_91_members_of_which_10_are_residual() -> None:
 
     assert (fact.member_count, fact.residual_count) == (91, 10)
     assert (split.member_count, split.party_count, split.residual_count) == (91, 81, 10)
-    assert coverage_count == 91
+    assert (dim.count, dim.residual_count) == (91, 10)
     # The scope lists what the frame holds: every member but the total.
     assert listed == [*sorted(_COUNTRIES), *sorted(_RESIDUALS)]
     assert len(listed or ()) == fact.member_count
@@ -215,4 +221,47 @@ def test_a_heading_with_no_fact_splits_its_scope_as_the_fact_does() -> None:
         stat_vars=[_SV],
     )
 
+    assert stated == ("3 recipients and 2 unallocated amounts", [])
+
+
+def _scope(*dcids: str) -> ResolvedScope:
+    return ResolvedScope(
+        axis="destination",
+        members=[ResolvedEntity(ref=dcid, label=dcid, role="destination") for dcid in dcids],
+    )
+
+
+@pytest.mark.parametrize("with_fact", [False, True], ids=["scope-alone", "beside-its-fact"])
+def test_a_heading_names_the_one_party_its_scope_holds_beside_a_total(with_fact: bool) -> None:
+    members = (_COUNTRIES[0], _TOTAL)
+
+    stated = _open_role_reading(
+        "destination",
+        _AID.noun("destination"),
+        role_axis_facts=[_fact("destination", members)] if with_fact else [],
+        scope=_scope(*members),
+        coverage=None,
+        states_all=False,
+        stat_vars=[_SV],
+    )
+
+    assert stated is not None
+    assert [entity.dcid for entity in stated[1]] == [_COUNTRIES[0]]
+
+
+def test_a_heading_counted_by_coverage_names_its_residual_members_apart() -> None:
+    dim = coverage._open_role_dim(
+        "recipients", (*_COUNTRIES[:3], *_RESIDUALS[:2], _TOTAL), role="recipient", sv_dcids=[_SV]
+    )
+
+    stated = _open_role_reading(
+        "destination",
+        _AID.noun("destination"),
+        role_axis_facts=[],
+        scope=None,
+        coverage=CoverageBreadth(has_data=True, dimensions=[dim]),
+        states_all=False,
+    )
+
+    assert dim == BreadthDim(label="recipients", count=5, residual_count=2)
     assert stated == ("3 recipients and 2 unallocated amounts", [])

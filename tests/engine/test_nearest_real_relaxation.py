@@ -198,8 +198,8 @@ def test_relaxation_names_the_dropped_binding_when_a_relaxes():
     assert suggestion.relaxation.property_dcid == _PROP_A
     assert suggestion.relaxation.dropped_value_dcids == [_VAL_A1]
     assert [sv.ref.ref for sv in suggestion.resolved.members] == [_SV_RELAX_A]
-    # A suggestion states no conversion offer, so it leaves its price bases unstated rather
-    # than list fewer than a conversion serves.
+    # Price bases are stated beside a conversion offer, and a suggestion states no offer,
+    # so it leaves them unstated.
     assert suggestion.resolved.price_bases is None
 
 

@@ -23,7 +23,7 @@ from dfo_platform.roles import (
     residual_members_text,
     role_wording,
 )
-from materialise.enrichment import party_split
+from materialise.enrichment import PartySplit, party_split
 from materialise.recipe_bodies import DeflationBasis
 from search.heading.pins import identity_pinned_properties
 from search.models import (
@@ -769,28 +769,30 @@ def _open_role_reading(
 ) -> tuple[str, list[_NormalizedEntity]] | None:
     """Return the text and entities naming an open role, or None when nothing is known.
 
-    A scope of one member on that axis names that member. Otherwise the members are counted
-    by the role's `RoleAxisFact`, else by splitting the scope's members as the fact splits
-    them (`enrichment.party_split`, in the datasets that publish ``stat_vars``), else by a
-    coverage dimension counting the role, which names no residual member apart. The count
-    reads "{n} {plural}", and residual members follow the parties, worded by side
-    (`residual_members_text`): "81 recipients and 10 unallocated amounts", "1 recipient and
-    2 unallocated amounts", "40 creditors and 1 unspecified creditor". A side of residual
-    members alone reads them alone. Otherwise a count of one party with no name says
-    nothing, so it reads nothing. With no count, ``states_all`` reads the role as every
-    entity in it ("all creditors").
+    The scope's members on that axis split as the role axis fact splits them
+    (`enrichment.party_split`, in the datasets that publish ``stat_vars``). A scope of one
+    member, or whose members leave one party and no residual member beside its totals, names
+    that member. Otherwise the members are counted by the role's `RoleAxisFact`, else by the
+    scope's split, else by a coverage dimension counting the role, each with its residual
+    members (`BreadthDim.residual_count` on the dimension). The count reads "{n} {plural}",
+    and residual members follow the parties, worded by side (`residual_members_text`): "81
+    recipients and 10 unallocated amounts", "1 recipient and 2 unallocated amounts", "40
+    creditors and 1 unspecified creditor". A side of residual members alone reads them
+    alone. Otherwise a count of one party with no name says nothing, so it reads nothing.
+    With no count, ``states_all`` reads the role as every entity in it ("all creditors").
     """
     members = list(scope.members) if scope is not None and scope.axis == axis else []
+    split = _scope_split(axis, members, stat_vars=stat_vars) if len(members) > 1 else None
+    named: ResolvedEntity | None = None
     if len(members) == 1:
-        member = members[0]
-        entity = _NormalizedEntity(dcid=member.ref, label=member.label, axis=axis)
-        return _entity_name(member.ref, member.label), [entity]
+        named = members[0]
+    elif split is not None and split.party_count == 1 and not split.residual_count:
+        named = next(member for member in members if member.ref == split.parties[0])
+    if named is not None:
+        entity = _NormalizedEntity(dcid=named.ref, label=named.label, axis=axis)
+        return _entity_name(named.ref, named.label), [entity]
     counted = _open_role_counts(
-        axis,
-        role_axis_facts=role_axis_facts,
-        members=members,
-        coverage=coverage,
-        stat_vars=stat_vars,
+        axis, role_axis_facts=role_axis_facts, split=split, coverage=coverage
     )
     if counted is None:
         return (f"all {noun.plural}", []) if states_all else None
@@ -803,13 +805,26 @@ def _open_role_reading(
     return f"{parties} {noun.singular if parties == 1 else noun.plural} and {residual_text}", []
 
 
+def _scope_split(
+    axis: RoleAxis, members: Sequence[ResolvedEntity], *, stat_vars: Sequence[str]
+) -> PartySplit:
+    """The scope's `members` on `axis`, split as the role axis fact splits them
+    (`enrichment.party_split`), in the datasets that publish `stat_vars`."""
+    index = get_index()
+    return party_split(
+        [member.ref for member in members],
+        axis=axis,
+        parties=index.parties,
+        datasets=index.statvar_provenances(stat_vars),
+    )
+
+
 def _open_role_counts(
     axis: RoleAxis,
     *,
     role_axis_facts: Sequence[RoleAxisFact],
-    members: Sequence[ResolvedEntity],
+    split: PartySplit | None,
     coverage: Coverage | None,
-    stat_vars: Sequence[str],
 ) -> tuple[int, int] | None:
     """The parties and residual members of the open role on `axis`, read as
     `_open_role_reading` describes, or None when nothing counts them."""
@@ -817,19 +832,13 @@ def _open_role_counts(
         if fact.role == axis and fact.member_count is not None:
             residuals = fact.residual_count or 0
             return fact.member_count - residuals, residuals
-    if members:
-        index = get_index()
-        split = party_split(
-            [member.ref for member in members],
-            axis=axis,
-            parties=index.parties,
-            datasets=index.statvar_provenances(stat_vars),
-        )
+    if split is not None:
         return split.party_count, split.residual_count
     if isinstance(coverage, (CoverageExact, CoverageBreadth)):
         for dim in coverage.dimensions or ():
             if _ROLE_COVERAGE_LABELS.get(dim.label) == axis:
-                return dim.count, 0
+                residuals = dim.residual_count or 0
+                return dim.count - residuals, residuals
     return None
 
 

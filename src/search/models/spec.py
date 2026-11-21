@@ -1006,18 +1006,20 @@ class ResolvedSpec(StrictModel):
         exclude_if=_is_none,
         description=(
             "the price bases this part can serve, 'current' before 'constant': a unit "
-            "request's prices, the basis the served series are published in (the unit's or "
-            "the measurementQualifier's, else current prices for a currency unit that "
-            "states none, as US dollars do), the basis of each 'unit' entry of "
+            "request's prices, the bases the served series are published in (each served "
+            "unit's, per series where the series select different units, or the "
+            "measurementQualifier's, else current prices for a currency unit that states "
+            "none, as US dollars do), the basis of each 'unit' entry of "
             "alternative_measures, and each basis a currency of unit_conversion converts at "
             "least one served year at (current_years, constant_years). A basis listed only "
             "through unit_conversion shows the years that conversion states. [] when the "
-            "answer's unit is no money and no unit option or conversion states a basis. "
+            "served units are no money and no unit option or conversion states a basis. "
             "A part with no unit option and no conversion recipe lists its own basis "
-            "alone. Absent where the conversion offer is unknown, so the list would "
-            "understate: while no conversion catalogue is loaded "
-            "(unit_conversion_unavailable), and on a Spec beside the answer, such as a "
-            "flagged match or a nearest-real suggestion, which states no conversion offer. "
+            "alone. Absent where a basis is unknown, so the list would understate: while "
+            "no conversion catalogue is loaded (unit_conversion_unavailable), on a Spec "
+            "beside the answer, such as a flagged match or a nearest-real suggestion, which "
+            "states no conversion offer, and where neither the unit facet nor a priced "
+            "measurementQualifier tells the series' own basis. "
             "Never a member of BaseIdentity, never hashed."
         ),
     )

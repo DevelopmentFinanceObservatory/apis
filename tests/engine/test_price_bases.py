@@ -3,6 +3,8 @@ options', and those its conversion recipe converts to, and no other."""
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import bound_conversion_catalogue
 from search.engine.unit.price_bases import servable_price_bases
@@ -130,3 +132,50 @@ def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
     spec = with_unit_conversion(_usd(_CRS, served=(1990, 2024)), members=_members(), plans=(plan,))
 
     assert spec.resolved.price_bases is None
+
+
+@pytest.mark.parametrize(
+    ("facets", "qualifier", "bases"),
+    [
+        pytest.param(
+            {
+                "unit": ResolvedFacet(
+                    basis="fallback",
+                    selection="per_series",
+                    refs=["USDollar", "ChainedUSDollarBaseYr2017"],
+                )
+            },
+            None,
+            ["current", "constant"],
+            id="per-series-money-units",
+        ),
+        pytest.param(
+            {
+                "unit": ResolvedFacet(
+                    basis="fallback", selection="per_series", refs=["Percent", "USDollar"]
+                )
+            },
+            None,
+            ["current"],
+            id="per-series-beside-a-unit-that-is-no-money",
+        ),
+        # The facet lists no unit, so the series' basis cannot be told.
+        pytest.param(
+            {"unit": ResolvedFacet(basis="fallback", selection="per_series")},
+            None,
+            None,
+            id="per-series-unlisted",
+        ),
+        pytest.param({}, "RealValue", ["constant"], id="no-unit-priced-qualifier"),
+        pytest.param({}, None, None, id="no-unit-no-qualifier"),
+    ],
+)
+def test_the_series_own_bases_read_every_served_unit(
+    facets: dict[str, ResolvedFacet], qualifier: str | None, bases: list[str] | None
+) -> None:
+    spec = _spec(
+        facets=facets,
+        measurement_qualifier=None if qualifier is None else _ref(qualifier, qualifier),
+    )
+
+    assert servable_price_bases(spec) == bases
