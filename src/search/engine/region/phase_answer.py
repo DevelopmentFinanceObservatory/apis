@@ -635,6 +635,7 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
         prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
         qualifier=state.shape_draft.meas_qual_dcid,
+        member_facts=mat_result.member_facts,
     )
     state.slot_options = slot_options
     state.warnings.extend(_ground_warnings)

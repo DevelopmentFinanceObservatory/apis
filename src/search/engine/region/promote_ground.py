@@ -573,6 +573,7 @@ def _ground_and_build_spec(
             currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
             prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
             qualifier=state.shape_draft.meas_qual_dcid,
+            member_facts=_survivor_facts,
         ),
         slot_options=slot_options,
         facet_options=facet_options,

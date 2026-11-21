@@ -530,6 +530,7 @@ def _ground_one_candidate(
         currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
         prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
         qualifier=cand_shape.meas_qual_dcid,
+        member_facts=cand_mat.member_facts,
     )
 
     # Recompute each candidate's slot status from its resolved member facts. Index-sourced

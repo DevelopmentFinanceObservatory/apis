@@ -21,9 +21,11 @@ from search.engine.spec_build import RoleAxisFactInput, _role_axis_facts
 from search.models import (
     BreadthDim,
     CoverageBreadth,
+    GraphRef,
     ResolvedEntity,
     ResolvedScope,
     RoleAxisFact,
+    SentenceFacts,
 )
 from search.render import heading
 from search.render.heading import _open_role_reading
@@ -315,3 +317,28 @@ def test_a_heading_splits_its_scope_in_the_datasets_the_answer_serves() -> None:
 
     assert reading([_DAC2A]) == ("3 recipients", [])
     assert reading([_IDS]) == ("2 recipients", [])
+
+
+def test_a_heading_names_no_lone_party_its_role_axis_fact_does_not_count() -> None:
+    """The scope names one party only where the role's fact, split in the served StatVars'
+    datasets, counts one party too; otherwise the fact counts the role."""
+    stated = _open_role_reading(
+        "destination",
+        _AID.noun("destination"),
+        role_axis_facts=[_fact("destination", (*_COUNTRIES[:2], _TOTAL))],
+        scope=_scope(_COUNTRIES[0], _TOTAL),
+        coverage=None,
+        states_all=False,
+        datasets=[_DAC2A],
+    )
+
+    assert stated == ("2 recipients", [])
+
+
+def test_a_heading_splits_its_scope_in_the_datasets_of_the_served_stat_vars() -> None:
+    """The heading reads the datasets the role axis facts are split in, the provenances of
+    the served StatVars, whatever sources the byline cites."""
+    facts = SentenceFacts(members=[GraphRef(ref=_SV, label="Flow")], constraint_properties=[])
+
+    assert heading._served_datasets(facts, ()) == (_DAC2A, _IDS)
+    assert heading._served_datasets(None, [_SV]) == (_DAC2A, _IDS)

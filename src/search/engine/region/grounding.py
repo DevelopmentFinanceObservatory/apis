@@ -1451,6 +1451,7 @@ def _relaxed_binding_suggestion(
                 currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
                 prices_of=functools.partial(unit_prices, ctx.graph, deadline=ctx.deadline),
                 qualifier=shape.meas_qual_dcid,
+                member_facts=mat.member_facts,
             )
             open_axis_facts = served_open_axes(
                 relaxed,

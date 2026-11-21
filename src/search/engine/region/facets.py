@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, assert_never, get_args
+from typing import TYPE_CHECKING, Literal, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
-from code_index.labels import PricesKind
+from code_index.labels import PRICE_BASIS_AXIS, PricesKind
 from code_index.shared import get_index
 from materialise.facets import nominal_currency
 from search.engine.clients.graph import Facet
@@ -48,6 +48,7 @@ from search.observations import CURRENCY_DCID_PREFIX, currency_unit_ref, series_
 
 if TYPE_CHECKING:
     from search.engine.extract import DateRequest
+    from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.unit.refs import UnitPrices
@@ -128,8 +129,7 @@ def _resolved_facets(
     *,
     request_basis: Mapping[str, FacetBasis] | None = None,
     currency_of: Callable[[str], str | None] | None = None,
-    prices_of: Callable[[str], UnitPrices | None] | None = None,
-    requested_prices: PricesKind | None = None,
+    unit_prices: FacetPrices = (None, None),
 ) -> dict[str, ResolvedFacet]:
     """Aggregate per-series facets into `Spec.resolved.facets`.
 
@@ -140,11 +140,9 @@ def _resolved_facets(
     ref or label, with `refs` on the unit axis listing the distinct units in series order. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
-    The unit axis states the price bases its units are in (`ResolvedFacet.prices`) and
-    those the data states (`ResolvedFacet.stated_prices`): `requested_prices`, the prices
-    of a unit request that converts the series, else each distinct unit's read by
-    `prices_of` (`unit.refs.unit_prices`), unstated where a series carries no unit or no
-    `prices_of` is given. Keys follow `FacetAxis` order.
+    The unit axis states `unit_prices`, the price bases its series are in
+    (`ResolvedFacet.prices`) and those the data states (`ResolvedFacet.stated_prices`),
+    read per served series by `_facet_prices`. Keys follow `FacetAxis` order.
     """
     result: dict[str, ResolvedFacet] = {}
     for axis in get_args(FacetAxis):
@@ -160,16 +158,7 @@ def _resolved_facets(
         basis = bound_axes.get(axis, "fallback")
         axis_request_basis = dict(request_basis) if axis == "unit" and request_basis else None
         every_series = n_with_axis == len(series_facet_maps)
-        prices, stated_prices = (
-            _facet_prices(
-                list(distinct),
-                every_series=every_series,
-                prices_of=prices_of,
-                requested=requested_prices,
-            )
-            if axis == "unit"
-            else (None, None)
-        )
+        prices, stated_prices = unit_prices if axis == "unit" else (None, None)
         # A carried series lacking this axis entirely (n_with_axis short of
         # every series) forces the heterogeneous per_series branch below,
         # the same way a genuine second distinct ref would.
@@ -206,29 +195,86 @@ def _resolved_facets(
 
 _PRICES_ORDER: tuple[PricesKind, ...] = ("current", "constant")
 
+type FacetPrices = tuple[list[PricesKind] | None, list[PricesKind] | None]
+"""A unit facet's `prices` and `stated_prices`."""
+
 
 def _facet_prices(
-    units: Sequence[str],
+    served: Sequence[tuple[str | None, str | None]],
     *,
-    every_series: bool,
-    prices_of: Callable[[str], UnitPrices | None] | None,
+    prices_of: Callable[[str, str | None], UnitPrices | Literal["unread"] | None] | None,
     requested: PricesKind | None,
-) -> tuple[list[PricesKind] | None, list[PricesKind] | None]:
-    """The price bases a unit axis serving `units` states (`ResolvedFacet.prices`) and the
-    ones among them the data states (`ResolvedFacet.stated_prices`), current before
-    constant: `requested`, a converting unit request's prices, which the request states,
-    else each unit's `prices_of`, a basis stated where every unit in it states it. Both
-    None where `prices_of` is missing or, with no request, some series carries no unit
-    (`every_series` false)."""
+) -> FacetPrices:
+    """The price bases a unit axis states (`ResolvedFacet.prices`) and the ones among them
+    the data states (`ResolvedFacet.stated_prices`), current before constant, over
+    `served`, each served series' unit and its StatVar's `measurementQualifier`:
+    `requested`, a converting unit request's prices, which the request states, else each
+    series' `prices_of` read of its unit under its own qualifier, so one unit under StatVars
+    in both bases states both. A basis is stated where every series in it states it. Both
+    None where `prices_of` is missing or, with no request, some series carries no unit or
+    a unit's currency read failed (`unit.refs.PRICES_UNREAD`), since whether it is money
+    is then unknown."""
     if requested is not None:
         return [requested], [requested]
-    if prices_of is None or not every_series:
+    if prices_of is None or any(unit is None for unit, _ in served):
         return None, None
-    read = [unit_prices for unit in units if (unit_prices := prices_of(unit)) is not None]
-    bases = {read_prices.prices for read_prices in read}
-    inferred = {read_prices.prices for read_prices in read if not read_prices.stated}
+    read = [
+        unit_prices
+        for unit, qualifier in dict.fromkeys(served)
+        if unit is not None and (unit_prices := prices_of(unit, qualifier)) is not None
+    ]
+    if any(isinstance(unit_prices, str) for unit_prices in read):
+        return None, None
+    priced = [unit_prices for unit_prices in read if not isinstance(unit_prices, str)]
+    bases = {unit_prices.prices for unit_prices in priced}
+    inferred = {unit_prices.prices for unit_prices in priced if not unit_prices.stated}
     prices = [basis for basis in _PRICES_ORDER if basis in bases]
     return prices, [basis for basis in prices if basis not in inferred]
+
+
+def _served_units(
+    plan: ReadPlan | None,
+    *,
+    qualifier: str | None,
+    member_facts: Mapping[str, MemberFacts] | None,
+) -> list[tuple[str | None, str | None]]:
+    """Each series `plan` serves as its unit and its StatVar's `measurementQualifier`
+    (`_member_qualifier`): in bulk each StatVar under each facet the group's selection
+    serves it (`BulkPlan.served_facets`), else each served series' lead facet."""
+    if plan is None:
+        return []
+    if isinstance(plan, BulkPlan):
+        served_ids = {candidate.facet_id: candidate for candidate in plan.served_facets}
+        return [
+            (served_ids[facet_id].unit, _member_qualifier(sv, qualifier, member_facts))
+            for sv in plan.served_members
+            for facet_id in plan.selected.get(sv, ())
+            if facet_id in served_ids and served_ids[facet_id].by_sv.get(sv)
+        ]
+    return [
+        (series.group[0].unit, _member_qualifier(series.stat_var, qualifier, member_facts))
+        for series in plan.served
+    ]
+
+
+def _member_qualifier(
+    sv: str, shape_qualifier: str | None, member_facts: Mapping[str, MemberFacts] | None
+) -> str | None:
+    """The `measurementQualifier` of StatVar `sv`: the one its fetched arcs or code index
+    row declare (`member_facts`), as a five-tuple member or as a constraint on the price
+    basis axis, else its code index row's, else the shape's `shape_qualifier`. A family
+    walked from the graph and missing from the code index reads its members' arcs."""
+    facts = (member_facts or {}).get(sv)
+    if facts is not None:
+        declared = facts.read_five_tuple().meas_qual_dcid
+        if declared is None and facts.constraints_known():
+            declared = facts.read_constraints().get(PRICE_BASIS_AXIS)
+        if declared is not None:
+            return declared
+    row = get_index().statvar_by_dcid(sv)
+    if row is not None and row.measurement_qualifier is not None:
+        return row.measurement_qualifier
+    return shape_qualifier
 
 
 def _currency_label(ref: str, labels: Mapping[str, str]) -> str:
@@ -284,8 +330,9 @@ def answer_facets(
     request_basis: Mapping[str, FacetBasis] | None,
     unit_request: IdentityUnitRequest | None,
     currency_of: Callable[[str], str | None],
-    prices_of: Callable[[str, str | None], UnitPrices | None] | None = None,
+    prices_of: Callable[[str, str | None], UnitPrices | Literal["unread"] | None] | None = None,
     qualifier: str | None = None,
+    member_facts: Mapping[str, MemberFacts] | None = None,
 ) -> dict[str, ResolvedFacet]:
     """`Spec.resolved.facets` for an answer: the facets its read plan serves, aggregated
     across its series (`_resolved_facets`). Every answer builds them here at grounding, on a
@@ -302,10 +349,11 @@ def answer_facets(
     the ISO 4217 code `currency_of` (`unit.refs.unit_currency`) names for it. An axis whose
     declared default every series serves (`ReadPlan.declared_defaults`) and that
     `bound_axes` leaves out takes the basis `declared_default`. The unit axis states its
-    price bases and those the data states: `unit_request`'s prices, else each served
-    unit's read by `prices_of`
-    (`unit.refs.unit_prices`) under the served StatVars' `measurementQualifier`
-    (`_served_qualifier`), unstated with no `prices_of`."""
+    price bases and those the data states (`_facet_prices`): `unit_request`'s prices, else
+    each served series' unit read by `prices_of` (`unit.refs.unit_prices`) under its own
+    StatVar's `measurementQualifier` (`_member_qualifier`: the member's arcs or code index
+    row in `member_facts`, else the code index, else the shape's `qualifier`), unstated
+    with no `prices_of`."""
     converted = _requested_unit_ref(unit_request) if unit_request is not None else None
     facets = series_facets(plan)
     bound_axes = {**_declared_bases(plan, facets), **bound_axes}
@@ -319,35 +367,17 @@ def answer_facets(
                     ref=converted, label=_currency_label(converted, labels)
                 )
         maps.append(facet_map)
-    served_qualifier = _served_qualifier(plan, qualifier)
     return _resolved_facets(
         maps,
         bound_axes,
         request_basis=request_basis,
         currency_of=currency_of,
-        prices_of=None if prices_of is None else lambda unit: prices_of(unit, served_qualifier),
-        requested_prices=unit_request.prices if unit_request is not None else None,
+        unit_prices=_facet_prices(
+            _served_units(plan, qualifier=qualifier, member_facts=member_facts),
+            prices_of=prices_of,
+            requested=unit_request.prices if unit_request is not None else None,
+        ),
     )
-
-
-def _served_qualifier(plan: ReadPlan | None, qualifier: str | None) -> str | None:
-    """The `measurementQualifier` of the StatVars `plan` serves: `qualifier`, the shape's,
-    else the one the code index records for every served member, None where they differ
-    or none is recorded."""
-    if qualifier is not None or plan is None:
-        return qualifier
-    index = get_index()
-    members = (
-        plan.served_members
-        if isinstance(plan, BulkPlan)
-        else [series.stat_var for series in plan.served]
-    )
-    qualifiers = {
-        row.measurement_qualifier
-        for sv in members
-        if (row := index.statvar_by_dcid(sv)) is not None
-    }
-    return next(iter(qualifiers)) if len(qualifiers) == 1 else None
 
 
 # ---------------------------------------------------------------------------

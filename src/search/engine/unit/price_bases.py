@@ -11,8 +11,9 @@ already states:
   year to (`ResolvedSpec.unit_conversion`).
 
 So the list names no basis the data cannot serve: WDI's remittances, published in US
-dollars with no constant sibling and no recipe, list current prices served alone, and a
-DAC table whose recipe deflates lists current served and constant by unit request.
+dollars with no constant sibling and no recipe, list current prices served alone, a DAC
+table whose recipe deflates lists current served and constant by unit request, and a part
+whose served units are no money lists none, whatever unit options it has.
 """
 
 from __future__ import annotations
@@ -32,11 +33,14 @@ def servable_price_bases(spec: Spec) -> list[PriceBasisRoute] | None:
     (`served_prices`), then each unit option's basis, then each basis its conversion offer
     converts to, current before constant within each route. A route to a basis the Spec
     already serves is left out, since taking it changes nothing. Empty when the served
-    units are no money. None where the served bases are unknown (`served_prices`), since the
-    list would then understate."""
+    units are no money, unit options included: a unit option of a series in percent, such
+    as real GDP growth at `RealValue`, is no price basis of money. None where the served
+    bases are unknown (`served_prices`), since the list would then understate."""
     served = served_prices(spec)
     if served is None:
         return None
+    if not served:
+        return []
     resolved = spec.resolved
     alternatives = {
         PRICES_BY_QUALIFIER[value.value.ref]

@@ -10,6 +10,7 @@ import pytest
 from dc_graph import GraphClient
 from search.engine.errors import GraphDeadlineFailure
 from search.engine.unit.refs import (
+    PRICES_UNREAD,
     UnitPrices,
     admits,
     expressible,
@@ -192,6 +193,22 @@ def test_unit_currency_names_no_currency_and_logs_the_unit_when_the_graph_read_f
     with caplog.at_level(logging.WARNING, logger="search.engine.unit.refs"):
         assert unit_currency(_graph(raise_on_call=True), _GRAPH_ONLY_UNIT, deadline=None) is None
     assert [record.args[0] for record in caplog.records] == [_GRAPH_ONLY_UNIT]
+
+
+@pytest.mark.parametrize(
+    ("unit", "prices"),
+    [
+        # A unit only the graph types is unknown after a failed read.
+        pytest.param(_GRAPH_ONLY_UNIT, PRICES_UNREAD, id="graph-typed"),
+        # The registry types these with no read.
+        pytest.param("CurrencyUSD", UnitPrices("current", stated=True), id="registry-money"),
+        pytest.param("Percent", None, id="registry-non-currency"),
+    ],
+)
+def test_unit_prices_after_a_failed_graph_read_leaves_only_a_graph_typed_unit_unknown(unit, prices):
+    graph = _graph(raise_on_call=True)
+
+    assert unit_prices(graph, unit, "Nominal", deadline=None) == prices
 
 
 def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):

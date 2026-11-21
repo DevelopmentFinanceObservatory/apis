@@ -141,13 +141,15 @@ class ResolvedFacet(StrictModel):
         description=(
             "unit axis only, alongside ref or selection: the price bases the served units "
             "are in, 'current' before 'constant', one per distinct basis over every carried "
-            "series. Under a unit request it is the request's prices. Otherwise each unit "
-            "reads as a unit request matches it natively: a unit the unit registry prices "
-            "states its own (a chained one constant), any other currency unit is in the "
-            "prices its StatVar's measurementQualifier states (Nominal current, RealValue "
-            "constant), else current prices, and a PPP or international-dollar unit is in "
-            "the prices a priced measurementQualifier states. [] when no served unit is "
-            "money; absent where a carried series names no unit, or off the unit axis"
+            "series. Under a unit request it is the request's prices. Otherwise each "
+            "series' unit reads as a unit request matches it natively, under its own "
+            "StatVar's measurementQualifier, so one unit under StatVars in both bases lists "
+            "both: a unit the unit registry prices states its own (a chained one constant), "
+            "any other currency unit is in the prices its StatVar's measurementQualifier "
+            "states (Nominal current, RealValue constant), else current prices, and a PPP "
+            "or international-dollar unit is in the prices a priced measurementQualifier "
+            "states. [] when no served unit is money; absent where a carried series names "
+            "no unit, where the graph read of a unit's currency failed, or off the unit axis"
         ),
     )
     stated_prices: list[Literal["current", "constant"]] | None = Field(
@@ -1060,7 +1062,7 @@ class ResolvedSpec(StrictModel):
             "Routes come in that order, 'current' before 'constant' within each, and a "
             "route to a basis the Spec already serves is left out. A basis reached only "
             "by unit request shows the years unit_conversion states for it. [] when the "
-            "served units are no money. A part with no unit option and no conversion "
+            "served units are no money, whatever unit options the part has. A part with no unit option and no conversion "
             "recipe lists its served basis alone. Absent where a basis is unknown, so the "
             "list would understate: while no conversion catalogue is loaded "
             "(unit_conversion_unavailable), on a Spec beside the answer, such as a flagged "

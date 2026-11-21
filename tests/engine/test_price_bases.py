@@ -8,19 +8,18 @@ from typing import Literal
 
 import pytest
 
-from search.engine.region.facets import _resolved_facets
+from search.engine.region.facets import _facet_prices
 from search.engine.same_shape import _merged_prices
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import bound_conversion_catalogue
 from search.engine.unit.price_bases import servable_price_bases
-from search.engine.unit.refs import UnitPrices
+from search.engine.unit.refs import PRICES_UNREAD, UnitPrices
 from search.models import (
     GraphRef,
     IdentityUnitRequest,
     MeasureAxisValue,
     PriceBasisRoute,
     ResolvedFacet,
-    SeriesFacetRef,
     Spec,
     SpecAlternativeMeasure,
 )
@@ -135,10 +134,17 @@ def test_an_answer_a_unit_request_converts_serves_the_requested_basis() -> None:
         pytest.param(None, None, id="unknown"),
     ],
 )
+@pytest.mark.parametrize("unit_option", [False, True], ids=["alone", "beside-a-unit-option"])
 def test_a_facet_stating_no_basis_lists_none_and_one_stating_nothing_is_unknown(
-    prices: _Prices, routes: list[PriceBasisRoute] | None
+    prices: _Prices, routes: list[PriceBasisRoute] | None, unit_option: bool
 ) -> None:
-    assert servable_price_bases(_in("Percent", prices=prices, provenance=_WDI)) == routes
+    """A series in percent, such as real GDP growth at `RealValue`, lists no basis though a
+    unit option publishes it at another qualifier."""
+    spec = _in("Percent", prices=prices, provenance=_WDI)
+    if unit_option:
+        spec = _with_constant_option(spec)
+
+    assert servable_price_bases(spec) == routes
 
 
 def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
@@ -150,50 +156,79 @@ def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
     assert spec.resolved.price_bases is None
 
 
-# An unpriced currency's current prices are inferred; a registry-priced unit states its own.
-_PRICES: dict[str, UnitPrices | None] = {
-    "CurrencyUSD": UnitPrices("current", stated=False),
-    "SDG_CU_USD": UnitPrices("current", stated=True),
-    "ChainedUSDollarBaseYr2017": UnitPrices("constant", stated=True),
-    "Percent": None,
+# Each served series' unit read under its own StatVar's qualifier, as `unit.refs.unit_prices`
+# reads it: an unpriced currency's current prices are inferred, a priced qualifier or a
+# registry-priced unit states its basis, and a failed graph read leaves a unit unknown.
+_PRICES: dict[tuple[str, str | None], UnitPrices | Literal["unread"] | None] = {
+    ("USDollar", None): UnitPrices("current", stated=False),
+    ("USDollar", "Nominal"): UnitPrices("current", stated=True),
+    ("USDollar", "RealValue"): UnitPrices("constant", stated=True),
+    ("SDG_CU_USD", None): UnitPrices("current", stated=True),
+    ("ChainedUSDollarBaseYr2017", None): UnitPrices("constant", stated=True),
+    ("Percent", None): None,
+    ("dc/u/GraphOnlyCurrency", None): PRICES_UNREAD,
 }
 
 
+def _prices_of(unit: str, qualifier: str | None) -> UnitPrices | Literal["unread"] | None:
+    return _PRICES[unit, qualifier]
+
+
 @pytest.mark.parametrize(
-    ("units", "requested", "prices", "stated"),
+    ("served", "requested", "prices", "stated"),
     [
-        pytest.param(["CurrencyUSD"], None, ["current"], [], id="one-unit"),
-        pytest.param(["SDG_CU_USD"], None, ["current"], ["current"], id="one-priced-unit"),
+        pytest.param([("USDollar", None)], None, ["current"], [], id="one-unit"),
+        pytest.param([("SDG_CU_USD", None)], None, ["current"], ["current"], id="priced-unit"),
+        # One unit under StatVars in both bases serves both.
         pytest.param(
-            ["CurrencyUSD", "ChainedUSDollarBaseYr2017"],
+            [("USDollar", "Nominal"), ("USDollar", "RealValue")],
+            None,
+            ["current", "constant"],
+            ["current", "constant"],
+            id="one-unit-both-qualifiers",
+        ),
+        pytest.param(
+            [("USDollar", None), ("ChainedUSDollarBaseYr2017", None)],
             None,
             ["current", "constant"],
             ["constant"],
             id="per-series-units",
         ),
-        # A basis one unit states and another infers is inferred.
+        # A basis one series states and another infers is inferred.
         pytest.param(
-            ["SDG_CU_USD", "CurrencyUSD"], None, ["current"], [], id="stated-beside-inferred"
+            [("SDG_CU_USD", None), ("USDollar", None)],
+            None,
+            ["current"],
+            [],
+            id="stated-beside-inferred",
         ),
-        pytest.param(["Percent", "CurrencyUSD"], None, ["current"], [], id="beside-no-money"),
-        pytest.param(["Percent"], None, [], [], id="no-money"),
-        # A series naming no unit leaves the bases unknown.
-        pytest.param(["CurrencyUSD", None], None, None, None, id="a-series-with-no-unit"),
+        pytest.param(
+            [("Percent", None), ("USDollar", None)], None, ["current"], [], id="beside-no-money"
+        ),
+        pytest.param([("Percent", None)], None, [], [], id="no-money"),
+        # A series naming no unit, or a unit the graph read failed to type, leaves the
+        # bases unknown.
+        pytest.param([("USDollar", None), (None, None)], None, None, None, id="no-unit"),
+        pytest.param(
+            [("Percent", None), ("dc/u/GraphOnlyCurrency", None)],
+            None,
+            None,
+            None,
+            id="unread-currency",
+        ),
         # A unit request states its own prices whatever the units.
-        pytest.param(["CurrencyUSD"], "constant", ["constant"], ["constant"], id="unit-request"),
+        pytest.param(
+            [("USDollar", None)], "constant", ["constant"], ["constant"], id="unit-request"
+        ),
     ],
 )
-def test_the_unit_facet_states_the_bases_of_every_served_unit(
-    units: list[str | None],
+def test_the_unit_facet_states_the_bases_of_every_served_series(
+    served: list[tuple[str | None, str | None]],
     requested: Literal["current", "constant"] | None,
     prices: _Prices,
     stated: _Prices,
 ) -> None:
-    maps = [{"unit": SeriesFacetRef(ref=unit)} if unit is not None else {} for unit in units]
-
-    facets = _resolved_facets(maps, {}, prices_of=_PRICES.get, requested_prices=requested)
-
-    assert (facets["unit"].prices, facets["unit"].stated_prices) == (prices, stated)
+    assert _facet_prices(served, prices_of=_prices_of, requested=requested) == (prices, stated)
 
 
 def _unit_facet(prices: _Prices, stated: _Prices) -> ResolvedFacet:
