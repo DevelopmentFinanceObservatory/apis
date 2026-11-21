@@ -17,6 +17,28 @@
 (`analysis.AnchorRequest`) and answers the latest period, its rule and the series it leaves out,
 storing nothing.
 
+A request with `verify` set computes the tree again at the versions its roots name and
+answers 200 `AnalysisVerified` (`analysis.verify_analysis`): `outcome` (`same`, `different`,
+`not_stored` or `roots_unavailable`), the pair the computation names with its frame `cv_` and
+output digest, the pair compared with and the `cv_` of the frame stored there, the stored
+frame's output digest when the two `cv_`s differ, the execution identity that computed it and
+the one the stored recipe records, the refusal the computation met (`refusal_code`,
+`refusal_reason`), and `unavailable_roots`. An answer reproduces when the `cv_`s or the output
+digests match. An engine refusal or a cap the computation meets answers `different` when a
+frame is stored under the pair compared with. `unavailable_roots` names every root that cannot
+be read at its version, up to the root-row bound (`over_ceiling` then), with its code:
+`artifact_expired` once its stored frame has aged out, `snapshot_revoked` once its version is
+taken down. A root whose rendering's file has aged out is rendered in memory from its stored
+frame. A verification reads no stored answer and writes nothing: no frame, recipe, answer,
+version record or rendering, and it pins nothing. It admits the caller holding the `verify`
+grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and refuses any other
+`verify_not_permitted` (403). It takes an analysis thread and a materialise permit only while
+another of each stays free for runs, anchors and mints, else refuses retryable
+`service_unavailable` (503), so verifications never hold the last of either; settings that
+grant `verify` need two of each (`DatasetsBuildSettings`). It logs no `datasets.delivery`
+line, since it serves no frame. A `verify` request that also sets `latest`, or names a Spec
+root, refuses `request_invalid` (400), since neither names a version.
+
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
 service cannot name logs as unresolved, a malformed `x-dfo-caller` of a vouched request
@@ -68,11 +90,14 @@ from datasets_api.analysis import (
     run_anchor,
     run_prepared,
     stored_answer,
+    verify_analysis,
 )
 from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.background_admission import leaving_headroom
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes import CODE_CATALOG
 from datasets_api.codes_analysis import ANALYSIS_STATUSES
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps
 from datasets_api.delivery import record_analysis
 from datasets_api.deps import Deps, DepsCell
@@ -82,8 +107,10 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
+from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
+from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -135,6 +162,43 @@ class AnalysisReady(BaseModel):
     resolved_periods: list[dict[str, JsonValue]] = Field(
         description="each period the recipe states relative to the latest, with its period"
     )
+
+
+class UnavailableRootBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str
+    code: str = Field(description="the Datasets code a run refuses the root with")
+    reason: str
+
+
+class AnalysisVerified(BaseModel):
+    """A tree computed again at the versions it names, beside the frame stored under its pair
+    (`analysis.Verification`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["verified"] = "verified"
+    outcome: Literal["same", "different", "not_stored", "roots_unavailable"]
+    frame: dict[str, str] | None = Field(description="the pair the computation names")
+    frame_content_version: str | None = Field(pattern=r"^cv_[0-9a-f]{32}$")
+    output_digest: str | None = Field(pattern=r"^out_[0-9a-f]{32}$")
+    stored: dict[str, str] | None = Field(description="the pair compared with")
+    stored_frame_content_version: str | None = Field(pattern=r"^cv_[0-9a-f]{32}$")
+    stored_output_digest: str | None = Field(
+        pattern=r"^out_[0-9a-f]{32}$",
+        description="the stored frame's output digest, read when the two cv_s differ",
+    )
+    stored_execution_identity: str | None = Field(
+        description="the execution identity the stored frame's recipe records"
+    )
+    execution_identity: dict[str, str]
+    refusal_code: str | None = Field(
+        description="the engine's refusal code, or over_ceiling, the computation met"
+    )
+    refusal_reason: str | None
+    unavailable_roots: list[UnavailableRootBody]
 
 
 class AnalysisPendingBody(BaseModel):
@@ -293,6 +357,50 @@ class RunningAnalyses:
                 self._keys.discard(key)
 
 
+# The analysis threads and materialise permits a `verify` request leaves free for runs,
+# anchors and mints.
+_VERIFY_HEADROOM = 1
+
+
+def _verify_job(
+    *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
+) -> dict[str, Any]:
+    """Verify `body`, taking each materialise permit only while `_VERIFY_HEADROOM` stay free
+    after it (`background_admission.leaving_headroom`).
+
+    Raises:
+        AnalysisBackpressure: A permit could be taken only by leaving fewer free.
+    """
+    bounds = analysis_bounds(current)
+    try:
+        with leaving_headroom(_VERIFY_HEADROOM):
+            verification = verify_analysis(
+                body,
+                source=LiveRootSource(
+                    deps=deps,
+                    recipes=current.recipe_store,
+                    render=False,
+                    max_root_rows=bounds.max_root_rows,
+                ),
+                stores=analysis_stores(current),
+                bounds=bounds,
+                permit=analysis_permit(current, deps),
+                trace_id=trace_id,
+            )
+    except MintBackgroundDeclined:
+        raise AnalysisBackpressure() from None
+    return AnalysisVerified.model_validate(verification.body()).model_dump(mode="json")
+
+
+def _admit_verify(request: Request, settings: DatasetsBuildSettings) -> None:
+    """Admit a `verify` request from the caller holding the `verify` grant alone.
+
+    Raises:
+        VerifyNotPermitted: The caller lacks the grant.
+    """
+    Principals.resolve(settings=settings).require(Grant.verify)(request)
+
+
 def _analysis_job(
     *,
     deps: DefinitionDeps,
@@ -358,9 +466,11 @@ class _AnalysisRoutes:
         request: Request,
         body: BaseModel,
         record: Callable[[dict[str, Any]], None] | None = None,
+        headroom: int = 0,
     ) -> JSONResponse:
         """Run `job` as door `name`. A door given `record` delivers: `record` records its
-        answer for the call's `datasets.delivery` line."""
+        answer for the call's `datasets.delivery` line. `headroom` is the analysis threads
+        that must stay free after `job` takes one."""
         current = self._cell.get()
         _log_caller(request, current, route=name)
         deps = definition_deps(
@@ -374,6 +484,7 @@ class _AnalysisRoutes:
                     deps=deps,
                     timings=call.timings,
                     refuse=AnalysisBackpressure,
+                    headroom=headroom,
                     current=current,
                     body=body,
                     trace_id=get_trace_id(),
@@ -391,7 +502,17 @@ class _AnalysisRoutes:
 
     async def post_analysis(self, body: AnalysisRequest, request: Request) -> JSONResponse:
         """Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
-        `pending` while a root builds, or the refusal with its fix."""
+        `pending` while a root builds, or the refusal with its fix. With `verify`, compute it
+        again at its pinned versions, storing nothing, for the `verify` grant's holder."""
+        if body.verify:
+            _admit_verify(request, self._cell.get().settings)
+            return await self._run(
+                _verify_job,
+                name="analysis_verify",
+                request=request,
+                body=body,
+                headroom=_VERIFY_HEADROOM,
+            )
         return await self._run(
             self._analysis_job,
             name="analysis",
@@ -416,7 +537,8 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
         routes.post_analysis,
         methods=["POST"],
         name="post_analysis",
-        response_model=AnalysisReady,
+        # `verify` answers `AnalysisVerified`, every other request `AnalysisReady`.
+        response_model=AnalysisReady | AnalysisVerified,
         responses={202: {"model": AnalysisPendingBody}},
     )
     router.add_api_route(
@@ -445,6 +567,8 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
             AnalysisBackpressure,
             # A dataset root whose queued rebuild failed (`datasets_api.analysis_roots`).
             RefreshRebuildFailed,
+            # A `verify` request from a caller without the `verify` grant.
+            VerifyNotPermitted,
         ),
         endpoint_exemplars={
             "datasets.analysis": (
@@ -471,6 +595,7 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
                 AnalysisStoreDiverges(spec_id="ops_exemplar", content_version="ocv_exemplar"),
                 AnalysisBackpressure(),
                 RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
+                VerifyNotPermitted(presented=False),
             )
         },
     )
@@ -480,6 +605,7 @@ __all__ = [
     "AnalysisBackpressure",
     "AnalysisPendingBody",
     "AnalysisReady",
+    "AnalysisVerified",
     "AnchorAnswer",
     "RunningAnalyses",
     "analysis_bounds",

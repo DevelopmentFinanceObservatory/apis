@@ -37,6 +37,10 @@ shows something else, locks the share row, checks that the revision the read ser
 latest, and checks the newest entry again under the lock, so concurrent reads of one slot record
 one entry, a read of an unchanged slot takes no lock, and a read that served a revision a replace
 or snapshot conversion has since moved past records nothing.
+`sample_shares` draws shares that are not taken down at random, optionally within a
+`created_at` window, each with its kind, mode, `created_at` and the number of slots its latest
+revision shows a card in, and nothing about its owner, title, token or payload. It orders the
+window by `random()`, a scan of every share row in it, which stays cheap at the table's size.
 `served_frames` reads the timeline a page at a time, newest first by `first_served_at` and then
 `id`, by keyset from a `ServedPosition` (migration 0018's index), reading one row past the page
 to learn whether another follows.
@@ -91,6 +95,7 @@ __all__ = [
     "ShareNotFound",
     "ShareNotReplaceable",
     "ShareRecord",
+    "ShareSample",
     "ShareSlot",
     "ShareStore",
     "ShareWriteTokenInUse",
@@ -112,6 +117,14 @@ _MINT_ATTEMPTS = 5
 _SHARE_COLUMNS = "id, kind, mode, title, write_token_sha256, owner, payload, created_at"
 
 _SHARE_WRITE_TOKEN_INDEX = "share_write_token_sha256_key"
+
+# A share's sampled columns and the slots of its latest revision that show a card.
+_SAMPLE_SELECT = (
+    "SELECT s.id, s.kind, s.mode, s.created_at, (SELECT count(*) FROM presentation.share_slot "
+    "sl WHERE sl.share_id = s.id AND sl.component_id IS NOT NULL AND sl.revision = (SELECT "
+    "max(r.revision) FROM presentation.share_revision r WHERE r.share_id = s.id)) AS slots "
+    "FROM presentation.share s"
+)
 
 MAX_SHARE_PAYLOAD_BYTES = 10 * 1024 * 1024
 """The largest `payload` a share stores, as compact UTF-8 JSON (10 MiB, the website's limit)."""
@@ -202,6 +215,18 @@ class ShareRecord:
     revision: int
     revised_at: datetime
     slots: tuple[ShareSlot, ...]
+
+
+@dataclass(frozen=True)
+class ShareSample:
+    """One share `sample_shares` drew: its id, kind, mode, when it was made, and how many slots
+    of its latest revision show a card."""
+
+    id: str
+    kind: ShareKind
+    mode: ShareMode
+    created_at: datetime
+    slots: int
 
 
 @dataclass(frozen=True)
@@ -434,6 +459,21 @@ class ShareStore(Protocol):
         """Record that `slot` of the share at `revision` shows `frame` for `card` from now,
         unless the slot's newest entry already shows it or `revision` is no longer the share's
         latest.
+
+        Raises:
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
+    def sample_shares(
+        self,
+        *,
+        limit: int,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+    ) -> tuple[ShareSample, ...]:
+        """Up to `limit` shares drawn at random from those not taken down, made at or after
+        `created_after` and before `created_before` where given.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -767,6 +807,40 @@ class LiveShareStore:
             )
 
         self._in_transaction(f"recording a frame share {share_id!r} served", write)
+
+    def sample_shares(
+        self,
+        *,
+        limit: int,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+    ) -> tuple[ShareSample, ...]:
+        clauses = ["s.deleted_at IS NULL"]
+        params: list[object] = []
+        if created_after is not None:
+            clauses.append("s.created_at >= %s")
+            params.append(created_after)
+        if created_before is not None:
+            clauses.append("s.created_at < %s")
+            params.append(created_before)
+
+        def read(tx: Transaction) -> tuple[ShareSample, ...]:
+            rows = tx.fetch_all(
+                f"{_SAMPLE_SELECT} WHERE {' AND '.join(clauses)} ORDER BY random() LIMIT %s",
+                (*params, limit),
+            )
+            return tuple(
+                ShareSample(
+                    id=cast(str, row["id"]),
+                    kind=cast("ShareKind", row["kind"]),
+                    mode=cast("ShareMode", row["mode"]),
+                    created_at=cast(datetime, row["created_at"]),
+                    slots=int(cast(int, row["slots"])),
+                )
+                for row in rows
+            )
+
+        return self._in_transaction("sampling shares", read)
 
     def served_frames(
         self, *, share_id: str, limit: int, before: ServedPosition | None = None

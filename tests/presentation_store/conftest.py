@@ -357,6 +357,40 @@ class FakeTransaction:
                 ]
             )
 
+        if sql.startswith("SELECT s.id, s.kind, s.mode, s.created_at, (SELECT count(*)"):
+            # In id order, not random, so a test reads which shares a limit keeps.
+            assert "WHERE s.deleted_at IS NULL" in sql and "ORDER BY random() LIMIT %s" in sql
+            bounds = list(params[:-1])
+            after = bounds.pop(0) if "s.created_at >= %s" in sql else None
+            before = bounds.pop(0) if "s.created_at < %s" in sql else None
+            sampled = []
+            for share_id in sorted(s.shares):
+                row = s.shares[share_id]
+                created_at = row["created_at"]
+                if row["deleted_at"] is not None:
+                    continue
+                if after is not None and created_at < after:
+                    continue
+                if before is not None and created_at >= before:
+                    continue
+                revisions = s.share_revisions.get(share_id, [])
+                latest = max((r["revision"] for r in revisions), default=None)
+                shown = [
+                    slot
+                    for slot in s.share_slots.get((share_id, latest), [])
+                    if slot["component_id"] is not None
+                ]
+                sampled.append(
+                    {
+                        "id": share_id,
+                        "kind": row["kind"],
+                        "mode": row["mode"],
+                        "created_at": created_at,
+                        "slots": len(shown),
+                    }
+                )
+            return sampled[: cast(int, params[-1])]
+
         if sql.startswith("UPDATE presentation.share SET mode = 'snapshot' WHERE id = %s"):
             (share_id,) = params
             s.shares[share_id]["mode"] = "snapshot"

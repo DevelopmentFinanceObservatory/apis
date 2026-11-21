@@ -60,9 +60,16 @@ _TOKEN_HEADER = "x-dfo-write-token"
 _CARD_NAMES = ("cmp_a", "cmp_b", "cmp_c", "cmp_d", "cmp_e")
 _PRINCIPAL_HEADER = "x-dfo-principal"
 _IMPORT_PRINCIPAL = "site-share-import"
+_VERIFY_PRINCIPAL = "probe-verify"
+_REFRESH_PRINCIPAL = "site-refresh"
 _PRINCIPALS = Principals(
     header=_PRINCIPAL_HEADER,
-    secrets=(("ai-publish", Grant.publish), (_IMPORT_PRINCIPAL, Grant.share_import)),
+    secrets=(
+        ("ai-publish", Grant.publish),
+        (_IMPORT_PRINCIPAL, Grant.share_import),
+        (_REFRESH_PRINCIPAL, Grant.refresh),
+        (_VERIFY_PRINCIPAL, Grant.verify),
+    ),
 )
 
 
@@ -1091,6 +1098,86 @@ def test_a_malformed_share_id_refuses_request_invalid(door: _Door, share_id: str
     _assert_refused(door.read(share_id), status=400, code="request_invalid")
 
 
+def _sample(
+    door: _Door,
+    *,
+    principal: str | None = _VERIFY_PRINCIPAL,
+    query: dict[str, str | int] | None = None,
+):
+    return door.client.get(
+        "/api/presentation/share-sample",
+        params=query or {},
+        headers={_PRINCIPAL_HEADER: principal} if principal is not None else {},
+    )
+
+
+def test_a_share_sample_states_each_live_share_and_nothing_about_its_owner(door: _Door):
+    door.import_share("k3Qx8vTa", _import_body(door, token=None))
+    door.import_share(
+        "m7Rp2wQz",
+        _import_body(door, token=None, created_at="2026-10-01T00:00:00Z", mode="snapshot"),
+    )
+    made = door.share(["cmp_a", "cmp_b"], latest=True).json()
+    door.replace(made["id"], ["cmp_c"], token=made["write_token"])
+    gone = door.share(["cmp_d"], latest=True).json()
+    door.unshare(gone["id"], token=gone["write_token"])
+
+    resp = _sample(door)
+    early = _sample(door, query={"created_before": "2026-10-01T00:00:00Z"})
+    window = _sample(
+        door,
+        query={
+            "created_after": "2026-10-01T00:00:00+00:00",
+            "created_before": "2026-11-01T00:00:00Z",
+        },
+    )
+    capped = _sample(door, query={"limit": 1})
+
+    assert resp.status_code == 200, resp.json()
+    assert resp.headers["cache-control"] == "no-store"
+    shares = {share["share_id"]: share for share in resp.json()["shares"]}
+    assert set(shares) == {"k3Qx8vTa", "m7Rp2wQz", made["id"]}
+    assert shares["m7Rp2wQz"] == {
+        "share_id": "m7Rp2wQz",
+        "kind": "card",
+        "mode": "snapshot",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "slots": 1,
+    }
+    # A replace with fewer cards leaves slot 2 empty.
+    assert shares[made["id"]]["slots"] == 1
+    assert [share["share_id"] for share in early.json()["shares"]] == ["k3Qx8vTa"]
+    assert [share["share_id"] for share in window.json()["shares"]] == ["m7Rp2wQz"]
+    assert len(capped.json()["shares"]) == 1
+
+
+@pytest.mark.parametrize(
+    "presented",
+    [None, "wrong", _IMPORT_PRINCIPAL, "ai-publish", _REFRESH_PRINCIPAL],
+    ids=lambda p: str(p),
+)
+def test_a_share_sample_admits_the_verify_principal_alone(door: _Door, presented: str | None):
+    door.share(["cmp_a"], latest=True)
+
+    _assert_refused(_sample(door, principal=presented), status=403, code="verify_not_permitted")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"limit": 501},
+        {"limit": 0},
+        {"created_after": "2026-10-01T00:00:00"},
+        {"created_before": "yesterday"},
+    ],
+    ids=["over-the-cap", "zero", "no-offset", "not-a-timestamp"],
+)
+def test_a_share_sample_past_its_cap_or_off_the_timestamp_grammar_refuses(
+    door: _Door, query: dict[str, str | int]
+):
+    _assert_refused(_sample(door, query=query), status=400, code="request_invalid")
+
+
 @pytest.mark.parametrize("by", ["owner", "operator"])
 def test_a_deleted_share_answers_not_found_on_every_route_but_its_holders_delete(
     door: _Door, by: str
@@ -1171,7 +1258,7 @@ def test_a_frame_store_the_door_builds_pins_through_the_door_s_ledger(
 def test_every_share_route_handler_is_a_module_level_function():
     routes = [r for r in build_shares_door().router.routes if isinstance(r, APIRoute)]
 
-    assert len(routes) == 9
+    assert len(routes) == 10
     assert all("<locals>" not in getattr(route.endpoint, "__qualname__", "") for route in routes)
 
 
