@@ -389,10 +389,14 @@ def _masked_text(reading: TextReading, text: str, owned: Ranges) -> TextReading:
 
 
 def _promoted(party: _OriginParty, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
-    """`shapes`, a seated menu in its order, where a shape that publishes an organisation
-    the part names as the origin of its flow (`_OriginParty.publishes`) takes the first slot
-    of the shapes measuring alike that do not (`_measures_alike`), and those follow it in
-    their order in the slots left. Every other shape keeps its slot.
+    """`shapes`, a seated menu in its order, where the shapes that publish an organisation
+    the part names as the origin of its flow (`_OriginParty.publishes`) lead the shapes
+    measuring alike that do not (`_measures_alike`). A set is every shape joined to a
+    publisher by measuring alike, through a shape that does not publish where two
+    publishers measure apart: DAC2a's gross and net disbursements both measure as IDS's
+    disbursements of IDA grants do, so the three are one set. The set's publishers take its
+    slots first, then its other shapes, each in their order. Every other shape keeps its
+    slot.
 
     It is the menu's last ordering step, after the collapse of measure families and the
     seating of topic roots (`seat_menu`), so neither moves a promoted shape back: DAC2a
@@ -401,23 +405,37 @@ def _promoted(party: _OriginParty, shapes: Sequence[ShapeDraft]) -> list[ShapeDr
     disbursements, which publish IDA as a provider: the IDS grants count one instrument of
     IDA's lending, so DAC2a takes their first slot, debt service stays second and the
     grants come third."""
-    publishers = [shape for shape in shapes if party.publishes(shape)]
-    if not publishers:
+    publishing = [party.publishes(shape) for shape in shapes]
+    if not any(publishing):
         return list(shapes)
-    positions = {id(shape): position for position, shape in enumerate(shapes)}
+    # Union-find over the menu's positions, joining each publisher to every shape measuring
+    # alike with it.
+    root = list(range(len(shapes)))
+
+    def find(position: int) -> int:
+        while root[position] != position:
+            root[position] = root[root[position]]
+            position = root[position]
+        return position
+
+    for i, shape in enumerate(shapes):
+        if not publishing[i]:
+            continue
+        for j, other in enumerate(shapes):
+            if j != i and _measures_alike(shape, other):
+                root[find(j)] = find(i)
+    sets: dict[int, list[int]] = {}
+    for position in range(len(shapes)):
+        sets.setdefault(find(position), []).append(position)
     slots = list(shapes)
-    placed = {id(publisher) for publisher in publishers}
-    for publisher in publishers:
-        group = [publisher] + [
-            shape
-            for shape in shapes
-            if id(shape) not in placed and _measures_alike(shape, publisher)
+    for positions in sets.values():
+        if not any(publishing[position] for position in positions):
+            continue
+        order = [p for p in positions if publishing[p]] + [
+            p for p in positions if not publishing[p]
         ]
-        placed.update(id(shape) for shape in group)
-        for position, shape in zip(
-            sorted(positions[id(shape)] for shape in group), group, strict=True
-        ):
-            slots[position] = shape
+        for slot, position in zip(positions, order, strict=True):
+            slots[slot] = shapes[position]
     return slots
 
 

@@ -67,23 +67,29 @@ def query_aliases_path() -> Traversable:
     return importlib.resources.files(_PACKAGE) / _DATA_DIR / _QUERY_ALIASES_FILENAME
 
 
-# Characters read as a hyphen besides the dash punctuation category (Pd): the minus sign
-# and the soft hyphen.
-_OTHER_HYPHENS = frozenset("\u2212\u00ad")
+_MINUS_SIGN = "\u2212"
+_SOFT_HYPHEN = "\u00ad"
 
 
-def _is_hyphen(char: str) -> bool:
-    return unicodedata.category(char) == "Pd" or char in _OTHER_HYPHENS
+def _folded_char(char: str) -> str:
+    """`char` as `fold_hyphens` reads it: a space for a hyphen or dash (Unicode category
+    Pd) or the minus sign, nothing for the soft hyphen, which marks where a word may break
+    and is no separator, and `char` otherwise."""
+    if char == _SOFT_HYPHEN:
+        return ""
+    if char == _MINUS_SIGN or unicodedata.category(char) == "Pd":
+        return " "
+    return char
 
 
 def fold_hyphens(normalized: str) -> str:
-    """`normalized` with every hyphen or dash (Unicode category Pd, the minus sign and the
-    soft hyphen), and the spaces around it, read as one space.
+    """`normalized` with every hyphen or dash (Unicode category Pd) and the minus sign, and
+    the spaces around it, read as one space, and every soft hyphen dropped.
 
     "world bank-ida", "world bank - ida" and "world bank ida" give one form, so a name the
     records write with a hyphen matches the same name written with a space. Idempotent, so it
     folds a stored normal form and a query's alike."""
-    return " ".join("".join(" " if _is_hyphen(char) else char for char in normalized).split())
+    return " ".join("".join(map(_folded_char, normalized)).split())
 
 
 def org_name_key(text: str, normalize: Callable[[str], str]) -> str:

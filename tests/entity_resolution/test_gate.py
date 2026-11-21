@@ -46,7 +46,9 @@ _CANDIDATE = CandidateSummary(
         pytest.param("World Bank - IDA", "alias", id="alias-spaced-hyphen"),
         pytest.param("World Bank\u2013IDA", "alias", id="alias-en-dash"),
         pytest.param("World Bank\u2212IDA", "alias", id="alias-minus-sign"),
-        pytest.param("World Bank\u00adIDA", "alias", id="alias-soft-hyphen"),
+        pytest.param(
+            "Inter\u00adnational Development Association", "name", id="soft-hyphen-dropped"
+        ),
         pytest.param("World Bank\u2e3aIDA", "alias", id="alias-two-em-dash"),
         pytest.param("IDA-905", "code", id="hyphenated-code-as-stored"),
         pytest.param("IDA 905", None, id="code-not-folded"),

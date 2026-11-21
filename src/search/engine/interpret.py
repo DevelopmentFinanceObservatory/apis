@@ -389,7 +389,7 @@ async def recall(
     materialise stage reads the graph.
 
     A text holding a word some declared dataset states is also searched without it, for
-    the series of the tables that state the word (`_detect`), and so is one holding a word
+    the series of the tables that state the word (`_search`), and so is one holding a word
     of `party_words`, the words that name a party on an axis the request leaves unnamed
     (`region.place_roles.stated_party_words`), for the series of the tables that declare it.
     A family of a recalled five-tuple that reads a code of `variable` no recalled family
@@ -428,11 +428,8 @@ async def recall(
         detection = detected.search
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
-        # The variable is scanned off the event loop while the graph searches, so the
-        # families read once the names resolve read a kept scan.
-        detection, _, miss_resolutions = await asyncio.gather(
+        detection, miss_resolutions = await asyncio.gather(
             _search(graph, canonical, party_words),
-            asyncio.to_thread(_code_phrases, variable, index),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     resolutions: dict[str, Resolution] = dict(cache_hits)
@@ -452,7 +449,8 @@ async def recall(
             entity_words=entity_words or {},
             entity_roles=entity_roles or {},
         )
-        detection = _with_reading_families(detection, _code_phrases(variable, index, owned), index)
+        phrases = await asyncio.to_thread(_code_phrases, variable, index, owned)
+        detection = _with_reading_families(detection, phrases, index)
     candidates = _above_recall_floor(detection.candidates)
 
     for c in candidates:

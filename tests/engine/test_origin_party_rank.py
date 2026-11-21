@@ -48,6 +48,17 @@ _DAC2A_ROW = StatVarRow(
     constraint_properties={"financialFlowType": "Disbursement", "dac2aAidType": "Total"},
     provenances=(_DAC2A,),
 )
+_DAC2A_NET_ROW = StatVarRow(
+    dcid="TESTFIXTURE/Party/Dac2aNetDisbursement",
+    population_type="FinancialFlow",
+    measured_property="amount",
+    stat_type="measuredValue",
+    measurement_qualifier="Nominal",
+    measurement_denominator=None,
+    observation_properties=_ROLES,
+    constraint_properties={"financialFlowType": "Disbursement", "dac2aAidType": "TotalNet"},
+    provenances=(_DAC2A,),
+)
 
 
 def _index() -> CodeIndex:
@@ -70,7 +81,7 @@ def _index() -> CodeIndex:
             ),
         ),
         codes=(),
-        statvars=(_DAC2A_ROW,),
+        statvars=(_DAC2A_ROW, _DAC2A_NET_ROW),
         datasets=(
             DatasetDeclaration(
                 provenance=_DAC2A,
@@ -140,6 +151,9 @@ _IDS_DEBT_SERVICE = _shape(
     0.65,
 )
 _DAC2A_SHAPE = _shape("dac2a", _DAC2A_ROW.dcid, dict(_DAC2A_ROW.constraint_properties), 0.55)
+_DAC2A_NET_SHAPE = _shape(
+    "dac2a_net", _DAC2A_NET_ROW.dcid, dict(_DAC2A_NET_ROW.constraint_properties), 0.50
+)
 # The seated menu, in recall order: grants, debt service, loans, DAC2a.
 _MENU = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _IDS_LOANS, _DAC2A_SHAPE)
 _NAME = "International Development Association"
@@ -179,6 +193,14 @@ def test_the_table_publishing_the_origin_organisation_takes_its_measures_first_s
     provider whose cue states no direction, IDA's own name, counts as the origin the
     extraction read."""
     assert _promoted_ids(state) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+
+
+def test_every_publisher_of_a_measure_leads_the_shapes_measuring_alike():
+    """DAC2a's gross and net disbursements both publish IDA and both measure as the IDS
+    disbursement of IDA grants does, so the three are one set: the two publishers take its
+    first two slots in their order and the IDS grants follow."""
+    menu = (_IDS_GRANTS, _DAC2A_SHAPE, _DAC2A_NET_SHAPE)
+    assert _promoted_ids(_state(), menu) == ["dac2a", "dac2a_net", "ids_grants"]
 
 
 @pytest.mark.parametrize(
