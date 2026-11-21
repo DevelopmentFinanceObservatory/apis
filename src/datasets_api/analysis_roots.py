@@ -11,7 +11,7 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   that changes the frame is a version of its own (`render.DerivedVersion`), and that version is
   the root's dataset, as it is the `dataset` of data-mcp's mint record.
   Once a read has recorded that version, a later read of the same dataset version with the
-  same minting options finds it by the frame refresh's rule and reads it with no render
+  same minting options under the same code index reads it with no render
   (`LiveRootSource._recorded_rendering`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
@@ -56,7 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
@@ -85,7 +85,12 @@ from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
 from code_index.query import CodeIndex
 from code_index.types import summable_axes
-from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import (
+    SnapshotRevoked,
+    StoredArtifactLocation,
+    StoredVersion,
+    read_servable_version,
+)
 from datasets_api.analysis import (
     STAT_VAR_PREFIX,
     STAT_VAR_WORD,
@@ -117,12 +122,13 @@ from datasets_api.derived import root_rendering
 from datasets_api.description_record import summed_refs
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.doors.snapshot import servable_snapshot_manifest
 from datasets_api.groupby import adds_stat_vars
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
-from datasets_api.recorded_rendering import MintingOptions, head_mintings
+from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
 from datasets_api.render import (
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
@@ -135,6 +141,7 @@ from datasets_api.store_errors import (
     stored_frame_distinct,
     stored_frame_row_count,
 )
+from datasets_api.timings import phase
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -533,6 +540,10 @@ class LiveRootSource:
         self._located_rows = 0
         # The version each served definition's first newest root read, by its spec id.
         self._newest_versions: dict[str, str] = {}
+        # The dataset version each derived version a serve answered was read from, by (spec id,
+        # derived version): a version recorded from one base and made again from another keeps
+        # the first in its record.
+        self._keyed_bases: dict[tuple[str, str], str] = {}
         # The StatVars with rows in each old-trace dataset version, by (spec id, version).
         self._stat_vars: dict[tuple[str, str], list[str]] = {}
 
@@ -852,7 +863,11 @@ class LiveRootSource:
         return head.content_version, stored.trace
 
     def _base_version(self, spec_id: str, content_version: str) -> str:
-        """The dataset version `content_version` renders: its base for a derived version."""
+        """The dataset version `content_version` renders: its base for a derived version, the
+        dataset version a serve in this request read it from (`_keyed_bases`) before the base
+        its record keeps."""
+        if (keyed := self._keyed_bases.get((spec_id, content_version))) is not None:
+            return keyed
         version = self._deps.snapshot_reader.read_version(spec_id, content_version)
         if version is None or version.base_content_version is None:
             return content_version
@@ -876,7 +891,7 @@ class LiveRootSource:
             mint = MintOptions.model_validate(options)
             coverage_snapshot = deps.coverage.snapshot()
             rendered = self._recorded_rendering(
-                spec_id, content_version, mint, revoked_under=revoked_under
+                spec_id, content_version, mint, base=lambda: stored, revoked_under=revoked_under
             ) or head_rendering(
                 subject_id=spec_id,
                 content_version=content_version,
@@ -912,12 +927,14 @@ class LiveRootSource:
                     reason="its stored frame has expired, so its rendering cannot be made",
                 )
             manifest = rendered
-        # A groupby sum or a party-totals cut that changed the frame answers its own version.
+        # A groupby sum or a party-totals cut that changed the frame answers its own version,
+        # made from the version the root names.
         return self._resolved(
             spec_id=spec_id,
             content_version=manifest.content_version,
             options=options,
             manifest=manifest,
+            base=content_version if manifest.content_version != content_version else None,
         )
 
     def _recorded_rendering(
@@ -926,17 +943,29 @@ class LiveRootSource:
         content_version: str,
         options: MintOptions,
         *,
+        base: Callable[[], Manifest],
         revoked_under: Sequence[str],
     ) -> Manifest | None:
-        """The stored version a minting rendering, a `groupby` sum or a party-totals cut, made
-        from the dataset version `content_version` with `options`, listing the file of that
-        rendering, or `None` for a rendering that mints nothing or one no stored version
-        records. A version counts by the frame refresh's rule (`head_mintings`), newest first,
-        while its stored frame file is servable and it is not revoked under `revoked_under`.
-        The code index is outside the rule, as it is for the refresh: a version recorded from
-        `content_version` stands until the dataset version moves. A root read with a sum or a
-        cut is thereby read from the version an earlier read rendered, with no render, so a
-        request repeated reads its stored answer.
+        """The stored version an earlier read made of the dataset version `content_version`
+        with the minting options of `options`, a `groupby` sum or a party-totals cut, for an
+        analysis root read in that rendering: a pinned dataset root (`_stored`), or a Spec root
+        or a dataset root under `latest` whose serve keeps its head (`_serve`). It is the newest
+        version a link of that minting records as rendered from `content_version` under the
+        serving code index (`recorded_rendering.mintings_rendered_under`), listing the file of
+        the rendering. `None` for a rendering that mints nothing, when no version is recorded
+        so, and when the newest one cannot serve: its stored frame file is not servable, it or
+        its recorded base is revoked under `revoked_under`, or it links no file of the
+        rendering. The caller then renders, and an older recorded version never answers in
+        place of the newest.
+
+        `base` reads the dataset version `content_version` with its revocation checked under
+        `revoked_under`, so a revoked dataset version answers nothing here even when the
+        recorded version's record names another base. Its coverage resolves a default
+        enrichment, as the render does (`current.head_rendering`). A request repeated thereby
+        reads its stored answer with no render.
+
+        Raises:
+            SnapshotRevoked: `base` found the dataset version revoked.
         """
         deps = self._deps
         lister = deps.version_lister
@@ -945,30 +974,49 @@ class LiveRootSource:
         )
         if lister is None or (minting.groupby is None and not minting.without_party_totals):
             return None
+        stamp = deps.code_index.stamp.content_hash
+        recorded = next(
+            (
+                version
+                for version in lister.list_head_versions(
+                    spec_id, head_content_version=content_version
+                )
+                if minting
+                in mintings_rendered_under(
+                    version, head_content_version=content_version, code_index_stamp=stamp
+                )
+            ),
+            None,
+        )
+        if recorded is None:
+            return None
         keys = resolved_rendering_keys(
             options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
-        )
-        for version in lister.list_head_versions(spec_id, head_content_version=content_version):
-            if minting not in head_mintings(version, head_content_version=content_version):
-                continue
-            derived = version.content_version
-            locations = deps.snapshot_reader.read_artifact_locations(spec_id, derived)
-            if servable_frame_location(locations, now=deps.now()) is None:
-                continue
+        )(base())
+        now = deps.now()
+        with phase("snapshot_state"):
             try:
-                manifest = load_stored(
+                stored = read_servable_version(
+                    deps.snapshot_reader,
                     subject_id=spec_id,
-                    content_version=derived,
-                    deps=deps,
-                    include_artifacts=True,
-                    rendering_keys=keys,
+                    content_version=recorded.content_version,
+                    now=now,
                     revoked_under=revoked_under,
                 )
             except SnapshotRevoked:
-                continue
-            if _data_artifact(manifest) is not None:
-                return manifest
-        return None
+                return None
+        if servable_frame_location(stored.servable, now=now) is None:
+            return None
+        manifest = servable_snapshot_manifest(
+            stored,
+            id=spec_id,
+            content_version=recorded.content_version,
+            now=now,
+            settings=deps.settings,
+            rendering_keys=lambda _: keys,
+            enrichment_digest=deps.code_index.enrichment_digest,
+        )
+        return manifest if _data_artifact(manifest) is not None else None
 
     def _serve(
         self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
@@ -986,8 +1034,16 @@ class LiveRootSource:
         revoked_under = (posted,)
 
         def load_head(content_version: str, coverage_snapshot: CoverageSnapshot) -> Manifest | None:
-            return self._recorded_rendering(
-                served.spec_id, content_version, options, revoked_under=revoked_under
+            base = partial(
+                load_stored,
+                subject_id=served.spec_id,
+                content_version=content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=revoked_under,
+            )
+            manifest = self._recorded_rendering(
+                served.spec_id, content_version, options, base=base, revoked_under=revoked_under
             ) or head_rendering(
                 subject_id=served.spec_id,
                 content_version=content_version,
@@ -997,6 +1053,9 @@ class LiveRootSource:
                 coverage_snapshot=coverage_snapshot,
                 revoked_under=revoked_under,
             )
+            if manifest is not None and manifest.content_version != content_version:
+                self._keyed_bases[(served.spec_id, manifest.content_version)] = content_version
+            return manifest
 
         try:
             return serve_spec(
@@ -1019,8 +1078,17 @@ class LiveRootSource:
             raise _pending(operation.id) from None
 
     def _resolved(
-        self, *, spec_id: str, content_version: str, options: Mapping[str, Any], manifest: Manifest
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        options: Mapping[str, Any],
+        manifest: Manifest,
+        base: str | None = None,
     ) -> ResolvedRoot:
+        """The root `manifest`, the version `content_version`, read with `options`. A groupby's
+        version names `base`, the dataset version it was made from, else the one a serve in
+        this request read it from (`_keyed_bases`), else its record's base."""
         artifact = _data_artifact(manifest) if options.get("columns") else None
         root = _root(
             spec_id=spec_id,
@@ -1032,10 +1100,15 @@ class LiveRootSource:
         )
         if "groupby" not in options:
             return root
-        # A groupby answers a version of its own, whose record names the dataset version it
-        # sums (`_listed_base`).
+        # A groupby answers a version of its own, which names the dataset version it sums
+        # (`_listed_base`).
         version = self._deps.snapshot_reader.read_version(spec_id, content_version)
-        base = (version.base_content_version if version is not None else None) or content_version
+        base = (
+            base
+            or self._keyed_bases.get((spec_id, content_version))
+            or (version.base_content_version if version is not None else None)
+            or content_version
+        )
         root = replace(root, base_content_version=_listed_base(options, base))
         rendered = _rendered_count(manifest)
         if rendered is not None:

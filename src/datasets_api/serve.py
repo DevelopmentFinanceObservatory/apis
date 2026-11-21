@@ -1584,6 +1584,7 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
+            code_index_stamp=deps.code_index.stamp.content_hash,
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,

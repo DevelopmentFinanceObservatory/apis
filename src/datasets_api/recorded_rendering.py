@@ -124,8 +124,8 @@ def recorded_minting(renderings: Iterable[Mapping[str, object]]) -> MintingOptio
 
 def head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
     """The minting options the files linked under `version` record as made from
-    `head_content_version`, by cases 2 and 3 of the frame refresh's rule (`datasets_api.doors.refresh`): each link
-    naming that head, and every link while `version`'s record names that head as its base and
+    `head_content_version`, by cases 2 and 3 of the frame refresh's rule
+    (`datasets_api.doors.refresh`): each link naming that head, and every link while `version`'s record names that head as its base and
     every file of minting options linked under it records one minting. A file recording a
     groupby this build's grammar refuses records a minting case 3 cannot read, so it keeps
     case 3 from applying."""
@@ -138,6 +138,21 @@ def head_mintings(version: HeadVersion, *, head_content_version: str) -> list[Mi
     ):
         return every
     return recorded_mintings(link.rendering for link in links if head_content_version in link.heads)
+
+
+def mintings_rendered_under(
+    version: HeadVersion, *, head_content_version: str, code_index_stamp: str
+) -> list[MintingOptions]:
+    """The minting options the files linked under `version` record as rendered from
+    `head_content_version` under the code index whose content hash is `code_index_stamp`: each
+    link whose row for that head records that hash (`HeadLink.rendered_under`). A link written
+    before rows recorded a hash, or under another index, records none, so a render from that
+    head under this index may make another version."""
+    return recorded_mintings(
+        link.rendering
+        for link in version.links
+        if link.rendered_under.get(head_content_version) == code_index_stamp
+    )
 
 
 def records_plain_file(renderings: Iterable[Mapping[str, object]]) -> bool:

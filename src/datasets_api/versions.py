@@ -136,6 +136,10 @@ class VersionRecord:
     # Whether a derived version's frame holds its summed rows (`render.DerivedVersion.summed`):
     # set exactly when `base_content_version` is.
     frame_summed: bool | None = None
+    # The content hash of the code index a derived version's files were rendered under
+    # (`CodeIndex.stamp.content_hash`), which each link records beside the head it names
+    # (`datasets.version_artifact_head.code_index_stamp`). `None` records none.
+    code_index_stamp: str | None = None
     # Builds and settles the version's description record in the transaction that writes the
     # version row. `None` writes no record.
     describer: VersionDescriber | None = field(default=None, compare=False)
@@ -358,10 +362,13 @@ class ListedVersion:
 class HeadLink:
     """One file linked under a version: its `rendering`, and every raw head a write named as
     making it (`datasets.version_artifact_head`), empty on a link no write named a head for, as
-    on every link under a raw version and every link written before links held heads."""
+    on every link under a raw version and every link written before links held heads.
+    `rendered_under` maps each of those heads whose row records it to the content hash of the
+    code index the last write naming that head rendered the file under."""
 
     rendering: Mapping[str, object]
     heads: frozenset[str] = frozenset()
+    rendered_under: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

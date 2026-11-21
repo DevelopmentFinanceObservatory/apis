@@ -1299,6 +1299,7 @@ def test_a_version_record_links_its_artifacts_under_the_digest_they_were_rendere
         output_profile=result.output_profile,
         frame_sha256=result.frame_sha256,
         frame_summed=False,
+        code_index_stamp="index",
         record_only_artifacts=[own],
         version_writer=recorder,
     )

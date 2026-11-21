@@ -252,6 +252,7 @@ def _written_records() -> dict[str, VersionRecord]:
             output_profile=result.output_profile,
             frame_sha256=result.frame_sha256,
             frame_summed=True,
+            code_index_stamp="sha256:index",
         ),
         "warnings": _definition_record(warned_result, warned),
         "conversions": _definition_record(converted_result, converted),

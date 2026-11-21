@@ -506,6 +506,7 @@ def _record_head_hit_derived(
         output_profile=output_profile,
         frame_sha256=derived.frame_sha256,
         frame_summed=derived.summed,
+        code_index_stamp=deps.code_index.stamp.content_hash,
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
