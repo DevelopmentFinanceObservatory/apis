@@ -19,7 +19,7 @@ from code_index.tokens import tokenize, word_tokens
 from entity_resolution.types import Kind
 from search.engine.qualifier_match import token_occurrences
 from search.engine.role_text import DoorRole
-from search.models.vocab import EntryPath
+from search.models import EntryPath
 
 type Ranges = tuple[tuple[int, int], ...]
 """Character ranges of a text, each `(start, end)`."""

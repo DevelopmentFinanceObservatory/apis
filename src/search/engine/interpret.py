@@ -45,7 +45,7 @@ from search.engine.qualifier_match import cross_vocabulary_codes, read_by_vocabu
 from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.role_text import DoorRole
 from search.engine.surface_resolution import resolve_names
-from search.models.vocab import EntryPath
+from search.models import EntryPath
 
 logger = logging.getLogger(__name__)
 
