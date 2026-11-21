@@ -12,6 +12,7 @@ from assembler.bind import BoundSeries, bind_all
 from assembler.errors import BindingInvalid, SchemaInvalid
 from assembler.limits import LABEL_MAX
 from assembler.mint import default_window, mint_component, stamp_envelope, warned_refs
+from assembler.mint.dispatch import _drawn_periods
 from assembler.mint.provenance import (
     _REF_FIELDS,
     _WARNING_KIND_BY_CODE,
@@ -1810,13 +1811,13 @@ _INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
 
 
 def _incomplete(provenance, stat_vars, source, mark, *, status=None):
-    """An `incomplete_after` entry: `partial` from `mark`, else `status`, `complete` by
+    """An `incomplete_after` entry: `partial` from `mark`, else `status`, `unmarked` by
     default."""
     return {
         "provenance": provenance,
         "stat_vars": list(stat_vars),
         "source": source,
-        "status": "partial" if mark is not None else status or "complete",
+        "status": "partial" if mark is not None else status or "unmarked",
         "partial_period": mark,
     }
 
@@ -1954,6 +1955,27 @@ def test_partial_period_judges_the_rows_a_card_draws():
         resolved_frame=frame, rows=drawn_rows(series=series, periods={"s1": {"2019"}})
     )
     assert _partial_period(resolved_frame=frame, rows=None), "a card binding no series"
+
+
+def test_each_series_draws_its_own_observed_periods():
+    """A line chart observes 2021 and 2022 across its series; the series without a 2022 value
+    draws 2021 alone."""
+
+    def bound(id_, **values):
+        points = tuple(
+            {"period": period, **({"value": value} if value is not None else {})}
+            for period, value in values.items()
+        )
+        return BoundSeries(id=id_, label=id_, unit=None, source_ref=None, points=points)
+
+    periods = _drawn_periods(
+        member="line_chart",
+        component={},
+        bound_series=[bound("a", y2021=1.0, y2022=2.0), bound("b", y2021=1.0, y2022=None)],
+        observed_periods=frozenset({"y2021", "y2022"}),
+    )
+
+    assert periods == {"a": {"y2021", "y2022"}, "b": {"y2021"}}
 
 
 _MALARIA_PARTIAL_2022 = {

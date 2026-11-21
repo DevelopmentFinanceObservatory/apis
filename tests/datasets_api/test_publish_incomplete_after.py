@@ -34,12 +34,12 @@ _RATIO = "dcid:ops_ratio"
 def _entry(
     stat_vars: list[str], mark: str | None = "2025", *, source: str = _SOURCE
 ) -> dict[str, object]:
-    """A `partial` entry from `mark` of `source`, or `complete` for `None`."""
+    """A `partial` entry from `mark` of `source`, or `unmarked` for `None`."""
     return {
         "provenance": _SOURCE,
         "stat_vars": stat_vars,
         "source": None if mark is None else source,
-        "status": "complete" if mark is None else "partial",
+        "status": "unmarked" if mark is None else "partial",
         "partial_period": mark,
     }
 

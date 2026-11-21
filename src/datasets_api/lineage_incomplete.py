@@ -8,15 +8,15 @@ cells, so `derived_incomplete_after` gives it a record of its own, keyed the sam
 the publish door stores with its lineage (`dataset_store.snapshot.FrameLineage`):
 
 - an output cell an input's entries name takes those entries' states;
-- an output cell an input's rows carry, which no entry names, is complete;
+- an output cell an input's rows carry, which no entry names, is unmarked;
 - any other output cell, which the computation made, takes the earliest partial period among
   the inputs' entries, since a figure computed from a partial input is partial unless its key
   shows otherwise; with no partial input it is unknown when an input holds an unknown cell,
-  and complete otherwise.
+  and unmarked otherwise.
 
 A dataset input's rows carry each provenance its trace selects with each variable its
-definition resolved. A computed version's record lists every cell of its rows, its complete
-cells as `complete` entries, so a computation over it knows its cells. A row with no
+definition resolved. A computed version's record lists every cell of its rows, its unmarked
+cells as `unmarked` entries, so a computation over it knows its cells. A row with no
 `provenance` cell is kept when an input carries its variable under any provenance; it takes
 the states of those cells when they agree, and is unknown when some are partial and others
 are not.
@@ -48,7 +48,7 @@ are compared with the variable bare (`bare_stat_var_ref`)."""
 type State = tuple[str, str | None, str | None]
 """An entry's `status`, `source` and `partial_period`."""
 
-_COMPLETE: State = ("complete", None, None)
+_UNMARKED: State = ("unmarked", None, None)
 _UNKNOWN: State = ("unknown", None, None)
 
 
@@ -99,7 +99,7 @@ def derived_incomplete_after(
                 state = _state(entry)
                 for cell in _cells(entry):
                     carried.add(cell)
-                    if state != _COMPLETE:
+                    if state != _UNMARKED:
                         named.setdefault(cell, set()).add(state)
             carried.update(_dataset_cells(version))
     states = {state for held_states in named.values() for state in held_states}
@@ -110,7 +110,7 @@ def derived_incomplete_after(
     elif any(state[0] == "unknown" for state in states):
         made = _UNKNOWN
     else:
-        made = _COMPLETE
+        made = _UNMARKED
     grouped: dict[tuple[str | None, State], list[str]] = {}
     for provenance, stat_var in sorted(frame_cells(frame), key=lambda c: (c[0] or "", c[1])):
         cell = (provenance, bare_stat_var_ref(stat_var))
@@ -144,8 +144,8 @@ def _states(
     if not kept:
         return [made]
     if provenance is not None:
-        return sorted(named.get(cell, {_COMPLETE}), key=_order)
-    per_cell = [frozenset(named.get(held, {_COMPLETE})) for held in kept]
+        return sorted(named.get(cell, {_UNMARKED}), key=_order)
+    per_cell = [frozenset(named.get(held, {_UNMARKED})) for held in kept]
     if len(set(per_cell)) == 1:
         return sorted(per_cell[0], key=_order)
     return [_UNKNOWN]
@@ -165,7 +165,7 @@ def _state(entry: Mapping[str, object]) -> State:
         return status, cast(str, entry["source"]), cast(str, entry["partial_period"])
     if status == "unknown":
         return status, cast("str | None", entry.get("source")), None
-    return _COMPLETE
+    return _UNMARKED
 
 
 def _recorded(version: StoredVersion) -> list[Mapping[str, object]] | None:

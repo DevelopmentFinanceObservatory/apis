@@ -1021,3 +1021,24 @@ def test_documentation_states_the_partial_period_the_dev_graph_marks(
     documentation = source_documentation_of({provenance: arcs}, publisher=None)
 
     assert documentation.partial_periods.get(provenance) == partial
+
+
+@pytest.mark.parametrize(
+    ("marks", "earliest"),
+    [
+        pytest.param(("2025-06", "2025"), "2025", id="a-year-before-its-own-month"),
+        pytest.param(("2026", "2025"), "2025", id="two-years"),
+        pytest.param(("2025-06", "2025-03"), "2025-03", id="two-months"),
+    ],
+)
+def test_a_node_stating_several_partial_periods_is_partial_from_the_earliest(
+    marks: tuple[str, ...], earliest: str
+) -> None:
+    """Whatever order the graph returns the arcs in."""
+    provenance = "provenance/OECDCreditorReportingSystem"
+    for order in (marks, marks[::-1]):
+        arcs = {**dev_provenance_nodes()[provenance], "partialObservationDate": order}
+
+        documentation = source_documentation_of({provenance: arcs}, publisher=None)
+
+        assert documentation.partial_periods[provenance] == earliest

@@ -242,10 +242,13 @@ def source_documentation_of(children: ChildArcs, publisher: str | None) -> Sourc
         license_url=agreed_child_value(children, "license"),
         last_update=max(last_dates) if last_dates else None,
         next_expected_update=min(next_dates) if next_dates else None,
+        # A child stating several marks holds only part of its data from the earliest. An ISO
+        # 8601 point or an interval's start orders by when it starts as a string: `2025` before
+        # `2025-06`.
         partial_periods={
-            child: partial
+            child: min(marks, key=lambda mark: (mark.split("/")[0], mark))
             for child, arcs in children.items()
-            if (partial := _first(arcs.get("partialObservationDate", ()))) is not None
+            if (marks := arcs.get("partialObservationDate", ()))
         },
         documents=(
             {

@@ -577,13 +577,38 @@ def test_a_sole_contributor_with_no_summable_axis_still_serves_unchanged():
     assert resp.json()["coverage"]["rows"] == 1
 
 
+def _marking(serve_catalogue: Callable[[Catalogue], None], mark: str) -> None:
+    """Serve a catalogue documenting `_PROVENANCE` with `mark` partial."""
+    arcs = {**dev_provenance_nodes()["provenance/OECDDAC2A"], "partialObservationDate": (mark,)}
+    serve_catalogue(documenting({_PROVENANCE: arcs}))
+
+
+def _records(version_store: FakeVersionRecordDatasetStore) -> dict[str, dict[str, object]]:
+    with version_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT content_version, incomplete_after, frame_summed FROM datasets.version_record"
+        )
+    return {row["content_version"]: row for row in rows}
+
+
+def _partial(stat_vars: list[str], mark: str) -> list[dict[str, object]]:
+    return [
+        {
+            "provenance": _PROVENANCE,
+            "stat_vars": stat_vars,
+            "source": _PROVENANCE,
+            "status": "partial",
+            "partial_period": mark,
+        }
+    ]
+
+
 def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
     serve_catalogue: Callable[[Catalogue], None],
 ) -> None:
     """The source marks 2020 partial. The sum of both members names its row by the spec id
     under the members' provenance, so it is partial from the members' mark."""
-    arcs = {**dev_provenance_nodes()["provenance/OECDDAC2A"], "partialObservationDate": ("2020",)}
-    serve_catalogue(documenting({_PROVENANCE: arcs}))
+    _marking(serve_catalogue, "2020")
     version_store = FakeVersionRecordDatasetStore()
     client = _client(
         graph=_graph(),
@@ -601,22 +626,9 @@ def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
         options={"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}},
     )
 
-    with version_store.transaction() as tx:
-        rows = tx.fetch_all(
-            "SELECT content_version, incomplete_after, frame_summed FROM datasets.version_record"
-        )
-    recorded = {row["content_version"]: row for row in rows}
+    recorded = _records(version_store)
     summed = recorded.pop(collapsed["content_version"])
     (raw,) = recorded.values()
     assert summed["frame_summed"]
-    partial = {"source": _PROVENANCE, "status": "partial", "partial_period": "2020"}
-    assert raw["incomplete_after"] == [
-        {
-            "provenance": _PROVENANCE,
-            "stat_vars": [f"dcid:{_MEMBER_A}", f"dcid:{_MEMBER_B}"],
-            **partial,
-        }
-    ]
-    assert summed["incomplete_after"] == [
-        {"provenance": _PROVENANCE, "stat_vars": [f"dcid:{spec_id}"], **partial}
-    ]
+    assert raw["incomplete_after"] == _partial([f"dcid:{_MEMBER_A}", f"dcid:{_MEMBER_B}"], "2020")
+    assert summed["incomplete_after"] == _partial([f"dcid:{spec_id}"], "2020")

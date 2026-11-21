@@ -106,15 +106,16 @@ class IncompleteAfter(BaseModel):
     as the pipeline marks it on `source`'s Provenance node (`partialObservationDate`, at its
     own grain); `source` is the provenance cell itself, or for a composite the component
     serving those variables. `unknown`: no catalogue documented `source` (`None` when the rows
-    name no provenance), so nothing says. `complete`: judged complete, listed only in a
-    computed version's record, which names every cell of its rows. `partial_period` is set
+    name no provenance) or the frame grammar could not read the mark, so nothing says.
+    `unmarked`: the pipeline marks no partial period the rows reach, listed only in a computed
+    version's record, which names every cell of its rows. `partial_period` is set
     only on a `partial` entry."""
 
     model_config = ConfigDict(extra="forbid")
     provenance: str | None
     stat_vars: list[str]
     source: str | None
-    status: Literal["partial", "unknown", "complete"]
+    status: Literal["partial", "unknown", "unmarked"]
     partial_period: str | None = None
 
 

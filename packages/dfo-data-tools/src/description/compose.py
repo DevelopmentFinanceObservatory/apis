@@ -76,6 +76,7 @@ def describe_version(
     vocabulary: Vocabulary,
     *,
     inputs: Sequence[DescriptionRecord] = (),
+    marked: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     """The description of a dataset version (`spec_`) or a computed version (`ops_`).
 
@@ -89,6 +90,8 @@ def describe_version(
         vocabulary: today's words.
         inputs: for a computed version, the records of the versions it was computed from
             that are held; ignored for a dataset version.
+        marked: the version's stored `incomplete_after`, `None` when it stores none, which
+            `freshness.partial_periods` states (`blocks.partial_periods`).
 
     Returns:
         The description as JSON-ready wire data.
@@ -121,7 +124,7 @@ def describe_version(
         "title": title,
         "about": about,
         "sources": sources,
-        "freshness": freshness,
+        "freshness": {**freshness, **blocks.partial_periods(marked, record, words)},
         "steps": steps,
         "caveats": _caveats(record, words, numbered),
         "cite": cite(record, words, title=title, composed=composed, sources=credited),

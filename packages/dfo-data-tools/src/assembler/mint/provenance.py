@@ -422,7 +422,7 @@ def _partial_period(
     period its version recorded for the row's own `provenance` and `stat_var` cells
     (`recorded_incomplete_after`, `materialise.partial_period.reaches`), so the card holds
     only part of that source's data there. A row with no `provenance` cell is named by an entry
-    with none. `complete` and `unknown` entries flag nothing, and a version that recorded
+    with none. `unmarked` and `unknown` entries flag nothing, and a version that recorded
     nothing reads as complete. Nothing is read beyond the frame's manifest."""
     entries = recorded_incomplete_after(resolved_frame.manifest)
     marks: dict[tuple[object, str], list[str]] = {}

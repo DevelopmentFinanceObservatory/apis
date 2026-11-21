@@ -27,6 +27,7 @@ from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue, bound_catalogue
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, dev_provenance_nodes, documenting
 
+from ._description_doubles import FAMILY_MEMBERS, GROUPBY_QUERY, datasets_client, mint_family
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_elected_year import _AID, _MALAWI, _MWI, _PROVENANCE, _Rig
 
@@ -233,6 +234,29 @@ def test_each_source_is_judged_on_its_own() -> None:
         assert incomplete_after(result) is None, "a catalogue judging no source records nothing"
 
 
+def test_a_mark_the_frame_grammar_cannot_read_records_its_rows_unknown() -> None:
+    """The CRS node states a quarter, which no frame period spells, so nothing says whether
+    its 2025 rows reach it; DAC1's unmarked rows keep the record judged."""
+    nodes = dev_provenance_nodes()
+    catalogue = documenting(
+        {_CRS: {**nodes[_CRS], "partialObservationDate": ("2025-Q3",)}, _DAC1: nodes[_DAC1]}
+    )
+    result = _result({(_CRS, "dcid:X"): "2025", (_DAC1, "dcid:Y"): "2025"})
+
+    with bound_catalogue(catalogue):
+        recorded = incomplete_after(result)
+
+    assert recorded == [
+        {
+            "provenance": _CRS,
+            "stat_vars": ["dcid:X"],
+            "source": _CRS,
+            "status": "unknown",
+            "partial_period": None,
+        }
+    ]
+
+
 def test_a_mint_with_no_catalogue_bound_records_nothing(
     bind_catalogue: Callable[[Catalogue], None],
 ) -> None:
@@ -278,3 +302,56 @@ def test_a_later_mint_of_the_same_version_replaces_its_partial_years(
     assert second.content_version == first.content_version
     assert _stored_record(rig) == []
     assert _recorded(rig, second) == []
+
+
+def _marked(mark: str) -> dict[str, tuple[str, ...]]:
+    """The dev graph's DAC2A arcs, marking `mark` partial."""
+    return {**dev_provenance_nodes()[_DAC2A], "partialObservationDate": (mark,)}
+
+
+def _stored_record_of(store: FakeVersionRecordDatasetStore, content_version: str) -> object:
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT incomplete_after FROM datasets.version_record WHERE content_version = %s",
+            (content_version,),
+        )
+    assert row is not None
+    return row["incomplete_after"]
+
+
+def _partial(stat_vars: list[str], mark: str) -> list[dict[str, object]]:
+    return [
+        {
+            "provenance": "OECD_DAC2A",
+            "stat_vars": stat_vars,
+            "source": "OECD_DAC2A",
+            "status": "partial",
+            "partial_period": mark,
+        }
+    ]
+
+
+def test_a_groupby_served_from_the_head_stores_the_judgement_of_its_base(
+    serve_catalogue: Callable[[Catalogue], None],
+) -> None:
+    """A plain mint primes the head, so the groupby read that follows collapses the head
+    (`current._record_head_hit_derived`), deriving its record from the base version's."""
+    serve_catalogue(documenting({"OECD_DAC2A": _marked("1900")}))
+    store = FakeVersionRecordDatasetStore()
+    client = datasets_client(store, fixture="family")
+    base = mint_family(client, options={"bundle": False})
+    spec_id = base["definition"]["spec_id"]
+
+    response = client.get(f"/api/datasets/{spec_id}?{GROUPBY_QUERY}")
+
+    assert response.status_code == 200, response.text
+    collapsed = response.json()
+    assert collapsed["trace"]["served_from"] == "head"
+    recorded = {
+        content_version: _stored_record_of(store, content_version)
+        for content_version in (base["content_version"], collapsed["content_version"])
+    }
+    assert recorded[base["content_version"]] == _partial(
+        sorted(f"dcid:{member}" for member in FAMILY_MEMBERS), "1900"
+    )
+    assert recorded[collapsed["content_version"]] == _partial([f"dcid:{spec_id}"], "1900")

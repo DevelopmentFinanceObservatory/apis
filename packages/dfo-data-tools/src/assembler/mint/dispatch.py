@@ -171,15 +171,19 @@ def _drawn_periods(
     observed_periods: frozenset[str],
 ) -> dict[str, frozenset[str]]:
     """The periods of each bound series the card draws: for a stat card, its headline period
-    and its change's basis periods of its primary series alone; for any other card, the
-    periods its builder observed (`observed_periods`), such as an entity-mode bar chart's one
-    shared period."""
+    and its change's basis periods of its primary series alone; for any other card, each
+    series' own points holding a value among the periods its builder observed
+    (`observed_periods`), such as an entity-mode bar chart's one shared period."""
     if member == "stat_card":
         change = cast("Mapping[str, object] | None", component.get("change"))
         basis = cast("Sequence[str]", change["basis"]) if change is not None else ()
         drawn = frozenset({cast(str, component["period"]), *basis})
         return {bound_series[0].id: drawn} if bound_series else {}
-    return {bound.id: observed_periods for bound in bound_series}
+    return {
+        bound.id: observed_periods
+        & {cast(str, point["period"]) for point in bound.points if "value" in point}
+        for bound in bound_series
+    }
 
 
 def stamp_envelope(

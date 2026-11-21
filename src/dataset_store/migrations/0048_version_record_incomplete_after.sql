@@ -3,7 +3,7 @@
 -- `incomplete_after` holds one entry per row `provenance` cell, source and state, naming its
 -- `stat_vars` (`datasets_api.manifest_models.IncompleteAfter`): `partial` from the period the
 -- source's import holds only part of, `unknown` where no catalogue documented the source, and
--- on a computed version `complete`. A dataset version's comes from its mint, judged against
+-- on a computed version `unmarked`. A dataset version's comes from its mint, judged against
 -- the origin catalogue (`datasets_api.manifest.incomplete_after`), a published derived frame's
 -- from the versions it was computed from
 -- (`datasets_api.lineage_incomplete.derived_incomplete_after`). `[]` means judged and nothing

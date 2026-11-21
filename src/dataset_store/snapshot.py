@@ -138,7 +138,7 @@ class FrameLineage:
     `incomplete_after` holds the entries the publish door derived from the same versions for
     the frame's rows (`datasets_api.lineage_incomplete`), each a
     `datasets_api.manifest_models.IncompleteAfter`, every cell listed, the complete ones as
-    `complete`. `None` when an input's record is unknown and on a version recorded before
+    `unmarked`. `None` when an input's record is unknown and on a version recorded before
     versions stored it, which reads as unknown."""
 
     input_content_versions: Sequence[str]

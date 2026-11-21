@@ -1591,7 +1591,9 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
-            incomplete_after=collapsed_incomplete_after(prewrite.incomplete_after, derived_result),
+            incomplete_after=collapsed_incomplete_after(
+                prewrite.incomplete_after, derived_statistics.figures
+            ),
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,
