@@ -11,7 +11,7 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   that changes the frame is a version of its own (`render.DerivedVersion`), and that version is
   the root's dataset, as it is the `dataset` of data-mcp's mint record.
   Once a read has recorded that version, a later read of the same dataset version with the
-  same minting options under the same code index reads it with no render
+  same minting options under the same code index and render format reads it with no render
   (`LiveRootSource._recorded_rendering`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
@@ -142,6 +142,7 @@ from datasets_api.store_errors import (
     stored_frame_row_count,
 )
 from datasets_api.timings import phase
+from datasets_api.versions import rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -951,7 +952,8 @@ class LiveRootSource:
         analysis root read in that rendering: a pinned dataset root (`_stored`), or a Spec root
         or a dataset root under `latest` whose serve keeps its head (`_serve`). It is the newest
         version a link of that minting records as rendered from `content_version` under the
-        serving code index (`recorded_rendering.mintings_rendered_under`), listing the file of
+        serving code index and render format (`versions.rendering_stamp`,
+        `recorded_rendering.mintings_rendered_under`), listing the file of
         the rendering. `None` for a rendering that mints nothing, when no version is recorded
         so, and when the newest one cannot serve: its stored frame file is not servable, it or
         its recorded base is revoked under `revoked_under`, or it links no file of the
@@ -974,7 +976,7 @@ class LiveRootSource:
         )
         if lister is None or (minting.groupby is None and not minting.without_party_totals):
             return None
-        stamp = deps.code_index.stamp.content_hash
+        stamp = rendering_stamp(deps.code_index.stamp.content_hash)
         recorded = next(
             (
                 version

@@ -24,9 +24,9 @@ from materialise.projection import (
 )
 from materialise.reshape import Table
 
-_AXIS_CODES = {
-    "crsPurpose": {"Basic health care": "dcid:CRSPurposeCode122"},
-    "crsTypeOfFinance": {"Standard grant": "dcid:CRSTypeOfFinanceCode110"},
+_AXIS_LABELS = {
+    "crsPurpose": {"dcid:CRSPurposeCode122": "Basic health care"},
+    "crsTypeOfFinance": {"dcid:CRSTypeOfFinanceCode110": "Standard grant"},
 }
 
 
@@ -97,8 +97,8 @@ _SOURCE = Table(
             None,
             "p1",
             None,
-            "Standard grant",
-            "Basic health care",
+            "dcid:CRSTypeOfFinanceCode110",
+            "dcid:CRSPurposeCode122",
             "KEN",
         ),
         (
@@ -124,13 +124,13 @@ def _project(
     *,
     names=_NAMES,
     parties=_PARTY_KINDS,
-    axis_codes=_AXIS_CODES,
+    axis_labels=_AXIS_LABELS,
     entity_columns=("financingProvider", "financingRecipient"),
 ):
     return plan_long_projection(
         source.columns,
         entity_columns=entity_columns,
-        axis_codes=axis_codes,
+        axis_labels=axis_labels,
         unit_naming=_UNIT_NAMING,
         grain=period_grain(_periods(source)),
     ).apply(source, names=names, parties=parties)
@@ -224,13 +224,28 @@ def test_a_declared_absence_or_a_decode_gap_leaves_the_code_cell_empty_without_a
     assert projected.unavailable == {}
 
 
-def test_a_label_two_codes_share_leaves_the_code_cell_empty_and_counts_a_miss():
-    shared = {**_AXIS_CODES, "crsTypeOfFinance": {"Standard grant": None}}
+def test_two_codes_sharing_a_label_keep_their_own_code_cells():
+    shared = {
+        **_AXIS_LABELS,
+        "crsTypeOfFinance": {
+            "dcid:CRSTypeOfFinanceCode110": "Standard grant",
+            "dcid:CRSTypeOfFinanceCode111": "Standard grant",
+        },
+    }
+    at = _SOURCE.columns.index("stat_var_crsTypeOfFinance")
+    second = (*_SOURCE.rows[0][:at], "dcid:CRSTypeOfFinanceCode111", *_SOURCE.rows[0][at + 1 :])
+    source = Table(columns=_SOURCE.columns, rows=(_SOURCE.rows[0], second))
 
-    projected = _project(axis_codes=shared)
+    projected = _project(source, axis_labels=shared)
 
-    assert _row(projected.table, 0)["crsTypeOfFinance"] is None
-    assert projected.unavailable == {"crsTypeOfFinance": 1}
+    assert [
+        (row["crsTypeOfFinance"], row["crsTypeOfFinance_label"])
+        for row in (_row(projected.table, i) for i in (0, 1))
+    ] == [
+        ("dcid:CRSTypeOfFinanceCode110", "Standard grant"),
+        ("dcid:CRSTypeOfFinanceCode111", "Standard grant"),
+    ]
+    assert projected.unavailable == {}
 
 
 def test_a_value_without_a_name_or_kind_leaves_its_cell_empty_and_counts_a_miss():
@@ -297,7 +312,7 @@ def test_the_values_to_name_are_the_name_columns_distinct_non_empty_cells():
     projection = plan_long_projection(
         _SOURCE.columns,
         entity_columns=("financingProvider", "financingRecipient"),
-        axis_codes=_AXIS_CODES,
+        axis_labels=_AXIS_LABELS,
         unit_naming=_UNIT_NAMING,
         grain="year",
     )
@@ -385,7 +400,7 @@ def test_a_layout_refuses_a_table_with_other_columns():
     projection = plan_long_projection(
         ("stat_var", "value"),
         entity_columns=(),
-        axis_codes={},
+        axis_labels={},
         unit_naming=_UNIT_NAMING,
         grain=None,
     )
@@ -521,7 +536,7 @@ def _kinds(
     projected = plan_long_projection(
         table.columns,
         entity_columns=(role,),
-        axis_codes={},
+        axis_labels={},
         unit_naming=_UNIT_NAMING,
         grain=None,
     ).apply(table, names={}, parties=_WHOLE_PARTIES)
@@ -651,7 +666,7 @@ def test_a_long_kind_cell_reads_the_partys_kind_in_words_for_its_side(
     columns = ("stat_var", role, "time_period", "provenance", "value")
 
     projected = plan_long_projection(
-        columns, entity_columns=(role,), axis_codes={}, unit_naming=_UNIT_NAMING, grain=None
+        columns, entity_columns=(role,), axis_labels={}, unit_naming=_UNIT_NAMING, grain=None
     ).apply(
         Table(columns=columns, rows=(("dcid:SV_A", ref, "2021", provenance, 1.0),)),
         names={},
@@ -686,7 +701,7 @@ def test_a_party_whose_kind_differs_between_datasets_reads_none_on_a_row_naming_
     projected = plan_long_projection(
         columns,
         entity_columns=("financingProvider",),
-        axis_codes={},
+        axis_labels={},
         unit_naming=_UNIT_NAMING,
         grain=None,
     ).apply(

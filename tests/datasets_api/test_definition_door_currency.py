@@ -1283,7 +1283,7 @@ def test_head_hit_stored_frame_groupby_refuses_a_zero_row_resolved_member_missin
     problem = resp.json()
     assert problem["code"] == "rollup_not_summable"
     assert problem["pointer"] == "/options/groupby"
-    assert "Malaria control" in problem["detail"]
+    assert _PURPOSE_MALARIA.dcid in problem["detail"]
 
 
 def test_a_head_hit_lists_only_the_matching_rendering_among_several_stored():

@@ -21,6 +21,9 @@ from code_index import CodeIndex, CodeRow
 from dataset_store import snapshot
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import analysis, analysis_roots, current, store_errors
+from datasets_api import render as render_module
+from datasets_api import version_store as version_store_module
+from datasets_api import versions as versions_module
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -1337,3 +1340,69 @@ def test_a_repeated_request_reads_its_recorded_sum_in_one_store_read(
 
     assert again.status_code == 200, again.text
     assert reads == Counter({"read_version_state": 1})
+
+
+@pytest.mark.parametrize(
+    "stamped",
+    [versions_module, version_store_module],
+    ids=["recorded-sum-stamp", "frame-file-key"],
+)
+def test_a_sum_recorded_under_an_earlier_render_format_renders_once_with_code_cells(
+    monkeypatch: pytest.MonkeyPatch, stamped: Any
+) -> None:
+    """A sum recorded while `stat_var_<axis>` cells held labels, under an earlier answer format
+    and an earlier render format in its head rows' stamp (`versions.rendering_stamp`) or in its
+    frame-layout file's link key (`version_store.rendering_key`), is not read again: either
+    alone makes the root render once, the answer is the one a current build gives, and the next
+    repeat renders nothing."""
+
+    def posted(client: Any, root: dict) -> Any:
+        return _post(client, _aggregate(_filter(root), group_by=["recipient", "testAxis"]))
+
+    control_client, _, control_root = _rig()
+    control = posted(control_client, control_root)
+    assert control.status_code == 200, control.text
+
+    client, store, root = _rig()
+    with monkeypatch.context() as earlier:
+        build = render_module.build_decode_plan
+
+        def label_cells(table: Any, *, index: CodeIndex, extra_refs: Any = ()) -> Any:
+            plan = build(table, index=index, extra_refs=extra_refs)
+            if plan is None:
+                return None
+            return replace(
+                plan,
+                lookup={
+                    ref: {
+                        system: (code.label if (code := index.code_by_dcid(cell)) else cell)
+                        for system, cell in cells.items()
+                    }
+                    for ref, cells in plan.lookup.items()
+                },
+            )
+
+        earlier.setattr(render_module, "build_decode_plan", label_cells)
+        earlier.setattr(stamped, "RENDER_FORMAT", "axis_label")
+        earlier.setattr(analysis, "ANSWER_FORMAT", "analysis_answer/3")
+        old = posted(client, root)
+    assert old.status_code == 200, old.text
+    assert old.json()["frame_content_version"] != control.json()["frame_content_version"]
+
+    work = _count_work(monkeypatch)
+    renewed = posted(client, root)
+    renders = work["_render_stored_rendering"]
+    work.clear()
+    again = posted(client, root)
+
+    assert renewed.status_code == again.status_code == 200, renewed.text
+    assert renders == 1
+    assert renewed.json()["frame_content_version"] == control.json()["frame_content_version"]
+    assert again.json() == renewed.json()
+    assert work == Counter()
+    with store.transaction() as tx:
+        derived = tx.fetch_all(
+            "SELECT content_version FROM datasets.version_record "
+            "WHERE base_content_version IS NOT NULL"
+        )
+    assert len(derived) == 2

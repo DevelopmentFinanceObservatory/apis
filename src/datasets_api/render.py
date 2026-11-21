@@ -11,21 +11,21 @@ Decode runs first and adds `stat_var_{code_system}` columns, so selection and pi
 select; a list that names none keeps every default column and only adds the enrichments. Unknown
 tokens list the parseable qualified tokens as `alternatives`.
 
-Long (unpivoted) output is written in the layout `materialise.projection` defines: each decoded
+Decoded `stat_var_<code_system>` cells hold code dcids (`datasets_api.decode`). Long (unpivoted)
+output is written in the layout `materialise.projection` defines: each decoded
 `stat_var_<code_system>` column becomes a `<code_system>` code column and a `<code_system>_label`
-column, each entity, `measurementMethod` and `provenance` gets a `_label` name column (and
-`stat_var` one when no axis decodes), `unit` splits into `unit`, `unit_label`, `currency`,
-`price_basis` and `base_year`, enrichments sit beside their entity, the order is fixed whatever
-order `columns` names, and `status` is left out. Names are cited source labels, else graph
-names read per chunk within the render's deadline (`_LongLayout`). A missing name, a failed or
-late read, or an axis label two codes share leaves the cell empty and adds
-`enrichment_unavailable`. A failed read also links the artifact as incomplete
-(`incomplete_rendering`). `measurementMethod_label`
-holds only a name that differs from the method's dcid and raises no warning. A selection keeps every
-decoded column unless it names some, and `status` and `<role>_label` tokens are accepted and
-ignored. Requests, pivot output, frames and collapse frames keep the grammar names, and so
-does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
-written as reshaped, with no projection and no name read.
+column holding the code's `code_index` label, each entity, `measurementMethod` and `provenance` gets
+a `_label` name column (and `stat_var` one when no axis decodes), `unit` splits into `unit`,
+`unit_label`, `currency`, `price_basis` and `base_year`, enrichments sit beside their entity, the
+order is fixed whatever order `columns` names, and `status` is left out. Names are cited source
+labels, else graph names read per chunk within the render's deadline (`_LongLayout`). A missing name
+or a failed or late read leaves the cell empty and adds `enrichment_unavailable`. A failed read also
+links the artifact as incomplete (`incomplete_rendering`). `measurementMethod_label` holds only a
+name that differs from the method's dcid and raises no warning. A selection keeps every decoded
+column unless it names some, and `status` and `<role>_label` tokens are accepted and ignored.
+Requests, pivot output, frames and collapse frames keep the grammar names, and so does a bare
+parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is written as
+reshaped, with no projection and no name read.
 
 Long output gives each party role one `<role>_kind` column in words
 (`materialise.projection.long_kind_cell`): `official` or `private` for a provider, `country or
@@ -120,7 +120,6 @@ from datasets_api.groupby import (
     levels_in_frame,
     refuse_decode_gaps,
     refuse_provenance_disagreement,
-    refuse_shared_labels,
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
     rekeys_stat_vars,
@@ -845,9 +844,6 @@ def _reshape_groupby_collapse(
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
         current = cast(Table, rows_table(collapsed))
 
-    refuse_shared_labels(
-        decode_lookup, index=code_index, contributors=contributors, kept=kept, levels=levels or {}
-    )
     adds = adds_stat_vars(
         contributors, index=code_index, kept=kept, levels=levels or {}, components=components
     )
@@ -918,8 +914,8 @@ def _reshape_groupby(
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
     declared-summable axes absent from `by`. `groupby.levels` first rewrites each level axis's
-    decoded labels to their depth ancestors' (`groupby.roll_up_levels`); a code above the depth
-    keeps its own label. A `by` that leaves out `stat_var` and keeps every decoded summable axis
+    decoded codes to their depth ancestors' dcids (`groupby.roll_up_levels`); a code above the
+    depth keeps its own. A `by` that leaves out `stat_var` and keeps every decoded summable axis
     collapses `stat_var` alone, each kept tuple holding one StatVar, so the frame is keyed by
     the kept axes under one `stat_var` as any other sum's is (`groupby.rekeys_stat_vars`).
 
@@ -1815,22 +1811,16 @@ def _axis_columns(columns: Sequence[str], *, code_index: CodeIndex | None) -> tu
     )
 
 
-def _axis_codes(code_index: CodeIndex | None) -> dict[str, dict[str, str | None]]:
-    """Each declared code system's `{label: code dcid}`, the lookup a long output's axis code
-    columns read (`materialise.projection.plan_long_projection`). A label two codes of one system
-    share maps to `None`, so its rows get an empty code cell and an `enrichment_unavailable`
-    warning naming the code column."""
+def _axis_labels(code_index: CodeIndex | None) -> dict[str, dict[str, str]]:
+    """Each declared code system's `{code dcid: label}`, the lookup a long output's axis label
+    columns read (`materialise.projection.plan_long_projection`)."""
     if code_index is None:
         return {}
-    codes: dict[str, dict[str, str | None]] = {
-        code_system: {} for code_system in code_index.declarations
-    }
+    labels: dict[str, dict[str, str]] = {code_system: {} for code_system in code_index.declarations}
     for row in code_index.codes:
-        by_label = codes.get(row.code_system)
-        if by_label is None:
-            continue
-        by_label[row.label] = None if row.label in by_label else row.dcid
-    return codes
+        if (by_dcid := labels.get(row.code_system)) is not None:
+            by_dcid[row.dcid] = row.label
+    return labels
 
 
 def _native_price_basis(
@@ -2070,7 +2060,7 @@ class _LongLayout:
     enrichment also uses, and a value is asked for once per layout. A graph read that fails or runs out of time
     leaves the names it would have given empty and stops further reads for the whole render
     (`_RenderReads`), so the render completes with those cells empty. `warnings` then counts
-    the empty name, kind and code cells per column as `enrichment_unavailable`.
+    the empty name and kind cells per column as `enrichment_unavailable`.
 
     `grain` is the whole frame's period grain (`materialise.projection.period_grain`), read by
     `render_and_store` before the first chunk. With `year` every `time_period` cell is an
@@ -2082,7 +2072,7 @@ class _LongLayout:
     columns."""
 
     entity_columns: Sequence[str]
-    axis_codes: Mapping[str, Mapping[str, str | None]]
+    axis_labels: Mapping[str, Mapping[str, str]]
     unit_naming: UnitNaming
     reads: _RenderReads
     grain: str | None = None
@@ -2109,7 +2099,7 @@ class _LongLayout:
         if options.layout == FRAME_LAYOUT:
             return cls(
                 entity_columns=entity_columns,
-                axis_codes={},
+                axis_labels={},
                 unit_naming=UnitNaming(
                     currency_of=unit_currency,
                     native_price_basis=lambda _stat_var: None,
@@ -2120,7 +2110,7 @@ class _LongLayout:
             )
         return cls(
             entity_columns=entity_columns,
-            axis_codes=_axis_codes(code_index),
+            axis_labels=_axis_labels(code_index),
             unit_naming=UnitNaming(
                 currency_of=unit_currency,
                 native_price_basis=_native_price_basis(
@@ -2142,7 +2132,7 @@ class _LongLayout:
             self.projection = plan_long_projection(
                 table.columns,
                 entity_columns=self.entity_columns,
-                axis_codes=self.axis_codes,
+                axis_labels=self.axis_labels,
                 unit_naming=self.unit_naming,
                 grain=self.grain,
             )
@@ -2181,7 +2171,7 @@ class _LongLayout:
         self, warnings: Sequence[MaterialisationWarning]
     ) -> tuple[MaterialisationWarning, ...]:
         """`warnings` with each `enrichment_unavailable` column named as the output names it,
-        then one `enrichment_unavailable` per name or code column with empty cells, in column
+        then one `enrichment_unavailable` per name or kind column with empty cells, in column
         order."""
         renamed = self.projection.renamed if self.projection is not None else {}
         out: list[MaterialisationWarning] = []
@@ -3342,13 +3332,14 @@ def _derived_version(
     )
 
 
-BUNDLE_LAYOUT_VERSION = 4
+BUNDLE_LAYOUT_VERSION = 5
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
 request while each old bundle stays listed under its own rendering key. Version 3 writes
 integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
-writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`."""
+writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`. Version 5
+writes a pivot's decoded `stat_var_<code_system>` cells as code dcids in place of labels."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -3368,23 +3359,26 @@ METADATA_INCOMPLETE = "incomplete"
 """The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
 without graph names, because the read failed."""
 
-DATA_LAYOUT_VERSION = 4
+DATA_LAYOUT_VERSION = 5
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
 cells for unchanged data and options, so a request renders a new file under a new rendering key
 and cannot match one written in the old layout. Version 2 is the long layout of
 `materialise.projection`. Version 3 adds integer years and keeps total rows out of the main
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
 XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
-`<role>_kind` in place of `<role>_party_kind`. A rendering without `LAYOUT_KEY` predates
-version 2."""
+`<role>_kind` in place of `<role>_party_kind`. Version 5 writes a pivot's decoded
+`stat_var_<code_system>` cells as code dcids in place of labels. A rendering without `LAYOUT_KEY`
+predates version 2."""
 
 FRAME_LAYOUT = "frame"
 """The `options.layout` value that asks for a bare parquet file in the frame layout: the
-frame's grammar columns as reshaped (`stat_var`, the roles, decoded `stat_var_<code_system>`
-axes, `time_period`, `value`, `unit` with a converted unit as its JCS request text,
-`measurementMethod`, `provenance`, `status`), the file machine readers parse. Its rendering
-carries `LAYOUT_KEY = FRAME_LAYOUT` from the request and no `DATA_LAYOUT_VERSION` stamp. A
-change to this layout ships under a new value."""
+frame's grammar columns as reshaped (`stat_var`, the roles, decoded `stat_var_<code_system>` axes
+holding code dcids, `time_period`, `value`, `unit` with a converted unit as its JCS request text,
+`measurementMethod`, `provenance`, `status`), the file machine readers parse. Its rendering carries
+`LAYOUT_KEY = FRAME_LAYOUT` from the request and no `DATA_LAYOUT_VERSION` stamp. A change to its
+columns ships under a new value. A change to its cells for unchanged data and options changes
+`versions.RENDER_FORMAT`, which salts the file's link key, so its rendering stays the one a caller
+selects it by."""
 
 
 def rendition_token(site: PublicSiteSettings) -> str:

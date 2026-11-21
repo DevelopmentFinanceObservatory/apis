@@ -105,7 +105,7 @@ def test_a_supplied_code_index_decodes_unconditionally_even_with_no_columns_requ
 
     assert reshaped.table.columns == (*_TABLE_COLUMNS, "stat_var_crsPurpose")
     assert reshaped.table.rows == (
-        ("dcid:SV_A", "country/USA", "country/KEN", "2020", 10.0, "Basic health care"),
+        ("dcid:SV_A", "country/USA", "country/KEN", "2020", 10.0, _PURPOSE_HEALTH.dcid),
     )
     assert reshaped.warnings == ()
 

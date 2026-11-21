@@ -32,6 +32,7 @@ from artifact_store.errors import (
     ArtifactWriteError,
 )
 from artifact_store.store import ArtifactSink, StoredArtifact, Tier
+from assembler.bind import series_label
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
 from assembler.limits import LABEL_MAX
 from assembler.pipeline import write_component
@@ -1298,6 +1299,46 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     assert (resolved.graph_generation, resolved.catalogue_build) == (
         "gen-1",
         f"build-1@{current_release().release_id}",
+    )
+
+
+def test_load_labels_a_breakdown_cell_from_the_code_index_with_no_graph_read(bind_catalogue):
+    """A decoded `stat_var_<code_system>` cell holds a code dcid. The load names it by the
+    code index's label, keeps it out of the graph label read, and a card's series label reads
+    that name."""
+    frame_ref = malaria_ethiopia_frame_ref()
+    rows = [{**row, "stat_var_crsPurpose": _EDUCATION_ROW.dcid} for row in malaria_ethiopia_rows()]
+    doc = build_frame_doc(role_keys=("recipient", "stat_var_crsPurpose"), rows=rows)
+    artifacts = _FakeArtifactStore()
+    digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(digest=digest, tier=Tier.working.value)
+            ]
+        },
+    )
+    graph = _FakeGraphReader(
+        labels={"MalariaGrantDisbursements": "Malaria", "country/ETH": "Ethiopia"}
+    )
+    index = CodeIndex(
+        stamp=_code_index([]).stamp,
+        declarations=(get_index().declarations["crsPurpose"],),
+        codes=(_EDUCATION_ROW,),
+        statvars=(),
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, code_index=index)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels[_EDUCATION_ROW.dcid] == "Education"
+    assert all(_EDUCATION_ROW.dcid not in call for call in graph.node_arcs_many_calls)
+    columns = cast("Sequence[str]", resolved.frame["columns"])
+    coordinates = {"recipient": "country/ETH", "stat_var_crsPurpose": _EDUCATION_ROW.dcid}
+    assert series_label(coordinates=coordinates, columns=columns, labels=resolved.labels) == (
+        "Ethiopia / Education"
     )
 
 

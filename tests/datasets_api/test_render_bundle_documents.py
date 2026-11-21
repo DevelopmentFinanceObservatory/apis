@@ -413,13 +413,12 @@ _AGE_STAMP = IndexStamp(
     statvar_shape_counts={},
     content_hash="ages",
 )
-_AGE_BAND_LOW = "dcid:AgeBandLow"
-_AGE_BAND_HIGH = "dcid:AgeBandHigh"
+_AGE_BAND_HIGH = "AgeBand0To5"
 
 
-def _age_index(low_label: str) -> CodeIndex:
-    """A code index decoding two age-band StatVars, the low band labelled `low_label`."""
-    bands = {_AGE_BAND_LOW: low_label, _AGE_BAND_HIGH: "0 to 5"}
+def _age_index(low_dcid: str) -> CodeIndex:
+    """A code index decoding two age-band StatVars, the low band's code `low_dcid`."""
+    bands = {low_dcid: "-5 to 0", _AGE_BAND_HIGH: "0 to 5"}
     return CodeIndex(
         stamp=_AGE_STAMP,
         declarations=(
@@ -440,7 +439,7 @@ def _age_index(low_label: str) -> CodeIndex:
         ),
         statvars=tuple(
             StatVarRow(
-                dcid=f"Count_Person_{dcid.removeprefix('dcid:')}",
+                dcid=f"Count_Person_{n}",
                 population_type="Person",
                 measured_property="count",
                 stat_type=None,
@@ -449,17 +448,14 @@ def _age_index(low_label: str) -> CodeIndex:
                 observation_properties=("observationAbout",),
                 constraint_properties={"ageBand": dcid},
             )
-            for dcid in bands
+            for n, dcid in enumerate(bands)
         ),
     )
 
 
 _AGE_TABLE = frame_of_rows(
     ("stat_var", "observationAbout", "time_period", "value"),
-    tuple(
-        (f"dcid:Count_Person_{dcid.removeprefix('dcid:')}", "country/NGA", "2020", 1.0 + n)
-        for n, dcid in enumerate(sorted((_AGE_BAND_LOW, _AGE_BAND_HIGH)))
-    ),
+    tuple((f"dcid:Count_Person_{n}", "country/NGA", "2020", 1.0 + n) for n in range(2)),
 )
 
 
@@ -468,7 +464,7 @@ _AGE_TABLE = frame_of_rows(
 def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name(
     format_, trigger, tmp_path
 ):
-    """A decoded label starting with a formula trigger heads a pivot column. The writer escapes it
+    """A decoded code starting with a formula trigger heads a pivot column. The writer escapes it
     with an apostrophe, and the descriptor and README name that written heading. Each row of
     this pivot fills one heading, so an Excel row ends in an empty cell, and still validates."""
     store = FakeArtifactStore()
@@ -491,7 +487,7 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
         enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS)),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        code_index=_age_index(f"{trigger}5 to 0"),
+        code_index=_age_index(f"{trigger}AgeBandLow"),
         resolved_stat_var_refs=(),
     )
     files = _unzip(store.fetch(rendered.artifact.url))
@@ -504,7 +500,7 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
     )
     (data, *_) = descriptor["resources"]
     fields = {field["name"]: field for field in data["schema"]["fields"]}
-    written = f"'{trigger}5 to 0"
-    assert set(fields) == {"stat_var", written, "0 to 5"}
+    written = f"'{trigger}AgeBandLow"
+    assert set(fields) == {"stat_var", written, _AGE_BAND_HIGH}
     assert fields[written]["description"].startswith("The value for the entry")
     assert f"| `{written}` |" in files["README.md"].decode()

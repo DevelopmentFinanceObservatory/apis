@@ -184,7 +184,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
     purpose_pos = streamed.table.columns.index("stat_var_crsPurpose")
     value_pos = streamed.table.columns.index("value")
     by_purpose = {row[purpose_pos]: row[value_pos] for row in streamed.table.rows}
-    assert by_purpose == {"Basic health care": 15.0, "Malaria control": 7.0}
+    assert by_purpose == {_PURPOSE_HEALTH.dcid: 15.0, _PURPOSE_MALARIA.dcid: 7.0}
 
 
 def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way(monkeypatch):

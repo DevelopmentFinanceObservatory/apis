@@ -165,7 +165,7 @@ def test_zero_row_resolved_member_refuses_and_names_it():
         )
     except RollupNotSummableError as exc:
         assert exc.precondition == "missing_members"
-        assert "Malaria control" in str(exc)
+        assert _PURPOSE_MALARIA.dcid in str(exc)
     else:
         raise AssertionError("expected RollupNotSummableError")
 
@@ -313,10 +313,10 @@ def test_composition_two_rollups_passes_on_a_complete_frame():
     value_pos = reshaped.table.columns.index("value")
     totals = {(row[recipient_pos], row[purpose_pos]): row[value_pos] for row in reshaped.table.rows}
     assert totals == {
-        ("country/KEN", "Basic health care"): 15.0,
-        ("country/KEN", "Malaria control"): 7.0,
-        ("country/TZA", "Basic health care"): 5.0,
-        ("country/TZA", "Malaria control"): 1.0,
+        ("country/KEN", _PURPOSE_HEALTH.dcid): 15.0,
+        ("country/KEN", _PURPOSE_MALARIA.dcid): 7.0,
+        ("country/TZA", _PURPOSE_HEALTH.dcid): 5.0,
+        ("country/TZA", _PURPOSE_MALARIA.dcid): 1.0,
     }
 
 

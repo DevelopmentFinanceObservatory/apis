@@ -2211,8 +2211,9 @@ def compute_analysis(
 
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
-# only a body of this format is answered. Raise it whenever the body changes.
-ANSWER_FORMAT = "analysis_answer/3"
+# only a body of this format is answered. Raise it whenever the body changes. Format 4 holds
+# code dcids in `stat_var_<axis>` cells (`datasets_api.decode`).
+ANSWER_FORMAT = "analysis_answer/4"
 
 
 def _keyed_tree(node: object) -> object:

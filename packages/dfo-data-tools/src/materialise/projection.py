@@ -1,15 +1,16 @@
 """The column layout of long (unpivoted) output, applied at the writer boundary.
 
-Reshape works in the grammar's own column names: decode adds `stat_var_<code_system>` label
-columns, groupby collapses over them, and `options.columns`, `groupby.by` and `pivot` name them.
-`LongProjection` maps that table to the published layout as the last step before the writer:
+Reshape works in the grammar's own column names: decode adds `stat_var_<code_system>` code columns,
+each cell the code's dcid, groupby collapses over them, and `options.columns`, `groupby.by` and
+`pivot` name them. `LongProjection` maps that table to the published layout as the last step before
+the writer:
 
 - `stat_var`, then `stat_var_label` when the table decodes no code system;
 - each entity role in declared order, as the entity (`<role>`), its name (`<role>_label`),
   for a party role (`materialise.enrichment.is_party_role`) its party's kind in words
   (`<role>_kind`, `long_kind_cell`), and any requested enrichment (`_iso2`, `_iso3`, `_type`);
-- each decoded code system in property order, as `<code_system>` (the value's code dcid) and
-  `<code_system>_label` (the decoded label);
+- each decoded code system in property order, as `<code_system>` (the cell's code dcid) and
+  `<code_system>_label` (the code's label);
 - `time_period` (an integer year for a frame of year points, `period_cell`), `value`;
 - the unit split into `unit` (the unit node dcid), `unit_label`, `currency` (ISO 4217),
   `price_basis` (`current` or `constant`) and `base_year`;
@@ -22,13 +23,12 @@ the grammar names.
 
 Names come from a `names` mapping (cell value to name) read by the caller for each table in one
 lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
-row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the
-year of its `time_period`, so a whole total reads `whole total` only in the dataset and years
-its marker holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a
-row with no readable value in one, gives `total`. A name or kind cell left empty beside a
-non-empty entity, and an axis code cell whose label two codes of its system share, count as
-unavailable. `apply` reports those counts per column so the caller can warn. The machine party
-cells (`materialise.enrichment.PARTY_FIELDS`) belong to the frame layout; the long layout's
+row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the year
+of its `time_period`, so a whole total reads `whole total` only in the dataset and years its marker
+holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a row with no
+readable value in one, gives `total`. A name or kind cell left empty beside a non-empty entity
+counts as unavailable. `apply` reports those counts per column so the caller can warn. The machine
+party cells (`materialise.enrichment.PARTY_FIELDS`) belong to the frame layout; the long layout's
 `<role>_kind` reads all three.
 
 `measurementMethod_label` holds only a name that differs from the method's dcid, and its empty
@@ -420,7 +420,7 @@ def plan_long_projection(
     source_columns: Sequence[str],
     *,
     entity_columns: Sequence[str],
-    axis_codes: Mapping[str, Mapping[str, str | None]],
+    axis_labels: Mapping[str, Mapping[str, str]],
     unit_naming: UnitNaming,
     grain: str | None,
 ) -> LongProjection:
@@ -428,13 +428,11 @@ def plan_long_projection(
 
     `entity_columns` are the frame's declared roles. `grain` is the grain of the frame's
     periods (`period_grain`), which types its `time_period` cells (`period_cell`).
-    `axis_codes` maps each code system the deployment declares to `{label: code dcid}`. A
-    decoded cell holds a label, and after a groupby that rolls up levels or sums over StatVars
-    it is the only fact the row keeps about its code, so the code column reads its value from the label. Groupby already treats a label
-    as the identity of its code within one system, so the lookup gives the code the row was
-    grouped under. A label two codes of one system share maps to `None`: its code cell stays
-    empty and counts as unavailable. A label the mapping lacks (a declared absence's
-    `absent_reading`, an empty decode gap) gives an empty code cell.
+    `axis_labels` maps each code system the deployment declares to `{code dcid: label}`. A
+    decoded `stat_var_<code_system>` cell holds its code's dcid, the code a groupby grouped the
+    row under, so the code column copies it and the label column reads its label. A cell the
+    mapping lacks is a declared absence's `absent_reading`, which the label column holds with an
+    empty code cell; an empty decode gap leaves both empty.
     """
     source = tuple(source_columns)
     position = {name: index for index, name in enumerate(source)}
@@ -495,7 +493,7 @@ def plan_long_projection(
             lambda row, reads: _method_name(row[at], reads.names),
         )
 
-    decodes_axes = any(axis_source_column(code_system) in position for code_system in axis_codes)
+    decodes_axes = any(axis_source_column(code_system) in position for code_system in axis_labels)
     if _STAT_VAR_COLUMN in position:
         if decodes_axes:
             take(_STAT_VAR_COLUMN)
@@ -511,18 +509,20 @@ def plan_long_projection(
             if f"{entity}_{field}" in position:
                 take(f"{entity}_{field}")
 
-    for code_system in sorted(axis_codes):
+    for code_system in sorted(axis_labels):
         source_column = axis_source_column(code_system)
         if source_column not in position:
             continue
-        label_at = itemgetter(position[source_column])
-        codes = axis_codes[code_system]
+        code_at = itemgetter(position[source_column])
+        labels = axis_labels[code_system]
         add(
             code_system,
-            lambda row, _reads, label_at=label_at, codes=codes: codes.get(label_at(row)),
-            lambda row, _reads, label_at=label_at, codes=codes: _shared_label(label_at(row), codes),
+            lambda row, _reads, code_at=code_at, labels=labels: _axis_code(code_at(row), labels),
         )
-        add(f"{code_system}{_LABEL_SUFFIX}", lambda row, _reads, label_at=label_at: label_at(row))
+        add(
+            f"{code_system}{_LABEL_SUFFIX}",
+            lambda row, _reads, code_at=code_at, labels=labels: _axis_label(code_at(row), labels),
+        )
         used.add(source_column)
         renamed[source_column] = f"{code_system}{_LABEL_SUFFIX}"
 
@@ -624,8 +624,15 @@ def _name_missing(cell: object, names: Mapping[str, object]) -> bool:
     return isinstance(cell, str) and cell != "" and cell not in names
 
 
-def _shared_label(label: object, codes: Mapping[str, str | None]) -> bool:
-    return isinstance(label, str) and label in codes and codes[label] is None
+def _axis_code(cell: object, labels: Mapping[str, str]) -> str | None:
+    """A decoded axis cell's code dcid, or `None` for a declared absence or an empty cell."""
+    return cell if isinstance(cell, str) and cell in labels else None
+
+
+def _axis_label(cell: object, labels: Mapping[str, str]) -> object:
+    """A decoded axis cell's code label, or the cell itself: a declared absence's reading, or
+    an empty cell."""
+    return labels.get(cell, cell) if isinstance(cell, str) else cell
 
 
 def long_output_selection(

@@ -917,10 +917,10 @@ def definition_version_record(
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, whether its frame holds its summed rows as `frame_summed`
-    (`render.DerivedVersion.summed`), and the content hash of the code index it was rendered
-    under as `code_index_stamp`. A raw version passes none of them. Only a raw version stores
-    the per-series conversion records. A derived version's rows are not those series, and the
-    observations door, their reader, serves raw versions alone.
+    (`render.DerivedVersion.summed`), and the stamp of the code index and render format it was
+    rendered under (`versions.rendering_stamp`) as `code_index_stamp`. A raw version passes none of
+    them. Only a raw version stores the per-series conversion records. A derived version's rows are
+    not those series, and the observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -1027,8 +1027,8 @@ def record_collapsed_head_version(
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
     `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
-    collapsed frame's, and `code_index_stamp` the content hash of the code index it was
-    rendered under. The artifacts in `manifest`
+    collapsed frame's, and `code_index_stamp` the stamp of the code index and render format it
+    was rendered under (`versions.rendering_stamp`). The artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
     makes repeated writes idempotent. `describer_for` gives the describer that writes the
     version's description record in the same transaction, from the record this call stores;

@@ -641,7 +641,7 @@ def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_
         repr(_LONG_CSV): f'{prefix}_5c9dfd.csv"',
         repr(shaped["pivot"]): f'{prefix}_pivot-9c1fe3_5c9dfd.csv"',
         repr(shaped["transposed pivot"]): f'{prefix}_pivot-eaf356_5c9dfd.csv"',
-        repr(shaped["frame layout"]): f'{prefix}_frame-621641_5c9dfd.parquet"',
+        repr(shaped["frame layout"]): f'{prefix}_frame-2ab755_5c9dfd.parquet"',
         repr(shaped["columns"]): f'{prefix}_columns-0311dc_5c9dfd.csv"',
         repr(shaped["groupby"]): f'{prefix}_groupby-0a5418_5c9dfd.csv"',
         repr(shaped["incomplete"]): f'{prefix}_incomplete-b40b02_5c9dfd.csv"',
