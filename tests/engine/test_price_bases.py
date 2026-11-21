@@ -9,9 +9,11 @@ from typing import Literal
 import pytest
 
 from search.engine.region.facets import _resolved_facets
+from search.engine.same_shape import _merged_prices
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import bound_conversion_catalogue
 from search.engine.unit.price_bases import servable_price_bases
+from search.engine.unit.refs import UnitPrices
 from search.models import (
     GraphRef,
     IdentityUnitRequest,
@@ -36,8 +38,15 @@ _WDI = "provenance/WorldBankWDI"
 type _Prices = list[Literal["current", "constant"]] | None
 
 
-def _in(unit: str = "CurrencyUSD", *, prices: _Prices, provenance: str = _CRS) -> Spec:
-    """A Spec served in `unit`, whose facet states `prices`, from `provenance`."""
+def _in(
+    unit: str = "CurrencyUSD",
+    *,
+    prices: _Prices,
+    stated: _Prices | Literal["all"] = "all",
+    provenance: str = _CRS,
+) -> Spec:
+    """A Spec served in `unit`, whose facet states `prices`, of them `stated` as the data
+    states them (every one by default), from `provenance`."""
     return _spec(
         facets={
             "unit": ResolvedFacet(
@@ -45,6 +54,7 @@ def _in(unit: str = "CurrencyUSD", *, prices: _Prices, provenance: str = _CRS) -
                 ref=unit,
                 currency=None if unit == "Percent" else "USD",
                 prices=prices,
+                stated_prices=prices if stated == "all" else stated,
             ),
             "provenance": ResolvedFacet(basis="fallback", ref=provenance),
         }
@@ -81,8 +91,11 @@ def _routes(*pairs: tuple[str, str]) -> list[PriceBasisRoute]:
 
 
 def test_a_part_with_no_unit_option_and_no_recipe_serves_current_prices_alone() -> None:
-    """WDI's remittances, in US dollars with no constant sibling and no conversion recipe."""
-    spec = _converted(_in("USDollar", prices=["current"], provenance=_WDI), provenance=_WDI)
+    """WDI's remittances, in US dollars with no constant sibling and no conversion recipe.
+    The current prices the engine infers for an unpriced currency are served all the same."""
+    spec = _converted(
+        _in("USDollar", prices=["current"], stated=[], provenance=_WDI), provenance=_WDI
+    )
 
     assert spec.resolved.unit_conversion is None
     assert spec.resolved.price_bases == _routes(("current", "served"))
@@ -137,36 +150,77 @@ def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
     assert spec.resolved.price_bases is None
 
 
-_PRICES: dict[str, Literal["current", "constant"] | None] = {
-    "CurrencyUSD": "current",
-    "ChainedUSDollarBaseYr2017": "constant",
+# An unpriced currency's current prices are inferred; a registry-priced unit states its own.
+_PRICES: dict[str, UnitPrices | None] = {
+    "CurrencyUSD": UnitPrices("current", stated=False),
+    "SDG_CU_USD": UnitPrices("current", stated=True),
+    "ChainedUSDollarBaseYr2017": UnitPrices("constant", stated=True),
     "Percent": None,
 }
 
 
 @pytest.mark.parametrize(
-    ("units", "requested", "prices"),
+    ("units", "requested", "prices", "stated"),
     [
-        pytest.param(["CurrencyUSD"], None, ["current"], id="one-unit"),
+        pytest.param(["CurrencyUSD"], None, ["current"], [], id="one-unit"),
+        pytest.param(["SDG_CU_USD"], None, ["current"], ["current"], id="one-priced-unit"),
         pytest.param(
             ["CurrencyUSD", "ChainedUSDollarBaseYr2017"],
             None,
             ["current", "constant"],
+            ["constant"],
             id="per-series-units",
         ),
-        pytest.param(["Percent", "CurrencyUSD"], None, ["current"], id="beside-no-money"),
-        pytest.param(["Percent"], None, [], id="no-money"),
+        # A basis one unit states and another infers is inferred.
+        pytest.param(
+            ["SDG_CU_USD", "CurrencyUSD"], None, ["current"], [], id="stated-beside-inferred"
+        ),
+        pytest.param(["Percent", "CurrencyUSD"], None, ["current"], [], id="beside-no-money"),
+        pytest.param(["Percent"], None, [], [], id="no-money"),
         # A series naming no unit leaves the bases unknown.
-        pytest.param(["CurrencyUSD", None], None, None, id="a-series-with-no-unit"),
+        pytest.param(["CurrencyUSD", None], None, None, None, id="a-series-with-no-unit"),
         # A unit request states its own prices whatever the units.
-        pytest.param(["CurrencyUSD"], "constant", ["constant"], id="unit-request"),
+        pytest.param(["CurrencyUSD"], "constant", ["constant"], ["constant"], id="unit-request"),
     ],
 )
 def test_the_unit_facet_states_the_bases_of_every_served_unit(
-    units: list[str | None], requested: Literal["current", "constant"] | None, prices: _Prices
+    units: list[str | None],
+    requested: Literal["current", "constant"] | None,
+    prices: _Prices,
+    stated: _Prices,
 ) -> None:
     maps = [{"unit": SeriesFacetRef(ref=unit)} if unit is not None else {} for unit in units]
 
     facets = _resolved_facets(maps, {}, prices_of=_PRICES.get, requested_prices=requested)
 
-    assert facets["unit"].prices == prices
+    assert (facets["unit"].prices, facets["unit"].stated_prices) == (prices, stated)
+
+
+def _unit_facet(prices: _Prices, stated: _Prices) -> ResolvedFacet:
+    return ResolvedFacet(basis="fallback", ref="CurrencyUSD", prices=prices, stated_prices=stated)
+
+
+@pytest.mark.parametrize(
+    ("members", "every_member", "merged"),
+    [
+        pytest.param(
+            [(["current"], ["current"]), (["constant"], ["constant"])],
+            True,
+            (["current", "constant"], ["current", "constant"]),
+            id="each-stated",
+        ),
+        # A basis one member infers is inferred in the merge, though another states it.
+        pytest.param(
+            [(["current"], ["current"]), (["current"], [])],
+            True,
+            (["current"], []),
+            id="stated-beside-inferred",
+        ),
+        pytest.param([(["current"], ["current"]), (None, None)], True, (None, None), id="unknown"),
+        pytest.param([(["current"], ["current"])], False, (None, None), id="a-member-unitless"),
+    ],
+)
+def test_a_merged_unit_facet_states_a_basis_no_member_infers(members, every_member, merged):
+    facets = [_unit_facet(prices, stated) for prices, stated in members]
+
+    assert _merged_prices(facets, every_member=every_member) == merged

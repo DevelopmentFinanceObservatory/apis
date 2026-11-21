@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import NamedTuple
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
@@ -68,28 +69,39 @@ def unit_currency(
     return _graph_currency(graph, unit_dcid, deadline=deadline)
 
 
+class UnitPrices(NamedTuple):
+    """The price basis a series' unit is served in, and whether the data states it
+    (`stated`) or the rule infers it (an unpriced currency read as current prices)."""
+
+    prices: PricesKind
+    stated: bool
+
+
 def unit_prices(
     graph: EngineGraphClient,
     unit_dcid: str,
     qualifier: str | None,
     *,
     deadline: float | None,
-) -> PricesKind | None:
+) -> UnitPrices | None:
     """The price basis a series in `unit_dcid` is served in, under the `measurementQualifier`
-    `qualifier` of its StatVar, by the rule `satisfies` reads: a unit the registry prices
-    (`Money`) states its own, a chained one constant prices; any other currency unit
-    (`_graph_currency`) is in the prices a priced qualifier states (`PRICES_BY_QUALIFIER`:
-    `Nominal` current, `RealValue` constant), else current prices; a PPP or
-    international-dollar unit is money in the prices a priced qualifier states. None for a
-    unit that is no money, and for a PPP unit whose qualifier states no prices. The graph
-    read honours the absolute monotonic `deadline`, and expiry raises."""
+    `qualifier` of its StatVar, by the rule `satisfies` reads, with whether the data states
+    it. A unit the registry prices (`Money`) states its own, a chained one constant prices;
+    any other currency unit (`_graph_currency`) is in the prices a priced qualifier states
+    (`PRICES_BY_QUALIFIER`: `Nominal` current, `RealValue` constant), else in current prices
+    the rule infers; a PPP or international-dollar unit is money in the prices a priced
+    qualifier states. None for a unit that is no money, and for a PPP unit whose qualifier
+    states no prices. The graph read honours the absolute monotonic `deadline`, and expiry
+    raises."""
     value = parse_unit(unit_dcid)
     if isinstance(value, Money):
-        return value.prices
+        return UnitPrices(value.prices, stated=True)
     stated = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
     if _graph_currency(graph, unit_dcid, deadline=deadline) is not None:
-        return stated or "current"
-    return stated if is_purchasing_power(unit_dcid) else None
+        return UnitPrices(stated, stated=True) if stated else UnitPrices("current", stated=False)
+    if stated is not None and is_purchasing_power(unit_dcid):
+        return UnitPrices(stated, stated=True)
+    return None
 
 
 def _is_current_no_base_year(request: IdentityUnitRequest) -> bool:

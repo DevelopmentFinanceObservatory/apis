@@ -393,7 +393,12 @@ def _gdp_reading(source: str, start: int, end: int) -> Spec:
             measurement_qualifier=_ref("Nominal", "Nominal"),
             facets={
                 "unit": ResolvedFacet(
-                    basis="fallback", ref="USDollar", label="US Dollar", currency="USD"
+                    basis="fallback",
+                    ref="USDollar",
+                    label="US Dollar",
+                    currency="USD",
+                    prices=["current"],
+                    stated_prices=["current"],
                 )
             },
             resolved_sources=[_ref(source.lower(), source)],

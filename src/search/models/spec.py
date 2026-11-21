@@ -150,6 +150,18 @@ class ResolvedFacet(StrictModel):
             "money; absent where a carried series names no unit, or off the unit axis"
         ),
     )
+    stated_prices: list[Literal["current", "constant"]] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "unit axis only, alongside prices: the bases in prices the data states, in the "
+            "same order. A unit the unit registry prices, a priced measurementQualifier or a "
+            "unit request states its basis. A basis in prices and not here is inferred: a "
+            "currency unit with no priced measurementQualifier read as current prices. A "
+            "basis is stated only where every served unit in it states it. Absent where "
+            "prices is"
+        ),
+    )
     request_basis: dict[str, FacetBasis] | None = Field(
         default=None,
         description=(
@@ -178,6 +190,10 @@ class ResolvedFacet(StrictModel):
             raise ValueError("exactly one of ref or selection must be present")
         if self.refs is not None and self.selection is None:
             raise ValueError("refs is only meaningful alongside selection")
+        if (self.prices is None) != (self.stated_prices is None) or not set(
+            self.stated_prices or ()
+        ) <= set(self.prices or ()):
+            raise ValueError("stated_prices is a subset of prices, present exactly when it is")
         return self
 
 

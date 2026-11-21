@@ -508,7 +508,7 @@ class _NodeBuilder:
         unit_class = classify_unit(
             unit=dcid, denominator=None, currency_units={dcid: iso} if iso else {}
         )
-        basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=None)
+        basis = price_basis(requested=None, unit_class=unit_class, stated=None)
         return UnitBlock(
             unit_class=unit_class.kind,
             currency=unit_class.currency,

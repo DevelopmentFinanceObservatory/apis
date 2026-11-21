@@ -537,7 +537,6 @@ def heading_from_parts(
     unit_text, basis = _byline_unit(
         shape,
         facets,
-        constraints,
         unit_request=unit_request,
         deflated_by=deflated_by,
         graph_measure_name=None if noun.stated else noun.text,
@@ -981,7 +980,6 @@ def _flow_family(
 def _byline_unit(
     shape: ShapeLike,
     facets: Mapping[str, ResolvedFacet] | None,
-    constraints: Mapping[str, str],
     *,
     unit_request: IdentityUnitRequest | None,
     deflated_by: DeflationBasis | None,
@@ -998,8 +996,10 @@ def _byline_unit(
     ("constant 2024 donor currency", `_role_currency_noun`). Other units are stated by
     the heading when they change the magnitude (`_unit_heading_phrase`) or needed by no
     reader. A unit whose series disagree (``per_series``) reads nothing. The price basis
-    is the unit request's, the unit's base year, or the ``measurementQualifier`` of the
-    shape or of every member (`price_basis`). A unit request's constant prices also name
+    is the unit request's, else the one the unit facet says the data states
+    (`ResolvedFacet.stated_prices`), with the base year and chaining of a unit the
+    registry prices (`price_basis`). A currency unit no fact prices reads as its currency
+    alone ("US dollars"). A unit request's constant prices also name
     ``deflated_by``, whose prices deflated the conversion: "constant 2024 Nigerian naira,
     donor prices".
 
@@ -1028,7 +1028,8 @@ def _byline_unit(
         noun = _role_currency_noun(unit_request.currency, wording)
     else:
         return "", None
-    qualifier = shape.measurement_qualifier
+    stated_prices = unit.stated_prices if unit is not None else None
+    stated = stated_prices[0] if stated_prices is not None and len(stated_prices) == 1 else None
     basis = price_basis(
         requested=(
             PriceBasis(
@@ -1039,10 +1040,8 @@ def _byline_unit(
             if unit_request is not None
             else None
         ),
-        unit_class=unit_class,
-        measurement_qualifier=(
-            qualifier.ref if qualifier is not None else constraints.get(PRICE_BASIS_AXIS)
-        ),
+        unit_class=unit_class if stated is not None else None,
+        stated=stated,
     )
     return price_basis_phrase(basis, currency_noun=noun), basis
 

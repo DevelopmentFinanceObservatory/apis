@@ -9,7 +9,14 @@ import pytest
 
 from dc_graph import GraphClient
 from search.engine.errors import GraphDeadlineFailure
-from search.engine.unit.refs import admits, expressible, satisfies, unit_currency, unit_prices
+from search.engine.unit.refs import (
+    UnitPrices,
+    admits,
+    expressible,
+    satisfies,
+    unit_currency,
+    unit_prices,
+)
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
 from tests.fixtures import FakeGraph
 
@@ -206,16 +213,18 @@ def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
     ("unit", "qualifier", "prices"),
     [
         # A unit the registry prices states its own basis, whatever the qualifier says.
-        ("undata/UNIT_MEASURE-CR_USD_K", "Nominal", "constant"),
-        ("SDG_CU_USD", None, "current"),
-        ("ChainedUSDollarBaseYr2017", None, "constant"),
-        # Any other currency unit is in the prices its qualifier states, else current.
-        ("USDollar", None, "current"),
-        ("USDollar", "RealValue", "constant"),
-        ("USDollar", "Adjusted", "current"),
-        (_GRAPH_ONLY_UNIT, None, "current"),
+        ("undata/UNIT_MEASURE-CR_USD_K", "Nominal", ("constant", True)),
+        ("SDG_CU_USD", None, ("current", True)),
+        ("ChainedUSDollarBaseYr2017", None, ("constant", True)),
+        # Any other currency unit is in the prices its qualifier states, else in current
+        # prices the rule infers.
+        ("USDollar", "Nominal", ("current", True)),
+        ("USDollar", "RealValue", ("constant", True)),
+        ("USDollar", None, ("current", False)),
+        ("USDollar", "Adjusted", ("current", False)),
+        (_GRAPH_ONLY_UNIT, None, ("current", False)),
         # A PPP unit is money only under a priced qualifier.
-        ("PPPInternationalDollar", "RealValue", "constant"),
+        ("PPPInternationalDollar", "RealValue", ("constant", True)),
         ("InternationalDollar", None, None),
         ("Percent", "Nominal", None),
     ],
@@ -223,4 +232,6 @@ def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
 def test_unit_prices_reads_a_unit_as_a_unit_request_matches_it(unit, qualifier, prices):
     graph = _graph({**_UNITS, _GRAPH_ONLY_UNIT: "XAF"})
 
-    assert unit_prices(graph, unit, qualifier, deadline=None) == prices
+    assert unit_prices(graph, unit, qualifier, deadline=None) == (
+        None if prices is None else UnitPrices(*prices)
+    )
