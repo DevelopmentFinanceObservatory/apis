@@ -23,6 +23,7 @@ from assembler.mint.provenance import (
     _build_provenance,
     _build_sources,
     card_derivation_steps,
+    drawn_rows,
 )
 from assembler.mint.source_refs import check_source_refs
 from assembler.mint.validate import _validate, component_registry
@@ -144,6 +145,7 @@ def mint_component(
         sources=sources,
         card_steps=card_derivation_steps(component),
         clock=clock,
+        drawn=drawn_rows(series=series, bound_series=bound_series),
     )
     return MintedComponent(
         component=component,

@@ -14,11 +14,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, FrameError
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX, parse_time_period
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
 from assembler.ports import NamedSeries, ResolvedFrame
+from assembler.resolve import ResolvedSeries
 from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
@@ -376,6 +378,90 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
     return str(end_year) if end_year is not None else None
 
 
+def drawn_rows(
+    *, series: Sequence[ResolvedSeries], bound_series: Sequence[BoundSeries]
+) -> list[Mapping[str, object]] | None:
+    """The frame rows a card draws: each resolved series' rows in the periods its bound series
+    keeps. `None` for a card that binds no series, which draws on the whole frame."""
+    if not series:
+        return None
+    periods = {bound.id: {point["period"] for point in bound.points} for bound in bound_series}
+    return [
+        row
+        for one in series
+        for row in one.rows
+        if row.get(TIME_PERIOD_COLUMN) in periods.get(one.id, ())
+    ]
+
+
+def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """A frame document's rows keyed by column."""
+    columns = list(cast("Sequence[str]", frame.get("columns") or ()))
+    return [
+        dict(zip(columns, row, strict=True))
+        for row in cast("Sequence[Sequence[object]]", frame.get("rows") or ())
+    ]
+
+
+def recorded_incomplete_after(
+    manifest: Mapping[str, object],
+) -> list[Mapping[str, object]] | None:
+    """The entries naming a frame's rows past the last complete year of their source, as its
+    version stored them (`datasets_api.manifest.version_document`'s `incomplete_after`): a
+    dataset version's as its mint judged them, a computed version's as its publish derived
+    them (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
+    completeness is unknown."""
+    held = manifest.get("incomplete_after")
+    return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))
+
+
+def _partial_period(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
+) -> bool:
+    """Whether a row the card draws, of `rows` or else the whole frame's, lies past the last
+    complete year its version recorded for the row's own `provenance` and `stat_var` cells
+    (`recorded_incomplete_after`), so the card's later years hold only part of that source's
+    data. A row's year is the one its period ends in. A row with no `provenance` cell is named
+    by an entry with none, and an entry with no last complete year names complete rows. A
+    version that recorded nothing reads as complete. Nothing is read beyond the frame's
+    manifest."""
+    entries = recorded_incomplete_after(resolved_frame.manifest)
+    if not entries:
+        return False
+    complete: dict[tuple[object, str], int] = {}
+    for entry in entries:
+        year = entry.get("last_complete_year")
+        if not isinstance(year, int):
+            continue
+        for stat_var in cast("Sequence[str]", entry["stat_vars"]):
+            key = (entry.get("provenance"), _bare(stat_var))
+            complete[key] = min(year, complete.get(key, year))
+    if not complete:
+        return False
+    drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
+    for row in drawn:
+        period, stat_var = row.get(TIME_PERIOD_COLUMN), row.get(STAT_VAR_COLUMN)
+        if not isinstance(period, str) or not isinstance(stat_var, str):
+            continue
+        year = complete.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)))
+        if year is not None and (end := _end_year(period)) is not None and end > year:
+            return True
+    return False
+
+
+def _bare(stat_var: str) -> str:
+    return stat_var.removeprefix(STAT_VAR_REF_PREFIX)
+
+
+def _end_year(period: str) -> int | None:
+    """The year the `time_period` cell `period` ends in (`2020/2025` ends in 2025), `None`
+    for a cell the frame grammar cannot read."""
+    try:
+        return int(parse_time_period(period).end[:4])
+    except FrameError:
+        return None
+
+
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
     """The steps a card takes after drawing its selection: a stat card's `change` between its
     two basis periods (`description.compose.change_step`), else none."""
@@ -396,14 +482,17 @@ def _build_provenance(
     sources: tuple[dict[str, object], ...],
     card_steps: Sequence[Step],
     clock: Callable[[], datetime.datetime],
+    drawn: Sequence[Mapping[str, object]] | None,
 ) -> dict[str, object]:
     """The provenance of a card drawn from `resolved_frame`, citing `sources`. The citation
     routes through the DFO as the steps known to have made the card's figures decide
     (`description.citation.figures_processed`): the version's, then the card's own
-    `card_steps`."""
+    `card_steps`. `freshness.partial_period` judges the rows the card draws, `drawn`
+    (`drawn_rows`), or the whole frame's for `None`."""
     manifest = resolved_frame.manifest
     record = resolved_frame.description_record
     warnings = cast(Sequence[Mapping[str, object]], manifest.get("warnings") or ())
+    data_through = _data_through(manifest)
     return {
         "inputs": [
             {
@@ -414,10 +503,10 @@ def _build_provenance(
         "execution_ref": resolved_frame.replay_key,
         "sources": list(sources),
         "freshness": {
-            "data_through": _data_through(manifest),
+            "data_through": data_through,
             "last_refreshed": None,
             "next_expected": None,
-            "partial_period": False,
+            "partial_period": _partial_period(resolved_frame=resolved_frame, rows=drawn),
         },
         "warnings": _translate_warnings(warnings, labels=resolved_frame.labels),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),

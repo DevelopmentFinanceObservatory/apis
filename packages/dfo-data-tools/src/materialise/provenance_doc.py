@@ -188,6 +188,7 @@ _ROLLUP_PROPERTIES: tuple[str, ...] = (
     "licenseAttribution",
     "license",
     "sourceDataUrl",
+    "partialObservationDate",
 )
 
 # The MCF-escaped Markdown documents, keyed by graph property to the wire member

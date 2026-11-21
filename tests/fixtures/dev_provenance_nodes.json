@@ -1,0 +1,266 @@
+{
+  "_comment": "The arcs of five DFO Provenance nodes as the dfo-dev graph holds them, read from its Spanner Edge and Node tables on 2026-11-21, the graph the dev graph release 860f403d263f and the origin catalogue are built from. The four OECD-derived imports state partialObservationDate 2025; DAC1 states none. The four MCF documents and description are left out.",
+  "provenance/OECDCreditorReportingSystem": {
+    "conversionRecipe": [
+      "ConversionRecipeDAC"
+    ],
+    "earliestObservationDate": [
+      "1973"
+    ],
+    "importedSourceReleaseDate": [
+      "2026-10-06"
+    ],
+    "lastDataRefreshDate": [
+      "2026-10-29"
+    ],
+    "latestObservationDate": [
+      "2025"
+    ],
+    "license": [
+      "https://www.oecd.org/en/about/terms-conditions.html"
+    ],
+    "licenseAttribution": [
+      "OECD (2026), Creditor Reporting System (CRS), OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet (accessed on 2026-10-15)"
+    ],
+    "licenseType": [
+      "OECDTermsAndConditions"
+    ],
+    "name": [
+      "OECD Creditor Reporting System (CRS)"
+    ],
+    "nextDataRefreshDate": [
+      "2026-12"
+    ],
+    "nextSourceReleaseDate": [
+      "2026-12"
+    ],
+    "partialObservationDate": [
+      "2025"
+    ],
+    "source": [
+      "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+    ],
+    "sourceDataUrl": [
+      "https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet"
+    ],
+    "sourceReleaseFrequency": [
+      "P3M"
+    ],
+    "typeOf": [
+      "Provenance"
+    ],
+    "url": [
+      "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+    ]
+  },
+  "provenance/OECDDAC1": {
+    "conversionRecipe": [
+      "ConversionRecipeDAC"
+    ],
+    "earliestObservationDate": [
+      "1960"
+    ],
+    "importedSourceReleaseDate": [
+      "2026-10-08"
+    ],
+    "lastDataRefreshDate": [
+      "2026-10-12"
+    ],
+    "latestObservationDate": [
+      "2025"
+    ],
+    "license": [
+      "https://www.oecd.org/en/about/terms-conditions.html"
+    ],
+    "licenseAttribution": [
+      "OECD (2026), OECD DAC1, OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC1/Table1_Data.zip (accessed on 2026-10-12)"
+    ],
+    "licenseType": [
+      "OECDTermsAndConditions"
+    ],
+    "name": [
+      "OECD DAC1",
+      "provenance/OECDDAC1"
+    ],
+    "nextDataRefreshDate": [
+      "2026-12"
+    ],
+    "nextSourceReleaseDate": [
+      "2026-12"
+    ],
+    "source": [
+      "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+    ],
+    "sourceDataUrl": [
+      "https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC1/Table1_Data.zip"
+    ],
+    "sourceReleaseFrequency": [
+      "P3M"
+    ],
+    "typeOf": [
+      "Provenance"
+    ],
+    "url": [
+      "https://data-explorer.oecd.org/vis?fs[0]=Topic,0%7CDevelopment%23DEV%23&fs[1]=Topic,1%7CDevelopment%23DEV%23%7COfficial%20Development%20Assistance%20%28ODA%29%23DEV_ODA%23&pg=0&fc=Topic&snb=23&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_DAC1%40DF_DAC1&df[ag]=OECD.DCD.FSD&df[vs]=1.7&dq=._Z.....&pd=,&to[TIME_PERIOD]=false&isAvailabilityDisabled=false&page=0"
+    ]
+  },
+  "provenance/OECDDAC2A": {
+    "conversionRecipe": [
+      "ConversionRecipeDAC"
+    ],
+    "earliestObservationDate": [
+      "1960"
+    ],
+    "importedSourceReleaseDate": [
+      "2026-10-08"
+    ],
+    "lastDataRefreshDate": [
+      "2026-10-29"
+    ],
+    "latestObservationDate": [
+      "2025"
+    ],
+    "license": [
+      "https://www.oecd.org/en/about/terms-conditions.html"
+    ],
+    "licenseAttribution": [
+      "OECD (2026), OECD DAC2A, OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC2/Table2a_Data.zip (accessed on 2026-10-12)"
+    ],
+    "licenseType": [
+      "OECDTermsAndConditions"
+    ],
+    "name": [
+      "OECD DAC2A"
+    ],
+    "nextDataRefreshDate": [
+      "2026-12"
+    ],
+    "nextSourceReleaseDate": [
+      "2026-12"
+    ],
+    "partialObservationDate": [
+      "2025"
+    ],
+    "source": [
+      "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+    ],
+    "sourceDataUrl": [
+      "https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC2/Table2a_Data.zip"
+    ],
+    "sourceReleaseFrequency": [
+      "P3M"
+    ],
+    "typeOf": [
+      "Provenance"
+    ],
+    "url": [
+      "https://data-explorer.oecd.org/vis?tm=dac2a&pg=0&snb=1&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_DAC2%40DF_DAC2A&df[ag]=OECD.DCD.FSD&df[vs]=1.6&dq=.DPGC.206.USD.Q&lom=LASTNPERIODS&lo=5&to[TIME_PERIOD]=false&isAvailabilityDisabled=false&page=0"
+    ]
+  },
+  "provenance/OECDDAC2B": {
+    "conversionRecipe": [
+      "ConversionRecipeDAC"
+    ],
+    "earliestObservationDate": [
+      "1960"
+    ],
+    "importedSourceReleaseDate": [
+      "2026-10-08"
+    ],
+    "lastDataRefreshDate": [
+      "2026-10-29"
+    ],
+    "latestObservationDate": [
+      "2025"
+    ],
+    "license": [
+      "https://www.oecd.org/en/about/terms-conditions.html"
+    ],
+    "licenseAttribution": [
+      "OECD (2026), OECD DAC2B, OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC2/Table2b_Data.zip (accessed on 2026-10-12)"
+    ],
+    "licenseType": [
+      "OECDTermsAndConditions"
+    ],
+    "name": [
+      "OECD DAC2B"
+    ],
+    "nextDataRefreshDate": [
+      "2026-12"
+    ],
+    "nextSourceReleaseDate": [
+      "2026-12"
+    ],
+    "partialObservationDate": [
+      "2025"
+    ],
+    "source": [
+      "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+    ],
+    "sourceDataUrl": [
+      "https://webfs-dcd.oecd.org/files/dotStat/DSD_DAC2/Table2b_Data.zip"
+    ],
+    "sourceReleaseFrequency": [
+      "P3M"
+    ],
+    "typeOf": [
+      "Provenance"
+    ],
+    "url": [
+      "https://data-explorer.oecd.org/vis?fs[0]=Topic,1%7CDevelopment%23DEV%23%7COfficial%20Development%20Assistance%20%28ODA%29%23DEV_ODA%23&fs[1]=Topic,2%7CDevelopment%23DEV%23%7COfficial%20Development%20Assistance%20%28ODA%29%23DEV_ODA%23%7CFlows%20by%20provider%20and%20recipient%23DEV_ODA_FPR%23&pg=0&fc=Topic&snb=8&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_DAC2%40DF_DAC2B&df[ag]=OECD.DCD.FSD&dq=DAC%2BAUS%2BAUT%2BBEL%2BCAN%2BCZE%2BDNK%2BFIN%2BFRA%2BDEU%2BGRC%2BITA%2BJPN%2BKOR%2BLUX%2BNLD%2BNZL%2BNOR%2BPOL%2BPRT%2BSVK%2BSVN%2BESP%2BSWE%2BCHE%2BGBR%2BUSA.DPGC..USD.Q&lom=LASTNPERIODS&lo=5&to[TIME_PERIOD]=false"
+    ]
+  },
+  "provenance/ONEImputedMultilateralSectors": {
+    "conversionRecipe": [
+      "ConversionRecipeDAC"
+    ],
+    "earliestObservationDate": [
+      "2011"
+    ],
+    "importedSourceReleaseDate": [
+      "2026-10-06"
+    ],
+    "lastDataRefreshDate": [
+      "2026-10-29"
+    ],
+    "latestObservationDate": [
+      "2025"
+    ],
+    "license": [
+      "https://www.oecd.org/en/about/terms-conditions.html"
+    ],
+    "licenseAttribution": [
+      "ONE (2026), Imputed Multilateral Sectors, https://docs.one.org/methodologies/data/oda/imputed-multilateral-sectors/ (accessed on 2026-10-15), computed from OECD (2026), Creditor Reporting System (CRS), https://sdmx.oecd.org/public/rest/dataflow/OECD.DCD.FSD/DSD_CRS@DF_CRS/ (accessed on 2026-10-15) and OECD (2026), Members' Total Use of the Multilateral System, https://sdmx.oecd.org/public/rest/dataflow/OECD.DCD.FSD/DSD_MULTI@DF_MULTI/ (accessed on 2026-10-15)"
+    ],
+    "licenseType": [
+      "OECDTermsAndConditions"
+    ],
+    "name": [
+      "ONE Imputed Multilateral Sectors"
+    ],
+    "nextDataRefreshDate": [
+      "2026-12"
+    ],
+    "nextSourceReleaseDate": [
+      "2026-12"
+    ],
+    "partialObservationDate": [
+      "2025"
+    ],
+    "source": [
+      "source/ONEData"
+    ],
+    "sourceDataUrl": [
+      "https://sdmx.oecd.org/public/rest/dataflow/OECD.DCD.FSD/DSD_CRS@DF_CRS/,https://sdmx.oecd.org/public/rest/dataflow/OECD.DCD.FSD/DSD_MULTI@DF_MULTI/"
+    ],
+    "sourceReleaseFrequency": [
+      "P3M"
+    ],
+    "typeOf": [
+      "Provenance"
+    ],
+    "url": [
+      "https://docs.one.org/methodologies/data/oda/imputed-multilateral-sectors/"
+    ]
+  }
+}

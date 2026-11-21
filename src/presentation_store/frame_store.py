@@ -918,6 +918,45 @@ class LiveFrameStore:
         deadline: float,
         rendering: Mapping[str, object] | None = None,
     ) -> ResolvedFrame:
+        """`_cached_or_resolved_frame`, its manifest holding the `incomplete_after` `stored`
+        holds (`_with_stored_record`)."""
+        frame = self._cached_or_resolved_frame(
+            frame_ref, stored=stored, canonical=canonical, deadline=deadline, rendering=rendering
+        )
+        return self._with_stored_record(
+            (frame_ref.spec_id, frame_ref.content_version), frame, stored
+        )
+
+    def _with_stored_record(
+        self, cache_key: tuple[str, str], frame: ResolvedFrame, stored: StoredVersion
+    ) -> ResolvedFrame:
+        """`frame` with the `incomplete_after` its version stores now, read with the version
+        every load reads. A later mint of a dataset version replaces it
+        (`datasets_api.version_store`), so a cached frame takes the new record on its next
+        load, as it takes a version's changed continuations, and the cache keeps the frame
+        that holds it. A frame already holding it is returned as cached."""
+        held = stored.facts.incomplete_after
+        record = None if held is None else [dict(entry) for entry in held]
+        if frame.manifest.get("incomplete_after") == record:
+            return frame
+        manifest = {k: v for k, v in frame.manifest.items() if k != "incomplete_after"}
+        if record is not None:
+            manifest["incomplete_after"] = record
+        updated = replace(frame, manifest=manifest)
+        entry = self._cache_get(cache_key)
+        if entry is not None and entry.resolved is frame:
+            self._cache_put(cache_key, replace(entry, resolved=updated), expected=entry)
+        return updated
+
+    def _cached_or_resolved_frame(
+        self,
+        frame_ref: FrameRef,
+        *,
+        stored: StoredVersion,
+        canonical: StoredArtifactLocation,
+        deadline: float,
+        rendering: Mapping[str, object] | None = None,
+    ) -> ResolvedFrame:
         """The cached frame while it is fresh, else the frame `_resolve` loads or refreshes,
         a frame loaded afresh carrying `rendering`."""
         cache_key = (frame_ref.spec_id, frame_ref.content_version)

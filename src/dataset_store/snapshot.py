@@ -102,6 +102,10 @@ class ManifestFacts:
     packed object `decode_series_conversion_entries` also reads.
     `default_scope_plural` says whether the mint's default place scope held more than one place,
     `None` on a collapse and on a version minted before versions stored it.
+    `incomplete_after` holds the version's rows past the last complete year of their source
+    (`datasets_api.manifest.incomplete_after`), each a
+    `datasets_api.manifest_models.IncompleteAfter`, empty when none is, and `None` when the
+    mint could not judge them or the version was recorded before versions stored them.
     """
 
     prepared_at: datetime
@@ -115,6 +119,7 @@ class ManifestFacts:
     output_profile: Mapping[str, object] | None = None
     series_conversions: dict[str, object] | list[Mapping[str, object]] | None = None
     default_scope_plural: bool | None = None
+    incomplete_after: Sequence[Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -128,11 +133,19 @@ class FrameLineage:
     computed from (`datasets_api.lineage_continuations`), each a
     `materialise.continued_series.ContinuedSeries.as_entry`, empty when nothing continues its
     series, and `None` on a version recorded before versions stored them, until the
-    `backfill-descriptions` task fills it."""
+    `backfill-descriptions` task fills it.
+
+    `incomplete_after` holds the entries the publish door derived from the same versions for
+    the frame's rows (`datasets_api.lineage_incomplete`): those past the last complete year of
+    their source, each a `datasets_api.manifest_models.IncompleteAfter`, and the rest under a
+    `None` source and year, so every cell of the frame is listed. `None` when the publish could
+    not tell them and on a version recorded before versions stored them, which reads as
+    unknown."""
 
     input_content_versions: Sequence[str]
     composed_stat_vars: Sequence[Mapping[str, object]] | None = None
     continuations: Sequence[Mapping[str, object]] | None = None
+    incomplete_after: Sequence[Mapping[str, object]] | None = None
 
 
 type VersionFacts = ManifestFacts | FrameLineage
@@ -154,6 +167,7 @@ VERSION_FACT_COLUMNS = (
     "input_content_versions",
     "composed_stat_vars",
     "continuations",
+    "incomplete_after",
 )
 
 
@@ -170,6 +184,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
             _json(list(facts.input_content_versions)),
             _json(None if facts.composed_stat_vars is None else list(facts.composed_stat_vars)),
             _json(None if facts.continuations is None else list(facts.continuations)),
+            _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
         )
     return (
         facts.prepared_at,
@@ -186,6 +201,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
         None,
         None,
         None,
+        _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
     )
 
 
@@ -231,6 +247,7 @@ def _version_facts(
             default_scope_plural=(
                 None if default_scope_plural is None else bool(default_scope_plural)
             ),
+            incomplete_after=cast("list[Mapping[str, object]] | None", row["incomplete_after"]),
         )
     input_content_versions = cast("list[str] | None", row["input_content_versions"])
     if input_content_versions is not None:
@@ -238,6 +255,7 @@ def _version_facts(
             input_content_versions=input_content_versions,
             composed_stat_vars=cast("list[Mapping[str, object]] | None", row["composed_stat_vars"]),
             continuations=cast("list[Mapping[str, object]] | None", row["continuations"]),
+            incomplete_after=cast("list[Mapping[str, object]] | None", row["incomplete_after"]),
         )
     raise VersionFactsMissing(subject_id=subject_id, content_version=content_version)
 

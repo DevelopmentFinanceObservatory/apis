@@ -44,7 +44,8 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, cast
 
-from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
+from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, FrameError
+from dfo_frame_grammar.grammar import parse_time_period
 from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from code_index.query import CodeIndex
@@ -66,6 +67,7 @@ from datasets_api.manifest_models import (
     DefinitionModel,
     DiagnosticModel,
     DimensionNoun,
+    IncompleteAfter,
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
@@ -111,7 +113,8 @@ from materialise.series_conversion import (
 )
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
-from origin_catalogue import current_catalogue
+from origin_catalogue import CatalogueNotBound, current_catalogue
+from origin_catalogue.catalogue import Undocumented, partial_period_of
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -200,6 +203,65 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
         ],
         window=coverage.window,
     )
+
+
+def incomplete_after(result: MaterialisationResult) -> list[dict[str, object]] | None:
+    """The rows of the frame `result` holds past the last complete year of their source, from
+    the origin catalogue bound to the mint, which joins the graph release the rows were read
+    from: one `IncompleteAfter` per row provenance, source and year whose rows reach the period
+    the source's import holds only part of (`origin_catalogue.partial_period_of`). The source
+    of a `(provenance, stat_var)` pair is the composite component serving the variable
+    (`trace.components`), else the provenance itself. A pair's rows reach the end of the
+    latest period any of its series reaches (`SeriesFigures.latest_by_source`). Empty when no
+    source marks a period the rows reach.
+
+    `None`, unknown, with no catalogue bound or when the catalogue documents a source of the
+    rows not at all (`Undocumented`), as a stale catalogue or one whose format root the job
+    has not yet filled does, so the version records no judgement it could not make."""
+    try:
+        catalogue = current_catalogue()
+    except CatalogueNotBound:
+        return None
+    component_of = {
+        bare_stat_var_ref(cast(str, ref)): cast(str, component["provenance"])
+        for component in result.trace.components
+        if component.get("provenance") is not None
+        for ref in cast("list[object]", component.get("stat_vars") or [])
+    }
+    grouped: dict[tuple[str, str, int], list[str]] = {}
+    for (provenance, stat_var), period in sorted(
+        result.series_statistics.figures.latest_by_source.items(),
+        key=lambda item: (item[0][0] or "", item[0][1]),
+    ):
+        if provenance is None:
+            return None
+        source = component_of.get(bare_stat_var_ref(stat_var), provenance)
+        try:
+            partial = _end_year(partial_period_of(catalogue, source))
+        except Undocumented:
+            return None
+        reach = _end_year(period)
+        if partial is not None and reach is not None and reach >= partial:
+            stat_vars = grouped.setdefault((provenance, source, partial - 1), [])
+            if stat_var not in stat_vars:
+                stat_vars.append(stat_var)
+    return [
+        IncompleteAfter(
+            provenance=provenance, stat_vars=stat_vars, source=source, last_complete_year=year
+        ).model_dump()
+        for (provenance, source, year), stat_vars in grouped.items()
+    ]
+
+
+def _end_year(period: str | None) -> int | None:
+    """The year `period`, a `time_period` cell (`2025`, `2025-03`, `2020/2025`), ends in, or
+    `None` for no period or one the frame grammar cannot read."""
+    if period is None:
+        return None
+    try:
+        return int(parse_time_period(period).end[:4])
+    except FrameError:
+        return None
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
@@ -688,6 +750,7 @@ def manifest_facts(
     output_profile: OutputProfile | None = None,
     series_conversions: Mapping[SeriesKey, SeriesConversion] | None = None,
     default_scope: Sequence[str] | None = None,
+    incomplete_after: Sequence[Mapping[str, object]] | None = None,
 ) -> ManifestFacts:
     """The facts a definition version stores for `manifest`: every manifest member but
     `artifacts`, `output_options` and `content_version` (the record's own column), with
@@ -699,6 +762,7 @@ def manifest_facts(
     stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
+    `incomplete_after` is stored as given (`ManifestFacts.incomplete_after`).
     """
     dumped = manifest.model_dump(
         mode="json", include={"definition", "coverage", "trace", "warnings"}
@@ -717,6 +781,7 @@ def manifest_facts(
             encode_series_conversions(series_conversions) if series_conversions else None
         ),
         default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
+        incomplete_after=None if incomplete_after is None else list(incomplete_after),
     )
 
 
@@ -820,8 +885,10 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
     published frame's `op_spec_hash` (its subject id), `input_content_versions` and
     `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
     they are unknown, on a version recorded before versions stored them until
-    `backfill-descriptions` fills them, and left out when nothing continues its series. Its
-    `citation` is the served form, `licence*` members included. `version_body` stores the
+    `backfill-descriptions` fills them, and left out when nothing continues its series. Either
+    adds `incomplete_after`, the version's rows past the last complete year of their source
+    (`ManifestFacts.incomplete_after`, `FrameLineage.incomplete_after`), left out while unknown.
+    Its `citation` is the served form, `licence*` members included. `version_body` stores the
     citation through `CitationModel.stored_json`, which drops them."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
@@ -833,10 +900,13 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
             document["continuations"] = None
         elif continuations:
             document["continuations"] = [dict(entry) for entry in continuations]
-        return document
-    return stored_manifest(stored).model_dump(
-        mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
-    )
+    else:
+        document = stored_manifest(stored).model_dump(
+            mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
+        )
+    if stored.facts.incomplete_after is not None:
+        document["incomplete_after"] = [dict(entry) for entry in stored.facts.incomplete_after]
+    return document
 
 
 def version_body(record: VersionRecord) -> dict[str, object]:
@@ -847,10 +917,12 @@ def version_body(record: VersionRecord) -> dict[str, object]:
     added. The `series_conversions` column alone holds the per-series
     conversion records, which run to tens of megabytes on a wide converted mint. A published
     frame's body is its `version_document`, which holds its `continuations` when they are known and some continue
-    its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
-    body.
+    its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Neither
+    holds `incomplete_after`, which its own column alone stores, so a body stays one the
+    previous image decodes. Nothing in this image reads the body.
     """
     body = version_document(unlinked_state(record).version)
+    body.pop("incomplete_after", None)
     facts = record.facts
     if isinstance(facts, FrameLineage):
         if facts.continuations is None:
@@ -912,12 +984,14 @@ def definition_version_record(
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     base_content_version: str | None = None,
     frame_summed: bool | None = None,
+    incomplete_after: Sequence[Mapping[str, object]] | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
-    (`render.DerivedVersion.summed`). A raw version passes neither. Only a raw version stores
-    the per-series conversion records. A derived version's rows are not those series, and the
+    (`render.DerivedVersion.summed`). A raw version passes neither. `incomplete_after` is the
+    version's rows past the last complete year of their source (`incomplete_after`), `None`
+    when unjudged. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
     observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
@@ -934,6 +1008,7 @@ def definition_version_record(
                 materialisation.series_conversions if base_content_version is None else None
             ),
             default_scope=materialisation.default_scope,
+            incomplete_after=incomplete_after,
         ),
         artifacts=tuple(
             ArtifactRecord(

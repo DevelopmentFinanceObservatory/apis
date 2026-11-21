@@ -49,6 +49,7 @@ CREATE TABLE datasets.version_record (
     input_content_versions TEXT,
     composed_stat_vars TEXT,
     continuations TEXT,
+    incomplete_after TEXT,
     frame_sha256 TEXT,
     frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
@@ -239,6 +240,7 @@ _JSON_COLUMNS = frozenset(
         "input_content_versions",
         "composed_stat_vars",
         "continuations",
+        "incomplete_after",
         "rendering",
         "signal",
         "recipe",

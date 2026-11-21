@@ -98,6 +98,21 @@ class YearCoverage(BaseModel):
     role_counts: dict[str, int]
 
 
+class IncompleteAfter(BaseModel):
+    """Rows of a frame past the last complete year of the source they come from: the rows
+    whose `provenance` cell is `provenance` and whose `stat_var` cell is one of `stat_vars`,
+    in the years after `last_complete_year`. `source` is the provenance whose import holds
+    only part of the year after it, as the pipeline marks it on the source's Provenance node
+    (`partialObservationDate`): the cell itself, or for a composite the component serving
+    those variables."""
+
+    model_config = ConfigDict(extra="forbid")
+    provenance: str
+    stat_vars: list[str]
+    source: str
+    last_complete_year: int
+
+
 class CoverageModel(BaseModel):
     """A frame's row and dimension counts and its applied window.
 
