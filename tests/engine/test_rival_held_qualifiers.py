@@ -34,8 +34,11 @@ from tests.engine.test_recall_reading_families import (
     _CRS,
     _CRS_HEALTH,
     _DAC1_COMMITMENTS,
+    _ROWS,
+    _TOTAL,
     _code,
     _coverage,
+    _flow,
     _graph,
     _index,
 )
@@ -254,3 +257,58 @@ def test_a_rival_held_term_follows_the_coverage_mode_in_log_mode(
     assert result.unbound_qualifiers == ()
     dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert len(dropped) == 1 and "adaptation" in dropped[0].message, result.warnings
+
+
+_IDA = "InternationalDevelopmentAssociation"
+_IDA_NAME = "International Development Association"
+_IDA_OBJECTIVE = _code("TESTFIXTURE/Rival/IdaObjective", "climatePolicyObjective", "IDA", _TOTAL)
+_CLIMATE_IDA = _flow(
+    "TESTFIXTURE/Rival/ClimateIda", {"climatePolicyObjective": _IDA_OBJECTIVE.dcid}, _CLIMATE
+)
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        pytest.param({_IDA_NAME: "IDA"}, id="entity-words"),
+        pytest.param(None, id="entity-alias"),
+    ],
+)
+def test_a_term_naming_the_parts_entity_is_the_entity_not_a_rival_held_code(words):
+    """The climate family records a code labelled "IDA", as DAC1 records aid type 2103,
+    "multilateral contribution to the International Development Association". On a CRS part
+    with IDA as its provider, "IDA" in "IDA disbursements" is the provider, whether the
+    request gave "IDA" as the entity's words or named it "International Development
+    Association" alone, an alias the entity pack stores. The part refuses on no term."""
+    query = "IDA disbursements from International Development Association"
+    rows = (*_ROWS, _CLIMATE_IDA)
+    graph = _graph(
+        query,
+        ((_CRS_HEALTH.dcid, 0.8),),
+        rows=rows,
+        nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
+    )
+    with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
+        result = asyncio.run(
+            resolve_variable(
+                "IDA disbursements",
+                entities=[_IDA_NAME],
+                entity_words=words,
+                date_request=None,
+                detect_query=query,
+                role_query=query,
+                entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
+                pac=True,
+                graph=graph,
+                resolver=make_resolver(graph),
+                llm=_Reply(0),
+                binder=_ElectHolding(_CRS_HEALTH.dcid),
+                sdmx=FakeSdmxClient(observations={}),
+                base_timing={},
+                coverage=_coverage().snapshot(),
+                source_scope=part_scope(named=_CRS),
+            )
+        )
+
+    assert result.no_data_reason != "qualifier_not_bound", result
+    assert result.unbound_qualifiers == ()

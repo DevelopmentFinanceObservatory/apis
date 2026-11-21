@@ -66,6 +66,24 @@ def query_aliases_path() -> Traversable:
     return importlib.resources.files(_PACKAGE) / _DATA_DIR / _QUERY_ALIASES_FILENAME
 
 
+_HYPHEN_RE = re.compile(r"\s*[-\u2010-\u2015]\s*")
+
+
+def fold_hyphens(normalized: str) -> str:
+    """`normalized` with every hyphen or dash, and the spaces around it, read as one space.
+
+    "world bank-ida", "world bank - ida" and "world bank ida" give one form, so a name the
+    records write with a hyphen matches the same name written with a space. Idempotent, so it
+    folds a stored normal form and a query's alike."""
+    return _HYPHEN_RE.sub(" ", normalized).strip()
+
+
+def org_name_key(text: str, normalize: Callable[[str], str]) -> str:
+    """The form an organisation name is matched in: `normalize` (`OrgNormalizer.normalize_name`),
+    then `fold_hyphens`."""
+    return fold_hyphens(normalize(text))
+
+
 class CuratedAliasError(ValueError):
     """A curated alias names a dcid absent from the committed records."""
 
@@ -146,8 +164,9 @@ def _rows(
 class AliasIndex:
     """Every name the pack stores for a row, mapped to that row as an org-pack candidate.
 
-    Keys and queries both pass through `normalize`, `OrgNormalizer.normalize_name`, which is
-    the form the BYOD build stores as `value_norm` and the listed-name gate compares against."""
+    Keys and queries both pass through `normalize`: `OrgNormalizer.normalize_name`, the form
+    the BYOD build stores as `value_norm`, then `fold_hyphens`, the form the listed-name gate
+    compares organisation names in."""
 
     owners: Mapping[str, tuple[CandidateSummary, ...]]
     normalize: Callable[[str], str]
@@ -178,12 +197,12 @@ def build_alias_index(
         names = [row["name"]] + [
             value for column, value in row.items() if column.startswith(_ALIAS_COLUMN_PREFIX)
         ]
-        for key in dict.fromkeys(normalizer.normalize_name(name) for name in names):
+        for key in dict.fromkeys(org_name_key(name, normalizer.normalize_name) for name in names):
             if key:
                 owners.setdefault(key, []).append(candidate)
     return AliasIndex(
         owners={key: tuple(candidates) for key, candidates in owners.items()},
-        normalize=normalizer.normalize_name,
+        normalize=functools.partial(org_name_key, normalize=normalizer.normalize_name),
     )
 
 

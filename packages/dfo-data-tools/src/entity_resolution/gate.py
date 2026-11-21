@@ -7,12 +7,13 @@ IDA survive even when the geo pack's income-group result wins the merge.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from resolvekit import EntityRecord, Resolver
 from resolvekit.core.model.result import CandidateSummary
 from resolvekit.packs.org.normalizer import OrgNormalizer
 
+from entity_resolution.pack import fold_hyphens, org_name_key
 from entity_resolution.types import MatchedAs
 
 _ORG_PACK_ID = "org"
@@ -29,9 +30,10 @@ def _pack_normalize(resolver: Resolver, text: str, candidate: CandidateSummary) 
     """Normalize `text` to compare with the candidate's stored names and codes.
 
     Org records use `OrgNormalizer.normalize_name` because it matches their stored `value_norm`
-    fields, including punctuation in aliases such as `Africa, regional`."""
+    fields, including punctuation in aliases such as `Africa, regional`, then `fold_hyphens`,
+    which `_listed_as` applies to the stored forms too."""
     if candidate.pack_id == _ORG_PACK_ID:
-        return _org_normalizer.normalize_name(text)
+        return org_name_key(text, _org_normalizer.normalize_name)
     normalizer = resolver.pack_normalizers.get(candidate.pack_id)
     if normalizer is None:
         raise GateError(
@@ -41,19 +43,33 @@ def _pack_normalize(resolver: Resolver, text: str, candidate: CandidateSummary) 
     return normalizer.normalize(text)
 
 
-def _listed_as(normalized_text: str, entity: EntityRecord) -> MatchedAs | None:
+def _listed_as(
+    normalized_text: str, entity: EntityRecord, *, stored: Callable[[str], str]
+) -> MatchedAs | None:
     """How `entity` lists the text: its canonical name, then a code, then any other name.
 
-    A text a record holds both as a code and as an alias (`KE` for Kenya) matches as `code`."""
-    if normalized_text == entity.canonical_name_norm or any(
-        normalized_text == name.value_norm and name.kind == _CANONICAL for name in entity.names
+    `stored` maps each stored name to the form `normalized_text` is in. A text a record holds
+    both as a code and as an alias (`KE` for Kenya) matches as `code`."""
+    if normalized_text == stored(entity.canonical_name_norm) or any(
+        normalized_text == stored(name.value_norm) and name.kind == _CANONICAL
+        for name in entity.names
     ):
         return "name"
     if any(normalized_text == code.value_norm for code in entity.codes):
         return "code"
-    if any(normalized_text == name.value_norm for name in entity.names):
+    if any(normalized_text == stored(name.value_norm) for name in entity.names):
         return "alias"
     return None
+
+
+def _stored_form(candidate: CandidateSummary) -> Callable[[str], str]:
+    """How a stored name of `candidate`'s pack is compared: hyphen-folded for org records,
+    as stored otherwise."""
+    return fold_hyphens if candidate.pack_id == _ORG_PACK_ID else _as_stored
+
+
+def _as_stored(value: str) -> str:
+    return value
 
 
 def filter_listed_candidates(
@@ -65,7 +81,13 @@ def filter_listed_candidates(
         (candidate, matched_as)
         for candidate in candidates
         if (entity := resolver.entity(candidate.entity_id)) is not None
-        and (matched_as := _listed_as(_pack_normalize(resolver, text, candidate), entity))
+        and (
+            matched_as := _listed_as(
+                _pack_normalize(resolver, text, candidate),
+                entity,
+                stored=_stored_form(candidate),
+            )
+        )
         is not None
     ]
     return sorted(

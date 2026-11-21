@@ -403,12 +403,16 @@ def party_possible(
     return any(
         family.axes and governs(top=position == 0, score=family.score)
         for position, family in enumerate(measure)
-    ) and any(
-        (dataset, axis) in published
-        for family in measure
-        for dataset in family.datasets
-        for axis in family.axes
-    )
+    ) and any(publishes_party(family, published) for family in measure)
+
+
+def publishes_party(family: RecalledFamily, published: AbstractSet[tuple[str, RoleAxis]]) -> bool:
+    """Whether a dataset publishing `family` publishes an organisation, whose
+    `(dataset, axis)` pairs are `published` (`PartyRow.published`), on an axis the family
+    declares: DAC2a's disbursement family publishes IDA as a provider. A family the index
+    does not carry declares no axis (`_recalled`), so it publishes no party: IDS's
+    disbursements of IDA grants."""
+    return any((dataset, axis) in published for dataset in family.datasets for axis in family.axes)
 
 
 def choose_readings(
