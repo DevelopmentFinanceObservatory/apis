@@ -116,6 +116,9 @@ _DATASET_STORE = {
     "0047_version_artifact_head.sql": (
         "233a4198dca56d1ce4e1afee2b0ee0184a9476847bef8e6bd564cd93969a657e"
     ),
+    "0048_version_record_incomplete_after.sql": (
+        "ff7ddf5fdd7ebd690ee01d54573c3412220699705e0fef9ab111c8ec022535f5"
+    ),
 }
 
 _PRESENTATION_STORE = {

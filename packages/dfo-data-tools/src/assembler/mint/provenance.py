@@ -416,33 +416,49 @@ def recorded_incomplete_after(
     return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))
 
 
+def drawn_partial_entries(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
+) -> list[Mapping[str, object]] | None:
+    """The `partial` entries of the frame's version record (`recorded_incomplete_after`) that a
+    row the card draws, of `rows` or else the whole frame's, reaches: a row whose own
+    `provenance` and `stat_var` cells the entry names, and whose period reaches the entry's
+    `partial_period` (`materialise.partial_period.reaches`). A row with no `provenance` cell is
+    named by an entry with none. `unmarked` and `unknown` entries are never drawn partial.
+    `[]` when the card draws none; `None` when the version stores no record. Nothing is read
+    beyond the frame's manifest."""
+    entries = recorded_incomplete_after(resolved_frame.manifest)
+    if entries is None:
+        return None
+    marked = [entry for entry in entries if entry.get("status") == "partial"]
+    if not marked:
+        return []
+    drawn = [
+        (period, (row.get(PROVENANCE_COLUMN), _bare(stat_var)))
+        for row in (_frame_rows(resolved_frame.frame) if rows is None else rows)
+        if isinstance(period := row.get(TIME_PERIOD_COLUMN), str)
+        and isinstance(stat_var := row.get(STAT_VAR_COLUMN), str)
+    ]
+    return [entry for entry in marked if _drawn_reaches(entry, drawn)]
+
+
+def _drawn_reaches(
+    entry: Mapping[str, object], drawn: Sequence[tuple[str, tuple[object, str]]]
+) -> bool:
+    cells = {
+        (entry.get("provenance"), _bare(stat_var))
+        for stat_var in cast("Sequence[str]", entry["stat_vars"])
+    }
+    mark = cast(str, entry["partial_period"])
+    return any(cell in cells and reaches(period, mark) for period, cell in drawn)
+
+
 def _partial_period(
     *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
 ) -> bool:
-    """Whether a row the card draws, of `rows` or else the whole frame's, reaches the partial
-    period its version recorded for the row's own `provenance` and `stat_var` cells
-    (`recorded_incomplete_after`, `materialise.partial_period.reaches`), so the card holds
-    only part of that source's data there. A row with no `provenance` cell is named by an entry
-    with none. `unmarked` and `unknown` entries flag nothing, and a version that recorded
-    nothing reads as complete. Nothing is read beyond the frame's manifest."""
-    entries = recorded_incomplete_after(resolved_frame.manifest)
-    marks: dict[tuple[object, str], list[str]] = {}
-    for entry in entries or ():
-        if entry.get("status") != "partial":
-            continue
-        for stat_var in cast("Sequence[str]", entry["stat_vars"]):
-            key = (entry.get("provenance"), _bare(stat_var))
-            marks.setdefault(key, []).append(cast(str, entry["partial_period"]))
-    if not marks:
-        return False
-    drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
-    return any(
-        reaches(period, mark)
-        for row in drawn
-        if isinstance(period := row.get(TIME_PERIOD_COLUMN), str)
-        and isinstance(stat_var := row.get(STAT_VAR_COLUMN), str)
-        for mark in marks.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)), ())
-    )
+    """Whether a row the card draws reaches a partial period its version recorded for the row's
+    own cells (`drawn_partial_entries`), so the card holds only part of that source's data
+    there. A version that recorded nothing reads as complete."""
+    return bool(drawn_partial_entries(resolved_frame=resolved_frame, rows=rows))
 
 
 def _bare(stat_var: str) -> str:

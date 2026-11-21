@@ -40,13 +40,16 @@ class MintedComponent:
     """Minted component and provenance, plus observed periods for stat-card
     validation. `description` is the card revision's description, and `None` for a card that
     carries none (`assembler.mint.card_description`). `source_ids` maps the frame's source ref
-    behind each `provenance.sources` entry, `None` for rows naming none, to the entry's id."""
+    behind each `provenance.sources` entry, `None` for rows naming none, to the entry's id.
+    `drawn` is the frame rows the card draws (`provenance.drawn_rows`), `None` for a card that
+    binds no series and so draws the whole frame."""
 
     component: Mapping[str, object]
     provenance: Mapping[str, object]
     observed_periods: frozenset[str]
     description: Mapping[str, object] | None = None
     source_ids: Mapping[str | None, str] = field(default_factory=dict)
+    drawn: Sequence[Mapping[str, object]] | None = None
 
 
 def mint_component(
@@ -140,26 +143,28 @@ def mint_component(
         registry=component_registry(release),
     )
 
+    drawn = drawn_rows(
+        series=series,
+        periods=_drawn_periods(
+            member=member,
+            component=component,
+            bound_series=bound_series,
+            observed_periods=observed_periods,
+        ),
+    )
     provenance = _build_provenance(
         resolved_frame=resolved_frame,
         sources=sources,
         card_steps=card_derivation_steps(component),
         clock=clock,
-        drawn=drawn_rows(
-            series=series,
-            periods=_drawn_periods(
-                member=member,
-                component=component,
-                bound_series=bound_series,
-                observed_periods=observed_periods,
-            ),
-        ),
+        drawn=drawn,
     )
     return MintedComponent(
         component=component,
         provenance=provenance,
         observed_periods=observed_periods,
         source_ids=source_id_by_raw_ref,
+        drawn=drawn,
     )
 
 
