@@ -386,14 +386,15 @@ def with_unit_conversion(
 ) -> Spec:
     """A copy of `spec` stating the conversions it offers under the request's catalogue
     (`current_conversion_catalogue`), and the price bases its part serves with them
-    (`price_bases.with_price_bases`)."""
-    offer = unit_conversion(
-        spec, members=members, plans=plans, catalogue=current_conversion_catalogue()
-    )
+    (`price_bases.with_price_bases`). With no catalogue bound it states neither."""
+    catalogue = current_conversion_catalogue()
+    offer = unit_conversion(spec, members=members, plans=plans, catalogue=catalogue)
     if offer is not None:
         resolved = spec.resolved.model_copy(update={"unit_conversion": offer})
         spec = spec.model_copy(update={"resolved": resolved})
-    return with_price_bases(spec)
+    # With no catalogue the conversion is unknown, so the bases stay unstated rather than
+    # understated.
+    return spec if catalogue is None else with_price_bases(spec)
 
 
 def conversion_unavailable_warning(spec: Spec) -> Warning | None:

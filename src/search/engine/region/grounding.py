@@ -18,9 +18,9 @@ from code_index.members import offers_slot
 from code_index.shared import get_index
 from code_index.types import ANY_AXIS
 from dfo_platform.executor import submit_with_context
-from dfo_platform.roles import role_key_axis
+from dfo_platform.roles import GENERIC_ROLE_WORDING, residual_members_text, role_key_axis
 from materialise import GraphReader
-from materialise.enrichment import party_split
+from materialise.enrichment import PartySplit, party_split
 from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
@@ -298,12 +298,19 @@ def _role_scope_defaulted_base(axis: EntityRoleKey) -> str:
     return f"{_role_scope_axis_clause(axis)}, so the answer covers every {noun} with data"
 
 
-def _role_scope_counted_base(axis: EntityRoleKey, member_count: int) -> str:
-    """The clause of a `role_scope_defaulted` warning on `axis` that states `member_count`."""
+def _role_scope_counted_base(axis: EntityRoleKey, member_count: int, residual_count: int) -> str:
+    """The clause of a `role_scope_defaulted` warning on `axis` that states `member_count`
+    members, `residual_count` of them residual: the parties, then the residual members by
+    side (`residual_members_text`), and the residual members alone on a side with no party."""
     noun = axis_noun(axis)
-    counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
-        member_count, f"all {member_count} {noun}s"
-    )
+    parties = member_count - residual_count
+    counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(parties, f"all {parties} {noun}s")
+    if residual_count:
+        residual_axis: RoleAxis = "destination" if axis == "destination" else "origin"
+        residuals = residual_members_text(
+            residual_axis, residual_count, GENERIC_ROLE_WORDING.noun(residual_axis)
+        )
+        counted = f"{counted} and {residuals}" if parties else residuals
     return f"{_role_scope_axis_clause(axis)}, so the answer covers {counted} with data"
 
 
@@ -311,14 +318,17 @@ def role_scope_defaulted_message(
     axis: EntityRoleKey,
     *,
     member_count: int | None,
+    residual_count: int = 0,
     bound_dcids: Sequence[str],
     label_of: Callable[[Sequence[str]], Sequence[str]],
 ) -> str:
     """Build the defaulted-scope warning on open `axis` with member count and any bound
     opposite-role entities.
 
-    `member_count` is how many parties of the open axis the materialised read plan serves
-    (`Materialised.scope_member_dcids`, counted by `enrichment.party_split`), or None for a
+    `member_count` is how many members of the open axis the materialised read plan serves
+    (`Materialised.scope_member_dcids`, split by `enrichment.party_split`), totals left out,
+    and `residual_count` how many of them are residual members, which the warning names
+    apart from the parties. `member_count` is None for a
     response whose answers serve different members, which the warning then counts as every
     member with data. Use `from` when
     destination is discovered, otherwise `to`. Spell out up to three labels; for four or
@@ -328,7 +338,7 @@ def role_scope_defaulted_message(
     if member_count is None:
         base = _role_scope_defaulted_base(axis)
     else:
-        base = _role_scope_counted_base(axis, member_count)
+        base = _role_scope_counted_base(axis, member_count, residual_count)
     if not bound_dcids:
         return f"{base}."
     preposition = "from" if axis == "destination" else "to"
@@ -393,7 +403,8 @@ def role_scope_defaulted_warnings(
     A discovered scope reports how many parties the answer serves (`members`, by default
     `mat.scope_member_dcids`, those of the materialised read plan), leaving out the totals
     the code index declares in the datasets of `mat.sv_dcids` as the role's
-    `RoleAxisFact.member_count` does (`enrichment.party_split`), or with `state_count`
+    `RoleAxisFact.member_count` does (`enrichment.party_split`), naming its residual members
+    apart, or with `state_count`
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
@@ -406,18 +417,22 @@ def role_scope_defaulted_warnings(
     discovered = mat.discovered_scope
     if discovered is not None:
         if discovered.axis not in unnamed_wholes:
+            split = (
+                _scope_party_split(
+                    mat,
+                    members if members is not None else mat.scope_member_dcids,
+                    role=discovered.axis,
+                )
+                if state_count
+                else None
+            )
             warnings.append(
                 role_scope_defaulted_warning(
                     discovered.axis,
                     role_scope_defaulted_message(
                         discovered.axis,
-                        member_count=_scope_party_count(
-                            mat,
-                            members if members is not None else mat.scope_member_dcids,
-                            role=discovered.axis,
-                        )
-                        if state_count
-                        else None,
+                        member_count=None if split is None else split.member_count,
+                        residual_count=0 if split is None else split.residual_count,
                         bound_dcids=bound_opposite_role_dcids(discovered, boundary_roles),
                         label_of=label_of,
                     ),
@@ -440,10 +455,13 @@ def role_scope_defaulted_warnings(
     return warnings
 
 
-def _scope_party_count(mat: Materialised, members: Collection[str] | None, *, role: str) -> int:
-    """How many of `members`, the members of the open `role`, the warning counts: the
-    parties `enrichment.party_split` finds on the role's axis (`role_key_axis`), read in the
-    datasets that publish `mat`'s StatVars, without the totals and residual members."""
+def _scope_party_split(
+    mat: Materialised, members: Collection[str] | None, *, role: str
+) -> PartySplit:
+    """`members`, the members of the open `role`, as the warning counts them: split into
+    parties and residual members by `enrichment.party_split` on the role's axis
+    (`role_key_axis`), read in the datasets that publish `mat`'s StatVars, totals left
+    out."""
     index = get_index()
     axis = role_key_axis(role)
     return party_split(
@@ -451,7 +469,7 @@ def _scope_party_count(mat: Materialised, members: Collection[str] | None, *, ro
         axis=ANY_AXIS if axis is None else axis,
         parties=index.parties,
         datasets=index.statvar_provenances(mat.sv_dcids),
-    ).member_count
+    )
 
 
 def restate_role_scope_warnings(

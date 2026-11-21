@@ -185,7 +185,7 @@ class PartySplit:
     countable parties, and `residuals`, the members that hold figures no other party does
     ("Africa, unallocated by country"). Both are sorted and leave out the totals the Datasets
     cut of party totals leaves out (`datasets_api.party_totals`). A frame minted
-    `without_party_totals` holds the rows of both, so `member_count` plus `residual_count` is
+    `without_party_totals` holds the rows of both, so `member_count`, which counts both, is
     the number of members on the frame's column for the role."""
 
     parties: tuple[str, ...]
@@ -193,6 +193,11 @@ class PartySplit:
 
     @property
     def member_count(self) -> int:
+        """How many members the frame holds for the role: its parties and residual members."""
+        return len(self.parties) + len(self.residuals)
+
+    @property
+    def party_count(self) -> int:
         """How many countable parties the role holds."""
         return len(self.parties)
 
@@ -218,8 +223,8 @@ def party_split(
     totals: the whole ones, or all of them in a series that holds no other party.
 
     The role axis fact (`RoleAxisFact.member_count` and `residual_count`), the
-    `role_scope_defaulted` warning, coverage's open-role dimension and a composite's scope
-    all count members through this one split, so they agree."""
+    `role_scope_defaulted` warning, coverage's open-role dimension, a composite's scope and
+    the heading all count members through this one split, so they agree."""
     ordered = sorted(set(dcids))
     kinds = {
         dcid: party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) for dcid in ordered

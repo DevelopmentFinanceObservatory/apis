@@ -612,7 +612,7 @@ class CompositeMint:
         from search.engine.region.grounding import role_scope_defaulted_message
 
         counted = {
-            fact.role: fact.member_count
+            fact.role: (fact.member_count, fact.residual_count or 0)
             for fact in reversed(spec.resolved.role_axis_facts or ())
             if fact.member_count is not None
         }
@@ -628,9 +628,11 @@ class CompositeMint:
                 return warning
             role = cast("RoleAxis", axis)
             opposite: EntityRoleKey = "origin" if role == "destination" else "destination"
+            member_count, residual_count = counted[role]
             message = role_scope_defaulted_message(
                 role,
-                member_count=counted[role],
+                member_count=member_count,
+                residual_count=residual_count,
                 bound_dcids=list(dict.fromkeys(self.identity.entities.get(opposite, ()))),
                 label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
             )

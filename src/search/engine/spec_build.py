@@ -68,7 +68,6 @@ from search.engine.spec_id import (
 )
 from search.engine.unit.conversion import counted_conversion
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
-from search.engine.unit.price_bases import with_price_bases
 from search.models import (
     SCHEMA_VERSION,
     BaseIdentity,
@@ -1678,7 +1677,7 @@ def build_spec(
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
     )
-    return with_price_bases(with_members_left_out(spec))
+    return with_members_left_out(spec)
 
 
 def with_members_left_out(spec: Spec) -> Spec:

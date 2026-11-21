@@ -1,7 +1,7 @@
 """The price bases a part can serve (`ResolvedSpec.price_bases`).
 
-A part serves current or constant prices in three ways: the basis of its own unit, a unit
-option that publishes the same measure at the other basis (an `alternative_measures` entry
+A part serves current or constant prices in three ways: the basis of its own unit (the
+series' own, and a unit request's), a unit option that publishes the same measure at the other basis (an `alternative_measures` entry
 on the unit axis, `spec_build._menu_siblings`), and a unit request its conversion recipe
 converts (`ResolvedSpec.unit_conversion`). The list is the union of the three, so it names
 no basis the data cannot serve: WDI's remittances, published in US dollars with no constant
@@ -24,13 +24,17 @@ _ORDER: tuple[PriceBasis, ...] = ("current", "constant")
 
 
 def servable_price_bases(spec: Spec) -> list[PriceBasis]:
-    """The price bases `spec`'s part can serve, current before constant: its own unit's
-    (`_own_prices`), each unit option's, and each a currency of its conversion converts at
-    least one served year at. Empty when none states a basis, as for a count or a share."""
+    """The price bases `spec`'s part can serve, current before constant: a unit request's,
+    the served series' own (`_native_prices`), each unit option's, and each a currency of
+    its conversion converts at least one served year at. Empty when none states a basis, as
+    for a count or a share."""
     resolved = spec.resolved
     bases: set[PriceBasis] = set()
-    if (own := _own_prices(spec)) is not None:
-        bases.add(own)
+    unit_binding = (spec.definition.identity.facets or {}).get("unit")
+    if isinstance(unit_binding, IdentityFacetValueRequest):
+        bases.add(unit_binding.request.prices)
+    if (native := _native_prices(resolved)) is not None:
+        bases.add(native)
     for alternative in resolved.alternative_measures or ():
         if alternative.axis != "unit":
             continue
@@ -54,16 +58,13 @@ def with_price_bases(spec: Spec) -> Spec:
     return spec.model_copy(update={"resolved": resolved})
 
 
-def _own_prices(spec: Spec) -> PriceBasis | None:
-    """The basis `spec` answers in: a unit request's prices, else the basis the byline's unit
-    token states (`unit_words.price_basis.price_basis`: the unit's own, then the
-    `measurementQualifier` of the shape or the served partition), else current prices for a
-    currency unit that states none (`USDollar`), which a conversion reads as nominal
-    (`materialise.facets.nominal_currency`). None for a unit that is no money."""
-    unit_binding = (spec.definition.identity.facets or {}).get("unit")
-    if isinstance(unit_binding, IdentityFacetValueRequest):
-        return unit_binding.request.prices
-    resolved = spec.resolved
+def _native_prices(resolved: ResolvedSpec) -> PriceBasis | None:
+    """The basis the served series are published in, whatever unit request converts them:
+    the basis the byline's unit token reads from the series (`unit_words.price_basis.
+    price_basis`: the unit's own, then the `measurementQualifier` of the shape or the served
+    partition), else current prices for a currency unit that states none (`USDollar`), which
+    a conversion reads as nominal (`materialise.facets.nominal_currency`). None for a unit
+    that is no money."""
     unit = resolved.facets.get("unit")
     if unit is None or unit.ref is None:
         return None

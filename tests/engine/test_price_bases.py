@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import bound_conversion_catalogue
+from search.engine.unit.price_bases import servable_price_bases
 from search.models import (
     GraphRef,
     IdentityUnitRequest,
@@ -108,3 +109,24 @@ def test_a_unit_that_is_no_money_serves_no_price_basis() -> None:
     spec = _converted(_in("Percent", currency=None, provenance=_WDI), provenance=_WDI)
 
     assert spec.resolved.price_bases == []
+
+
+def test_a_unit_request_keeps_the_series_own_basis() -> None:
+    """A constant-price series served under a current-price request, which no recipe
+    converts, still serves the constant prices it is published in."""
+    spec = _spec(
+        measurement_qualifier=_ref("RealValue", "Real Value"),
+        facets={"unit": ResolvedFacet(basis="fallback", ref="USDollar", currency="USD")},
+    )
+    request = IdentityUnitRequest(currency="USD", prices="current")
+
+    assert servable_price_bases(_requested(spec, request)) == ["current", "constant"]
+
+
+def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
+    """With no conversion catalogue loaded the conversion is unknown, so the list would
+    understate a DAC part's constant prices."""
+    plan = _plan((1990, 2024), (("observationAbout", "country/DEU"),))
+    spec = with_unit_conversion(_usd(_CRS, served=(1990, 2024)), members=_members(), plans=(plan,))
+
+    assert spec.resolved.price_bases is None

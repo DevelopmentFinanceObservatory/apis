@@ -16,7 +16,14 @@ from typing import Literal, NamedTuple, Protocol
 from code_index.flow_family import flow_family
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index
-from dfo_platform.roles import FlowFamily, RoleNoun, RoleWording, role_wording
+from dfo_platform.roles import (
+    FlowFamily,
+    RoleNoun,
+    RoleWording,
+    residual_members_text,
+    role_wording,
+)
+from materialise.enrichment import party_split
 from materialise.recipe_bodies import DeflationBasis
 from search.heading.pins import identity_pinned_properties
 from search.models import (
@@ -514,6 +521,8 @@ def heading_from_parts(
         and facts is not None
         and bool(facts.members)
         and not any(value.text for value in (*modifiers, *how)),
+        stat_vars=list(member_dcids)
+        or [member.ref for member in (facts.members if facts is not None else ())],
     )
     subject = (
         None
@@ -756,15 +765,19 @@ def _open_role_reading(
     scope: ResolvedScope | None,
     coverage: Coverage | None,
     states_all: bool,
+    stat_vars: Sequence[str] = (),
 ) -> tuple[str, list[_NormalizedEntity]] | None:
     """Return the text and entities naming an open role, or None when nothing is known.
 
-    A scope of one member on that axis names that member. Otherwise the count comes from
-    the role's `RoleAxisFact`, then the scope, then a coverage dimension counting it, and
-    reads "{n} {plural}". A fact counting residual members adds them as amounts left
-    unallocated to one party ("81 recipients and 10 unallocated amounts", "1 recipient and 2
-    unallocated amounts"), since the answer's figures hold their rows beside the parties'.
-    Otherwise a count of one with no name says nothing, so it reads nothing. With no count, ``states_all`` reads the role as every
+    A scope of one member on that axis names that member. Otherwise the members are counted
+    by the role's `RoleAxisFact`, else by splitting the scope's members as the fact splits
+    them (`enrichment.party_split`, in the datasets that publish ``stat_vars``), else by a
+    coverage dimension counting the role, which names no residual member apart. The count
+    reads "{n} {plural}", and residual members follow the parties, worded by side
+    (`residual_members_text`): "81 recipients and 10 unallocated amounts", "1 recipient and
+    2 unallocated amounts", "40 creditors and 1 unspecified creditor". A side of residual
+    members alone reads them alone. Otherwise a count of one party with no name says
+    nothing, so it reads nothing. With no count, ``states_all`` reads the role as every
     entity in it ("all creditors").
     """
     members = list(scope.members) if scope is not None and scope.axis == axis else []
@@ -772,27 +785,51 @@ def _open_role_reading(
         member = members[0]
         entity = _NormalizedEntity(dcid=member.ref, label=member.label, axis=axis)
         return _entity_name(member.ref, member.label), [entity]
-    axis_facts = [fact for fact in role_axis_facts if fact.role == axis]
-    counts = [fact.member_count for fact in axis_facts]
+    counted = _open_role_counts(
+        axis,
+        role_axis_facts=role_axis_facts,
+        members=members,
+        coverage=coverage,
+        stat_vars=stat_vars,
+    )
+    if counted is None:
+        return (f"all {noun.plural}", []) if states_all else None
+    parties, residuals = counted
+    if not residuals:
+        return (f"{parties} {noun.plural}", []) if parties > 1 else None
+    residual_text = residual_members_text(axis, residuals, noun)
+    if not parties:
+        return residual_text, []
+    return f"{parties} {noun.singular if parties == 1 else noun.plural} and {residual_text}", []
+
+
+def _open_role_counts(
+    axis: RoleAxis,
+    *,
+    role_axis_facts: Sequence[RoleAxisFact],
+    members: Sequence[ResolvedEntity],
+    coverage: Coverage | None,
+    stat_vars: Sequence[str],
+) -> tuple[int, int] | None:
+    """The parties and residual members of the open role on `axis`, read as
+    `_open_role_reading` describes, or None when nothing counts them."""
+    for fact in role_axis_facts:
+        if fact.role == axis and fact.member_count is not None:
+            residuals = fact.residual_count or 0
+            return fact.member_count - residuals, residuals
     if members:
-        counts.append(len(members))
+        index = get_index()
+        split = party_split(
+            [member.ref for member in members],
+            axis=axis,
+            parties=index.parties,
+            datasets=index.statvar_provenances(stat_vars),
+        )
+        return split.party_count, split.residual_count
     if isinstance(coverage, (CoverageExact, CoverageBreadth)):
-        counts.extend(
-            dim.count
-            for dim in coverage.dimensions or ()
-            if _ROLE_COVERAGE_LABELS.get(dim.label) == axis
-        )
-    count = next((count for count in counts if count is not None), None)
-    if count is not None:
-        residuals = next(
-            (fact.residual_count for fact in axis_facts if fact.member_count is not None), None
-        )
-        if not residuals:
-            return (f"{count} {noun.plural}", []) if count > 1 else None
-        parties = f"{count} {noun.singular if count == 1 else noun.plural} and " if count else ""
-        return f"{parties}{residuals} unallocated amount{'' if residuals == 1 else 's'}", []
-    if states_all:
-        return f"all {noun.plural}", []
+        for dim in coverage.dimensions or ():
+            if _ROLE_COVERAGE_LABELS.get(dim.label) == axis:
+                return dim.count, 0
     return None
 
 
@@ -806,6 +843,7 @@ def _role_phrases(
     scope: ResolvedScope | None,
     coverage: Coverage | None,
     states_all: bool,
+    stat_vars: Sequence[str] = (),
 ) -> dict[RoleAxis, RolePhrase]:
     """Return each flow role's phrase, destination first, with the family's preposition.
 
@@ -835,6 +873,7 @@ def _role_phrases(
                 scope=scope,
                 coverage=coverage,
                 states_all=states_all,
+                stat_vars=stat_vars,
             )
         )
         if reading is not None and axis == "destination" and subject:

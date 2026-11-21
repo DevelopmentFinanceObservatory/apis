@@ -122,7 +122,7 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     each member's years (`BulkPlan.member_pairs`). Otherwise they are the places of the
     served series, in series order. An answer lists it as its scope (`ResolvedSpec.scope`),
     totals included. Coverage's open-role breadth dimension, the `role_scope_defaulted`
-    warning and the role's `RoleAxisFact.member_count` count its parties
+    warning and the role's `RoleAxisFact.member_count` count it without its totals
     (`enrichment.party_split`), so the three agree."""
     if isinstance(plan, BulkPlan):
         members: set[str] = set()
@@ -141,10 +141,10 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
 def _scope_party_count(
     members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
 ) -> int:
-    """How many of an open `role`'s `members` are parties on its axis
-    (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`, `enrichment.party_split`), read in
-    the datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
-    holds beside its residual members, as the role's heading and warning count them."""
+    """How many of an open `role`'s `members` a frame minted `without_party_totals` holds on
+    its axis (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`), its parties and residual
+    members together (`enrichment.party_split`), read in the datasets that publish
+    `sv_dcids`, as the role's axis fact and warning count them."""
     index = get_index()
     return party_split(
         members,
