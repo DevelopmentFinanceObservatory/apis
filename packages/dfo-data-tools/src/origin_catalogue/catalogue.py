@@ -175,15 +175,29 @@ class SourceDocumentation:
     partial_periods: Mapping[str, str] = field(default_factory=dict)
 
 
+class Undocumented(LookupError):
+    """The catalogue cannot say whether a provenance's import marks a partial period: it lists
+    no row for the provenance, or no documentation of its entry that covers it."""
+
+    def __init__(self, provenance: str) -> None:
+        self.provenance = provenance
+        super().__init__(f"the origin catalogue documents no provenance {provenance!r}")
+
+
 def partial_period_of(catalogue: Catalogue, provenance: str) -> str | None:
     """The period `provenance`'s import holds only part of, as its source-index entry's
     documentation states it (`SourceDocumentation.partial_periods`), `None` when the pipeline
-    marks none or `catalogue` does not list the provenance."""
+    marks none.
+
+    Raises:
+        Undocumented: `catalogue` lists no row for `provenance`, or no documentation of its
+            entry naming it among its `provenances`, so whether it is marked is unknown.
+    """
     row = catalogue.provenance(provenance)
-    if row is None:
-        return None
-    documentation = catalogue.source_documentation(entry_ref(row))
-    return None if documentation is None else documentation.partial_periods.get(provenance)
+    documentation = None if row is None else catalogue.source_documentation(entry_ref(row))
+    if documentation is None or provenance not in documentation.provenances:
+        raise Undocumented(provenance)
+    return documentation.partial_periods.get(provenance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -944,6 +958,7 @@ __all__ = [
     "SeriesAdmission",
     "SourceRef",
     "UnTables",
+    "Undocumented",
     "entry_ref",
     "partial_period_of",
     "release_held_arcs",

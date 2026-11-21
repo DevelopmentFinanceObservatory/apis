@@ -1823,14 +1823,16 @@ def _row(provenance, stat_var, period):
 
 
 def _judged(entries, rows):
-    """`_partial_period` over `rows`, drawn from a frame whose version recorded `entries` in
-    its `coverage` (`None` for a version that recorded none)."""
-    coverage = {} if entries is None else {"incomplete_after": entries}
+    """`_partial_period` over `rows`, drawn from a frame whose version recorded `entries`
+    (`None` for a version that recorded none)."""
+    manifest: dict[str, object] = {"schema_version": 1}
+    if entries is not None:
+        manifest["incomplete_after"] = entries
     frame = build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
         role_keys=("recipient",),
         rows=[{**row, "recipient": "country/ETH", "unit": None} for row in rows],
-        manifest={"schema_version": 1, "coverage": coverage},
+        manifest=manifest,
     )
     return _partial_period(resolved_frame=frame, rows=None)
 
@@ -1868,6 +1870,18 @@ def _judged(entries, rows):
             False,
             id="a-card-drawing-only-complete-years",
         ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_row(_CRS, "dcid:X", "2020/2025")],
+            True,
+            id="an-interval-ending-past-the-complete-year",
+        ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], None, None)],
+            [_row(_CRS, "dcid:X", "2025")],
+            False,
+            id="a-derived-record-s-complete-cell",
+        ),
         pytest.param([], [_row(_CRS, "dcid:X", "2025")], False, id="counted-and-complete"),
         pytest.param(None, [_row(_CRS, "dcid:X", "2025")], False, id="unknown-reads-complete"),
     ],
@@ -1879,7 +1893,7 @@ def test_partial_period_is_judged_on_each_row_s_own_cells(entries, rows, partial
 
 
 def test_freshness_data_through_is_the_manifest_window_s_end_year(release):
-    """`partial_period` reads the version's `coverage.incomplete_after`: both sources' rows of
+    """`partial_period` reads the version's `incomplete_after`: both sources' rows of
     `X` reach 2020, and the WDI source's import held only part of 2020."""
     manifest = {
         "schema_version": 1,
@@ -1887,8 +1901,8 @@ def test_freshness_data_through_is_the_manifest_window_s_end_year(release):
             "rows": 2,
             "dimensions": [],
             "window": {"kind": "all", "start_year": 2015, "end_year": 2020, "origin": "default"},
-            "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
         },
+        "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
     }
     minted = _mint_source_card(resolved_frame=_two_source_frame(manifest=manifest), release=release)
 
@@ -1905,7 +1919,7 @@ def test_partial_period_judges_the_rows_a_card_draws():
     frame = _two_source_frame(
         manifest={
             "schema_version": 1,
-            "coverage": {"incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)]},
+            "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
         }
     )
     rows = tuple(_row(_WDI_REF, "dcid:X", period) for period in ("2019", "2020"))

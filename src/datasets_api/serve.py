@@ -113,7 +113,7 @@ from datasets_api.manifest_models import (
     CitationSource,
     Manifest,
     WarningModel,
-    refreshed_coverage,
+    year_coverage_counted,
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
@@ -549,6 +549,9 @@ class DefinitionPrewrite:
     # The year members of the version's `coverage` (`manifest.year_coverage`), counted here
     # from the index the run elected over and joined to every manifest the write half builds.
     year_coverage: Mapping[str, object] = field(default_factory=dict)
+    # The rows past the last complete year of their source (`manifest.incomplete_after`), judged
+    # here against the catalogue bound to the mint, `None` when it could not be judged.
+    incomplete_after: list[dict[str, object]] | None = None
 
 
 def _documentation_complete(source_citations: Mapping[str, SourceCitation]) -> bool:
@@ -934,10 +937,7 @@ def prewrite_definition(
             "spec_id": stored.spec_id,
             "identity": stored.identity,
         }
-        years = {
-            **year_coverage(result, requests=requests, index=coverage_index),
-            **incomplete_after(result),
-        }
+        years = year_coverage(result, requests=requests, index=coverage_index)
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -968,6 +968,7 @@ def prewrite_definition(
             documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
             year_coverage=years,
+            incomplete_after=incomplete_after(result),
         )
 
 
@@ -1078,9 +1079,9 @@ def _base_record(
 ) -> VersionRecord:
     """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
     `describer`. It takes the stored body when the version is on record (`persisted`), else
-    this call's. A stored body takes this call's `coverage` where it is newer
-    (`refreshed_coverage`): whole when the stored year coverage was never counted, else this
-    call's `incomplete_after`. The write stores it on the version
+    this call's. A stored body whose year coverage was never counted
+    (`year_coverage_counted`) takes this call's `coverage`, and every stored body takes this
+    call's `incomplete_after` when this call judged one, which the write stores on the version
     (`VersionRecordWriter.write_version`)."""
     record = definition_version_record(
         manifest=prewrite.manifest,
@@ -1088,16 +1089,17 @@ def _base_record(
         materialisation=prewrite.result,
         artifacts=[],
         record_only_artifacts=artifacts,
+        incomplete_after=prewrite.incomplete_after,
     )
     record = replace(record, describer=describer)
     if persisted is None:
         return record
     facts = persisted.version.facts
-    if isinstance(facts, ManifestFacts):
+    if isinstance(facts, ManifestFacts) and not year_coverage_counted(facts.coverage):
         assert isinstance(record.facts, ManifestFacts)
-        facts = replace(
-            facts, coverage=refreshed_coverage(facts.coverage, minted=record.facts.coverage)
-        )
+        facts = replace(facts, coverage=record.facts.coverage)
+    if isinstance(facts, ManifestFacts) and prewrite.incomplete_after is not None:
+        facts = replace(facts, incomplete_after=prewrite.incomplete_after)
     return replace(record, facts=facts)
 
 
@@ -1588,6 +1590,9 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
+            # A party-totals cut keeps the rows' cells, so the raw version's judgement holds;
+            # a collapse sums them into cells of its own, which nothing judged.
+            incomplete_after=None if derived.summed else prewrite.incomplete_after,
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,

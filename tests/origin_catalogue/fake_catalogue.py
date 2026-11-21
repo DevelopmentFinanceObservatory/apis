@@ -453,7 +453,7 @@ def listing(names: Mapping[str, str]) -> FakeCatalogue:
 DEV_PROVENANCE_NODES = (
     Path(__file__).resolve().parents[1] / "fixtures" / "dev_provenance_nodes.json"
 )
-"""The arcs of five DFO Provenance nodes as the dev graph held them on 2026-11-21: CRS, DAC2A,
+"""The arcs of five DFO Provenance nodes as the dev graph holds them: CRS, DAC2A,
 DAC2B and the imputed multilateral sectors state `partialObservationDate` 2025, DAC1 none."""
 
 

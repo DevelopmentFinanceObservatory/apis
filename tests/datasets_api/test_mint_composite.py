@@ -33,10 +33,12 @@ from code_index.composites import (
 )
 from code_index.declarations import CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
+from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import serve
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
+from datasets_api.manifest import version_document
 from datasets_api.version_store import LiveHeadStore
 from materialise.reshape import RollupNotSummableError, Table
 from materialise.trace import RecordedFamily, StatedFamily, recorded_family_json
@@ -809,13 +811,19 @@ def test_a_composite_records_only_the_component_its_source_marks_partial():
         bilateral: (_CRS_FACET, 100, (2023, 2024, 2025)),
         imputed: (_IMPUTED_FACET, 7, (2023, 2024, 2025)),
     }
+    store = FakeVersionRecordDatasetStore()
     with catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service(catalogue)):
-        _artifacts, client = _composite_client(populated=populated)
+        _artifacts, client = _composite_client(store, populated=populated)
         minted = _mint(client)
 
     assert minted.status_code == 200, minted.text
-    coverage = minted.json()["coverage"]
-    ((entry),) = coverage["incomplete_after"]
+    body = minted.json()
+    stored = LiveSnapshotReader(store=store).read_version(
+        body["definition"]["spec_id"], body["content_version"]
+    )
+    assert stored is not None
+    document = version_document(stored)
+    ((entry),) = document["incomplete_after"]
     assert (entry["provenance"], entry["source"], entry["last_complete_year"]) == (
         _STACKED.provenance,
         IMPUTED_PROVENANCE,
@@ -838,7 +846,7 @@ def test_a_composite_records_only_the_component_its_source_marks_partial():
                     "provenance": _STACKED.provenance,
                 }
             ],
-            manifest={"coverage": coverage},
+            manifest=document,
         )
         return _partial_period(resolved_frame=frame, rows=None)
 

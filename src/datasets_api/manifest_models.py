@@ -98,21 +98,6 @@ class YearCoverage(BaseModel):
     role_counts: dict[str, int]
 
 
-def refreshed_coverage(
-    stored: Mapping[str, object], *, minted: Mapping[str, object]
-) -> dict[str, object]:
-    """The `coverage` a version on record keeps when a later mint of it gives `minted`: the
-    whole of `minted` when `stored` was never counted (`year_coverage_counted`) and `minted`
-    was, else `stored` with `minted`'s `incomplete_after` when `minted` states one. The rows
-    are the same, so only the partial years of the release each mint read can differ."""
-    if not year_coverage_counted(stored) and year_coverage_counted(minted):
-        return dict(minted)
-    refreshed = dict(stored)
-    if minted.get("incomplete_after") is not None:
-        refreshed["incomplete_after"] = minted["incomplete_after"]
-    return refreshed
-
-
 class IncompleteAfter(BaseModel):
     """Rows of a frame past the last complete year of the source they come from: the rows
     whose `provenance` cell is `provenance` and whose `stat_var` cell is one of `stat_vars`,
@@ -134,8 +119,7 @@ class CoverageModel(BaseModel):
     `recent_years`, `elected_year` and `fullest_year` set the frame's one year beside the
     years around it (`datasets_api.manifest.year_coverage`). They are counted once, when
     the version is minted, and stored with it, all three or none, so every read of the
-    version states the same ones. `incomplete_after` is recorded at the same mint
-    (`datasets_api.manifest.incomplete_after`). A `None` member is left out of every dump."""
+    version states the same ones. A `None` member is left out of every dump."""
 
     model_config = ConfigDict(extra="forbid")
     rows: int
@@ -169,18 +153,6 @@ class CoverageModel(BaseModel):
             "the year holding the most series of the ten calendar years ending at the "
             "newest of `recent_years`, stated when it is earlier than those three and the "
             "frame's year holds under the share of its series a latest window's year must hold"
-        ),
-    )
-    incomplete_after: list[IncompleteAfter] | None = Field(
-        default=None,
-        exclude_if=_is_none,
-        description=(
-            "the rows past the last complete year of their source, keyed by the rows' own "
-            "`provenance` and `stat_var` cells, as the graph release the version was minted "
-            "under marked each source's partial period. Empty when no source of the rows "
-            "held only part of a year they reach. Absent on a version minted before versions "
-            "recorded it, or with no origin catalogue to read the marks from, whose "
-            "completeness is unknown"
         ),
     )
 

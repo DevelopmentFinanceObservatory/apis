@@ -1,12 +1,14 @@
--- The rows of a published derived frame past the last complete year of their source.
+-- The rows of a version past the last complete year of their source.
 --
--- `incomplete_after` holds the entries the publish door derives from the versions a frame was
--- computed from (`datasets_api.lineage_incomplete.derived_incomplete_after`), each naming a
--- `provenance` cell, the `stat_vars` it covers, the `source` whose import holds only part of
--- the year after `last_complete_year`, and that year, and `[]` when none of the frame's rows
--- is past one. A dataset version's row leaves it NULL, since its `coverage` records its own.
--- A derived frame's row recorded before this column, or written by the previous image until
--- the services move, holds NULL, which reads as unknown.
+-- `incomplete_after` holds one entry per row `provenance` cell, source and last complete year,
+-- naming the `stat_vars` whose rows reach the period the source's import holds only part of:
+-- for a dataset version as its mint judged them against the origin catalogue
+-- (`datasets_api.manifest.incomplete_after`), and for a published derived frame as the publish
+-- door derived them from the versions it was computed from
+-- (`datasets_api.lineage_incomplete.derived_incomplete_after`). `[]` means judged and nothing
+-- partial. NULL means unknown: a version the mint or the publish could not judge, a row
+-- recorded before this column, and a row written by the previous image, which names its
+-- columns and leaves this one out. A later mint of the same dataset version replaces it.
 --
 -- Adding a nullable column rewrites no row. Re-running this migration changes nothing.
 

@@ -5605,13 +5605,7 @@ def test_a_frame_s_partial_flag_needs_no_read_beyond_its_stored_record(fixture, 
     key = (frame_ref.spec_id, frame_ref.content_version)
     version = snapshots.versions[key]
     facts = version.facts
-    if recorded is not None:
-        facts = (
-            replace(facts, incomplete_after=recorded)
-            if isinstance(facts, FrameLineage)
-            else replace(facts, coverage={**facts.coverage, "incomplete_after": recorded})
-        )
-    snapshots.versions[key] = replace(version, facts=facts)
+    snapshots.versions[key] = replace(version, facts=replace(facts, incomplete_after=recorded))
     store = _store(snapshots=snapshots, artifacts=artifacts)
     loaded = store.load(frame_ref=frame_ref)
 
@@ -5622,3 +5616,23 @@ def test_a_frame_s_partial_flag_needs_no_read_beyond_its_stored_record(fixture, 
     )
     with bound_catalogue(marking):
         assert _partial_period(resolved_frame=loaded, rows=None) is partial
+
+
+def test_a_cached_frame_takes_the_record_a_later_mint_stores():
+    """A later mint of the same version replaces its record, and the next load of the cached
+    frame carries it, so a card drawn after the full release reads complete."""
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    version = snapshots.versions[key]
+    partial = replace(version.facts, incomplete_after=_malaria_incomplete_after(2023))
+    snapshots.versions[key] = replace(version, facts=partial)
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+    first = store.load(frame_ref=frame_ref)
+    assert _partial_period(resolved_frame=first, rows=None)
+    assert store.load(frame_ref=frame_ref) is first
+
+    snapshots.versions[key] = replace(version, facts=replace(partial, incomplete_after=[]))
+    later = store.load(frame_ref=frame_ref)
+
+    assert not _partial_period(resolved_frame=later, rows=None)
+    assert store.load(frame_ref=frame_ref) is later

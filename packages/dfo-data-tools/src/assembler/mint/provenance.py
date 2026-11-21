@@ -14,8 +14,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, FrameError
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX, parse_time_period
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
@@ -407,16 +407,11 @@ def recorded_incomplete_after(
     manifest: Mapping[str, object],
 ) -> list[Mapping[str, object]] | None:
     """The entries naming a frame's rows past the last complete year of their source, as its
-    version recorded them when it was stored: a dataset version's `coverage.incomplete_after`
-    (`datasets_api.manifest.incomplete_after`), a computed version's `incomplete_after`
-    (`datasets_api.lineage_incomplete`). `None` for a version recorded before versions stored
-    them, whose completeness is unknown."""
-    coverage = manifest.get("coverage")
-    held = (
-        coverage.get("incomplete_after")
-        if isinstance(coverage, Mapping)
-        else manifest.get("incomplete_after")
-    )
+    version stored them (`datasets_api.manifest.version_document`'s `incomplete_after`): a
+    dataset version's as its mint judged them, a computed version's as its publish derived
+    them (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
+    completeness is unknown."""
+    held = manifest.get("incomplete_after")
     return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))
 
 
@@ -426,30 +421,45 @@ def _partial_period(
     """Whether a row the card draws, of `rows` or else the whole frame's, lies past the last
     complete year its version recorded for the row's own `provenance` and `stat_var` cells
     (`recorded_incomplete_after`), so the card's later years hold only part of that source's
-    data. A row with no `provenance` cell is named by an entry with none. A version that
-    recorded nothing reads as complete. Nothing is read beyond the frame's manifest."""
+    data. A row's year is the one its period ends in. A row with no `provenance` cell is named
+    by an entry with none, and an entry with no last complete year names complete rows. A
+    version that recorded nothing reads as complete. Nothing is read beyond the frame's
+    manifest."""
     entries = recorded_incomplete_after(resolved_frame.manifest)
     if not entries:
         return False
     complete: dict[tuple[object, str], int] = {}
     for entry in entries:
-        year = cast(int, entry["last_complete_year"])
+        year = entry.get("last_complete_year")
+        if not isinstance(year, int):
+            continue
         for stat_var in cast("Sequence[str]", entry["stat_vars"]):
             key = (entry.get("provenance"), _bare(stat_var))
             complete[key] = min(year, complete.get(key, year))
+    if not complete:
+        return False
     drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
     for row in drawn:
         period, stat_var = row.get(TIME_PERIOD_COLUMN), row.get(STAT_VAR_COLUMN)
-        if not isinstance(period, str) or not period[:4].isdigit() or not isinstance(stat_var, str):
+        if not isinstance(period, str) or not isinstance(stat_var, str):
             continue
         year = complete.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)))
-        if year is not None and int(period[:4]) > year:
+        if year is not None and (end := _end_year(period)) is not None and end > year:
             return True
     return False
 
 
 def _bare(stat_var: str) -> str:
     return stat_var.removeprefix(STAT_VAR_REF_PREFIX)
+
+
+def _end_year(period: str) -> int | None:
+    """The year the `time_period` cell `period` ends in (`2020/2025` ends in 2025), `None`
+    for a cell the frame grammar cannot read."""
+    try:
+        return int(parse_time_period(period).end[:4])
+    except FrameError:
+        return None
 
 
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
