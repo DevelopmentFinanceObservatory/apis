@@ -13,6 +13,7 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
 
 from code_index.types import AnyAxis, PartyKind, PartyRow
 from dc_graph import label_or_self_name
@@ -178,25 +179,61 @@ def party_kind_of(
     return None if party is None else party.kind_over(axis, datasets)
 
 
-def party_count(
+@dataclass(frozen=True, slots=True)
+class PartySplit:
+    """The members of a role on one axis, split by kind (`party_split`): `parties`, the
+    countable parties, and `residuals`, the members that hold figures no other party does
+    ("Africa, unallocated by country"). Both are sorted and leave out the totals the Datasets
+    cut of party totals leaves out (`datasets_api.party_totals`). A frame minted
+    `without_party_totals` holds the rows of both, so `member_count`, which counts both, is
+    the number of members on the frame's column for the role."""
+
+    parties: tuple[str, ...]
+    residuals: tuple[str, ...]
+
+    @property
+    def member_count(self) -> int:
+        """How many members the frame holds for the role: its parties and residual members."""
+        return len(self.parties) + len(self.residuals)
+
+    @property
+    def party_count(self) -> int:
+        """How many countable parties the role holds."""
+        return len(self.parties)
+
+    @property
+    def residual_count(self) -> int:
+        """How many residual members the role holds."""
+        return len(self.residuals)
+
+
+def party_split(
     dcids: Collection[str],
     *,
     axis: RoleAxis | AnyAxis,
     parties: Mapping[str, PartyRow],
     datasets: Collection[str],
-) -> int:
-    """How many of `dcids`, members of a role on `axis`, are parties: those the code index's
-    `parties` declares no `total` on `axis` in `datasets` (`party_kind_of`), the members the
-    Datasets cut of party totals keeps in every cell (`datasets_api.party_totals`). When every
-    member is a total the count is all of them. The count reads no year, series or dataset of a
-    row. It leaves out the totals the cut keeps in a cell that holds only totals: the whole ones,
-    or all of them in a series that holds no other party. It counts every total of a role of
-    only totals, where the cut keeps only the whole ones of a cell that has one."""
-    kept = sum(
-        party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) != "total"
-        for dcid in dcids
-    )
-    return kept or len(dcids)
+) -> PartySplit:
+    """`dcids`, members of a role on `axis`, split by the kind the code index's `parties`
+    declares for each on `axis` in `datasets` (`party_kind_of`): the `residual` members, and
+    the parties, every other member except a `total`. A member the index does not list, or
+    one of differing kinds in `datasets`, is a party. When every member is a total, the
+    parties are all of them. The split reads no year, series or dataset of a row. Its parties
+    leave out the totals the Datasets cut of party totals keeps in a cell that holds only
+    totals: the whole ones, or all of them in a series that holds no other party.
+
+    The role axis fact (`RoleAxisFact.member_count` and `residual_count`), the
+    `role_scope_defaulted` warning, coverage's open-role dimension, a composite's scope and
+    the heading all count members through this one split, so they agree."""
+    ordered = sorted(set(dcids))
+    kinds = {
+        dcid: party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) for dcid in ordered
+    }
+    residuals = tuple(dcid for dcid in ordered if kinds[dcid] == "residual")
+    kept = tuple(dcid for dcid in ordered if kinds[dcid] not in ("total", "residual"))
+    if not kept and not residuals:
+        kept = tuple(ordered)
+    return PartySplit(parties=kept, residuals=residuals)
 
 
 def is_whole_total(party: PartyRow, *, year: int | None, provenance: str | None) -> bool:

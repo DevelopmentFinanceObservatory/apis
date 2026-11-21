@@ -836,6 +836,37 @@ def test_an_inclusive_answer_counts_the_recipients_of_both_lines(
     assert "both recipients" in defaulted
 
 
+_RESIDUALS = ("DACAfricaUnallocated", "DACAsiaUnallocated")
+_WITH_RESIDUALS = {**_HELD, **{(_DAC2A_MEMBER, _FRA, residual): 5 for residual in _RESIDUALS}}
+"""France's rows beside two regional lines unallocated by country, which the code index
+declares `residual` on DAC2a's recipient side."""
+
+
+@pytest.mark.parametrize("scenario", ["H1", "H2"])
+def test_an_answer_counts_its_residual_recipients_apart_from_its_parties(
+    scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A table answer and a composite one count three members, Ethiopia and two unallocated
+    lines, of which the role axis fact counts the two lines as residual, and the
+    defaulted-scope warning names Ethiopia as the one recipient beside the two unallocated
+    amounts, and the heading names Ethiopia beside them. The scope lists all three, sorted
+    by ref in both answers, as the frame holds them."""
+    _patched_coverage(monkeypatch, _WITH_RESIDUALS)
+
+    part = _resolve_fresh(scenario, held=_WITH_RESIDUALS)
+
+    resolved = part.spec.resolved
+    assert [(f.role, f.member_count, f.residual_count) for f in resolved.role_axis_facts or ()] == [
+        ("destination", 3, 2)
+    ]
+    assert resolved.scope is not None
+    assert [member.ref for member in resolved.scope.members] == sorted((_ETH, *_RESIDUALS))
+    (defaulted,) = [w.message for w in part.warnings if w.code == "role_scope_defaulted"]
+    assert "covers the one recipient and 2 unallocated amounts with data" in defaulted
+    assert resolved.rendered_sentence is not None
+    assert " to Ethiopia and 2 unallocated amounts " in resolved.rendered_sentence
+
+
 def test_an_inclusive_answer_lists_the_parties_its_role_axis_fact_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

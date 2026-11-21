@@ -20,12 +20,13 @@ from collections.abc import Callable
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
 import dc_graph
+from code_index.labels import PRICES_BY_QUALIFIER, PricesKind
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
 from unit_words.currency_codes import ISO_4217_CODES
-from unit_words.unit_class import is_known_non_currency
+from unit_words.unit_class import is_known_non_currency, is_purchasing_power
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,30 @@ def unit_currency(
     `deadline`. An expired deadline raises; any other failed read names no currency.
     """
     return _graph_currency(graph, unit_dcid, deadline=deadline)
+
+
+def unit_prices(
+    graph: EngineGraphClient,
+    unit_dcid: str,
+    qualifier: str | None,
+    *,
+    deadline: float | None,
+) -> PricesKind | None:
+    """The price basis a series in `unit_dcid` is served in, under the `measurementQualifier`
+    `qualifier` of its StatVar, by the rule `satisfies` reads: a unit the registry prices
+    (`Money`) states its own, a chained one constant prices; any other currency unit
+    (`_graph_currency`) is in the prices a priced qualifier states (`PRICES_BY_QUALIFIER`:
+    `Nominal` current, `RealValue` constant), else current prices; a PPP or
+    international-dollar unit is money in the prices a priced qualifier states. None for a
+    unit that is no money, and for a PPP unit whose qualifier states no prices. The graph
+    read honours the absolute monotonic `deadline`, and expiry raises."""
+    value = parse_unit(unit_dcid)
+    if isinstance(value, Money):
+        return value.prices
+    stated = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
+    if _graph_currency(graph, unit_dcid, deadline=deadline) is not None:
+        return stated or "current"
+    return stated if is_purchasing_power(unit_dcid) else None
 
 
 def _is_current_no_base_year(request: IdentityUnitRequest) -> bool:

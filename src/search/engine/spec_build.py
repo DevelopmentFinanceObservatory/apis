@@ -19,7 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import PartyRow
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import party_count
+from materialise.enrichment import party_split
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
@@ -984,27 +984,29 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    Each count is `party_count` of the population on its axis, read in `datasets`, the
-    provenances of the served StatVars. A missing member population yields ``member_count=None``
-    and ``members_available=False``. The origin axis states whether its population holds
+    Each fact counts the population on its axis split into parties and residual members
+    (`party_split`), read in `datasets`, the provenances of the served StatVars. A missing
+    member population yields ``member_count=None``, no ``residual_count`` and
+    ``members_available=False``. The origin axis states whether its population holds
     a multilateral: one of its members where they are known, else one `datasets` publish
     on the axis (`RoleAxisFact.holds_multilaterals`).
     """
     if not facts:
         return None
-    return [
-        RoleAxisFact(
+    stated: list[RoleAxisFact] = []
+    for fact in facts:
+        stated_fact = RoleAxisFact(
             role=fact.role,
-            member_count=(
-                party_count(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
-                if fact.member_dcids is not None
-                else None
-            ),
+            member_count=None,
             members_available=fact.member_dcids is not None,
             holds_multilaterals=_axis_holds_multilaterals(fact, parties=parties, datasets=datasets),
         )
-        for fact in facts
-    ]
+        if fact.member_dcids is not None:
+            stated_fact = stated_fact.counting(
+                party_split(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
+            )
+        stated.append(stated_fact)
+    return stated
 
 
 def _axis_holds_multilaterals(

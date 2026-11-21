@@ -117,7 +117,7 @@ from search.engine.unit.conversion import (
     with_unit_conversion,
 )
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
-from search.engine.unit.refs import unit_currency
+from search.engine.unit.refs import unit_currency, unit_prices
 from search.models import (
     EntityRoleKey,
     IdentityFacetValueRequest,
@@ -571,6 +571,8 @@ def _ground_and_build_spec(
             request_basis=state.unit_request_basis,
             unit_request=_converted_by(state),
             currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
+            prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
+            qualifier=state.shape_draft.meas_qual_dcid,
         ),
         slot_options=slot_options,
         facet_options=facet_options,
