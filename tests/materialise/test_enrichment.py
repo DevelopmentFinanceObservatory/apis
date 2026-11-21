@@ -11,6 +11,8 @@ import httpx
 import pytest
 
 import materialise.enrichment as enrichment_module
+from code_index.composites import provenance_datasets
+from code_index.declarations import CRS_INCLUSIVE, DAC2A_BILATERAL
 from code_index.shared import get_index
 from code_index.types import PartyRow, WholeMarker
 from datasets_api.render import _RenderReads
@@ -249,6 +251,13 @@ _UNWINDOWED = PartyRow(
     published=((_DAC2A, "origin"),),
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",)),),
 )
+_CRS, _IMPUTED = provenance_datasets(CRS_INCLUSIVE)
+_MARKED_IN_ONE_TABLE = PartyRow(
+    dcid="W",
+    kind="total",
+    published=((_CRS, "origin"), (_IMPUTED, "origin")),
+    whole=(WholeMarker(dataset=_CRS, covers=("official",)),),
+)
 
 
 @pytest.mark.parametrize(
@@ -263,6 +272,11 @@ _UNWINDOWED = PartyRow(
         pytest.param(_WINDOWED, None, _DAC2B, False, "false", id="no-marker-needs-no-year"),
         pytest.param(_WINDOWED, 2021, _DAC2B, False, "false", id="a-dataset-with-no-marker"),
         pytest.param(_WINDOWED, 2021, None, False, "", id="no-provenance"),
+        pytest.param(_WINDOWED, 2021, DAC2A_BILATERAL, True, "true", id="a-composites-table"),
+        pytest.param(_MARKED_IN_ONE_TABLE, 2021, _CRS, True, "true", id="the-marked-table"),
+        pytest.param(
+            _MARKED_IN_ONE_TABLE, 2021, CRS_INCLUSIVE, False, "", id="a-composites-tables-disagree"
+        ),
         pytest.param(_UNWINDOWED, None, _DAC2A, True, "true", id="no-window-needs-no-year"),
         pytest.param(_UNWINDOWED, 1960, _DAC2A, True, "true", id="no-window-in-an-early-year"),
         pytest.param(_UNWINDOWED, 2021, None, False, "", id="no-window-still-needs-a-dataset"),
@@ -627,6 +641,23 @@ def test_budget_bounds_individual_probes_and_the_graph_logs_the_unprobed_count(m
 )
 def test_a_period_has_a_year_only_when_it_lies_in_one(cell: object, year: int | None):
     assert period_year(cell) == year
+
+
+def test_the_fixture_index_reads_official_donors_whole_on_a_dac2a_composites_rows():
+    """A DAC2a frame's rows carry the composite's provenance, which reads the DAC2A marker."""
+    official = get_index().parties["DACOfficialDonors"]
+    assert is_whole_total(official, year=2021, provenance=DAC2A_BILATERAL) is True
+    assert (
+        party_cell(
+            "party_whole",
+            "DACOfficialDonors",
+            axis="origin",
+            parties={"DACOfficialDonors": official},
+            year=2021,
+            provenance=DAC2A_BILATERAL,
+        )
+        == "true"
+    )
 
 
 def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():

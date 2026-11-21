@@ -16,10 +16,13 @@ from pathlib import Path
 
 import pytest
 
+from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 from code_index.declarations import (
     BROAD_READINGS,
     CODE_SYSTEMS,
     CONCEPT_GROUPS,
+    CRS_INCLUSIVE,
+    DAC2A_BILATERAL,
     DATASETS,
     MEASURE_VALUE_TEXT,
     PARTY_KIND_OVERRIDES,
@@ -3637,6 +3640,79 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
     assert publishing <= _REVIEWED_AGAINST[trust]
 
 
+@pytest.mark.parametrize(
+    ("datasets", "kind"),
+    [
+        pytest.param(("provenance/OECDDAC2A",), "total", id="dac2a"),
+        pytest.param((DAC2A_BILATERAL,), "total", id="dac2a-composite"),
+        pytest.param(("provenance/OECDCreditorReportingSystem",), "party", id="crs"),
+        pytest.param((), None, id="every-dataset"),
+    ],
+)
+def test_the_fixture_index_reads_a_trust_funds_kind_within_the_readers_datasets(
+    datasets: tuple[str, ...], kind: str | None
+):
+    """A DAC2a frame's rows carry the composite's provenance, which reads as DAC2A. Over every
+    dataset that publishes the fund there are two kinds."""
+    assert get_index().parties["IMFConcessionalTrustFunds"].kind_over("origin", datasets) == kind
+
+
+def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_readers_axis():
+    """The fund is a donor only in the CRS and a total recipient only in DAC2A: a donor read
+    over DAC2A finds no donor there and borrows no kind from the CRS."""
+    row = PartyRow(
+        dcid="TrustFund",
+        kind="party",
+        published=(
+            ("provenance/OECDCreditorReportingSystem", "origin"),
+            ("provenance/OECDDAC2A", "destination"),
+        ),
+        dataset_kinds=(("provenance/OECDDAC2A", "total"),),
+    )
+    assert row.kinds_over("origin", ("provenance/OECDDAC2A",)) == frozenset()
+    assert row.kind_over("destination", (DAC2A_BILATERAL,)) == "total"
+
+
+def test_every_fixture_party_takes_one_kind_and_marker_under_each_provenance_publishing_it():
+    unkinded = []
+    for dcid, row in get_index().parties.items():
+        for axis in {axis for _, axis in row.published}:
+            on_axis = {
+                dataset for dataset, published_axis in row.published if published_axis == axis
+            }
+            composites = {
+                ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
+            }
+            unkinded.extend(
+                (dcid, axis, provenance)
+                for provenance in on_axis | composites
+                if row.kind_over(axis, (provenance,)) is None
+                or len(row.markers_over(provenance)) != 1
+            )
+    assert unkinded == []
+
+
+def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on():
+    crs, imputed = provenance_datasets(CRS_INCLUSIVE)
+    with pytest.raises(
+        ExportRefused,
+        match=re.escape(f"[('TrustFund', 'origin', {CRS_INCLUSIVE!r})] (party, axis, provenance)"),
+    ):
+        _export_parties(
+            {"TrustFund": ("Organization",)},
+            kind_overrides={
+                "TrustFund": KindOverride(
+                    "total",
+                    "a fund",
+                    datasets=frozenset({imputed}),
+                    reviewed=frozenset({crs, imputed}),
+                )
+            },
+            axis="origin",
+            published_in=frozenset({crs, imputed}),
+        )
+
+
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
 def test_the_fixture_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
     index = get_index()
@@ -4007,6 +4083,24 @@ _BOTH = frozenset({_TEST_PROVENANCE, _OTHER})
 
 def _window(*covers: PartyClass, first_year: int | None = None) -> WholeWindow:
     return WholeWindow(covers, first_year)
+
+
+def test_export_index_refuses_a_whole_total_a_composites_tables_mark_differently():
+    crs, imputed = provenance_datasets(CRS_INCLUSIVE)
+    with pytest.raises(
+        ExportRefused,
+        match=re.escape(
+            f"[('DACOfficialDonors', 'origin', {CRS_INCLUSIVE!r})] (party, axis, provenance)"
+        ),
+    ):
+        _export_parties(
+            {"DACOfficialDonors": ("DACGroup",)},
+            whole_totals={
+                "DACOfficialDonors": WholePopulationTotal("origin", {crs: _window("official")}, "a")
+            },
+            axis="origin",
+            published_in=frozenset({crs, imputed}),
+        )
 
 
 def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(tmp_path: Path):

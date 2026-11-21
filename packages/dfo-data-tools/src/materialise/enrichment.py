@@ -14,7 +14,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Collection, Iterable, Mapping
 
-from code_index.types import AnyAxis, PartyKind, PartyRow
+from code_index.types import ANY_AXIS, AnyAxis, PartyKind, PartyRow
 from dc_graph import label_or_self_name
 from dfo_platform.roles import RoleAxis, role_key_axis
 from graph_release.context import served_origin_key
@@ -165,10 +165,10 @@ def party_kind_of(
     """The kind the code index's `parties` row declares for the party `ref` on `axis`, the
     axis of the role the reader reads (`ANY_AXIS` for a reader of no role), in `datasets`, the
     provenances the reader serves (`PartyRow.kind_over`), which holds whatever the graph says
-    (a group of organisations is typed `Organization` and declared `total`). Empty `datasets`
-    reads every dataset that publishes the party on `axis`. `None` for a ref the rows do not
-    list, for a party no dataset publishes on `axis`, and for a party that takes different
-    kinds in those datasets.
+    (a group of organisations is typed `Organization` and declared `total`). A composite
+    provenance among `datasets` reads as its component tables, and empty `datasets` reads every
+    dataset that publishes the party on `axis`. `None` for a ref the rows do not list, for a
+    party no dataset publishes on `axis`, and for a party that takes no one kind in `datasets`.
 
     Search, the options document and every download read this one source, since the index
     lists every party a declared dataset publishes. A coverage build carrying a party the index
@@ -200,26 +200,35 @@ def party_count(
 
 
 def is_whole_total(party: PartyRow, *, year: int | None, provenance: str | None) -> bool:
-    """Whether `party` is a whole total on a row of `provenance` in `year`: a `total` with a
-    marker for `provenance` (`PartyRow.marker`) that applies in `year`. A marker applies in
-    every year when its `years` is `None`, and otherwise only in a `year` inside that window. A
-    row with no `provenance`, or no `year` where a window is set, reads as no whole total, the
-    reading that holds in every dataset and year."""
-    if provenance is None or (marker := party.marker(provenance)) is None:
+    """Whether `party` is a whole total on a row of `provenance` in `year`: a `total` there
+    (`PartyRow.kind_over`) with one marker for `provenance` (`PartyRow.markers_over`, which
+    reads a composite through its component tables) that applies in `year`. A marker applies
+    in every year when its `years` is `None`, and otherwise only in a `year` inside that
+    window. A row with no `provenance`, or no `year` where a window is set, or whose datasets
+    disagree on the marker, reads as no whole total, the reading that holds in every dataset
+    and year."""
+    if provenance is None:
         return False
-    return party.kind_in(provenance) == "total" and _in_window(marker.years, year)
+    readings = party.markers_over(provenance)
+    if len(readings) != 1 or (marker := readings[0]) is None:
+        return False
+    return party.kind_over(ANY_AXIS, (provenance,)) == "total" and _in_window(marker.years, year)
 
 
 def whole_cell(party: PartyRow, *, year: int | None, provenance: str | None) -> str:
     """The `party_whole` cell of `party` on a row of `provenance` in `year`: `true` when it is a
     whole total there (`is_whole_total`) and `false` when it is not. Empty when the row lacks
-    what decides it: a party with whole markers on a row with no `provenance`, or on one with no
-    `year` where that dataset's marker sets a window. A pivot's year-free cell, a period across
-    years and a table without the column all read so. A party with no marker reads `false`,
-    which holds in every dataset and year."""
+    what decides it: a party with whole markers on a row with no `provenance`, on one whose
+    datasets disagree on the marker (`PartyRow.markers_over`), or on one with no `year` where
+    the marker sets a window. A pivot's year-free cell, a period across years and a table
+    without the column all read so. A party with no marker reads `false`, which holds in every
+    dataset and year."""
     if party.whole and provenance is None:
         return ""
-    marker = None if provenance is None else party.marker(provenance)
+    readings = () if provenance is None else party.markers_over(provenance)
+    if len(readings) > 1:
+        return ""
+    marker = readings[0] if readings else None
     if marker is not None and marker.years is not None and year is None:
         return ""
     return "true" if is_whole_total(party, year=year, provenance=provenance) else "false"

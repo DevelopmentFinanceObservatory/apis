@@ -715,6 +715,25 @@ class PartyRow:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
 
+    def markers_over(self, provenance: str) -> tuple[WholeMarker | None, ...]:
+        """The distinct whole readings of the party on rows of `provenance`: for each dataset
+        that reads it (`provenance` itself, or a declared composite's component tables,
+        `code_index.composites.provenance_datasets`) and publishes the party, its marker there
+        (`marker`), or `None` where it has none. Two markers that cover the same classes over
+        the same years are one reading, whatever their dataset. Empty where no such dataset
+        publishes the party, one reading where they agree, and several where they disagree,
+        so a reader that needs one answer has none. A party with no marker reads `(None,)`."""
+        if not self.whole:
+            return (None,)
+        publishing = {dataset for dataset, _ in self.published}
+        readings: dict[
+            tuple[tuple[PartyClass, ...], tuple[int, int] | None] | None, WholeMarker | None
+        ] = {}
+        for dataset in sorted(publishing & _component_datasets((provenance,))):
+            marker = self.marker(dataset)
+            readings.setdefault(None if marker is None else (marker.covers, marker.years), marker)
+        return tuple(readings.values())
+
     def kind_in(self, dataset: str) -> PartyKind:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
         return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
@@ -723,10 +742,14 @@ class PartyRow:
         self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
     ) -> frozenset[PartyKind]:
         """The kinds the party takes in those of `datasets` that publish it on `axis` (on
-        either axis for `ANY_AXIS`), or in every dataset that publishes it there when none of
-        `datasets` does, as for an empty `datasets`. A party no dataset publishes on `axis`
-        takes no kind there. A row without `dataset_kinds` takes `kind` alone wherever it is
-        published."""
+        either axis for `ANY_AXIS`), or in every dataset that publishes it there for an empty
+        `datasets`, a reader that serves every dataset. A declared composite among `datasets`
+        reads as its component tables (`code_index.composites.provenance_datasets`), since a
+        composite's rows carry its provenance and no dataset publishes it. A party no dataset
+        publishes on `axis` takes no kind there. A row without `dataset_kinds` takes `kind`
+        alone wherever it is published, the one kind every dataset gives it. A row with
+        `dataset_kinds` takes no kind over `datasets` none of which publishes it on `axis`, so a
+        reader never borrows the kind another dataset gives it."""
         publishing = {
             dataset
             for dataset, published_axis in self.published
@@ -734,7 +757,7 @@ class PartyRow:
         }
         if not self.dataset_kinds:
             return frozenset((self.kind,)) if publishing else frozenset()
-        named = (publishing & set(datasets)) or publishing
+        named = publishing & _component_datasets(datasets) if datasets else publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
     def kind_over(
@@ -750,6 +773,14 @@ class PartyRow:
         its own `kind`, and for another kind the class that kind gives a row with no whole
         marker (`KIND_CLASSES`)."""
         return self.party_class if kind == self.kind else KIND_CLASSES[kind]
+
+
+def _component_datasets(datasets: Collection[str]) -> set[str]:
+    """`datasets` with each declared composite replaced by its component tables."""
+    # `code_index.composites` imports this module, so it loads on the first read.
+    from code_index.composites import provenance_datasets
+
+    return {table for ref in datasets for table in provenance_datasets(ref)}
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

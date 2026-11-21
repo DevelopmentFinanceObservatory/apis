@@ -20,6 +20,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
+from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 from code_index.constraint_values import constraint_value_fault
 from code_index.declarations import (
     BROAD_READINGS,
@@ -71,10 +72,12 @@ from code_index.types import (
     PartlyStatedValue,
     PartyClass,
     PartyKind,
+    PartyRow,
     PartyWord,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
+    WholeMarker,
     WholeTotalSet,
     covered_class,
     invalid_when_named_entry,
@@ -315,8 +318,9 @@ def export_parties(
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, and a `whole_totals` row the parties contradict
-    (`_check_whole_population_totals`).
+    types give a kind other than `party`, a `whole_totals` row the parties contradict
+    (`_check_whole_population_totals`), and a party that gives no one kind or whole marker under a
+    provenance whose rows can hold it (`_check_provenance_reads`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -403,7 +407,69 @@ def export_parties(
                 _whole_marker_to_dict(dataset, window, parties[row["dcid"]])
                 for dataset, window in sorted(whole.datasets.items())
             ]
+    _check_provenance_reads(rows)
     return rows
+
+
+def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
+    """Raises `ExportRefused` for a party row that gives no one answer on an axis under a
+    provenance whose rows can hold it there: a dataset that publishes it on that axis, or a
+    declared composite one of whose component tables does. The row gives no one kind there
+    (`PartyRow.kind_over`) or its tables disagree on its whole marker
+    (`PartyRow.markers_over`). A frame's rows carry one of these provenances, and a party cell
+    with no answer leaves every sum and rank over the role unavailable.
+
+    The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
+    `PartyRow` reads them through (`code_index.composites.provenance_datasets`) whatever
+    composites `code_index.loader.parse_index` is given to serve."""
+    unkinded, unmarked = [], []
+    for row in rows:
+        party = _party_row(row)
+        for axis in sorted({axis for _, axis in party.published}):
+            on_axis = {
+                dataset for dataset, published_axis in party.published if published_axis == axis
+            }
+            composites = {
+                ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
+            }
+            for provenance in sorted(on_axis | composites):
+                if party.kind_over(axis, (provenance,)) is None:
+                    unkinded.append((party.dcid, axis, provenance))
+                if len(party.markers_over(provenance)) > 1:
+                    unmarked.append((party.dcid, axis, provenance))
+    if unkinded:
+        raise ExportRefused(
+            f"parties take no one kind under provenances that publish them: {unkinded!r} "
+            "(party, axis, provenance); scope PARTY_KIND_OVERRIDES so each composite's tables "
+            "agree on the party's kind"
+        )
+    if unmarked:
+        raise ExportRefused(
+            f"whole totals carry different markers in the tables of a composite that publishes "
+            f"them: {unmarked!r} (party, axis, provenance); mark the total alike in each of the "
+            "composite's tables in WHOLE_POPULATION_TOTALS"
+        )
+
+
+def _party_row(row: Mapping) -> PartyRow:
+    """The kind, publications, dataset kinds and whole markers of an exported party row, as
+    the reader parses them (`code_index.loader`)."""
+    return PartyRow(
+        dcid=row["dcid"],
+        kind=row["kind"],
+        published=tuple(sorted((entry["dataset"], entry["axis"]) for entry in row["published"])),
+        whole=tuple(
+            WholeMarker(
+                dataset=marker["dataset"],
+                covers=tuple(sorted(marker["covers"])),
+                years=tuple(marker["years"]) if "years" in marker else None,
+            )
+            for marker in row.get("whole", ())
+        ),
+        dataset_kinds=tuple(
+            sorted((entry["dataset"], entry["kind"]) for entry in row.get("dataset_kinds", ()))
+        ),
+    )
 
 
 def _check_override_datasets(
