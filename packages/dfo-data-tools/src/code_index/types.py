@@ -735,11 +735,21 @@ class PartyRow:
     def marker_over(self, provenance: str) -> WholeMarker | None:
         """The party's whole marker on rows of `provenance`: its marker in `provenance` itself
         (`marker`), or in the one component table of a declared composite
-        (`declared_composite_tables`). `None` where it has none there, and on a composite of
-        several tables, in none of which the export lets a party carry a marker
-        (`code_index.export.check_composite_whole_totals`)."""
+        (`declared_composite_tables`). A composite whose component binds the table's
+        destinations to one side reads a population that drops the destinations off that
+        side, so a recipient's marker, which covers the table's whole population, holds there
+        only for the bound population's total (`declared_destination_totals`); a donor's
+        marker holds unchanged. `None` where it has none there, where the binding drops it,
+        and on a composite of several tables, in none of which the export lets a party carry a
+        marker (`code_index.export.check_composite_whole_totals`)."""
         tables = declared_composite_tables().get(provenance, (provenance,))
-        return self.marker(tables[0]) if len(tables) == 1 else None
+        if len(tables) != 1:
+            return None
+        marker = self.marker(tables[0])
+        total = declared_destination_totals().get(provenance)
+        if marker is None or total is None or self.dcid == total:
+            return marker
+        return None if self.publishes("destination", tables) else marker
 
     def kind_in(self, dataset: str) -> PartyKind:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
@@ -797,6 +807,26 @@ def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
     from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 
     return MappingProxyType({ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES})
+
+
+@functools.cache
+def declared_destination_totals() -> Mapping[str, str]:
+    """Each declared composite whose component binds its table's destinations to one side
+    (`ComponentRecipe.destinations`), with the total of the population it binds
+    (`code_index.scope_conventions.RolePopulation.total`, the table's
+    `BilateralSource.rebound`). Read once, as `declared_composite_tables` is."""
+    from code_index.composites import DECLARED_COMPOSITES
+    from code_index.scope_conventions import BILATERAL_SOURCES
+
+    rebound = {source.dataset: source.rebound for source in BILATERAL_SOURCES}
+    return MappingProxyType(
+        {
+            ref: rebound[recipe.dataset]
+            for ref, composite in DECLARED_COMPOSITES.items()
+            for recipe in composite.components
+            if recipe.destinations is not None
+        }
+    )
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

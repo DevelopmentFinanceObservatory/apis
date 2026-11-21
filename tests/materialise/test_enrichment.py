@@ -648,21 +648,26 @@ def test_a_period_has_a_year_only_when_it_lies_in_one(cell: object, year: int | 
     assert period_year(cell) == year
 
 
-def test_the_fixture_index_reads_official_donors_whole_on_a_dac2a_composites_rows():
-    """A DAC2a frame's rows carry the composite's provenance, which reads the DAC2A marker."""
-    official = get_index().parties["DACOfficialDonors"]
-    assert is_whole_total(official, year=2021, provenance=DAC2A_BILATERAL) is True
-    assert (
-        party_cell(
-            "party_whole",
-            "DACOfficialDonors",
-            axis="origin",
-            parties={"DACOfficialDonors": official},
-            year=2021,
-            provenance=DAC2A_BILATERAL,
-        )
-        == "true"
-    )
+@pytest.mark.parametrize(
+    ("dcid", "provenance", "inherits"),
+    [
+        pytest.param("DACOfficialDonors", DAC2A_BILATERAL, True, id="donor-total-bound-composite"),
+        pytest.param("DACAllRecipients", _DAC2A, True, id="recipient-total-its-table"),
+        pytest.param("DACAllRecipients", DAC2A_BILATERAL, False, id="spanning-total-bound-off"),
+    ],
+)
+def test_a_bound_composite_inherits_its_tables_marker_only_where_its_population_holds_it(
+    dcid: str, provenance: str, inherits: bool
+):
+    """A DAC2a composite binds its destinations to the bilateral side, so "All Recipients,
+    Total", marked whole over every recipient in DAC2A, is no whole total on its rows; a
+    donor total's marker is untouched by a destination binding."""
+    party = get_index().parties[dcid]
+    marker = party.marker(_DAC2A)
+
+    assert marker is not None
+    assert party.marker_over(provenance) == (marker if inherits else None)
+    assert is_whole_total(party, year=2021, provenance=provenance) is inherits
 
 
 def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():

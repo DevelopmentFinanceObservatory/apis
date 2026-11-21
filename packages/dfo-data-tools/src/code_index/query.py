@@ -42,6 +42,7 @@ from code_index.types import (
     StatVarRow,
     WholeTotalSet,
     declared_composite_tables,
+    declared_destination_totals,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -270,7 +271,8 @@ provenance as its component tables."""
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
     """The hex SHA-256 of `PARTY_READING_VERSION`, each declared composite's component tables
-    (`declared_composite_tables`, sorted by composite) and `parties`'
+    (`declared_composite_tables`) and bound destination total (`declared_destination_totals`),
+    each sorted by composite, and `parties`'
     `(dcid, kind, party_class, whole markers, dataset kinds, published)` rows, sorted by dcid,
     each marker as `(dataset, covers, years)`, each dataset kind as `(dataset, kind)` and each
     publication as `(dataset, axis)`. Neither row order nor a label or group change moves it.
@@ -278,8 +280,8 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
     row's dataset and on whether its year falls inside the window, and the dataset kinds
     because a party's kind and class cells depend on the row's dataset. The publications are
     in it because they decide which kind or marker a reader takes and which roles can hold a
-    total (`PartyRow.publishes`), and the composites' tables because a composite provenance
-    reads as them."""
+    total (`PartyRow.publishes`), and the composites' tables and bound totals because a
+    composite provenance reads its kinds and markers through them."""
     rows = sorted(
         (
             party.dcid,
@@ -292,7 +294,8 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
         for party in parties
     )
     composites = sorted(declared_composite_tables().items())
-    payload = [PARTY_READING_VERSION, composites, rows]
+    bound_totals = sorted(declared_destination_totals().items())
+    payload = [PARTY_READING_VERSION, composites, bound_totals, rows]
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 

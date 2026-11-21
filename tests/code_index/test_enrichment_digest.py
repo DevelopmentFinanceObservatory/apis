@@ -131,12 +131,20 @@ def test_the_digest_moves_when_the_party_reading_version_moves(monkeypatch: pyte
     assert _index(_ROWS).enrichment_digest != baseline
 
 
-def test_the_digest_moves_when_a_composites_tables_move(monkeypatch: pytest.MonkeyPatch):
-    """A composite provenance reads as its tables, so a party cell on its rows moves with them."""
+@pytest.mark.parametrize(
+    ("reading", "added"),
+    [
+        pytest.param("declared_composite_tables", (_DAC2B,), id="tables"),
+        pytest.param("declared_destination_totals", "DACAfrica", id="bound-total"),
+    ],
+)
+def test_the_digest_moves_when_a_composites_reading_moves(
+    monkeypatch: pytest.MonkeyPatch, reading: str, added: object
+):
+    """A composite provenance reads kinds and markers through its tables and the total its
+    destination binding keeps, so a party cell on its rows moves with them."""
     baseline = _index(_ROWS).enrichment_digest
-    tables = dict(query.declared_composite_tables())
-    monkeypatch.setattr(
-        query, "declared_composite_tables", lambda: {**tables, "provenance/Composite": (_DAC2B,)}
-    )
+    declared = dict(getattr(query, reading)())
+    monkeypatch.setattr(query, reading, lambda: {**declared, "provenance/Composite": added})
 
     assert _index(_ROWS).enrichment_digest != baseline
