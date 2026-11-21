@@ -10,6 +10,7 @@ import dataclasses
 import gzip
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -39,6 +40,8 @@ from code_index.declarations import (
     WholeWindow,
 )
 from code_index.export import (
+    PARTY_KIND_UNRESOLVED,
+    WHOLE_MARKER_CONFLICT,
     CoverageJoin,
     ExportRefused,
     PartyPublication,
@@ -3255,12 +3258,12 @@ def _export_parties(
     axis: RoleAxis = "destination",
     axes: frozenset[RoleAxis] | None = None,
     published_in: frozenset[str] = frozenset({_TEST_PROVENANCE}),
-    published_years: tuple[int, int] = (1960, 2024),
+    published_years: tuple[int, int] | Mapping[str, tuple[int, int]] = (1960, 2024),
 ) -> dict:
     """Export the two-system graph with `types_by_party` as graph nodes, named by `names` and
     carrying the `dac_codes`, and `parties` (all of them by default) as the coverage build's
     parties, published on `axes` (just `axis` by default) by the datasets `published_in` in
-    `published_years`."""
+    `published_years`, one span for every dataset or one per dataset."""
     graph = _two_system_graph()
     names = names or {}
     dac_codes = dac_codes or {}
@@ -3277,7 +3280,11 @@ def _export_parties(
     published = frozenset(types_by_party) if parties is None else parties
     publication = PartyPublication(
         pairs=frozenset(product(published_in, axes or {axis})),
-        years=dict.fromkeys(published_in, published_years),
+        years=(
+            dict(published_years)
+            if isinstance(published_years, Mapping)
+            else dict.fromkeys(published_in, published_years)
+        ),
     )
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
     return export_index(
@@ -3658,8 +3665,8 @@ def test_the_fixture_index_reads_a_trust_funds_kind_within_the_readers_datasets(
 
 
 def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_readers_axis():
-    """The fund is a donor only in the CRS and a total recipient only in DAC2A: a donor read
-    over DAC2A finds no donor there and borrows no kind from the CRS."""
+    """A hypothetical fund, a donor only in the CRS and a total recipient only in DAC2A: a
+    donor read over DAC2A finds no donor there and borrows no kind from the CRS."""
     row = PartyRow(
         dcid="TrustFund",
         kind="party",
@@ -3694,10 +3701,7 @@ def test_every_fixture_party_takes_one_kind_and_marker_under_each_provenance_pub
 
 def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on():
     crs, imputed = provenance_datasets(CRS_INCLUSIVE)
-    with pytest.raises(
-        ExportRefused,
-        match=re.escape(f"[('TrustFund', 'origin', {CRS_INCLUSIVE!r})] (party, axis, provenance)"),
-    ):
+    with pytest.raises(ExportRefused) as refused:
         _export_parties(
             {"TrustFund": ("Organization",)},
             kind_overrides={
@@ -3711,6 +3715,10 @@ def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on
             axis="origin",
             published_in=frozenset({crs, imputed}),
         )
+    assert (refused.value.code, refused.value.rows) == (
+        PARTY_KIND_UNRESOLVED,
+        (("TrustFund", "origin", CRS_INCLUSIVE),),
+    )
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
@@ -4087,12 +4095,7 @@ def _window(*covers: PartyClass, first_year: int | None = None) -> WholeWindow:
 
 def test_export_index_refuses_a_whole_total_a_composites_tables_mark_differently():
     crs, imputed = provenance_datasets(CRS_INCLUSIVE)
-    with pytest.raises(
-        ExportRefused,
-        match=re.escape(
-            f"[('DACOfficialDonors', 'origin', {CRS_INCLUSIVE!r})] (party, axis, provenance)"
-        ),
-    ):
+    with pytest.raises(ExportRefused) as refused:
         _export_parties(
             {"DACOfficialDonors": ("DACGroup",)},
             whole_totals={
@@ -4101,6 +4104,40 @@ def test_export_index_refuses_a_whole_total_a_composites_tables_mark_differently
             axis="origin",
             published_in=frozenset({crs, imputed}),
         )
+    assert (refused.value.code, refused.value.rows) == (
+        WHOLE_MARKER_CONFLICT,
+        (("DACOfficialDonors", "origin", CRS_INCLUSIVE),),
+    )
+
+
+def test_a_whole_total_marked_alike_in_a_composites_tables_reads_whole_to_the_last_year(
+    tmp_path: Path,
+):
+    """Each table's window ends in the last year it publishes the total, so two tables that
+    mark it from one year differ in the last: one reading, through the later end."""
+    crs, imputed = provenance_datasets(CRS_INCLUSIVE)
+    document = _export_parties(
+        {"DACOfficialDonors": ("DACGroup",)},
+        whole_totals={
+            "DACOfficialDonors": WholePopulationTotal(
+                "origin",
+                {
+                    crs: _window("official", first_year=2010),
+                    imputed: _window("official", first_year=2010),
+                },
+                "a",
+            )
+        },
+        axis="origin",
+        published_in=frozenset({crs, imputed}),
+        published_years={crs: (2000, 2020), imputed: (2000, 2023)},
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    row = load_index(out).parties["DACOfficialDonors"]
+    assert [marker.years for marker in row.whole] == [(2010, 2020), (2010, 2023)]
+    assert [marker.years for marker in row.markers_over(CRS_INCLUSIVE)] == [(2010, 2023)]
 
 
 def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(tmp_path: Path):

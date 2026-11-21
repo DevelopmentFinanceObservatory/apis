@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from code_index import CodeIndex, parse_index
+from code_index import CodeIndex, parse_index, query
 
 from .conftest import FIXTURE_PATH
 
@@ -101,6 +101,7 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
             published=_donor_in(_DAC2A, _DAC2B),
             dataset_kinds=[{"dataset": _DAC2A, "kind": "total"}],
         ),
+        _replaced(1, published=_donor_in(_DAC2A, _DAC2B, "provenance/OECD_DAC1")),
     ],
     ids=[
         "kind",
@@ -113,9 +114,18 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
         "markers_dropped",
         "party_dropped",
         "dataset_kind",
+        "marked_total_published",
     ],
 )
 def test_the_digest_moves_when_a_kind_a_class_a_marker_or_a_window_changes(
     changed: list[dict[str, Any]],
 ):
     assert _index(changed).enrichment_digest != _index(_ROWS).enrichment_digest
+
+
+def test_the_digest_moves_when_the_party_reading_version_moves(monkeypatch: pytest.MonkeyPatch):
+    """A change to how a row is read re-renders every party file though no row changed."""
+    baseline = _index(_ROWS).enrichment_digest
+    monkeypatch.setattr(query, "PARTY_READING_VERSION", query.PARTY_READING_VERSION + 1)
+
+    assert _index(_ROWS).enrichment_digest != baseline

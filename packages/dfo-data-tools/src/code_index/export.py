@@ -131,7 +131,16 @@ _STATVAR_PASS1_PROPERTIES = (
 
 class ExportRefused(Exception):
     """The graph or the declarations break a rule the code index relies on, so the export
-    refuses to build it. The message names the rule and the offending rows."""
+    refuses to build it. The message names the rule and the offending rows. A refusal that
+    carries them for a reader also sets `code`, the rule broken, and `rows`, the offending
+    rows as tuples; others leave `code` `None` and `rows` empty."""
+
+    def __init__(
+        self, message: str, *, code: str | None = None, rows: Sequence[tuple[str, ...]] = ()
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.rows = tuple(rows)
 
 
 @dataclass(frozen=True)
@@ -411,6 +420,12 @@ def export_parties(
     return rows
 
 
+PARTY_KIND_UNRESOLVED = "party_kind_unresolved"
+"""`ExportRefused.code` for a party that takes no one kind under a provenance publishing it."""
+WHOLE_MARKER_CONFLICT = "whole_marker_conflict"
+"""`ExportRefused.code` for a whole total whose tables under one provenance mark it differently."""
+
+
 def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
     """Raises `ExportRefused` for a party row that gives no one answer on an axis under a
     provenance whose rows can hold it there: a dataset that publishes it on that axis, or a
@@ -422,7 +437,8 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
     The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
     `PartyRow` reads them through (`code_index.composites.provenance_datasets`) whatever
     composites `code_index.loader.parse_index` is given to serve."""
-    unkinded, unmarked = [], []
+    unkinded: list[tuple[str, str, str]] = []
+    unmarked: list[tuple[str, str, str]] = []
     for row in rows:
         party = _party_row(row)
         for axis in sorted({axis for _, axis in party.published}):
@@ -441,13 +457,17 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
         raise ExportRefused(
             f"parties take no one kind under provenances that publish them: {unkinded!r} "
             "(party, axis, provenance); scope PARTY_KIND_OVERRIDES so each composite's tables "
-            "agree on the party's kind"
+            "agree on the party's kind",
+            code=PARTY_KIND_UNRESOLVED,
+            rows=unkinded,
         )
     if unmarked:
         raise ExportRefused(
             f"whole totals carry different markers in the tables of a composite that publishes "
             f"them: {unmarked!r} (party, axis, provenance); mark the total alike in each of the "
-            "composite's tables in WHOLE_POPULATION_TOTALS"
+            "composite's tables in WHOLE_POPULATION_TOTALS",
+            code=WHOLE_MARKER_CONFLICT,
+            rows=unmarked,
         )
 
 

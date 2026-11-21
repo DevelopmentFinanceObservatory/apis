@@ -5,6 +5,7 @@ This module has no graph or file-I/O imports.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -694,9 +695,11 @@ class PartyRow:
 
     def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
         """Whether one of `datasets` publishes the party on `axis`, or any dataset does for
-        `ANY_DATASET`. Empty `datasets` publish nothing."""
+        `ANY_DATASET`. A declared composite among `datasets` reads as its component tables
+        (`code_index.composites.provenance_datasets`). Empty `datasets` publish nothing."""
+        tables = None if datasets is ANY_DATASET else _component_datasets(datasets)
         return any(
-            published_axis == axis and (datasets is ANY_DATASET or dataset in datasets)
+            published_axis == axis and (tables is None or dataset in tables)
             for dataset, published_axis in self.published
         )
 
@@ -719,19 +722,33 @@ class PartyRow:
         """The distinct whole readings of the party on rows of `provenance`: for each dataset
         that reads it (`provenance` itself, or a declared composite's component tables,
         `code_index.composites.provenance_datasets`) and publishes the party, its marker there
-        (`marker`), or `None` where it has none. Two markers that cover the same classes over
-        the same years are one reading, whatever their dataset. Empty where no such dataset
-        publishes the party, one reading where they agree, and several where they disagree,
-        so a reader that needs one answer has none. A party with no marker reads `(None,)`."""
+        (`marker`), or `None` where it has none. Markers are one reading when they cover the
+        same classes from the same first year, or with no window, which is what a declaration
+        states: a window's last year is the last year the dataset publishes the total, so it
+        differs between tables that mark the total alike. The reading's `years` then run from
+        that first year to the last year any of its tables holds the total, since a row of a
+        year holds a figure only from a table publishing the total then. Empty where no such
+        dataset publishes the party, one reading where they agree, and several where they
+        disagree, so a reader that needs one answer has none. A party with no marker reads
+        `(None,)`."""
         if not self.whole:
             return (None,)
         publishing = {dataset for dataset, _ in self.published}
-        readings: dict[
-            tuple[tuple[PartyClass, ...], tuple[int, int] | None] | None, WholeMarker | None
-        ] = {}
+        readings: dict[tuple[tuple[PartyClass, ...], int | None] | None, WholeMarker | None] = {}
         for dataset in sorted(publishing & _component_datasets((provenance,))):
             marker = self.marker(dataset)
-            readings.setdefault(None if marker is None else (marker.covers, marker.years), marker)
+            if marker is None:
+                readings[None] = None
+                continue
+            key = (marker.covers, None if marker.years is None else marker.years[0])
+            held = readings.get(key)
+            if held is not None and held.years is not None and marker.years is not None:
+                marker = WholeMarker(
+                    dataset=held.dataset,
+                    covers=held.covers,
+                    years=(held.years[0], max(held.years[1], marker.years[1])),
+                )
+            readings[key] = marker
         return tuple(readings.values())
 
     def kind_in(self, dataset: str) -> PartyKind:
@@ -747,9 +764,10 @@ class PartyRow:
         reads as its component tables (`code_index.composites.provenance_datasets`), since a
         composite's rows carry its provenance and no dataset publishes it. A party no dataset
         publishes on `axis` takes no kind there. A row without `dataset_kinds` takes `kind`
-        alone wherever it is published, the one kind every dataset gives it. A row with
-        `dataset_kinds` takes no kind over `datasets` none of which publishes it on `axis`, so a
-        reader never borrows the kind another dataset gives it."""
+        alone wherever some dataset publishes it on `axis`, whether or not one of `datasets`
+        does, since every dataset gives it that kind. A row with `dataset_kinds` takes no kind
+        over `datasets` none of which publishes it on `axis`, so it never borrows the kind
+        another dataset gives it."""
         publishing = {
             dataset
             for dataset, published_axis in self.published
@@ -777,10 +795,18 @@ class PartyRow:
 
 def _component_datasets(datasets: Collection[str]) -> set[str]:
     """`datasets` with each declared composite replaced by its component tables."""
-    # `code_index.composites` imports this module, so it loads on the first read.
-    from code_index.composites import provenance_datasets
+    tables = _composite_tables()
+    return {table for ref in datasets for table in tables.get(ref, (ref,))}
 
-    return {table for ref in datasets for table in provenance_datasets(ref)}
+
+@functools.cache
+def _composite_tables() -> Mapping[str, tuple[str, ...]]:
+    """Each declared composite's component tables (`code_index.composites.provenance_datasets`),
+    read once. `code_index.composites` imports this module, so the import waits for the first
+    read."""
+    from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
+
+    return {ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES}
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

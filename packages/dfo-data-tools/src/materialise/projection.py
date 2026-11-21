@@ -151,9 +151,10 @@ def long_kind_cell(
     The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
     `PartyRow.class_of`), on the role's axis. A row with no `provenance` reads the kind of every
     dataset that publishes the party on that axis. `None` for
-    a ref the code index does not list, one that is not text, and a party that takes no one kind
+    a ref the code index does not list, one that is not text, a party that takes no one kind
     for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
-    with no `provenance`."""
+    with no `provenance`, and a total whose datasets for the row disagree on its whole marker
+    (`PartyRow.markers_over`), whose `party_whole` cell is empty too."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
@@ -165,6 +166,8 @@ def long_kind_cell(
     if kind is None:
         return None
     if kind == "total":
+        if dataset is not None and len(party.markers_over(dataset)) > 1:
+            return None
         whole = is_whole_total(party, year=period_year(period), provenance=dataset)
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
     if kind == "residual":
