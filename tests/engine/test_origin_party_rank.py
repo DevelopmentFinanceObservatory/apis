@@ -1,182 +1,99 @@
 """A shape that publishes the organisation a part names as the origin of its flow leads
 the seated menu among the shapes measuring alike (`phase_rank_bind._promoted`).
 
-The index holds one DAC2a disbursement row, which publishes IDA as a provider. Two series
-the index does not carry stand beside it: an IDS disbursement of IDA grants, measuring
-alike, and an IDS debt service, measuring otherwise. Recall ranks both IDS series above
-DAC2a.
+The shapes are built from rows of the recorded dev code index. IDA publishes on the origin
+axis in the CRS, DAC2a and DAC2b, which give the provider's account of their flows, and in
+World Bank IDS, which the index lists without a declared dataset. Recall ranks IDS's series
+of IDA grants, debt service and concessional loans above DAC2a's disbursements, as Studio
+saw it for "IDA disbursements".
 """
 
 from __future__ import annotations
 
+from functools import cache
 from types import SimpleNamespace
 
 import pytest
 
 from code_index.query import CodeIndex
-from code_index.types import (
-    CodeSystemDeclaration,
-    DatasetDeclaration,
-    IndexStamp,
-    PartyRow,
-    StatVarRow,
-)
+from code_index.types import MeasureIndex
 from search.engine.origin_words import owns
 from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import _origin_party, _OriginParty, _promoted
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
+from tests.code_index.support import INDEX_FIXTURE, load_index, load_measure_axes
 from tests.engine.test_expansion_rank_order import _STRONG_ROOT as _ROOT
 from tests.engine.test_expansion_rank_order import _run_prune
 from tests.engine.test_expansion_rank_order import _shape as _prune_shape
 from tests.graph_release.support import serving_index
 
-_DAC2A = "provenance/OECDDAC2A"
-_IDS = "provenance/WorldBankInternationalDebtStatistics"
 _IDA = "InternationalDevelopmentAssociation"
-_ROLES = ("financingProvider", "financingRecipient")
-
-_DAC2A_ROW = StatVarRow(
-    dcid="TESTFIXTURE/Party/Dac2aDisbursement",
-    population_type="FinancialFlow",
-    measured_property="amount",
-    stat_type="measuredValue",
-    measurement_qualifier="Nominal",
-    measurement_denominator=None,
-    observation_properties=_ROLES,
-    constraint_properties={"financialFlowType": "Disbursement", "dac2aAidType": "Total"},
-    provenances=(_DAC2A,),
-)
-_DAC2A_NET_ROW = StatVarRow(
-    dcid="TESTFIXTURE/Party/Dac2aNetDisbursement",
-    population_type="FinancialFlow",
-    measured_property="amount",
-    stat_type="measuredValue",
-    measurement_qualifier="Nominal",
-    measurement_denominator=None,
-    observation_properties=_ROLES,
-    constraint_properties={"financialFlowType": "Disbursement", "dac2aAidType": "TotalNet"},
-    provenances=(_DAC2A,),
-)
-
-# A row the index lists without a declared dataset, so it belongs to no index family.
-_IDS_LISTED_ROW = StatVarRow(
-    dcid="TESTFIXTURE/Party/IdsIdaListedGrants",
-    population_type="FinancialFlow",
-    measured_property="amount",
-    stat_type="measuredValue",
-    measurement_qualifier="Nominal",
-    measurement_denominator=None,
-    observation_properties=("creditor", "debtor"),
-    constraint_properties={
-        "financialFlowType": "Disbursement",
-        "sourceIndicatorCode": "DT.DIS.IDAG.LISTED",
-    },
-    provenances=(_IDS,),
-)
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+_DAC2A = "provenance/OECDDAC2A"
+_NAME = "International Development Association"
 
 
-def _index() -> CodeIndex:
-    return CodeIndex(
-        stamp=IndexStamp(
-            graph_endpoint="test",
-            exported_at="2026-01-01T00:00:00Z",
-            code_counts={"dac2aAidType": 0},
-            statvar_shape_counts={},
-            content_hash="origin-party-rank",
-        ),
-        declarations=(
-            CodeSystemDeclaration(
-                code_system="dac2aAidType",
-                hierarchical=False,
-                disjoint_from_children=True,
-                summable=True,
-                absent_reading="not_declared",
-                plain_name="aid type",
-            ),
-        ),
-        codes=(),
-        statvars=(_DAC2A_ROW, _DAC2A_NET_ROW),
-        listed_statvars=(_IDS_LISTED_ROW,),
-        datasets=(
-            DatasetDeclaration(
-                provenance=_DAC2A,
-                label="OECD DAC2a",
-                description="A test table.",
-                opt_in=False,
-                absent_observation="unknown",
-                account="provider",
-                rank=0,
-                invariants={},
-            ),
-        ),
-        parties=(
-            PartyRow(
-                dcid=_IDA,
-                kind="party",
-                published=((_DAC2A, "origin"), (_IDS, "origin")),
-            ),
-        ),
-    )
+@cache
+def _recorded() -> tuple[CodeIndex, MeasureIndex]:
+    """The recorded dev code index and its measure axes."""
+    return load_index(INDEX_FIXTURE), load_measure_axes(INDEX_FIXTURE)
 
 
-def _arcs(constraints: dict[str, str]) -> dict:
-    return {
-        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
-        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
-        "statType": {"nodes": [{"dcid": "measuredValue"}]},
-        "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
-        "constraintProperties": {"nodes": [{"dcid": p} for p in constraints]},
-        **{p: {"nodes": [{"dcid": v}]} for p, v in constraints.items()},
-        "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
-    }
-
-
-def _shape(shape_id: str, dcid: str, constraints: dict[str, str], score: float) -> ShapeDraft:
+def _shape(shape_id: str, dcid: str, score: float) -> ShapeDraft:
+    """A shape of the recorded index's row `dcid`, recalled at `score`."""
+    row = _recorded()[0].statvar_by_dcid(dcid)
+    assert row is not None, dcid
+    constraints = row.constraint_properties
     return ShapeDraft(
         shape_id=shape_id,
         label=shape_id,
-        pop_type_dcid="FinancialFlow",
-        meas_prop_dcid="amount",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid="Nominal",
+        pop_type_dcid=row.population_type,
+        meas_prop_dcid=row.measured_property,
+        stat_type_dcid=row.stat_type,
+        meas_qual_dcid=row.measurement_qualifier,
         meas_denom_dcid=None,
         slot_keys=(),
-        sv_arc_facts={dcid: _arcs(constraints)},
+        sv_arc_facts={
+            dcid: {
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+                "populationType": {"nodes": [{"dcid": row.population_type}]},
+                "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+                "statType": {"nodes": [{"dcid": row.stat_type}]},
+                "measurementQualifier": {"nodes": [{"dcid": row.measurement_qualifier}]},
+                "constraintProperties": {"nodes": [{"dcid": p} for p in constraints]},
+                **{p: {"nodes": [{"dcid": v}]} for p, v in constraints.items()},
+                "observationProperties": {
+                    "nodes": [{"dcid": role} for role in row.observation_properties]
+                },
+            }
+        },
         representative_score=score,
     )
 
 
+# IDS's IDA grants (DT.DIS.IDAG.CD) and concessional loans (DT.DIS.MIDA.CD), both listed rows.
 _IDS_GRANTS = _shape(
-    "ids_grants",
-    "TESTFIXTURE/Party/IdsIdaGrants",
-    {"financialFlowType": "Disbursement", "sourceIndicatorCode": "DT.DIS.IDAG.CD"},
-    0.70,
+    "ids_grants", "Amount_FinancialFlow_Disbursement_UnrequitedTransfer_Nominal", 0.70
 )
 _IDS_LOANS = _shape(
-    "ids_a_loans",
-    "TESTFIXTURE/Party/IdsIdaLoans",
-    {"financialFlowType": "Disbursement", "sourceIndicatorCode": "DT.DIS.MIDA.CD"},
-    0.60,
+    "ids_loans", "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal", 0.60
 )
 _IDS_DEBT_SERVICE = _shape(
-    "ids_debt_service",
-    "TESTFIXTURE/Party/IdsDebtService",
-    {"financialFlowType": "DebtService", "sourceIndicatorCode": "DT.TDS.MIDA.CD"},
-    0.65,
+    "ids_debt_service", "Amount_FinancialFlow_ServicingPayment_DebtInstrument_Nominal", 0.65
 )
-_DAC2A_SHAPE = _shape("dac2a", _DAC2A_ROW.dcid, dict(_DAC2A_ROW.constraint_properties), 0.55)
-_IDS_LISTED = _shape(
-    "ids_listed", _IDS_LISTED_ROW.dcid, dict(_IDS_LISTED_ROW.constraint_properties), 0.62
+_DAC2A_GROSS = _shape(
+    "dac2a_gross", "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal", 0.55
 )
-_DAC2A_NET_SHAPE = _shape(
-    "dac2a_net", _DAC2A_NET_ROW.dcid, dict(_DAC2A_NET_ROW.constraint_properties), 0.50
+_DAC2A_NET = _shape(
+    "dac2a_net", "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal", 0.50
+)
+_DAC2A_DEPOSITS = _shape(
+    "dac2a_deposits", "Amount_FinancialFlow_Disbursement_DAC2aAidType210_Nominal", 0.50
 )
 # The seated menu, in recall order: grants, debt service, loans, DAC2a.
-_MENU = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _IDS_LOANS, _DAC2A_SHAPE)
-_NAME = "International Development Association"
+_MENU = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _IDS_LOANS, _DAC2A_GROSS)
 
 
 def _state(*, kind: str = "organisation", axis: str = "origin", door: str = "parsed"):
@@ -196,23 +113,46 @@ def _state(*, kind: str = "organisation", axis: str = "origin", door: str = "par
 
 
 def _promoted_ids(state, menu=_MENU) -> list[str]:
-    with serving_index(_index()):
+    with serving_index(*_recorded()):
         return [shape.shape_id for shape in _promoted(_origin_party(state), menu)]
 
 
-def test_the_table_publishing_the_origin_organisation_takes_its_measures_first_slot():
-    """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
-    disbursement of IDA grants. IDS debt service measures otherwise and keeps the second
-    slot, and the two IDS disbursements follow in their order in the slots left."""
-    assert _promoted_ids(_state()) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
+@pytest.mark.parametrize(
+    ("menu", "promoted"),
+    [
+        pytest.param(
+            _MENU,
+            ["dac2a_gross", "ids_debt_service", "ids_grants", "ids_loans"],
+            id="debt-service-keeps-its-slot",
+        ),
+        pytest.param(
+            (_IDS_GRANTS, _IDS_LOANS, _DAC2A_DEPOSITS),
+            ["dac2a_deposits", "ids_grants", "ids_loans"],
+            id="capital-subscriptions",
+        ),
+        pytest.param(
+            (_IDS_GRANTS, _DAC2A_GROSS, _DAC2A_NET),
+            ["dac2a_gross", "dac2a_net", "ids_grants"],
+            id="gross-and-net",
+        ),
+    ],
+)
+def test_the_provider_account_table_leads_the_shapes_measuring_alike(menu, promoted):
+    """DAC2a gives IDA's own account of its disbursements, so its shapes take the first
+    slots of the shapes measuring alike, held by IDS's grants and loans, which IDS lists for
+    IDA as a creditor of its debtors' reports. IDS debt service measures otherwise and keeps
+    its slot. DAC2a's gross and net disbursements measure apart from each other and alike
+    with the IDS grants, so the three are one set and both DAC2a shapes lead it."""
+    assert _promoted_ids(_state(), menu) == promoted
 
 
-def test_every_publisher_of_a_measure_leads_the_shapes_measuring_alike():
-    """DAC2a's gross and net disbursements both publish IDA and both measure as the IDS
-    disbursement of IDA grants does, so the three are one set: the two publishers take its
-    first two slots in their order and the IDS grants follow."""
-    menu = (_IDS_GRANTS, _DAC2A_SHAPE, _DAC2A_NET_SHAPE)
-    assert _promoted_ids(_state(), menu) == ["dac2a", "dac2a_net", "ids_grants"]
+def test_a_dataset_declaring_no_account_publishes_no_origin_organisation():
+    """IDS publishes IDA on the origin axis, and the index declares no account for it, so
+    of IDA's origin publishers the part keeps those giving the provider's account."""
+    with serving_index(*_recorded()):
+        published = _origin_party(_state()).published
+    assert (_DAC2A, "origin") in published
+    assert (_IDS, "origin") not in published
 
 
 @pytest.mark.parametrize(
@@ -228,16 +168,8 @@ def test_the_menu_stands_without_an_origin_organisation(state):
     its origin organisations own no word of its variable. The raw-text door names none: its
     roles are the extraction's reading, not the caller's."""
     assert _promoted_ids(state) == [shape.shape_id for shape in _MENU]
-    with serving_index(_index()):
+    with serving_index(*_recorded()):
         assert _origin_party(state).owned == ()
-
-
-def test_a_table_in_no_index_family_publishes_by_its_rows_provenances():
-    """The index lists the IDS row without a declared dataset, so it belongs to no index
-    family and IDS, its provenance, publishes it, as the raw-text door's source choice reads
-    a recalled row (`source_choice._recalled`). IDS publishes IDA as a creditor, so that
-    shape leads the IDS grants it measures alike with."""
-    assert _promoted_ids(_state(), (_IDS_GRANTS, _IDS_LISTED)) == ["ids_listed", "ids_grants"]
 
 
 def test_a_publisher_seated_as_a_topic_leaf_still_leads_the_menu(monkeypatch):

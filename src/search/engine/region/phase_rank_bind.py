@@ -289,8 +289,9 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
 class _OriginParty:
     """What one part reads once of the organisations it binds as the origin of its flow
     (`origin_words.origin_organisations`): their dcids by the request's name for each, the
-    `(dataset, axis)` pairs that publish them on the origin axis (`PartyRow.published`),
-    and the character ranges of the variable their own words take
+    `(dataset, axis)` pairs that publish them on the origin axis (`PartyRow.published`) of
+    a dataset giving the provider's account of its flows (`_provider_accounts`), and the
+    character ranges of the variable their own words take
     (`origin_words.owned_ranges`), the ranges recall left out too. It remembers, per shape,
     whether its family publishes one of them (`publishes`)."""
 
@@ -311,7 +312,8 @@ class _OriginParty:
 
 def _origin_party(state: ResolveState) -> _OriginParty:
     """The part's `_OriginParty`, read once before its qualifier readings, from the place
-    each name resolved to."""
+    each name resolved to, with the pairs publishing an organisation on the origin axis that
+    `_provider_accounts` keeps."""
     organisations = origin_organisations(
         {
             name: (place_set.node.dcid, place_set.node.kind)
@@ -322,7 +324,7 @@ def _origin_party(state: ResolveState) -> _OriginParty:
         door=state.door,
     )
     index = get_index()
-    published = frozenset(
+    published = _provider_accounts(
         pair
         for dcid in organisations.values()
         if (party := index.parties.get(dcid)) is not None
@@ -333,6 +335,24 @@ def _origin_party(state: ResolveState) -> _OriginParty:
         organisations=organisations,
         published=published,
         owned=_owned(state, organisations, state.variable),
+    )
+
+
+def _provider_accounts(
+    published: Iterable[tuple[str, RoleAxis]],
+) -> frozenset[tuple[str, RoleAxis]]:
+    """The pairs of `published` whose dataset gives the provider's account of its flows
+    (`DatasetDeclaration.account`). A part naming an organisation as the origin of its flow
+    asks what the organisation disbursed, which the provider's account states. A dataset
+    the index declares no account for gives another party's: World Bank IDS lists IDA as
+    the creditor of the debts its debtors report, so its IDA grants count what the debtors
+    received of one instrument, and DAC2a, which states IDA's own disbursements to every
+    recipient, leads for "IDA disbursements"."""
+    datasets = get_index().datasets
+    return frozenset(
+        (dataset, axis)
+        for dataset, axis in published
+        if (declaration := datasets.get(dataset)) is not None and declaration.account == "provider"
     )
 
 
@@ -440,32 +460,24 @@ def _promoted(party: _OriginParty, shapes: Sequence[ShapeDraft]) -> list[ShapeDr
 
 
 def _family_publishes(shape: ShapeDraft, published: AbstractSet[tuple[str, RoleAxis]]) -> bool:
-    """Whether `shape`'s family publishes a party of `published`
-    (`source_choice.publishes_party`): a dataset publishing it (`publishing_datasets`)
-    publishes the party on an axis its rows declare. The family is the shape's index family
-    (`shape_family`), its datasets those candidacy stamped on the shape where it did
-    (`ShapeDraft.datasets`); a shape the index groups in no family stands for the rows the
-    index lists for its members (`CodeIndex.listed_statvars`), published by their
-    provenances. Where `source_choice._recalled` reads the axes of one recalled row, a
-    shape stands for its whole family, so the axes are those of every row's roles; a role
-    naming no flow axis adds none. A shape whose members the index holds no row of
-    publishes none."""
-    index = get_index()
-    family = shape_family(shape, index)
-    if family is not None:
-        rows = family.rows
-    else:
-        rows = tuple(
-            row
-            for dcid in shape.sv_arc_facts or ()
-            if dcid not in index.family_by_dcid and (row := index.statvar_by_dcid(dcid)) is not None
-        )
-    datasets = publishing_datasets(family, rows)
-    if family is not None and shape.datasets is not None:
+    """Whether `shape`'s index family (`shape_family`) publishes a party of `published`
+    (`source_choice.publishes_party`): a dataset publishing the family
+    (`source_choice.publishing_datasets`), of those the part may answer the shape from where
+    candidacy stamped them (`ShapeDraft.datasets`), publishes it on an axis the family
+    declares. Where `source_choice._recalled` reads the axes of one recalled row, a shape
+    stands for its whole family, so the axes are those of every row's roles; a role naming
+    no flow axis adds none. A shape the index groups in no family, a row it lists without a
+    declared dataset, publishes none of `published`, whose datasets each declare an account
+    (`_provider_accounts`)."""
+    family = shape_family(shape, get_index())
+    if family is None:
+        return False
+    datasets = publishing_datasets(family, family.rows)
+    if shape.datasets is not None:
         datasets &= frozenset(shape.datasets)
     axes = frozenset(
         axis
-        for row in rows
+        for row in family.rows
         for role in row.observation_properties
         if (axis := axis_for_role(role)) is not None
     )
