@@ -47,7 +47,7 @@ def _graph_currency_read(
     """The ISO 4217 code `unit_dcid` is denominated in, or None, and whether the answer is
     known. A unit the registry reads as money names its currency, and any other unit it
     types, or a PPP unit (`unit_class.is_known_non_currency`), names none, both with no
-    read. The graph's currency units map the rest. An expired `deadline` raises; any other
+    read. The graph's currency units map the rest. An expired `deadline` raises. Any other
     failed read names no currency and is not known, logs a warning naming `unit_dcid` and
     notes the lost read (`degraded_reads.note_degraded_read`)."""
     value = parse_unit(unit_dcid)
@@ -99,10 +99,10 @@ def unit_prices(
 ) -> UnitPrices | Literal["unread"] | None:
     """The price basis a series in `unit_dcid` is served in, under the `measurementQualifier`
     `qualifier` of its StatVar, by the rule `satisfies` reads, with whether the data states
-    it. A unit the registry prices (`Money`) states its own, a chained one constant prices;
-    any other currency unit (`_graph_currency`) is in the prices a priced qualifier states
+    it. A unit the registry prices (`Money`) states its own, a chained one constant prices.
+    Any other currency unit (`_graph_currency`) is in the prices a priced qualifier states
     (`PRICES_BY_QUALIFIER`: `Nominal` current, `RealValue` constant), else in current prices
-    the rule infers; a PPP or international-dollar unit is money in the prices a priced
+    the rule infers. A PPP or international-dollar unit is money in the prices a priced
     qualifier states. None for a unit that is no money, and for a PPP unit whose qualifier
     states no prices. `PRICES_UNREAD` where the graph read of the currency units failed,
     so whether the unit is money is unknown. The graph read honours the absolute monotonic

@@ -322,7 +322,7 @@ def test_a_heading_splits_its_scope_in_the_datasets_the_answer_serves() -> None:
 
 def test_a_heading_names_no_lone_party_its_role_axis_fact_does_not_count() -> None:
     """The scope names one party only where the role's fact, split in the served StatVars'
-    datasets, counts one party too; otherwise the fact counts the role."""
+    datasets, counts one party too. Otherwise the fact counts the role."""
     stated = _open_role_reading(
         "destination",
         _AID.noun("destination"),

@@ -3239,7 +3239,7 @@ _FRANCE_SHAPED_DESTINATIONS = (
 @pytest.mark.parametrize(
     ("source", "recipients", "words", "rows", "series"),
     [
-        # Total ODA counts every destination but the two totals; the sentence names the
+        # Total ODA counts every destination but the two totals. The sentence names the
         # parties apart from the unallocated amounts.
         pytest.param(
             None, 5, "to 3 recipients and 2 unallocated amounts", 42, 7, id="contributions"
