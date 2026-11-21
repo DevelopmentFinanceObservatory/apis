@@ -131,14 +131,16 @@ class Dependency(StrEnum):
 class GateFinding:
     """A deterministic failure. `examples` holds a few of the rows or ids at fault, sorted.
     A finding raised for a step's own coded refusal carries that step's code in `detail_code`
-    and its offending rows in `rows` (`PlatformRefusal.detail_code`, `.rows`); any other
-    leaves `detail_code` `None` and `rows` empty."""
+    and its first offending rows in `rows` (`PlatformRefusal.detail_code`, `.rows`), at most
+    as many as `examples` holds, with `rows_omitted` counting the rest; any other leaves
+    `detail_code` `None`, `rows` empty and `rows_omitted` zero."""
 
     code: GateCode
     detail: str
     examples: tuple[str, ...] = ()
     detail_code: str | None = None
     rows: tuple[tuple[str, ...], ...] = ()
+    rows_omitted: int = 0
 
     def summary(self) -> dict[str, object]:
         """The finding as JSON values, `detail_code` and `rows` only where set."""
@@ -151,6 +153,8 @@ class GateFinding:
             summary["detail_code"] = self.detail_code
         if self.rows:
             summary["rows"] = [list(row) for row in self.rows]
+        if self.rows_omitted:
+            summary["rows_omitted"] = self.rows_omitted
         return summary
 
 
@@ -213,7 +217,8 @@ def refused(refusal: PlatformRefusal) -> GateResult:
                 GateCode(refusal.code),
                 str(refusal),
                 detail_code=refusal.detail_code,
-                rows=refusal.rows,
+                rows=refusal.rows[:_EXAMPLES],
+                rows_omitted=max(len(refusal.rows) - _EXAMPLES, 0),
             ),
         )
     )
@@ -373,7 +378,7 @@ def check_invariants(
     try:
         coverage = coverage_rows(series, role_map(parts.edges, role_axes))
     except PlatformRefusal as refusal:
-        findings.append(GateFinding(GateCode(refusal.code), str(refusal)))
+        findings.extend(refused(refusal).findings)
     else:
         lacking = _missing(_unique(coverage[VARIABLE_COLUMN]), _variables_with_arcs(parts))
         if lacking:
@@ -445,7 +450,8 @@ def check_dfo_rebuild(
                 f"the DFO parts do not rebuild from the staged platform files: {refusal}",
                 (refusal.code,),
                 detail_code=refusal.detail_code,
-                rows=refusal.rows,
+                rows=refusal.rows[:_EXAMPLES],
+                rows_omitted=max(len(refusal.rows) - _EXAMPLES, 0),
             ),
         )
     differ = sorted(

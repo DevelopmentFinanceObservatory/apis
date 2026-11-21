@@ -965,18 +965,20 @@ def test_an_open_role_reads_a_party_s_kind_on_its_own_axis(total_in, named):
 
 
 @pytest.mark.parametrize(
-    ("datasets", "named"),
+    ("total", "datasets", "named"),
     [
-        pytest.param(["p2"], ["financingProvider"], id="where-it-is-a-donor-total"),
-        pytest.param(["p1"], [], id="where-it-is-no-donor"),
+        pytest.param("MixedParty", ["p2"], ["financingProvider"], id="where-it-is-a-donor-total"),
+        pytest.param("MixedParty", ["p1"], [], id="where-it-is-no-donor"),
+        pytest.param("PlainTotal", ["p2"], ["financingProvider"], id="plain-total-its-dataset"),
+        pytest.param("PlainTotal", ["p1"], [], id="plain-total-another-dataset"),
     ],
 )
 def test_a_bound_role_holds_a_total_only_where_a_read_dataset_publishes_it_on_the_axis(
-    datasets, named
+    total, datasets, named
 ):
-    """A party that is a total only where p2 publishes it as a donor is no donor total in a
-    read of p1, which publishes it as a recipient alone, so a p1 file holds no donor row of it
-    to move."""
+    """A party that is a donor total only where p2 publishes it as a donor is no donor total
+    in a read of p1, which publishes it as a recipient or not at all, so a p1 file holds no
+    donor row of it to move, whether it takes one kind everywhere or a kind per dataset."""
     parties = {
         **_PARTIES,
         "MixedParty": PartyRow(
@@ -986,8 +988,9 @@ def test_a_bound_role_holds_a_total_only_where_a_read_dataset_publishes_it_on_th
             published=(("p1", "destination"), ("p2", "origin")),
             dataset_kinds=(("p2", "total"),),
         ),
+        "PlainTotal": PartyRow(dcid="PlainTotal", kind="total", published=(("p2", "origin"),)),
     }
-    identity = _spec({"entities": {"origin": ["MixedParty", "country/USA"]}})["identity"]
+    identity = _spec({"entities": {"origin": [total, "country/USA"]}})["identity"]
 
     assert (
         list(movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=datasets))

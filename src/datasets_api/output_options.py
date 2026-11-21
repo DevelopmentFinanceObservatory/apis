@@ -114,7 +114,8 @@ def movable_totals_roles(
     function, so a render drops rows only on a role the options document names.
 
     A role bound to several entities qualifies when one of them is a total in one of `datasets` that
-    publishes it on the role's axis (`PartyRow.kinds_over` over `parties`). An open role qualifies
+    publishes it on the role's axis (`PartyRow.publishes`, `PartyRow.kinds_over` over `parties`),
+    whether it takes one kind everywhere or a kind per dataset. An open role qualifies
     when `parties` lists a party that one of `datasets` publishes on its axis and that is a total in
     one of them there (`PartyRow.publishes`, `PartyRow.kinds_over`), or any total some dataset
     publishes on its axis when `datasets` is empty, as for a definition whose read selected no
@@ -125,7 +126,11 @@ def movable_totals_roles(
     publishing = read or ANY_DATASET
 
     def holds_total(party: PartyRow | None, axis: RoleAxis) -> bool:
-        return party is not None and "total" in party.kinds_over(axis, read)
+        return (
+            party is not None
+            and party.publishes(axis, publishing)
+            and "total" in party.kinds_over(axis, read)
+        )
 
     def movable(role: str) -> bool:
         axis = role_key_axis(role)

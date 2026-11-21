@@ -184,14 +184,20 @@ def test_a_platform_refusal_is_a_finding_under_its_own_code() -> None:
     assert not result.passed
 
 
-def test_a_platform_refusal_carries_its_steps_code_and_rows_into_the_report() -> None:
+@pytest.mark.parametrize(("count", "omitted"), [(2, None), (7, 2)])
+def test_a_platform_refusal_carries_its_steps_code_and_first_rows_into_the_report(
+    count: int, omitted: int | None
+) -> None:
+    rows = tuple((f"P{at}", "origin") for at in range(count))
     refusal = PlatformRefusal(
-        "code_index_export_refused", "x", detail_code="party_kind_unresolved", rows=(("A", "B"),)
+        "code_index_export_refused", "x", detail_code="party_kind_unresolved", rows=rows
     )
 
     (finding,) = refused(refusal).summary()["findings"]
 
-    assert (finding["detail_code"], finding["rows"]) == ("party_kind_unresolved", [["A", "B"]])
+    assert finding["detail_code"] == "party_kind_unresolved"
+    assert finding["rows"] == [list(row) for row in rows[:5]]
+    assert finding.get("rows_omitted") == omitted
 
 
 def test_merge_keeps_every_finding_and_refuses_a_report_twice() -> None:

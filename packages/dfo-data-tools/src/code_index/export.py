@@ -424,6 +424,17 @@ def export_parties(
     return rows
 
 
+_MESSAGE_ROWS = 5
+"""The rows a refusal's message lists; `ExportRefused.rows` holds them all."""
+
+
+def _capped(rows: Sequence[tuple[str, ...]]) -> str:
+    """The first `_MESSAGE_ROWS` of `rows`, and how many more there are."""
+    shown = repr(list(rows[:_MESSAGE_ROWS]))
+    left = len(rows) - _MESSAGE_ROWS
+    return f"{shown} and {left} more" if left > 0 else shown
+
+
 PARTY_KIND_UNRESOLVED = "party_kind_unresolved"
 """`ExportRefused.code` for a party that takes no one kind under a provenance publishing it."""
 WHOLE_MARKER_IN_COMPOSITE = "whole_marker_in_composite"
@@ -448,7 +459,7 @@ def check_composite_whole_totals(whole_totals: Mapping[str, WholePopulationTotal
     if marked:
         raise ExportRefused(
             f"WHOLE_POPULATION_TOTALS marks totals in a table of a composite of several tables: "
-            f"{marked!r} (party, dataset, composite); declare the marker on the composite with "
+            f"{_capped(marked)} (party, dataset, composite); declare the marker on the composite with "
             "its own composition check",
             code=WHOLE_MARKER_IN_COMPOSITE,
             rows=marked,
@@ -470,8 +481,9 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
     unkinded = unkinded_reads(_party_row(row) for row in rows)
     if unkinded:
         raise ExportRefused(
-            f"parties take no one kind under provenances that publish them: {unkinded!r} "
-            "(party, axis, provenance); scope PARTY_KIND_OVERRIDES so each composite's tables "
+            f"parties take no one kind under provenances that publish them: "
+            f"{_capped(unkinded)} (party, axis, provenance); scope PARTY_KIND_OVERRIDES so each "
+            "composite's tables "
             "agree on the party's kind",
             code=PARTY_KIND_UNRESOLVED,
             rows=unkinded,

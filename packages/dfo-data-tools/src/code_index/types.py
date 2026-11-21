@@ -791,10 +791,19 @@ class PartyRow:
         return self.party_class if kind == self.kind else KIND_CLASSES[kind]
 
 
-def _component_datasets(datasets: Collection[str]) -> set[str]:
+def _component_datasets(datasets: Collection[str]) -> frozenset[str]:
     """`datasets` with each declared composite replaced by its component tables."""
+    return _component_tables(frozenset(datasets))
+
+
+@functools.lru_cache(maxsize=1024)
+def _component_tables(datasets: frozenset[str]) -> frozenset[str]:
+    """`_component_datasets` for one set of datasets, built once: a frame reads the same few
+    provenances on every row."""
     reads = declared_composite_reads()
-    return {table for ref in datasets for table in (reads[ref].tables if ref in reads else (ref,))}
+    return frozenset(
+        table for ref in datasets for table in (reads[ref].tables if ref in reads else (ref,))
+    )
 
 
 @dataclass(frozen=True, slots=True)
