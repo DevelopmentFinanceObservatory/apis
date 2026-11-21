@@ -17,7 +17,6 @@ from description.facts import DescriptionRecord
 from description.vocabulary import SourceDocumentFacts, Vocabulary
 from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
-from origin_catalogue.periods import FramePeriod
 
 __all__ = [
     "FRAME_UNAVAILABLE_OUTCOME",
@@ -161,11 +160,6 @@ class ResolvedFrame:
     revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
     records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
     derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
-    `source_periods` holds the rows of each family under each source behind the frame
-    (`origin_catalogue.periods.FramePeriod`), as the version recorded them at its mint, a
-    derived frame's roots recorded them, or, for a version minted before versions recorded
-    them, the bound release gives them; `periods_release` names the release they were read
-    under. `None` until the store reads them.
     """
 
     frame_ref: FrameRef
@@ -184,8 +178,6 @@ class ResolvedFrame:
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
     rendering: Mapping[str, object] | None = None
-    source_periods: tuple[FramePeriod, ...] | None = None
-    periods_release: str | None = None
 
 
 # Why a frame does not load. Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed

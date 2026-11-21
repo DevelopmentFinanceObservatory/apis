@@ -21,8 +21,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import origin_catalogue.periods as periods_module
+import origin_catalogue.service as catalogue_service_module
 from artifact_store import Tier
+from assembler.mint.provenance import _partial_period
+from assembler.ports import FrameRef
+from assembler.testing import build_resolved_frame
 from code_index.composites import (
     DECLARED_COMPOSITES,
     CompositeNotServable,
@@ -35,10 +38,8 @@ from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
 from datasets_api.version_store import LiveHeadStore
-from graph_release.service import Release
 from materialise.reshape import RollupNotSummableError, Table
 from materialise.trace import RecordedFamily, StatedFamily, recorded_family_json
-from origin_catalogue.arc_tables import WireArcs
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import recompute_identity
 from spec_registry.reader import StoredDefinition
@@ -51,8 +52,12 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
 )
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
-from tests.graph_release.support import origin_release, serving_release
 from tests.materialise import test_composite as composite_test
+from tests.origin_catalogue.fake_catalogue import (
+    dev_provenance_nodes,
+    documenting,
+    fake_catalogue_service,
+)
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -789,82 +794,53 @@ def test_a_dac2a_inclusive_sum_serves_the_line_a_cell_holds_where_it_lacks_the_o
     }
 
 
-def _family_release(populated: Mapping[str, tuple[str, int, tuple[int, ...]]]) -> Release:
-    """A release filing every populated member in one flow family, whose CRS series hold
-    2021 one in twenty times, a preliminary year, and whose imputed series hold it in full."""
-    arcs: WireArcs = {
-        "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
-        "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
-        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+def test_a_composite_records_only_the_component_its_source_marks_partial():
+    """The imputed table stays partial after the CRS completes, as the pipeline keeps it
+    partial while either input still holds the year in part. The composite's rows carry one
+    provenance, so the variable alone tells a card drawing the bilateral component, complete,
+    from one drawing the imputed component, partial."""
+    nodes = dev_provenance_nodes()
+    crs = {k: v for k, v in nodes[CRS_PROVENANCE].items() if k != "partialObservationDate"}
+    catalogue = documenting({CRS_PROVENANCE: crs, IMPUTED_PROVENANCE: nodes[IMPUTED_PROVENANCE]})
+    members = _members()
+    bilateral = members["bilateral"][0].removeprefix("dcid:")
+    imputed = members["imputed"][0].removeprefix("dcid:")
+    populated = {
+        bilateral: (_CRS_FACET, 100, (2023, 2024, 2025)),
+        imputed: (_IMPUTED_FACET, 7, (2023, 2024, 2025)),
     }
-    series = []
-    for dcid, (facet, _value, _years) in populated.items():
-        reaching = 1 if facet == _CRS_FACET else 20
-        series += [(dcid, facet, [2020, 2021] if n < reaching else [2020]) for n in range(20)]
-    return origin_release(
-        dict.fromkeys(populated, arcs),
-        series=series,
-        facets={facet: _SDMX_PROVENANCE[facet] for facet in (_CRS_FACET, _IMPUTED_FACET)},
-    )
-
-
-def test_a_composite_records_each_components_last_complete_year():
-    """The composite's rows carry its own provenance, which holds no series, so the version
-    records the sources behind them, one entry per family: CRS, whose 2021 is preliminary, and
-    the imputed table, complete through 2021."""
-    populated = _populated()
-    released = _family_release(populated)
-    family = list(released.origin.family_of(next(iter(populated))) or ())
-    with serving_release(released):
+    with catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service(catalogue)):
         _artifacts, client = _composite_client(populated=populated)
         minted = _mint(client)
 
     assert minted.status_code == 200, minted.text
-    assert minted.json()["coverage"]["last_complete_years"] == {
-        _STACKED.provenance: [
-            {
-                "provenance": CRS_PROVENANCE,
-                "family": family,
-                "last_complete_year": 2020,
-                "last_year": 2021,
-            },
-            {
-                "provenance": IMPUTED_PROVENANCE,
-                "family": family,
-                "last_complete_year": 2021,
-                "last_year": 2021,
-            },
-        ]
-    }
+    coverage = minted.json()["coverage"]
+    ((entry),) = coverage["incomplete_after"]
+    assert (entry["provenance"], entry["source"], entry["last_complete_year"]) == (
+        _STACKED.provenance,
+        IMPUTED_PROVENANCE,
+        2024,
+    )
+    assert f"dcid:{imputed}" in entry["stat_vars"]
+    assert f"dcid:{bilateral}" not in entry["stat_vars"]
 
-
-@pytest.mark.parametrize(
-    ("declared", "recorded"),
-    [
-        pytest.param({}, None, id="nothing-counted-or-declared-records-none"),
-        pytest.param(
-            {CRS_PROVENANCE: 2020},
-            [
+    def drawn(stat_var: str) -> bool:
+        frame = build_resolved_frame(
+            frame_ref=FrameRef(spec_id="spec_x", content_version="cv_x"),
+            role_keys=("recipient",),
+            rows=[
                 {
-                    "provenance": CRS_PROVENANCE,
-                    "last_complete_year": 2020,
-                    "last_year": 2021,
+                    "stat_var": f"dcid:{stat_var}",
+                    "recipient": _RECIPIENT,
+                    "time_period": "2025",
+                    "value": 1.0,
+                    "unit": None,
+                    "provenance": _STACKED.provenance,
                 }
             ],
-            id="a-declared-year-is-recorded",
-        ),
-    ],
-)
-def test_a_mint_under_a_release_that_counts_no_complete_years_records_declared_ones(
-    monkeypatch, declared, recorded
-):
-    """A registry-declared year holds whatever the release counts, so the mint records it, for
-    variables of any family (no `family` stated)."""
-    monkeypatch.setattr(periods_module, "declared_periods", lambda: declared)
-    with serving_release(origin_release({})):
-        _artifacts, client = _composite_client()
-        minted = _mint(client)
+            manifest={"coverage": coverage},
+        )
+        return _partial_period(resolved_frame=frame, rows=None)
 
-    assert minted.status_code == 200, minted.text
-    held = minted.json()["coverage"].get("last_complete_years")
-    assert held == (None if recorded is None else {_STACKED.provenance: recorded})
+    assert drawn(imputed)
+    assert not drawn(bilateral)

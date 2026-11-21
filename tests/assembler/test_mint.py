@@ -32,7 +32,6 @@ from assembler.testing import (
 from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dfo_platform.codes import bound_registry_endpoint
-from origin_catalogue.periods import FramePeriod
 from presentation_api.refusals import binding_invalid_spec
 
 
@@ -1804,84 +1803,123 @@ def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(rel
     assert envelope["provenance"]["sources"] == minted.provenance["sources"]
 
 
-def _period(*, provenance=_WDI_REF, variables=("dcid:X",), complete, last=None):
-    return FramePeriod(
-        row_ref=_WDI_REF,
-        provenance=provenance,
-        variables=frozenset(variables),
-        last_complete_year=complete,
-        last_year=last,
+_CRS = "provenance/OECDCreditorReportingSystem"
+_DAC2A = "provenance/OECDDAC2A"
+_IMPUTED = "provenance/ONEImputedMultilateralSectors"
+_INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
+
+
+def _incomplete(provenance, stat_vars, source, year):
+    return {
+        "provenance": provenance,
+        "stat_vars": list(stat_vars),
+        "source": source,
+        "last_complete_year": year,
+    }
+
+
+def _row(provenance, stat_var, period):
+    return {"stat_var": stat_var, "provenance": provenance, "time_period": period, "value": 1.0}
+
+
+def _judged(entries, rows):
+    """`_partial_period` over `rows`, drawn from a frame whose version recorded `entries` in
+    its `coverage` (`None` for a version that recorded none)."""
+    coverage = {} if entries is None else {"incomplete_after": entries}
+    frame = build_resolved_frame(
+        frame_ref=malaria_ethiopia_frame_ref(),
+        role_keys=("recipient",),
+        rows=[{**row, "recipient": "country/ETH", "unit": None} for row in rows],
+        manifest={"schema_version": 1, "coverage": coverage},
     )
+    return _partial_period(resolved_frame=frame, rows=None)
 
 
 @pytest.mark.parametrize(
-    ("periods", "partial"),
+    ("entries", "rows", "partial"),
     [
-        pytest.param(None, False, id="no-periods-read"),
-        pytest.param((), False, id="no-source-states-a-complete-year"),
-        pytest.param((_period(complete=2019),), True, id="crs-preliminary-year-is-partial"),
-        pytest.param((_period(complete=2020),), False, id="control-complete-final-year"),
         pytest.param(
-            (_period(complete=2019, last=2019),),
-            False,
-            id="a-family-ending-at-its-complete-year-is-complete",
-        ),
-        pytest.param(
-            (_period(variables=("dcid:Y",), complete=2019),),
-            False,
-            id="a-partial-family-the-frame-does-not-hold",
-        ),
-        pytest.param(
-            (_period(complete=2020), _period(provenance="provenance/B", complete=2019)),
+            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_row(_CRS, "dcid:X", "2025")],
             True,
-            id="a-composites-partial-component",
+            id="control-a-row-past-its-source-s-complete-year",
         ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_row(_DAC2A, "dcid:X", "2025"), _row(_CRS, "dcid:X", "2024")],
+            False,
+            id="two-provenances-one-variable-the-partial-one-ends-complete",
+        ),
+        pytest.param(
+            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, 2024)],
+            [_row(_INCLUSIVE, "dcid:Imputed", "2025")],
+            True,
+            id="control-a-composite-s-partial-component",
+        ),
+        pytest.param(
+            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, 2024)],
+            [_row(_INCLUSIVE, "dcid:Bilateral", "2025")],
+            False,
+            id="a-composite-card-drawing-its-complete-component",
+        ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_row(_CRS, "dcid:X", "2023"), _row(_CRS, "dcid:X", "2024")],
+            False,
+            id="a-card-drawing-only-complete-years",
+        ),
+        pytest.param([], [_row(_CRS, "dcid:X", "2025")], False, id="counted-and-complete"),
+        pytest.param(None, [_row(_CRS, "dcid:X", "2025")], False, id="unknown-reads-complete"),
     ],
 )
-def test_freshness_data_through_is_the_manifest_window_s_end_year(release, periods, partial):
-    """`partial_period` says the rows a card draws hold a family of one source past the last
-    year that source held it complete (`ResolvedFrame.source_periods`). Both sources' rows of
-    `X` reach 2020."""
+def test_partial_period_is_judged_on_each_row_s_own_cells(entries, rows, partial):
+    """A row is partial when its version recorded its own `(provenance, stat_var)` cells past
+    a last complete year it reaches beyond. Each case asserts its flagged control first."""
+    assert _judged(entries, rows) is partial
+
+
+def test_freshness_data_through_is_the_manifest_window_s_end_year(release):
+    """`partial_period` reads the version's `coverage.incomplete_after`: both sources' rows of
+    `X` reach 2020, and the WDI source's import held only part of 2020."""
     manifest = {
         "schema_version": 1,
         "coverage": {
             "rows": 2,
             "dimensions": [],
             "window": {"kind": "all", "start_year": 2015, "end_year": 2020, "origin": "default"},
+            "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
         },
     }
-    frame = dataclasses.replace(_two_source_frame(manifest=manifest), source_periods=periods)
-    minted = _mint_source_card(resolved_frame=frame, release=release)
+    minted = _mint_source_card(resolved_frame=_two_source_frame(manifest=manifest), release=release)
 
     assert minted.provenance["freshness"] == {
         "data_through": "2020",
         "last_refreshed": None,
         "next_expected": None,
-        "partial_period": partial,
+        "partial_period": True,
     }
 
 
 def test_partial_period_judges_the_rows_a_card_draws():
     """A card whose bound series keeps 2019 alone draws no row of the partial 2020."""
-    frame = dataclasses.replace(
-        _two_source_frame(manifest={"schema_version": 1}),
-        source_periods=(_period(complete=2019),),
+    frame = _two_source_frame(
+        manifest={
+            "schema_version": 1,
+            "coverage": {"incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)]},
+        }
     )
-    rows = tuple(
-        {"stat_var": "dcid:X", "provenance": _WDI_REF, "time_period": period, "value": 1.0}
-        for period in ("2019", "2020")
-    )
+    rows = tuple(_row(_WDI_REF, "dcid:X", period) for period in ("2019", "2020"))
     series = [ResolvedSeries(id="s1", coordinates=(), rows=rows)]
 
     def bound(*periods):
         points = tuple({"period": period, "value": 1.0} for period in periods)
         return [BoundSeries(id="s1", label="X", unit=None, source_ref=_WDI_REF, points=points)]
 
-    assert not _partial_period(
-        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019"))
-    )
     assert _partial_period(
         resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019", "2020"))
+    )
+    assert not _partial_period(
+        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019"))
     )
     assert _partial_period(resolved_frame=frame, rows=None), "a card binding no series"
 

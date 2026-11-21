@@ -98,7 +98,7 @@ from datasets_api.manifest import (
     coverage_facts_of,
     definition_version_record,
     healed_citation,
-    last_complete_years,
+    incomplete_after,
     manifest_output_options,
     persisted_manifest,
     provenance_refs_of,
@@ -113,7 +113,7 @@ from datasets_api.manifest_models import (
     CitationSource,
     Manifest,
     WarningModel,
-    year_coverage_counted,
+    refreshed_coverage,
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
@@ -936,7 +936,7 @@ def prewrite_definition(
         }
         years = {
             **year_coverage(result, requests=requests, index=coverage_index),
-            **last_complete_years(result),
+            **incomplete_after(result),
         }
         manifest = assemble_manifest(
             stored=stored,
@@ -1078,9 +1078,10 @@ def _base_record(
 ) -> VersionRecord:
     """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
     `describer`. It takes the stored body when the version is on record (`persisted`), else
-    this call's. A stored body whose year coverage was never counted
-    (`year_coverage_counted`) takes this call's `coverage`, which the write stores on the
-    version (`VersionRecordWriter.write_version`)."""
+    this call's. A stored body takes this call's `coverage` where it is newer
+    (`refreshed_coverage`): whole when the stored year coverage was never counted, else this
+    call's `incomplete_after`. The write stores it on the version
+    (`VersionRecordWriter.write_version`)."""
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
@@ -1092,9 +1093,11 @@ def _base_record(
     if persisted is None:
         return record
     facts = persisted.version.facts
-    if isinstance(facts, ManifestFacts) and not year_coverage_counted(facts.coverage):
+    if isinstance(facts, ManifestFacts):
         assert isinstance(record.facts, ManifestFacts)
-        facts = replace(facts, coverage=record.facts.coverage)
+        facts = replace(
+            facts, coverage=refreshed_coverage(facts.coverage, minted=record.facts.coverage)
+        )
     return replace(record, facts=facts)
 
 

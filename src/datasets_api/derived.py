@@ -65,7 +65,6 @@ from dataset_store.snapshot import (
 )
 from datasets_api.analysis import resolved_periods
 from datasets_api.codes_snapshot import ArtifactExpired
-from datasets_api.manifest import stored_source_periods
 from datasets_api.manifest_models import CitationModel, CitationSource, RetentionModel
 from datasets_api.mint_models import MintOptions
 from datasets_api.party_totals import TRACE_KEY
@@ -227,39 +226,6 @@ def recipe_citation(reader: SnapshotReader, record: RecipeRecord | None) -> Cita
     """The citation of the derived frame whose stored recipe is `record`: its roots' citations
     merged (`roots_citation`), and no source for a frame with no recipe."""
     return roots_citation(reader, stored_recipe_roots(record))
-
-
-def recipe_root_facts(
-    reader: SnapshotReader, record: RecipeRecord | None
-) -> list[ManifestFacts | None]:
-    """The stored manifest facts of each root of the derived frame whose stored recipe is
-    `record`, in root order, `None` for a root with no stored manifest record: one version
-    read per root, which `facts_citation` and `facts_source_periods` share."""
-    return [_root_facts(reader, root) for root in stored_recipe_roots(record)]
-
-
-def facts_citation(facts: Sequence[ManifestFacts | None]) -> CitationModel:
-    """The citations of the roots whose facts are `facts` merged, as `roots_citation` merges
-    them."""
-    return _merged_citation(
-        CitationModel.model_validate(held.citation) for held in facts if held is not None
-    )
-
-
-def facts_source_periods(
-    facts: Sequence[ManifestFacts | None],
-) -> dict[str, list[Mapping[str, object]]]:
-    """The sources and families behind the rows of the roots whose facts are `facts`
-    (`manifest.stored_source_periods`), merged: for each provenance the rows carry, every
-    root's entries in root order, each once. A root with no stored record adds none."""
-    merged: dict[str, list[Mapping[str, object]]] = {}
-    for held in facts:
-        if held is None:
-            continue
-        for ref, entries in stored_source_periods(held.coverage, held.trace).items():
-            kept = merged.setdefault(ref, [])
-            kept.extend(entry for entry in entries if entry not in kept)
-    return merged
 
 
 def full_recipe_citation(

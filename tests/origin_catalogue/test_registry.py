@@ -220,10 +220,6 @@ def _declared(*rows: str) -> str:
     return _UN + f"declarations = [{', '.join(rows)}]\n"
 
 
-def _period(provenance: str, year: int) -> str:
-    return f'[[last_complete_period]]\nprovenance = "{provenance}"\nyear = {year}\n'
-
-
 def _alias(refs: str | list[str], *names: str) -> str:
     refs = [refs] if isinstance(refs, str) else refs
     listed_refs = ", ".join(f'"{ref}"' for ref in refs)
@@ -378,14 +374,6 @@ def _alias(refs: str | list[str], *names: str) -> str:
         (_BASE + _UN + _alias("provenance/A"), r"alias\.0\.names\n  Tuple should have at least"),
         (_BASE + _UN + _alias("WorldBank", "World Bank"), r"alias\.0\.refs\.0"),
         (_BASE + _UN + _alias("dc/s/World Bank", "World Bank"), r"alias\.0\.refs\.0"),
-        (
-            _BASE
-            + _UN
-            + _period("provenance/OECDDAC2A", 2024)
-            + _period("provenance/OECDDAC2A", 2023),
-            "duplicate declared period provenance",
-        ),
-        (_BASE + _UN + _period("dc/s/WorldBank", 2024), r"last_complete_period\.0\.provenance"),
         (_BASE + _UN + "extra = 1\n", "extra"),
         (_BASE + '[[base]]\nsource = "dc/s/A"\n' + _UN, "label"),
         ("[[base]\n", "not valid UTF-8 TOML"),
@@ -402,19 +390,6 @@ def test_parse_registry_accepts_a_minimal_registry() -> None:
     assert registry.base[0].exclusions is None
     assert registry.un_system[0].exclusions == ()
     assert registry.alias == ()
-
-
-def test_parse_registry_reads_each_declared_last_complete_period() -> None:
-    toml = (
-        _BASE
-        + _UN
-        + _period("provenance/OECDCreditorReportingSystem", 2024)
-        + _period("provenance/OECDDAC2A", 2023)
-    )
-    assert parse_registry(toml.encode("utf-8")).declared_periods() == {
-        "provenance/OECDCreditorReportingSystem": 2024,
-        "provenance/OECDDAC2A": 2023,
-    }
 
 
 def test_parse_registry_accepts_aliases_of_any_reference_kind() -> None:

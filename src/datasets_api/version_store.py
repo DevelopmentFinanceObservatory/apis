@@ -91,7 +91,7 @@ from datasets_api.description_store import (
     read_description,
 )
 from datasets_api.manifest import version_body
-from datasets_api.manifest_models import year_coverage_counted
+from datasets_api.manifest_models import refreshed_coverage
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
     COLLAPSED_FACT_FIELDS,
@@ -305,16 +305,20 @@ def _insert_version(
 
 def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
     """Store `record`'s `coverage` on its version, already on record, when the stored one was
-    never counted (`year_coverage_counted`) and `record`'s was. The column and the `coverage`
-    of `immutable_body` take it whole: the two describe one frame, so they differ only in
-    the year members and the member nouns.
+    never counted (`year_coverage_counted`) and `record`'s was, and otherwise the
+    `incomplete_after` `record`'s states in place of the stored one (`refreshed_coverage`).
+    The column and the `coverage` of `immutable_body` take it whole: the two describe one
+    frame, so they differ only in the year members, the member nouns and the partial years.
+    A later mint of the same version thereby states the partial years of the release it read,
+    so a version minted before versions recorded them, or under a release whose partial year
+    has since completed, reads them afresh.
 
     The read and the write run under the version's link lock, so of two writers the second
-    reads the first's coverage, finds it counted and writes nothing, and both read back one
-    record.
+    reads the first's coverage, finds nothing to change and writes nothing, and both read back
+    one record.
     """
     facts = record.facts
-    if not isinstance(facts, ManifestFacts) or not year_coverage_counted(facts.coverage):
+    if not isinstance(facts, ManifestFacts):
         return
     key = (record.subject_id, record.content_version)
     lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
@@ -324,12 +328,12 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
         key,
     )
     stored = None if row is None else row["coverage"]
-    if not isinstance(stored, Mapping) or year_coverage_counted(
-        cast("Mapping[str, object]", stored)
-    ):
+    if not isinstance(stored, Mapping):
+        return
+    coverage = refreshed_coverage(cast("Mapping[str, object]", stored), minted=facts.coverage)
+    if coverage == stored:
         return
     assert row is not None
-    coverage = dict(facts.coverage)
     body = row["immutable_body"]
     tx.execute(
         "UPDATE datasets.version_record SET coverage = %s, immutable_body = %s "

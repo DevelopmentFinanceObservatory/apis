@@ -206,6 +206,7 @@ def sample_tables() -> CatalogueTables:
                 last_update="2026-10-02",
                 next_expected_update="2027-01-02",
                 documents={"dataNotes": ("- Figures for the latest year are preliminary.\\n",)},
+                partial_periods={CRS: "2025"},
             ),
             WDI_DATASET: SourceDocumentation(provenances=(WDI,), publisher="World Bank"),
             EUROSTAT_GDP: SourceDocumentation(provenances=(EUROSTAT_GDP,)),

@@ -156,10 +156,13 @@ class SourceDocumentation:
     `source_data_url` (`sourceDataUrl`), `citation` (`licenseAttribution`)
     and `license_url` (`license`) are the value every child agrees on.
     `last_update` is the latest child `lastDataRefreshDate` and
-    `next_expected_update` the earliest `nextDataRefreshDate`. `documents`
-    maps each of the four document properties a sole child carries to its
-    distinct stored values, MCF-escaped Markdown; it is empty for an entry
-    with several children."""
+    `next_expected_update` the earliest `nextDataRefreshDate`.
+    `partial_periods` maps each child that states a `partialObservationDate`
+    to it: the period (`2025`) for which the child's import holds only part
+    of the source's data, as the pipeline marks it. A child the pipeline does
+    not mark is left out. `documents` maps each of the four document
+    properties a sole child carries to its distinct stored values,
+    MCF-escaped Markdown; it is empty for an entry with several children."""
 
     provenances: tuple[str, ...] = ()
     publisher: str | None = None
@@ -169,6 +172,18 @@ class SourceDocumentation:
     last_update: str | None = None
     next_expected_update: str | None = None
     documents: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    partial_periods: Mapping[str, str] = field(default_factory=dict)
+
+
+def partial_period_of(catalogue: Catalogue, provenance: str) -> str | None:
+    """The period `provenance`'s import holds only part of, as its source-index entry's
+    documentation states it (`SourceDocumentation.partial_periods`), `None` when the pipeline
+    marks none or `catalogue` does not list the provenance."""
+    row = catalogue.provenance(provenance)
+    if row is None:
+        return None
+    documentation = catalogue.source_documentation(entry_ref(row))
+    return None if documentation is None else documentation.partial_periods.get(provenance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +945,7 @@ __all__ = [
     "SourceRef",
     "UnTables",
     "entry_ref",
+    "partial_period_of",
     "release_held_arcs",
     "release_held_family",
 ]

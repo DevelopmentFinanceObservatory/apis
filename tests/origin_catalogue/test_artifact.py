@@ -25,6 +25,7 @@ from origin_catalogue.artifact import (
     read_un_mirror,
     resident_bytes,
 )
+from origin_catalogue.card_facts import source_documentation_of
 from origin_catalogue.families import FamilyKey, family_tables, summarise_table
 from origin_catalogue.schema import (
     ARC_TARGETS_FILE,
@@ -40,6 +41,7 @@ from origin_catalogue.schema import (
     identity_key,
 )
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, wire_arcs
+from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes
 from tests.origin_catalogue.support import (
     BUILT_AT,
     CENSUS_POVERTY,
@@ -390,6 +392,7 @@ def test_source_documentation_stores_each_entry_s_documentation_facts(tmp_path: 
         "last_update": "2026-10-02",
         "next_expected_update": "2027-01-02",
         "documents": {"dataNotes": ["- Figures for the latest year are preliminary.\\n"]},
+        "partial_periods": {CRS: "2025"},
     }
     assert set(documentation) == {CRS, WDI_DATASET, EUROSTAT_GDP}
 
@@ -990,3 +993,31 @@ def test_loading_refuses_family_counts_the_manifest_does_not_record(tmp_path: Pa
 
     with pytest.raises(CatalogueArtifactError, match="family row counts"):
         load_catalogue(uri)
+
+
+_DEV_PROVENANCE_NODES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "dev_provenance_nodes.json"
+)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "partial"),
+    [
+        pytest.param("provenance/OECDCreditorReportingSystem", "2025", id="crs"),
+        pytest.param("provenance/OECDDAC2A", "2025", id="dac2a"),
+        pytest.param("provenance/OECDDAC2B", "2025", id="dac2b"),
+        pytest.param("provenance/ONEImputedMultilateralSectors", "2025", id="imputed"),
+        pytest.param("provenance/OECDDAC1", None, id="dac1-unmarked"),
+    ],
+)
+def test_documentation_states_the_partial_period_the_dev_graph_marks(
+    provenance: str, partial: str | None
+) -> None:
+    """The documentation of each recorded dev Provenance node states its
+    `partialObservationDate` as the pipeline wrote it, and DAC1, which the pipeline never
+    marks, states none."""
+    arcs = dev_provenance_nodes()[provenance]
+
+    documentation = source_documentation_of({provenance: arcs}, publisher=None)
+
+    assert documentation.partial_periods.get(provenance) == partial

@@ -371,8 +371,8 @@ A card whose frame's version holds a description record carries `description`, c
       ],
       "freshness": {
         "data_through": "2024",
-        "last_refreshed": null,
-        "next_expected": null,
+        "last_refreshed": "2026-06-12",
+        "next_expected": "2026-10",
         "partial_period": false
       },
       "warnings": [],
@@ -417,7 +417,7 @@ A card whose frame's version holds a description record carries `description`, c
 }
 ```
 
-`freshness.data_through` is the last year of the frame's window. `freshness.partial_period` is true when the rows a card draws (its bound series' points, or the whole frame for a card that binds none) hold a variable family of one source past the last year that source held the family complete, so the source has published only part of the later years: the OECD's preliminary CRS year holds about 4 percent of the series the year before holds. The graph release computes the last complete year for each provenance and variable family when it opens, and a `[[last_complete_period]]` entry in the origin catalogue registry overrides it for every family of a provenance (`origin_catalogue.periods`). A dataset version records, when it is minted, one entry per source and family behind its rows with the family's last complete year and the last year its rows reach (`coverage.last_complete_years`, a composite's components listed under its own provenance), and a derived frame carries its roots' records, matched by the provenance its rows carry, so a frame of preliminary values stays partial after the full release lands. A version minted before it recorded them reads the years the release bound to the load gives, read again when another release is bound.
+`freshness.data_through` is the last year of the frame's window. `freshness.partial_period` is true when a row the card draws (its bound series' points, or the whole frame for a card that binds none) lies past the last complete year its version recorded for the row's own `provenance` and `stat_var` cells. The record comes from the publisher: the dfo-pipelines import marks the year its data holds only in part on the source's Provenance node (`partialObservationDate`), the origin catalogue carries it in each source's documentation, and the mint records, for each row provenance and variable whose rows reach that year, the source and the year before it (`coverage.incomplete_after`). A composite's rows take the mark of the component serving each variable. A computed (`ops_`) version records its own when it is published, from the records of the versions it was computed from: a kept cell takes its input's entry or none, and a cell the computation made takes the earliest last complete year among its inputs' entries. The card reads only that stored record, so a frame of preliminary values stays partial after the full release lands, and a version recorded before versions stored it reads as complete until a later mint of the same version records it. A source the pipeline never marks, such as DAC1, whose newest year is preliminary, is never flagged.
 
 #### Intent grammar: scale, range, and change
 

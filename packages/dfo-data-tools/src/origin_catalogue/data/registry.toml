@@ -45,15 +45,6 @@
 #                     out, and an alias with none left is skipped
 #   names             the other names, none blank or written twice in the
 #                     file, ignoring case and extra whitespace
-#
-# [[last_complete_period]]: the last complete year of a DFO provenance, as its
-# publisher declares it. The release computes one for each family of the
-# provenance from how many series reach each year; an entry here wins over it
-# for every family. Declare one only where the publisher announces a
-# preliminary year the series counts do not show, and remove it when the full
-# release lands.
-#   provenance        the provenance/* dcid, declared once
-#   year              the last complete year
 
 [[base]]
 source = "dc/s/BankForInternationalSettlementsBis"

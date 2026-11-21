@@ -34,11 +34,6 @@ data is), anywhere otherwise (Eurostat's NUTS 2 regions). The catalogue job
 scans those places as well as every country, Earth and the regional
 aggregates.
 
-A `[[last_complete_period]]` entry declares the last complete year of a DFO provenance, for
-a publisher that announces a preliminary year its series counts do not show. It wins over
-the year the release computes from those counts (`origin_catalogue.periods`), for every
-family of the provenance. No provenance is declared twice.
-
 An `[[alias]]` entry gives a source's other names, the abbreviations and
 short forms users write that the catalogue's names do not already yield. Its
 `refs` are one or more references, each a provenance, a catalogue Dataset or a
@@ -282,24 +277,15 @@ class Alias(_Model):
         return self
 
 
-class DeclaredPeriod(_Model):
-    """The last complete year a DFO provenance's publisher declares: `year`, before the
-    provenance's preliminary one."""
-
-    provenance: _DfoProvenance
-    year: Annotated[int, Field(ge=1900, le=2200)]
-
-
 class Registry(_Model):
-    """Every admitted upstream source, the other names of any source and the declared last
-    complete years. Duplicate sources, provenances, segments, exclusions, series
-    declarations, refs within an alias, alias names (ignoring case and extra whitespace) and
-    declared provenances are refused, and a UN supersession names a registered agency."""
+    """Every admitted upstream source and the other names of any source. Duplicate
+    sources, provenances, segments, exclusions, series declarations, refs within an alias and
+    alias names (ignoring case and extra whitespace) are refused, and a UN supersession names
+    a registered agency."""
 
     base: tuple[BaseSource, ...]
     un_system: tuple[UnAgency, ...]
     alias: tuple[Alias, ...] = ()
-    last_complete_period: tuple[DeclaredPeriod, ...] = ()
 
     @model_validator(mode="after")
     def _no_duplicates(self) -> Self:
@@ -331,10 +317,6 @@ class Registry(_Model):
             "alias name",
             [" ".join(name.casefold().split()) for entry in self.alias for name in entry.names],
         )
-        _refuse_duplicates(
-            "declared period provenance",
-            [entry.provenance for entry in self.last_complete_period],
-        )
         return self
 
     @model_validator(mode="after")
@@ -365,10 +347,6 @@ class Registry(_Model):
     def series_declarations(self) -> dict[str, SeriesDeclaration]:
         """Each declared UN series' declaration, keyed by series."""
         return {d.series: d for agency in self.un_system for d in agency.declarations}
-
-    def declared_periods(self) -> dict[str, int]:
-        """Each declared provenance's last complete year, keyed by provenance."""
-        return {entry.provenance: entry.year for entry in self.last_complete_period}
 
     def scan_levels(self) -> dict[str, tuple[ScanLevel, ...]]:
         """Each base source's scan level, keyed by source, for sources that
@@ -415,7 +393,6 @@ __all__ = [
     "Alias",
     "BaseSource",
     "ConstraintKey",
-    "DeclaredPeriod",
     "DfoSupersededProvenance",
     "Exclusion",
     "ExclusionReason",

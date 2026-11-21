@@ -148,6 +148,7 @@ _ALLOWLIST: tuple[str, ...] = (
     "nextDataRefreshDate",
     "earliestObservationDate",
     "latestObservationDate",
+    "partialObservationDate",
     "isPartOf",
     "provenanceCategory",
     "containedInPlace",
@@ -551,6 +552,7 @@ class _NodeBuilder:
             next_data_refresh_date=first_value(arcs, "nextDataRefreshDate"),
             earliest_observation_date=first_value(arcs, "earliestObservationDate"),
             latest_observation_date=first_value(arcs, "latestObservationDate"),
+            partial_observation_date=first_value(arcs, "partialObservationDate"),
             freshness=Freshness(
                 release_frequency=release_frequency,
                 release_frequency_label=cadence_label(release_frequency),

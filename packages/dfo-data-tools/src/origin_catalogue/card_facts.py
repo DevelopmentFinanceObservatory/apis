@@ -65,6 +65,7 @@ DOCUMENTATION_CHILD_PROPERTIES: tuple[str, ...] = (
     "licenseAttribution",
     "license",
     "sourceDataUrl",
+    "partialObservationDate",
 )
 """The child arcs `source_documentation_of` reads beyond `CHILD_PROPERTIES`,
 from every child."""
@@ -241,6 +242,11 @@ def source_documentation_of(children: ChildArcs, publisher: str | None) -> Sourc
         license_url=agreed_child_value(children, "license"),
         last_update=max(last_dates) if last_dates else None,
         next_expected_update=min(next_dates) if next_dates else None,
+        partial_periods={
+            child: partial
+            for child, arcs in children.items()
+            if (partial := _first(arcs.get("partialObservationDate", ()))) is not None
+        },
         documents=(
             {
                 prop: tuple(dict.fromkeys(values))

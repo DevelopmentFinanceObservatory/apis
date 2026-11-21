@@ -403,31 +403,53 @@ def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
     ]
 
 
+def recorded_incomplete_after(
+    manifest: Mapping[str, object],
+) -> list[Mapping[str, object]] | None:
+    """The entries naming a frame's rows past the last complete year of their source, as its
+    version recorded them when it was stored: a dataset version's `coverage.incomplete_after`
+    (`datasets_api.manifest.incomplete_after`), a computed version's `incomplete_after`
+    (`datasets_api.lineage_incomplete`). `None` for a version recorded before versions stored
+    them, whose completeness is unknown."""
+    coverage = manifest.get("coverage")
+    held = (
+        coverage.get("incomplete_after")
+        if isinstance(coverage, Mapping)
+        else manifest.get("incomplete_after")
+    )
+    return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))
+
+
 def _partial_period(
     *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
 ) -> bool:
-    """Whether the rows a card draws, `rows` or the whole frame's, hold a family of one source
-    past the last year that source held it complete (`FramePeriod.partial`), so the card's
-    later years hold only part of that family's series. The families and their years are the
-    frame's `source_periods`; a frame the store read none for reads as complete."""
-    periods = resolved_frame.source_periods or ()
-    if not periods:
+    """Whether a row the card draws, of `rows` or else the whole frame's, lies past the last
+    complete year its version recorded for the row's own `provenance` and `stat_var` cells
+    (`recorded_incomplete_after`), so the card's later years hold only part of that source's
+    data. A row with no `provenance` cell is named by an entry with none. A version that
+    recorded nothing reads as complete. Nothing is read beyond the frame's manifest."""
+    entries = recorded_incomplete_after(resolved_frame.manifest)
+    if not entries:
         return False
+    complete: dict[tuple[object, str], int] = {}
+    for entry in entries:
+        year = cast(int, entry["last_complete_year"])
+        for stat_var in cast("Sequence[str]", entry["stat_vars"]):
+            key = (entry.get("provenance"), _bare(stat_var))
+            complete[key] = min(year, complete.get(key, year))
     drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
-    for period in periods:
-        reach = max(
-            (
-                int(time_period[:4])
-                for row in drawn
-                if isinstance(time_period := row.get(TIME_PERIOD_COLUMN), str)
-                and time_period[:4].isdigit()
-                and period.holds(stat_var=row.get(STAT_VAR_COLUMN), ref=row.get(PROVENANCE_COLUMN))
-            ),
-            default=None,
-        )
-        if reach is not None and period.partial(reach):
+    for row in drawn:
+        period, stat_var = row.get(TIME_PERIOD_COLUMN), row.get(STAT_VAR_COLUMN)
+        if not isinstance(period, str) or not period[:4].isdigit() or not isinstance(stat_var, str):
+            continue
+        year = complete.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)))
+        if year is not None and int(period[:4]) > year:
             return True
     return False
+
+
+def _bare(stat_var: str) -> str:
+    return stat_var.removeprefix(STAT_VAR_REF_PREFIX)
 
 
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
