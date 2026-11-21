@@ -164,14 +164,24 @@ class FrameNotRefreshable(Refusal):
 
 class RefreshRebuildFailed(Refusal):
     """The queued rebuild of the frame's dataset failed and will not be retried. Maps to
-    non-retryable `internal_error` (500)."""
+    non-retryable `internal_error` (500). `refusal_code` and `refusal` are the failed
+    operation's, so a caller can branch on the refusal the rebuild met."""
 
     code = "internal_error"
 
-    def __init__(self, *, operation_id: str, refusal_code: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        operation_id: str,
+        refusal_code: str | None,
+        refusal: ProblemSpec | None = None,
+    ) -> None:
         super().__init__(
             f"the queued rebuild {operation_id!r} failed with {refusal_code or 'no recorded code'}"
         )
+        self.operation_id = operation_id
+        self.refusal_code = refusal_code
+        self.refusal = refusal
 
 
 class RefreshBackpressure(Backpressure):
@@ -720,7 +730,11 @@ def answer_frame_refresh(
     else:
         return _answer(manifest.content_version)
     if operation.state == "failed":
-        raise RefreshRebuildFailed(operation_id=operation.id, refusal_code=operation.refusal_code)
+        raise RefreshRebuildFailed(
+            operation_id=operation.id,
+            refusal_code=operation.refusal_code,
+            refusal=operation.refusal,
+        )
     return FramePending(
         operation_id=operation.id, retry_after_s=OPERATION_SUBMIT_RETRY_AFTER_MS / 1000
     )

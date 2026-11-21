@@ -511,6 +511,29 @@ def test_rank_limit_accepts_its_bounds(limit: int) -> None:
     assert op_spec.limit == limit
 
 
+@pytest.mark.parametrize(
+    ("partition_by", "valid"),
+    [
+        pytest.param(["recipient"], True, id="apart"),
+        pytest.param(["sector"], False, id="naming-a-ranked-column"),
+    ],
+)
+def test_rank_partition_by_must_name_no_ranked_column(partition_by: list[str], valid: bool) -> None:
+    def build() -> RankOpSpec:
+        return RankOpSpec(
+            frame_ref=SNAPSHOT_REF, rank_by=["reporter", "sector"], partition_by=partition_by
+        )
+
+    if valid:
+        assert build().partition_by == tuple(partition_by)
+        return
+    with pytest.raises(ValidationError) as refused:
+        build()
+    assert [(error["type"], error["loc"]) for error in refused.value.errors()] == [
+        ("value_error", ())
+    ]
+
+
 @pytest.mark.parametrize("limit", [0, -1, 1001])
 def test_rank_limit_outside_its_bounds_refuses(limit: int) -> None:
     with pytest.raises(ValidationError):

@@ -133,8 +133,15 @@ class FakeRootSource:
         self.reads = 0
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: bool,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
+        """`root` at its version, read as it is: the planner's path words imply no sum here,
+        which `analysis_roots.LiveRootSource` reads."""
         given = root.content_version if isinstance(root, DatasetRoot) else None
         self.resolved.append((root.spec_id, given, latest))
         if root.spec_id in self.pending and (latest or given is None):
