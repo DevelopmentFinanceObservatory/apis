@@ -768,6 +768,9 @@ class PartyRow:
             for dataset, published_axis in self.published
             if axis is ANY_AXIS or published_axis == axis
         }
+        # A row with one kind holds it wherever it is published, so a provenance cell the
+        # index does not list for it still reads that kind. A row with a kind per dataset
+        # needs a read dataset that publishes it, or it would borrow another dataset's kind.
         if not self.dataset_kinds:
             return frozenset((self.kind,)) if publishing else frozenset()
         named = publishing & _component_datasets(datasets) if datasets else publishing
