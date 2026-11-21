@@ -821,7 +821,12 @@ class CompositeRead:
     bound_total: str | None
 
 
-class CompositeReadUndeclared(ValueError):
+class IndexFormatError(ValueError):
+    """A `CodeIndex` export has a missing required key or a value of the wrong type, or the
+    declarations it is read under cannot read it."""
+
+
+class CompositeReadUndeclared(IndexFormatError):
     """A declared composite a `PartyRow` cannot read: a component binds the destinations of a
     table no `BILATERAL_SOURCES` row declares (`code` `bound_table_undeclared`), or its
     components bind populations with different totals (`code` `several_bound_totals`).

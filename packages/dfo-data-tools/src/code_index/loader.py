@@ -25,6 +25,7 @@ from code_index.types import (
     DeclaredDefault,
     HouseDefaultCase,
     ImpliedValue,
+    IndexFormatError,
     IndexStamp,
     MeasureAxis,
     MeasureClassDeclaration,
@@ -55,10 +56,6 @@ _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "u
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
 _HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
 _LEGACY_PARTY_KEYS = frozenset({"datasets", "axes"})
-
-
-class IndexFormatError(ValueError):
-    """A `CodeIndex` export has a missing required key or a value of the wrong type."""
 
 
 class ServedCompositeUndeclared(IndexFormatError):

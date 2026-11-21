@@ -142,6 +142,26 @@ class GateFinding:
     rows: tuple[tuple[str, ...], ...] = ()
     rows_omitted: int = 0
 
+    @classmethod
+    def from_refusal(
+        cls,
+        refusal: PlatformRefusal,
+        *,
+        code: GateCode | None = None,
+        detail: str | None = None,
+        examples: tuple[str, ...] = (),
+    ) -> GateFinding:
+        """The finding for `refusal`: under its own code and message unless `code` and
+        `detail` name others, with its `detail_code` and its first rows."""
+        return cls(
+            GateCode(refusal.code) if code is None else code,
+            str(refusal) if detail is None else detail,
+            examples,
+            detail_code=refusal.detail_code,
+            rows=refusal.rows[:_EXAMPLES],
+            rows_omitted=max(len(refusal.rows) - _EXAMPLES, 0),
+        )
+
     def summary(self) -> dict[str, object]:
         """The finding as JSON values, `detail_code` and `rows` only where set."""
         summary: dict[str, object] = {
@@ -211,17 +231,7 @@ def merge(*results: GateResult) -> GateResult:
 
 def refused(refusal: PlatformRefusal) -> GateResult:
     """The finding for a platform build that refused its snapshot."""
-    return GateResult(
-        findings=(
-            GateFinding(
-                GateCode(refusal.code),
-                str(refusal),
-                detail_code=refusal.detail_code,
-                rows=refusal.rows[:_EXAMPLES],
-                rows_omitted=max(len(refusal.rows) - _EXAMPLES, 0),
-            ),
-        )
-    )
+    return GateResult(findings=(GateFinding.from_refusal(refusal),))
 
 
 class FamilyReader(Protocol):
@@ -445,13 +455,11 @@ def check_dfo_rebuild(
         rebuilt = build_dfo_parts(dfo_inputs(parts, declarations), base_parties).blobs()
     except PlatformRefusal as refusal:
         return (
-            GateFinding(
-                GateCode.DFO_REBUILD_MISMATCH,
-                f"the DFO parts do not rebuild from the staged platform files: {refusal}",
-                (refusal.code,),
-                detail_code=refusal.detail_code,
-                rows=refusal.rows[:_EXAMPLES],
-                rows_omitted=max(len(refusal.rows) - _EXAMPLES, 0),
+            GateFinding.from_refusal(
+                refusal,
+                code=GateCode.DFO_REBUILD_MISMATCH,
+                detail=f"the DFO parts do not rebuild from the staged platform files: {refusal}",
+                examples=(refusal.code,),
             ),
         )
     differ = sorted(
