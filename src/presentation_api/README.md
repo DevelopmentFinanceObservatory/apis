@@ -371,8 +371,8 @@ A card whose frame's version holds a description record carries `description`, c
       ],
       "freshness": {
         "data_through": "2024",
-        "last_refreshed": "2026-06-12",
-        "next_expected": "2026-10",
+        "last_refreshed": null,
+        "next_expected": null,
         "partial_period": false
       },
       "warnings": [],
@@ -416,6 +416,8 @@ A card whose frame's version holds a description record carries `description`, c
   }
 }
 ```
+
+`freshness.data_through` is the last year of the frame's window. `freshness.partial_period` is true when that year is later than the last complete year a cited source holds for the frame's variables, so the source has published only part of it: the OECD's preliminary CRS year holds about 4 percent of the series the year before holds. The graph release computes the last complete year for each provenance and variable family when it opens, and a `[[last_complete_period]]` entry in the origin catalogue registry overrides it (`origin_catalogue.periods`). A dataset version records the year each source held when it was minted (`coverage.last_complete_years`), so a frame of preliminary values stays partial after the full release lands; a version minted before it recorded one reads the year the bound release gives today.
 
 #### Intent grammar: scale, range, and change
 

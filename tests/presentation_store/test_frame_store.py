@@ -120,7 +120,7 @@ from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.fixtures.provenance import arc_targets
-from tests.graph_release.support import release_at_revision
+from tests.graph_release.support import origin_release, release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
     stored_canonical_frame_959f8bc,
@@ -4016,6 +4016,35 @@ def test_load_carries_what_each_cited_source_s_document_says_and_caches_it(fixtu
     }
     assert second is first
     assert graph.calls == reads_after_first_load
+
+
+def test_load_carries_the_last_complete_year_of_each_source_for_the_variables_it_resolved():
+    """The frame's manifest trace names the variables its definition resolved, and the bound
+    release's family counts under the cited source give their last complete year: a final year
+    holding one series of the twenty before it is partial."""
+    snapshots, artifacts, frame_ref, _ = _thin_spec_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version,
+        facts=replace(version.facts, trace={"resolved_stat_vars": [{"ref": "dcid:Amount_Aid"}]}),
+    )
+    released = origin_release(
+        {
+            "Amount_Aid": {
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+                "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
+                "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+            }
+        },
+        series=[("Amount_Aid", "f", [2023, 2024, 2025]), *[("Amount_Aid", "f", [2023, 2024])] * 19],
+        facets={"f": "src_oecd_dac"},
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=_documenting_graph())
+
+    with bound_release(released):
+        loaded = store.load(frame_ref=frame_ref)
+
+    assert loaded.source_documents["src_oecd_dac"].last_complete_period == "2024"
 
 
 def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():

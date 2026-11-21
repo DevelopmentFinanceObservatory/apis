@@ -104,7 +104,9 @@ class CoverageModel(BaseModel):
     `recent_years`, `elected_year` and `fullest_year` set the frame's one year beside the
     years around it (`datasets_api.manifest.year_coverage`). They are counted once, when
     the version is minted, and stored with it, all three or none, so every read of the
-    version states the same ones. A `None` member is left out of every dump."""
+    version states the same ones. `last_complete_years` is recorded at the same mint
+    (`datasets_api.manifest.last_complete_years`). A `None` member is left out of every
+    dump."""
 
     model_config = ConfigDict(extra="forbid")
     rows: int
@@ -129,6 +131,16 @@ class CoverageModel(BaseModel):
             "the year a latest window served when the version was minted. It is the "
             "frame's year under a latest window. A frame of a named year after it holds a "
             "year a latest window passes over"
+        ),
+    )
+    last_complete_years: dict[str, int] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the last complete year of each provenance the frame's rows come from, for the "
+            "variables it resolved, as the graph release held it when the version was minted: "
+            "a later year holds only part of that source's series. Empty when no source "
+            "states one, and absent on a version minted before the member existed"
         ),
     )
     fullest_year: YearCoverage | None = Field(

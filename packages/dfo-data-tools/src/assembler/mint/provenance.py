@@ -22,6 +22,7 @@ from assembler.ports import NamedSeries, ResolvedFrame
 from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
+from description.vocabulary import SourceDocumentFacts
 from dfo_platform.columns import PROVENANCE_COLUMN
 
 DESCRIPTION_PROVENANCE_MEMBERS = ("sources", "freshness", "warnings", "citation")
@@ -376,6 +377,39 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
     return str(end_year) if end_year is not None else None
 
 
+def _partial_period(
+    *,
+    data_through: str | None,
+    manifest: Mapping[str, object],
+    sources: Sequence[Mapping[str, object]],
+    documents: Mapping[str, SourceDocumentFacts],
+) -> bool:
+    """Whether `data_through` is later than the last complete year a cited source held for
+    the frame's variables, so its final period is partial.
+
+    The version's `coverage.last_complete_years`, recorded when it was minted, decide, since
+    the frame holds the values its sources had published then. A version minted before the
+    member existed reads each source's year today (`SourceDocumentFacts.last_complete_period`).
+    A source neither gives a year for reads as complete."""
+    if data_through is None or not data_through.isdigit():
+        return False
+    refs = [cast(str, ref) for source in sources if (ref := source.get("ref")) is not None]
+    coverage = cast("Mapping[str, object]", manifest.get("coverage") or {})
+    recorded = coverage.get("last_complete_years")
+    if isinstance(recorded, Mapping):
+        years = cast("Mapping[str, object]", recorded)
+        complete = [year for ref in refs if isinstance(year := years.get(ref), int)]
+    else:
+        complete = [
+            int(year)
+            for ref in refs
+            if (facts := documents.get(ref)) is not None
+            and (year := facts.last_complete_period) is not None
+            and year.isdigit()
+        ]
+    return bool(complete) and int(data_through) > min(complete)
+
+
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
     """The steps a card takes after drawing its selection: a stat card's `change` between its
     two basis periods (`description.compose.change_step`), else none."""
@@ -404,6 +438,7 @@ def _build_provenance(
     manifest = resolved_frame.manifest
     record = resolved_frame.description_record
     warnings = cast(Sequence[Mapping[str, object]], manifest.get("warnings") or ())
+    data_through = _data_through(manifest)
     return {
         "inputs": [
             {
@@ -414,10 +449,15 @@ def _build_provenance(
         "execution_ref": resolved_frame.replay_key,
         "sources": list(sources),
         "freshness": {
-            "data_through": _data_through(manifest),
+            "data_through": data_through,
             "last_refreshed": None,
             "next_expected": None,
-            "partial_period": False,
+            "partial_period": _partial_period(
+                data_through=data_through,
+                manifest=manifest,
+                sources=sources,
+                documents=resolved_frame.source_documents,
+            ),
         },
         "warnings": _translate_warnings(warnings, labels=resolved_frame.labels),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),

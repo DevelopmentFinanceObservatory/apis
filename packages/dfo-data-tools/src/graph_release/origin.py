@@ -18,7 +18,9 @@ variables' arcs and joins its summaries to the catalogue's base ones.
 
 The view also holds the release's `ReleaseGraphReader`, built once as the release opens, which
 `statvar_members.MemberEnumerator` walks in place of the graph for a family the release holds
-(`ReleaseOrigin.holds_family`).
+(`ReleaseOrigin.holds_family`), and the last complete year of each family under each
+provenance (`ReleaseOrigin.complete_years`), counted over the `series` part's year masks, the
+rows the coverage index is a view over (`series_coverage.complete`).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from graph_release.coverage import HORIZON
 from graph_release.dfo import ReleaseGraphReader
 from graph_release.format import LoadedRelease
 from graph_release.platform import PlatformRefusal
@@ -39,6 +42,7 @@ from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
 from origin_catalogue.arc_tables import ArcTablesBuilder, SpannerNode, spanner_wire_arcs
 from origin_catalogue.families import FamilyKey, FamilySummary, base_without, summarise_table
 from origin_catalogue.un_mirror import UnArc
+from series_coverage.complete import group_year_counts, last_complete_years
 
 if TYPE_CHECKING:
     from origin_catalogue.catalogue import Catalogue
@@ -52,11 +56,30 @@ class ReleaseOrigin:
     """A release's DFO variables, each with its arc rows in dcid order (`arcs`), and the
     summary of each family of them (`families`), as the catalogue job's `dfo` arc table and
     `origin_catalogue.families.summarise_table` over it give them. `reader` answers graph reads
-    over the DFO variables' edges and the nodes those edges join."""
+    over the DFO variables' edges and the nodes those edges join. `complete_years` maps each
+    provenance to the last complete year (`series_coverage.complete.last_complete_year`) of
+    each family whose members it holds series of, counted over every series of those members
+    under the provenance; a view built without the `facets` part holds none."""
 
     arcs: Mapping[str, tuple[UnArc, ...]]
     families: Mapping[FamilyKey, FamilySummary]
     reader: ReleaseGraphReader
+    complete_years: Mapping[str, Mapping[FamilyKey, int]] = field(default_factory=dict)
+    # Each member's family, read from `families`.
+    _family_of: dict[str, FamilyKey] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_family_of",
+            {member: key for key, summary in self.families.items() for member in summary.members},
+        )
+
+    def family_of(self, variable: str) -> FamilyKey | None:
+        """The family `families` files `variable` under, or None for a variable it lists in
+        none."""
+        return self._family_of.get(variable)
+
     # `base_families_without_dfo` per catalogue build id, held here so it goes with the release.
     _base_without_dfo: dict[str, Mapping[FamilyKey, FamilySummary | None]] = field(
         default_factory=dict, init=False, repr=False
@@ -115,9 +138,12 @@ class ReleaseOrigin:
         return held
 
 
-def origin_view(*, series: pa.Table, edges: pa.Table, nodes: pa.Table) -> ReleaseOrigin:
-    """The `ReleaseOrigin` of the `series`, `edges` and `nodes` parts. Raises `ViewRefused`
-    for a target whose `Node` row is neither an entity nor a literal
+def origin_view(
+    *, series: pa.Table, edges: pa.Table, nodes: pa.Table, facets: pa.Table | None = None
+) -> ReleaseOrigin:
+    """The `ReleaseOrigin` of the `series`, `edges` and `nodes` parts, with the complete years
+    of each family under each provenance when `facets` names each series' provenance. Raises
+    `ViewRefused` for a target whose `Node` row is neither an entity nor a literal
     (`origin_catalogue.arc_tables.spanner_wire_target`)."""
     # Unique before decoding: the series column has a row per series, millions of them.
     observed = set(cast("list[str]", series["variable_measured"].unique().to_pylist()))
@@ -164,7 +190,71 @@ def origin_view(*, series: pa.Table, edges: pa.Table, nodes: pa.Table) -> Releas
         )
     except PlatformRefusal as exc:
         raise ViewRefused(f"the origin view does not build: {exc}") from exc
-    return ReleaseOrigin(arcs=table, families=summarise_table(table), reader=reader)
+    families = summarise_table(table)
+    return ReleaseOrigin(
+        arcs=table,
+        families=families,
+        reader=reader,
+        complete_years={} if facets is None else _complete_years(series, facets, families),
+    )
+
+
+def _complete_years(
+    series: pa.Table, facets: pa.Table, families: Mapping[FamilyKey, FamilySummary]
+) -> dict[str, dict[FamilyKey, int]]:
+    """The last complete year of each family under each provenance, over the year masks of
+    every series of the family's members, each series filed under its facet's provenance. A
+    series whose variable no family lists or whose facet `facets` does not hold is left out,
+    and a mask word a series lacks reads as no year."""
+    keys = list(families)
+    family_code = {
+        member: code for code, key in enumerate(keys) for member in families[key].members
+    }
+    variables = _Column.of(series["variable_measured"])
+    row_family = np.array([family_code.get(name, -1) for name in variables.values], dtype=np.int64)[
+        variables.codes
+    ]
+    provenance_of = dict(
+        zip(
+            cast("list[str]", facets["facet_id"].to_pylist()),
+            cast("list[str]", _strings(facets["provenance"]).to_pylist()),
+            strict=True,
+        )
+    )
+    provenances = sorted(set(provenance_of.values()))
+    provenance_code = {name: code for code, name in enumerate(provenances)}
+    facet_ids = _Column.of(series["facet_id"])
+    row_provenance = np.array(
+        [provenance_code.get(provenance_of.get(facet, ""), -1) for facet in facet_ids.values],
+        dtype=np.int64,
+    )[facet_ids.codes]
+    groups = np.where(
+        (row_family >= 0) & (row_provenance >= 0), row_provenance * len(keys) + row_family, -1
+    )
+    masks = np.column_stack(
+        [
+            series[f"period_mask_{word}"]
+            .fill_null(pa.scalar(0, pa.int64()))
+            .to_numpy()
+            .astype(np.uint64)
+            for word in range(HORIZON.mask_words)
+        ]
+    )
+    counts = group_year_counts(
+        masks, groups, group_count=len(provenances) * len(keys), horizon=HORIZON
+    )
+    complete: dict[str, dict[FamilyKey, int]] = {}
+    for group, year in enumerate(last_complete_years(counts, horizon=HORIZON)):
+        if year is not None:
+            provenance, family = divmod(group, len(keys))
+            complete.setdefault(provenances[provenance], {})[keys[family]] = year
+    return complete
+
+
+def _strings(column: pa.ChunkedArray) -> pa.Array:
+    """`column` as plain strings, decoding a dictionary column."""
+    array = column.combine_chunks()
+    return array.cast(pa.string()) if pa.types.is_dictionary(array.type) else array
 
 
 @dataclass(frozen=True)
@@ -222,10 +312,12 @@ def release_origin(loaded: LoadedRelease) -> ReleaseOrigin:
     """`origin_view` over a published release. Raises `ViewRefused` for a release that lacks
     a part the view reads."""
     try:
-        series, edges, nodes = (loaded.tables[name] for name in ("series", "edges", "nodes"))
+        series, edges, nodes, facets = (
+            loaded.tables[name] for name in ("series", "edges", "nodes", "facets")
+        )
     except KeyError as exc:
         raise ViewRefused(f"the release holds no {exc.args[0]} part") from exc
-    return origin_view(series=series, edges=edges, nodes=nodes)
+    return origin_view(series=series, edges=edges, nodes=nodes, facets=facets)
 
 
 __all__ = ["ReleaseOrigin", "origin_view", "release_origin"]

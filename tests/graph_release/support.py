@@ -6,7 +6,7 @@ import dataclasses
 import hashlib
 import json
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -22,6 +22,7 @@ from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from graph_release.authored import literal_id
 from graph_release.context import bound_release, current_release
+from graph_release.coverage import HORIZON
 from graph_release.declarations import DECLARATIONS
 from graph_release.format import (
     MASK_EPOCH,
@@ -420,10 +421,17 @@ _ORIGIN_PROVENANCE = "provenance/DFOOntology"
 """The provenance of an `origin_release` edge whose target names none."""
 
 
-def origin_release(variables: Mapping[str, WireArcs]) -> Release:
+def origin_release(
+    variables: Mapping[str, WireArcs],
+    *,
+    series: Sequence[tuple[str, str, Sequence[int]]] = (),
+    facets: Mapping[str, str] | None = None,
+) -> Release:
     """The bound release with an origin view holding `variables`, each with its `->*` arcs as
     a test graph answers them, in place of its own, under an id of its own, served by no
-    service. Its `edges` and `nodes` rows are those DFO's Spanner holds for such a variable
+    service. With `facets`, the provenance of each facet id, each `series` row, a variable,
+    its facet id and the years it holds, is a `series` row of the view, so it holds the
+    complete years of each family under each provenance; without, it holds none. Its `edges` and `nodes` rows are those DFO's Spanner holds for such a variable
     (`graph_release.origin`): an edge per target, a `Node` row per variable and per typed
     target, a literal row per value, and an `authored` row naming an untyped target by its
     dcid alone, which drops any name the test graph gives it, so the view answers each variable's arcs as `ArcTablesBuilder` holds the
@@ -455,16 +463,48 @@ def origin_release(variables: Mapping[str, WireArcs]) -> Release:
                     }
                 )
     origin = origin_view(
-        series=pa.table({"variable_measured": pa.array(list(variables), pa.string())}),
+        series=_series_rows(variables, series),
         edges=pa.Table.from_pylist(edges, schema=_plain(PART_SCHEMAS["edges"].schema)),
         nodes=pa.Table.from_pylist(
             [{"subject_id": dcid, **row} for dcid, row in nodes.items()],
             schema=_NODE_ROWS,
         ),
+        facets=None
+        if facets is None
+        else pa.table(
+            {
+                "facet_id": pa.array(list(facets), pa.string()),
+                "provenance": pa.array(list(facets.values()), pa.string()),
+            }
+        ),
     )
-    digest = hashlib.sha256(repr(sorted(edges, key=repr)).encode()).hexdigest()[:12]
+    digest = hashlib.sha256(
+        repr((sorted(edges, key=repr), series, sorted((facets or {}).items()))).encode()
+    ).hexdigest()[:12]
     release = release_at_revision(f"origin-{digest}")
     return dataclasses.replace(release, origin=origin)
+
+
+def _series_rows(
+    variables: Mapping[str, WireArcs], series: Sequence[tuple[str, str, Sequence[int]]]
+) -> pa.Table:
+    """A `series` part holding one row per `series` entry, its mask words signed as Spanner
+    stores them, or, with none, one row naming each of `variables` and nothing else."""
+    if not series:
+        return pa.table({"variable_measured": pa.array(list(variables), pa.string())})
+    masks = [HORIZON.masks_from_years(years) for _, _, years in series]
+    return pa.table(
+        {
+            "variable_measured": pa.array([row[0] for row in series], pa.string()),
+            "facet_id": pa.array([row[1] for row in series], pa.string()),
+            **{
+                f"period_mask_{word}": pa.array(
+                    [_signed(words[word]) for words in masks], pa.int64()
+                )
+                for word in range(HORIZON.mask_words)
+            },
+        }
+    )
 
 
 def _node(

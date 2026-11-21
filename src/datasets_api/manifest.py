@@ -17,7 +17,9 @@ definition also stores whether the mint's default place scope was plural
 records include a canonical frame artifact that the response omits. Snapshot manifests list all
 servable renderings. A version's `coverage` also sets its frame's one year beside the years
 around it, counted from the coverage index its run elected over (`year_coverage`) and stored
-with the version.
+with the version, and records the last complete year of each provenance its rows come from
+(`last_complete_years`), so a card drawn on it later flags a partial final year as the data
+stood when it was read.
 
 Each serve call reads the name, url, licence, source, Data Commons and documentation of every
 dispatched provenance ref once (`materialise.provenance_doc.read_source_citations`), and every
@@ -112,6 +114,7 @@ from materialise.series_conversion import (
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
+from origin_catalogue.periods import last_complete_year
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -200,6 +203,24 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
         ],
         window=coverage.window,
     )
+
+
+def last_complete_years(result: MaterialisationResult) -> dict[str, object]:
+    """The `last_complete_years` member of the `coverage` of the frame `result` holds: for each
+    provenance its rows come from (`provenance_refs_of`), the last year it held complete for
+    the variables the run resolved (`origin_catalogue.periods.last_complete_year`, read from
+    the release bound to the mint). A provenance nothing gives a year for is left out, and a
+    frame with none states an empty mapping, so a version minted before the member existed
+    reads apart from one minted with nothing to state."""
+    variables = [
+        bare_stat_var_ref(cast(str, entry["ref"])) for entry in result.trace.resolved_stat_vars
+    ]
+    years = {
+        provenance: year
+        for provenance in dict.fromkeys(provenance_refs_of(result.trace.facets))
+        if (year := last_complete_year(provenance, variables=variables)) is not None
+    }
+    return {"last_complete_years": years}
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.

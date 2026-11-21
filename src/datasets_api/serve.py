@@ -98,6 +98,7 @@ from datasets_api.manifest import (
     coverage_facts_of,
     definition_version_record,
     healed_citation,
+    last_complete_years,
     manifest_output_options,
     persisted_manifest,
     provenance_refs_of,
@@ -933,7 +934,10 @@ def prewrite_definition(
             "spec_id": stored.spec_id,
             "identity": stored.identity,
         }
-        years = year_coverage(result, requests=requests, index=coverage_index)
+        years = {
+            **year_coverage(result, requests=requests, index=coverage_index),
+            **last_complete_years(result),
+        }
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,

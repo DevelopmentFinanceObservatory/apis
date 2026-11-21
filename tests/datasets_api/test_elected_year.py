@@ -25,6 +25,7 @@ import httpx
 import pytest
 
 from artifact_store import LiveArtifactInventory
+from assembler.mint.provenance import _partial_period
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader, ManifestFacts
 from datasets_api.adapter import build_identity_document, to_materialisation_request
@@ -36,11 +37,16 @@ from datasets_api.shape import resolve_shape
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import Trigger, VersionRecord
 from dc_sdmx import SdmxClient
+from description.vocabulary import SourceDocumentFacts
 from dfo_platform.timings import PhaseTimings, collecting
+from graph_release.context import bound_release
+from graph_release.service import Release
 from materialise import EnrichmentLookup, MaterialisationRequest, MaterialisationResult
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from materialise.window import LatestYear, ReadSeries, RequestedWindow
+from origin_catalogue.arc_tables import WireArcs
+from origin_catalogue.periods import version_last_complete_period
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
@@ -48,6 +54,7 @@ from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.graph_release.support import origin_release
 
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -873,3 +880,43 @@ def test_a_frame_of_two_variables_at_one_year_counts_both(version_store):
         ],
         "elected_year": 2024,
     }
+
+
+def _aid_release(*, reporting_2025: int) -> Release:
+    """A release whose origin view files `_AID` under `_PROVENANCE`, with twenty series
+    holding 2024 and `reporting_2025` of them holding 2025."""
+    arcs: WireArcs = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+        "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+    }
+    series = [(_AID, "usd", [2024, 2025] if n < reporting_2025 else [2024]) for n in range(20)]
+    return origin_release({_AID: arcs}, series=series, facets={"usd": _PROVENANCE})
+
+
+def test_a_version_minted_while_its_final_year_was_partial_stays_partial(version_store):
+    """The version records the last complete year its source held at the mint, so a card
+    drawn on it under a later release, where the full year has landed, still flags the
+    preliminary values the frame holds."""
+    rig = _Rig(version_store, indexed={_AID: _MALAWI})
+    with bound_release(_aid_release(reporting_2025=1)):
+        minted, _ = rig.mint(RequestedWindow(kind="all"))
+    stored = rig.deps.snapshot_reader.read_version(rig.stored.spec_id, minted.content_version)
+    assert stored is not None
+    manifest = version_document(stored)
+
+    with bound_release(_aid_release(reporting_2025=20)):
+        today = version_last_complete_period(_PROVENANCE, None, resolved=[_AID])
+        documents = {_PROVENANCE: SourceDocumentFacts(last_complete_period=today)}
+        sources = [{"ref": _PROVENANCE}]
+
+        assert cast("dict[str, object]", manifest["coverage"])["last_complete_years"] == {
+            _PROVENANCE: 2024
+        }
+        assert today == "2025"
+        assert _partial_period(
+            data_through="2025", manifest=manifest, sources=sources, documents=documents
+        )
+        assert not _partial_period(
+            data_through="2025", manifest={}, sources=sources, documents=documents
+        ), "a version minted before the member reads today's year"

@@ -272,6 +272,7 @@ from materialise.provenance_doc import (
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
+from origin_catalogue.periods import version_last_complete_period
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -721,18 +722,45 @@ def _composed_sides(composed: Sequence[ComposedVariable]) -> list[str]:
     ]
 
 
-def _source_documents(live: Mapping[str, SourceCitation]) -> dict[str, SourceDocumentFacts]:
+def _source_documents(
+    live: Mapping[str, SourceCitation],
+    *,
+    record: DescriptionRecord | None,
+    manifest: Mapping[str, object],
+) -> dict[str, SourceDocumentFacts]:
     """What each documented source's document says, by provenance dcid, as the Datasets
-    description door reads it: its publisher, its last download and its next release."""
+    description door reads it: its publisher, its last download, its next release and the
+    last year it holds complete for the variables `manifest`'s trace resolved and `record`
+    names (`origin_catalogue.periods.version_last_complete_period`)."""
+    variables = record.variables if record is not None else None
+    resolved = _resolved_variables(manifest)
     return {
         ref: SourceDocumentFacts(
             publisher=doc.source.ref if doc.source is not None else None,
             last_downloaded=doc.last_update,
             next_release=doc.next_expected_update,
+            last_complete_period=version_last_complete_period(ref, variables, resolved=resolved),
         )
         for ref, cited in live.items()
         if (doc := cited.documentation) is not None
     }
+
+
+def _resolved_variables(manifest: Mapping[str, object]) -> list[str]:
+    """The bare dcids of the variables a dataset version manifest's trace resolved, none for
+    a derived frame's."""
+    trace = manifest.get("trace")
+    if not isinstance(trace, Mapping):
+        return []
+    entries = cast("Mapping[str, object]", trace).get("resolved_stat_vars")
+    if not isinstance(entries, list):
+        return []
+    return [
+        ref.removeprefix(STAT_VAR_REF_PREFIX)
+        for entry in cast("list[object]", entries)
+        if isinstance(entry, Mapping)
+        and isinstance(ref := cast("Mapping[str, object]", entry).get("ref"), str)
+    ]
 
 
 def _documented(live: Mapping[str, SourceCitation]) -> bool:
@@ -1366,7 +1394,11 @@ class LiveFrameStore:
         citation = citation_healed_from(stored_citation, live)
         if citation != stored_citation:
             stored_manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
-        return stored_manifest, _source_documents(live), _documented(live)
+        return (
+            stored_manifest,
+            _source_documents(live, record=frame.description_record, manifest=stored_manifest),
+            _documented(live),
+        )
 
     def _roots_citation(self, frame_ref: FrameRef) -> CitationModel | None:
         """A derived frame's citation as the derived manifest gives it, its recipe roots'
@@ -1763,7 +1795,11 @@ class LiveFrameStore:
             processed=figures_processed(version_id=frame_ref.spec_id, steps=steps),
         )
         manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
-        return manifest, _source_documents(live), _documented(live)
+        return (
+            manifest,
+            _source_documents(live, record=None, manifest=manifest),
+            _documented(live),
+        )
 
     def _source_citations(
         self, refs: Sequence[str], *, frame_ref: FrameRef, deadline: float
