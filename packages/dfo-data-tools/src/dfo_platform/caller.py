@@ -48,9 +48,14 @@ else none. The surface is the `x-dfo-surface` header beside a valid principal, c
 principal vouches for is `direct`, whatever it claims. The client is the `<name>/<version>`
 product token of `X-DFO-Client`. The user agent is a vouched request's `x-dfo-user-agent`, the
 end client's User-Agent an upstream forwards, else the request's own User-Agent, and none for a
-`conversation:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16 lowercase hex
-digits) the Studio harness sends for the turn that caused the request, kept only on a vouched
-`conversation:` caller's request when the single value fully matches, else none.
+`conversation:` caller. The MCP client is an `ip:` caller's vouched `x-dfo-mcp-client`, the name
+the end client gave in its MCP `initialize` request (`Anthropic/ClaudeAI`, `openai-mcp`,
+`claude-code`), which data-mcp and analysis-mcp forward for public callers. It is kept when the
+stripped single value fully matches `_MCP_CLIENT_NAME`, is `invalid` when the header is present
+but does not match, and is none when the header is absent or blank, on an unvouched request and
+for any caller that is not an `ip:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16
+lowercase hex digits) the Studio harness sends for the turn that caused the request, kept only on
+a vouched `conversation:` caller's request when the single value fully matches, else none.
 """
 
 from __future__ import annotations
@@ -369,6 +374,13 @@ SURFACE_HEADER = "x-dfo-surface"
 """The surface an upstream names for a request it vouches for, one of `DeliverySurface`."""
 USER_AGENT_HEADER = "x-dfo-user-agent"
 """The end client's User-Agent an upstream forwards for a request it vouches for."""
+MCP_CLIENT_HEADER = "x-dfo-mcp-client"
+"""The MCP `initialize` client name an upstream forwards for a request it vouches for."""
+_MCP_CLIENT_NAME = re.compile(r"[ !#-\[\]-~]{1,128}")
+"""The MCP client names a delivery line keeps: 1 to 128 printable ASCII characters, with no
+quote or backslash. The same rule as dfo-ai's `common.caller.MCP_CLIENT_NAME`."""
+MCP_CLIENT_INVALID = "invalid"
+"""What a delivery line names for an `x-dfo-mcp-client` that fails `_MCP_CLIENT_NAME`."""
 MINT_ADMISSION_HEADER = "X-DFO-Mint-Admission"
 """`background` on a mint that warms data no caller waits on yet (`datasets_api.background_admission`)."""
 MINT_ADMISSION_BACKGROUND = "background"
@@ -407,7 +419,11 @@ class DeliveryIdentity:
     clipped (see the module docstring). `admission` is `background` for a request sent with
     `X-DFO-Mint-Admission: background`, else `foreground`. `turn_id` is the `x-dfo-turn` value
     of a vouched `conversation:` caller's request when it fully matches `tr_<16 hex digits>`,
-    else `None`.
+    else `None`. `mcp_client` is an `ip:` caller's vouched `x-dfo-mcp-client`, the end client's
+    MCP `initialize` name, when the stripped single value fully matches `_MCP_CLIENT_NAME`;
+    `MCP_CLIENT_INVALID` when the header is present and empty of a usable value (it fails the
+    pattern or repeats); `None` when the header is absent or blank, or the caller is not an
+    `ip:` caller.
     """
 
     caller: str | None
@@ -418,6 +434,7 @@ class DeliveryIdentity:
     user_agent: str | None
     admission: Admission
     turn_id: str | None
+    mcp_client: str | None
 
 
 UNRESOLVED_IDENTITY = DeliveryIdentity(
@@ -429,6 +446,7 @@ UNRESOLVED_IDENTITY = DeliveryIdentity(
     user_agent=None,
     admission="foreground",
     turn_id=None,
+    mcp_client=None,
 )
 """The identity of a delivery made outside a request `dfo_platform.app` resolved."""
 
@@ -442,6 +460,19 @@ def _client_token(request: Request) -> str | None:
     """The `<name>/<version>` product token of `X-DFO-Client`, its runtime comment dropped."""
     match = _CLIENT_FORMAT.fullmatch(_clean(request.headers.get(CLIENT_HEADER, "")))
     return f"{match['name']}/{match['version']}" if match else None
+
+
+def _mcp_client_of(request: Request) -> str | None:
+    """The `x-dfo-mcp-client` name of a vouched `ip:` caller's request: the stripped value
+    when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
+    `MCP_CLIENT_INVALID`."""
+    values = request.headers.getlist(MCP_CLIENT_HEADER)
+    if not values:
+        return None
+    name = values[0].strip() if len(values) == 1 else None
+    if name == "":
+        return None
+    return name if name is not None and _MCP_CLIENT_NAME.fullmatch(name) else MCP_CLIENT_INVALID
 
 
 def _caller_of(
@@ -489,6 +520,11 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
         turn_id = turn if conversation and turn and _TURN_ID.fullmatch(turn) else None
         forwarded = _clean(request.headers.get(USER_AGENT_HEADER, "")) if vouched else ""
         own = _clean(request.headers.get("user-agent", ""))
+        mcp_client = (
+            _mcp_client_of(request)
+            if vouched and caller is not None and _ADDRESS_KEY.fullmatch(caller)
+            else None
+        )
         return DeliveryIdentity(
             caller=caller,
             caller_source=source,
@@ -498,6 +534,7 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
             user_agent=None if conversation else (forwarded or own or None),
             admission=admission,
             turn_id=turn_id,
+            mcp_client=mcp_client,
         )
     except Exception as exc:
         # A log line's identity must not fail the request it describes.
