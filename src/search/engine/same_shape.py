@@ -19,6 +19,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.composites import binds_composite
+from code_index.labels import PricesKind
 from code_index.shared import get_index
 from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from search.engine.config import settings
@@ -489,7 +490,8 @@ def _merge_resolved_facets(
     Other axes retain one reference only when every member reports the same
     scalar selection. Missing values, differing refs, or any ``per_series``
     selection produce a merged ``per_series`` facet, which on the unit axis lists every
-    member's units in group order.
+    member's units in group order. The unit axis states the union of its members' price
+    bases (`ResolvedFacet.prices`), unstated where some member states none.
     """
     from search.models import ResolvedFacet
 
@@ -524,6 +526,7 @@ def _merge_resolved_facets(
                 documentation=shared.documentation,
                 currency=shared.currency,
                 account=shared.account,
+                prices=_merged_prices(present, every_member=not heterogeneous),
             )
         else:
             refs = (ref for f in present for ref in ([f.ref] if f.ref else f.refs or ()))
@@ -531,8 +534,22 @@ def _merge_resolved_facets(
                 basis=basis,
                 selection="per_series",
                 refs=list(dict.fromkeys(refs)) if axis == "unit" else None,
+                prices=_merged_prices(present, every_member=len(present) == len(group)),
             )
     return result
+
+
+def _merged_prices(
+    facets: Sequence[ResolvedFacet], *, every_member: bool
+) -> list[PricesKind] | None:
+    """The price bases a merged unit facet states: the union of `facets`' own, current
+    before constant, None where a member carries no unit facet (`every_member` false) or
+    some facet states none."""
+    if not every_member or any(f.prices is None for f in facets):
+        return None
+    held = {prices for f in facets for prices in f.prices or ()}
+    order: tuple[PricesKind, ...] = ("current", "constant")
+    return [prices for prices in order if prices in held]
 
 
 def _union_entities(group: list[RegionResult]) -> list[Entity]:

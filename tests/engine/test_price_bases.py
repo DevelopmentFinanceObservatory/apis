@@ -1,10 +1,14 @@
-"""The price bases a part can serve (`ResolvedSpec.price_bases`): its own unit's, its unit
-options', and those its conversion recipe converts to, and no other."""
+"""The price bases a part can serve and the route to each (`ResolvedSpec.price_bases`): the
+bases its unit facet serves, its unit options' and those its conversion recipe converts
+to, and no other. The unit facet states its own bases (`ResolvedFacet.prices`)."""
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
+from search.engine.region.facets import _resolved_facets
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import bound_conversion_catalogue
 from search.engine.unit.price_bases import servable_price_bases
@@ -12,7 +16,9 @@ from search.models import (
     GraphRef,
     IdentityUnitRequest,
     MeasureAxisValue,
+    PriceBasisRoute,
     ResolvedFacet,
+    SeriesFacetRef,
     Spec,
     SpecAlternativeMeasure,
 )
@@ -23,11 +29,26 @@ from tests.engine.test_unit_conversion_offer import (
     _members,
     _plan,
     _requested,
-    _usd,
 )
-from tests.render._helpers import _ref, _spec
+from tests.render._helpers import _spec
 
 _WDI = "provenance/WorldBankWDI"
+type _Prices = list[Literal["current", "constant"]] | None
+
+
+def _in(unit: str = "CurrencyUSD", *, prices: _Prices, provenance: str = _CRS) -> Spec:
+    """A Spec served in `unit`, whose facet states `prices`, from `provenance`."""
+    return _spec(
+        facets={
+            "unit": ResolvedFacet(
+                basis="fallback",
+                ref=unit,
+                currency=None if unit == "Percent" else "USD",
+                prices=prices,
+            ),
+            "provenance": ResolvedFacet(basis="fallback", ref=provenance),
+        }
+    )
 
 
 def _converted(spec: Spec, *, provenance: str = _CRS) -> Spec:
@@ -36,15 +57,6 @@ def _converted(spec: Spec, *, provenance: str = _CRS) -> Spec:
     plan = _plan((1990, 2024), (("observationAbout", "country/DEU"),), provenance=provenance)
     with bound_conversion_catalogue(_CATALOGUE):
         return with_unit_conversion(spec, members=_members(), plans=(plan,))
-
-
-def _in(unit: str, *, currency: str | None, provenance: str) -> Spec:
-    return _spec(
-        facets={
-            "unit": ResolvedFacet(basis="fallback", ref=unit, currency=currency),
-            "provenance": ResolvedFacet(basis="fallback", ref=provenance),
-        }
-    )
 
 
 def _with_constant_option(spec: Spec) -> Spec:
@@ -64,118 +76,97 @@ def _with_constant_option(spec: Spec) -> Spec:
     )
 
 
+def _routes(*pairs: tuple[str, str]) -> list[PriceBasisRoute]:
+    return [PriceBasisRoute.model_validate({"prices": p, "via": v}) for p, v in pairs]
+
+
 def test_a_part_with_no_unit_option_and_no_recipe_serves_current_prices_alone() -> None:
     """WDI's remittances, in US dollars with no constant sibling and no conversion recipe."""
-    spec = _converted(_in("USDollar", currency="USD", provenance=_WDI), provenance=_WDI)
+    spec = _converted(_in("USDollar", prices=["current"], provenance=_WDI), provenance=_WDI)
 
     assert spec.resolved.unit_conversion is None
-    assert spec.resolved.price_bases == ["current"]
+    assert spec.resolved.price_bases == _routes(("current", "served"))
 
 
-def test_a_part_whose_recipe_deflates_serves_both_bases() -> None:
-    spec = _converted(_usd(_CRS, served=(1990, 2024)))
+def test_a_part_whose_recipe_deflates_reaches_constant_prices_by_unit_request() -> None:
+    """The control: a DAC table whose recipe converts. Current prices by unit request are
+    left out, since the Spec already serves them."""
+    spec = _converted(_in(prices=["current"]))
 
     assert spec.resolved.unit_conversion is not None
-    assert spec.resolved.price_bases == ["current", "constant"]
+    assert spec.resolved.price_bases == _routes(("current", "served"), ("constant", "unit_request"))
 
 
-def test_a_unit_option_serves_its_basis_without_a_recipe() -> None:
+def test_a_unit_option_reaches_its_basis_without_a_recipe() -> None:
     spec = _converted(
-        _with_constant_option(_in("USDollar", currency="USD", provenance=_NO_RECIPE)),
+        _with_constant_option(_in(prices=["current"], provenance=_NO_RECIPE)),
         provenance=_NO_RECIPE,
     )
 
-    assert spec.resolved.unit_conversion is None
-    assert spec.resolved.price_bases == ["current", "constant"]
+    assert spec.resolved.price_bases == _routes(("current", "served"), ("constant", "alternative"))
 
 
-def test_a_constant_price_series_serves_its_own_basis() -> None:
-    """A series in constant prices states its basis by its `measurementQualifier`, and no
-    recipe converts it."""
-    spec = _spec(
-        measurement_qualifier=_ref("RealValue", "Real Value"),
-        facets={"unit": ResolvedFacet(basis="fallback", ref="USDollar", currency="USD")},
-    )
-
-    assert _converted(spec, provenance=_NO_RECIPE).resolved.price_bases == ["constant"]
-
-
-def test_an_answer_a_unit_request_converts_serves_the_requested_basis_and_the_native_one() -> None:
+def test_an_answer_a_unit_request_converts_serves_the_requested_basis() -> None:
+    """A Spec bound to constant prices by unit request serves them as built, and reaches
+    current prices by a unit request at current prices."""
     request = IdentityUnitRequest(currency="USD", prices="constant", base_year=2020)
-    spec = _converted(_requested(_usd(_CRS, served=(1990, 2024)), request))
+    spec = _converted(_requested(_in(prices=["constant"]), request))
 
-    assert spec.resolved.price_bases == ["current", "constant"]
-
-
-def test_a_unit_that_is_no_money_serves_no_price_basis() -> None:
-    spec = _converted(_in("Percent", currency=None, provenance=_WDI), provenance=_WDI)
-
-    assert spec.resolved.price_bases == []
+    assert spec.resolved.price_bases == _routes(("constant", "served"), ("current", "unit_request"))
 
 
-def test_a_unit_request_keeps_the_series_own_basis() -> None:
-    """A constant-price series served under a current-price request, which no recipe
-    converts, still serves the constant prices it is published in."""
-    spec = _spec(
-        measurement_qualifier=_ref("RealValue", "Real Value"),
-        facets={"unit": ResolvedFacet(basis="fallback", ref="USDollar", currency="USD")},
-    )
-    request = IdentityUnitRequest(currency="USD", prices="current")
-
-    assert servable_price_bases(_requested(spec, request)) == ["current", "constant"]
+@pytest.mark.parametrize(
+    ("prices", "routes"),
+    [
+        pytest.param([], [], id="no-money"),
+        pytest.param(None, None, id="unknown"),
+    ],
+)
+def test_a_facet_stating_no_basis_lists_none_and_one_stating_nothing_is_unknown(
+    prices: _Prices, routes: list[PriceBasisRoute] | None
+) -> None:
+    assert servable_price_bases(_in("Percent", prices=prices, provenance=_WDI)) == routes
 
 
 def test_an_answer_with_no_catalogue_leaves_its_price_bases_unstated() -> None:
     """With no conversion catalogue loaded the conversion is unknown, so the list would
     understate a DAC part's constant prices."""
     plan = _plan((1990, 2024), (("observationAbout", "country/DEU"),))
-    spec = with_unit_conversion(_usd(_CRS, served=(1990, 2024)), members=_members(), plans=(plan,))
+    spec = with_unit_conversion(_in(prices=["current"]), members=_members(), plans=(plan,))
 
     assert spec.resolved.price_bases is None
 
 
+_PRICES: dict[str, Literal["current", "constant"] | None] = {
+    "CurrencyUSD": "current",
+    "ChainedUSDollarBaseYr2017": "constant",
+    "Percent": None,
+}
+
+
 @pytest.mark.parametrize(
-    ("facets", "qualifier", "bases"),
+    ("units", "requested", "prices"),
     [
+        pytest.param(["CurrencyUSD"], None, ["current"], id="one-unit"),
         pytest.param(
-            {
-                "unit": ResolvedFacet(
-                    basis="fallback",
-                    selection="per_series",
-                    refs=["USDollar", "ChainedUSDollarBaseYr2017"],
-                )
-            },
+            ["CurrencyUSD", "ChainedUSDollarBaseYr2017"],
             None,
             ["current", "constant"],
-            id="per-series-money-units",
+            id="per-series-units",
         ),
-        pytest.param(
-            {
-                "unit": ResolvedFacet(
-                    basis="fallback", selection="per_series", refs=["Percent", "USDollar"]
-                )
-            },
-            None,
-            ["current"],
-            id="per-series-beside-a-unit-that-is-no-money",
-        ),
-        # The facet lists no unit, so the series' basis cannot be told.
-        pytest.param(
-            {"unit": ResolvedFacet(basis="fallback", selection="per_series")},
-            None,
-            None,
-            id="per-series-unlisted",
-        ),
-        pytest.param({}, "RealValue", ["constant"], id="no-unit-priced-qualifier"),
-        pytest.param({}, None, None, id="no-unit-no-qualifier"),
+        pytest.param(["Percent", "CurrencyUSD"], None, ["current"], id="beside-no-money"),
+        pytest.param(["Percent"], None, [], id="no-money"),
+        # A series naming no unit leaves the bases unknown.
+        pytest.param(["CurrencyUSD", None], None, None, id="a-series-with-no-unit"),
+        # A unit request states its own prices whatever the units.
+        pytest.param(["CurrencyUSD"], "constant", ["constant"], id="unit-request"),
     ],
 )
-def test_the_series_own_bases_read_every_served_unit(
-    facets: dict[str, ResolvedFacet], qualifier: str | None, bases: list[str] | None
+def test_the_unit_facet_states_the_bases_of_every_served_unit(
+    units: list[str | None], requested: Literal["current", "constant"] | None, prices: _Prices
 ) -> None:
-    spec = _spec(
-        facets=facets,
-        measurement_qualifier=None if qualifier is None else _ref(qualifier, qualifier),
-    )
+    maps = [{"unit": SeriesFacetRef(ref=unit)} if unit is not None else {} for unit in units]
 
-    assert servable_price_bases(spec) == bases
+    facets = _resolved_facets(maps, {}, prices_of=_PRICES.get, requested_prices=requested)
+
+    assert facets["unit"].prices == prices

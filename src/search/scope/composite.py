@@ -466,11 +466,12 @@ class CompositeMint:
     def parties(self, axis: RoleAxis) -> list[str] | None:
         """The members on `axis` of the series every component writes in the years it
         serves, each read under its own places (`_served_parties`), without the totals
-        `party_split` leaves out: its parties, then its residual members, as the frame
-        holds them. These are the members of the scope `open_axes` states. None where the
-        snapshot cannot list some serving component's parties (`_lists_parties`)."""
+        `party_split` leaves out: its parties and residual members, as the frame holds
+        them, sorted by ref as a table answer's scope is. These are the members of the scope
+        `open_axes` states. None where the snapshot cannot list some serving component's
+        parties (`_lists_parties`)."""
         split = self.party_split(axis)
-        return None if split is None else [*split.parties, *split.residuals]
+        return None if split is None else sorted((*split.parties, *split.residuals))
 
     def party_split(self, axis: RoleAxis) -> PartySplit | None:
         """The members `parties(axis)` lists, split into parties and residual members as

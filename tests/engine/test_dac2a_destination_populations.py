@@ -848,8 +848,9 @@ def test_an_answer_counts_its_residual_recipients_apart_from_its_parties(
 ) -> None:
     """A table answer and a composite one count three members, Ethiopia and two unallocated
     lines, of which the role axis fact counts the two lines as residual, and the
-    defaulted-scope warning and the heading name Ethiopia as the one recipient beside the two
-    unallocated amounts. The scope lists all three, as the frame holds them."""
+    defaulted-scope warning names Ethiopia as the one recipient beside the two unallocated
+    amounts, and the heading names Ethiopia beside them. The scope lists all three, sorted
+    by ref in both answers, as the frame holds them."""
     _patched_coverage(monkeypatch, _WITH_RESIDUALS)
 
     part = _resolve_fresh(scenario, held=_WITH_RESIDUALS)
@@ -859,11 +860,11 @@ def test_an_answer_counts_its_residual_recipients_apart_from_its_parties(
         ("destination", 3, 2)
     ]
     assert resolved.scope is not None
-    assert [member.ref for member in resolved.scope.members] == [_ETH, *_RESIDUALS]
+    assert [member.ref for member in resolved.scope.members] == sorted((_ETH, *_RESIDUALS))
     (defaulted,) = [w.message for w in part.warnings if w.code == "role_scope_defaulted"]
     assert "covers the one recipient and 2 unallocated amounts with data" in defaulted
     assert resolved.rendered_sentence is not None
-    assert " to 1 recipient and 2 unallocated amounts " in resolved.rendered_sentence
+    assert " to Ethiopia and 2 unallocated amounts " in resolved.rendered_sentence
 
 
 def test_an_inclusive_answer_lists_the_parties_its_role_axis_fact_counts(

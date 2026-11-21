@@ -93,7 +93,7 @@ from search.engine.spec_build import (
     inapplicable_property_dcid,
     pair_slot_drafts,
 )
-from search.engine.unit.refs import unit_currency
+from search.engine.unit.refs import unit_currency, unit_prices
 from search.models import (
     Confidence,
     Entity,
@@ -1449,6 +1449,8 @@ def _relaxed_binding_suggestion(
                 request_basis=None,
                 unit_request=None,
                 currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
+                prices_of=functools.partial(unit_prices, ctx.graph, deadline=ctx.deadline),
+                qualifier=shape.meas_qual_dcid,
             )
             open_axis_facts = served_open_axes(
                 relaxed,

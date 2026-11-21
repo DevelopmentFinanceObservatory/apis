@@ -135,6 +135,21 @@ class ResolvedFacet(StrictModel):
             "carried series select, in series order; a series selecting no unit adds none"
         ),
     )
+    prices: list[Literal["current", "constant"]] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "unit axis only, alongside ref or selection: the price bases the served units "
+            "are in, 'current' before 'constant', one per distinct basis over every carried "
+            "series. Under a unit request it is the request's prices. Otherwise each unit "
+            "reads as a unit request matches it natively: a unit the unit registry prices "
+            "states its own (a chained one constant), any other currency unit is in the "
+            "prices its StatVar's measurementQualifier states (Nominal current, RealValue "
+            "constant), else current prices, and a PPP or international-dollar unit is in "
+            "the prices a priced measurementQualifier states. [] when no served unit is "
+            "money; absent where a carried series names no unit, or off the unit axis"
+        ),
+    )
     request_basis: dict[str, FacetBasis] | None = Field(
         default=None,
         description=(
@@ -577,6 +592,21 @@ class ConversionCurrency(StrictModel):
     )
 
 
+class PriceBasisRoute(StrictModel):
+    """One price basis a part can serve and the route to it (see
+    ResolvedSpec.price_bases)."""
+
+    prices: Literal["current", "constant"] = Field(description="the price basis")
+    via: Literal["served", "alternative", "unit_request"] = Field(
+        description=(
+            "how to reach it: 'served', the Spec as built serves it; 'alternative', "
+            "resubmit the definition of the 'unit' entry of alternative_measures at this "
+            "basis; 'unit_request', post a facets.unit request at this basis, which "
+            "unit_conversion converts"
+        )
+    )
+
+
 class UnitConversion(StrictModel):
     """The conversions a unit request can ask of this answer: the currencies, years and base
     years the conversion recipe of its served members converts. A request posts one as the
@@ -1001,26 +1031,26 @@ class ResolvedSpec(StrictModel):
             "BaseIdentity, never hashed."
         ),
     )
-    price_bases: list[Literal["current", "constant"]] | None = Field(
+    price_bases: list[PriceBasisRoute] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            "the price bases this part can serve, 'current' before 'constant': a unit "
-            "request's prices, the bases the served series are published in (each served "
-            "unit's, per series where the series select different units, or the "
-            "measurementQualifier's, else current prices for a currency unit that states "
-            "none, as US dollars do), the basis of each 'unit' entry of "
-            "alternative_measures, and each basis a currency of unit_conversion converts at "
-            "least one served year at (current_years, constant_years). A basis listed only "
-            "through unit_conversion shows the years that conversion states. [] when the "
-            "served units are no money and no unit option or conversion states a basis. "
-            "A part with no unit option and no conversion recipe lists its own basis "
-            "alone. Absent where a basis is unknown, so the list would understate: while "
-            "no conversion catalogue is loaded (unit_conversion_unavailable), on a Spec "
-            "beside the answer, such as a flagged match or a nearest-real suggestion, which "
-            "states no conversion offer, and where neither the unit facet nor a priced "
-            "measurementQualifier tells the series' own basis. "
-            "Never a member of BaseIdentity, never hashed."
+            "the price bases this part can serve, each with the route to it: 'served', a "
+            "basis the Spec serves as built (the unit facet's prices, which under a bound "
+            "unit request are the request's); 'alternative', the basis of a 'unit' entry "
+            "of alternative_measures, reached by resubmitting that entry's definition; "
+            "'unit_request', a basis a currency of unit_conversion converts at least one "
+            "served year to, reached by posting a facets.unit request at that basis. "
+            "Routes come in that order, 'current' before 'constant' within each, and a "
+            "route to a basis the Spec already serves is left out. A basis reached only "
+            "by unit request shows the years unit_conversion states for it. [] when the "
+            "served units are no money. A part with no unit option and no conversion "
+            "recipe lists its served basis alone. Absent where a basis is unknown, so the "
+            "list would understate: while no conversion catalogue is loaded "
+            "(unit_conversion_unavailable), on a Spec beside the answer, such as a flagged "
+            "match or a nearest-real suggestion, which states no conversion offer, and "
+            "where the unit facet states no prices. Never a member of BaseIdentity, never "
+            "hashed."
         ),
     )
     scope_choices: PartScope | None = Field(

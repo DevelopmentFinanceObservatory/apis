@@ -102,8 +102,8 @@ def test_every_surface_counts_91_members_of_which_10_are_residual() -> None:
     assert (fact.member_count, fact.residual_count) == (91, 10)
     assert (split.member_count, split.party_count, split.residual_count) == (91, 81, 10)
     assert (dim.count, dim.residual_count) == (91, 10)
-    # The scope lists what the frame holds: every member but the total.
-    assert listed == [*sorted(_COUNTRIES), *sorted(_RESIDUALS)]
+    # The scope lists what the frame holds, every member but the total, sorted by ref.
+    assert listed == sorted((*_COUNTRIES, *_RESIDUALS))
     assert len(listed or ()) == fact.member_count
     assert "covers all 81 recipients and 10 unallocated amounts with data" in _warning(
         "destination", _MEMBERS
@@ -218,7 +218,7 @@ def test_a_heading_with_no_fact_splits_its_scope_as_the_fact_does() -> None:
         scope=scope,
         coverage=None,
         states_all=False,
-        stat_vars=[_SV],
+        datasets=[_DAC2A],
     )
 
     assert stated == ("3 recipients and 2 unallocated amounts", [])
@@ -242,7 +242,7 @@ def test_a_heading_names_the_one_party_its_scope_holds_beside_a_total(with_fact:
         scope=_scope(*members),
         coverage=None,
         states_all=False,
-        stat_vars=[_SV],
+        datasets=[_DAC2A],
     )
 
     assert stated is not None
@@ -265,3 +265,53 @@ def test_a_heading_counted_by_coverage_names_its_residual_members_apart() -> Non
 
     assert dim == BreadthDim(label="recipients", count=5, residual_count=2)
     assert stated == ("3 recipients and 2 unallocated amounts", [])
+
+
+def test_a_heading_names_the_one_party_its_scope_holds_beside_residual_members() -> None:
+    members = (_COUNTRIES[0], *_RESIDUALS[:2], _TOTAL)
+
+    stated = _open_role_reading(
+        "destination",
+        _AID.noun("destination"),
+        role_axis_facts=[_fact("destination", members)],
+        scope=_scope(*members),
+        coverage=None,
+        states_all=False,
+        datasets=[_DAC2A],
+    )
+
+    assert stated is not None
+    assert stated[0].endswith(" and 2 unallocated amounts")
+    assert [entity.dcid for entity in stated[1]] == [_COUNTRIES[0]]
+
+
+def test_a_heading_splits_its_scope_in_the_datasets_the_answer_serves() -> None:
+    """A party that is a total only in a dataset the answer does not serve is a party."""
+    elsewhere = "TESTFIXTURE/ElsewhereTotal"
+    parties = {
+        **_PARTIES,
+        elsewhere: PartyRow(
+            dcid=elsewhere,
+            kind="party",
+            published=((_DAC2A, "destination"), (_IDS, "destination")),
+            dataset_kinds=((_IDS, "total"),),
+        ),
+    }
+    index = SimpleNamespace(parties=parties)
+    members = (*_COUNTRIES[:2], elsewhere)
+
+    def reading(datasets: list[str]) -> tuple[str, list[Any]] | None:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(heading, "get_index", lambda: index)
+            return _open_role_reading(
+                "destination",
+                _AID.noun("destination"),
+                role_axis_facts=[],
+                scope=_scope(*members),
+                coverage=None,
+                states_all=False,
+                datasets=datasets,
+            )
+
+    assert reading([_DAC2A]) == ("3 recipients", [])
+    assert reading([_IDS]) == ("2 recipients", [])
