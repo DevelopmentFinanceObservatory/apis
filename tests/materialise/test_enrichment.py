@@ -666,7 +666,7 @@ def test_a_bound_composite_inherits_its_tables_marker_only_where_its_population_
     dcid: str, provenance: str, inherits: bool
 ):
     """A DAC2a composite binds its destinations to the bilateral side, so "All Recipients,
-    Total", marked whole over every recipient in DAC2A, is no whole total on its rows; a
+    Total", marked whole over every recipient in DAC2A, is no whole total on its rows. A
     donor total's marker is untouched by a destination binding."""
     party = get_index().parties[dcid]
     marker = party.marker(_DAC2A)

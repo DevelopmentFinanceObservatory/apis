@@ -135,7 +135,7 @@ class ExportRefused(Exception):
     """The graph or the declarations break a rule the code index relies on, so the export
     refuses to build it. The message names the rule and the offending rows. A refusal that
     carries them for a reader also sets `code`, the rule broken, and `rows`, the offending
-    rows as tuples; others leave `code` `None` and `rows` empty."""
+    rows as tuples. Any other refusal leaves `code` `None` and `rows` empty."""
 
     def __init__(
         self, message: str, *, code: str | None = None, rows: Sequence[tuple[str, ...]] = ()
@@ -475,9 +475,9 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
     rows carry one of these provenances, and a party cell with no kind leaves every sum and
     rank over the role unavailable.
 
-    The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
-    `PartyRow` reads them through (`code_index.composites.provenance_datasets`); the loader
-    refuses to serve a composite whose tables differ (`code_index.loader._check_composites`)."""
+    The composites are the module-level `DECLARED_COMPOSITES`, the set a `PartyRow` reads them
+    through (`code_index.composites.provenance_datasets`). The loader refuses to serve a
+    composite whose tables differ (`code_index.loader._check_composites`)."""
     unkinded = unkinded_reads(_party_row(row) for row in rows)
     if unkinded:
         raise ExportRefused(

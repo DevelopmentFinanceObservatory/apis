@@ -539,7 +539,7 @@ class CompositeDeclaration:
     a flow, and so does the composite.
 
     A composite of one component reads that component's table's whole markers, and one of
-    several components reads none (`PartyRow.marker_over`); the export refuses a whole marker
+    several components reads none (`PartyRow.marker_over`). The export refuses a whole marker
     in any table of a composite of several tables
     (`code_index.export.check_composite_whole_totals`). A whole total under a composite of
     several components needs its own marker declared on the composite, backed by its own
@@ -761,8 +761,8 @@ class PartyRow:
         publishes on `axis` takes no kind there. A row without `dataset_kinds` takes `kind`
         alone wherever some dataset publishes it on `axis`, whether or not one of `datasets`
         does, since every dataset gives it that kind. A row with `dataset_kinds` takes no kind
-        over `datasets` none of which publishes it on `axis`, so it never borrows the kind
-        another dataset gives it."""
+        over `datasets` none of which publishes it on `axis`, whatever kind another dataset
+        gives it."""
         publishing = {
             dataset
             for dataset, published_axis in self.published

@@ -3662,7 +3662,7 @@ def test_the_fixture_index_reads_a_trust_funds_kind_within_the_readers_datasets(
 
 
 def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_readers_axis():
-    """A hypothetical fund, a donor only in the CRS and a total recipient only in DAC2A: a
+    """A hypothetical fund is a donor only in the CRS and a total recipient only in DAC2A. A
     donor read over DAC2A finds no donor there and borrows no kind from the CRS."""
     row = PartyRow(
         dcid="TrustFund",

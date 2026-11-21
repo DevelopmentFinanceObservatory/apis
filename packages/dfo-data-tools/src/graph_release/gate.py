@@ -132,8 +132,8 @@ class GateFinding:
     """A deterministic failure. `examples` holds a few of the rows or ids at fault, sorted.
     A finding raised for a step's own coded refusal carries that step's code in `detail_code`
     and its first offending rows in `rows` (`PlatformRefusal.detail_code`, `.rows`), at most
-    as many as `examples` holds, with `rows_omitted` counting the rest; any other leaves
-    `detail_code` `None`, `rows` empty and `rows_omitted` zero."""
+    as many as `examples` holds, with `rows_omitted` counting the rest. Any other finding
+    leaves `detail_code` `None`, `rows` empty and `rows_omitted` zero."""
 
     code: GateCode
     detail: str

@@ -36,7 +36,7 @@ class PlatformRefusal(Exception):
     """A snapshot the builder must not release. `code` names the fault with the gate's code for
     it. A refusal raised for a step's own coded refusal carries that step's code in
     `detail_code` and its offending rows in `rows`, as `code_index.export.ExportRefused` gives
-    them; any other leaves `detail_code` `None` and `rows` empty."""
+    them. Any other refusal leaves `detail_code` `None` and `rows` empty."""
 
     def __init__(
         self,
