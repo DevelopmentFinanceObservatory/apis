@@ -80,6 +80,7 @@ from search.engine.function_words import (
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.measure_verdict import measure_verdicts
+from search.engine.origin_words import Ranges, origin_organisations, owned_ranges, owns
 from search.engine.qualifier_match import (
     BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
@@ -283,24 +284,19 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
     )
 
 
-type _Ranges = tuple[tuple[int, int], ...]
-
-
 @dataclass(slots=True)
 class _OriginParty:
     """What one part reads once of the organisations it binds as the origin of its flow
-    (`_origin_organisations`), for every reader that ranks its shapes or reads its words:
-    their dcids by the request's name for each, the `(dataset, axis)` pairs that publish
-    them on the origin axis (`PartyRow.published`), and the character ranges of the
-    variable their own words take (`_owned_ranges`). It remembers, per shape, whether its
-    family publishes one of them (`publishes`) and the values the variable names of it
-    (`stated`)."""
+    (`origin_words.origin_organisations`): their dcids by the request's name for each, the
+    `(dataset, axis)` pairs that publish them on the origin axis (`PartyRow.published`),
+    and the character ranges of the variable their own words take
+    (`origin_words.owned_ranges`), the ranges recall left out too. It remembers, per shape,
+    whether its family publishes one of them (`publishes`)."""
 
     organisations: Mapping[str, str]
     published: frozenset[tuple[str, RoleAxis]]
-    owned: _Ranges
+    owned: Ranges
     _publishes: dict[int, tuple[ShapeDraft, bool]] = field(default_factory=dict)
-    _stated: dict[int, tuple[ShapeDraft, frozenset[str]]] = field(default_factory=dict)
 
     def publishes(self, shape: ShapeDraft) -> bool:
         """Whether a dataset publishing `shape`'s index family publishes one of the
@@ -311,18 +307,18 @@ class _OriginParty:
             self._publishes[id(shape)] = held
         return held[1]
 
-    def stated(self, state: ResolveState, shape: ShapeDraft) -> frozenset[str]:
-        """The values of `shape` the variable names (`_stated_values`)."""
-        held = self._stated.get(id(shape))
-        if held is None or held[0] is not shape:
-            held = (shape, _stated_values(state, shape))
-            self._stated[id(shape)] = held
-        return held[1]
-
 
 def _origin_party(state: ResolveState) -> _OriginParty:
-    """The part's `_OriginParty`, read once before its qualifier readings."""
-    organisations = _origin_organisations(state)
+    """The part's `_OriginParty`, read once before its qualifier readings, from the place
+    each name resolved to."""
+    organisations = origin_organisations(
+        {
+            name: (place_set.node.dcid, place_set.node.kind)
+            for name, place_set in state.place_sets.items()
+            if place_set.node is not None
+        },
+        state.entity_roles,
+    )
     index = get_index()
     published = frozenset(
         pair
@@ -334,56 +330,14 @@ def _origin_party(state: ResolveState) -> _OriginParty:
     return _OriginParty(
         organisations=organisations,
         published=published,
-        owned=_owned_ranges(state, organisations, state.variable),
+        owned=_owned(state, organisations, state.variable),
     )
 
 
-def _origin_organisations(state: ResolveState) -> dict[str, str]:
-    """The dcid of each organisation the part binds as the origin of its flow, by the
-    request's name for it: every role the door gives it is on the origin axis, whether or
-    not the query's words state that direction (`DoorRole.stated`). The raw-text door keeps
-    a role only where the extraction cites a cue for it, so an unstated origin role is still
-    the extraction's reading of the request: "World Bank IDA disbursements to Kenya" cites
-    IDA's own name and "IDA's disbursements" a possessive, and each names IDA the provider.
-    A role the query's wording contradicts never reaches here: place binding refuses the
-    part ``role_not_resolved`` first (`place_roles._contradicted_names`)."""
-    organisations: dict[str, str] = {}
-    for name, place_set in state.place_sets.items():
-        node = place_set.node
-        if node is None or node.kind != "organisation":
-            continue
-        roles = state.entity_roles.get(name, ())
-        if roles and all(role.axis == "origin" for role in roles):
-            organisations[name] = node.dcid
-    return organisations
-
-
-def _owned_ranges(state: ResolveState, organisations: Mapping[str, str], text: str) -> _Ranges:
-    """The character ranges of `text` that `organisations` own: each occurrence of an
-    organisation's name, the request's words for it (`ResolveState.entity_words`) or its
-    role spans (`DoorRole.span`)."""
-    if not organisations:
-        return ()
-    tokens = tokenize(text)
-    return tuple(
-        occurrence
-        for name in organisations
-        for words in (
-            name,
-            state.entity_words.get(name),
-            *(role.span for role in state.entity_roles.get(name, ())),
-        )
-        if words
-        for occurrence in token_occurrences(tokens, words)
-    )
-
-
-def _owns(text: str, owned: _Ranges, start: int, end: int) -> bool:
-    """Whether `text[start:end]` holds a word and `owned` covers every one."""
-    words = word_tokens(text[start:end])
-    return bool(words) and all(
-        any(low <= start + word.start and start + word.end <= high for low, high in owned)
-        for word in words
+def _owned(state: ResolveState, organisations: Mapping[str, str], text: str) -> Ranges:
+    """The ranges of `text` the part's `organisations` own (`origin_words.owned_ranges`)."""
+    return owned_ranges(
+        text, organisations, entity_words=state.entity_words, entity_roles=state.entity_roles
     )
 
 
@@ -391,29 +345,31 @@ def _without_owned_terms(
     state: ResolveState, sources: _SourceReadings, party: _OriginParty
 ) -> _SourceReadings:
     """`sources` with every span, match and tie the part's origin organisations own
-    (`_owned_ranges`) taken out of the variable's reading and the query text's, in every
-    code system and in each vocabulary. The organisation reads those words, so no reader
-    takes them as a code: "IDA" in "IDA disbursements", DAC1 aid type 2103 ("multilateral
-    contribution to the International Development Association"), is the provider IDA, and
-    neither elects a DAC1 family, binds the aid type nor stands unapplied. With IDA the
-    recipient, "contributions to IDA" names aid type 2103 and every reader keeps it. The
-    dropped phrases are the raw-text path's and stay as read."""
+    (`origin_words.owned_ranges`) taken out of the variable's reading and the query
+    text's, in every code system and in each vocabulary, as recall left them out
+    (`interpret.recall`). The organisation reads those words, so no reader takes them as a
+    code: "IDA" in "IDA disbursements", DAC1 aid type 2103 ("multilateral contribution to
+    the International Development Association"), is the provider IDA, and neither elects a
+    DAC1 family, binds the aid type nor stands unapplied. With IDA the recipient,
+    "contributions to IDA" names aid type 2103 and every reader keeps it. The dropped
+    phrases are the raw-text path's and stay as read."""
     if not party.organisations:
         return sources
     texts = [state.variable, *([state.query_text] if sources.owned > 1 else [])]
     masked = list(sources.texts)
     for position, text in enumerate(texts):
-        owned = party.owned if position == 0 else _owned_ranges(state, party.organisations, text)
+        owned = party.owned if position == 0 else _owned(state, party.organisations, text)
         if owned:
             masked[position] = _masked_text(masked[position], text, owned)
     return replace(sources, texts=tuple(masked))
 
 
-def _masked_text(reading: TextReading, text: str, owned: _Ranges) -> TextReading:
-    """`reading` of `text` less the spans, matches and ties `owned` covers (`_owns`)."""
+def _masked_text(reading: TextReading, text: str, owned: Ranges) -> TextReading:
+    """`reading` of `text` less the spans, matches and ties `owned` covers
+    (`origin_words.owns`)."""
 
     def kept(start: int | None, end: int | None) -> bool:
-        return start is None or end is None or not _owns(text, owned, start, end)
+        return start is None or end is None or not owns(text, owned, start, end)
 
     def masked(vocabulary: VocabularyReading) -> VocabularyReading:
         return replace(
@@ -432,37 +388,30 @@ def _masked_text(reading: TextReading, text: str, owned: _Ranges) -> TextReading
     )
 
 
-def _party_ranked(
-    party: _OriginParty, state: ResolveState, shapes: Sequence[ShapeDraft]
-) -> list[ShapeDraft]:
-    """`shapes` in rank order (`_rank_key`), where a shape that publishes an organisation
-    the part names as the origin of its flow (`_OriginParty.publishes`) takes the best slot
+def _promoted(party: _OriginParty, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """`shapes`, a seated menu in its order, where a shape that publishes an organisation
+    the part names as the origin of its flow (`_OriginParty.publishes`) takes the first slot
     of the shapes measuring alike that do not (`_measures_alike`), and those follow it in
-    their own rank order in the slots left. Every other shape keeps its slot. A shape
-    holding a value the variable names as a code of its own reading and the publisher lacks
-    (`_OriginParty.stated`) is no such shape and keeps its slot.
+    their order in the slots left. Every other shape keeps its slot.
 
-    "IDA disbursements" with IDA stated as the provider recalls IDS's disbursements of IDA
-    grants above IDS debt service and DAC2a's disbursements, which publish IDA as a
-    provider: the IDS grants count one instrument of IDA's lending, so DAC2a takes their
-    first slot, debt service stays second and the grants come third. "IDA grant
-    disbursements", where "grant" is read as a code the grants series holds, keeps them
-    first."""
-    ranked = sorted(shapes, key=_rank_key)
-    publishers = [shape for shape in ranked if party.publishes(shape)]
+    It is the menu's last ordering step, after the collapse of measure families and the
+    seating of topic roots (`seat_menu`), so neither moves a promoted shape back: DAC2a
+    reached as a leaf of a topic root still leads. "IDA disbursements" with IDA the provider
+    recalls IDS's disbursements of IDA grants above IDS debt service and DAC2a's
+    disbursements, which publish IDA as a provider: the IDS grants count one instrument of
+    IDA's lending, so DAC2a takes their first slot, debt service stays second and the
+    grants come third."""
+    publishers = [shape for shape in shapes if party.publishes(shape)]
     if not publishers:
-        return ranked
-    positions = {id(shape): position for position, shape in enumerate(ranked)}
-    slots = list(ranked)
+        return list(shapes)
+    positions = {id(shape): position for position, shape in enumerate(shapes)}
+    slots = list(shapes)
     placed = {id(publisher) for publisher in publishers}
     for publisher in publishers:
-        held = {value for _prop, value in shape_constraint_values(publisher)}
         group = [publisher] + [
             shape
-            for shape in ranked
-            if id(shape) not in placed
-            and party.stated(state, shape) <= held
-            and _measures_alike(shape, publisher)
+            for shape in shapes
+            if id(shape) not in placed and _measures_alike(shape, publisher)
         ]
         placed.update(id(shape) for shape in group)
         for position, shape in zip(
@@ -474,37 +423,26 @@ def _party_ranked(
 
 def _family_publishes(shape: ShapeDraft, published: AbstractSet[tuple[str, RoleAxis]]) -> bool:
     """Whether `shape`'s index family (`shape_family`) publishes a party of `published`
-    (`source_choice.publishes_party`): a dataset publishing the family publishes it on an
-    axis the family declares. Where `source_choice._recalled` reads the axes of one
-    recalled row, a shape stands for its whole family, so the axes are those of every row's
-    roles; a role naming no flow axis adds none. A shape the index does not carry
-    publishes none."""
+    (`source_choice.publishes_party`): a dataset publishing the family, of those the part
+    may answer the shape from where candidacy stamped them (`ShapeDraft.datasets`),
+    publishes it on an axis the family declares. Where `source_choice._recalled` reads the
+    axes of one recalled row, a shape stands for its whole family, so the axes are those of
+    every row's roles; a role naming no flow axis adds none. A shape the index does not
+    carry publishes none."""
     index = get_index()
     family = shape_family(shape, index)
     if family is None:
         return False
+    datasets = frozenset(family.datasets)
+    if shape.datasets is not None:
+        datasets &= frozenset(shape.datasets)
     axes = frozenset(
         axis
         for row in family.rows
         for role in row.observation_properties
         if (axis := axis_for_role(role)) is not None
     )
-    return publishes_party(
-        RecalledFamily(datasets=frozenset(family.datasets), axes=axes), published
-    )
-
-
-def _stated_values(state: ResolveState, shape: ShapeDraft) -> frozenset[str]:
-    """The constraint values of `shape` (`shape_constraint_values`) the variable names: a
-    code a span of the shape's own reading names (`ResolveState.variable_spans_by_vocabulary`,
-    read with the origin organisations' words taken out, `_without_owned_terms`)."""
-    read = {
-        row.dcid
-        for span in for_shape(state.variable_spans_by_vocabulary, shape)
-        for row in span.rows
-        if isinstance(row, CodeRow)
-    }
-    return frozenset(value for _prop, value in shape_constraint_values(shape) if value in read)
+    return publishes_party(RecalledFamily(datasets=datasets, axes=axes), published)
 
 
 def _measures_alike(shape: ShapeDraft, other: ShapeDraft) -> bool:
@@ -547,7 +485,7 @@ def _role_bearing_outranks(eligible_shapes: Sequence[ShapeDraft]) -> bool:
     flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them. The
     rule is `flow_governance.governs`, which the raw-text door's organisation reading shares.
 
-    The top is taken by recall rank, not by the menu's order (`_party_ranked`): that order
+    The top is taken by recall rank, not by the menu's order (`_promoted`): that order
     promotes a publisher among the flows measuring alike, which says which flow table
     answers once a flow governs, not whether one does."""
     if not eligible_shapes:
@@ -936,7 +874,6 @@ def _read_offer(
     eligible_shapes: Sequence[ShapeDraft],
     sources: _SourceReadings,
     reading_owned_phrases: frozenset[str],
-    party: _OriginParty,
 ) -> tuple[_Offer, Sequence[ShapeDraft]]:
     """What the phase reads for `eligible_shapes`, the readings it may offer, and those
     readings narrowed, ranked and collapsed, ready to seat. Nothing is written to the
@@ -978,7 +915,7 @@ def _read_offer(
     )
 
     # Preserve ranked order: the status rule offers rivals in menu order.
-    ranked_shapes = _party_ranked(party, state, eligible_shapes)
+    ranked_shapes = sorted(eligible_shapes, key=_rank_key)
     # Collapse measure-only variants before seating. Newly freed seats follow their own
     # rank. Shapes the index does not carry take the declared price-basis order, the query's
     # named readings first, unless the leg left a price-basis phrase unread.
@@ -1129,7 +1066,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
     # "multilateral ODA" never hides "ODA" from a CRS shape.
     # The organisations the part names as the origin of its flow own their words in every
-    # reading (`_without_owned_terms`), and their tables lead the menu (`_party_ranked`).
+    # reading (`_without_owned_terms`), and their tables lead the seated menu (`_promoted`).
     party = _origin_party(state)
     sources = _without_owned_terms(
         state,
@@ -1227,7 +1164,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admitted = [i.shape for i in judged if i.admissible]
     if not admitted and state.interpretations.refusal_reason() is not None:
         return await _refuse_without_a_menu(
-            state, _refused_on_pinned(party, state, judged, excluding), pinned_part_read
+            state, _refused_on_pinned(party, judged, excluding), pinned_part_read
         )
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
@@ -1250,10 +1187,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.
     with timed_step(state, "shape_rank"):
-        offer, ranked_shapes = _read_offer(
-            state, eligible_shapes, sources, reading_owned_phrases, party
-        )
-    refused_on_pinned = _refused_on_pinned(party, state, judged, excluding)
+        offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
+    refused_on_pinned = _refused_on_pinned(party, judged, excluding)
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
     # leaf or none (`seat_menu`), which is the order the status rule offers alternatives in.
@@ -1284,7 +1219,6 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
                 ],
                 sources,
                 reading_owned_phrases,
-                party,
             )
         offer = replace(
             offer, eligible_shapes=_dataset_candidates(offer.eligible_shapes, excluding)
@@ -1299,6 +1233,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
                 unbound_sources=exclusion_records(state, excluding),
                 llm_usage=state.var_usage,
             )
+    # The publisher of the part's origin organisation leads the readings measuring alike, as
+    # the last ordering step, so neither the collapse nor the seating moves it back.
+    menu = _promoted(party, menu)
     if not menu:
         # Every admissible reading is a leaf of a root larger than the menu, so the part
         # offers none: it refuses as a part refusing every reading does when it refused
@@ -1432,25 +1369,19 @@ def _meets_score_floor(shape: ShapeDraft) -> bool:
 
 
 def _refused_on_pinned(
-    party: _OriginParty,
-    state: ResolveState,
-    judged: Sequence[Interpretation],
-    excluding: SourceScope | None,
+    party: _OriginParty, judged: Sequence[Interpretation], excluding: SourceScope | None
 ) -> list[Interpretation]:
     """The not-electable list: the interpretations refused only on a pinned part, less
-    those an exclusion removes, in the menu's rank order (`_party_ranked`), seated as the
-    menu is under the same seat count (`seat_menu`), so a topic root is listed with every
-    leaf or none and the leaves of one large root do not fill the list ahead of a scored
-    reading."""
-    pinned = [i for i in judged if i.pinned_failure is not None]
-    order = {
-        id(shape): position
-        for position, shape in enumerate(_party_ranked(party, state, [i.shape for i in pinned]))
-    }
-    ranked = sorted(pinned, key=lambda i: order[id(i.shape)])
+    those an exclusion removes, seated as the menu is under the same seat count
+    (`seat_menu`), so a topic root is listed with every leaf or none and the leaves of one
+    large root do not fill the list ahead of a scored reading, then ordered as the menu is
+    last (`_promoted`)."""
+    ranked = sorted(
+        (i for i in judged if i.pinned_failure is not None), key=lambda i: _rank_key(i.shape)
+    )
     refused = ranked if excluding is None else _excluded_out(ranked, excluding)
     by_shape = {id(i.shape): i for i in refused}
-    seated = seat_menu([i.shape for i in refused], settings().bind_top_k)
+    seated = _promoted(party, seat_menu([i.shape for i in refused], settings().bind_top_k))
     return [by_shape[id(shape)] for shape in seated]
 
 

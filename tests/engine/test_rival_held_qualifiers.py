@@ -16,6 +16,7 @@ import asyncio
 import pytest
 
 from search.engine.binders import GeminiBinder
+from search.engine.interpret import recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
@@ -356,3 +357,43 @@ def test_a_term_naming_the_provider_elects_no_family_that_records_it():
     assert {member.ref.ref for spec in result.specs for member in spec.resolved.members} == {
         _CRS_HEALTH.dcid
     }
+
+
+@pytest.mark.parametrize(
+    ("query", "injected"),
+    [
+        pytest.param(
+            "IDA disbursements from International Development Association", False, id="provider"
+        ),
+        pytest.param(
+            "IDA disbursements to International Development Association", True, id="recipient"
+        ),
+    ],
+)
+def test_recall_reads_no_family_for_the_providers_words(query, injected):
+    """Recall adds a row of each family of a recalled five-tuple that reads a code of the
+    variable no recalled family reads. "IDA" is the provider's word, so the climate family
+    recording "IDA" joins no pool; with IDA the recipient the word stays a code and the
+    family joins."""
+    rows = (*_ROWS, _CLIMATE_IDA)
+    graph = _graph(
+        query,
+        ((_CRS_HEALTH.dcid, 0.8),),
+        rows=rows,
+        nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
+    )
+    with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
+        result = asyncio.run(
+            recall(
+                "IDA disbursements",
+                [_IDA_NAME],
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query=query,
+                entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
+                entity_words={_IDA_NAME: "IDA"},
+            )
+        )
+
+    climate = {row.dcid for row in rows if _CLIMATE in row.provenances}
+    assert bool(climate & {c.dcid for c in result.candidates}) is injected

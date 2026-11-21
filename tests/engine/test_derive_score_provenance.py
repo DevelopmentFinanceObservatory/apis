@@ -305,23 +305,3 @@ def test_a_rival_lowers_and_a_sole_reading_raises_confidence(score, rival, sole,
         retrieved=True,
     )
     assert confidence == expected
-
-
-def test_collapse_keeps_a_family_at_its_earliest_position_in_the_callers_order():
-    """The caller ranks the nominal member ahead of a shape outside the index and the real
-    member, which recall scored higher, behind it. The family's survivor takes the
-    nominal member's place and the real member's score, so the caller's order stands."""
-    from dataclasses import replace
-
-    from search.engine.retrieval.bound_values import collapse_measure_families
-
-    nominal = _family_shape("nominal", score=0.55)
-    real = replace(_family_shape("real", score=0.62), meas_qual_dcid="RealValue")
-    outside = replace(_family_shape("outside", score=0.70), pop_type_dcid="DebtStock")
-
-    collapsed = collapse_measure_families(
-        (nominal, outside, real), _family_index(), (_family_axis(),), named=()
-    )
-
-    assert [shape.shape_id for shape in collapsed] == ["nominal", "outside"]
-    assert collapsed[0].representative_score == pytest.approx(0.62)

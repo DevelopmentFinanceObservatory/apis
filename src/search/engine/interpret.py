@@ -40,8 +40,13 @@ from search.engine.clients.graph import (
     with_reading_families,
 )
 from search.engine.config import settings
-from search.engine.qualifier_match import cross_vocabulary_codes, read_by_vocabulary
+from search.engine.origin_words import Ranges, origin_organisations, owned_ranges, owns
+from search.engine.qualifier_match import (
+    cross_vocabulary_codes,
+    read_by_vocabulary,
+)
 from search.engine.retrieval.topics import is_topic_candidate
+from search.engine.role_text import DoorRole
 from search.engine.surface_resolution import resolve_names
 
 logger = logging.getLogger(__name__)
@@ -248,48 +253,41 @@ def _pooled(first: Detection, second: Detection, joins: Callable[[str], bool]) -
     return replace(first, candidates=union(first.candidates, second.candidates), hits=hits)
 
 
-async def _detect(
-    graph: EngineGraphClient,
-    text: str,
-    party_words: AbstractSet[str] = frozenset(),
-    *,
-    variable: str,
+async def _search(
+    graph: EngineGraphClient, text: str, party_words: AbstractSet[str] = frozenset()
 ) -> Detection:
-    """The graph's detection of `text` (`EngineGraphClient.detect_svs`), with a row of each
-    family that reads a code `variable` names where no recalled family of its five-tuple
-    reads it (`_with_reading_families`). When `text` holds a word some declared dataset
-    states, or one of `party_words` (`_without_stated_words`), the graph is searched
-    concurrently on the text without it, and the series of the datasets that state or name
-    a party for a removed word join the pool (`_states_a_word`, `_pooled`). A failure of
-    either search raises. `variable` is read off the event loop while the graph searches
-    (`_code_phrases`)."""
+    """The graph's detection of `text` (`EngineGraphClient.detect_svs`). When `text` holds
+    a word some declared dataset states, or one of `party_words` (`_without_stated_words`),
+    the graph is searched concurrently on the text without it, and the series of the
+    datasets that state or name a party for a removed word join the pool (`_states_a_word`,
+    `_pooled`). A failure of either search raises."""
     index = get_index()
     unstated = _without_stated_words(text, index, party_words)
-    phrases = asyncio.to_thread(_code_phrases, variable, index)
     if unstated is None:
-        detection, read = await asyncio.gather(asyncio.to_thread(graph.detect_svs, text), phrases)
-    else:
-        rest, removed = unstated
-        first, second, read = await asyncio.gather(
-            asyncio.to_thread(graph.detect_svs, text),
-            asyncio.to_thread(graph.detect_svs, rest),
-            phrases,
-        )
-        detection = _pooled(
-            first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words)
-        )
-    return _with_reading_families(detection, read, index)
+        return await asyncio.to_thread(graph.detect_svs, text)
+    rest, removed = unstated
+    first, second = await asyncio.gather(
+        asyncio.to_thread(graph.detect_svs, text),
+        asyncio.to_thread(graph.detect_svs, rest),
+    )
+    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words))
 
 
-def _code_phrases(variable: str, index: CodeIndex) -> list[list[CodeRow]]:
+def _code_phrases(variable: str, index: CodeIndex, owned: Ranges = ()) -> list[list[CodeRow]]:
     """The code rows each span of `variable` read in every code system names there
     (`cross_vocabulary_codes`), for each span naming one or more codes, with the reader the
     bind phase reads it with (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls
     it), so recall adds a family for exactly the phrases the later checks find in the
-    variable. The reader keeps the scan, so the bind phase reads the variable without
-    scanning it again."""
+    variable. A span the part's origin organisations own (`owned`,
+    `origin_words.owned_ranges`) names none, as the bind phase leaves it out. The reader
+    keeps the scan, so the bind phase reads the variable without scanning it again."""
     (reading,) = read_by_vocabulary((variable,), index, get_measure_index(), vocabularies=())
-    return [codes for span in reading.everywhere.spans if (codes := cross_vocabulary_codes(span))]
+    return [
+        codes
+        for span in reading.everywhere.spans
+        if not owns(variable, owned, span.start, span.end)
+        and (codes := cross_vocabulary_codes(span))
+    ]
 
 
 def _with_reading_families(
@@ -321,6 +319,9 @@ class Detected:
     text: str
     variable: str
     detection: Detection
+    # The graph's detection before any family joined it (`_search`), which recall joins the
+    # families to again once it knows the words the part's origin organisations own.
+    search: Detection
 
     @property
     def candidates(self) -> list[DetectedSV]:
@@ -333,10 +334,15 @@ async def detect_measure(graph: EngineGraphClient, text: str, *, variable: str) 
     catalogue, as `recall` makes it with no entity resolved and no party word removed. A
     failed search raises."""
     canonical = _canonicalize_acronyms(text)
+    index = get_index()
+    search, phrases = await asyncio.gather(
+        _search(graph, canonical), asyncio.to_thread(_code_phrases, variable, index)
+    )
     return Detected(
         text=canonical,
         variable=variable,
-        detection=await _detect(graph, canonical, variable=variable),
+        detection=_with_reading_families(search, phrases, index),
+        search=search,
     )
 
 
@@ -366,6 +372,8 @@ async def recall(
     members: Sequence[str] | None = None,
     party_words: AbstractSet[str] = frozenset(),
     detected: Detected | None = None,
+    entity_roles: Mapping[str, Sequence[DoorRole]] | None = None,
+    entity_words: Mapping[str, str] | None = None,
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
 
@@ -385,7 +393,11 @@ async def recall(
     of `party_words`, the words that name a party on an axis the request leaves unnamed
     (`region.place_roles.stated_party_words`), for the series of the tables that declare it.
     A family of a recalled five-tuple that reads a code of `variable` no recalled family
-    there reads joins the pool (`_with_reading_families`).
+    there reads joins the pool (`_with_reading_families`), read once the names resolve: a
+    code phrase an organisation the part binds as the origin of its flow owns, by its name,
+    the request's words for it (`entity_words`) or its role spans (`entity_roles`), pulls
+    in no family (`origin_words.owned_ranges`), so "IDA" in "IDA disbursements" with IDA
+    the provider adds no DAC1 aid type 2103 family.
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
@@ -404,6 +416,7 @@ async def recall(
     surfaces = entity_surfaces or {}
 
     canonical = _canonicalize_acronyms(detect_query)
+    index = get_index()
     if members is not None:
         detection = _member_detection(members)
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
@@ -412,16 +425,36 @@ async def recall(
         and (detected.text, detected.variable) == (canonical, variable)
         and not party_words
     ):
-        detection = detected.detection
+        detection = detected.search
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
-        detection, miss_resolutions = await asyncio.gather(
-            _detect(graph, canonical, party_words, variable=variable),
+        # The variable is scanned off the event loop while the graph searches, so the
+        # families read once the names resolve read a kept scan.
+        detection, _, miss_resolutions = await asyncio.gather(
+            _search(graph, canonical, party_words),
+            asyncio.to_thread(_code_phrases, variable, index),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
-    candidates = _above_recall_floor(detection.candidates)
     resolutions: dict[str, Resolution] = dict(cache_hits)
     resolutions.update(zip(misses, miss_resolutions, strict=True))
+    if members is None:
+        organisations = origin_organisations(
+            {
+                name: (resolution.entity.dcid, resolution.entity.kind)
+                for name, resolution in resolutions.items()
+                if isinstance(resolution, Resolved)
+            },
+            entity_roles or {},
+        )
+        owned = owned_ranges(
+            variable,
+            organisations,
+            entity_words=entity_words or {},
+            entity_roles=entity_roles or {},
+        )
+        detection = _with_reading_families(detection, _code_phrases(variable, index, owned), index)
+    candidates = _above_recall_floor(detection.candidates)
+
     for c in candidates:
         logger.debug(
             "recall candidate dcid=%s score=%.4f sentence=%r",

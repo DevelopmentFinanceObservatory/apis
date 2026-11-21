@@ -478,6 +478,15 @@ def test_an_uncued_organisation_the_pack_names_is_contested(
             ["World Bank", "Kenya"],
             [("IDA", (0,))],
         ),
+        # A run that is a whole measure, or lies inside a longer code label, is passed over
+        # whole: no name inside it reads.
+        ("Global Fund in Kenya", ["Global Fund"], ["Kenya"], []),
+        (
+            "Multilateral contribution to the World Bank Group by France",
+            ["Multilateral contribution to the World Bank Group"],
+            ["France"],
+            [],
+        ),
         # A short name written as the pack stores it reads as one.
         ("Gavi disbursements to Kenya", ["disbursements"], ["Kenya"], [("Gavi", (0,))]),
         ("AfDB loans to Ghana", ["loans"], ["Ghana"], [("AfDB", (0,))]),
@@ -1396,10 +1405,12 @@ _CRS_DISBURSEMENT = (
 def _detection(text: str, *hits: DetectedSV, variable: str | None = None) -> Detected:
     """`hits` as the graph's detection of `text` for `variable` (`text` where omitted), with
     no UN candidate."""
+    detection = Detection(candidates=hits, un=settled_un(()))
     return Detected(
         text=text,
         variable=text if variable is None else variable,
-        detection=Detection(candidates=hits, un=settled_un(())),
+        detection=detection,
+        search=detection,
     )
 
 

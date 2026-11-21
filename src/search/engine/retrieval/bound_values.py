@@ -699,10 +699,8 @@ def collapse_measure_families(
     Skip the partition election when there is no shape axis or a constraint
     basis axis; a constraint value never splits a shape, so grouping could merge two
     different measures. The elected partition keeps its preferred measure, but takes
-    the family's strongest measured score and the earliest input position of its family's
-    members, so the order `shapes` comes in is the order it leaves in: a ranking that
-    promotes one member of a family ahead of a shape keeps the survivor there. Topic-only
-    families remain unscored; survivors retain input order.
+    the family's strongest measured score and that member's input position
+    (earliest on a tie). Topic-only families remain unscored; survivors retain input order.
     """
     if reading is not None:
         shapes = _collapse_default_readings(shapes, reading)
@@ -747,11 +745,13 @@ def collapse_measure_families(
         # The family's own best evidence, not the axis election's: every
         # candidate in this group is retrieval evidence for the same
         # underlying concept, so the group's highest representative_score is
-        # the family's true retrieval strength. A member with no score of its
-        # own is never the best evidence; when no member of the family carries
-        # a score, the survivor keeps its own None and there is nothing to
-        # raise it to. The survivor takes the group's earliest position, so the
-        # caller's order stands.
+        # the family's true retrieval strength, and that member's own list
+        # position is where the survivor belongs -- ties keep the earliest
+        # index, `shapes`' own tie-break (breadth, then shape_id) already
+        # having settled which one that is. A member with no score of its own
+        # is never the best evidence; when no member of the family carries a
+        # score, the survivor keeps its own None and there is nothing to
+        # raise it to.
         scored_indices = [i for i in indices if shapes[i].representative_score is not None]
         best_index = (
             max(
@@ -775,7 +775,7 @@ def collapse_measure_families(
             survivor = replace(survivor, representative_score=best_score)
         elif recalled_changed:
             survivor = replace(survivor, recalled=group_recalled)
-        survivors[min(indices)] = survivor
+        survivors[best_index] = survivor
 
     return tuple(shape for shape in survivors if shape is not None)
 

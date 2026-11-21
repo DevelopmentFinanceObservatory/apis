@@ -1,5 +1,5 @@
-"""A shape that publishes the organisation a part names as the origin of its flow ranks
-first among the shapes measuring alike (`phase_rank_bind._party_ranked`).
+"""A shape that publishes the organisation a part names as the origin of its flow leads
+the seated menu among the shapes measuring alike (`phase_rank_bind._promoted`).
 
 The index holds one DAC2a disbursement row, which publishes IDA as a provider. Two series
 the index does not carry stand beside it: an IDS disbursement of IDA grants, measuring
@@ -21,12 +21,15 @@ from code_index.types import (
     PartyRow,
     StatVarRow,
 )
-from search.engine.qualifier_match import QualifierSpan
-from search.engine.region.phase_rank_bind import _origin_party, _owns, _party_ranked
+from search.engine.origin_words import owns
+from search.engine.region import phase_rank_bind
+from search.engine.region.phase_rank_bind import _origin_party, _OriginParty, _promoted
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
-from tests.engine.test_recall_reading_families import _code
+from tests.engine.test_expansion_rank_order import _STRONG_ROOT as _ROOT
+from tests.engine.test_expansion_rank_order import _run_prune
+from tests.engine.test_expansion_rank_order import _shape as _prune_shape
 from tests.graph_release.support import serving_index
 
 _DAC2A = "provenance/OECDDAC2A"
@@ -118,11 +121,10 @@ def _shape(shape_id: str, dcid: str, constraints: dict[str, str], score: float) 
     )
 
 
-_IDA_GRANT = "TESTFIXTURE/Party/IdaGrant"
 _IDS_GRANTS = _shape(
     "ids_grants",
     "TESTFIXTURE/Party/IdsIdaGrants",
-    {"financialFlowType": "Disbursement", "financingType": _IDA_GRANT},
+    {"financialFlowType": "Disbursement", "sourceIndicatorCode": "DT.DIS.IDAG.CD"},
     0.70,
 )
 _IDS_LOANS = _shape(
@@ -138,23 +140,14 @@ _IDS_DEBT_SERVICE = _shape(
     0.65,
 )
 _DAC2A_SHAPE = _shape("dac2a", _DAC2A_ROW.dcid, dict(_DAC2A_ROW.constraint_properties), 0.55)
-# Recall order is grants, debt service, loans, DAC2a; listed otherwise, so an order the
-# rule leaves to the input shows.
-_SHAPES = (_DAC2A_SHAPE, _IDS_LOANS, _IDS_DEBT_SERVICE, _IDS_GRANTS)
+# The seated menu, in recall order: grants, debt service, loans, DAC2a.
+_MENU = (_IDS_GRANTS, _IDS_DEBT_SERVICE, _IDS_LOANS, _DAC2A_SHAPE)
 _NAME = "International Development Association"
 
 
-def _state(
-    *,
-    variable: str = "IDA disbursements",
-    kind: str = "organisation",
-    axis: str = "origin",
-    stated: bool = True,
-    party: str | None = None,
-    spans: tuple[QualifierSpan, ...] = (),
-):
+def _state(*, kind: str = "organisation", axis: str = "origin", stated: bool = True):
     return SimpleNamespace(
-        variable=variable,
+        variable="IDA disbursements",
         place_sets={
             _NAME: PlaceSet(
                 name=_NAME,
@@ -162,50 +155,30 @@ def _state(
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
             )
         },
-        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated, party=party)]},
+        entity_roles={_NAME: [DoorRole(axis=axis, span="IDA", stated=stated)]},
         entity_words={_NAME: "IDA"},
-        # The test shapes declare no slots, so each reads the query in the empty vocabulary.
-        variable_spans_by_vocabulary={frozenset(): spans},
     )
 
 
-def _ranked(state) -> list[str]:
+def _promoted_ids(state, menu=_MENU) -> list[str]:
     with serving_index(_index()):
-        return [shape.shape_id for shape in _party_ranked(_origin_party(state), state, _SHAPES)]
-
-
-_PROMOTED = ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
-_RECALL = ["ids_grants", "ids_debt_service", "ids_a_loans", "dac2a"]
+        return [shape.shape_id for shape in _promoted(_origin_party(state), menu)]
 
 
 @pytest.mark.parametrize(
     "state",
     [
         pytest.param(_state(), id="stated-provider"),
-        pytest.param(_state(stated=False, party="source"), id="unstated-origin"),
+        pytest.param(_state(stated=False), id="unstated-origin"),
     ],
 )
-def test_the_table_publishing_the_origin_organisation_takes_its_measures_best_slot(state):
+def test_the_table_publishing_the_origin_organisation_takes_its_measures_first_slot(state):
     """DAC2a publishes IDA as a provider, so it takes the first slot, held by the IDS
-    disbursement of IDA grants that recall scored highest. IDS debt service measures
-    otherwise and keeps the second slot, and the two IDS disbursements follow in recall
-    order in the slots left. A raw-text provider whose cue states no direction, IDA's own
-    name, counts as the origin the extraction read."""
-    assert _ranked(state) == _PROMOTED
-
-
-def test_a_series_whose_code_the_query_names_keeps_its_slot():
-    """ "grant" in "IDA grant disbursements" is read as the grant code the IDS series holds
-    and DAC2a lacks, so the grants keep the first slot; the IDS loans, whose values the
-    query names none of, yield theirs to DAC2a."""
-    grant = QualifierSpan(
-        matched_text="grant",
-        start=4,
-        end=9,
-        rows=(_code(_IDA_GRANT, "financingType", "grant"),),
-    )
-    state = _state(variable="IDA grant disbursements", spans=(grant,))
-    assert _ranked(state) == ["ids_grants", "ids_debt_service", "dac2a", "ids_a_loans"]
+    disbursement of IDA grants. IDS debt service measures otherwise and keeps the second
+    slot, and the two IDS disbursements follow in their order in the slots left. A raw-text
+    provider whose cue states no direction, IDA's own name, counts as the origin the
+    extraction read."""
+    assert _promoted_ids(state) == ["dac2a", "ids_debt_service", "ids_grants", "ids_a_loans"]
 
 
 @pytest.mark.parametrize(
@@ -215,20 +188,42 @@ def test_a_series_whose_code_the_query_names_keeps_its_slot():
         pytest.param(_state(kind="country"), id="not-an-organisation"),
     ],
 )
-def test_recall_order_stands_without_an_origin_organisation(state):
-    """A part naming no organisation as the origin of its flow ranks by recall."""
-    assert _ranked(state) == _RECALL
+def test_the_menu_stands_without_an_origin_organisation(state):
+    """A part naming no organisation as the origin of its flow keeps its seated order."""
+    assert _promoted_ids(state) == [shape.shape_id for shape in _MENU]
+
+
+def test_a_publisher_seated_as_a_topic_leaf_still_leads_the_menu(monkeypatch):
+    """The publisher arrives as the leaf of a topic root, which seating stands behind every
+    scored shape (`seat_menu`). Promotion is the menu's last ordering step, so the leaf
+    leads the bind menu all the same. The leaf publishes the part's origin organisation and
+    measures as the scored shape does, as the fakes below say."""
+    scored = _prune_shape("scored", score=0.9)
+    leaf = _prune_shape("leaf", score=None, rank=0.85, root=_ROOT)
+
+    class _LeafPublishes(_OriginParty):
+        def publishes(self, shape):
+            return shape.shape_id == "leaf"
+
+    monkeypatch.setattr(
+        phase_rank_bind,
+        "_origin_party",
+        lambda state: _LeafPublishes(organisations={}, published=frozenset(), owned=()),
+    )
+    monkeypatch.setattr(phase_rank_bind, "_measures_alike", lambda shape, other: True)
+
+    assert [shape.shape_id for shape in _run_prune([scored, leaf])] == ["leaf", "scored"]
 
 
 @pytest.mark.parametrize(
-    ("start", "end", "owns"),
+    ("start", "end", "owns_it"),
     [
         pytest.param(0, 3, True, id="owned-word"),
         pytest.param(4, 5, False, id="no-word"),
         pytest.param(6, 9, False, id="unowned-word"),
     ],
 )
-def test_owned_ranges_own_a_span_only_by_its_words(start, end, owns):
+def test_owned_ranges_own_a_span_only_by_its_words(start, end, owns_it):
     """A span is owned when it holds a word and the owned ranges cover every one; a span
     holding no word, as the dash in "IDA - aid", is owned by nothing."""
-    assert _owns("IDA - aid", ((0, 5),), start, end) is owns
+    assert owns("IDA - aid", ((0, 5),), start, end) is owns_it
