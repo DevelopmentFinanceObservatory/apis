@@ -65,6 +65,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.analysis import resolved_periods
 from datasets_api.codes_snapshot import ArtifactExpired
+from datasets_api.manifest import stored_source_periods
 from datasets_api.manifest_models import CitationModel, CitationSource, RetentionModel
 from datasets_api.mint_models import MintOptions
 from datasets_api.party_totals import TRACE_KEY
@@ -228,25 +229,36 @@ def recipe_citation(reader: SnapshotReader, record: RecipeRecord | None) -> Cita
     return roots_citation(reader, stored_recipe_roots(record))
 
 
-def recipe_periods(
+def recipe_root_facts(
     reader: SnapshotReader, record: RecipeRecord | None
-) -> dict[str, list[dict[str, object]]] | None:
-    """The `coverage.last_complete_years` of the roots of the derived frame whose stored recipe
-    is `record`, merged: for each provenance, every root's sources in root order, each once.
-    `None` for a frame with no recipe or no roots, and when a root's version records no such
-    member, so a reader falls back to the release it is bound to."""
-    roots = stored_recipe_roots(record)
-    if not roots:
-        return None
-    merged: dict[str, list[dict[str, object]]] = {}
-    for root in roots:
-        facts = _root_facts(reader, root)
-        recorded = None if facts is None else facts.coverage.get("last_complete_years")
-        if not isinstance(recorded, Mapping):
-            return None
-        for ref, sources in cast("Mapping[str, list[dict[str, object]]]", recorded).items():
-            held = merged.setdefault(ref, [])
-            held.extend(source for source in sources if source not in held)
+) -> list[ManifestFacts | None]:
+    """The stored manifest facts of each root of the derived frame whose stored recipe is
+    `record`, in root order, `None` for a root with no stored manifest record: one version
+    read per root, which `facts_citation` and `facts_source_periods` share."""
+    return [_root_facts(reader, root) for root in stored_recipe_roots(record)]
+
+
+def facts_citation(facts: Sequence[ManifestFacts | None]) -> CitationModel:
+    """The citations of the roots whose facts are `facts` merged, as `roots_citation` merges
+    them."""
+    return _merged_citation(
+        CitationModel.model_validate(held.citation) for held in facts if held is not None
+    )
+
+
+def facts_source_periods(
+    facts: Sequence[ManifestFacts | None],
+) -> dict[str, list[Mapping[str, object]]]:
+    """The sources and families behind the rows of the roots whose facts are `facts`
+    (`manifest.stored_source_periods`), merged: for each provenance the rows carry, every
+    root's entries in root order, each once. A root with no stored record adds none."""
+    merged: dict[str, list[Mapping[str, object]]] = {}
+    for held in facts:
+        if held is None:
+            continue
+        for ref, entries in stored_source_periods(held.coverage, held.trace).items():
+            kept = merged.setdefault(ref, [])
+            kept.extend(entry for entry in entries if entry not in kept)
     return merged
 
 

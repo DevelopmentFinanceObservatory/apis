@@ -162,7 +162,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -221,13 +221,14 @@ from dataset_store.snapshot import (
 from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
 from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS
-from datasets_api.derived import recipe_citation, recipe_periods
+from datasets_api.derived import facts_citation, facts_source_periods, recipe_root_facts
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
 from datasets_api.manifest import (
     HEALED_FIELDS,
     build_citation,
     citation_healed_from,
+    stored_source_periods,
     version_document,
 )
 from datasets_api.manifest_models import CitationModel
@@ -255,6 +256,7 @@ from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.executor import submit_with_context
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
+from graph_release.context import bound_release_or_none
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     STORED_FRAME_DECODE_ERRORS,
@@ -272,7 +274,7 @@ from materialise.provenance_doc import (
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
-from origin_catalogue.periods import version_last_complete_period
+from origin_catalogue.periods import frame_periods
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -361,6 +363,8 @@ _FAMILY_REF_PREFIX = "spec_"
 
 # A published derived frame's spec id. Its version stores no citation.
 _DERIVED_SPEC_PREFIX = "ops_"
+# How many derived frames' recipes and root facts `LiveFrameStore._derived_roots` keeps.
+_DERIVED_ROOTS_KEPT = 256
 
 
 _door_deadline: ContextVar[float | None] = ContextVar(
@@ -722,51 +726,33 @@ def _composed_sides(composed: Sequence[ComposedVariable]) -> list[str]:
     ]
 
 
-def _source_documents(
-    live: Mapping[str, SourceCitation],
-    *,
-    record: DescriptionRecord | None,
-    manifest: Mapping[str, object],
-) -> dict[str, SourceDocumentFacts]:
-    """What each cited source's document says, by provenance dcid, as the Datasets description
-    door reads it: its publisher, its last download and its next release, for a source the
-    read documents. Every source, documented or not, also carries the last year the bound
-    release holds it complete for the variables `manifest`'s trace resolved and `record`
-    names (`origin_catalogue.periods.version_last_complete_period`). A source with neither
-    has no entry."""
-    variables = record.variables if record is not None else None
-    resolved = _resolved_variables(manifest)
-    documents: dict[str, SourceDocumentFacts] = {}
-    for ref, cited in live.items():
-        complete = version_last_complete_period(ref, variables, resolved=resolved)
-        doc = cited.documentation
-        if doc is not None:
-            documents[ref] = SourceDocumentFacts(
-                publisher=doc.source.ref if doc.source is not None else None,
-                last_downloaded=doc.last_update,
-                next_release=doc.next_expected_update,
-                last_complete_period=complete,
-            )
-        elif complete is not None:
-            documents[ref] = SourceDocumentFacts(last_complete_period=complete)
-    return documents
+def _source_documents(live: Mapping[str, SourceCitation]) -> dict[str, SourceDocumentFacts]:
+    """What each documented source's document says, by provenance dcid, as the Datasets
+    description door reads it: its publisher, its last download and its next release."""
+    return {
+        ref: SourceDocumentFacts(
+            publisher=doc.source.ref if doc.source is not None else None,
+            last_downloaded=doc.last_update,
+            next_release=doc.next_expected_update,
+        )
+        for ref, cited in live.items()
+        if (doc := cited.documentation) is not None
+    }
 
 
-def _resolved_variables(manifest: Mapping[str, object]) -> list[str]:
-    """The bare dcids of the variables a dataset version manifest's trace resolved, none for
-    a derived frame's."""
-    trace = manifest.get("trace")
-    if not isinstance(trace, Mapping):
-        return []
-    entries = cast("Mapping[str, object]", trace).get("resolved_stat_vars")
-    if not isinstance(entries, list):
-        return []
-    return [
-        ref.removeprefix(STAT_VAR_REF_PREFIX)
-        for entry in cast("list[object]", entries)
-        if isinstance(entry, Mapping)
-        and isinstance(ref := cast("Mapping[str, object]", entry).get("ref"), str)
-    ]
+def _frame_cells(frame: Mapping[str, object]) -> set[tuple[str, str | None]]:
+    """The distinct `(stat_var, provenance)` cells of a frame document's rows, the provenance
+    `None` for a frame with no provenance column. Empty for a frame with no `stat_var`."""
+    columns = list(cast("Sequence[str]", frame.get("columns") or ()))
+    if STAT_VAR_COLUMN not in columns:
+        return set()
+    at_var = columns.index(STAT_VAR_COLUMN)
+    at_ref = columns.index(PROVENANCE_COLUMN) if PROVENANCE_COLUMN in columns else None
+    return {
+        (row[at_var], None if at_ref is None else row[at_ref])
+        for row in cast("Sequence[Sequence[Any]]", frame.get("rows") or ())
+        if isinstance(row[at_var], str)
+    }
 
 
 def _documented(live: Mapping[str, SourceCitation]) -> bool:
@@ -902,6 +888,9 @@ class LiveFrameStore:
         self._frame1_max_bytes = frame1_decode_max_bytes(fold_max_rows, folds=False)
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
+        self._derived_reads: dict[
+            tuple[str, str], tuple[RecipeRecord, list[ManifestFacts | None]]
+        ] = {}
         self._cache_bytes = 0
         self._refreshing: set[tuple[str, str]] = set()
         self._refresh_ended = threading.Condition(self._cache_lock)
@@ -944,6 +933,24 @@ class LiveFrameStore:
         return frame if frame.rendering == rendering else replace(frame, rendering=rendering)
 
     def _cached_or_resolved(
+        self,
+        frame_ref: FrameRef,
+        *,
+        stored: StoredVersion,
+        canonical: StoredArtifactLocation,
+        deadline: float,
+        rendering: Mapping[str, object] | None = None,
+    ) -> ResolvedFrame:
+        """`_cached_or_resolved_words` with the sources behind the frame's rows read under the
+        bound release (`_with_periods`)."""
+        frame = self._cached_or_resolved_words(
+            frame_ref, stored=stored, canonical=canonical, deadline=deadline, rendering=rendering
+        )
+        return self._with_periods(
+            (frame_ref.spec_id, frame_ref.content_version), frame, stored=stored
+        )
+
+    def _cached_or_resolved_words(
         self,
         frame_ref: FrameRef,
         *,
@@ -1164,8 +1171,6 @@ class LiveFrameStore:
                 frame, stored_manifest=document, deadline=deadline
             )
             frame = replace(frame, manifest=manifest, source_documents=documents)
-            if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
-                frame = replace(frame, source_periods=self._roots_periods(frame_ref))
             citation_retry_at = None if citation_complete else now + _RECHECK
         if (
             cached is not None
@@ -1313,9 +1318,7 @@ class LiveFrameStore:
         spec_id = frame.frame_ref.spec_id
         if self._recipe_reader is None or not spec_id.startswith(_DERIVED_SPEC_PREFIX):
             return None, None, True, True
-        recipe = self._recipe_reader.read_recipe(
-            spec_id=spec_id, content_version=frame.frame_ref.content_version
-        )
+        recipe, _ = self._derived_roots(frame.frame_ref)
         if recipe is None:
             return None, None, False, True
         body = cast("Mapping[str, object] | None", recipe.body.get("anchor"))
@@ -1402,34 +1405,73 @@ class LiveFrameStore:
         citation = citation_healed_from(stored_citation, live)
         if citation != stored_citation:
             stored_manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
-        return (
-            stored_manifest,
-            _source_documents(live, record=frame.description_record, manifest=stored_manifest),
-            _documented(live),
-        )
+        return stored_manifest, _source_documents(live), _documented(live)
 
-    def _roots_periods(self, frame_ref: FrameRef) -> dict[str, list[dict[str, object]]] | None:
-        """The sources behind each provenance a derived frame's rows carry, as its recipe roots
-        recorded them (`datasets_api.derived.recipe_periods`), or `None` when the store reads
-        no recipes or a root records none."""
+    def _derived_roots(
+        self, frame_ref: FrameRef
+    ) -> tuple[RecipeRecord | None, list[ManifestFacts | None]]:
+        """A derived frame's stored recipe and the stored manifest facts of each of its roots
+        (`datasets_api.derived.recipe_root_facts`), `(None, [])` for a store with no recipe
+        reader or a frame with no recipe yet. A recipe and its root versions never change once
+        written, so a found recipe's answer is kept for the last `_DERIVED_ROOTS_KEPT` frames,
+        and a load reads each at most once."""
         if self._recipe_reader is None:
-            return None
+            return None, []
+        key = (frame_ref.spec_id, frame_ref.content_version)
+        with self._cache_lock:
+            kept = self._derived_reads.get(key)
+        if kept is not None:
+            return kept
         record = self._recipe_reader.read_recipe(
             spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
         )
-        return recipe_periods(self._snapshots, record)
+        if record is None:
+            return None, []
+        read = (record, recipe_root_facts(self._snapshots, record))
+        with self._cache_lock:
+            self._derived_reads[key] = read
+            while len(self._derived_reads) > _DERIVED_ROOTS_KEPT:
+                del self._derived_reads[next(iter(self._derived_reads))]
+        return read
 
     def _roots_citation(self, frame_ref: FrameRef) -> CitationModel | None:
         """A derived frame's citation as the derived manifest gives it, its recipe roots'
-        citations merged (`datasets_api.derived.recipe_citation`), or `None` when the store
+        citations merged (`datasets_api.derived.facts_citation`), or `None` when the store
         reads no recipes, the frame has no recipe yet, or its roots cite no source."""
-        if self._recipe_reader is None:
-            return None
-        record = self._recipe_reader.read_recipe(
-            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
-        )
-        citation = recipe_citation(self._snapshots, record)
+        _, facts = self._derived_roots(frame_ref)
+        citation = facts_citation(facts)
         return citation if citation.sources else None
+
+    def _with_periods(
+        self, cache_key: tuple[str, str], frame: ResolvedFrame, *, stored: StoredVersion
+    ) -> ResolvedFrame:
+        """`frame` carrying the sources and families behind its rows
+        (`ResolvedFrame.source_periods`), read under the bound release and kept with the
+        cached frame until another release is bound. A dataset frame reads its version's
+        (`datasets_api.manifest.stored_source_periods`), a derived frame its roots'
+        (`datasets_api.derived.facts_source_periods`); each falls back to the bound release's
+        years for a version that recorded none."""
+        release = bound_release_or_none()
+        release_id = None if release is None else release.release_id
+        if frame.source_periods is not None and frame.periods_release == release_id:
+            return frame
+        if frame.frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
+            recorded: Mapping[str, Sequence[Mapping[str, object]]] = facts_source_periods(
+                self._derived_roots(frame.frame_ref)[1]
+            )
+        elif isinstance(stored.facts, ManifestFacts):
+            recorded = stored_source_periods(stored.facts.coverage, stored.facts.trace)
+        else:
+            recorded = {}
+        updated = replace(
+            frame,
+            source_periods=frame_periods(recorded, cells=_frame_cells(frame.frame)),
+            periods_release=release_id,
+        )
+        entry = self._cache_get(cache_key)
+        if entry is not None and entry.resolved is frame:
+            self._cache_put(cache_key, replace(entry, resolved=updated), expected=entry)
+        return updated
 
     def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         """Pin `frame_ref` for `component_id`, and, for a derived frame, each root version its
@@ -1814,11 +1856,7 @@ class LiveFrameStore:
             processed=figures_processed(version_id=frame_ref.spec_id, steps=steps),
         )
         manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
-        return (
-            manifest,
-            _source_documents(live, record=None, manifest=manifest),
-            _documented(live),
-        )
+        return manifest, _source_documents(live), _documented(live)
 
     def _source_citations(
         self, refs: Sequence[str], *, frame_ref: FrameRef, deadline: float

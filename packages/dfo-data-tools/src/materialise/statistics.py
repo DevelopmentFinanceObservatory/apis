@@ -421,8 +421,8 @@ class SeriesFigures:
     the version holds no series, or when its series' first and latest periods mix grains
     and so do not order. `entities_by_role` and `by_source_unit` keep first-appearance
     order. Each entity counts the distinct variables holding data for it, not their
-    series. `latest_by_source` maps each series' `provenance` cell to the latest end any of
-    its series reaches, whatever the grains.
+    series. `latest_by_source` maps each `(provenance cell, stat_var)` pair to the latest end
+    any of its series reaches, whatever the grains.
     """
 
     series: int
@@ -433,7 +433,7 @@ class SeriesFigures:
     entities_by_role: tuple[RoleFigure, ...]
     by_source_unit: tuple[SourceUnitFigure, ...]
     status: StatusFigures
-    latest_by_source: Mapping[str | None, str] = field(default_factory=dict)
+    latest_by_source: Mapping[tuple[str | None, str], str] = field(default_factory=dict)
 
 
 def _series_identity(
@@ -465,7 +465,7 @@ class _FiguresFold:
     reaching_end: int = 0
     entities: dict[str, dict[str, set[str]]] = field(default_factory=dict)
     source_units: Counter[tuple[str | None, str]] = field(default_factory=Counter)
-    source_ends: dict[str | None, str] = field(default_factory=dict)
+    source_ends: dict[tuple[str | None, str], str] = field(default_factory=dict)
     units: dict[str, str | dict[str, object] | None] = field(default_factory=dict)
     values_by_facet: Counter[tuple[str | None, str | None]] = field(default_factory=Counter)
 
@@ -526,8 +526,8 @@ class _FiguresFold:
                 self.end, self.reaching_end = end, 0
             if end == self.end:
                 self.reaching_end += 1
-            if (held := self.source_ends.get(provenance)) is None or end > held:
-                self.source_ends[provenance] = end
+            if (held := self.source_ends.get((provenance, stat_var))) is None or end > held:
+                self.source_ends[(provenance, stat_var)] = end
             unit = cast("str | dict[str, object] | None", facet.get("unit"))
             unit_key = json.dumps(unit, sort_keys=True, separators=(",", ":"))
             self.units.setdefault(unit_key, unit)

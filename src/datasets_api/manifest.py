@@ -17,9 +17,9 @@ definition also stores whether the mint's default place scope was plural
 records include a canonical frame artifact that the response omits. Snapshot manifests list all
 servable renderings. A version's `coverage` also sets its frame's one year beside the years
 around it, counted from the coverage index its run elected over (`year_coverage`) and stored
-with the version, and records the last complete year of each provenance its rows come from
-(`last_complete_years`), so a card drawn on it later flags a partial final year as the data
-stood when it was read.
+with the version, and records the last complete year of each source and family its rows come
+from (`last_complete_years`), so a card drawn on it later flags a partial final year as the
+data stood when it was read.
 
 Each serve call reads the name, url, licence, source, Data Commons and documentation of every
 dispatched provenance ref once (`materialise.provenance_doc.read_source_citations`), and every
@@ -115,7 +115,7 @@ from materialise.series_conversion import (
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
-from origin_catalogue.periods import last_complete_year, release_counts_periods
+from origin_catalogue.periods import SourceRows, counts_periods, source_periods
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -207,67 +207,76 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
 
 
 def last_complete_years(result: MaterialisationResult) -> dict[str, object]:
-    """The `last_complete_years` member of the `coverage` of the frame `result` holds, empty
-    when the bound release counts no complete years (`release_counts_periods`), so a later
-    read falls back to the release it is bound to.
+    """The `last_complete_years` member of the `coverage` of the frame `result` holds
+    (`origin_catalogue.periods.source_periods`), empty when neither the bound release counts
+    complete years nor the registry declares one for a source of the rows
+    (`counts_periods`), so a later read falls back to the release it is bound to.
 
-    Each provenance the rows carry (`provenance_refs_of`) lists the sources behind it with
-    the last year each held complete (`origin_catalogue.periods.last_complete_year`) and the
-    last year its rows reach. A plain definition's rows come from that provenance itself, for
-    the variables the run resolved, reaching the latest period its series reach
-    (`SeriesFigures.latest_by_source`). A composite's rows come from its components
-    (`trace.components`), each for its own members, reaching the last year it serves in the
-    frame. A source with no known year or no rows is left out."""
-    if not release_counts_periods():
+    Each provenance the rows carry lists one entry per source and family (`_trace_sources`).
+    An entry's last year is the latest period its variables' series reach under the row
+    provenance (`SeriesFigures.latest_by_source`)."""
+    trace = result.trace
+    refs, sources = _trace_sources(
+        facets=trace.facets, components=trace.components, resolved=trace.resolved_stat_vars
+    )
+    if not counts_periods(provenance for provenance, _ in sources):
         return {}
-    refs = list(dict.fromkeys(provenance_refs_of(result.trace.facets)))
-    entries: dict[str, list[SourcePeriod]] = {}
-    if result.trace.components:
-        sources = [
+    ends = {
+        (ref, bare_stat_var_ref(stat_var)): year
+        for (ref, stat_var), period in result.series_statistics.figures.latest_by_source.items()
+        if ref is not None and (year := _leading_year(period)) is not None
+    }
+    periods = source_periods(row_refs=refs, sources=sources, ends=ends)
+    return {
+        "last_complete_years": {
+            ref: [SourcePeriod.model_validate(entry) for entry in entries]
+            for ref, entries in periods.items()
+        }
+    }
+
+
+def stored_source_periods(
+    coverage: Mapping[str, object], trace: Mapping[str, object]
+) -> Mapping[str, Sequence[Mapping[str, object]]]:
+    """The sources and families behind a stored dataset version's rows: the
+    `last_complete_years` its `coverage` recorded at the mint, else, for a version minted
+    before it recorded them, those the bound release gives its stored `trace` today
+    (`origin_catalogue.periods.source_periods`), with no last year."""
+    recorded = coverage.get("last_complete_years")
+    if isinstance(recorded, Mapping):
+        return cast("Mapping[str, Sequence[Mapping[str, object]]]", recorded)
+    refs, sources = _trace_sources(
+        facets=cast("Sequence[Mapping[str, object]]", trace.get("facets") or ()),
+        components=cast("Sequence[Mapping[str, object]]", trace.get("components") or ()),
+        resolved=cast("Sequence[Mapping[str, object]]", trace.get("resolved_stat_vars") or ()),
+    )
+    return source_periods(row_refs=refs, sources=sources, ends=None)
+
+
+def _trace_sources(
+    *,
+    facets: Iterable[Mapping[str, object]],
+    components: Sequence[Mapping[str, object]],
+    resolved: Sequence[Mapping[str, object]],
+) -> tuple[list[str], list[SourceRows]]:
+    """The provenances a version's rows carry (`provenance_refs_of`) and the sources behind
+    them: a composite's components (`trace.components`), each serving its own members, else
+    each of those provenances serving every variable the definition resolved."""
+    refs = list(dict.fromkeys(provenance_refs_of(facets)))
+    if components:
+        return refs, [
             (
                 cast(str, component["provenance"]),
                 [
                     bare_stat_var_ref(cast(str, ref))
                     for ref in cast("list[object]", component.get("stat_vars") or [])
                 ],
-                max(
-                    (
-                        cast("list[int]", span)[1]
-                        for span in cast("list[object]", component.get("periods") or [])
-                    ),
-                    default=None,
-                ),
             )
-            for component in result.trace.components
+            for component in components
             if component.get("provenance") is not None
         ]
-        for ref in refs:
-            entries[ref] = _source_periods(sources)
-    else:
-        variables = [
-            bare_stat_var_ref(cast(str, entry["ref"])) for entry in result.trace.resolved_stat_vars
-        ]
-        ends = result.series_statistics.figures.latest_by_source
-        for ref in refs:
-            entries[ref] = _source_periods([(ref, variables, _leading_year(ends.get(ref)))])
-    return {"last_complete_years": {ref: found for ref, found in entries.items() if found}}
-
-
-def _source_periods(sources: Sequence[tuple[str, Sequence[str], int | None]]) -> list[SourcePeriod]:
-    """A `SourcePeriod` for each `(provenance, variables, last year)` that has rows and a
-    known last complete year."""
-    periods: list[SourcePeriod] = []
-    for provenance, variables, last_year in sources:
-        if last_year is None:
-            continue
-        complete = last_complete_year(provenance, variables=variables)
-        if complete is not None:
-            periods.append(
-                SourcePeriod(
-                    provenance=provenance, last_complete_year=complete, last_year=last_year
-                )
-            )
-    return periods
+    variables = [bare_stat_var_ref(cast(str, entry["ref"])) for entry in resolved]
+    return refs, [(ref, variables) for ref in refs]
 
 
 def _leading_year(period: str | None) -> int | None:

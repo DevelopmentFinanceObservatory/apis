@@ -234,13 +234,15 @@ def _complete_years(
     # Count only the (provenance, family) pairs some series holds.
     held = pairs >= 0
     occurring, groups = np.unique(pairs[held], return_inverse=True)
+    words = series.select([f"period_mask_{word}" for word in range(HORIZON.mask_words)]).filter(
+        pa.array(held)
+    )
+    # Arrow filters the held rows first, so only they leave it; the signed words read as
+    # unsigned in place.
     masks = np.column_stack(
         [
-            series[f"period_mask_{word}"]
-            .fill_null(pa.scalar(0, pa.int64()))
-            .to_numpy()[held]
-            .astype(np.uint64)
-            for word in range(HORIZON.mask_words)
+            column.fill_null(pa.scalar(0, pa.int64())).to_numpy().view(np.uint64)
+            for column in words.columns
         ]
     )
     counts = group_year_counts(masks, groups, group_count=len(occurring), horizon=HORIZON)

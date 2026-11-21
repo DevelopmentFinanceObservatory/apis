@@ -14,12 +14,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from dfo_frame_grammar import TIME_PERIOD_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
 from assembler.ports import NamedSeries, ResolvedFrame
+from assembler.resolve import ResolvedSeries
 from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
@@ -377,65 +378,56 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
     return str(end_year) if end_year is not None else None
 
 
-def _partial_period(
-    *,
-    resolved_frame: ResolvedFrame,
-    sources: Sequence[Mapping[str, object]],
-    data_through: str | None,
-) -> bool:
-    """Whether a cited source's rows in the frame reach past the last year that source held
-    complete, so the frame's later years hold only part of its series.
+def drawn_rows(
+    *, series: Sequence[ResolvedSeries], bound_series: Sequence[BoundSeries]
+) -> list[Mapping[str, object]] | None:
+    """The frame rows a card draws: each resolved series' rows in the periods its bound series
+    keeps. `None` for a card that binds no series, which draws on the whole frame."""
+    if not series:
+        return None
+    periods = {bound.id: {point["period"] for point in bound.points} for bound in bound_series}
+    return [
+        row
+        for one in series
+        for row in one.rows
+        if row.get(TIME_PERIOD_COLUMN) in periods.get(one.id, ())
+    ]
 
-    The sources behind each provenance the rows carry, and the year each held complete, are
-    the ones the version recorded when it was minted, since the frame holds the values its
-    sources had published then: a dataset version's `coverage.last_complete_years`, a
-    derived frame's roots' (`ResolvedFrame.source_periods`). A source's rows reach the last
-    year it recorded, cut at the last year the frame's rows carrying its provenance reach. A
-    version minted before it recorded them reads each cited source's year today
-    (`SourceDocumentFacts.last_complete_period`) against the last year its rows reach, or
-    `data_through` for a frame whose rows name no provenance."""
-    refs = [cast(str, ref) for source in sources if (ref := source.get("ref")) is not None]
-    ends = _last_years_by_provenance(resolved_frame.frame)
-    recorded = resolved_frame.source_periods
-    if recorded is None:
-        coverage = cast("Mapping[str, object]", resolved_frame.manifest.get("coverage") or {})
-        held = coverage.get("last_complete_years")
-        if isinstance(held, Mapping):
-            recorded = cast("Mapping[str, Sequence[Mapping[str, object]]]", held)
-    if recorded is not None:
-        for ref in refs:
-            for period in recorded.get(ref, ()):
-                complete, last = period.get("last_complete_year"), period.get("last_year")
-                if not isinstance(complete, int) or not isinstance(last, int):
-                    continue
-                if min(last, ends.get(ref, last)) > complete:
-                    return True
+
+def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """A frame document's rows keyed by column."""
+    columns = list(cast("Sequence[str]", frame.get("columns") or ()))
+    return [
+        dict(zip(columns, row, strict=True))
+        for row in cast("Sequence[Sequence[object]]", frame.get("rows") or ())
+    ]
+
+
+def _partial_period(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
+) -> bool:
+    """Whether the rows a card draws, `rows` or the whole frame's, hold a family of one source
+    past the last year that source held it complete (`FramePeriod.partial`), so the card's
+    later years hold only part of that family's series. The families and their years are the
+    frame's `source_periods`; a frame the store read none for reads as complete."""
+    periods = resolved_frame.source_periods or ()
+    if not periods:
         return False
-    through = int(data_through) if data_through is not None and data_through.isdigit() else None
-    for ref in refs:
-        facts = resolved_frame.source_documents.get(ref)
-        year = None if facts is None else facts.last_complete_period
-        last = ends.get(ref, through)
-        if year is not None and year.isdigit() and last is not None and last > int(year):
+    drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
+    for period in periods:
+        reach = max(
+            (
+                int(time_period[:4])
+                for row in drawn
+                if isinstance(time_period := row.get(TIME_PERIOD_COLUMN), str)
+                and time_period[:4].isdigit()
+                and period.holds(stat_var=row.get(STAT_VAR_COLUMN), ref=row.get(PROVENANCE_COLUMN))
+            ),
+            default=None,
+        )
+        if reach is not None and period.partial(reach):
             return True
     return False
-
-
-def _last_years_by_provenance(frame: Mapping[str, object]) -> dict[str, int]:
-    """The last year the frame's rows carrying each provenance reach, read from the leading
-    year of their `time_period`. Empty for a frame without both columns."""
-    columns = list(cast("Sequence[str]", frame.get("columns") or ()))
-    if PROVENANCE_COLUMN not in columns or TIME_PERIOD_COLUMN not in columns:
-        return {}
-    at_ref, at_period = columns.index(PROVENANCE_COLUMN), columns.index(TIME_PERIOD_COLUMN)
-    ends: dict[str, int] = {}
-    for row in cast("Sequence[Sequence[object]]", frame.get("rows") or ()):
-        ref, period = row[at_ref], row[at_period]
-        if isinstance(ref, str) and isinstance(period, str) and period[:4].isdigit():
-            year = int(period[:4])
-            if year > ends.get(ref, year - 1):
-                ends[ref] = year
-    return ends
 
 
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
@@ -458,11 +450,13 @@ def _build_provenance(
     sources: tuple[dict[str, object], ...],
     card_steps: Sequence[Step],
     clock: Callable[[], datetime.datetime],
+    drawn: Sequence[Mapping[str, object]] | None,
 ) -> dict[str, object]:
     """The provenance of a card drawn from `resolved_frame`, citing `sources`. The citation
     routes through the DFO as the steps known to have made the card's figures decide
     (`description.citation.figures_processed`): the version's, then the card's own
-    `card_steps`."""
+    `card_steps`. `freshness.partial_period` judges the rows the card draws, `drawn`
+    (`drawn_rows`), or the whole frame's for `None`."""
     manifest = resolved_frame.manifest
     record = resolved_frame.description_record
     warnings = cast(Sequence[Mapping[str, object]], manifest.get("warnings") or ())
@@ -480,9 +474,7 @@ def _build_provenance(
             "data_through": data_through,
             "last_refreshed": None,
             "next_expected": None,
-            "partial_period": _partial_period(
-                resolved_frame=resolved_frame, sources=sources, data_through=data_through
-            ),
+            "partial_period": _partial_period(resolved_frame=resolved_frame, rows=drawn),
         },
         "warnings": _translate_warnings(warnings, labels=resolved_frame.labels),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),

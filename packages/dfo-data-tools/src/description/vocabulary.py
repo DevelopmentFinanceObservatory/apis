@@ -53,16 +53,12 @@ class SourceDocumentFacts:
     (`dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd`); a UN agency's provenance is
     its own source (`undata/p/WHO`). `last_downloaded` is the date the DFO pipeline last
     downloaded the source (`2026-10-08`) and `next_release` the publisher's next release
-    (`2026-09`), each as the document writes it. `last_complete_period` is the last year the
-    source holds complete for the version's variables (`2024`,
-    `origin_catalogue.periods.last_complete_year`), so a later period is partial. Each is
-    `None` when nothing gives it.
+    (`2026-09`), each as the document writes it. Each is `None` when the document gives none.
     """
 
     publisher: str | None = None
     last_downloaded: str | None = None
     next_release: str | None = None
-    last_complete_period: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,7 +302,6 @@ def build_vocabulary(
                     publisher=_word(facts.publisher),
                     last_downloaded=_word(facts.last_downloaded),
                     next_release=_word(facts.next_release),
-                    last_complete_period=_word(facts.last_complete_period),
                 )
                 for ref, facts in sources.items()
             }

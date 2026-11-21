@@ -29,17 +29,16 @@ from assembler.mint.provenance import _partial_period
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame
 from code_index.shared import get_index
-from dataset_store.snapshot import LiveSnapshotReader, ManifestFacts
+from dataset_store.snapshot import LiveSnapshotReader, ManifestFacts, StoredVersion
 from datasets_api.adapter import build_identity_document, to_materialisation_request
 from datasets_api.current import DefinitionDeps, serve_current, serve_current_head
-from datasets_api.manifest import version_document, year_coverage
+from datasets_api.manifest import stored_source_periods, version_document, year_coverage
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions, Scope
 from datasets_api.shape import resolve_shape
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import Trigger, VersionRecord
 from dc_sdmx import SdmxClient
-from description.vocabulary import SourceDocumentFacts
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_release.context import bound_release
 from graph_release.service import Release
@@ -48,7 +47,7 @@ from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from materialise.window import LatestYear, ReadSeries, RequestedWindow
 from origin_catalogue.arc_tables import WireArcs
-from origin_catalogue.periods import version_last_complete_period
+from origin_catalogue.periods import frame_periods
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
@@ -897,17 +896,27 @@ def _aid_release(*, reporting_2025: int) -> Release:
 
 
 def test_a_version_minted_while_its_final_year_was_partial_stays_partial(version_store):
-    """The version records the last complete year its source held at the mint, so a card
-    drawn on it under a later release, where the full year has landed, still flags the
-    preliminary values the frame holds."""
+    """The version records the last complete year of each family its source held at the mint,
+    so a card drawn on it under a later release, where the full year has landed, still flags
+    the preliminary values the frame holds. A version minted before it recorded them reads
+    today's year."""
     rig = _Rig(version_store, indexed={_AID: _MALAWI})
-    with bound_release(_aid_release(reporting_2025=1)):
+    partial_release = _aid_release(reporting_2025=1)
+    with bound_release(partial_release):
         minted, _ = rig.mint(RequestedWindow(kind="all"))
     stored = rig.deps.snapshot_reader.read_version(rig.stored.spec_id, minted.content_version)
-    assert stored is not None
-    manifest = version_document(stored)
-    assert cast("dict[str, object]", manifest["coverage"])["last_complete_years"] == {
-        _PROVENANCE: [{"provenance": _PROVENANCE, "last_complete_year": 2024, "last_year": 2025}]
+    assert isinstance(stored, StoredVersion) and isinstance(stored.facts, ManifestFacts)
+    family = partial_release.origin.family_of(_AID)
+    assert family is not None
+    assert stored.facts.coverage["last_complete_years"] == {
+        _PROVENANCE: [
+            {
+                "provenance": _PROVENANCE,
+                "family": list(family),
+                "last_complete_year": 2024,
+                "last_year": 2025,
+            }
+        ]
     }
 
     frame = build_resolved_frame(
@@ -924,17 +933,13 @@ def test_a_version_minted_while_its_final_year_was_partial_stays_partial(version
                 "provenance": _PROVENANCE,
             }
         ],
-        manifest=manifest,
     )
+    cells = [(f"dcid:{_AID}", _PROVENANCE)]
     with bound_release(_aid_release(reporting_2025=20)):
-        today = version_last_complete_period(_PROVENANCE, None, resolved=[_AID])
-        frame = replace(
-            frame, source_documents={_PROVENANCE: SourceDocumentFacts(last_complete_period=today)}
+        recorded = frame_periods(
+            stored_source_periods(stored.facts.coverage, stored.facts.trace), cells=cells
         )
-        sources = [{"ref": _PROVENANCE}]
+        today = frame_periods(stored_source_periods({}, stored.facts.trace), cells=cells)
 
-        assert today == "2025"
-        assert _partial_period(resolved_frame=frame, sources=sources, data_through="2025")
-        assert not _partial_period(
-            resolved_frame=replace(frame, manifest={}), sources=sources, data_through="2025"
-        ), "a version minted before the member reads today's year"
+    assert _partial_period(resolved_frame=replace(frame, source_periods=recorded), rows=None)
+    assert not _partial_period(resolved_frame=replace(frame, source_periods=today), rows=None)

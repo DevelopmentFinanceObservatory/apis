@@ -10,6 +10,7 @@ import logging
 import random
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
@@ -34,6 +35,7 @@ from artifact_store.errors import (
 from artifact_store.store import ArtifactSink, StoredArtifact, Tier
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
 from assembler.limits import LABEL_MAX
+from assembler.mint.provenance import _partial_period
 from assembler.pipeline import write_component
 from assembler.ports import (
     Continuation,
@@ -47,6 +49,7 @@ from assembler.resolve import resolve_selectors
 from assembler.testing import (
     build_frame_doc,
     malaria_ethiopia_frame_ref,
+    malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
 from code_index.composites import DECLARED_COMPOSITES
@@ -96,23 +99,23 @@ from dfo_platform.caller import Caller
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
+from graph_release.service import Release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import (
     PROVENANCE_NAME_PROPERTIES,
-    SourceCitation,
     SourceDocumentNotFound,
 )
 from origin_catalogue import BASE
+from origin_catalogue.periods import FramePeriod
 from presentation_store import frame_store
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
     PRESENTATION_PIN_REFERENCE_KIND,
     LiveFrameStore,
     _CachedFrame,
-    _source_documents,
     frame_reads_bounded_by,
 )
 from spec_registry import recompute_identity
@@ -4023,33 +4026,59 @@ def test_load_carries_what_each_cited_source_s_document_says_and_caches_it(fixtu
     assert graph.calls == reads_after_first_load
 
 
-def test_load_carries_the_last_complete_year_of_each_source_for_the_variables_it_resolved():
-    """The frame's manifest trace names the variables its definition resolved, and the bound
-    release's family counts under the cited source give their last complete year: a final year
-    holding one series of the twenty before it is partial."""
-    snapshots, artifacts, frame_ref, _ = _thin_spec_fixture()
-    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
-    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
-        version,
-        facts=replace(version.facts, trace={"resolved_stat_vars": [{"ref": "dcid:Amount_Aid"}]}),
-    )
-    released = origin_release(
+def _malaria_release(*, final_year_series: int) -> Release:
+    """A release whose one family under `src_oecd_dac` holds twenty series through 2015 and
+    `final_year_series` of them in 2016, the fixture frame's last year: one in twenty is a
+    preliminary 2016, twenty a complete one."""
+    return origin_release(
         {
-            "Amount_Aid": {
+            "MalariaGrantDisbursements": {
                 "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
                 "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
                 "measuredProperty": {"nodes": [{"dcid": "amount"}]},
             }
         },
-        series=[("Amount_Aid", "f", [2023, 2024, 2025]), *[("Amount_Aid", "f", [2023, 2024])] * 19],
+        series=[
+            ("MalariaGrantDisbursements", "f", [2015, 2016] if at < final_year_series else [2015])
+            for at in range(20)
+        ],
         facets={"f": "src_oecd_dac"},
+    )
+
+
+_MALARIA_TRACE = {
+    "facets": [{"axis": "provenance", "ref": "src_oecd_dac"}],
+    "resolved_stat_vars": [{"ref": "dcid:MalariaGrantDisbursements"}],
+}
+
+
+def test_a_version_that_recorded_no_years_reads_the_bound_release_s_and_rereads_the_next():
+    """A version minted before versions recorded their years reads them from the release bound
+    to the load, whatever path its citation read takes, and keeps them with the cached frame
+    until another release is bound."""
+    snapshots, artifacts, frame_ref, _ = _thin_spec_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, trace=_MALARIA_TRACE)
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=_documenting_graph())
 
-    with bound_release(released):
-        loaded = store.load(frame_ref=frame_ref)
+    with bound_release(_malaria_release(final_year_series=1)):
+        first = store.load(frame_ref=frame_ref)
+        assert store.load(frame_ref=frame_ref) is first
+    with bound_release(_malaria_release(final_year_series=20)):
+        later = store.load(frame_ref=frame_ref)
 
-    assert loaded.source_documents["src_oecd_dac"].last_complete_period == "2024"
+    assert first.source_periods == (
+        FramePeriod(
+            row_ref="src_oecd_dac",
+            provenance="src_oecd_dac",
+            variables=frozenset({"dcid:MalariaGrantDisbursements"}),
+            last_complete_year=2015,
+            last_year=None,
+        ),
+    )
+    assert [period.last_complete_year for period in later.source_periods or ()] == [2016]
 
 
 def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():
@@ -4815,73 +4844,87 @@ def _cited(manifest: Mapping[str, object]) -> list[tuple[str, str, str | None]]:
     ]
 
 
+_CRS_INCLUSIVE = "provenance/ONECRSInclusive"
+
+
 @pytest.mark.parametrize(
-    ("recorded", "carried"),
+    ("recorded", "trace", "partial"),
     [
         pytest.param(
             {
-                "src_oecd_dac": [
-                    {"provenance": "src_oecd_dac", "last_complete_year": 2024, "last_year": 2025}
+                _CRS_INCLUSIVE: [
+                    {
+                        "provenance": "src_oecd_dac",
+                        "family": None,
+                        "last_complete_year": 2015,
+                        "last_year": 2016,
+                    }
                 ]
             },
-            {
-                "src_oecd_dac": [
-                    {"provenance": "src_oecd_dac", "last_complete_year": 2024, "last_year": 2025}
-                ]
-            },
-            id="the-roots-recorded-years",
+            {},
+            True,
+            id="a-composite-root-s-component-cited-by-the-rows",
         ),
-        pytest.param(None, None, id="a-root-recording-none-falls-back"),
+        pytest.param(
+            {
+                _CRS_INCLUSIVE: [
+                    {
+                        "provenance": "src_oecd_dac",
+                        "family": None,
+                        "last_complete_year": 2016,
+                        "last_year": 2016,
+                    }
+                ]
+            },
+            {},
+            False,
+            id="control-a-complete-component",
+        ),
+        pytest.param(None, _MALARIA_TRACE, True, id="a-root-recording-none-reads-the-release"),
     ],
 )
-def test_load_carries_a_derived_frame_s_roots_recorded_last_complete_years(recorded, carried):
+def test_a_derived_frame_carries_its_roots_sources_and_reads_each_root_once(
+    recorded, trace, partial
+):
     """A derived frame holds its roots' values as they were minted, so it carries the sources
-    and last complete years its roots recorded."""
+    and families its roots recorded, matched by the provenance its rows carry: here a CRS
+    inclusive composite root records its component `src_oecd_dac`, which the rows carry. A
+    root that recorded none reads the bound release's. One load reads the recipe and each
+    root once, whatever its citation and anchor reads need."""
     snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
     root_ref = malaria_ethiopia_frame_ref()
     root = snapshots.versions[(root_ref.spec_id, root_ref.content_version)]
+    coverage = dict(root.facts.coverage)
     if recorded is not None:
-        snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
-            root,
-            facts=replace(
-                root.facts, coverage={**root.facts.coverage, "last_complete_years": recorded}
-            ),
-        )
+        coverage["last_complete_years"] = recorded
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
+        root, facts=replace(root.facts, coverage=coverage, trace=trace)
+    )
     _put_recipe_over_the_root(recipes, frame_ref)
     store = _store(
         snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
     )
+    reads = Counter[tuple[str, str]]()
+    read_version, read_recipe = snapshots.read_version, recipes.read_recipe
 
-    assert store.load(frame_ref=frame_ref).source_periods == carried
+    def counted_version(spec_id, content_version):
+        reads[(spec_id, content_version)] += 1
+        return read_version(spec_id, content_version)
 
+    def counted_recipe(*, spec_id, content_version):
+        reads[("recipe", spec_id)] += 1
+        return read_recipe(spec_id=spec_id, content_version=content_version)
 
-def test_an_undocumented_source_carries_today_s_last_complete_year():
-    """A version minted before it recorded its years falls back to the bound release's, which
-    holds for every cited source, documented or not. A source with neither has no entry."""
-    released = origin_release(
-        {
-            "Amount_Aid": {
-                "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
-                "populationType": {"nodes": [{"dcid": "FinancialFlow", "types": ["Class"]}]},
-                "measuredProperty": {"nodes": [{"dcid": "amount"}]},
-            }
-        },
-        series=[("Amount_Aid", "f", [2023, 2024, 2025]), *[("Amount_Aid", "f", [2023, 2024])] * 19],
-        facets={"f": "src_oecd_dac"},
-    )
-    live = {
-        ref: SourceCitation(dcid=ref, name=None, url=None, licence=None)
-        for ref in ("src_oecd_dac", "src_other")
-    }
+    snapshots.read_version = counted_version
+    recipes.read_recipe = counted_recipe
 
-    with bound_release(released):
-        documents = _source_documents(
-            live,
-            record=None,
-            manifest={"trace": {"resolved_stat_vars": [{"ref": "dcid:Amount_Aid"}]}},
-        )
+    with bound_release(_malaria_release(final_year_series=1)):
+        loaded = store.load(frame_ref=frame_ref)
 
-    assert documents == {"src_oecd_dac": SourceDocumentFacts(last_complete_period="2024")}
+    frame = replace(malaria_ethiopia_resolved_frame(), source_periods=loaded.source_periods)
+    assert _partial_period(resolved_frame=frame, rows=None) is partial
+    assert reads[("recipe", frame_ref.spec_id)] == 1
+    assert reads[(root_ref.spec_id, root_ref.content_version)] == 1
 
 
 def test_load_cites_a_derived_frame_with_its_recipe_roots_sources_filled_from_the_graph():

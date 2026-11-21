@@ -1,9 +1,10 @@
-"""The last complete year of a DFO provenance's data (`origin_catalogue.periods`), from the
-bound release's family counts (`graph_release.origin.ReleaseOrigin.complete_years`) and the
-registry's declared years.
+"""The last complete year of each family of a DFO provenance's data and the sources behind a
+frame's rows (`origin_catalogue.periods`), from the bound release's family counts
+(`graph_release.origin.ReleaseOrigin.complete_years`) and the registry's declared years.
 
-The year counts scale down two families: CRS flows, whose preliminary final year holds one
-series in twenty, and DAC1 ODA as a share of GNI, whose final year holds nine in ten.
+The year counts scale down three families: CRS flows, whose preliminary final year holds one
+series in twenty, CRS grant equivalents, complete through the same year, and DAC1 ODA as a
+share of GNI, whose final year holds nine in ten.
 """
 
 from __future__ import annotations
@@ -13,18 +14,27 @@ from collections.abc import Iterator, Mapping
 import pytest
 
 import origin_catalogue.periods as periods_module
-from description.facts import FixedValue, VariableFacts
 from graph_release.context import bound_release
 from graph_release.service import Release
 from origin_catalogue.arc_tables import WireArcs
-from origin_catalogue.periods import last_complete_year, version_last_complete_period
+from origin_catalogue.families import FamilyKey
+from origin_catalogue.periods import (
+    complete_year,
+    counts_periods,
+    frame_periods,
+    source_periods,
+)
 from tests.graph_release.support import origin_release
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _DAC1 = "provenance/OECDDAC1"
 _CRS_HEALTH = "Amount_FinancialFlow_ODA_Health"
 _CRS_EDUCATION = "Amount_FinancialFlow_ODA_Education"
+_CRS_GRANTS = "GrantEquivalent_FinancialFlow_ODA"
 _DAC1_GNI_SHARE = "Amount_FinancialFlow_ODA_AsFractionOf_GNI"
+_COMPOSITE = "provenance/ONEBilateralAndImputedMultilateral"
+_AMOUNT = FamilyKey("FinancialFlow", "amount", "measuredValue", None, None, False, True)
+_GRANTS = FamilyKey("FinancialFlow", "grantEquivalent", "measuredValue", None, None, False, True)
 
 
 def _variable(*, measured: str, denominator: str | None = None) -> WireArcs:
@@ -59,11 +69,13 @@ def release() -> Iterator[Release]:
         {
             _CRS_HEALTH: _variable(measured="amount"),
             _CRS_EDUCATION: _variable(measured="amount"),
+            _CRS_GRANTS: _variable(measured="grantEquivalent"),
             _DAC1_GNI_SHARE: _variable(measured="amount", denominator="GNI"),
         },
         series=[
             *_rows(_CRS_HEALTH, "crs", {2023: 20, 2024: 20, 2025: 1}),
             *_rows(_CRS_EDUCATION, "crs", {2023: 10, 2024: 10}),
+            *_rows(_CRS_GRANTS, "crs", {2023: 10, 2024: 10, 2025: 10}),
             *_rows(_DAC1_GNI_SHARE, "dac1", {2023: 10, 2024: 10, 2025: 9}),
         ],
         facets={"crs": _CRS, "dac1": _DAC1},
@@ -80,68 +92,137 @@ def _no_declared_periods(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_release_holds_the_last_complete_year_of_each_family_under_each_provenance(
     release: Release,
 ) -> None:
-    """The two CRS variables share a family, so their series count together: 30 in 2024, one
-    in 2025."""
-    complete = release.origin.complete_years
-
-    assert {provenance: sorted(years.values()) for provenance, years in complete.items()} == {
-        _CRS: [2024],
-        _DAC1: [2025],
+    """The two CRS flow variables share a family, so their series count together: 30 in 2024,
+    one in 2025. CRS grant equivalents are a family of their own, complete through 2025."""
+    assert release.origin.complete_years == {
+        _CRS: {_AMOUNT: 2024, _GRANTS: 2025},
+        _DAC1: {release.origin.family_of(_DAC1_GNI_SHARE): 2025},
     }
 
 
 @pytest.mark.parametrize(
-    ("provenance", "variables", "shape", "expected"),
+    ("provenance", "family", "expected"),
     [
-        pytest.param(_CRS, [_CRS_HEALTH], None, 2024, id="crs-preliminary-year-is-partial"),
-        pytest.param(_DAC1, [_DAC1_GNI_SHARE], None, 2025, id="control-dac1-share-complete"),
-        pytest.param(
-            _CRS,
-            [],
-            {"populationType": "FinancialFlow", "measuredProperty": "amount"},
-            2024,
-            id="a-shape-reads-its-families",
-        ),
-        pytest.param(_CRS, [], {"measuredProperty": "grantEquivalent"}, None, id="no-family"),
-        pytest.param(_CRS, ["Unknown_Variable"], {}, None, id="unknown-variable-no-shape"),
-        pytest.param("provenance/Other", [_CRS_HEALTH], None, None, id="another-provenance"),
+        pytest.param(_CRS, _AMOUNT, 2024, id="crs-preliminary-year-is-partial"),
+        pytest.param(_CRS, _GRANTS, 2025, id="control-sibling-family-complete"),
+        pytest.param(_CRS, None, None, id="an-unknown-family-has-no-year"),
+        pytest.param("provenance/Other", _AMOUNT, None, id="another-provenance"),
     ],
 )
-def test_last_complete_year_reads_the_bound_releases_families(
-    release: Release,
-    provenance: str,
-    variables: list[str],
-    shape: dict[str, str] | None,
-    expected: int | None,
+def test_complete_year_reads_the_bound_releases_family(
+    release: Release, provenance: str, family: FamilyKey | None, expected: int | None
 ) -> None:
-    assert last_complete_year(provenance, variables=variables, shape=shape) == expected
+    assert complete_year(provenance, family) == expected
 
 
-def test_a_declared_year_wins_over_the_releases(
+def test_a_declared_year_wins_for_every_family(
     release: Release, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(periods_module, "declared_periods", lambda: {_CRS: 2023})
+
+    assert complete_year(_CRS, _GRANTS) == complete_year(_CRS, None) == 2023
+
+
+def test_each_family_of_a_source_is_judged_against_its_own_year(release: Release) -> None:
+    """A frame of CRS flows cut at 2024 and grant equivalents through 2025 is complete: each
+    family reaches its own last complete year. One entry over both would take the flows' 2024
+    and the grants' 2025 and read the frame as partial."""
+    periods = source_periods(
+        row_refs=[_CRS],
+        sources=[(_CRS, [_CRS_HEALTH, _CRS_GRANTS])],
+        ends={(_CRS, _CRS_HEALTH): 2024, (_CRS, _CRS_GRANTS): 2025},
+    )
+
+    assert periods == {
+        _CRS: [
+            {
+                "provenance": _CRS,
+                "family": list(_AMOUNT),
+                "last_complete_year": 2024,
+                "last_year": 2024,
+            },
+            {
+                "provenance": _CRS,
+                "family": list(_GRANTS),
+                "last_complete_year": 2025,
+                "last_year": 2025,
+            },
+        ]
+    }
+    framed = frame_periods(
+        periods, cells=[(f"dcid:{_CRS_HEALTH}", _CRS), (f"dcid:{_CRS_GRANTS}", _CRS)]
+    )
+    assert [(period.variables, period.partial(2025)) for period in framed] == [
+        (frozenset({f"dcid:{_CRS_HEALTH}"}), False),
+        (frozenset({f"dcid:{_CRS_GRANTS}"}), False),
+    ]
+
+
+def test_a_partial_family_reaching_past_its_year_is_partial(release: Release) -> None:
+    periods = source_periods(
+        row_refs=[_CRS], sources=[(_CRS, [_CRS_HEALTH])], ends={(_CRS, _CRS_HEALTH): 2025}
+    )
+
+    (framed,) = frame_periods(periods, cells=[(f"dcid:{_CRS_HEALTH}", _CRS)])
+    assert framed.partial(2025)
+    assert not framed.partial(2024), "rows a card cuts at 2024 are complete"
+
+
+@pytest.mark.parametrize(
+    "row_ref", [pytest.param(_COMPOSITE, id="composite-ref"), pytest.param(_CRS, id="component")]
+)
+def test_a_composites_entry_holds_rows_carrying_it_or_its_component(
+    release: Release, row_ref: str
+) -> None:
+    """A composite records its component's families under its own provenance. A frame's rows
+    carry the composite's, and a derived frame over it may cite the component; both match."""
+    recorded = {
+        _COMPOSITE: [
+            {
+                "provenance": _CRS,
+                "family": list(_AMOUNT),
+                "last_complete_year": 2024,
+                "last_year": 2025,
+            }
+        ]
+    }
+
+    (framed,) = frame_periods(recorded, cells=[(f"dcid:{_CRS_HEALTH}", row_ref)])
+
+    assert (framed.row_ref, framed.provenance, framed.partial(2025)) == (_COMPOSITE, _CRS, True)
+
+
+def test_a_declared_year_is_recorded_under_a_release_that_counts_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(periods_module, "declared_periods", lambda: {_DAC1: 2024})
+    with bound_release(origin_release({})):
+        assert counts_periods([_DAC1])
+        assert not counts_periods([_CRS])
+        assert source_periods(
+            row_refs=[_DAC1],
+            sources=[(_DAC1, [_DAC1_GNI_SHARE])],
+            ends={(_DAC1, _DAC1_GNI_SHARE): 2025},
+        ) == {
+            _DAC1: [
+                {
+                    "provenance": _DAC1,
+                    "family": None,
+                    "last_complete_year": 2024,
+                    "last_year": 2025,
+                }
+            ]
+        }
 
-    assert last_complete_year(_DAC1, variables=[_DAC1_GNI_SHARE]) == 2024
-    assert last_complete_year(_CRS, variables=[_CRS_HEALTH]) == 2024
 
-
-def test_a_versions_period_reads_its_resolved_variables_then_its_record() -> None:
-    facts = VariableFacts(
-        shape=[FixedValue(property="measuredProperty", value="amount")],
-        variable=None,
-        fixed=[],
-        dimensions=None,
-        admitted_at_mint=1,
-        admitted_from="resolved_variables",
-        with_data=1,
-    )
-    released = origin_release(
-        {_CRS_HEALTH: _variable(measured="amount")},
-        series=_rows(_CRS_HEALTH, "crs", {2024: 20, 2025: 1}),
-        facets={"crs": _CRS},
-    )
-    with bound_release(released):
-        assert version_last_complete_period(_CRS, None, resolved=[_CRS_HEALTH]) == "2024"
-        assert version_last_complete_period(_CRS, facts) == "2024"
-        assert version_last_complete_period(_CRS, None) is None
+def test_without_ends_every_variable_counts_and_no_last_year_is_given(release: Release) -> None:
+    assert source_periods(row_refs=[_CRS], sources=[(_CRS, [_CRS_HEALTH])], ends=None) == {
+        _CRS: [
+            {
+                "provenance": _CRS,
+                "family": list(_AMOUNT),
+                "last_complete_year": 2024,
+                "last_year": None,
+            }
+        ]
+    }

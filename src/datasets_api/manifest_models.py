@@ -99,19 +99,17 @@ class YearCoverage(BaseModel):
 
 
 class SourcePeriod(BaseModel):
-    """One source behind a frame's rows: its provenance, the last year it held complete for
-    the frame's variables when the version was minted
-    (`origin_catalogue.periods.last_complete_year`), and the last year its rows reach."""
+    """One family of one source behind a frame's rows: the source's provenance, the family's
+    `FamilyKey` members (left out for variables of any family), the last year the source held
+    the family complete when the version was minted
+    (`origin_catalogue.periods.complete_year`), and the last year the family's rows reach.
+    `origin_catalogue.periods.FramePeriod.partial` judges them."""
 
     model_config = ConfigDict(extra="forbid")
     provenance: str
+    family: list[str | bool | None] | None = None
     last_complete_year: int
     last_year: int
-
-    @property
-    def partial(self) -> bool:
-        """Whether the source's rows reach past its last complete year."""
-        return self.last_year > self.last_complete_year
 
 
 class CoverageModel(BaseModel):
@@ -153,13 +151,13 @@ class CoverageModel(BaseModel):
         default=None,
         exclude_if=_is_none,
         description=(
-            "for each provenance the frame's rows carry, the sources behind them, each with "
-            "the last year it held complete for the frame's variables when the version was "
-            "minted and the last year its rows in the frame reach: rows past the complete "
-            "year hold only part of that source's series. A composite's rows list each "
-            "component's source. A source no year is known for is left out. Absent on a "
-            "version minted before the member existed or under a release that counted no "
-            "complete years"
+            "for each provenance the frame's rows carry, one entry per source and variable "
+            "family behind them, each with the last year the source held the family complete "
+            "when the version was minted and the last year the family's rows reach: rows past "
+            "the complete year hold only part of that family's series. A composite's rows list "
+            "each component's families. A family no year is known for is left out. Absent on "
+            "a version minted before the member existed, or when neither the graph release "
+            "counted complete years nor the registry declared one for a source"
         ),
     )
     fullest_year: YearCoverage | None = Field(

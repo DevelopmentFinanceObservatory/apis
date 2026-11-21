@@ -16,6 +16,8 @@ from assembler.mint.provenance import (
     _REF_FIELDS,
     _WARNING_KIND_BY_CODE,
     DESCRIPTION_PROVENANCE_MEMBERS,
+    _partial_period,
+    drawn_rows,
 )
 from assembler.ports import FrameRef
 from assembler.resolve import ResolvedSeries, resolve_selectors
@@ -29,8 +31,8 @@ from assembler.testing import (
 )
 from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
-from description.vocabulary import SourceDocumentFacts
 from dfo_platform.codes import bound_registry_endpoint
+from origin_catalogue.periods import FramePeriod
 from presentation_api.refusals import binding_invalid_spec
 
 
@@ -1802,82 +1804,53 @@ def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(rel
     assert envelope["provenance"]["sources"] == minted.provenance["sources"]
 
 
-def _period(provenance, complete, last):
-    return {"provenance": provenance, "last_complete_year": complete, "last_year": last}
+def _period(*, provenance=_WDI_REF, variables=("dcid:X",), complete, last=None):
+    return FramePeriod(
+        row_ref=_WDI_REF,
+        provenance=provenance,
+        variables=frozenset(variables),
+        last_complete_year=complete,
+        last_year=last,
+    )
 
 
 @pytest.mark.parametrize(
-    ("recorded", "carried", "documents", "partial"),
+    ("periods", "partial"),
     [
-        pytest.param(None, None, {}, False, id="no-source-states-a-complete-year"),
-        pytest.param(None, None, {_WDI_REF: "2019"}, True, id="crs-preliminary-year-is-partial"),
-        pytest.param(None, None, {_WDI_REF: "2020"}, False, id="control-complete-final-year"),
+        pytest.param(None, False, id="no-periods-read"),
+        pytest.param((), False, id="no-source-states-a-complete-year"),
+        pytest.param((_period(complete=2019),), True, id="crs-preliminary-year-is-partial"),
+        pytest.param((_period(complete=2020),), False, id="control-complete-final-year"),
         pytest.param(
-            None, None, {_WDI_REF: "2020", _UNCITED_REF: "2019"}, True, id="any-source-partial"
-        ),
-        pytest.param(None, None, {_WDI_REF: None}, False, id="unknown-year-reads-complete"),
-        pytest.param(
-            {_WDI_REF: [_period(_WDI_REF, 2019, 2020)]},
-            None,
-            {_WDI_REF: "2020"},
-            True,
-            id="the-mints-year-wins-over-todays",
-        ),
-        pytest.param(
-            {}, None, {_WDI_REF: "2019"}, False, id="a-mint-recording-none-reads-complete"
-        ),
-        pytest.param(
-            {_WDI_REF: [_period(_WDI_REF, 2019, 2019)]},
-            None,
-            {},
+            (_period(complete=2019, last=2019),),
             False,
-            id="a-source-ending-at-its-complete-year-is-complete",
+            id="a-family-ending-at-its-complete-year-is-complete",
         ),
         pytest.param(
-            {_WDI_REF: [_period(_WDI_REF, 2020, 2021)]},
-            None,
-            {},
+            (_period(variables=("dcid:Y",), complete=2019),),
             False,
-            id="rows-cut-before-the-partial-year-are-complete",
+            id="a-partial-family-the-frame-does-not-hold",
         ),
         pytest.param(
-            {_WDI_REF: [_period("provenance/A", 2020, 2020), _period("provenance/B", 2019, 2020)]},
-            None,
-            {},
+            (_period(complete=2020), _period(provenance="provenance/B", complete=2019)),
             True,
             id="a-composites-partial-component",
         ),
-        pytest.param(
-            None,
-            {_WDI_REF: [_period(_WDI_REF, 2019, 2020)]},
-            {_WDI_REF: "2020"},
-            True,
-            id="a-derived-frame-reads-its-roots-years",
-        ),
     ],
 )
-def test_freshness_data_through_is_the_manifest_window_s_end_year(
-    release, recorded, carried, documents, partial
-):
-    """`partial_period` says a cited source's rows reach past the last year it held complete:
-    as the version recorded at its mint (`coverage.last_complete_years`), or a derived frame's
-    roots (`ResolvedFrame.source_periods`), else, for a version minted before either was
-    recorded, as today's documents give it (`SourceDocumentFacts.last_complete_period`). Both
-    sources' rows reach 2020."""
-    coverage = {
-        "rows": 2,
-        "dimensions": [],
-        "window": {"kind": "all", "start_year": 2015, "end_year": 2020, "origin": "default"},
-    }
-    if recorded is not None:
-        coverage["last_complete_years"] = recorded
-    frame = dataclasses.replace(
-        _two_source_frame(manifest={"schema_version": 1, "coverage": coverage}),
-        source_documents={
-            ref: SourceDocumentFacts(last_complete_period=year) for ref, year in documents.items()
+def test_freshness_data_through_is_the_manifest_window_s_end_year(release, periods, partial):
+    """`partial_period` says the rows a card draws hold a family of one source past the last
+    year that source held it complete (`ResolvedFrame.source_periods`). Both sources' rows of
+    `X` reach 2020."""
+    manifest = {
+        "schema_version": 1,
+        "coverage": {
+            "rows": 2,
+            "dimensions": [],
+            "window": {"kind": "all", "start_year": 2015, "end_year": 2020, "origin": "default"},
         },
-        source_periods=carried,
-    )
+    }
+    frame = dataclasses.replace(_two_source_frame(manifest=manifest), source_periods=periods)
     minted = _mint_source_card(resolved_frame=frame, release=release)
 
     assert minted.provenance["freshness"] == {
@@ -1886,6 +1859,31 @@ def test_freshness_data_through_is_the_manifest_window_s_end_year(
         "next_expected": None,
         "partial_period": partial,
     }
+
+
+def test_partial_period_judges_the_rows_a_card_draws():
+    """A card whose bound series keeps 2019 alone draws no row of the partial 2020."""
+    frame = dataclasses.replace(
+        _two_source_frame(manifest={"schema_version": 1}),
+        source_periods=(_period(complete=2019),),
+    )
+    rows = tuple(
+        {"stat_var": "dcid:X", "provenance": _WDI_REF, "time_period": period, "value": 1.0}
+        for period in ("2019", "2020")
+    )
+    series = [ResolvedSeries(id="s1", coordinates=(), rows=rows)]
+
+    def bound(*periods):
+        points = tuple({"period": period, "value": 1.0} for period in periods)
+        return [BoundSeries(id="s1", label="X", unit=None, source_ref=_WDI_REF, points=points)]
+
+    assert not _partial_period(
+        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019"))
+    )
+    assert _partial_period(
+        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019", "2020"))
+    )
+    assert _partial_period(resolved_frame=frame, rows=None), "a card binding no series"
 
 
 def test_freshness_data_through_is_null_when_the_manifest_records_no_window(release):

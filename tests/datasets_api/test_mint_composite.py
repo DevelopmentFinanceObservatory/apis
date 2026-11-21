@@ -21,6 +21,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import origin_catalogue.periods as periods_module
 from artifact_store import Tier
 from code_index.composites import (
     DECLARED_COMPOSITES,
@@ -809,26 +810,61 @@ def _family_release(populated: Mapping[str, tuple[str, int, tuple[int, ...]]]) -
 
 def test_a_composite_records_each_components_last_complete_year():
     """The composite's rows carry its own provenance, which holds no series, so the version
-    records the sources behind them: CRS, whose 2021 is preliminary, and the imputed table,
-    complete through 2021."""
+    records the sources behind them, one entry per family: CRS, whose 2021 is preliminary, and
+    the imputed table, complete through 2021."""
     populated = _populated()
-    with serving_release(_family_release(populated)):
+    released = _family_release(populated)
+    family = list(released.origin.family_of(next(iter(populated))) or ())
+    with serving_release(released):
         _artifacts, client = _composite_client(populated=populated)
         minted = _mint(client)
 
     assert minted.status_code == 200, minted.text
     assert minted.json()["coverage"]["last_complete_years"] == {
         _STACKED.provenance: [
-            {"provenance": CRS_PROVENANCE, "last_complete_year": 2020, "last_year": 2021},
-            {"provenance": IMPUTED_PROVENANCE, "last_complete_year": 2021, "last_year": 2021},
+            {
+                "provenance": CRS_PROVENANCE,
+                "family": family,
+                "last_complete_year": 2020,
+                "last_year": 2021,
+            },
+            {
+                "provenance": IMPUTED_PROVENANCE,
+                "family": family,
+                "last_complete_year": 2021,
+                "last_year": 2021,
+            },
         ]
     }
 
 
-def test_a_mint_under_a_release_that_counts_no_complete_years_records_none():
+@pytest.mark.parametrize(
+    ("declared", "recorded"),
+    [
+        pytest.param({}, None, id="nothing-counted-or-declared-records-none"),
+        pytest.param(
+            {CRS_PROVENANCE: 2020},
+            [
+                {
+                    "provenance": CRS_PROVENANCE,
+                    "last_complete_year": 2020,
+                    "last_year": 2021,
+                }
+            ],
+            id="a-declared-year-is-recorded",
+        ),
+    ],
+)
+def test_a_mint_under_a_release_that_counts_no_complete_years_records_declared_ones(
+    monkeypatch, declared, recorded
+):
+    """A registry-declared year holds whatever the release counts, so the mint records it, for
+    variables of any family (no `family` stated)."""
+    monkeypatch.setattr(periods_module, "declared_periods", lambda: declared)
     with serving_release(origin_release({})):
         _artifacts, client = _composite_client()
         minted = _mint(client)
 
     assert minted.status_code == 200, minted.text
-    assert "last_complete_years" not in minted.json()["coverage"]
+    held = minted.json()["coverage"].get("last_complete_years")
+    assert held == (None if recorded is None else {_STACKED.provenance: recorded})
