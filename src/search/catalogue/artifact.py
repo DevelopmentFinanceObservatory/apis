@@ -31,10 +31,11 @@ from artifact_publication.uri import (
     write_uri_bytes,
     write_uri_bytes_if_unchanged,
 )
+from origin_catalogue.origins import DFO
 
 logger = logging.getLogger(__name__)
 
-FORMAT_VERSION: Final[int] = 3
+FORMAT_VERSION: Final[int] = 4
 """Bumped when a build's JSON changes shape, so an image reads only the
 builds it understands."""
 
@@ -83,6 +84,44 @@ class AidCounts(_Model):
     years: YearRange | None = Field(description="the years with aid data; null when none")
 
 
+class OriginSplit(_Model):
+    """The indicators, datasets and publishers one group of origins holds."""
+
+    indicators: int = Field(description="distinct StatVars the origins hold")
+    datasets: int = Field(description="distinct source-index entries of the origins' provenances")
+    publishers: int = Field(description="distinct sources of the origins' provenances")
+
+
+class OriginCounts(_Model):
+    """`Counts` split by origin. An indicator, dataset or publisher held by
+    both groups counts in each, so the two groups can sum to more than the
+    global figure. The global `indicators` is the union of the two indicator
+    figures."""
+
+    dfo: OriginSplit = Field(
+        description=(
+            f"the {DFO.label} origin (`{DFO.id}`): DFO variables, the coverage "
+            "variables search serves on a facet of a DFO provenance, and the provenances of that origin"
+        )
+    )
+    data_commons: OriginSplit = Field(
+        description=(
+            "the `base` and `un_system` origins: base variables, the coverage variables search "
+            "serves under a base provenance, UN variables, and the provenances of those "
+            "origins. A StatVar both groups hold counts in both"
+        )
+    )
+
+
+class OriginProvenances(_Model):
+    """The admitted provenance ids of each origin group, sorted. The groups
+    follow `OriginCounts`: `dfo` holds the provenances of the DFO origin and
+    `data_commons` those of every other admitted origin."""
+
+    dfo: list[str]
+    data_commons: list[str]
+
+
 class Counts(_Model):
     """What DFO holds, counted from one origin catalogue build and one
     coverage index build."""
@@ -96,6 +135,13 @@ class Counts(_Model):
         description="countries with base data in the origin catalogue or coverage rows"
     )
     aid: AidCounts
+    by_origin: OriginCounts = Field(
+        description=(
+            f"indicators, datasets and publishers counted for the {DFO.label} "
+            "origin and for the Data Commons origins. Something both hold counts in "
+            "each, so the split can exceed the global figures"
+        )
+    )
 
 
 class PlaceCounts(_Model):
@@ -135,6 +181,9 @@ class BuildInputs(_Model):
     coverage_build_id: str
     build_commit: str
     examples_digest: str
+    un_system_enabled: bool = Field(
+        description="whether the origin catalogue admitted the UN origin, which moves the counts"
+    )
 
 
 class CatalogueArtifact(_Model):
@@ -147,6 +196,9 @@ class CatalogueArtifact(_Model):
     built_at: datetime
     inputs: BuildInputs
     counts: Counts
+    provenances: OriginProvenances = Field(
+        description="the admitted provenance ids behind `counts`, by origin group"
+    )
     examples: list[CatalogueExample]
     places: dict[str, CataloguePlace] = Field(description="every counted country, by dcid")
 
@@ -309,6 +361,9 @@ __all__ = [
     "CatalogueRefusal",
     "CatalogueVersion",
     "Counts",
+    "OriginCounts",
+    "OriginProvenances",
+    "OriginSplit",
     "PlaceCounts",
     "YearRange",
     "build_key",
