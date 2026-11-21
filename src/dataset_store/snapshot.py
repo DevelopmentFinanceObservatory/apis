@@ -102,10 +102,10 @@ class ManifestFacts:
     packed object `decode_series_conversion_entries` also reads.
     `default_scope_plural` says whether the mint's default place scope held more than one place,
     `None` on a collapse and on a version minted before versions stored it.
-    `incomplete_after` holds the version's rows past the last complete year of their source
-    (`datasets_api.manifest.incomplete_after`), each a
-    `datasets_api.manifest_models.IncompleteAfter`, empty when none is, and `None` when the
-    mint could not judge them or the version was recorded before versions stored them.
+    `incomplete_after` holds how complete the version's rows are, judged per source at its mint
+    (`datasets_api.manifest.incomplete_after`): one `datasets_api.manifest_models.IncompleteAfter`
+    per group of partial or unjudged cells, empty when every cell is complete, and `None` when
+    the mint had no catalogue or the version was recorded before versions stored it.
     """
 
     prepared_at: datetime
@@ -136,11 +136,10 @@ class FrameLineage:
     `backfill-descriptions` task fills it.
 
     `incomplete_after` holds the entries the publish door derived from the same versions for
-    the frame's rows (`datasets_api.lineage_incomplete`): those past the last complete year of
-    their source, each a `datasets_api.manifest_models.IncompleteAfter`, and the rest under a
-    `None` source and year, so every cell of the frame is listed. `None` when the publish could
-    not tell them and on a version recorded before versions stored them, which reads as
-    unknown."""
+    the frame's rows (`datasets_api.lineage_incomplete`), each a
+    `datasets_api.manifest_models.IncompleteAfter`, every cell listed, the complete ones as
+    `complete`. `None` when an input's record is unknown and on a version recorded before
+    versions stored it, which reads as unknown."""
 
     input_content_versions: Sequence[str]
     composed_stat_vars: Sequence[Mapping[str, object]] | None = None

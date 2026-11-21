@@ -1809,12 +1809,15 @@ _IMPUTED = "provenance/ONEImputedMultilateralSectors"
 _INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
 
 
-def _incomplete(provenance, stat_vars, source, year):
+def _incomplete(provenance, stat_vars, source, mark, *, status=None):
+    """An `incomplete_after` entry: `partial` from `mark`, else `status`, `complete` by
+    default."""
     return {
         "provenance": provenance,
         "stat_vars": list(stat_vars),
         "source": source,
-        "last_complete_year": year,
+        "status": "partial" if mark is not None else status or "complete",
+        "partial_period": mark,
     }
 
 
@@ -1841,40 +1844,52 @@ def _judged(entries, rows):
     ("entries", "rows", "partial"),
     [
         pytest.param(
-            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025")],
             [_row(_CRS, "dcid:X", "2025")],
             True,
             id="control-a-row-past-its-source-s-complete-year",
         ),
         pytest.param(
-            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025")],
             [_row(_DAC2A, "dcid:X", "2025"), _row(_CRS, "dcid:X", "2024")],
             False,
             id="two-provenances-one-variable-the-partial-one-ends-complete",
         ),
         pytest.param(
-            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, 2024)],
+            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, "2025")],
             [_row(_INCLUSIVE, "dcid:Imputed", "2025")],
             True,
             id="control-a-composite-s-partial-component",
         ),
         pytest.param(
-            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, 2024)],
+            [_incomplete(_INCLUSIVE, ["dcid:Imputed"], _IMPUTED, "2025")],
             [_row(_INCLUSIVE, "dcid:Bilateral", "2025")],
             False,
             id="a-composite-card-drawing-its-complete-component",
         ),
         pytest.param(
-            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025")],
             [_row(_CRS, "dcid:X", "2023"), _row(_CRS, "dcid:X", "2024")],
             False,
             id="a-card-drawing-only-complete-years",
         ),
         pytest.param(
-            [_incomplete(_CRS, ["dcid:X"], _CRS, 2024)],
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025")],
             [_row(_CRS, "dcid:X", "2020/2025")],
             True,
             id="an-interval-ending-past-the-complete-year",
+        ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025-06")],
+            [_row(_CRS, "dcid:X", "2025")],
+            True,
+            id="control-a-year-holding-a-partial-month",
+        ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, "2025-06")],
+            [_row(_CRS, "dcid:X", "2025-03")],
+            False,
+            id="a-month-before-a-partial-month",
         ),
         pytest.param(
             [_incomplete(_CRS, ["dcid:X"], None, None)],
@@ -1882,13 +1897,20 @@ def _judged(entries, rows):
             False,
             id="a-derived-record-s-complete-cell",
         ),
+        pytest.param(
+            [_incomplete(_CRS, ["dcid:X"], _CRS, None, status="unknown")],
+            [_row(_CRS, "dcid:X", "2025")],
+            False,
+            id="an-unjudged-cell",
+        ),
         pytest.param([], [_row(_CRS, "dcid:X", "2025")], False, id="counted-and-complete"),
         pytest.param(None, [_row(_CRS, "dcid:X", "2025")], False, id="unknown-reads-complete"),
     ],
 )
 def test_partial_period_is_judged_on_each_row_s_own_cells(entries, rows, partial):
-    """A row is partial when its version recorded its own `(provenance, stat_var)` cells past
-    a last complete year it reaches beyond. Each case asserts its flagged control first."""
+    """A row is partial when its version recorded its own `(provenance, stat_var)` cells as
+    partial from a period the row's period reaches, at the mark's own grain. Each case asserts
+    its flagged control first."""
     assert _judged(entries, rows) is partial
 
 
@@ -1902,7 +1924,7 @@ def test_freshness_data_through_is_the_manifest_window_s_end_year(release):
             "dimensions": [],
             "window": {"kind": "all", "start_year": 2015, "end_year": 2020, "origin": "default"},
         },
-        "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
+        "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, "2020")],
     }
     minted = _mint_source_card(resolved_frame=_two_source_frame(manifest=manifest), release=release)
 
@@ -1915,27 +1937,117 @@ def test_freshness_data_through_is_the_manifest_window_s_end_year(release):
 
 
 def test_partial_period_judges_the_rows_a_card_draws():
-    """A card whose bound series keeps 2019 alone draws no row of the partial 2020."""
+    """A card drawing 2019 alone draws no row of the partial 2020."""
     frame = _two_source_frame(
         manifest={
             "schema_version": 1,
-            "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, 2019)],
+            "incomplete_after": [_incomplete(_WDI_REF, ["dcid:X"], _WDI_REF, "2020")],
         }
     )
     rows = tuple(_row(_WDI_REF, "dcid:X", period) for period in ("2019", "2020"))
     series = [ResolvedSeries(id="s1", coordinates=(), rows=rows)]
 
-    def bound(*periods):
-        points = tuple({"period": period, "value": 1.0} for period in periods)
-        return [BoundSeries(id="s1", label="X", unit=None, source_ref=_WDI_REF, points=points)]
-
     assert _partial_period(
-        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019", "2020"))
+        resolved_frame=frame, rows=drawn_rows(series=series, periods={"s1": {"2019", "2020"}})
     )
     assert not _partial_period(
-        resolved_frame=frame, rows=drawn_rows(series=series, bound_series=bound("2019"))
+        resolved_frame=frame, rows=drawn_rows(series=series, periods={"s1": {"2019"}})
     )
     assert _partial_period(resolved_frame=frame, rows=None), "a card binding no series"
+
+
+_MALARIA_PARTIAL_2022 = {
+    "incomplete_after": [
+        _incomplete("src_oecd_dac", ["dcid:MalariaGrantDisbursements"], "src_oecd_dac", "2022")
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("window", "partial"),
+    [
+        pytest.param({"start": "2020", "end": "2022"}, False, id="bars-at-2021-beside-2022-rows"),
+        pytest.param({"start": "2022", "end": "2022"}, True, id="control-bars-at-2022"),
+    ],
+)
+def test_an_entity_bar_chart_is_judged_on_the_period_its_bars_stand_at(release, window, partial):
+    """Kenya ends at 2021, so a 2020-2022 window stands every bar at 2021, though Ethiopia's
+    and Ghana's 2022 rows are in the window and 2022 is partial. Kenya is left out of the
+    one-year control."""
+    recipients = ["country/ETH", "country/GHA", "country/KEN"]
+    if window["start"] == "2022":
+        recipients = recipients[:2]
+    resolved_frame = dataclasses.replace(
+        _multi_recipient_resolved_frame(), manifest={"schema_version": 1, **_MALARIA_PARTIAL_2022}
+    )
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame,
+        selectors=_multi_recipient_selectors(recipients=recipients),
+        window=window,
+    )
+    minted = mint_component(
+        member="bar_chart",
+        merged_intent={
+            "type": "bar_chart",
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+            "select": {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": recipients},
+            "window": window,
+        },
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+
+    assert minted.provenance["freshness"]["partial_period"] is partial
+
+
+@pytest.mark.parametrize(
+    ("change", "partial"),
+    [
+        pytest.param(None, True, id="control-a-headline-at-the-partial-year"),
+        pytest.param(
+            {"basis": ["2020", "2021"], "derivation": "difference"}, False, id="a-change-to-2021"
+        ),
+    ],
+)
+def test_a_stat_card_is_judged_on_its_headline_and_change_periods(release, change, partial):
+    """Ethiopia's window reaches the partial 2022; a card whose change ends at 2021 shows
+    2021 and draws no 2022 row."""
+    resolved_frame = dataclasses.replace(
+        _multi_recipient_resolved_frame(), manifest={"schema_version": 1, **_MALARIA_PARTIAL_2022}
+    )
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame,
+        selectors=_multi_recipient_selectors(recipients=["country/ETH"]),
+        window={"start": "2020", "end": "2022"},
+    )
+    intent = {
+        "type": "stat_card",
+        "frame_ref": {
+            "spec_id": resolved_frame.frame_ref.spec_id,
+            "content_version": resolved_frame.frame_ref.content_version,
+        },
+        "select": {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": ["country/ETH"]},
+        "window": {"start": "2020", "end": "2022"},
+    }
+    if change is not None:
+        intent["change"] = change
+    minted = mint_component(
+        member="stat_card",
+        merged_intent=intent,
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+
+    assert minted.provenance["freshness"]["partial_period"] is partial
 
 
 def test_freshness_data_through_is_null_when_the_manifest_records_no_window(release):

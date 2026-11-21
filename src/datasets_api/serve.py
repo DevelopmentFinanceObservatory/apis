@@ -95,6 +95,7 @@ from datasets_api.manifest import (
     assemble_manifest,
     collapsed_citation,
     collapsed_head_manifest,
+    collapsed_incomplete_after,
     coverage_facts_of,
     definition_version_record,
     healed_citation,
@@ -549,8 +550,8 @@ class DefinitionPrewrite:
     # The year members of the version's `coverage` (`manifest.year_coverage`), counted here
     # from the index the run elected over and joined to every manifest the write half builds.
     year_coverage: Mapping[str, object] = field(default_factory=dict)
-    # The rows past the last complete year of their source (`manifest.incomplete_after`), judged
-    # here against the catalogue bound to the mint, `None` when it could not be judged.
+    # How complete the rows are, judged per source (`manifest.incomplete_after`) against the
+    # catalogue bound to the mint, `None` when it could not be judged.
     incomplete_after: list[dict[str, object]] | None = None
 
 
@@ -1590,9 +1591,7 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
-            # A party-totals cut keeps the rows' cells, so the raw version's judgement holds;
-            # a collapse sums them into cells of its own, which nothing judged.
-            incomplete_after=None if derived.summed else prewrite.incomplete_after,
+            incomplete_after=collapsed_incomplete_after(prewrite.incomplete_after, derived_result),
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,

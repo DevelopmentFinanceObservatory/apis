@@ -99,18 +99,23 @@ class YearCoverage(BaseModel):
 
 
 class IncompleteAfter(BaseModel):
-    """Rows of a frame past the last complete year of the source they come from: the rows
-    whose `provenance` cell is `provenance` and whose `stat_var` cell is one of `stat_vars`,
-    in the years after `last_complete_year`. `source` is the provenance whose import holds
-    only part of the year after it, as the pipeline marks it on the source's Provenance node
-    (`partialObservationDate`): the cell itself, or for a composite the component serving
-    those variables."""
+    """How complete a group of a frame's rows is: the rows whose `provenance` cell is
+    `provenance` (`None` for rows with none) and whose `stat_var` cell is one of `stat_vars`.
+
+    `partial`: the rows at or after `partial_period` hold only part of their source's data,
+    as the pipeline marks it on `source`'s Provenance node (`partialObservationDate`, at its
+    own grain); `source` is the provenance cell itself, or for a composite the component
+    serving those variables. `unknown`: no catalogue documented `source` (`None` when the rows
+    name no provenance), so nothing says. `complete`: judged complete, listed only in a
+    computed version's record, which names every cell of its rows. `partial_period` is set
+    only on a `partial` entry."""
 
     model_config = ConfigDict(extra="forbid")
-    provenance: str
+    provenance: str | None
     stat_vars: list[str]
-    source: str
-    last_complete_year: int
+    source: str | None
+    status: Literal["partial", "unknown", "complete"]
+    partial_period: str | None = None
 
 
 class CoverageModel(BaseModel):

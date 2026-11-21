@@ -1,4 +1,4 @@
-"""A computed version's record of the rows past the last complete year of their source
+"""A computed version's record of how complete its rows are
 (`FrameLineage.incomplete_after`, `datasets_api.lineage_incomplete`): derived when it is
 published from the records of the versions it was computed from, keyed by its own rows'
 `provenance` and `stat_var` cells, and read by a card with no recipe and no release."""
@@ -31,12 +31,26 @@ _COMPLETE = "dcid:Amount_Complete"
 _RATIO = "dcid:ops_ratio"
 
 
-def _entry(stat_vars: list[str], year: int | None = 2024) -> dict[str, object]:
+def _entry(
+    stat_vars: list[str], mark: str | None = "2025", *, source: str = _SOURCE
+) -> dict[str, object]:
+    """A `partial` entry from `mark` of `source`, or `complete` for `None`."""
     return {
         "provenance": _SOURCE,
         "stat_vars": stat_vars,
-        "source": None if year is None else _SOURCE,
-        "last_complete_year": year,
+        "source": None if mark is None else source,
+        "status": "complete" if mark is None else "partial",
+        "partial_period": mark,
+    }
+
+
+def _unknown(stat_vars: list[str], *, source: str | None = _SOURCE) -> dict[str, object]:
+    return {
+        "provenance": _SOURCE,
+        "stat_vars": stat_vars,
+        "source": source,
+        "status": "unknown",
+        "partial_period": None,
     }
 
 
@@ -134,6 +148,34 @@ def _published(*, recorded: list[object] | None, stat_var: str) -> tuple[FrameLi
             id="a-kept-complete-cell-of-a-partial-root",
         ),
         pytest.param([], _RATIO, [_entry([_RATIO], None)], False, id="over-a-complete-root"),
+        pytest.param(
+            [_unknown([_PARTIAL])],
+            _RATIO,
+            [_unknown([_RATIO], source=None)],
+            False,
+            id="a-ratio-over-an-unjudged-root-cell",
+        ),
+        pytest.param(
+            [_unknown([_PARTIAL])],
+            _COMPLETE,
+            [_entry([_COMPLETE], None)],
+            False,
+            id="a-kept-cell-beside-an-unjudged-one",
+        ),
+        pytest.param(
+            [_entry([_PARTIAL], "2025-06", source="provenance/B"), _entry([_COMPLETE], "2025")],
+            _RATIO,
+            [_entry([_RATIO], "2025")],
+            True,
+            id="the-earliest-mark-at-its-own-grain",
+        ),
+        pytest.param(
+            [_entry([_PARTIAL], source="provenance/B"), _entry([_COMPLETE], source="provenance/A")],
+            _RATIO,
+            [_entry([_RATIO], source="provenance/A")],
+            True,
+            id="equal-marks-break-on-source",
+        ),
         pytest.param(None, _RATIO, None, False, id="a-root-recorded-before-the-member"),
     ],
 )
@@ -145,8 +187,9 @@ def test_a_computed_version_records_its_own_rows_past_their_source_s_complete_ye
 ) -> None:
     """A computed row whose cells its root's record names takes the root's entry; a cell the
     root's rows carry with no entry is complete, and listed so; a cell the computation made
-    takes the earliest last complete year among the root's entries. The rows reach 2026, so a
-    card over the version flags exactly when a dated entry is stored, with no recipe read."""
+    takes the earliest partial period among the root's entries (by its start, ties broken by
+    source), else unknown beside an unjudged root cell. The rows reach 2026, so a card over the
+    version flags exactly when a partial entry is stored, with no recipe read."""
     lineage, flagged = _published(recorded=recorded, stat_var=stat_var)
 
     assert lineage.incomplete_after == stored
@@ -165,7 +208,7 @@ def test_a_computation_over_a_computed_version_knows_its_input_s_cells(
 ) -> None:
     """The first computation keeps both root cells; the second keeps one of them. The first's
     record lists its complete cell, so the second reads it as kept and complete, and never
-    gives it the earliest partial year."""
+    gives it the earliest partial period."""
     store = FakeVersionRecordDatasetStore()
     _record_root(store, recorded=[_entry([_PARTIAL])])
     both = _rows(_PARTIAL) + _rows(_COMPLETE)
@@ -218,3 +261,23 @@ def test_a_computation_over_no_inputs_records_nothing() -> None:
     frame = Frame.build(role_keys=("recipient",), rows=_rows(_RATIO))
 
     assert derived_incomplete_after([], reader=cast("SnapshotReader", None), frame=frame) is None
+
+
+def test_a_republished_computed_version_takes_the_record_derived_then() -> None:
+    """The root was recorded before versions stored a record, so the first publish stores
+    none; the root's record lands, and publishing the same version again stores the one
+    derived from it."""
+    store = FakeVersionRecordDatasetStore()
+    _record_root(store, recorded=None)
+    first, _ = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+    assert first.incomplete_after is None
+    with store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET incomplete_after = %s WHERE content_version = %s",
+            (json.dumps([_entry([_PARTIAL])]), _ROOT[1]),
+        )
+
+    again, flagged = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+
+    assert again.incomplete_after == [_entry([_PARTIAL])]
+    assert flagged

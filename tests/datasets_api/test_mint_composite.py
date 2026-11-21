@@ -824,10 +824,11 @@ def test_a_composite_records_only_the_component_its_source_marks_partial():
     assert stored is not None
     document = version_document(stored)
     ((entry),) = document["incomplete_after"]
-    assert (entry["provenance"], entry["source"], entry["last_complete_year"]) == (
+    assert (entry["provenance"], entry["source"], entry["status"], entry["partial_period"]) == (
         _STACKED.provenance,
         IMPUTED_PROVENANCE,
-        2024,
+        "partial",
+        "2025",
     )
     assert f"dcid:{imputed}" in entry["stat_vars"]
     assert f"dcid:{bilateral}" not in entry["stat_vars"]

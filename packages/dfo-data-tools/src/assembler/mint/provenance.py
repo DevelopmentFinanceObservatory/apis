@@ -10,12 +10,12 @@ from __future__ import annotations
 import datetime
 import hashlib
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, FrameError
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX, parse_time_period
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
@@ -25,6 +25,7 @@ from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
 from dfo_platform.columns import PROVENANCE_COLUMN
+from materialise.partial_period import reaches
 
 DESCRIPTION_PROVENANCE_MEMBERS = ("sources", "freshness", "warnings", "citation")
 """The provenance members a lineage-only provenance leaves out, since a description carries
@@ -379,13 +380,13 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
 
 
 def drawn_rows(
-    *, series: Sequence[ResolvedSeries], bound_series: Sequence[BoundSeries]
+    *, series: Sequence[ResolvedSeries], periods: Mapping[str, Collection[str]]
 ) -> list[Mapping[str, object]] | None:
-    """The frame rows a card draws: each resolved series' rows in the periods its bound series
-    keeps. `None` for a card that binds no series, which draws on the whole frame."""
+    """The frame rows a card draws: each resolved series' rows in the periods `periods` gives
+    for that series' id, none for a series it does not name. `None` for a card that binds no
+    series, which draws on the whole frame."""
     if not series:
         return None
-    periods = {bound.id: {point["period"] for point in bound.points} for bound in bound_series}
     return [
         row
         for one in series
@@ -406,8 +407,7 @@ def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
 def recorded_incomplete_after(
     manifest: Mapping[str, object],
 ) -> list[Mapping[str, object]] | None:
-    """The entries naming a frame's rows past the last complete year of their source, as its
-    version stored them (`datasets_api.manifest.version_document`'s `incomplete_after`): a
+    """The entries stating how complete a frame's rows are, as its version stored them (`datasets_api.manifest.version_document`'s `incomplete_after`): a
     dataset version's as its mint judged them, a computed version's as its publish derived
     them (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
     completeness is unknown."""
@@ -418,48 +418,34 @@ def recorded_incomplete_after(
 def _partial_period(
     *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
 ) -> bool:
-    """Whether a row the card draws, of `rows` or else the whole frame's, lies past the last
-    complete year its version recorded for the row's own `provenance` and `stat_var` cells
-    (`recorded_incomplete_after`), so the card's later years hold only part of that source's
-    data. A row's year is the one its period ends in. A row with no `provenance` cell is named
-    by an entry with none, and an entry with no last complete year names complete rows. A
-    version that recorded nothing reads as complete. Nothing is read beyond the frame's
-    manifest."""
+    """Whether a row the card draws, of `rows` or else the whole frame's, reaches the partial
+    period its version recorded for the row's own `provenance` and `stat_var` cells
+    (`recorded_incomplete_after`, `materialise.partial_period.reaches`), so the card holds
+    only part of that source's data there. A row with no `provenance` cell is named by an entry
+    with none. `complete` and `unknown` entries flag nothing, and a version that recorded
+    nothing reads as complete. Nothing is read beyond the frame's manifest."""
     entries = recorded_incomplete_after(resolved_frame.manifest)
-    if not entries:
-        return False
-    complete: dict[tuple[object, str], int] = {}
-    for entry in entries:
-        year = entry.get("last_complete_year")
-        if not isinstance(year, int):
+    marks: dict[tuple[object, str], list[str]] = {}
+    for entry in entries or ():
+        if entry.get("status") != "partial":
             continue
         for stat_var in cast("Sequence[str]", entry["stat_vars"]):
             key = (entry.get("provenance"), _bare(stat_var))
-            complete[key] = min(year, complete.get(key, year))
-    if not complete:
+            marks.setdefault(key, []).append(cast(str, entry["partial_period"]))
+    if not marks:
         return False
     drawn = _frame_rows(resolved_frame.frame) if rows is None else rows
-    for row in drawn:
-        period, stat_var = row.get(TIME_PERIOD_COLUMN), row.get(STAT_VAR_COLUMN)
-        if not isinstance(period, str) or not isinstance(stat_var, str):
-            continue
-        year = complete.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)))
-        if year is not None and (end := _end_year(period)) is not None and end > year:
-            return True
-    return False
+    return any(
+        reaches(period, mark)
+        for row in drawn
+        if isinstance(period := row.get(TIME_PERIOD_COLUMN), str)
+        and isinstance(stat_var := row.get(STAT_VAR_COLUMN), str)
+        for mark in marks.get((row.get(PROVENANCE_COLUMN), _bare(stat_var)), ())
+    )
 
 
 def _bare(stat_var: str) -> str:
     return stat_var.removeprefix(STAT_VAR_REF_PREFIX)
-
-
-def _end_year(period: str) -> int | None:
-    """The year the `time_period` cell `period` ends in (`2020/2025` ends in 2025), `None`
-    for a cell the frame grammar cannot read."""
-    try:
-        return int(parse_time_period(period).end[:4])
-    except FrameError:
-        return None
 
 
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:

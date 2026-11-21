@@ -5563,7 +5563,8 @@ def _malaria_incomplete_after(year: int) -> list[dict[str, object]]:
             "provenance": "src_oecd_dac",
             "stat_vars": ["dcid:MalariaGrantDisbursements"],
             "source": "src_oecd_dac",
-            "last_complete_year": year,
+            "status": "partial",
+            "partial_period": str(year + 1),
         }
     ]
 

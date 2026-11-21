@@ -145,7 +145,15 @@ def mint_component(
         sources=sources,
         card_steps=card_derivation_steps(component),
         clock=clock,
-        drawn=drawn_rows(series=series, bound_series=bound_series),
+        drawn=drawn_rows(
+            series=series,
+            periods=_drawn_periods(
+                member=member,
+                component=component,
+                bound_series=bound_series,
+                observed_periods=observed_periods,
+            ),
+        ),
     )
     return MintedComponent(
         component=component,
@@ -153,6 +161,25 @@ def mint_component(
         observed_periods=observed_periods,
         source_ids=source_id_by_raw_ref,
     )
+
+
+def _drawn_periods(
+    *,
+    member: str,
+    component: Mapping[str, object],
+    bound_series: Sequence[BoundSeries],
+    observed_periods: frozenset[str],
+) -> dict[str, frozenset[str]]:
+    """The periods of each bound series the card draws: for a stat card, its headline period
+    and its change's basis periods of its primary series alone; for any other card, the
+    periods its builder observed (`observed_periods`), such as an entity-mode bar chart's one
+    shared period."""
+    if member == "stat_card":
+        change = cast("Mapping[str, object] | None", component.get("change"))
+        basis = cast("Sequence[str]", change["basis"]) if change is not None else ()
+        drawn = frozenset({cast(str, component["period"]), *basis})
+        return {bound_series[0].id: drawn} if bound_series else {}
+    return {bound.id: observed_periods for bound in bound_series}
 
 
 def stamp_envelope(

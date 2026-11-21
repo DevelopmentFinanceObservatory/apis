@@ -1,4 +1,4 @@
-"""The mint's record of the rows past the last complete year of their source
+"""The mint's record of how complete a version's rows are, judged per source
 (`ManifestFacts.incomplete_after`, `datasets_api.manifest.incomplete_after`), read from the
 `partialObservationDate` the origin catalogue carries for each source and stored in its own
 column, which the version's manifest document carries (`version_document`).
@@ -84,7 +84,8 @@ _PARTIAL_2025 = [
         "provenance": _PROVENANCE,
         "stat_vars": [f"dcid:{_AID}"],
         "source": _PROVENANCE,
-        "last_complete_year": 2024,
+        "status": "partial",
+        "partial_period": "2025",
     }
 ]
 
@@ -157,22 +158,92 @@ def test_a_catalogue_that_does_not_document_the_source_records_nothing(
     assert not _flagged(rig, minted)
 
 
+def _result(latest_by_source: dict[tuple[str | None, str], str]) -> MaterialisationResult:
+    """A mint result whose series reach the periods `latest_by_source` gives, for asking the
+    record alone."""
+    return cast(
+        "MaterialisationResult",
+        SimpleNamespace(
+            trace=SimpleNamespace(components=()),
+            series_statistics=SimpleNamespace(
+                figures=SimpleNamespace(latest_by_source=latest_by_source)
+            ),
+        ),
+    )
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_UN = "provenance/UNSDG"
+
+
+def test_each_source_is_judged_on_its_own() -> None:
+    """A version mixing CRS rows reaching CRS's partial 2025 with a UN series and a row with
+    no provenance, which no catalogue documents, records CRS's partial cells and lists the
+    other two as unknown, and a card drawing the CRS row reads it partial."""
+    result = _result({(_CRS, "dcid:X"): "2025", (_UN, "dcid:Y"): "2025", (None, "dcid:Z"): "2025"})
+
+    with bound_catalogue(documenting({_CRS: dev_provenance_nodes()[_CRS]})):
+        recorded = incomplete_after(result)
+
+    assert recorded == [
+        {
+            "provenance": None,
+            "stat_vars": ["dcid:Z"],
+            "source": None,
+            "status": "unknown",
+            "partial_period": None,
+        },
+        {
+            "provenance": _CRS,
+            "stat_vars": ["dcid:X"],
+            "source": _CRS,
+            "status": "partial",
+            "partial_period": "2025",
+        },
+        {
+            "provenance": _UN,
+            "stat_vars": ["dcid:Y"],
+            "source": _UN,
+            "status": "unknown",
+            "partial_period": None,
+        },
+    ]
+
+    def drawn(provenance: str, stat_var: str) -> bool:
+        frame = build_resolved_frame(
+            frame_ref=FrameRef(spec_id="spec_x", content_version="cv_x"),
+            role_keys=("recipient",),
+            rows=[
+                {
+                    "stat_var": stat_var,
+                    "recipient": _MWI,
+                    "time_period": "2025",
+                    "value": 1.0,
+                    "unit": None,
+                    "provenance": provenance,
+                }
+            ],
+            manifest={"incomplete_after": recorded},
+        )
+        return _partial_period(resolved_frame=frame, rows=None)
+
+    assert drawn(_CRS, "dcid:X")
+    assert not drawn(_UN, "dcid:Y")
+    with bound_catalogue(FakeCatalogue()):
+        assert incomplete_after(result) is None, "a catalogue judging no source records nothing"
+
+
 def test_a_mint_with_no_catalogue_bound_records_nothing(
     bind_catalogue: Callable[[Catalogue], None],
 ) -> None:
     """A mint elsewhere needs a catalogue for admission, so this asks the record alone, over
     a result whose rows reach a partial year."""
-    result = SimpleNamespace(
-        trace=SimpleNamespace(components=()),
-        series_statistics=SimpleNamespace(
-            figures=SimpleNamespace(latest_by_source={(_PROVENANCE, f"dcid:{_AID}"): "2025"})
-        ),
-    )
+    result = _result({(_PROVENANCE, f"dcid:{_AID}"): "2025"})
     with bound_catalogue(_source_as(_DAC2A)):
-        assert incomplete_after(cast("MaterialisationResult", result)) == _PARTIAL_2025
+        assert incomplete_after(result) == _PARTIAL_2025
     bind_catalogue(cast("Catalogue", None))
 
-    assert incomplete_after(cast("MaterialisationResult", result)) is None
+    assert incomplete_after(result) is None
 
 
 def _stored_record(rig: _Rig) -> object:

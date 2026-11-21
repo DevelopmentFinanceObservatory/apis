@@ -44,8 +44,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, cast
 
-from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, FrameError
-from dfo_frame_grammar.grammar import parse_time_period
+from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
 from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from code_index.query import CodeIndex
@@ -97,6 +96,7 @@ from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
 from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
+from materialise.partial_period import reaches, start_of
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
     CoverageFacts,
@@ -113,7 +113,7 @@ from materialise.series_conversion import (
 )
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
-from origin_catalogue import CatalogueNotBound, current_catalogue
+from origin_catalogue import Catalogue, CatalogueNotBound, current_catalogue
 from origin_catalogue.catalogue import Undocumented, partial_period_of
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
@@ -206,18 +206,18 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
 
 
 def incomplete_after(result: MaterialisationResult) -> list[dict[str, object]] | None:
-    """The rows of the frame `result` holds past the last complete year of their source, from
-    the origin catalogue bound to the mint, which joins the graph release the rows were read
-    from: one `IncompleteAfter` per row provenance, source and year whose rows reach the period
-    the source's import holds only part of (`origin_catalogue.partial_period_of`). The source
-    of a `(provenance, stat_var)` pair is the composite component serving the variable
-    (`trace.components`), else the provenance itself. A pair's rows reach the end of the
-    latest period any of its series reaches (`SeriesFigures.latest_by_source`). Empty when no
-    source marks a period the rows reach.
+    """How complete the rows of the frame `result` holds are, judged per source against the
+    origin catalogue bound to the mint, which joins the graph release the rows were read from
+    (`IncompleteAfter`). The source of a `(provenance, stat_var)` pair is the composite
+    component serving the variable (`trace.components`), else the provenance itself. A pair
+    is `partial` when its rows reach the period its source's import holds only part of
+    (`origin_catalogue.partial_period_of`, `materialise.partial_period.reaches`), the latest
+    period any of its series reaches (`SeriesFigures.latest_by_source`), and `unknown` when
+    the catalogue does not document its source (`Undocumented`) or its rows name no
+    provenance. A complete pair is left out, so an empty list is judged and complete.
 
-    `None`, unknown, with no catalogue bound or when the catalogue documents a source of the
-    rows not at all (`Undocumented`), as a stale catalogue or one whose format root the job
-    has not yet filled does, so the version records no judgement it could not make."""
+    `None`, unknown as a whole, with no catalogue bound or when the catalogue judged no pair, so
+    a stale catalogue's mint leaves a stored record standing (`version_store`)."""
     try:
         catalogue = current_catalogue()
     except CatalogueNotBound:
@@ -228,40 +228,130 @@ def incomplete_after(result: MaterialisationResult) -> list[dict[str, object]] |
         if component.get("provenance") is not None
         for ref in cast("list[object]", component.get("stat_vars") or [])
     }
-    grouped: dict[tuple[str, str, int], list[str]] = {}
+    grouped = _grouped(
+        result,
+        lambda provenance, stat_var, period: _judged(
+            provenance, stat_var, period, catalogue=catalogue, component_of=component_of
+        ),
+    )
+    judged = any(key is None or key[2] == "partial" for key in grouped)
+    entries = _entries(grouped)
+    return None if entries and not judged else entries
+
+
+def collapsed_incomplete_after(
+    raw: Sequence[Mapping[str, object]] | None, result: MaterialisationResult
+) -> list[dict[str, object]] | None:
+    """The `incomplete_after` of the collapse `result` of a version whose record is `raw`
+    (`serve` groupby). A collapse keeps each row's `provenance` cell and period; a party-totals
+    cut keeps its `stat_var` cell too, and a sum names its rows by the definition's spec id. A
+    pair whose variable `raw` names under its provenance takes those entries; any other pair is
+    the sum of its provenance's raw cells, so it is partial from the earliest partial period
+    among its provenance's raw entries that its rows reach (by start, ties broken by source),
+    else unknown when its provenance holds an unknown cell, else complete. `None` when `raw` is.
+    """
+    if raw is None:
+        return None
+    by_provenance: dict[object, list[Mapping[str, object]]] = {}
+    for entry in raw:
+        by_provenance.setdefault(entry.get("provenance"), []).append(entry)
+
+    def judged(
+        provenance: str | None, stat_var: str, period: str
+    ) -> tuple[str | None, str | None, str, str | None] | None:
+        held = by_provenance.get(provenance, [])
+        named = [
+            entry
+            for entry in held
+            if bare_stat_var_ref(stat_var)
+            in {bare_stat_var_ref(one) for one in cast("list[str]", entry["stat_vars"])}
+        ]
+        if named:
+            entry = named[0]
+        else:
+            partial = [
+                entry
+                for entry in held
+                if entry.get("status") == "partial"
+                and reaches(period, cast(str, entry["partial_period"]))
+            ]
+            unknown = [entry for entry in held if entry.get("status") == "unknown"]
+            if partial:
+                entry = min(
+                    partial,
+                    key=lambda one: (
+                        start_of(cast(str, one["partial_period"])),
+                        cast(str, one["source"]),
+                    ),
+                )
+            elif unknown:
+                entry = unknown[0]
+            else:
+                return None
+        return (
+            provenance,
+            cast("str | None", entry.get("source")),
+            cast(str, entry["status"]),
+            cast("str | None", entry.get("partial_period")),
+        )
+
+    return _entries(_grouped(result, judged))
+
+
+type _Group = tuple[str | None, str | None, str, str | None]
+"""An `incomplete_after` entry's provenance, source, status and partial period."""
+
+
+def _grouped(
+    result: MaterialisationResult,
+    judge: Callable[[str | None, str, str], _Group | None],
+) -> dict[_Group | None, list[str]]:
+    """The variables of `result`'s `(provenance, stat_var)` pairs under the group `judge`
+    gives each from its latest period (`SeriesFigures.latest_by_source`), `None` for a
+    complete pair."""
+    grouped: dict[_Group | None, list[str]] = {}
     for (provenance, stat_var), period in sorted(
         result.series_statistics.figures.latest_by_source.items(),
         key=lambda item: (item[0][0] or "", item[0][1]),
     ):
-        if provenance is None:
-            return None
-        source = component_of.get(bare_stat_var_ref(stat_var), provenance)
-        try:
-            partial = _end_year(partial_period_of(catalogue, source))
-        except Undocumented:
-            return None
-        reach = _end_year(period)
-        if partial is not None and reach is not None and reach >= partial:
-            stat_vars = grouped.setdefault((provenance, source, partial - 1), [])
-            if stat_var not in stat_vars:
-                stat_vars.append(stat_var)
+        stat_vars = grouped.setdefault(judge(provenance, stat_var, period), [])
+        if stat_var not in stat_vars:
+            stat_vars.append(stat_var)
+    return grouped
+
+
+def _entries(grouped: Mapping[_Group | None, list[str]]) -> list[dict[str, object]]:
+    """The `IncompleteAfter` entries of `grouped`'s partial and unknown groups."""
+    fields = ("provenance", "source", "status", "partial_period")
     return [
-        IncompleteAfter(
-            provenance=provenance, stat_vars=stat_vars, source=source, last_complete_year=year
+        IncompleteAfter.model_validate(
+            {**dict(zip(fields, group, strict=True)), "stat_vars": stat_vars}
         ).model_dump()
-        for (provenance, source, year), stat_vars in grouped.items()
+        for group, stat_vars in grouped.items()
+        if group is not None
     ]
 
 
-def _end_year(period: str | None) -> int | None:
-    """The year `period`, a `time_period` cell (`2025`, `2025-03`, `2020/2025`), ends in, or
-    `None` for no period or one the frame grammar cannot read."""
-    if period is None:
-        return None
+def _judged(
+    provenance: str | None,
+    stat_var: str,
+    period: str,
+    *,
+    catalogue: Catalogue,
+    component_of: Mapping[str, str],
+) -> _Group | None:
+    """The `(provenance, source, status, partial period)` group of one pair of
+    `incomplete_after`, `None` for a complete pair."""
+    if provenance is None:
+        return None, None, "unknown", None
+    source = component_of.get(bare_stat_var_ref(stat_var), provenance)
     try:
-        return int(parse_time_period(period).end[:4])
-    except FrameError:
+        mark = partial_period_of(catalogue, source)
+    except Undocumented:
+        return provenance, source, "unknown", None
+    if mark is None or not reaches(period, mark):
         return None
+    return provenance, source, "partial", mark
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
@@ -886,7 +976,7 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
     `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
     they are unknown, on a version recorded before versions stored them until
     `backfill-descriptions` fills them, and left out when nothing continues its series. Either
-    adds `incomplete_after`, the version's rows past the last complete year of their source
+    adds `incomplete_after`, how complete the version's rows are, judged per source
     (`ManifestFacts.incomplete_after`, `FrameLineage.incomplete_after`), left out while unknown.
     Its `citation` is the served form, `licence*` members included. `version_body` stores the
     citation through `CitationModel.stored_json`, which drops them."""
@@ -989,9 +1079,8 @@ def definition_version_record(
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
-    (`render.DerivedVersion.summed`). A raw version passes neither. `incomplete_after` is the
-    version's rows past the last complete year of their source (`incomplete_after`), `None`
-    when unjudged. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
+    (`render.DerivedVersion.summed`). A raw version passes neither. `incomplete_after` is how
+    complete the version's rows are (`incomplete_after`), `None` when unjudged. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
     observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`

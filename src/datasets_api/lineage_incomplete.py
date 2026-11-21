@@ -1,29 +1,28 @@
-"""The rows of a computed version past the last complete year of their source.
+"""How complete the rows of a computed version are.
 
 A dataset version records which of its rows reach a period their source's import holds only
-part of (`ManifestFacts.incomplete_after`, `datasets_api.manifest.incomplete_after`), keyed by
-the rows' own `provenance` and `stat_var` cells. A computed (`ops_`) version keeps or replaces
-those cells, so `derived_incomplete_after` gives it a record of its own, keyed the same way,
-which the publish door stores with its lineage (`dataset_store.snapshot.FrameLineage`):
+part of, and which its catalogue could not judge (`ManifestFacts.incomplete_after`,
+`datasets_api.manifest.incomplete_after`, `manifest_models.IncompleteAfter`), keyed by the rows'
+own `provenance` and `stat_var` cells. A computed (`ops_`) version keeps or replaces those
+cells, so `derived_incomplete_after` gives it a record of its own, keyed the same way, which
+the publish door stores with its lineage (`dataset_store.snapshot.FrameLineage`):
 
-- an output cell an input's entry names takes that entry;
+- an output cell an input's entries name takes those entries' states;
 - an output cell an input's rows carry, which no entry names, is complete;
-- any other output cell, which the computation made, takes the earliest last complete year
-  among the inputs' entries, since a figure computed from a partial input is partial unless
-  its key shows otherwise.
+- any other output cell, which the computation made, takes the earliest partial period among
+  the inputs' entries, since a figure computed from a partial input is partial unless its key
+  shows otherwise; with no partial input it is unknown when an input holds an unknown cell,
+  and complete otherwise.
 
 A dataset input's rows carry each provenance its trace selects with each variable its
-definition resolved. A computed version's record lists every cell of its rows: those past a
-last complete year as a dataset's entries do, and the rest in entries whose `source` and
-`last_complete_year` are `None`, which no reader flags, so a computation over it knows its
-cells. A row with no `provenance` cell is kept when an input carries its variable under any
-provenance; it takes that variable's entries when every provenance carrying it has one, and is
-complete when none has.
+definition resolved. A computed version's record lists every cell of its rows, its complete
+cells as `complete` entries, so a computation over it knows its cells. A row with no
+`provenance` cell is kept when an input carries its variable under any provenance; it takes
+the states of those cells when they agree, and is unknown when some are partial and others
+are not.
 
-The record is unknown, `None`, when it cannot be told: no inputs, an input the store does not
-hold, an input whose record is unknown (recorded before versions stored it, or minted where its
-catalogue could not judge it), and a row with no `provenance` cell whose variable some carrying
-provenances mark partial and others do not.
+The record is unknown as a whole, `None`, with no inputs, an input the store does not hold,
+or an input whose record is unknown (recorded before versions stored one).
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ from datasets_api.manifest import provenance_refs_of
 from description.facts import InputVersion
 from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.generation import bare_stat_var_ref
+from materialise.partial_period import start_of
 
 __all__ = ["derived_incomplete_after", "frame_cells"]
 
@@ -45,15 +45,11 @@ type Cell = tuple[str | None, str]
 """A row's `provenance` cell, `None` for a frame with none, and its `stat_var` cell. Cells
 are compared with the variable bare (`bare_stat_var_ref`)."""
 
-type Source = tuple[str | None, int | None]
-"""The source an output cell's rows come from and its last complete year, both `None` for a
-complete cell."""
+type State = tuple[str, str | None, str | None]
+"""An entry's `status`, `source` and `partial_period`."""
 
-_COMPLETE: Source = (None, None)
-
-
-class _Unknown(Exception):
-    """The record cannot be told."""
+_COMPLETE: State = ("complete", None, None)
+_UNKNOWN: State = ("unknown", None, None)
 
 
 def frame_cells(frame: Frame) -> set[Cell]:
@@ -78,13 +74,13 @@ def derived_incomplete_after(
     inputs: Sequence[InputVersion], *, reader: SnapshotReader, frame: Frame
 ) -> list[dict[str, object]] | None:
     """The `incomplete_after` record of a computed version over `inputs` whose rows are
-    `frame`'s, read through `reader` in one batch: one entry per output `provenance` cell,
-    source and last complete year, holding the variables of its cells, the complete cells
-    under a `None` source and year. `None` when it cannot be told."""
+    `frame`'s, read through `reader` in one batch: one entry per output `provenance` cell and
+    state, holding the variables of its cells, every cell listed. `None` when unknown as a
+    whole."""
     if not inputs:
         return None
     held = reader.read_versions_of([one.content_version for one in inputs])
-    partial: dict[Cell, set[tuple[str, int]]] = {}
+    named: dict[Cell, set[State]] = {}
     carried: set[Cell] = set()
     for one in inputs:
         versions = [
@@ -100,69 +96,76 @@ def derived_incomplete_after(
             if recorded is None:
                 return None
             for entry in recorded:
-                source, year = entry.get("source"), entry.get("last_complete_year")
+                state = _state(entry)
                 for cell in _cells(entry):
                     carried.add(cell)
-                    if isinstance(source, str) and isinstance(year, int):
-                        partial.setdefault(cell, set()).add((source, year))
+                    if state != _COMPLETE:
+                        named.setdefault(cell, set()).add(state)
             carried.update(_dataset_cells(version))
-    earliest = min(
-        (source for named in partial.values() for source in named),
-        key=lambda source: source[1],
-        default=None,
-    )
-    grouped: dict[tuple[str | None, str | None, int | None], list[str]] = {}
-    try:
-        for provenance, stat_var in sorted(
-            frame_cells(frame), key=lambda cell: (cell[0] or "", cell[1])
-        ):
-            cell = (provenance, bare_stat_var_ref(stat_var))
-            for source in _sources(cell, partial=partial, carried=carried, earliest=earliest):
-                stat_vars = grouped.setdefault((provenance, *source), [])
-                if stat_var not in stat_vars:
-                    stat_vars.append(stat_var)
-    except _Unknown:
-        return None
+    states = {state for held_states in named.values() for state in held_states}
+    partial = [state for state in states if state[0] == "partial"]
+    if partial:
+        # The earliest mark, ties broken by source, so equal inputs give one record.
+        made = min(partial, key=_order_by_mark)
+    elif any(state[0] == "unknown" for state in states):
+        made = _UNKNOWN
+    else:
+        made = _COMPLETE
+    grouped: dict[tuple[str | None, State], list[str]] = {}
+    for provenance, stat_var in sorted(frame_cells(frame), key=lambda c: (c[0] or "", c[1])):
+        cell = (provenance, bare_stat_var_ref(stat_var))
+        for state in _states(cell, named=named, carried=carried, made=made):
+            stat_vars = grouped.setdefault((provenance, state), [])
+            if stat_var not in stat_vars:
+                stat_vars.append(stat_var)
     return [
         {
             "provenance": provenance,
             "stat_vars": stat_vars,
             "source": source,
-            "last_complete_year": year,
+            "status": status,
+            "partial_period": mark,
         }
-        for (provenance, source, year), stat_vars in grouped.items()
+        for (provenance, (status, source, mark)), stat_vars in grouped.items()
     ]
 
 
-def _sources(
-    cell: Cell,
-    *,
-    partial: Mapping[Cell, set[tuple[str, int]]],
-    carried: set[Cell],
-    earliest: tuple[str, int] | None,
-) -> list[Source]:
-    """The sources the output `cell` takes (module docstring): its inputs' entries for a kept
-    cell, `_COMPLETE` for a kept cell none names, the earliest partial source for a cell the
-    computation made, and `_COMPLETE` for one when no input is partial.
-
-    Raises:
-        _Unknown: `cell` has no `provenance`, and some provenances carrying its variable are
-            partial and others are not.
-    """
+def _states(
+    cell: Cell, *, named: Mapping[Cell, set[State]], carried: set[Cell], made: State
+) -> list[State]:
+    """The states the output `cell` takes (module docstring), `made` for a cell the
+    computation made."""
     provenance, variable = cell
     kept = (
         {held for held in carried if held[1] == variable}
         if provenance is None
         else {cell} & carried
     )
-    if kept:
-        named = [held for held in kept if held in partial]
-        if not named:
-            return [_COMPLETE]
-        if len(named) < len(kept):
-            raise _Unknown
-        return sorted({source for held in named for source in partial[held]})
-    return [_COMPLETE] if earliest is None else [earliest]
+    if not kept:
+        return [made]
+    if provenance is not None:
+        return sorted(named.get(cell, {_COMPLETE}), key=_order)
+    per_cell = [frozenset(named.get(held, {_COMPLETE})) for held in kept]
+    if len(set(per_cell)) == 1:
+        return sorted(per_cell[0], key=_order)
+    return [_UNKNOWN]
+
+
+def _order(state: State) -> tuple[str, str, str]:
+    return state[0], state[1] or "", state[2] or ""
+
+
+def _order_by_mark(state: State) -> tuple[str, str]:
+    return start_of(state[2] or ""), state[1] or ""
+
+
+def _state(entry: Mapping[str, object]) -> State:
+    status = cast(str, entry.get("status"))
+    if status == "partial":
+        return status, cast(str, entry["source"]), cast(str, entry["partial_period"])
+    if status == "unknown":
+        return status, cast("str | None", entry.get("source")), None
+    return _COMPLETE
 
 
 def _recorded(version: StoredVersion) -> list[Mapping[str, object]] | None:

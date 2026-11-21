@@ -1,5 +1,5 @@
 {
-  "_comment": "The arcs of five DFO Provenance nodes as the dfo-dev graph holds them, read from its Spanner Edge and Node tables on 2026-11-21, the graph the dev graph release 860f403d263f and the origin catalogue are built from. The four OECD-derived imports state partialObservationDate 2025; DAC1 states none. The four MCF documents and description are left out.",
+  "_comment": "The arcs of five DFO Provenance nodes as the dfo-dev graph holds them, read from its Spanner Edge and Node tables, the graph the dev graph release and the origin catalogue are built from. The four OECD-derived imports state partialObservationDate 2025; DAC1 states none. The four MCF documents and description are left out.",
   "provenance/OECDCreditorReportingSystem": {
     "conversionRecipe": [
       "ConversionRecipeDAC"
