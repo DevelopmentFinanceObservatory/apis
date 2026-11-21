@@ -129,11 +129,29 @@ class Dependency(StrEnum):
 
 @dataclass(frozen=True)
 class GateFinding:
-    """A deterministic failure. `examples` holds a few of the rows or ids at fault, sorted."""
+    """A deterministic failure. `examples` holds a few of the rows or ids at fault, sorted.
+    A finding raised for a step's own coded refusal carries that step's code in `detail_code`
+    and its offending rows in `rows` (`PlatformRefusal.detail_code`, `.rows`); any other
+    leaves `detail_code` `None` and `rows` empty."""
 
     code: GateCode
     detail: str
     examples: tuple[str, ...] = ()
+    detail_code: str | None = None
+    rows: tuple[tuple[str, ...], ...] = ()
+
+    def summary(self) -> dict[str, object]:
+        """The finding as JSON values, `detail_code` and `rows` only where set."""
+        summary: dict[str, object] = {
+            "code": str(self.code),
+            "detail": self.detail,
+            "examples": list(self.examples),
+        }
+        if self.detail_code is not None:
+            summary["detail_code"] = self.detail_code
+        if self.rows:
+            summary["rows"] = [list(row) for row in self.rows]
+        return summary
 
 
 @dataclass(frozen=True)
@@ -162,17 +180,11 @@ class GateResult:
     def summary(self) -> dict[str, object]:
         """The result as JSON values, for the manifest's `gates` and the job's events."""
         return {
-            "findings": [
-                {"code": str(f.code), "detail": f.detail, "examples": list(f.examples)}
-                for f in self.findings
-            ],
+            "findings": [f.summary() for f in self.findings],
             "unavailable": [
                 {"dependency": str(u.dependency), "detail": u.detail} for u in self.unavailable
             ],
-            "notices": [
-                {"code": str(f.code), "detail": f.detail, "examples": list(f.examples)}
-                for f in self.notices
-            ],
+            "notices": [f.summary() for f in self.notices],
             "reports": dict(self.reports),
         }
 
@@ -195,7 +207,16 @@ def merge(*results: GateResult) -> GateResult:
 
 def refused(refusal: PlatformRefusal) -> GateResult:
     """The finding for a platform build that refused its snapshot."""
-    return GateResult(findings=(GateFinding(GateCode(refusal.code), str(refusal)),))
+    return GateResult(
+        findings=(
+            GateFinding(
+                GateCode(refusal.code),
+                str(refusal),
+                detail_code=refusal.detail_code,
+                rows=refusal.rows,
+            ),
+        )
+    )
 
 
 class FamilyReader(Protocol):
@@ -423,6 +444,8 @@ def check_dfo_rebuild(
                 GateCode.DFO_REBUILD_MISMATCH,
                 f"the DFO parts do not rebuild from the staged platform files: {refusal}",
                 (refusal.code,),
+                detail_code=refusal.detail_code,
+                rows=refusal.rows,
             ),
         )
     differ = sorted(

@@ -420,7 +420,9 @@ def test_dfo_inputs_refuse_empty_declarations(field: str, empty: object) -> None
         ),
     ],
 )
-def test_declarations_hash_moves_with_every_declaration(change, monkeypatch) -> None:
+def test_declarations_hash_moves_with_every_declaration(
+    change, monkeypatch, fresh_composite_reads
+) -> None:
     before = DECLARATIONS.declarations_hash()
 
     changed: Declarations = change(DECLARATIONS, monkeypatch)

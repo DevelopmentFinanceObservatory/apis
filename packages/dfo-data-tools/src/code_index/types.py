@@ -538,18 +538,12 @@ class CompositeDeclaration:
     measure changes between its periods. Each component table gives a provider's account of
     a flow, and so does the composite.
 
-    A composite of one table reads that table's whole markers (`PartyRow.marker_over`). A
-    composite of several tables declares no whole total, and the export refuses a whole marker
-    in any of its tables (`code_index.export.check_composite_whole_totals`), since a table's
-    marker rests on a composition check of that table's rows alone. A whole total over several
-    tables needs its own marker on the declaration, backed by its own composition check on
-    recorded data: the total's row equals the sum of its members' rows in the declared years.
-    For a stacked composite the party is whole in a year for some classes when every component
-    table that publishes a party of those classes on the axis marks the total for them, and
-    the year lies inside every such marker's window, so the window ends in the earliest last
-    year; a table that publishes the classes without the total makes it an ordinary total in
-    every year. For a spliced composite each year belongs to one component, and the year reads
-    that component table's marker."""
+    A composite of one component reads that component's table's whole markers, and one of
+    several components reads none (`PartyRow.marker_over`); the export refuses a whole marker
+    in any table of a composite of several tables
+    (`code_index.export.check_composite_whole_totals`). A whole total under a composite of
+    several components needs its own marker declared on the composite, backed by its own
+    composition check on recorded data."""
 
     provenance: str
     label: str
@@ -734,22 +728,23 @@ class PartyRow:
 
     def marker_over(self, provenance: str) -> WholeMarker | None:
         """The party's whole marker on rows of `provenance`: its marker in `provenance` itself
-        (`marker`), or in the one component table of a declared composite
-        (`declared_composite_tables`). A composite whose component binds the table's
-        destinations to one side reads a population that drops the destinations off that
-        side, so a recipient's marker, which covers the table's whole population, holds there
-        only for the bound population's total (`declared_destination_totals`); a donor's
-        marker holds unchanged. `None` where it has none there, where the binding drops it,
-        and on a composite of several tables, in none of which the export lets a party carry a
-        marker (`code_index.export.check_composite_whole_totals`)."""
-        tables = declared_composite_tables().get(provenance, (provenance,))
-        if len(tables) != 1:
+        (`marker`), or in the table of a declared composite of one component
+        (`CompositeRead.marker_table`). A composite of several components, whether of one
+        table or several, reads none, since no composition check covers their sum. A
+        composite whose component binds the table's destinations to one side reads a
+        population that drops the destinations off that side, so a recipient's marker, which
+        covers the table's whole population, holds there only for the bound population's total
+        (`CompositeRead.bound_total`); a donor's marker holds unchanged. `None` where it has
+        none there, or the composite reads none."""
+        read = declared_composite_reads().get(provenance)
+        if read is None:
+            return self.marker(provenance)
+        if read.marker_table is None:
             return None
-        marker = self.marker(tables[0])
-        total = declared_destination_totals().get(provenance)
-        if marker is None or total is None or self.dcid == total:
+        marker = self.marker(read.marker_table)
+        if marker is None or read.bound_total in (None, self.dcid):
             return marker
-        return None if self.publishes("destination", tables) else marker
+        return None if self.publishes("destination", (read.marker_table,)) else marker
 
     def kind_in(self, dataset: str) -> PartyKind:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
@@ -795,38 +790,71 @@ class PartyRow:
 
 def _component_datasets(datasets: Collection[str]) -> set[str]:
     """`datasets` with each declared composite replaced by its component tables."""
-    tables = declared_composite_tables()
-    return {table for ref in datasets for table in tables.get(ref, (ref,))}
+    reads = declared_composite_reads()
+    return {table for ref in datasets for table in (reads[ref].tables if ref in reads else (ref,))}
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeRead:
+    """How a `PartyRow` reads the rows of one declared composite provenance.
+
+    `tables` are its component tables, each once in declaration order, which its kinds and
+    publications read. `marker_table` is the table whose whole markers it inherits, set only
+    for a composite of one component. `bound_total` is the total of the destination
+    population its components bind (`code_index.scope_conventions.RolePopulation.total`, the
+    table's `BilateralSource.rebound`), `None` where they bind none."""
+
+    tables: tuple[str, ...]
+    marker_table: str | None
+    bound_total: str | None
+
+
+class CompositeReadUndeclared(ValueError):
+    """A declared composite a `PartyRow` cannot read: a component binds the destinations of a
+    table no `BILATERAL_SOURCES` row declares (`code` `bound_table_undeclared`), or its
+    components bind populations with different totals (`code` `several_bound_totals`).
+    `composite` is its provenance and `refs` the tables or totals at fault, sorted."""
+
+    def __init__(self, *, code: str, composite: str, refs: Sequence[str]) -> None:
+        super().__init__(f"{code}: composite {composite!r} names {sorted(refs)!r}")
+        self.code = code
+        self.composite = composite
+        self.refs = tuple(sorted(refs))
 
 
 @functools.cache
-def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
-    """Each declared composite's component tables (`code_index.composites.provenance_datasets`),
-    the tables a `PartyRow` reads a composite provenance as. Read once:
-    `code_index.composites` imports this module, so the import waits for the first read."""
-    from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
-
-    return MappingProxyType({ref: provenance_datasets(ref) for ref in DECLARED_COMPOSITES})
-
-
-@functools.cache
-def declared_destination_totals() -> Mapping[str, str]:
-    """Each declared composite whose component binds its table's destinations to one side
-    (`ComponentRecipe.destinations`), with the total of the population it binds
-    (`code_index.scope_conventions.RolePopulation.total`, the table's
-    `BilateralSource.rebound`). Read once, as `declared_composite_tables` is."""
+def declared_composite_reads() -> Mapping[str, CompositeRead]:
+    """Each declared composite's `CompositeRead`, by provenance. Read once:
+    `code_index.composites` imports this module, so the import waits for the first read.
+    Raises `CompositeReadUndeclared` for a composite it cannot read."""
     from code_index.composites import DECLARED_COMPOSITES
     from code_index.scope_conventions import BILATERAL_SOURCES
 
     rebound = {source.dataset: source.rebound for source in BILATERAL_SOURCES}
-    return MappingProxyType(
-        {
-            ref: rebound[recipe.dataset]
-            for ref, composite in DECLARED_COMPOSITES.items()
-            for recipe in composite.components
-            if recipe.destinations is not None
-        }
-    )
+    reads: dict[str, CompositeRead] = {}
+    for ref, composite in DECLARED_COMPOSITES.items():
+        components = composite.components
+        bound = {recipe.dataset for recipe in components if recipe.destinations is not None}
+        if undeclared := bound - rebound.keys():
+            raise CompositeReadUndeclared(
+                code="bound_table_undeclared", composite=ref, refs=tuple(undeclared)
+            )
+        totals = {rebound[dataset] for dataset in bound}
+        if len(totals) > 1:
+            raise CompositeReadUndeclared(
+                code="several_bound_totals", composite=ref, refs=tuple(totals)
+            )
+        reads[ref] = CompositeRead(
+            tables=tuple(dict.fromkeys(recipe.dataset for recipe in components)),
+            marker_table=components[0].dataset if len(components) == 1 else None,
+            bound_total=next(iter(totals), None),
+        )
+    return MappingProxyType(reads)
+
+
+def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
+    """Each declared composite's component tables (`CompositeRead.tables`), by provenance."""
+    return MappingProxyType({ref: read.tables for ref, read in declared_composite_reads().items()})
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

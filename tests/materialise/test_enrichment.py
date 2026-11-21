@@ -12,7 +12,13 @@ import pytest
 
 import materialise.enrichment as enrichment_module
 from code_index.composites import provenance_datasets
-from code_index.declarations import CRS_INCLUSIVE, DAC2A_BILATERAL
+from code_index.declarations import (
+    COMPOSITES,
+    CRS_INCLUSIVE,
+    DAC1,
+    DAC2A_BILATERAL,
+    DAC2A_INCLUSIVE,
+)
 from code_index.shared import get_index
 from code_index.types import PartyRow, WholeMarker
 from datasets_api.render import _RenderReads
@@ -668,6 +674,36 @@ def test_a_bound_composite_inherits_its_tables_marker_only_where_its_population_
     assert marker is not None
     assert party.marker_over(provenance) == (marker if inherits else None)
     assert is_whole_total(party, year=2021, provenance=provenance) is inherits
+
+
+_HEADLINE = next(composite.provenance for composite in COMPOSITES if composite.kind == "spliced")
+_MARKED_IN_DAC1_AND_DAC2A = PartyRow(
+    dcid="W",
+    kind="total",
+    published=((DAC1, "origin"), (_DAC2A, "origin")),
+    whole=(
+        WholeMarker(dataset=DAC1, covers=("official",)),
+        WholeMarker(dataset=_DAC2A, covers=("official",)),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "table"),
+    [
+        pytest.param(DAC2A_BILATERAL, _DAC2A, id="one-component"),
+        pytest.param(DAC2A_INCLUSIVE, None, id="stacked-components-of-one-table"),
+        pytest.param(_HEADLINE, None, id="spliced-components-of-one-table"),
+    ],
+)
+def test_a_composite_reads_its_tables_marker_only_with_one_component(
+    provenance: str, table: str | None
+):
+    """No composition check covers a sum of components, whether they read one table or
+    several, so only a composite of one component inherits its table's marker."""
+    row = _MARKED_IN_DAC1_AND_DAC2A
+
+    assert row.marker_over(provenance) == (None if table is None else row.marker(table))
 
 
 def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():

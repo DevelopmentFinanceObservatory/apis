@@ -5,6 +5,7 @@ nothing else, so an export that changes none of them re-renders no party-kind fi
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -132,19 +133,24 @@ def test_the_digest_moves_when_the_party_reading_version_moves(monkeypatch: pyte
 
 
 @pytest.mark.parametrize(
-    ("reading", "added"),
+    "changed",
     [
-        pytest.param("declared_composite_tables", (_DAC2B,), id="tables"),
-        pytest.param("declared_destination_totals", "DACAfrica", id="bound-total"),
+        pytest.param({"tables": (_DAC2A, _DAC2B)}, id="tables"),
+        pytest.param({"marker_table": None}, id="marker-table"),
+        pytest.param({"bound_total": "DACAfrica"}, id="bound-total"),
     ],
 )
 def test_the_digest_moves_when_a_composites_reading_moves(
-    monkeypatch: pytest.MonkeyPatch, reading: str, added: object
+    monkeypatch: pytest.MonkeyPatch, changed: dict[str, Any]
 ):
-    """A composite provenance reads kinds and markers through its tables and the total its
-    destination binding keeps, so a party cell on its rows moves with them."""
+    """A composite provenance reads kinds and markers through its tables, the one table it
+    reads markers from and the total its destination binding keeps, so a party cell on its
+    rows moves with them."""
     baseline = _index(_ROWS).enrichment_digest
-    declared = dict(getattr(query, reading)())
-    monkeypatch.setattr(query, reading, lambda: {**declared, "provenance/Composite": added})
+    reads = dict(query.declared_composite_reads())
+    ref, read = next((ref, read) for ref, read in reads.items() if read.marker_table)
+    monkeypatch.setattr(
+        query, "declared_composite_reads", lambda: {**reads, ref: replace(read, **changed)}
+    )
 
     assert _index(_ROWS).enrichment_digest != baseline

@@ -16,7 +16,7 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -467,9 +467,24 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
     The composites are the module-level `DECLARED_COMPOSITES`, because that is the set a
     `PartyRow` reads them through (`code_index.composites.provenance_datasets`); the loader
     refuses to serve a composite whose tables differ (`code_index.loader._check_composites`)."""
+    unkinded = unkinded_reads(_party_row(row) for row in rows)
+    if unkinded:
+        raise ExportRefused(
+            f"parties take no one kind under provenances that publish them: {unkinded!r} "
+            "(party, axis, provenance); scope PARTY_KIND_OVERRIDES so each composite's tables "
+            "agree on the party's kind",
+            code=PARTY_KIND_UNRESOLVED,
+            rows=unkinded,
+        )
+
+
+def unkinded_reads(parties: Iterable[PartyRow]) -> list[tuple[str, str, str]]:
+    """The `(party, axis, provenance)` reads of `parties` that give no one kind
+    (`PartyRow.kind_over`), in party order, sorted within each: under each dataset that
+    publishes the party on an axis and each declared composite one of whose tables does, on
+    that axis and on either axis (`ANY_AXIS`, recorded as `any`)."""
     unkinded: list[tuple[str, str, str]] = []
-    for row in rows:
-        party = _party_row(row)
+    for party in parties:
         axes: list[RoleAxis | AnyAxis] = [*sorted({axis for _, axis in party.published}), ANY_AXIS]
         for axis in axes:
             on_axis = {
@@ -486,14 +501,7 @@ def _check_provenance_reads(rows: Sequence[Mapping]) -> None:
                 for provenance in sorted(on_axis | composites)
                 if party.kind_over(axis, (provenance,)) is None
             )
-    if unkinded:
-        raise ExportRefused(
-            f"parties take no one kind under provenances that publish them: {unkinded!r} "
-            "(party, axis, provenance); scope PARTY_KIND_OVERRIDES so each composite's tables "
-            "agree on the party's kind",
-            code=PARTY_KIND_UNRESOLVED,
-            rows=unkinded,
-        )
+    return unkinded
 
 
 def _party_row(row: Mapping) -> PartyRow:

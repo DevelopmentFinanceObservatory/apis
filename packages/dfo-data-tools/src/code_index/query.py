@@ -41,8 +41,7 @@ from code_index.types import (
     StatTypeWordDeclaration,
     StatVarRow,
     WholeTotalSet,
-    declared_composite_tables,
-    declared_destination_totals,
+    declared_composite_reads,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -271,8 +270,8 @@ provenance as its component tables."""
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
     """The hex SHA-256 of `PARTY_READING_VERSION`, each declared composite's component tables
-    (`declared_composite_tables`) and bound destination total (`declared_destination_totals`),
-    each sorted by composite, and `parties`'
+    and the table and bound destination total it reads markers through
+    (`declared_composite_reads`), sorted by composite, and `parties`'
     `(dcid, kind, party_class, whole markers, dataset kinds, published)` rows, sorted by dcid,
     each marker as `(dataset, covers, years)`, each dataset kind as `(dataset, kind)` and each
     publication as `(dataset, axis)`. Neither row order nor a label or group change moves it.
@@ -293,9 +292,11 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
         )
         for party in parties
     )
-    composites = sorted(declared_composite_tables().items())
-    bound_totals = sorted(declared_destination_totals().items())
-    payload = [PARTY_READING_VERSION, composites, bound_totals, rows]
+    composites = sorted(
+        (ref, list(read.tables), read.marker_table, read.bound_total)
+        for ref, read in declared_composite_reads().items()
+    )
+    payload = [PARTY_READING_VERSION, composites, rows]
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 

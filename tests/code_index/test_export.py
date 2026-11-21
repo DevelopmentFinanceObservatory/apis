@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
+from code_index.composites import provenance_datasets
 from code_index.declarations import (
     BROAD_READINGS,
     CODE_SYSTEMS,
@@ -65,11 +65,11 @@ from code_index.export import (
     export_value_parents,
     stamp_counts,
     strip_system_suffix,
+    unkinded_reads,
 )
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.shared import get_index
 from code_index.types import (
-    ANY_AXIS,
     BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
@@ -3678,23 +3678,7 @@ def test_a_party_takes_no_kind_over_datasets_that_do_not_publish_it_on_the_reade
 
 
 def test_every_fixture_party_takes_one_kind_under_each_provenance_publishing_it():
-    unkinded = []
-    for dcid, row in get_index().parties.items():
-        for axis in [*{axis for _, axis in row.published}, ANY_AXIS]:
-            on_axis = {
-                dataset
-                for dataset, published_axis in row.published
-                if axis is ANY_AXIS or published_axis == axis
-            }
-            composites = {
-                ref for ref in DECLARED_COMPOSITES if on_axis.intersection(provenance_datasets(ref))
-            }
-            unkinded.extend(
-                (dcid, axis, provenance)
-                for provenance in on_axis | composites
-                if row.kind_over(axis, (provenance,)) is None
-            )
-    assert unkinded == []
+    assert unkinded_reads(get_index().parties.values()) == []
 
 
 def test_export_index_refuses_a_party_whose_kind_a_composites_tables_disagree_on():
