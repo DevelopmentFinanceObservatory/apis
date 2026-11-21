@@ -973,9 +973,7 @@ def test_an_open_role_reads_a_party_s_kind_on_its_own_axis(total_in, named):
         pytest.param("PlainTotal", ["p1"], ["financingProvider"], id="plain-total-another-dataset"),
     ],
 )
-def test_a_bound_role_holds_a_total_only_where_a_read_dataset_publishes_it_on_the_axis(
-    total, datasets, named
-):
+def test_a_bound_role_holds_a_total_where_its_kind_cell_reads_total(total, datasets, named):
     """A party that is a donor total only where p2 publishes it as a donor is no donor total
     in a read of p1, which publishes it as a recipient alone. A party with one kind is a total
     wherever it is published, as its kind cell reads it, so a p1 file moves its rows too."""

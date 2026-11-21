@@ -117,8 +117,7 @@ def movable_totals_roles(
     as the kind cell reads it (`PartyRow.kinds_over` over `parties`): a party with one kind is
     a total wherever some dataset publishes it there, and a party with a kind per dataset only
     in one of `datasets` that publishes it there, so the split and the kind cell agree. An open
-    role qualifies
-    when `parties` lists a party that one of `datasets` publishes on its axis and that is a total in
+    role qualifies when `parties` lists a party that one of `datasets` publishes on its axis and that is a total in
     one of them there (`PartyRow.publishes`, `PartyRow.kinds_over`), or any total some dataset
     publishes on its axis when `datasets` is empty, as for a definition whose read selected no
     provenance. The index builds those rows from the coverage that lists each provenance's parties,
