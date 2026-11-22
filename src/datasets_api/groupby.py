@@ -4,9 +4,11 @@ The collapse set is the decoded, declared-summable axes minus `by`. Unknown
 names refuse before per-frame checks. An undeclared axis absent from one frame
 is a no-op. `stat_var` joins the collapse only when a CRS axis collapses or a
 kept axis rolls up to a level. A decoded axis not declared summable stays out
-of the collapse. `groupby.levels` rewrites a kept hierarchical axis's decoded labels
-to their ancestors' labels at one depth (`roll_up_levels`), so the sum groups
-each code under its ancestor.
+of the collapse. Each decoded `stat_var_<axis>` cell holds the code's dcid
+(`datasets_api.decode`), so a kept axis groups by code and two codes sharing a
+label stay two rows. `groupby.levels` rewrites a kept hierarchical axis's decoded
+codes to their ancestors at one depth (`roll_up_levels`), so the sum groups each
+code under its ancestor's dcid.
 
 The guards refuse ambiguous measures, unknown axes, decode gaps, and mixed
 provenance. They use code-index declarations and frame data. The reshape engine
@@ -97,6 +99,58 @@ def levels_in_frame(
     return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
 
 
+def selected_stat_vars(
+    lookup: Mapping[str, Mapping[str, str]],
+    *,
+    codes: Mapping[str, Sequence[str]] | None,
+    decoded_code_systems: Sequence[str],
+) -> frozenset[str] | None:
+    """Return the StatVar refs of `lookup` whose decoded code on each `groupby.codes` axis this
+    frame decodes is one of that axis's listed codes, or `None` when `codes` names no such
+    axis. `lookup` is the decode lookup after any `levels` roll-up (`roll_up_levels`), so a
+    StatVar is selected by its rolled code. A row's decoded cell is its StatVar's lookup cell,
+    so a row is kept exactly when its `stat_var` is in the result; a StatVar with no cell on an
+    axis reads an empty cell, which no code matches. An axis outside `decoded_code_systems`
+    selects on nothing; a render refuses a selection on one (`render._decoded_selection`)."""
+    decoded = frozenset(decoded_code_systems)
+    in_frame = {
+        axis: frozenset(listed) for axis, listed in (codes or {}).items() if axis in decoded
+    }
+    if not in_frame:
+        return None
+    return frozenset(
+        ref
+        for ref, cells in lookup.items()
+        if all(cells.get(axis) in listed for axis, listed in in_frame.items())
+    )
+
+
+def selected_contributors(
+    contributors: Iterable[str],
+    *,
+    index: CodeIndex,
+    codes: Mapping[str, Sequence[str]] | None,
+    levels: Mapping[str, int] | None = None,
+) -> list[str]:
+    """Return `contributors` (`dcid:` refs or bare dcids), in their order, that a groupby with
+    the selection `codes` and the roll-up `levels` sums: each one whose code-index code on every
+    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed, as the render keeps
+    the summed rows of those codes (`selected_stat_vars`). An axis no contributor carries
+    selects on nothing."""
+    refs = list(contributors)
+    if not codes:
+        return refs
+    lookup: dict[str, dict[str, str]] = {}
+    for ref in refs:
+        statvar = index.statvar_by_dcid(_bare_dcid(ref))
+        lookup[ref] = dict(statvar.constraint_properties) if statvar is not None else {}
+    if levels:
+        lookup = roll_up_levels(lookup, index=index, levels=levels)
+    carried = sorted({axis for cells in lookup.values() for axis in cells})
+    selected = selected_stat_vars(lookup, codes=codes, decoded_code_systems=carried)
+    return refs if selected is None else [ref for ref in refs if ref in selected]
+
+
 def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
     """Return true when the groupby adds the components of `composite`, the composite the
     frame's rows carry as their provenance or `None`, into one total: the composite's
@@ -117,16 +171,35 @@ def sums_stat_vars(
     composite: CompositeDeclaration | None = None,
 ) -> bool:
     """Return true when the groupby sums this frame's StatVars: a decoded summable axis
-    collapses, a kept axis rolls up to a level, or the frame's stacked composite adds its
-    components (`sums_components`)."""
+    collapses, `by` leaves out `stat_var` on a frame decoding a summable axis
+    (`rekeys_stat_vars`), a kept axis rolls up to a level, or the frame's stacked composite adds
+    its components (`sums_components`)."""
     return (
         bool(
             collapse_axes(
                 by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
             )
         )
+        or rekeys_stat_vars(
+            by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
+        )
         or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
         or sums_components(by=by, composite=composite)
+    )
+
+
+def rekeys_stat_vars(
+    *,
+    by: Sequence[str],
+    decoded_code_systems: Sequence[str],
+    declarations: Mapping[str, CodeSystemDeclaration],
+) -> bool:
+    """Return true when `by` leaves out `stat_var` and the frame decodes a declared-summable
+    axis: the groupby reads one `stat_var` keyed by the axes `by` keeps, summing those it
+    leaves out. With every such axis kept it sums nothing, each kept tuple holding one StatVar,
+    and still reads the frame keyed by them (conformance C118)."""
+    return _STAT_VAR_COLUMN not in by and bool(
+        declared_axes_present(decoded_code_systems=decoded_code_systems, declarations=declarations)
     )
 
 
@@ -179,10 +252,10 @@ def roll_up_levels(
     index: CodeIndex,
     levels: Mapping[str, int],
 ) -> dict[str, dict[str, str]]:
-    """Return `lookup` with each level axis's label replaced by its depth ancestor's label.
+    """Return `lookup` with each level axis's code replaced by its depth ancestor's dcid.
 
     A StatVar's code maps to `CodeIndex.ancestor_at_depth`. A code shallower than its depth has
-    no ancestor there and keeps its own label, so its row names it. A declared absence and a
+    no ancestor there and keeps its own dcid, so its row names it. A declared absence and a
     missing cell stay as they are, and an ancestor with no code row drops the cell, which
     `refuse_decode_gaps` then refuses.
     """
@@ -199,11 +272,10 @@ def roll_up_levels(
             ancestor = index.ancestor_at_depth(code, depth)
             if ancestor is None:
                 continue
-            ancestor_row = index.code_by_dcid(ancestor)
-            if ancestor_row is None:
+            if index.code_by_dcid(ancestor) is None:
                 del new_cells[code_system]
             else:
-                new_cells[code_system] = ancestor_row.label
+                new_cells[code_system] = ancestor
         rolled[ref] = new_cells
     return rolled
 
@@ -267,6 +339,31 @@ def refuse_stat_var_collision(
                 axis=_STAT_VAR_COLUMN,
                 precondition="stat_var_ambiguous",
             )
+
+
+def adds_stat_vars(
+    contributors: Iterable[str],
+    *,
+    index: CodeIndex,
+    kept: Sequence[str],
+    levels: Mapping[str, int],
+    components: bool,
+) -> bool:
+    """Whether a groupby collapse adds StatVars together: a level roll-up or a component sum
+    ran, or two of `contributors` (`dcid:` refs or bare dcids), the StatVars with rows, hold
+    one tuple of codes on the `kept` axes. A collapse where each kept tuple holds one StatVar
+    re-keys the frame under one `stat_var` and adds nothing (`rekeys_stat_vars`)."""
+    if levels or components:
+        return True
+    seen: set[tuple[str | None, ...]] = set()
+    for ref in contributors:
+        statvar = index.statvar_by_dcid(_bare_dcid(ref))
+        codes = statvar.constraint_properties if statvar is not None else {}
+        key = tuple(codes.get(axis) for axis in kept)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
 
 
 def _one_per_component(

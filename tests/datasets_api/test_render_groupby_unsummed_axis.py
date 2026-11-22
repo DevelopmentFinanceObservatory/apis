@@ -156,6 +156,6 @@ def test_a_family_holding_two_unsummed_values_sums_per_value_and_keeps_the_colum
     assert "stat_var" not in summed.table.columns
     assert "stat_var_crsPurpose" not in summed.table.columns
     assert sorted((row[unsummed], row[value]) for row in summed.table.rows) == [
-        ("Line one", 14.0),
-        ("Line two", 3.0),
+        ("LineOne", 14.0),
+        ("LineTwo", 3.0),
     ]

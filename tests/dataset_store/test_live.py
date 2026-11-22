@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,7 +68,11 @@ from datasets_api.recipe_store import (
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
 from datasets_api.retention_admission import CopyClaimUnsettled, PreparingCopy
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
+from datasets_api.version_store import (
+    LiveHeadStore,
+    LiveVersionLister,
+    LiveVersionRecordWriter,
+)
 from datasets_api.versions import (
     ArtifactRecord,
     HeadFence,
@@ -822,6 +827,117 @@ def test_read_version_state_reads_the_base_revocation_and_links_in_one_transacti
     assert (unnamed.revocation is not None) is (revoked is not None and not revoked_under_other)
     assert reader.artifact_inventoried(digest)
     assert not reader.artifact_inventoried(f"sha256:never-stored-{uuid4().hex}")
+
+
+def test_list_head_versions_reads_each_link_with_every_head_a_write_named(live_store):
+    """A derived version's write names its record's base as a head of each link it writes, each
+    head kept beside those named before, even where the upsert kept the linked digest, and a raw
+    version's write names none. `list_head_versions` returns the subject's versions recorded
+    from the head or linking a file a write from it named, newest first, each with every link
+    under it and the heads that link records, whether or not the file has a location. A link
+    holding a head cannot be deleted."""
+    subject_id = f"spec:test-live-head-{uuid4().hex}"
+    other_id = f"spec:test-live-head-other-{uuid4().hex}"
+    digests = {name: f"sha256:test-live-head-{name}-{uuid4().hex}" for name in "abcde"}
+    groupby = {"format": "csv", "bundle": False, "groupby": {"by": ["recipient"]}}
+    cut = {**groupby, "without_party_totals": True}
+    plain = {"format": "csv", "bundle": False}
+    started = datetime.now(UTC)
+    with live_store.transaction() as tx:
+        for name, digest in digests.items():
+            tx.execute(
+                "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) "
+                "VALUES (%s, %s)",
+                (digest, 7),
+            )
+            if name != "e":
+                tx.execute(
+                    "INSERT INTO datasets.artifact_location "
+                    "(artifact_digest, tier, bucket, object_name, stored_at) "
+                    "VALUES (%s, %s, %s, %s, now())",
+                    (digest, "working", "b", digest),
+                )
+
+    def write(
+        offset: int,
+        content_version: str,
+        base: str | None,
+        *links: tuple[str, dict[str, object]],
+        subject: str = subject_id,
+    ) -> None:
+        LiveVersionRecordWriter(
+            store=live_store, now=lambda: started + timedelta(seconds=offset)
+        ).record_version(
+            VersionRecord(
+                subject_id=subject,
+                subject_kind="spec",
+                content_version=content_version,
+                schema_version=1,
+                facts=FrameLineage(input_content_versions=[]),
+                artifacts=tuple(
+                    ArtifactRecord(
+                        artifact_digest=digests[name], rendering=rendering, media_type="text/csv"
+                    )
+                    for name, rendering in links
+                ),
+                base_content_version=base,
+                frame_summed=None if base is None else True,
+            )
+        )
+
+    write(0, "cv_h1", None, ("a", plain))
+    write(1, "cv_d1", "cv_h1", ("a", groupby))
+    # A later write from h2 makes cv_d1 again: the kept groupby link names h1 and h2, the new
+    # cut link h2, while the record keeps base h1.
+    write(2, "cv_d1", "cv_h2", ("b", groupby), ("c", cut))
+    write(3, "cv_d2", "cv_h2", ("d", groupby))
+    write(4, "cv_d3", "cv_h2", ("b", cut))
+    write(5, "cv_d3", "cv_h1", ("c", groupby))
+    write(6, "cv_d4", "cv_h1", ("e", groupby))
+    write(7, "cv_d9", "cv_h1", ("a", groupby), subject=other_id)
+    with live_store.transaction() as tx:
+        # A link written before links named a head.
+        tx.execute(
+            "DELETE FROM datasets.version_artifact_head "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_d4"),
+        )
+    lister = LiveVersionLister(store=live_store)
+
+    def listed(head: str) -> list[tuple[str, str | None, list[tuple[str, list[str]]]]]:
+        return [
+            (
+                version.content_version,
+                version.base_content_version,
+                sorted(
+                    (json.dumps(link.rendering, sort_keys=True), sorted(link.heads))
+                    for link in version.links
+                ),
+            )
+            for version in lister.list_head_versions(subject_id, head_content_version=head)
+        ]
+
+    def links(*pairs: tuple[dict[str, object], list[str]]) -> list[tuple[str, list[str]]]:
+        return sorted((json.dumps(rendering, sort_keys=True), heads) for rendering, heads in pairs)
+
+    d1 = ("cv_d1", "cv_h1", links((groupby, ["cv_h1", "cv_h2"]), (cut, ["cv_h2"])))
+    d3 = ("cv_d3", "cv_h2", links((cut, ["cv_h2"]), (groupby, ["cv_h1"])))
+    assert listed("cv_h1") == [("cv_d4", "cv_h1", links((groupby, []))), d3, d1]
+    assert listed("cv_h2") == [d3, ("cv_d2", "cv_h2", links((groupby, ["cv_h2"]))), d1]
+    assert lister.list_head_versions(subject_id, head_content_version="cv_none") == []
+    with live_store.transaction() as tx:
+        raw = tx.fetch_all(
+            "SELECT head_content_version FROM datasets.version_artifact_head "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_h1"),
+        )
+    assert raw == []
+    # The rule for links naming no head rests on no link being deleted.
+    with pytest.raises(pg8000.exceptions.Error), live_store.transaction() as tx:
+        tx.execute(
+            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_d1"),
+        )
 
 
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):
@@ -4020,6 +4136,48 @@ def _stored_fact_columns(
 def _delete_versions(live_store, subjects: list[str]) -> None:
     with live_store.transaction() as tx:
         tx.execute("DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,))
+
+
+@pytest.mark.parametrize("kind", ["definition", "published"])
+def test_a_rewrite_judged_by_an_older_catalogue_build_keeps_the_newer_judgement(live_store, kind):
+    """Two writes of one version carry judgements of different catalogue builds, the later
+    build's first: a dataset version recorded by instances bound to different builds, or a
+    computed version republished over its inputs' different judgements. The older build's
+    write leaves the stored judgement and its build, and a still later build's write replaces
+    both. Each read gives the build's `built_at` in UTC."""
+    from tests.datasets_api._version_facts import facts_from_body, golden_cases
+
+    case = golden_cases()[kind]
+    facts = facts_from_body(case["body"])
+    subject_id = f"{case['subject_id']}_{uuid4().hex}"
+    content_version = case["content_version"]
+    built = datetime(2026, 11, 1, tzinfo=UTC)
+    partial = [{"provenance": "p", "stat_vars": ["dcid:X"], "source": "p", "status": "partial"}]
+
+    def write(entries: list[dict[str, object]], built_at: datetime) -> None:
+        LiveVersionRecordWriter(store=live_store).record_version(
+            VersionRecord(
+                subject_id=subject_id,
+                subject_kind="spec",
+                content_version=content_version,
+                schema_version=1,
+                facts=replace(facts, incomplete_after=entries, incomplete_after_built_at=built_at),
+            )
+        )
+
+    def stored() -> tuple[object, object]:
+        version = LiveSnapshotReader(store=live_store).read_version(subject_id, content_version)
+        assert version is not None and type(version.facts) is type(facts)
+        return version.facts.incomplete_after, version.facts.incomplete_after_built_at
+
+    try:
+        write([], built + timedelta(days=7))
+        write(partial, built)
+        assert stored() == ([], built + timedelta(days=7))
+        write(partial, built + timedelta(days=14))
+        assert stored() == (partial, built + timedelta(days=14))
+    finally:
+        _delete_versions(live_store, [subject_id])
 
 
 def test_0031_backfills_frame_grammar_version_from_the_stored_trace(live_store):

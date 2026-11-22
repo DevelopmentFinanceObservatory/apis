@@ -43,6 +43,8 @@ from code_index.flow_family import flow_family
 from code_index.query import CodeIndex
 from code_index.types import StatVarRow
 from dataset_store.snapshot import FrameLineage, ManifestFacts, StoredVersion
+from datasets_api.groupby import selected_contributors
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.versions import VersionRecord
 from description.facts import (
     Basis,
@@ -146,7 +148,7 @@ _CHOSEN_OVER_DISAGREEMENT = "most_observations_over_disagreement"
 # Conversion gaps a trace minted before conversions counted what they left out names only in
 # its warnings: a caveat points at the conversion, with no count.
 _CONVERSION_GAP_CODES = ("currency_unmapped_omitted", "deflator_missing_omitted")
-_MAX_SUMMED_NAMED = 64
+MAX_SUMMED_NAMED = 64
 _MAX_CHOICE_OTHERS = 32
 _DCID_PREFIX = "dcid:"
 _YEARS_DIMENSION = "years"
@@ -234,9 +236,15 @@ def collapsed_record(
     *,
     figures: SeriesFigures,
     summed: bool = True,
+    adds: bool = True,
+    variables: Sequence[str] | None = None,
 ) -> DescriptionRecord:
     """The record of a derived version (`datasets_api.render.DerivedVersion`), derived from
-    its base version's record.
+    its base version's record. A `summed` version that `adds` nothing, a re-key keeping each
+    StatVar in a tuple of its own (`groupby.adds_stat_vars`), holds no `sum_variables` step and
+    keeps the base's steps and caveats. `variables` are the StatVars the sum added, as bare
+    dcids, where a `groupby.codes` selection kept some of those with data
+    (`selected_summed_refs`); `None` reads every one with data in the trace (`summed_refs`).
 
     It keeps the base's population, sources and builds, takes its series facts and its
     dimensions from the derived version's own figures and coverage (`_collapsed_variables`).
@@ -265,6 +273,8 @@ def collapsed_record(
         ),
         columns=_collapse_columns(facts, figures),
         summed=summed,
+        adds=adds,
+        added=variables,
     )
 
 
@@ -276,27 +286,29 @@ def _collapsed(
     series: SeriesFacts,
     columns: Mapping[str, RoleFigure | None] | None,
     summed: bool,
+    adds: bool = True,
+    added: Sequence[str] | None = None,
 ) -> DescriptionRecord:
     """`base` as the record of the derived version `content_version`, holding `series` and the
-    dimensions its role `columns` keep. A `summed` version adds, after the base's steps, a
-    `sum_variables` step naming the variables with data in the trace (`collapse_steps`), and
-    where the base's steps are unknown the sum is the step known to follow them. Any other
-    keeps the base's steps and caveats."""
+    dimensions its role `columns` keep. A `summed` version that `adds` StatVars adds, after the
+    base's steps, a `sum_variables` step naming `added`, else the variables with data in
+    the trace (`collapse_steps`), and where the base's steps are unknown the sum is the step
+    known to follow them. Any other keeps the base's steps and caveats."""
     variables = (
         None
         if base.variables is None
         else _collapsed_variables(base.variables, columns=columns, summed=summed)
     )
     steps = base.known_steps
-    if summed:
-        summed_refs = _summed_refs(facts.trace)
-        steps = collapse_steps(base.known_steps, trace=facts.trace)
+    if summed and adds:
+        summed_variables = list(added) if added is not None else summed_refs(facts.trace)
+        steps = collapse_steps(base.known_steps, trace=facts.trace, variables=summed_variables)
         update: dict[str, object] = {
             "steps": None if base.steps is None else steps,
             "steps_after_unknown": steps if base.steps is None else MISSING,
             "caveats": None
             if base.caveats is None
-            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed_refs),
+            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed_variables),
         }
     else:
         update = {}
@@ -448,25 +460,48 @@ def _collapsed_caveats(
     return result
 
 
-def collapse_steps(steps: Sequence[Step], *, trace: Mapping[str, object]) -> list[Step]:
+def collapse_steps(
+    steps: Sequence[Step],
+    *,
+    trace: Mapping[str, object],
+    variables: Sequence[str] | None = None,
+) -> list[Step]:
     """The steps of a multi-contributor collapse of a version whose steps are `steps`: those,
-    then a `sum_variables` step naming the variables with data in the version's `trace`."""
-    summed = _summed_refs(trace)
+    then a `sum_variables` step naming `variables`, the variables the sum added, else those
+    with data in the version's `trace`."""
+    summed = list(variables) if variables is not None else summed_refs(trace)
     sum_step = Step(
         id=_next_step_id(steps),
         op=_SUM_VARIABLES_OP,
         policy=_SUM_VARIABLES_POLICY,
         summed=Summed(
             count=len(summed),
-            variables=[StepRef(ref=ref) for ref in summed[:_MAX_SUMMED_NAMED]],
+            variables=[StepRef(ref=ref) for ref in summed[:MAX_SUMMED_NAMED]],
         ),
     )
     return [*steps, sum_step]
 
 
-def _summed_refs(trace: Mapping[str, object]) -> list[str]:
+def summed_refs(trace: Mapping[str, object]) -> list[str]:
     """The variables a collapse of a version with `trace` sums: those with data in it."""
     return [ref for ref, count in _resolved(trace) if count]
+
+
+def selected_summed_refs(
+    version: VersionRecord, *, groupby: GroupbyOptions | None, code_index: CodeIndex
+) -> list[str] | None:
+    """The variables with data in the derived `version`'s trace (`summed_refs`) that the
+    `groupby.codes` selection of the `groupby` that summed it keeps, after its `levels` roll-up
+    (`groupby.selected_contributors`), or `None` for a groupby with no selection, which sums
+    every one."""
+    if groupby is None or not groupby.codes:
+        return None
+    return selected_contributors(
+        summed_refs(_manifest_facts(version).trace),
+        index=code_index,
+        codes=groupby.codes,
+        levels=groupby.levels,
+    )
 
 
 def publish_record(
@@ -823,7 +858,7 @@ def _summed_step(
 ) -> None:
     if any(step.op == _SUM_VARIABLES_OP for step in steps):
         return
-    summed = _summed_refs(facts.trace)
+    summed = summed_refs(facts.trace)
     count = warning.get("contributing_member_count")
     steps.append(
         Step(
@@ -832,7 +867,7 @@ def _summed_step(
             policy=_SUM_VARIABLES_POLICY,
             summed=Summed(
                 count=count if isinstance(count, int) else len(summed),
-                variables=[StepRef(ref=ref) for ref in summed[:_MAX_SUMMED_NAMED]],
+                variables=[StepRef(ref=ref) for ref in summed[:MAX_SUMMED_NAMED]],
             ),
         )
     )

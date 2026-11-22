@@ -294,24 +294,27 @@ _STORED_FRAMES: dict[str, tuple[bool, tuple[dict[str, object], ...]]] = {
 }
 # What the refresh of each stored frame answers once the data moved, by how many StatVars
 # contribute to the new head: the raw `head`, the `sum` of it with a version of its own, or a
-# refusal. A stored frame in `_NEVER_REFRESHED` refuses before the data moves too.
+# refusal.
 _REFRESH_ANSWERS = {
     ("plain", 1): "head",
     ("plain", 2): "head",
     ("collapse", 1): "head",
     ("collapse", 2): "sum",
-    ("collapse-linking-two-sums", 1): "refused",
-    ("collapse-linking-two-sums", 2): "refused",
+    # The two sums are one frame, the head while one StatVar contributes.
+    ("collapse-linking-two-sums", 1): "head",
+    # The two sums are one frame, the sum of the head's two StatVars.
+    ("collapse-linking-two-sums", 2): "sum",
     ("raw-linking-one-sum-and-no-plain-file", 1): "head",
     ("raw-linking-one-sum-and-no-plain-file", 2): "sum",
     ("raw-linking-one-sum-and-a-plain-file", 1): "head",
     ("raw-linking-one-sum-and-a-plain-file", 2): "refused",
-    ("raw-linking-two-sums-and-no-plain-file", 1): "refused",
-    ("raw-linking-two-sums-and-no-plain-file", 2): "refused",
+    # The two sums are one frame, the head while one StatVar contributes.
+    ("raw-linking-two-sums-and-no-plain-file", 1): "head",
+    # The two sums are one frame, the sum of the head's two StatVars.
+    ("raw-linking-two-sums-and-no-plain-file", 2): "sum",
     ("raw-linking-two-sums-and-a-plain-file", 1): "head",
     ("raw-linking-two-sums-and-a-plain-file", 2): "refused",
 }
-_NEVER_REFRESHED = {"collapse-linking-two-sums", "raw-linking-two-sums-and-no-plain-file"}
 
 
 @pytest.mark.parametrize("advanced_by", ["refresh", "plain-mint", "sum-mint"])
@@ -337,10 +340,7 @@ def test_the_render_accepts_the_frame_the_refresh_answers_and_no_other_frame_of_
         )
     )
     expected = _REFRESH_ANSWERS[(stored_as, contributors)]
-    if stored_as in _NEVER_REFRESHED:
-        assert _refusal(rig.refresh(stored)) == (422, "rendering_not_recorded")
-    else:
-        assert rig.refresh(stored).json() == {"status": "current", "frame": stored}
+    assert rig.refresh(stored).json() == {"status": "current", "frame": stored}
 
     if contributors == 2 and not second_contributor:
         observations.add_stat_var()

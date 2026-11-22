@@ -385,10 +385,33 @@ def read_snapshot_manifest(
         now=read_at,
         revoked_under=revoked_under,
     )
+    return servable_snapshot_manifest(
+        stored,
+        id=id,
+        content_version=content_version,
+        now=read_at,
+        settings=settings,
+        rendering_keys=rendering_keys,
+        enrichment_digest=enrichment_digest,
+    )
+
+
+def servable_snapshot_manifest(
+    stored: ServableVersion,
+    *,
+    id: str,
+    content_version: str,
+    now: datetime,
+    settings: DatasetsBuildSettings,
+    rendering_keys: Callable[[Manifest], tuple[str, ...]] | None,
+    enrichment_digest: str | None,
+) -> Manifest:
+    """The manifest `read_snapshot_manifest` gives of `stored`, a version it read at `now`, for
+    a caller that has read the version itself (`read_servable_version`)."""
     manifest = _stored_snapshot_manifest(stored.version, settings=settings)
     servable = servable_listable_locations(
         stored.servable,
-        now=read_at,
+        now=now,
         rendition=rendition_token(settings.site),
         enrichment_digest=enrichment_digest,
     )

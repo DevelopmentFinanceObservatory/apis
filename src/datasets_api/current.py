@@ -80,7 +80,12 @@ from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import (
+    ManifestFacts,
+    SnapshotReader,
+    StoredArtifactLocation,
+    StoredVersion,
+)
 from datasets_api.adapter import definition_read_scope, family_basis, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
@@ -102,6 +107,7 @@ from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
 from datasets_api.manifest import (
     collapsed_head_manifest,
+    collapsed_incomplete_after,
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
@@ -167,6 +173,7 @@ from datasets_api.versions import (
     VersionLister,
     VersionRecordWriter,
     link_digest,
+    rendering_stamp,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
@@ -453,7 +460,9 @@ def _record_head_hit_derived(
     (`persisted_response`): its stored body with the artifacts linked for it, so its stored
     warnings stand. An incomplete render gives way to a complete artifact a concurrent call
     linked under the derived version (`with_linked_artifacts`). The base record precedes
-    the render, so every writer dates and cites the derived version as the base does. The
+    the render, so every writer dates and cites the derived version as the base does, and the
+    derived version's `incomplete_after` derives from the base version's stored one
+    (`collapsed_incomplete_after`) and takes its build's `built_at`. The
     derived version's description record derives from the base version's in the transaction
     that records it (`version_descriptions.collapse_describer`).
     """
@@ -498,6 +507,8 @@ def _record_head_hit_derived(
         ),
         extra_warnings=reshape_models,
     )
+    with phase("snapshot_state"):
+        base = deps.snapshot_reader.read_version(subject_id, base_content_version)
     created = record_collapsed_head_version(
         manifest=derived_manifest,
         subject_id=subject_id,
@@ -506,6 +517,15 @@ def _record_head_hit_derived(
         output_profile=output_profile,
         frame_sha256=derived.frame_sha256,
         frame_summed=derived.summed,
+        code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
+        incomplete_after=collapsed_incomplete_after(
+            None if base is None else base.facts.incomplete_after, derived_statistics.figures
+        ),
+        incomplete_after_built_at=(
+            base.facts.incomplete_after_built_at
+            if base is not None and isinstance(base.facts, ManifestFacts)
+            else None
+        ),
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
@@ -516,6 +536,8 @@ def _record_head_hit_derived(
             enrichment=deps.enrichment,
             deadline=deps.deadline,
             summed=derived.summed,
+            adds=derived.adds,
+            groupby=derived.groupby,
         ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):
@@ -1736,6 +1758,7 @@ def serve_current(
     head_read: HeadRead | None = None,
     strip_pointer: bool = False,
     revoked_under: Sequence[str] = (),
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest:
     """Serve the current version of the served definition `stored`, materialising and advancing
     the head when the head cannot answer. A head answers under `load_stored`'s
@@ -1773,7 +1796,9 @@ def serve_current(
     head it read, and stamps the confirmation of the head its run wrote. `progress` receives the
     materialiser's row progress. `strip_pointer` marks the refusals a rebuild's admission and
     materialisation raise (`without_pointers`) for a retrieval route, whose request has no body;
-    refusals from a head hit keep their pointers.
+    refusals from a head hit keep their pointers. `on_materialised` receives the raw version a
+    rebuild of this call materialised (`ServedDefinition.content_version`), the one its answer
+    is or was derived from, whichever writer won the head.
 
     Returns a manifest stamped by `stamp_trace`.
     """
@@ -1792,6 +1817,7 @@ def serve_current(
             head_read=head_read,
             strip_pointer=strip_pointer,
             revoked_under=revoked_under,
+            on_materialised=on_materialised,
         )
         manifest = check(
             coverage_snapshot if coverage_snapshot is not None else deps.coverage.snapshot()
@@ -1816,6 +1842,7 @@ def _check_currency(
     head_read: HeadRead | None,
     strip_pointer: bool,
     revoked_under: Sequence[str],
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest | None:
     """One pass of `serve_current` on the coverage snapshot `snapshot`. `None` means another
     caller rebuilt the subject while this one waited, so the head is read again."""
@@ -1893,6 +1920,8 @@ def _check_currency(
             if isinstance(recheck, str):
                 raise
             return recheck
+    if on_materialised is not None:
+        on_materialised(served.content_version)
     written = served.head
     if written is None:
         # A concurrent update won the head. Stamp its confirmation.

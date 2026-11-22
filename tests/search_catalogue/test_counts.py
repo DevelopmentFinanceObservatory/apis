@@ -400,6 +400,36 @@ def test_the_trust_funds_count_as_a_donor_only_in_the_rows_where_they_total_no_o
     assert counted.places["country/KEN"].aid.donors == 0
 
 
+def test_the_trust_funds_count_as_a_donor_in_a_table_the_index_does_not_list_them_in(tmp_path):
+    """A coverage build newer than the index holds the trust funds in a table the index does
+    not list them in. Their kind there is unknown, so they count as a donor, as a party the
+    index does not list does, and borrow no total from the table that lists them."""
+    new_table = "provenance/NewTable"
+    new_facet = "facet-new"
+    table, horizon = coverage_table([(V1, new_facet, "IMFTrustFunds", "country/GHA", [2019])])
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {new_facet: FacetMetadata(provenance_id=new_table)},
+        horizon=horizon,
+    )
+    trust_funds = PartyRow(
+        dcid="IMFTrustFunds",
+        kind="party",
+        published=((AID_TABLE, "origin"), (AID_TABLE, "destination")),
+        dataset_kinds=((AID_TABLE, "total"),),
+    )
+
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={new_table},
+        parties={"IMFTrustFunds": trust_funds},
+    )
+
+    assert counted.counts.aid.donors == 1
+
+
 def test_a_facet_without_a_provenance_adds_to_neither_origin_group(tmp_path):
     table, horizon = coverage_table([(V1, FACET_ACTUALS, "country/FRA", "country/ETH", [2018])])
     coverage = CoverageIndex(

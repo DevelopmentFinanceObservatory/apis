@@ -16,14 +16,31 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
   fixture gives;
 - the bare derived root under `latest` answers the same `ops_` and `ocv_`;
 - `POST /api/presentation/components` makes a table card of the frame from the release's
-  minimal table intent, whose description names the frame's two roots as its sources, in the
-  ref's order, and a stat card, whose title and series label it prints;
+  minimal table intent, whose description names the sources the two roots credit and then the
+  roots, in the ref's order, and a stat card, whose title and series label it prints;
 - `POST /api/presentation/shares` makes a live share of the card with its page, embed and data
   URLs and a `shw_` token, which replaces it; a wrong token refuses 403, a delete takes it
   down, and the delete retried with the token answers 204 again;
 - `PUT /api/presentation/shares/{id}/import` stores a share of the card under an id the website
   chose, 201 and then 200 on a re-run, refuses a caller without the import principal 403, and
   the token whose digest it stored replaces the share.
+
+`breakdown_step` runs over the CRS reading, four StatVars of two purposes:
+
+- an aggregate by recipient reads it summed, counting four StatVars in `stat_vars_summed` and
+  naming the summed version in `derived_roots`, and totals the fixture's points;
+- an aggregate by recipient and `crsPurpose` keeps `stat_var_crsPurpose`, whose cells are the
+  two purposes' code dcids;
+- a filter naming purpose 72040 by its label, its publisher code and its dcid computes one
+  frame, totalling that purpose's points;
+- that filter under the aggregate reads the sum with the purpose's code as its
+  `groupby.codes` selection, which the derived recipe's root options state, and answers the
+  frame and values of the same tree over a root stating the groupby with no codes;
+- a filter by `GBS`, a text two purposes hold, refuses 422 `breakdown_label_ambiguous` naming
+  both;
+- the summed version's artifact locations aged past retention through `psql`, the aggregate
+  again answers 200 and stores the version's frame under the next renewal, `<digest>#r1` on a
+  fresh stack.
 
 Exits 1 on the first failed check.
 
@@ -39,6 +56,7 @@ import math
 import os
 import secrets
 import string
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -46,7 +64,7 @@ from typing import Any
 
 import httpx
 import pyarrow.parquet as pq
-from upstream import Reading, load_fixture
+from upstream import Reading, load_fixture, series_key
 
 ANALYSIS_ROUTE = "/api/datasets/analysis"
 SHARES_ROUTE = "/api/presentation/shares"
@@ -54,6 +72,9 @@ WRITE_TOKEN = "x-dfo-write-token"
 PRINCIPAL = "x-dfo-principal"
 ODA_READING = "oda_germany_to_kenya_ghana_nigeria"
 POPULATION_READING = "kenya_population"
+CRS_READING = "crs_germany_to_kenya_by_purpose"
+PURPOSE_COLUMN = "stat_var_crsPurpose"
+COMPOSE_FILE = Path(__file__).with_name("compose.yaml")
 
 
 class SmokeFailure(Exception):
@@ -85,20 +106,16 @@ def check_manifest(client: httpx.Client, entry: Mapping[str, object]) -> list[Ma
     return manifest["artifacts"]
 
 
-def _series_key(refs: Sequence[str]) -> tuple[str, ...]:
-    return tuple(sorted(refs))
-
-
 def check_observations(client: httpx.Client, entry: Mapping[str, object], reading: Reading) -> str:
     path = f"/api/datasets/{entry['spec_id']}/{entry['content_version']}/observations"
     served = {
-        _series_key([entity["ref"] for entity in series["entities"]]): [
+        series_key(series["stat_var"]["ref"], [entity["ref"] for entity in series["entities"]]): [
             (point["date"], point["value"]) for point in series["points"]
         ]
         for series in _get(client, path).json()["series"]
     }
     expected = {
-        _series_key(list(series.entities.values())): list(series.points)
+        series_key(series.stat_var, list(series.entities.values())): list(series.points)
         for series in reading.series
     }
     if served != expected:
@@ -252,13 +269,18 @@ def _card(client: httpx.Client, kind: str, derived: Mapping[str, str]) -> Mappin
     return card
 
 
-def create_card(client: httpx.Client, member: Mapping[str, Any]) -> str:
-    """A table card on the derived frame, whose description names the frame's roots as its
-    sources, in the ref's order."""
+def create_card(client: httpx.Client, member: Mapping[str, Any], credited: Sequence[str]) -> str:
+    """A table card on the derived frame, whose description names the sources its roots
+    credit, `credited`, then the frame's roots, in the ref's order
+    (`description.blocks.computed_sources`)."""
     card = _card(client, "table", _derived_pair(member))
     named = [source["ref"] for source in card["resolved_payload"]["description"]["sources"]]
-    if named != [root["spec_id"] for root in member["roots"]]:
-        raise SmokeFailure(f"card describes sources {named}, the ref roots {member['roots']}")
+    roots = [root["spec_id"] for root in member["roots"]]
+    if named != [*credited, *roots]:
+        raise SmokeFailure(
+            f"card describes sources {named}, not the credited {list(credited)} then the ref "
+            f"roots {roots}"
+        )
     return card["component_id"]
 
 
@@ -368,15 +390,218 @@ def analysis_step(
     member = check_quotient(client, oda, population)
     derived = _derived_pair(member)
     expected = _expected_quotients(readings[ODA_READING], readings[POPULATION_READING])
-    component_id = create_card(client, member)
+    credited = [
+        reading.series[0].facet.provenance
+        for reading in (readings[ODA_READING], readings[POPULATION_READING])
+    ]
+    component_id = create_card(client, member, credited)
     return [
         f"analysis: quotient_of answered {derived['spec_id']} {derived['content_version']}",
         check_derived_reads(client, member, [oda, population], expected),
         check_latest(client, derived),
-        f"card: {component_id} on the derived frame, describing its roots as its sources",
+        f"card: {component_id} on the derived frame, describing its roots' sources and its roots",
         stat_card(client, derived),
         check_share(client, component_id),
         check_share_import(client, component_id),
+    ]
+
+
+def _aggregate(data: Mapping[str, Any], group_by: Sequence[str]) -> dict[str, Any]:
+    return {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": list(group_by)},
+        "inputs": {"data": dict(data)},
+    }
+
+
+def _purpose_filter(data: Mapping[str, Any], value: str) -> dict[str, Any]:
+    predicate = {"kind": "category_match", "column": PURPOSE_COLUMN, "values": [value]}
+    return {"verb": "filter", "arguments": {"predicates": [predicate]}, "inputs": {"data": data}}
+
+
+def _frame_rows(client: httpx.Client, body: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The rows of the frame-layout file of the derived frame `body`'s ref names."""
+    (member,) = body["ref"]["members"]
+    path = f"{_derived_path(_derived_pair(member))}/file?format=parquet&bundle=false&layout=frame"
+    return pq.read_table(io.BytesIO(_get(client, path).content)).to_pylist()
+
+
+def check_summed(
+    client: httpx.Client, crs: Mapping[str, object], reading: Reading
+) -> tuple[str, Mapping[str, Any]]:
+    """An aggregate by recipient over the CRS reading reads it summed over its StatVars. Answers
+    a line and the 200 body."""
+    body = _post(client, ANALYSIS_ROUTE, {"tree": _aggregate(_root(crs), ["destination"])}).json()
+    (derived,) = body["derived_roots"] or [{}]
+    expected = [
+        {
+            "spec_id": crs["spec_id"],
+            "content_version": derived.get("content_version"),
+            "count": len(reading.stat_vars),
+        }
+    ]
+    if (
+        body["stat_vars_summed"] != expected
+        or derived.get("base_content_version") != crs["content_version"]
+    ):
+        raise SmokeFailure(
+            f"summed read answered stat_vars_summed {body['stat_vars_summed']}, derived_roots "
+            f"{body['derived_roots']}"
+        )
+    total = sum(row["value"] for row in _frame_rows(client, body))
+    held = sum(value for series in reading.series for _, value in series.points)
+    if not math.isclose(total, held):
+        raise SmokeFailure(f"summed read totals {total}, the fixture {held}")
+    return (
+        f"summed root: {len(reading.stat_vars)} StatVars summed into {body['rows']} rows "
+        f"totalling the fixture's {held:,.0f}"
+    ), body
+
+
+def check_dcid_cells(client: httpx.Client, crs: Mapping[str, object], reading: Reading) -> str:
+    """Grouping by the purpose keeps it as `stat_var_crsPurpose`, whose cells are code dcids."""
+    tree = _aggregate(_root(crs), ["destination", "crsPurpose"])
+    body = _post(client, ANALYSIS_ROUTE, {"tree": tree}).json()
+    cells = {row[PURPOSE_COLUMN] for row in _frame_rows(client, body)}
+    expected = {dcid.split("_")[-2] for dcid in reading.stat_vars}
+    if PURPOSE_COLUMN not in body["role_keys"] or cells != expected:
+        raise SmokeFailure(f"purpose cells {cells}, expected the dcids {expected}")
+    return f"dcid cells: {PURPOSE_COLUMN} holds {sorted(cells)}"
+
+
+def check_purpose_filters(client: httpx.Client, crs: Mapping[str, object], reading: Reading) -> str:
+    """A filter naming one purpose by its label, its publisher code and its dcid keeps the same
+    rows, the fixture's points of that purpose, and computes one frame."""
+    dcid = "CRSPurposeCode72040"
+    frames: set[str] = set()
+    for value in ("emergency food assistance", "72040", dcid):
+        tree = _aggregate(_purpose_filter(_root(crs), value), ["destination"])
+        body = _post(client, ANALYSIS_ROUTE, {"tree": tree}).json()
+        frames.add(body["frame_content_version"])
+        total = sum(row["value"] for row in _frame_rows(client, body))
+        held = sum(
+            value
+            for series in reading.series
+            if series.stat_var.endswith(f"_{dcid}_Nominal")
+            for _, value in series.points
+        )
+        if not math.isclose(total, held):
+            raise SmokeFailure(f"the filter by {value!r} totals {total}, the fixture {held}")
+    if len(frames) != 1:
+        raise SmokeFailure(f"the three spellings of {dcid} computed frames {frames}")
+    return f"purpose filters: a label, a publisher code and a dcid keep one frame {frames.pop()}"
+
+
+def check_selected_codes(client: httpx.Client, crs: Mapping[str, object]) -> str:
+    """A purpose filter under an aggregate reads the sum it infers with the purpose's code as a
+    `groupby.codes` selection, and answers the frame of the same tree over a root stating that
+    groupby with no codes."""
+    dcid = "CRSPurposeCode72040"
+    groupby = {"by": ["crsPurpose", "time_period"], "op": "sum"}
+    stated = {**_root(crs), "rendering": {"groupby": groupby}}
+    pushed, unpushed = (
+        _post(
+            client,
+            ANALYSIS_ROUTE,
+            {"tree": _aggregate(_purpose_filter(root, dcid), ["destination"])},
+        ).json()
+        for root in (_root(crs), stated)
+    )
+    (member,) = pushed["ref"]["members"]
+    recipe = _get(client, _derived_path(_derived_pair(member))).json()["recipe"]
+    (options,) = [root["options"] for root in recipe["roots"]]
+    if options.get("groupby") != {**groupby, "codes": {"crsPurpose": [dcid]}}:
+        raise SmokeFailure(f"the filtered sum's root options are {options}")
+    (unpushed_member,) = unpushed["ref"]["members"]
+    if "codes" in unpushed_member["roots"][0]["rendering"]["groupby"]:
+        raise SmokeFailure(f"the stated groupby read {unpushed_member['roots']}")
+    answer = ("frame_content_version", "output_digest", "rows")
+    values = [
+        sorted(row["value"] for row in _frame_rows(client, body)) for body in (pushed, unpushed)
+    ]
+    if (
+        [pushed[key] for key in answer] != [unpushed[key] for key in answer]
+        or not values[0]
+        or values[0] != values[1]
+    ):
+        raise SmokeFailure(f"the selected sum answered {pushed}, the unselected {unpushed}")
+    return (
+        f"selected codes: the filter by {dcid} sums with codes {options['groupby']['codes']}, "
+        f"answering the unselected frame {pushed['frame_content_version']}"
+    )
+
+
+def check_ambiguous_label(client: httpx.Client, crs: Mapping[str, object]) -> str:
+    """A label two purposes share refuses with both as candidates."""
+    tree = _aggregate(_purpose_filter(_root(crs), "GBS"), ["destination"])
+    problem = _post(client, ANALYSIS_ROUTE, {"tree": tree}, status=422).json()
+    candidates = sorted(one["dcid"] for one in problem.get("fix", {}).get("candidates", ()))
+    if problem["code"] != "breakdown_label_ambiguous" or candidates != [
+        "CRSPurposeCode510",
+        "CRSPurposeCode51010",
+    ]:
+        raise SmokeFailure(f"the label 'GBS' answered {problem}")
+    return f"ambiguous label: 'GBS' refused breakdown_label_ambiguous with {candidates}"
+
+
+def _psql(sql: str) -> str:
+    """`sql` run as the migrator on the stack's datasets database; its unaligned output."""
+    command = [
+        *("docker", "compose", "-f", str(COMPOSE_FILE), "exec", "-T", "postgres"),
+        *("psql", "-v", "ON_ERROR_STOP=1", "-U", "dfo_local_migrator", "-d", "datasets"),
+        *("-tAc", sql),
+    ]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SmokeFailure(f"psql answered {done.returncode}: {done.stderr}")
+    return done.stdout.strip()
+
+
+def check_expired_rerender(client: httpx.Client, crs: Mapping[str, object], first: Mapping) -> str:
+    """The summed root's derived version aged past retention renders again on the next request,
+    which answers 200 and stores the stored frame again under the next renewal's object name,
+    `<digest>#r1` on a fresh stack."""
+    (derived,) = first["derived_roots"]
+    version = derived["content_version"]
+    if not version.startswith("cv_") or not version.isascii():
+        raise SmokeFailure(f"derived root {derived}")
+    of_version = (
+        "artifact_digest IN (SELECT artifact_digest FROM datasets.version_artifact "
+        f"WHERE content_version = '{version}'"
+    )
+    stored_frame = f"WHERE {of_version} AND rendering->>'format' = 'frame')"
+    renewals = {
+        int(n)
+        for n in _psql(f"SELECT renewal FROM datasets.artifact_location {stored_frame}").split()
+    }
+    if len(renewals) != 1:
+        raise SmokeFailure(f"{version}'s stored frame is held at renewals {renewals}")
+    renewed = f"#r{renewals.pop() + 1}"
+    aged = _psql(
+        "UPDATE datasets.artifact_location SET stored_at = '2000-01-01T00:00:00+00:00' "
+        f"WHERE {of_version}) RETURNING artifact_digest"
+    )
+    if not aged:
+        raise SmokeFailure(f"no artifact location of {version} to age")
+    again = _post(client, ANALYSIS_ROUTE, {"tree": _aggregate(_root(crs), ["destination"])})
+    names = _psql(f"SELECT object_name FROM datasets.artifact_location {stored_frame}").split()
+    if not names or not all(name.endswith(renewed) for name in names):
+        raise SmokeFailure(f"after the re-render {version}'s stored frame is at {names}")
+    if again.json()["frame_content_version"] != first["frame_content_version"]:
+        raise SmokeFailure(f"the re-rendered answer {again.json()} differs from {first}")
+    return f"expired re-render: {version} aged, answered 200, stored frame renewed as {names}"
+
+
+def breakdown_step(client: httpx.Client, crs: Mapping[str, object], reading: Reading) -> list[str]:
+    """The checks over the CRS reading's coded, summable purpose axis. Answers a line each."""
+    summed, first = check_summed(client, crs, reading)
+    return [
+        summed,
+        check_dcid_cells(client, crs, reading),
+        check_purpose_filters(client, crs, reading),
+        check_selected_codes(client, crs),
+        check_ambiguous_label(client, crs),
+        check_expired_rerender(client, crs, first),
     ]
 
 
@@ -399,6 +624,10 @@ def main() -> int:
                 checks += 4
             by_name = {str(entry["name"]): entry for entry in seeded}
             for line in analysis_step(client, by_name, readings):
+                print(line)
+                checks += 1
+            crs = by_name[CRS_READING]
+            for line in breakdown_step(client, crs, readings[CRS_READING]):
                 print(line)
                 checks += 1
         except SmokeFailure as failure:

@@ -15,6 +15,9 @@ REFRESH_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "The stored records do not say which rendering the named frame is. It is a groupby "
         "collapse and no file linked under its version records the groupby, or its version "
         "links both a groupby sum and a plain file and the two renderings of the current "
-        "data differ.",
+        "data differ. It is also refused when its version is recorded under several "
+        "renderings, raw or derived, and the current data renders them as different frames, "
+        "and when a rebuilt dataset cannot render one of them or renders them as one frame "
+        "other than the one it served.",
     ),
 }

@@ -11,8 +11,9 @@ count, which columns hold any cell, each coded column's distinct cells and the y
 - `summary_line` and `year_window` give the coverage facts a bundle heads with.
 
 A column is coded when it is the variable, a role, a decoded axis's code column (`<code_system>` in
-long output), the unit, the measurement method or the provenance, holds at least one cell, and every
-cell is a string a spreadsheet would not read as a formula. Such a cell is written to the data file
+long output, `stat_var_<code_system>` in pivot output), the unit, the measurement method or the
+provenance, holds at least one cell, and every cell is a string a spreadsheet would not read as a
+formula. Such a cell is written to the data file
 unchanged, so the codes table can key it by the exact cell text, `dcid:` prefix included, and the
 bundle's foreign keys hold. The name columns beside the codes (`<role>_label`,
 `<code_system>_label`, `unit_label` and the rest) hold words and stay out of the coded set.
@@ -177,8 +178,9 @@ class TableScan:
     Holds one set of distinct cells per candidate code column and a year window, so its size
     follows the data's distinct values.
 
-    `axis_kinds` maps each axis code column the table may carry (`<code_system>`) to the kind
-    its codes take in the codes table, the code system's plain name, such as `sector`.
+    `axis_kinds` maps each axis code column the table may carry (`<code_system>` in long output,
+    `stat_var_<code_system>` in pivot output) to the kind its codes take in the codes table, the
+    code system's plain name, such as `sector`.
 
     `pivot_index` and `pivot_columns` name the pivot that shaped the table, if any: the table is
     then its `pivot_index` column followed by one column per distinct value of `pivot_columns`,
@@ -228,13 +230,15 @@ class TableScan:
     @property
     def heading_kind(self) -> str | None:
         """The code kind of the pivot's headings. Set when the pivot spread a coded column (a
-        role, the variable, the unit, the measurement method or the provenance) and every
-        heading could key the codes table, `None` otherwise."""
+        role, the variable, a decoded axis, the unit, the measurement method or the provenance)
+        and every heading could key the codes table, `None` otherwise."""
         if self.pivot_columns is None:
             return None
         if self.pivot_columns in self.role_columns:
             kind = _ENTITY_KIND
-        elif (kind := _COLUMN_KINDS.get(self.pivot_columns)) is None:
+        elif (
+            kind := self.axis_kinds.get(self.pivot_columns) or _COLUMN_KINDS.get(self.pivot_columns)
+        ) is None:
             return None
         headings = self.headings
         return kind if headings and all(_codable(heading) for heading in headings) else None
@@ -325,8 +329,8 @@ def column_docs(
 
     `code_system_names` maps a code system to its plain name (`CodeSystemDeclaration.plain_name`,
     such as `sector` for `crsPurpose`), which names the decoded axis columns: the long layout's
-    `<code system>` code and `<code system>_label` name, and the `stat_var_<code system>` label
-    column a pivot or groupby writes. Each pivot heading holds the values for the entry its heading
+    `<code system>` code and `<code system>_label` name, and the `stat_var_<code system>` code
+    column a pivot writes. Each pivot heading holds the values for the entry its heading
     names. Descriptions leave out "Names are in the codes table" and "Empty", which the README adds
     from `coded` and `empty`. A heading that is a code has no foreign key, because the code is the
     heading and no cell holds it, so its description points to the codes table itself."""
@@ -377,8 +381,8 @@ def _column_meaning(
     if column.startswith(f"{STAT_VAR_COLUMN}_"):
         plain = code_system_names.get(column.removeprefix(f"{STAT_VAR_COLUMN}_"))
         if plain is not None:
-            return plain.capitalize(), f"The {plain} of the variable, in words."
-        return "Variable property", "A property of the variable, in words."
+            return plain.capitalize(), f"The {plain} of the variable, as a code."
+        return "Variable property", "A property of the variable, as a code."
     for role in role_columns:
         if column == f"{role}{KIND_SUFFIX}" and (axis := role_key_axis(role)) is not None:
             noun = role_noun(role)

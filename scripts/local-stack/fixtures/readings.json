@@ -1,5 +1,5 @@
 {
- "_comment": "Seed readings for scripts/local-stack/seed.py. Each StatVar's arcs are the dev graph's, copied from tests/fixtures/graph_nodes.json; the population and GNI facets follow the World Development Indicators facets tests/fixtures/graph_obs.json records for Kenya (provenance, unit, first year). Every value and every facet id is synthesised at a realistic magnitude, since no recorded fixture holds these series' points.",
+ "_comment": "Seed readings for scripts/local-stack/seed.py. Each StatVar's arcs are the dev graph's, copied from tests/fixtures/graph_nodes.json; the population and GNI facets follow the World Development Indicators facets tests/fixtures/graph_obs.json records for Kenya (provenance, unit, first year). Every value and every facet id is synthesised at a realistic magnitude, since no recorded fixture holds these series' points. The CRS StatVars and their arcs are the recorded code index's rows (tests/fixtures/code_index/index.json.gz), so their purposes decode through the index the stack serves.",
  "places": {
   "country/DEU": "Germany",
   "country/KEN": "Kenya",
@@ -18,7 +18,8 @@
   "InternationalDollar": "International dollar",
   "DAC2aAidType206": "official development assistance",
   "Disbursement": "disbursement",
-  "Gross": "gross"
+  "Gross": "gross",
+  "provenance/OECDCreditorReportingSystem": "OECD Creditor Reporting System (CRS)"
  },
  "stat_vars": {
   "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal": {
@@ -131,6 +132,234 @@
    },
    "label": "Gross National Income Based on Purchasing Power Parity",
    "roles": null
+  },
+  "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode15220_Nominal": {
+   "arcs": {
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "populationType": [
+     "FinancialFlow"
+    ],
+    "measuredProperty": [
+     "amount"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "measurementQualifier": [
+     "Nominal"
+    ],
+    "constraintProperties": [
+     "crsCooperationModality",
+     "crsPurpose",
+     "crsTypeOfFinance",
+     "crsTypeOfFlow",
+     "financialFlowType",
+     "nettingBasis"
+    ],
+    "observationProperties": [
+     "financingProvider",
+     "financingRecipient"
+    ],
+    "crsCooperationModality": [
+     "CRSCooperationModalityA02"
+    ],
+    "crsPurpose": [
+     "CRSPurposeCode15220"
+    ],
+    "crsTypeOfFinance": [
+     "CRSTypeOfFinance110"
+    ],
+    "crsTypeOfFlow": [
+     "CRSTypeOfFlow10"
+    ],
+    "financialFlowType": [
+     "Disbursement"
+    ],
+    "nettingBasis": [
+     "Gross"
+    ],
+    "name": [
+     "Grants for civilian peace-building as sector budget support (gross disbursements)"
+    ]
+   },
+   "label": "Grants for civilian peace-building as sector budget support (gross disbursements)",
+   "roles": {
+    "donor": "financingProvider",
+    "recipient": "financingRecipient"
+   }
+  },
+  "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode15220_Nominal": {
+   "arcs": {
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "populationType": [
+     "FinancialFlow"
+    ],
+    "measuredProperty": [
+     "amount"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "measurementQualifier": [
+     "Nominal"
+    ],
+    "constraintProperties": [
+     "crsCooperationModality",
+     "crsPurpose",
+     "crsTypeOfFinance",
+     "crsTypeOfFlow",
+     "financialFlowType",
+     "nettingBasis"
+    ],
+    "observationProperties": [
+     "financingProvider",
+     "financingRecipient"
+    ],
+    "crsCooperationModality": [
+     "CRSCooperationModalityB01"
+    ],
+    "crsPurpose": [
+     "CRSPurposeCode15220"
+    ],
+    "crsTypeOfFinance": [
+     "CRSTypeOfFinance110"
+    ],
+    "crsTypeOfFlow": [
+     "CRSTypeOfFlow10"
+    ],
+    "financialFlowType": [
+     "Disbursement"
+    ],
+    "nettingBasis": [
+     "Gross"
+    ],
+    "name": [
+     "Grants for civilian peace-building as core support to NGOs (gross disbursements)"
+    ]
+   },
+   "label": "Grants for civilian peace-building as core support to NGOs (gross disbursements)",
+   "roles": {
+    "donor": "financingProvider",
+    "recipient": "financingRecipient"
+   }
+  },
+  "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode72040_Nominal": {
+   "arcs": {
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "populationType": [
+     "FinancialFlow"
+    ],
+    "measuredProperty": [
+     "amount"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "measurementQualifier": [
+     "Nominal"
+    ],
+    "constraintProperties": [
+     "crsCooperationModality",
+     "crsPurpose",
+     "crsTypeOfFinance",
+     "crsTypeOfFlow",
+     "financialFlowType",
+     "nettingBasis"
+    ],
+    "observationProperties": [
+     "financingProvider",
+     "financingRecipient"
+    ],
+    "crsCooperationModality": [
+     "CRSCooperationModalityA02"
+    ],
+    "crsPurpose": [
+     "CRSPurposeCode72040"
+    ],
+    "crsTypeOfFinance": [
+     "CRSTypeOfFinance110"
+    ],
+    "crsTypeOfFlow": [
+     "CRSTypeOfFlow10"
+    ],
+    "financialFlowType": [
+     "Disbursement"
+    ],
+    "nettingBasis": [
+     "Gross"
+    ],
+    "name": [
+     "Grants for emergency food assistance as sector budget support (gross disbursements)"
+    ]
+   },
+   "label": "Grants for emergency food assistance as sector budget support (gross disbursements)",
+   "roles": {
+    "donor": "financingProvider",
+    "recipient": "financingRecipient"
+   }
+  },
+  "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode72040_Nominal": {
+   "arcs": {
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "populationType": [
+     "FinancialFlow"
+    ],
+    "measuredProperty": [
+     "amount"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "measurementQualifier": [
+     "Nominal"
+    ],
+    "constraintProperties": [
+     "crsCooperationModality",
+     "crsPurpose",
+     "crsTypeOfFinance",
+     "crsTypeOfFlow",
+     "financialFlowType",
+     "nettingBasis"
+    ],
+    "observationProperties": [
+     "financingProvider",
+     "financingRecipient"
+    ],
+    "crsCooperationModality": [
+     "CRSCooperationModalityB01"
+    ],
+    "crsPurpose": [
+     "CRSPurposeCode72040"
+    ],
+    "crsTypeOfFinance": [
+     "CRSTypeOfFinance110"
+    ],
+    "crsTypeOfFlow": [
+     "CRSTypeOfFlow10"
+    ],
+    "financialFlowType": [
+     "Disbursement"
+    ],
+    "nettingBasis": [
+     "Gross"
+    ],
+    "name": [
+     "Grants for emergency food assistance as core support to NGOs (gross disbursements)"
+    ]
+   },
+   "label": "Grants for emergency food assistance as core support to NGOs (gross disbursements)",
+   "roles": {
+    "donor": "financingProvider",
+    "recipient": "financingRecipient"
+   }
   }
  },
  "readings": [
@@ -603,6 +832,213 @@
       [
        "2024",
        374600000000
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "crs_germany_to_kenya_by_purpose",
+   "stat_vars": [
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode15220_Nominal",
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode15220_Nominal",
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode72040_Nominal",
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode72040_Nominal"
+   ],
+   "identity": {
+    "identity_version": "spec1",
+    "shape": {
+     "kind": "statvar_schema",
+     "population_type": "FinancialFlow",
+     "measured_property": "amount",
+     "stat_type": "measuredValue",
+     "measurement_qualifier": "Nominal"
+    },
+    "slots": [
+     {
+      "property": "crsCooperationModality",
+      "binding": {
+       "state": "set",
+       "refs": [
+        "CRSCooperationModalityA02",
+        "CRSCooperationModalityB01"
+       ]
+      }
+     },
+     {
+      "property": "crsPurpose",
+      "binding": {
+       "state": "set",
+       "refs": [
+        "CRSPurposeCode15220",
+        "CRSPurposeCode72040"
+       ]
+      }
+     },
+     {
+      "property": "crsTypeOfFinance",
+      "binding": {
+       "state": "value",
+       "ref": "CRSTypeOfFinance110"
+      }
+     },
+     {
+      "property": "crsTypeOfFlow",
+      "binding": {
+       "state": "value",
+       "ref": "CRSTypeOfFlow10"
+      }
+     },
+     {
+      "property": "financialFlowType",
+      "binding": {
+       "state": "value",
+       "ref": "Disbursement"
+      }
+     },
+     {
+      "property": "nettingBasis",
+      "binding": {
+       "state": "value",
+       "ref": "Gross"
+      }
+     }
+    ],
+    "entities": {
+     "origin": [
+      "country/DEU"
+     ],
+     "destination": [
+      "country/KEN"
+     ]
+    },
+    "requested_window": {
+     "kind": "all"
+    }
+   },
+   "scope": {},
+   "series": [
+    {
+     "stat_var": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode15220_Nominal",
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "5104416620915634401",
+      "provenance": "provenance/OECDCreditorReportingSystem",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2020",
+       41200000
+      ],
+      [
+       "2021",
+       45800000
+      ],
+      [
+       "2022",
+       52300000
+      ],
+      [
+       "2023",
+       49100000
+      ]
+     ]
+    },
+    {
+     "stat_var": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode15220_Nominal",
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "5104416620915634401",
+      "provenance": "provenance/OECDCreditorReportingSystem",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2020",
+       8300000
+      ],
+      [
+       "2021",
+       9100000
+      ],
+      [
+       "2022",
+       7600000
+      ],
+      [
+       "2023",
+       8800000
+      ]
+     ]
+    },
+    {
+     "stat_var": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode72040_Nominal",
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "5104416620915634401",
+      "provenance": "provenance/OECDCreditorReportingSystem",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2020",
+       21000000
+      ],
+      [
+       "2021",
+       24000000
+      ],
+      [
+       "2022",
+       19000000
+      ],
+      [
+       "2023",
+       26000000
+      ]
+     ]
+    },
+    {
+     "stat_var": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode72040_Nominal",
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "5104416620915634401",
+      "provenance": "provenance/OECDCreditorReportingSystem",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2020",
+       12000000
+      ],
+      [
+       "2021",
+       11000000
+      ],
+      [
+       "2022",
+       15000000
+      ],
+      [
+       "2023",
+       13000000
       ]
      ]
     }

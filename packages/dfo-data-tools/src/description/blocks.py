@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import quote
 
+from dfo_descriptions import description_schema
 from dfo_frame_grammar import STAT_VAR_COLUMN
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -983,6 +984,48 @@ def _earliest(dates: Sequence[str | None], form: re.Pattern[str]) -> str | None:
     if not known or len(known) < len(dates):
         return None
     return min(known)
+
+
+STATES_PARTIAL_PERIODS: Final = "partial_periods" in description_schema()["$defs"]["freshness"].get(
+    "properties", {}
+)
+"""Whether the pinned description schema has `freshness.partial_periods`, which a description
+states only then, so a schema without the member validates every description served."""
+
+
+def partial_periods(
+    marked: Sequence[Mapping[str, object]] | None, record: DescriptionRecord, words: Words
+) -> Wire:
+    """The `partial_periods` member of `freshness`: each source the version's record marks
+    partial (`datasets_api.manifest_models.IncompleteAfter`), with the period its import held
+    only in part, once per source and period, in source order. `[]` when the record marks none,
+    `null` when the version stores no record (`marked` `None`), and no member at all while the
+    pinned schema lacks it (`STATES_PARTIAL_PERIODS`)."""
+    if not STATES_PARTIAL_PERIODS:
+        return {}
+    if marked is None:
+        return {"partial_periods": None}
+    pairs = sorted(
+        {
+            (str(entry["source"]), str(entry["partial_period"]))
+            for entry in marked
+            if entry.get("status") == "partial"
+        }
+    )
+    stored = {source.ref: source.name for source in record.evidence.sources}
+    return {
+        "partial_periods": [
+            {
+                "source": words.ref(
+                    source,
+                    f"freshness.partial_periods.{n}.source",
+                    stored.get(source) if stored.get(source) != source else None,
+                ),
+                "period": period,
+            }
+            for n, (source, period) in enumerate(pairs[:MAX_SOURCES])
+        ]
+    }
 
 
 def latest(series: SeriesFacts, words: Words) -> Wire:

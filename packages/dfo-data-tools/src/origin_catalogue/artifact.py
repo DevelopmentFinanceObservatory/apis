@@ -566,6 +566,7 @@ def _encode_source_documentation(documentation: Mapping[str, SourceDocumentation
             "last_update": entry.last_update,
             "next_expected_update": entry.next_expected_update,
             "documents": {prop: list(values) for prop, values in entry.documents.items()},
+            "partial_periods": dict(entry.partial_periods),
         }
         for ref, entry in sorted(documentation.items())
     ]
@@ -1471,6 +1472,10 @@ def _decode_source_documentation(raw: bytes) -> dict[str, SourceDocumentation]:
             documents={
                 _string(prop): tuple(_string(value) for value in values)
                 for prop, values in dict(item["documents"]).items()
+            },
+            partial_periods={
+                _string(provenance): _string(period)
+                for provenance, period in dict(item["partial_periods"]).items()
             },
         )
     return documentation

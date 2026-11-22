@@ -32,8 +32,10 @@ from artifact_store.errors import (
     ArtifactWriteError,
 )
 from artifact_store.store import ArtifactSink, StoredArtifact, Tier
+from assembler.bind import series_label
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
 from assembler.limits import LABEL_MAX
+from assembler.mint.provenance import _partial_period
 from assembler.pipeline import write_component
 from assembler.ports import (
     Continuation,
@@ -101,7 +103,7 @@ from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES, SourceDocumentNotFound
-from origin_catalogue import BASE
+from origin_catalogue import BASE, bound_catalogue
 from presentation_store import frame_store
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
@@ -126,7 +128,7 @@ from tests.materialise._canonical_frame import (
     stored_canonical_frame_959f8bc,
 )
 from tests.origin_catalogue import test_graph as origin_graph
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, documenting, provenance_row
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -1301,6 +1303,63 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     )
 
 
+def test_load_labels_a_breakdown_cell_from_the_code_index_with_no_graph_read(bind_catalogue):
+    """A decoded `stat_var_<code_system>` cell holds a code dcid. The load names it by the
+    code index's label, keeps it out of the graph label read, and a card's series label reads
+    that name. A label one code of the code system carries maps to its dcid for stored
+    selects; a label two codes carry, one of them outside the frame, maps to none."""
+    frame_ref = malaria_ethiopia_frame_ref()
+    shared = [
+        CodeRow(
+            dcid=f"CRSPurposeCode1222{last}",
+            code_system="crsPurpose",
+            code=f"1222{last}",
+            label="Basic health",
+            synonyms=(),
+            parent=None,
+        )
+        for last in "01"
+    ]
+    rows = [
+        {**row, "stat_var_crsPurpose": code.dcid}
+        for code in (_EDUCATION_ROW, shared[0])
+        for row in malaria_ethiopia_rows()
+    ]
+    doc = build_frame_doc(role_keys=("recipient", "stat_var_crsPurpose"), rows=rows)
+    artifacts = _FakeArtifactStore()
+    digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(digest=digest, tier=Tier.working.value)
+            ]
+        },
+    )
+    graph = _FakeGraphReader(
+        labels={"MalariaGrantDisbursements": "Malaria", "country/ETH": "Ethiopia"}
+    )
+    index = CodeIndex(
+        stamp=_code_index([]).stamp,
+        declarations=(get_index().declarations["crsPurpose"],),
+        codes=(_EDUCATION_ROW, *shared),
+        statvars=(),
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, code_index=index)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels[_EDUCATION_ROW.dcid] == "Education"
+    assert resolved.codes_by_label == {"stat_var_crsPurpose": {"Education": _EDUCATION_ROW.dcid}}
+    assert all(_EDUCATION_ROW.dcid not in call for call in graph.node_arcs_many_calls)
+    columns = cast("Sequence[str]", resolved.frame["columns"])
+    coordinates = {"recipient": "country/ETH", "stat_var_crsPurpose": _EDUCATION_ROW.dcid}
+    assert series_label(coordinates=coordinates, columns=columns, labels=resolved.labels) == (
+        "Ethiopia / Education"
+    )
+
+
 def test_load_finds_its_unlisted_provenances_once_and_starts_no_pool(monkeypatch, bind_catalogue):
     """A load beside whose label read a provenance name read runs finds the provenances the
     catalogue does not list once, and runs the name read on the shared pool."""
@@ -2049,8 +2108,9 @@ def test_load_states_the_rendering_the_versions_linked_files_record_at_each_load
         "ambiguous": False,
         "collapsed": False,
         "mintings": [minting],
+        "plain": False,
     }
-    assert ambiguous == {**cut, "ambiguous": True}
+    assert ambiguous == {**cut, "ambiguous": True, "plain": True}
 
 
 def test_load_cache_hit_refuses_once_the_frame_is_revoked_after_the_first_load():
@@ -5552,3 +5612,86 @@ def test_a_pin_of_a_posted_frame_rechecks_a_served_id_revocation_at_the_write():
         store.pin(frame_ref=frame_ref, component_id="cmp_test")
     assert excinfo.value.reason == "revoked"
     assert references.records == {}
+
+
+def _malaria_incomplete_after(year: int) -> list[dict[str, object]]:
+    """The record of a version whose `src_oecd_dac` malaria rows are complete through `year`."""
+    return [
+        {
+            "provenance": "src_oecd_dac",
+            "stat_vars": ["dcid:MalariaGrantDisbursements"],
+            "source": "src_oecd_dac",
+            "status": "partial",
+            "partial_period": str(year + 1),
+        }
+    ]
+
+
+class _RaisingReader:
+    """A store reader that raises on any call, so a test proves a step reads nothing."""
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"read {name} after the frame was loaded")
+
+
+@pytest.mark.unbound_release
+@pytest.mark.parametrize(
+    ("fixture", "recorded", "partial"),
+    [
+        pytest.param(
+            _happy_path_fixture, _malaria_incomplete_after(2023), True, id="control-dataset"
+        ),
+        pytest.param(
+            _happy_path_fixture, _malaria_incomplete_after(2024), False, id="dataset-complete"
+        ),
+        pytest.param(_happy_path_fixture, None, False, id="dataset-recorded-before-the-member"),
+        pytest.param(
+            _ops_happy_path_fixture,
+            _malaria_incomplete_after(2023),
+            True,
+            id="derived-with-no-recipe",
+        ),
+        pytest.param(_ops_happy_path_fixture, None, False, id="derived-recorded-before-it"),
+    ],
+)
+def test_a_frame_s_partial_flag_needs_no_read_beyond_its_stored_record(fixture, recorded, partial):
+    """The flag comes from the record the version stored, through the frame's manifest. With
+    the snapshot and recipe readers raising, no graph release bound and a catalogue marking
+    every year of the source partial, the loaded frame's flag stands. A version recorded
+    before versions stored the member reads as unknown, so its 2024 rows are not flagged
+    whatever the catalogue marks."""
+    snapshots, artifacts, frame_ref, _ = fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    version = snapshots.versions[key]
+    facts = version.facts
+    snapshots.versions[key] = replace(version, facts=replace(facts, incomplete_after=recorded))
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+    loaded = store.load(frame_ref=frame_ref)
+
+    store._snapshots = _RaisingReader()
+    store._recipe_reader = _RaisingReader()
+    marking = documenting(
+        {"src_oecd_dac": {"typeOf": ("Provenance",), "partialObservationDate": ("2000",)}}
+    )
+    with bound_catalogue(marking):
+        assert _partial_period(resolved_frame=loaded, rows=None) is partial
+
+
+def test_a_cached_frame_takes_the_record_a_later_mint_stores():
+    """A later mint of the same version replaces its record, and the next load of the cached
+    frame carries it, so a card drawn after the full release reads complete."""
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    version = snapshots.versions[key]
+    partial = replace(version.facts, incomplete_after=_malaria_incomplete_after(2023))
+    snapshots.versions[key] = replace(version, facts=partial)
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+    first = store.load(frame_ref=frame_ref)
+    assert _partial_period(resolved_frame=first, rows=None)
+    assert store.load(frame_ref=frame_ref) is first
+
+    snapshots.versions[key] = replace(version, facts=replace(partial, incomplete_after=[]))
+    later = store.load(frame_ref=frame_ref)
+
+    assert not _partial_period(resolved_frame=later, rows=None)
+    assert store.load(frame_ref=frame_ref) is later

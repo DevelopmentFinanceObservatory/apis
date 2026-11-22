@@ -47,8 +47,10 @@ from datasets_api.description_record import (
     mint_record,
     named_refs,
     publish_record,
+    selected_summed_refs,
     with_labels,
 )
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.versions import (
     DescriptionDiverges,
     LateFields,
@@ -137,12 +139,16 @@ class MintDescriber:
 class CollapseDescriber:
     """A derived version's record, derived from its base version's stored record. A base that
     holds no record leaves the derived version without one. `summed` is set for a
-    multi-contributor collapse (`description_record.collapsed_record`)."""
+    multi-contributor collapse (`description_record.collapsed_record`). `variables` are the
+    StatVars a `groupby.codes` selection kept (`description_record.selected_summed_refs`),
+    `None` for a sum of every StatVar with data."""
 
     figures: SeriesFigures
     labels: Mapping[str, str]
     read: datetime.date
     summed: bool = True
+    adds: bool = True
+    variables: tuple[str, ...] | None = None
 
     def describe(
         self, version: VersionRecord, *, base: DescriptionRecord | None
@@ -156,7 +162,14 @@ class CollapseDescriber:
                 version.base_content_version,
             )
             return None
-        record = collapsed_record(base, version, figures=self.figures, summed=self.summed)
+        record = collapsed_record(
+            base,
+            version,
+            figures=self.figures,
+            summed=self.summed,
+            adds=self.adds,
+            variables=self.variables,
+        )
         return with_labels(record, self.labels, read=self.read)
 
     def settle(self, stored: DescriptionRecord, *, version: VersionRecord) -> LateFields | None:
@@ -181,10 +194,13 @@ def mint_describers(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     collapsed_summed: bool = True,
+    collapsed_adds: bool = True,
+    collapsed_groupby: GroupbyOptions | None = None,
 ) -> MintDescribers:
     """The describers of a mint of `version`, and of the derived version it renders, which
-    `collapsed_summed` says sums the definition's variables, with the labels both records name
-    read in one batch, and the title they compose. A build that fails gives neither."""
+    `collapsed_summed` says sums the definition's variables and `collapsed_groupby` summed,
+    with the labels both records name read in one batch, and the title they compose. A build
+    that fails gives neither."""
 
     def build() -> MintDescribers:
         return _mint_describers(
@@ -192,6 +208,8 @@ def mint_describers(
             figures=figures,
             collapsed=collapsed,
             collapsed_summed=collapsed_summed,
+            collapsed_adds=collapsed_adds,
+            collapsed_groupby=collapsed_groupby,
             code_index=code_index,
             enrichment=enrichment,
             deadline=deadline,
@@ -210,17 +228,23 @@ def _mint_describers(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     collapsed_summed: bool,
+    collapsed_adds: bool = True,
+    collapsed_groupby: GroupbyOptions | None = None,
 ) -> MintDescribers:
     provisional = mint_record(version, figures=figures, code_index=code_index, title=None)
     refs = named_refs(provisional)
+    variables: tuple[str, ...] | None = None
     if collapsed is not None:
         collapsed_version, collapsed_figures = collapsed
+        variables = _variables(collapsed_version, collapsed_groupby, code_index)
         refs += named_refs(
             collapsed_record(
                 provisional,
                 collapsed_version,
                 figures=collapsed_figures,
                 summed=collapsed_summed,
+                adds=collapsed_adds,
+                variables=variables,
             )
         )
     labels = read_labels(enrichment, refs, deadline=deadline)
@@ -235,9 +259,21 @@ def _mint_describers(
         collapsed=None
         if collapsed is None
         else CollapseDescriber(
-            figures=collapsed[1], labels=labels, read=read, summed=collapsed_summed
+            figures=collapsed[1],
+            labels=labels,
+            read=read,
+            summed=collapsed_summed,
+            adds=collapsed_adds,
+            variables=variables,
         ),
     )
+
+
+def _variables(
+    version: VersionRecord, groupby: GroupbyOptions | None, code_index: CodeIndex
+) -> tuple[str, ...] | None:
+    selected = selected_summed_refs(version, groupby=groupby, code_index=code_index)
+    return None if selected is None else tuple(selected)
 
 
 def collapse_describer(
@@ -248,19 +284,29 @@ def collapse_describer(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     summed: bool = True,
+    adds: bool = True,
+    groupby: GroupbyOptions | None = None,
 ) -> CollapseDescriber | None:
     """The describer of a head's derived `version`, which `summed` says sums the definition's
-    variables, with the labels of what it names, or `None` when building it failed. The
-    version's facts hold its base's trace, which stands in for the base's record here."""
+    variables and `groupby` summed, with the labels of what it names, or `None` when building
+    it failed. The version's facts hold its base's trace, which stands in for the base's
+    record here."""
 
     def build() -> CollapseDescriber:
         base = mint_record(version, figures=figures, code_index=code_index, title=None)
-        refs = named_refs(collapsed_record(base, version, figures=figures, summed=summed))
+        variables = _variables(version, groupby, code_index)
+        refs = named_refs(
+            collapsed_record(
+                base, version, figures=figures, summed=summed, adds=adds, variables=variables
+            )
+        )
         return CollapseDescriber(
             figures=figures,
             labels=read_labels(enrichment, refs, deadline=deadline),
             read=utc_now().date(),
             summed=summed,
+            adds=adds,
+            variables=variables,
         )
 
     return _guarded(version, build)

@@ -1,7 +1,7 @@
 """Mint the readings in `fixtures/readings.json` through the running local stack.
 
 Each reading is posted to the mint door (`POST /api/datasets`) as a `statvar_set` input with
-its scope, so its spec, version record, artifacts and inventory rows are the ones a deployed
+its scope, or as the Spec its identity names when it reads several StatVars, so its spec, version record, artifacts and inventory rows are the ones a deployed
 mint writes, in the stack's Postgres and GCS emulator. The server's upstreams answer from the
 same fixture (`upstream.py`).
 
@@ -22,15 +22,27 @@ from pathlib import Path
 import httpx
 from upstream import Reading, load_fixture
 
+from spec_registry.identity import recompute_identity
+
 MINT_TIMEOUT_SECONDS = 120
 
 
 def mint_body(reading: Reading) -> dict[str, object]:
+    """The mint body of `reading`: its Spec identity when it states one, else a `statvar_set`
+    of its StatVars and scope."""
+    if reading.identity is not None:
+        spec_id = recompute_identity(dict(reading.identity)).spec_id
+        definition = {"schema_version": 1, "spec_id": spec_id, "identity": reading.identity}
+        return {
+            "schema_version": 1,
+            "input": {"kind": "spec_id", "spec_id": spec_id, "definition": definition},
+            "options": {"bundle": False},
+        }
     return {
         "schema_version": 1,
         "input": {
             "kind": "statvar_set",
-            "statvars": [f"dcid:{reading.stat_var}"],
+            "statvars": [f"dcid:{dcid}" for dcid in reading.stat_vars],
             "scope": {"window": {"kind": "all"}, **reading.scope},
         },
         "options": {"bundle": False},
