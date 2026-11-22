@@ -248,6 +248,33 @@ def test_two_codes_sharing_a_label_keep_their_own_code_cells():
     assert projected.unavailable == {}
 
 
+def test_a_label_cell_reads_the_code_one_code_holds_and_a_shared_label_counts_a_miss():
+    """A version summed when decoded cells held labels: a label one code of the axis holds
+    gives that code, and one two codes share gives none, counted unavailable."""
+    shared = {
+        **_AXIS_LABELS,
+        "crsTypeOfFinance": {
+            "dcid:CRSTypeOfFinanceCode110": "Standard grant",
+            "dcid:CRSTypeOfFinanceCode111": "Standard grant",
+        },
+    }
+    finance_at = _SOURCE.columns.index("stat_var_crsTypeOfFinance")
+    purpose_at = _SOURCE.columns.index("stat_var_crsPurpose")
+    cells = list(_SOURCE.rows[0])
+    cells[finance_at], cells[purpose_at] = "Standard grant", "Basic health care"
+    source = Table(columns=_SOURCE.columns, rows=(tuple(cells),))
+
+    projected = _project(source, axis_labels=shared)
+    row = _row(projected.table, 0)
+
+    assert (row["crsPurpose"], row["crsPurpose_label"]) == (
+        "dcid:CRSPurposeCode122",
+        "Basic health care",
+    )
+    assert (row["crsTypeOfFinance"], row["crsTypeOfFinance_label"]) == (None, "Standard grant")
+    assert projected.unavailable == {"crsTypeOfFinance": 1}
+
+
 def test_a_value_without_a_name_or_kind_leaves_its_cell_empty_and_counts_a_miss():
     projected = _project(
         names={"country/USA": "United States", "p1": "Source one"},

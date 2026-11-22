@@ -121,7 +121,8 @@ class StoredRootSource:
 
     @property
     def code_index(self) -> None:
-        """None: a replay computes a stored recipe, whose op-specs hold their values resolved."""
+        """None: a replay computes a stored recipe's op-specs as stored, so a filter value
+        on a breakdown column matches only the cells its root frames hold as written."""
         return None
 
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:

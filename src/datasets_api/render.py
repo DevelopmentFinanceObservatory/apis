@@ -152,7 +152,6 @@ from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
     current_rendering_keys,
     enriched_rendering_key,
-    rendering_key,
 )
 from datasets_api.versions import (
     ArtifactRecord,
@@ -1329,9 +1328,11 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
     whatever its shape (`format`, `bundle`, a bundle's `RENDITION_KEY` and a bare file's
     `LAYOUT_KEY = DATA_LAYOUT_VERSION`), so the default table keeps its name. The token names
     each field in key order, by its value when that is a short lowercase word (`frame`, `incomplete`) and by its
-    key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of the
-    fields' `rendering_key`, so two renderings that differ in any field, such as two pivots on
-    other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`."""
+    key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of a
+    SHA-256 over the fields' sorted JSON, so two renderings that differ in any field, such as two
+    pivots on other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`. The hash covers the
+    fields alone, unlike `rendering_key`, which salts a frame-layout file's key with
+    `versions.RENDER_FORMAT`, so a file's name stays put when its format changes."""
     if _file_kind(rendering) is not None:
         return None
     shaping = {
@@ -1346,7 +1347,8 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
         value if isinstance(value, str) and _SHAPE_WORD.fullmatch(value) else key
         for key, value in sorted(shaping.items())
     ]
-    return "-".join([*words, rendering_key(shaping)[:6]])
+    canonical = json.dumps(shaping, sort_keys=True, default=str)
+    return "-".join([*words, hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:6]])
 
 
 def stored_artifact_entry(
@@ -1596,16 +1598,17 @@ def _table_scan(
     role_columns: Sequence[str], *, options: MintOptions, code_index: CodeIndex | None
 ) -> TableScan:
     """A scan of one data file written under `options`, told the pivot that shaped it and the
-    axis code columns long output writes, each code taking its code system's plain name as its
-    kind."""
+    axis code columns the file can hold, each code taking its code system's plain name as its
+    kind: `<code_system>` in long output and `stat_var_<code_system>` in pivot output."""
     pivot = options.pivot
+    axis_kinds: dict[str, str] = {}
+    if code_index is not None:
+        for name, declaration in code_index.declarations.items():
+            column = name if pivot is None else axis_source_column(name)
+            axis_kinds[column] = declaration.plain_name
     return TableScan(
         role_columns=role_columns,
-        axis_kinds=(
-            {name: declaration.plain_name for name, declaration in code_index.declarations.items()}
-            if code_index is not None and pivot is None
-            else None
-        ),
+        axis_kinds=axis_kinds,
         pivot_index=pivot.index if pivot is not None else None,
         pivot_columns=pivot.columns if pivot is not None else None,
     )
@@ -1653,17 +1656,20 @@ def _codes(
     reads: _RenderReads,
 ) -> BundleCodes:
     """The codes table of the scanned files. Cited sources take their cited names, a collapsed
-    family's `(ref, label)` takes its label, and an axis code takes its `code_index` label, the
-    name its `<code_system>_label` cell holds. The graph names every other code through the
+    family's `(ref, label)` takes its label, and an axis code, in a cell or a pivot heading,
+    takes its `code_index` label, the name a long file's `<code_system>_label` cell holds. The
+    graph names every other code through the
     render's `reads`, so the read shares the render's deadline and makes none after a failed
     name read."""
     known = _known_labels(citations, family, code_index=code_index)
     if code_index is not None:
         for scan in scans:
-            for column in scan.axis_kinds:
-                for code in scan.codes(column):
-                    if (row := code_index.code_by_dcid(code)) is not None:
-                        known[code] = row.label
+            codes = [code for column in scan.axis_kinds for code in scan.codes(column)]
+            if scan.pivot_columns in scan.axis_kinds and scan.heading_kind is not None:
+                codes.extend(scan.headings)
+            for code in codes:
+                if (row := code_index.code_by_dcid(code)) is not None:
+                    known[code] = row.label
     return bundle_codes(scans, known_labels=known, lookup=reads.lookup)
 
 
@@ -2062,7 +2068,9 @@ class _LongLayout:
     same render has the same columns.
 
     A party's kind cell is the one the code index declares
-    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, read with no
+    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, over the
+    datasets the version cites on a row whose `provenance` is none of them, such as a
+    composite's (`_RenderReads.sources`), read with no
     graph call, so the split of totals is the same in every chunk and every render of a
     version, whether or not a graph read succeeds. A whole total (`PartyRow.whole`) reads
     `whole total` in the dataset and years its marker holds and `total` outside them. A party
@@ -2148,7 +2156,9 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(table, names=self.names, parties=self.reads.parties)
+        projected = self.projection.apply(
+            table, names=self.names, parties=self.reads.parties, sources=self.reads.sources
+        )
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -3027,7 +3037,8 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from the code index's party rows. A cut that leaves rows out renders from the cut frame,
+    kinds from the code index's party rows over `citation_refs` on a row whose provenance is
+    none of them, such as a composite's. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. `recorded_cut` is the cut a derived version's trace records
@@ -3060,6 +3071,7 @@ def render_and_store(
                 frame_chunks,
                 roles=open_party_roles(identity, entity_columns),
                 parties=parties,
+                sources=cited_refs,
             )
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
@@ -3356,7 +3368,10 @@ code described differently), so every version renders and links a new bundle on 
 request while each old bundle stays listed under its own rendering key. Version 3 writes
 integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
 writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`. Version 5
-writes a pivot's decoded `stat_var_<code_system>` cells as code dcids in place of labels."""
+writes a pivot's decoded `stat_var_<code_system>` cells as code dcids, describes that column as a
+code and names its codes in the codes table, and reads a party's kind and class cells over the
+datasets the version cites on a row whose `provenance` is none of them, such as a composite's
+(`materialise.enrichment.party_datasets`)."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -3384,8 +3399,10 @@ and cannot match one written in the old layout. Version 2 is the long layout of
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
 XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
 `<role>_kind` in place of `<role>_party_kind`. Version 5 writes a pivot's decoded
-`stat_var_<code_system>` cells as code dcids in place of labels. A rendering without `LAYOUT_KEY`
-predates version 2."""
+`stat_var_<code_system>` cells as code dcids, and reads a party's `<role>_kind` and pivot party
+cells over the datasets the version cites on a row whose `provenance` is none of them, such as a
+composite's (`materialise.enrichment.party_datasets`). A rendering without `LAYOUT_KEY` predates
+version 2."""
 
 FRAME_LAYOUT = "frame"
 """The `options.layout` value that asks for a bare parquet file in the frame layout: the

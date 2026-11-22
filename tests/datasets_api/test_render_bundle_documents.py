@@ -504,3 +504,46 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
     assert set(fields) == {"stat_var", written, _AGE_BAND_HIGH}
     assert fields[written]["description"].startswith("The value for the entry")
     assert f"| `{written}` |" in files["README.md"].decode()
+
+
+@pytest.mark.parametrize(
+    "pivot",
+    [
+        pytest.param(PivotOptions(index="stat_var_ageBand", columns="time_period"), id="cells"),
+        pytest.param(PivotOptions(index="stat_var", columns="stat_var_ageBand"), id="headings"),
+    ],
+)
+def test_a_pivot_by_a_decoded_axis_names_its_codes_from_the_code_index(pivot, tmp_path):
+    """A pivot's `stat_var_<code_system>` cells and headings hold code dcids, which the codes
+    table names with the code index's labels, and the column is described as a code."""
+    store = FakeArtifactStore()
+    rendered = render_and_store(
+        frame_chunks=lambda: iter((_AGE_TABLE,)),
+        options=MintOptions(format="csv", bundle=True, pivot=pivot),
+        spec={"spec_id": "spec_age_bands"},
+        provenance_refs=[],
+        citations={},
+        reproducing_call=None,
+        content_version="cv_age_bands",
+        prepared_at=PREPARED_AT,
+        site=_SITE,
+        artifact_store=store,
+        entity_columns=("observationAbout",),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS)),
+        pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        code_index=_age_index("AgeBandLow"),
+        resolved_stat_var_refs=(),
+    )
+    files = _unzip(store.fetch(rendered.artifact.url))
+
+    codes = _codes(files)
+    # The CSV writer escapes the low band's label, which starts with a formula trigger.
+    assert codes["AgeBandLow"] == ("'-5 to 0", "age band")
+    assert codes[_AGE_BAND_HIGH] == ("0 to 5", "age band")
+    (data, *_) = _validate(tmp_path, files)["resources"]
+    fields = {field["name"]: field for field in data["schema"]["fields"]}
+    if pivot.index == "stat_var_ageBand":
+        assert fields["stat_var_ageBand"]["description"].startswith(
+            "The age band of the variable, as a code."
+        )

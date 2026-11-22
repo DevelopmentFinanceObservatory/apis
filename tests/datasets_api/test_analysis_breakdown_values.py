@@ -1,7 +1,8 @@
 """A filter value on a breakdown column (`<axis>` or `stat_var_<axis>`) given as a code dcid, a
 publisher code or a label naming one code of the axis, resolved before the request key
 (`analysis.resolved_breakdown_values`); an ambiguous label refused with its candidates; and the
-codes an unmatched filter names beside the dcids its column holds."""
+codes an unmatched filter names beside the dcids its column holds; and a stored recipe's label
+value matched to a frame whose cells hold dcids (`analysis._Engine.matched`)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,9 @@ from dataclasses import replace
 import pytest
 
 from code_index import CodeIndex
+from datasets_api import analysis
 from datasets_api.analysis import StepNode, resolved_breakdown_values
+from datasets_api.config import DatasetsBuildSettings
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .test_analysis_summed_roots import _aggregate, _count_work, _post, _rig
@@ -125,6 +128,25 @@ def test_an_ambiguous_label_refuses_with_its_candidates() -> None:
     ]
 
 
+def test_a_verification_records_an_ambiguous_label_as_its_refusal() -> None:
+    """A verification whose filter label names two codes answers 200, the refusal recorded."""
+    settings = DatasetsBuildSettings.from_env().model_copy(update={"verify_principal": "probe"})
+    client, _, root = _rig(
+        code_index=_sharing(_hierarchical_code_index(), synonym="shared"), settings=settings
+    )
+    tree = _aggregate(_keep(root, "testAxis", ["Shared"]), group_by=["recipient"])
+
+    response = client.post(
+        "/api/datasets/analysis",
+        json={"tree": tree, "verify": True},
+        headers={"x-dfo-principal": "probe"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["outcome"], body["refusal_code"]) == ("not_stored", "breakdown_label_ambiguous")
+
+
 def test_a_label_matched_exactly_wins_over_a_synonym() -> None:
     """A text that is one code's label and another code's synonym names the labelled code."""
     index = _hierarchical_code_index()
@@ -215,3 +237,40 @@ def test_the_website_filter_labels_each_name_one_code_of_the_recorded_index(
     dcid, sent_label = _sent(step)
     assert dcid.startswith(("CRSPurposeCode", "CRSTypeOfFinance"))
     assert sent_label.casefold() == label.casefold()
+
+
+@pytest.mark.parametrize(
+    ("stored", "same_frame"),
+    [
+        # A label stored before the cells held dcids names the code the frame now holds.
+        (["Axis value A"], False),
+        # Values the frame still holds stay as stored, so the derived root keeps its ids.
+        (["TestAxisA", "Axis value A"], True),
+    ],
+    ids=["label", "resolved"],
+)
+def test_a_stored_recipe_filter_value_keeps_the_rows_of_its_code(
+    monkeypatch: pytest.MonkeyPatch, stored: list[str], same_frame: bool
+) -> None:
+    """A derived root over a recipe whose filter holds `stored` reads the rows of `TestAxisA`
+    from a frame whose `testAxis` cells hold dcids, and names its stored pair while the frame
+    holds every stored value's code as stored."""
+    client, _, root = _rig()
+    summed = {
+        **root,
+        "rendering": {"columns": [], "groupby": {"by": ["testAxis", "time_period"], "op": "sum"}},
+    }
+    with monkeypatch.context() as as_stored:
+        as_stored.setattr(analysis, "resolved_breakdown_values", lambda step, _codes: step)
+        first = _post(client, _keep(summed, "testAxis", stored))
+    assert first.status_code == 200, first.text
+    (member,) = first.json()["ref"]["members"]
+    derived = {"spec_id": member["spec"]["spec_id"], "content_version": member["content_version"]}
+
+    alone = _post(client, derived)
+    response = _post(client, _keep(derived, "testAxis", ["TestAxisA"]))
+
+    assert alone.status_code == response.status_code == 200, response.text
+    assert [alone.json()["rows"], response.json()["rows"]] == [1, 1]
+    assert (alone.json()["ref"] == first.json()["ref"]) is same_frame
+    assert (first.json()["rows"] == 1) is same_frame

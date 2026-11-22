@@ -1,9 +1,14 @@
-"""A frame-layout file reads a party's kind over the datasets its version cites, so a frame of
-the DAC2a bilateral composite types the IMF trust funds a `total`, as DAC2A declares them,
-though the CRS declares them a `party`, and a partitioned rank of its providers answers."""
+"""A file reads a party's kind over the datasets its version cites, so a frame of the DAC2a
+bilateral composite types the IMF trust funds a `total`, as DAC2A declares them, though the CRS
+declares them a `party`. Its frame-layout file says so and a partitioned rank of its providers
+answers, its long file writes `total` in `<role>_kind`, and a cut of its party totals leaves the
+trust funds out."""
 
 from __future__ import annotations
 
+import io
+
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame
 
@@ -84,14 +89,13 @@ def _frame(provenance: str | None) -> Frame:
     )
 
 
-def _frame_layout(frame: Frame, *, cited: list[str]) -> Frame:
-    """`frame` rendered to its frame-layout file for a version citing `cited`, read back as the
-    analysis runner reads a root."""
+def _render(frame: Frame, *, cited: list[str], options: MintOptions) -> bytes:
+    """The file `frame` renders to under `options` for a version citing `cited`."""
     artifact_store = FakeArtifactStore()
     provenance = frame.table.column("provenance") if "provenance" in frame.columns else None
     rendered = render_and_store(
         frame_chunks=lambda: iter((frame,)),
-        options=_FRAME_LAYOUT,
+        options=options,
         spec={"spec_id": "spec_party_kind_sources"},
         provenance_refs=[] if provenance is None else sorted(set(provenance.to_pylist())),
         citations={},
@@ -108,7 +112,27 @@ def _frame_layout(frame: Frame, *, cited: list[str]) -> Frame:
         site=SITE,
         citation_refs=cited,
     )
-    return frame_from_frame_layout(artifact_store.fetch(rendered.artifact.url))
+    return artifact_store.fetch(rendered.artifact.url)
+
+
+def _frame_layout(frame: Frame, *, cited: list[str]) -> Frame:
+    """`frame` rendered to its frame-layout file for a version citing `cited`, read back as the
+    analysis runner reads a root."""
+    return frame_from_frame_layout(_render(frame, cited=cited, options=_FRAME_LAYOUT))
+
+
+def _long_provider_kinds(frame: Frame, *, cited: list[str], cut: bool = False) -> dict[str, str]:
+    """Each provider's `financingProvider_kind` in `frame`'s long parquet file for a version
+    citing `cited`, with its party totals cut out when `cut`."""
+    options = MintOptions(format="parquet", bundle=False, without_party_totals=cut)
+    table = pq.read_table(io.BytesIO(_render(frame, cited=cited, options=options)))
+    return dict(
+        zip(
+            table.column("financingProvider").to_pylist(),
+            table.column("financingProvider_kind").to_pylist(),
+            strict=True,
+        )
+    )
 
 
 def _kinds(frame: Frame) -> dict[str, str]:
@@ -178,3 +202,16 @@ def test_a_frame_citing_datasets_that_type_a_party_apart_leaves_it_untyped_and_r
     assert _kinds(frame)[_TRUST_FUNDS] == "untyped"
     with pytest.raises(PlaceLevelsMixedError):
         _top_two_per_recipient(frame)
+
+
+def test_a_long_file_of_a_dac2a_composite_writes_the_trust_funds_kind_as_total() -> None:
+    kinds = _long_provider_kinds(_frame(DAC2A_BILATERAL), cited=[DAC2A])
+
+    assert kinds[_TRUST_FUNDS] == "total"
+    assert kinds["InternationalMonetaryFund"] == "official"
+
+
+def test_a_cut_of_a_dac2a_composite_leaves_the_trust_funds_out() -> None:
+    kinds = _long_provider_kinds(_frame(DAC2A_BILATERAL), cited=[DAC2A], cut=True)
+
+    assert sorted(kinds) == ["InternationalMonetaryFund", "country/FRA", "country/USA"]

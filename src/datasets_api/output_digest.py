@@ -15,9 +15,8 @@ stays in, so two frames holding the same values under different variables hold d
 outputs.
 
 A role cell is hashed as the frame holds it. A decoded `stat_var_<code_system>` cell holds the
-code's dcid (`datasets_api.decode`), so a relabelled code moves no digest. A frame rendered while
-those cells held labels hashes to another digest than the same frame rendered now, so each
-breakdown frame re-keys once.
+code's dcid (`datasets_api.decode`), so a relabelled code moves no digest, and a frame whose
+cells hold labels hashes to another digest than the same frame holding dcids.
 
 `compare`, `sum_of`, `share_of` and `quotient_of` write their rows under a variable of their
 own, spelt `dcid:` and the step's `ops_` id, which hashes the versions the step read and the

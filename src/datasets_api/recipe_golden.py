@@ -153,7 +153,8 @@ class FixtureRootSource:
 
     @property
     def code_index(self) -> None:
-        """None: a case computes a stored recipe, whose op-specs hold their values resolved."""
+        """None: a case computes a stored recipe's op-specs as stored, so a filter value
+        on a breakdown column matches only the cells its root frames hold as written."""
         return None
 
     @classmethod

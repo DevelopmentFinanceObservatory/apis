@@ -10,7 +10,9 @@ the writer:
   for a party role (`materialise.enrichment.is_party_role`) its party's kind in words
   (`<role>_kind`, `long_kind_cell`), and any requested enrichment (`_iso2`, `_iso3`, `_type`);
 - each decoded code system in property order, as `<code_system>` (the cell's code dcid) and
-  `<code_system>_label` (the code's label);
+  `<code_system>_label` (the code's label). A cell holding a code's label, as a version summed
+  before decoded cells held dcids does, reads the dcid of the one code of the axis with that
+  label, and a label several codes share leaves the code cell empty and counted unavailable;
 - `time_period` (an integer year for a frame of year points, `period_cell`), `value`;
 - the unit split into `unit` (the unit node dcid), `unit_label`, `currency` (ISO 4217),
   `price_basis` (`current` or `constant`) and `base_year`;
@@ -24,8 +26,10 @@ the grammar names.
 Names come from a `names` mapping (cell value to name) read by the caller for each table in one
 lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
 row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the year
-of its `time_period`, so a whole total reads `whole total` only in the dataset and years its marker
-holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a row with no
+of its `time_period`, its kind read over the datasets the table's version cites on a row whose
+`provenance` is none of them, such as a composite's (`materialise.enrichment.party_datasets`), so
+a whole total reads `whole total` only in the dataset and years its marker holds
+(`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a row with no
 readable value in one, gives `total`. A name or kind cell left empty beside a non-empty entity
 counts as unavailable. `apply` reports those counts per column so the caller can warn. The machine
 party cells (`materialise.enrichment.PARTY_FIELDS`) belong to the frame layout; the long layout's
@@ -55,7 +59,13 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 from code_index.types import ANY_AXIS, PartyRow
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
+from materialise.enrichment import (
+    PARTY_FIELDS,
+    is_party_role,
+    is_whole_total,
+    party_datasets,
+    period_year,
+)
 from materialise.errors import MaterialisationUsageError
 from materialise.recipe_bodies import DeflationBasis
 from materialise.reshape import Table, TableLike
@@ -140,27 +150,30 @@ def long_kind_cell(
     parties: Mapping[str, PartyRow],
     period: object,
     provenance: object,
+    sources: Collection[str] = (),
 ) -> str | None:
     """The `<role>_kind` cell of a long-layout row whose `role` cell is `ref`, `time_period` cell
-    `period` and `provenance` cell `provenance`, in words for a reader of the file.
+    `period` and `provenance` cell `provenance`, in a table read from `sources`, the datasets its
+    version cites, in words for a reader of the file.
 
     A total reads `whole total` when it is a whole total for the row's dataset and year
     (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
-    The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
-    `PartyRow.class_of`), on the role's axis. A row with no `provenance` reads the kind of every
-    dataset that publishes the party on that axis. `None` for
-    a ref the code index does not list, one that is not text, and a party that takes no one kind
-    for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
-    with no `provenance`."""
+    The kind and class are the party's on the role's axis over
+    `party_datasets(provenance, sources)` (`PartyRow.kind_over`, `PartyRow.class_of`): the row's
+    dataset when it is one of `sources`, and every one of `sources` on a row whose `provenance`
+    is none of them, such as a composite's, or that has none. With no `sources` such a row reads
+    every dataset that publishes the party on that axis. `None` for a ref the code index does
+    not list, one that is not text, and a party that takes no one kind for the row, a party whose
+    kind differs between those datasets."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
     dataset = provenance if isinstance(provenance, str) else None
     axis = role_key_axis(role)
     kind = party.kind_over(
-        ANY_AXIS if axis is None else axis, () if dataset is None else (dataset,)
+        ANY_AXIS if axis is None else axis, party_datasets(dataset, sources=sources)
     )
     if kind is None:
         return None
@@ -261,10 +274,12 @@ def axis_source_column(code_system: str) -> str:
 @dataclass(frozen=True)
 class NodeReads:
     """What a long output's cells read beyond the row: `names` maps a cell value to its name,
-    `parties` a party ref to its code index row, which gives its kind cell."""
+    `parties` a party ref to its code index row, which gives its kind cell, read over `sources`,
+    the datasets the table's version cites (`long_kind_cell`)."""
 
     names: Names
     parties: Mapping[str, PartyRow]
+    sources: Collection[str] = ()
 
 
 @dataclass(frozen=True)
@@ -394,11 +409,17 @@ class LongProjection:
         return tuple(refs)
 
     def apply(
-        self, table: TableLike, *, names: Names, parties: Mapping[str, PartyRow]
+        self,
+        table: TableLike,
+        *,
+        names: Names,
+        parties: Mapping[str, PartyRow],
+        sources: Collection[str] = (),
     ) -> ProjectedTable:
         """`table` in this layout, its name cells read from `names` and its kind cells from
-        `parties`, each for the dataset and year of its row. Raises `MaterialisationUsageError`
-        when `table`'s columns differ from the ones the layout was planned for."""
+        `parties`, each for the dataset and year of its row, in a table read from `sources`
+        (`long_kind_cell`). Raises `MaterialisationUsageError` when `table`'s columns differ
+        from the ones the layout was planned for."""
         if tuple(table.columns) != self.source_columns:
             raise MaterialisationUsageError(
                 f"a long projection planned for columns {self.source_columns!r} was applied to "
@@ -406,7 +427,7 @@ class LongProjection:
             )
         source_rows = table.rows
         cells = self.cells
-        reads = NodeReads(names=names, parties=parties)
+        reads = NodeReads(names=names, parties=parties, sources=sources)
         rows = tuple(tuple(cell(row, reads) for cell in cells) for row in source_rows)
         counts: Counter[str] = Counter()
         for column, is_unavailable in self.unavailable:
@@ -432,7 +453,10 @@ def plan_long_projection(
     decoded `stat_var_<code_system>` cell holds its code's dcid, the code a groupby grouped the
     row under, so the code column copies it and the label column reads its label. A cell the
     mapping lacks is a declared absence's `absent_reading`, which the label column holds with an
-    empty code cell; an empty decode gap leaves both empty.
+    empty code cell; an empty decode gap leaves both empty. A cell that is a code's label, as a
+    version summed before decoded cells held dcids holds, gives the code column the dcid of the
+    one code of the axis with that label (`_codes_by_label`), and a label several codes of the
+    axis share leaves it empty and counts it unavailable.
     """
     source = tuple(source_columns)
     position = {name: index for index, name in enumerate(source)}
@@ -476,6 +500,7 @@ def plan_long_projection(
                 parties=reads.parties,
                 period=None if period_at is None else row[period_at],
                 provenance=None if provenance_at is None else row[provenance_at],
+                sources=reads.sources,
             )
 
         def missing(row: Row, reads: NodeReads) -> bool:
@@ -515,9 +540,15 @@ def plan_long_projection(
             continue
         code_at = itemgetter(position[source_column])
         labels = axis_labels[code_system]
+        by_label, shared = _codes_by_label(labels)
         add(
             code_system,
-            lambda row, _reads, code_at=code_at, labels=labels: _axis_code(code_at(row), labels),
+            lambda row, _reads, code_at=code_at, labels=labels, by_label=by_label: _axis_code(
+                code_at(row), labels, by_label
+            ),
+            lambda row, _reads, code_at=code_at, labels=labels, shared=shared: (
+                code_at(row) in shared and code_at(row) not in labels
+            ),
         )
         add(
             f"{code_system}{_LABEL_SUFFIX}",
@@ -624,9 +655,27 @@ def _name_missing(cell: object, names: Mapping[str, object]) -> bool:
     return isinstance(cell, str) and cell != "" and cell not in names
 
 
-def _axis_code(cell: object, labels: Mapping[str, str]) -> str | None:
-    """A decoded axis cell's code dcid, or `None` for a declared absence or an empty cell."""
-    return cell if isinstance(cell, str) and cell in labels else None
+def _codes_by_label(labels: Mapping[str, str]) -> tuple[dict[str, str], frozenset[str]]:
+    """From one axis's `{code dcid: label}`, each label one code holds mapped to that code's
+    dcid, and the labels several codes share."""
+    by_label: dict[str, str] = {}
+    shared: set[str] = set()
+    for dcid, label in labels.items():
+        if label in by_label:
+            shared.add(label)
+        by_label[label] = dcid
+    for label in shared:
+        del by_label[label]
+    return by_label, frozenset(shared)
+
+
+def _axis_code(cell: object, labels: Mapping[str, str], by_label: Mapping[str, str]) -> str | None:
+    """A decoded axis cell's code dcid: the cell when it is a code's dcid, the dcid of the one
+    code labelled with it when it is a label (`_codes_by_label`), and `None` for a shared label,
+    a declared absence or an empty cell."""
+    if not isinstance(cell, str):
+        return None
+    return cell if cell in labels else by_label.get(cell)
 
 
 def _axis_label(cell: object, labels: Mapping[str, str]) -> object:

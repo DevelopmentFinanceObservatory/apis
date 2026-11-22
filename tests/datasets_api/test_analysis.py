@@ -11,6 +11,7 @@ from datetime import timedelta
 from importlib.resources import files
 
 import jsonschema
+import pyarrow as pa
 import pytest
 import rfc8785
 from dfo_frame_grammar import Frame
@@ -39,6 +40,7 @@ from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
 from datasets_api.recipe_store import ReplayedFrame
 from dfo_analysis_engine import execution_identity
+from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes, pair
@@ -334,30 +336,73 @@ def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> Non
     assert root["rendering"]["columns"] == ["financingRecipient_type", "party_kind"]
 
 
-_MOVED_FRAME_CV = "cv_" + "f" * 32
+def _with_column(frame: Frame, column: str, cells: list) -> Frame:
+    """`frame` with `column` holding `cells`."""
+    table = frame.table
+    at = table.schema.get_field_index(column)
+    field = table.schema.field(at)
+    return Frame.from_table(
+        columns=frame.columns, table=table.set_column(at, field, pa.array(cells, type=field.type))
+    )
 
 
-def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
+def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> list[str]:
     """Make every later run compute `ref`, as one does whose root pairs a later derivation of
-    `analysis_roots.frame_ref_for` names apart from the stored run's. Its summary names `ref`
-    and `_MOVED_FRAME_CV`, as the engine's does for a minting step, whose rows name its pair."""
+    `analysis_roots.frame_ref_for` names apart from the stored run's. Its minted rows name
+    `ref`, as a minting step's rows name its pair, and its summary names `ref` and that frame's
+    `cv_`, which the list returned collects."""
     evaluated = analysis._evaluated
+    moved_cvs: list[str] = []
 
     def elsewhere(*args, **kwargs):
         computed = evaluated(*args, **kwargs)
+        evaluation = computed.evaluation
+        minted = f"dcid:{evaluation.ref.spec_id}"
+        cells = evaluation.frame.table.column("stat_var").to_pylist()
+        frame = _with_column(
+            evaluation.frame,
+            "stat_var",
+            [f"dcid:{ref.spec_id}" if cell == minted else cell for cell in cells],
+        )
+        moved_cvs.append(derive_frame_content_version(frame))
         moved = dataclasses.replace(
-            computed.evaluation,
+            evaluation,
             ref=ref,
-            tree={**computed.evaluation.tree, "frame": pair(ref)},
-            summary={
-                **computed.evaluation.summary,
-                **pair(ref),
-                "frame_content_version": _MOVED_FRAME_CV,
-            },
+            frame=frame,
+            tree={**evaluation.tree, "frame": pair(ref)},
+            summary={**evaluation.summary, **pair(ref), "frame_content_version": moved_cvs[-1]},
         )
         return dataclasses.replace(computed, evaluation=moved)
 
     monkeypatch.setattr(analysis, "_evaluated", elsewhere)
+    return moved_cvs
+
+
+def _computed_apart(monkeypatch: pytest.MonkeyPatch, ref: FrameRef | None = None) -> list[str]:
+    """Make every later run compute other values, under `ref` when given, else under its own
+    pair, as one does whose root cells changed format under unchanged root pairs: each value
+    doubled, the summary naming that frame's `cv_`, which the list returned collects, and
+    another output digest."""
+    if ref is not None:
+        _computed_under(monkeypatch, ref)
+    evaluated = analysis._evaluated
+    apart_cvs: list[str] = []
+
+    def apart(*args, **kwargs):
+        computed = evaluated(*args, **kwargs)
+        evaluation = computed.evaluation
+        values = evaluation.frame.table.column("value").to_pylist()
+        frame = _with_column(evaluation.frame, "value", [value * 2 for value in values])
+        apart_cvs.append(derive_frame_content_version(frame))
+        moved = dataclasses.replace(
+            evaluation,
+            frame=frame,
+            summary={**evaluation.summary, "frame_content_version": apart_cvs[-1]},
+        )
+        return dataclasses.replace(computed, evaluation=moved, output_digest="out_" + "0" * 32)
+
+    monkeypatch.setattr(analysis, "_evaluated", apart)
+    return apart_cvs
 
 
 _ELSEWHERE = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
@@ -398,7 +443,7 @@ def test_a_run_of_a_stored_replay_key_answers_the_stored_frame_in_every_field(
         )
     elif stored_as == "pinned-object-gone":
         _pinned_object_gone(stores, stored)
-    _computed_under(monkeypatch, _ELSEWHERE)
+    moved_cvs = _computed_under(monkeypatch, _ELSEWHERE)
 
     again = _run(stores, _PER_PERSON)
 
@@ -407,7 +452,8 @@ def test_a_run_of_a_stored_replay_key_answers_the_stored_frame_in_every_field(
     assert again.evaluation.tree["frame"] == pair(stored)
     body = again.body()
     assert body["ref"] == first.ref()
-    assert body["frame_content_version"] == first.frame_content_version != _MOVED_FRAME_CV
+    assert body["frame_content_version"] == first.frame_content_version
+    assert moved_cvs and first.frame_content_version not in moved_cvs
     assert body["summary"] == first.body()["summary"]
     prepared = prepare_analysis(
         AnalysisRequest.model_validate({"tree": _PER_PERSON}), source=source(stores)
@@ -447,6 +493,44 @@ def test_a_run_whose_replayed_frame_file_aged_out_publishes_its_own_pair_and_tak
     kept = recipes.read_recipe(spec_id=stored.spec_id, content_version=stored.content_version)
     assert kept is not None
     assert kept.replay_key == replay_key
+
+
+def test_a_pair_holding_another_frame_than_the_run_computes_is_not_reused(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A frame stored under the run's own pair whose `cv_` differs from the run's refuses as a
+    divergence, logged with both `cv_`s."""
+    stores = Stores()
+    ref = _run(stores, _PER_PERSON).evaluation.ref
+    apart_cvs = _computed_apart(monkeypatch)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(AnalysisStoreDiverges) as raised:
+        _run(stores, _PER_PERSON)
+
+    assert (raised.value.spec_id, raised.value.content_version) == (
+        ref.spec_id,
+        ref.content_version,
+    )
+    (record,) = [r for r in caplog.records if r.name == "datasets_api.analysis"]
+    assert f"run_frame_content_version={apart_cvs[-1]}" in record.getMessage()
+
+
+def test_a_replayed_frame_of_another_output_is_not_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frame stored under the replay key whose output digest differs from the run's gives up
+    the key, and the run publishes its own frame at its own pair."""
+    stores = Stores()
+    first = _run(stores, _PER_PERSON)
+    replay_key = first.ref()["members"][0]["spec"]["recipe"]["replay_key"]
+    apart_cvs = _computed_apart(monkeypatch, _ELSEWHERE)
+
+    moved = _run(stores, _PER_PERSON)
+    again = _run(stores, _PER_PERSON)
+
+    assert moved.created and not again.created
+    assert moved.evaluation.ref == again.evaluation.ref == _ELSEWHERE
+    assert moved.frame_content_version == apart_cvs[0] != first.frame_content_version
+    recipes = stores.analysis().recipe_store
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(**pair(_ELSEWHERE))
 
 
 @pytest.mark.parametrize("computed", [None, _ELSEWHERE], ids=["own_pair", "replayed_pair"])

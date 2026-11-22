@@ -43,9 +43,6 @@ _EXEMPT: dict[Site, str] = {
     ("datasets_api/maintenance.py", "run_backfill_frame1", "ArtifactRecord"): (
         "re-links a canonical frame document, which has no party-kind cell"
     ),
-    ("datasets_api/render.py", "_file_shape", "rendering_key"): (
-        "a six-character filename tag, not a link or lookup key"
-    ),
     ("datasets_api/render.py", "render_and_store_canonical_frame", "ArtifactRecord"): (
         "links the canonical frame, which has no party-kind cell"
     ),
