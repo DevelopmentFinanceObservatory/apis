@@ -12,9 +12,11 @@ the `bind_catalogue` fixture.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 from artifact_publication.jobs import Ingestion
 from origin_catalogue import (
@@ -36,6 +38,7 @@ from origin_catalogue import (
     entry_ref,
 )
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
+from origin_catalogue.card_facts import source_documentation_of
 from origin_catalogue.catalogue import (
     EMPTY_UN_TABLES,
     SourceDocumentation,
@@ -447,9 +450,42 @@ def listing(names: Mapping[str, str]) -> FakeCatalogue:
     )
 
 
+DEV_PROVENANCE_NODES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "dev_provenance_nodes.json"
+)
+"""The arcs of five DFO Provenance nodes as the dev graph holds them: CRS, DAC2A,
+DAC2B and the imputed multilateral sectors state `partialObservationDate` 2025, DAC1 none."""
+
+
+def dev_provenance_nodes() -> dict[str, dict[str, tuple[str, ...]]]:
+    """`DEV_PROVENANCE_NODES`, each node's arcs by property."""
+    nodes = json.loads(DEV_PROVENANCE_NODES.read_text())
+    return {
+        dcid: {prop: tuple(values) for prop, values in arcs.items()}
+        for dcid, arcs in nodes.items()
+        if dcid != "_comment"
+    }
+
+
+def documenting(nodes: Mapping[str, Mapping[str, tuple[str, ...]]]) -> FakeCatalogue:
+    """A `FakeCatalogue` listing each of `nodes` as an orphan DFO provenance documented from
+    its arcs (`origin_catalogue.card_facts.source_documentation_of`), as the catalogue job
+    documents it."""
+    return FakeCatalogue(
+        provenances={dcid: provenance_row(dcid, DFO) for dcid in nodes},
+        documentation={
+            dcid: source_documentation_of({dcid: arcs}, publisher=None)
+            for dcid, arcs in nodes.items()
+        },
+    )
+
+
 __all__ = [
+    "DEV_PROVENANCE_NODES",
     "FAKE_BUILT_AT",
     "FakeCatalogue",
+    "dev_provenance_nodes",
+    "documenting",
     "empty_dataset_facts",
     "empty_source_documentation",
     "fake_catalogue_service",

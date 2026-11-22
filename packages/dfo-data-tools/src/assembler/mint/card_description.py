@@ -59,6 +59,7 @@ from assembler.mint.provenance import (
     LeftOut,
     _citation_sources_by_ref,
     card_derivation_steps,
+    drawn_partial_entries,
     lineage_only,
 )
 from assembler.mint.selection import selection_facts
@@ -147,6 +148,9 @@ def with_card_description(
         if described.live
         else None
     )
+    # The entries of the version's record a row the card draws reaches, which the dropped
+    # `provenance.freshness.partial_period` judged, so the description states them.
+    marked = drawn_partial_entries(resolved_frame=resolved_frame, rows=minted.drawn)
     if member == "source_card":
         sources = cast("Sequence[str]", component["source_refs"])
         if not sources:
@@ -158,6 +162,7 @@ def with_card_description(
             component_id=described.component_id,
             revision=described.revision,
             frame=frame,
+            marked=marked,
         )
     elif selection is not None:
         drawn_variables = {
@@ -178,6 +183,7 @@ def with_card_description(
             if left_out is not None
             else [],
             inputs=resolved_frame.input_records,
+            marked=marked,
         )
     else:
         return minted

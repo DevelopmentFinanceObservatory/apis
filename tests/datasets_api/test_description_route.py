@@ -18,6 +18,7 @@ fixed here. A refusal renders at the status the code registry gives it on
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ import pytest
 from datasets_api.description_record import role_dimensions
 from datasets_api.description_store import insert_description
 from dc_graph import GraphCapExceededError, GraphDeadlineExceededError
+from description import blocks as description_blocks
 from description.facts import (
     Builds,
     CaveatFact,
@@ -1010,3 +1012,81 @@ def test_an_input_whose_record_fails_validation_is_described_as_one_without_a_re
     described, expected = damaged.body(), absent.body()
     assert described.pop("built_from")["facts_schema"] == expected.pop("built_from")["facts_schema"]
     assert described == expected
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+
+
+def _marking(version: _Described, marked: list[dict[str, object]] | None) -> None:
+    """Store `marked` as the version's `incomplete_after`, `None` as a version recorded
+    before versions stored one."""
+    with version.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET incomplete_after = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (
+                None if marked is None else json.dumps(marked),
+                version.id,
+                version.content_version,
+            ),
+        )
+
+
+def _entry(provenance: str, status: str, mark: str | None) -> dict[str, object]:
+    return {
+        "provenance": provenance,
+        "stat_vars": ["dcid:X"],
+        "source": provenance,
+        "status": status,
+        "partial_period": mark,
+    }
+
+
+@pytest.mark.parametrize("kind", _KINDS)
+@pytest.mark.parametrize(
+    ("marked", "stated"),
+    [
+        pytest.param(
+            [
+                _entry(_CRS, "partial", "2024"),
+                {**_entry(_CRS, "partial", "2024"), "stat_vars": ["dcid:Y"]},
+                _entry("provenance/UNSDG", "unknown", None),
+            ],
+            [{"source": _CRS, "period": "2024"}],
+            id="a-partial-crs-version",
+        ),
+        pytest.param([], [], id="recorded-with-none-marked"),
+        pytest.param(None, None, id="recorded-before-the-record"),
+    ],
+)
+def test_freshness_states_the_partial_periods_its_version_records(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    marked: list[dict[str, object]] | None,
+    stated: list[dict[str, object]] | None,
+) -> None:
+    """Each source the record marks partial, once per period. An unknown cell states
+    nothing. The test forces `STATES_PARTIAL_PERIODS` on, since a description states the
+    member only when the pinned schema holds `freshness.partial_periods`."""
+    monkeypatch.setattr(description_blocks, "STATES_PARTIAL_PERIODS", True)
+    version = _Described(kind)
+    _marking(version, marked)
+
+    partial_periods = version.body()["freshness"]["partial_periods"]
+
+    if stated is None:
+        assert partial_periods is None
+    else:
+        assert [
+            {"source": entry["source"]["ref"], "period": entry["period"]}
+            for entry in partial_periods
+        ] == stated
+
+
+def test_freshness_states_partial_periods_only_under_a_schema_holding_them() -> None:
+    version = _Described("spec")
+    _marking(version, [_entry(_CRS, "partial", "2024")])
+
+    freshness = version.body()["freshness"]
+
+    assert ("partial_periods" in freshness) is description_blocks.STATES_PARTIAL_PERIODS

@@ -264,6 +264,13 @@ class SourceBlock(ResponseModel):
         description="the earliestObservationDate arc's value"
     )
     latest_observation_date: str | None = Field(description="the latestObservationDate arc's value")
+    partial_observation_date: str | None = Field(
+        default=None,
+        description=(
+            "the partialObservationDate arc's value: the period for which the import holds only "
+            "part of the source's data, null when the import marks none"
+        ),
+    )
     freshness: Freshness
     data_commons: DataCommonsRef | None = Field(
         description=(
