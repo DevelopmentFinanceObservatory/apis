@@ -294,9 +294,12 @@ def _signed_link(
     deps: Deps | DefinitionDeps,
     recipes: RecipeReader,
 ) -> ResolvedLink:
-    """The signed URL and tier of the derived version's file at `location`, named for download
-    as the bare Parquet file route names it, by the sources its roots cite, recorded as the
-    call's delivery (`delivery.record_file`)."""
+    """The signed URL and tier of the derived version's file at `location`, recorded as the
+    call's delivery (`delivery.record_file`). The download is named from the sources the
+    recipe's roots cite and the date the file's location was stored, read from records alone.
+    `GET .../file?format=parquet` names the same bytes from the sources in the frame's
+    `provenance` column and the date the stored frame was stored, so the two names differ when
+    a cited source contributes no row or the file was stored again later."""
     spec_id, content_version = stored.version.subject_id, stored.version.content_version
     record = recipes.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(deps.snapshot_reader, record)

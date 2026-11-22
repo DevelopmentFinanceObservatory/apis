@@ -49,7 +49,7 @@ class DoorExecutor:
         refuse: Callable[[], Exception],
         timings: PhaseTimings | None = None,
         wait_seconds: float = 0.0,
-        headroom: int = 0,
+        headroom: int | Callable[[], int] = 0,
         keep_waiting: Callable[[], bool] | None = None,
     ) -> T:
         """Run `job` on the executor under the caller's context behind bounded admission.
@@ -69,12 +69,15 @@ class DoorExecutor:
 
         `headroom` is the permits that must stay free after this job takes one
         (`HeadroomSemaphore.acquire_leaving`). A background mint leaves one for other callers.
+        A callable is asked at every poll, so a waiting job can leave room for others that
+        arrive while it waits.
 
         `timings`, when given, records `queue` from submission to the job's start and
         `handoff` from the job's finish to this coroutine resuming on the event loop.
         """
         admitted_by = time.monotonic() + wait_seconds
-        while not self.semaphore.acquire_leaving(headroom):
+        leave = (lambda: headroom) if isinstance(headroom, int) else headroom
+        while not self.semaphore.acquire_leaving(leave()):
             if time.monotonic() >= admitted_by or (keep_waiting is not None and not keep_waiting()):
                 raise refuse()
             await asyncio.sleep(_ADMISSION_POLL_SECONDS)

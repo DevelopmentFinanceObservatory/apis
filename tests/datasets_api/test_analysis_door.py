@@ -260,8 +260,9 @@ class _GatedSource(FakeRootSource):
 def test_a_verification_leaves_an_analysis_thread_free_for_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two analysis threads: a verification holding one refuses another 503, and a run still
-    starts beside it."""
+    """Two analysis threads: a verification holding one refuses another 503 once its wait
+    for a thread ends, shortened to a fifth of a second, and a run still starts beside it."""
+    monkeypatch.setattr(analysis_door, "_RUN_WAIT_SECONDS", 0.2)
     stores = Stores()
     roots = _GatedSource(source(stores))
     roots.release.set()
@@ -419,7 +420,9 @@ def test_a_stored_answer_answers_while_every_analysis_thread_and_permit_is_held(
 def test_a_verification_with_every_analysis_thread_held_refuses_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A verification reads no stored answer, so it still takes an analysis thread first."""
+    """A verification reads no stored answer, so it still waits for an analysis thread first,
+    and refuses 503 once its wait ends, shortened to a fifth of a second."""
+    monkeypatch.setattr(analysis_door, "_RUN_WAIT_SECONDS", 0.2)
     stores = Stores()
     roots = _ReadBlockingSource(source(stores))
     roots.release.set()
@@ -1299,9 +1302,11 @@ def test_a_lean_stored_hit_reads_the_answer_without_its_summary(
     assert asked == [False]
 
 
-def test_the_answer_store_reads_a_body_without_its_summary() -> None:
+def test_the_answer_store_reads_a_body_without_its_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     stores = Stores()
-    with _client(stores, source(stores), pytest.MonkeyPatch()) as client:
+    with _client(stores, source(stores), monkeypatch) as client:
         body = client.post(_PATH, json={"tree": _TREE}).json()
     with stores.store.transaction() as tx:
         row = tx.fetch_one("SELECT request_key FROM datasets.analysis_answer", ())
@@ -1451,3 +1456,142 @@ def test_the_anchor_route_takes_latest_stored(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 200, response.text
     assert response.json()["roots"] == [{"spec_id": AID, "content_version": AID_V2}]
     assert [latest for _, _, latest in roots.resolved] == ["stored"]
+
+
+def test_an_anchor_and_a_verification_take_threads_before_queued_runs(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two analysis threads held by runs reading their roots and two more runs queued: an
+    anchor and a verification posted after them each take a thread within the wait, before
+    either queued run, so runs queued for every thread never starve them."""
+    started: list[str] = []
+
+    def starting(name: str, job: Any) -> Any:
+        def run(**kwargs: Any) -> Any:
+            started.append(name)
+            return job(**kwargs)
+
+        return run
+
+    for name, attribute in [("run", "_analysis_job"), ("anchor", "_anchor_job")]:
+        monkeypatch.setattr(
+            analysis_door, attribute, starting(name, getattr(analysis_door, attribute))
+        )
+    monkeypatch.setattr(analysis_door, "_verify_job", starting("verify", analysis_door._verify_job))
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    roots.release.set()
+    with (
+        _client(
+            stores,
+            roots,
+            monkeypatch,
+            analysis_max_concurrency=2,
+            materialise_max_concurrency=4,
+            verify_principal=_PROBE_PRINCIPAL,
+        ) as client,
+        caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
+    ):
+        stored = _stored_pair(client)
+        roots.release.clear()
+        started.clear()
+        answers: list[Any] = []
+        held = [_posting(client, tree, answers) for tree in (_OTHER_TREE, _UNSTORED_TREE)]
+        ends = time.monotonic() + 5
+        while len(started) < 2:
+            assert time.monotonic() < ends, "the held runs never started"
+            time.sleep(0.01)
+        queued = [
+            _posting(client, step("quotient_of", *pair, on={"destination": "place"}), answers)
+            for pair in [
+                (dataset(POPULATION, POPULATION_V1), dataset(AID, AID_V1)),
+                (dataset(AID, AID_V1), dataset(AID, AID_V1)),
+            ]
+        ]
+        _wait_for_calls(caplog, 5)
+        others: dict[str, Any] = {}
+        anchoring = threading.Thread(
+            target=lambda: others.update(
+                anchor=client.post(
+                    f"{_PATH}/anchor",
+                    json={
+                        "roots": [dataset(AID, AID_V1)],
+                        "populations": [{"spec_id": AID, "bindings": {}}],
+                    },
+                )
+            )
+        )
+        verifying = threading.Thread(
+            target=lambda: others.update(
+                verify=client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+            )
+        )
+        anchoring.start()
+        verifying.start()
+        _wait_for_calls(caplog, 7)
+        time.sleep(0.2)
+        roots.release.set()
+        for thread in [*held, *queued, anchoring, verifying]:
+            thread.join(10)
+
+    assert others["anchor"].status_code == 200, others["anchor"].text
+    assert others["verify"].status_code == 200, others["verify"].text
+    assert sorted(started[2:4]) == ["anchor", "verify"]
+    assert started[4:] == ["run", "run"]
+    # The queued trees name a grain the doubles' frames lack, so the engine refuses them 422
+    # (`role_ambiguous`) once they hold a thread.
+    assert sorted(response.status_code for response, _ in answers) == [200, 200, 422, 422]
+
+
+def test_a_stored_request_reads_a_derived_roots_recipe_roots_and_anchor_roots_at_their_heads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A derived root computed from the aid data's first version expands into its recipe's
+    root, and under `latest: "stored"` that root and every anchor root read their dataset's
+    head, so the answer is the chain's at the head versions."""
+    stores = Stores()
+    roots = source(stores)
+    summed = step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    with _client(stores, roots, monkeypatch) as client:
+        member = client.post(_PATH, json={"tree": summed}).json()["ref"]["members"][0]
+        derived = {
+            "spec_id": member["spec"]["spec_id"],
+            "content_version": member["content_version"],
+        }
+        roots.resolved.clear()
+        stored = client.post(
+            _PATH,
+            json={
+                "tree": step("rank", derived, rank_by=["destination"], limit=1),
+                "anchor_roots": [{"spec_id": POPULATION}],
+                "latest": "stored",
+            },
+        )
+        resolved = list(roots.resolved)
+        at_heads = client.post(
+            _PATH,
+            json={
+                "tree": step(
+                    "rank",
+                    step(
+                        "aggregate",
+                        dataset(AID, AID_V2),
+                        aggregation="sum",
+                        group_by=["destination"],
+                    ),
+                    rank_by=["destination"],
+                    limit=1,
+                ),
+                "anchor_roots": [dataset(POPULATION, POPULATION_V1)],
+            },
+        )
+
+    assert stored.status_code == 200, stored.text
+    assert at_heads.status_code == 200, at_heads.text
+    assert sorted(resolved) == [(AID, AID_V1, "stored"), (POPULATION, None, "stored")]
+    body = stored.json()
+    assert body.pop("resolved_roots") == [
+        {"spec_id": AID, "content_version": AID_V2, "freshness": "current"},
+        {"spec_id": POPULATION, "content_version": POPULATION_V1, "freshness": "current"},
+    ]
+    assert body["ref"]["members"][0]["roots"] == at_heads.json()["ref"]["members"][0]["roots"]

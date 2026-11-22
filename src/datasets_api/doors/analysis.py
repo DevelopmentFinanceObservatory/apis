@@ -39,9 +39,10 @@ taken down. A root whose rendering's file has aged out is rendered in memory fro
 frame. A verification reads no stored answer and writes nothing: no frame, recipe, answer,
 version record or rendering, and it pins nothing. It admits the caller holding the `verify`
 grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and refuses any other
-`verify_not_permitted` (403). It takes an analysis thread and a materialise permit only while
-another of each stays free for runs, anchors and mints, else refuses retryable
-`service_unavailable` (503), so verifications never hold the last of either; settings that
+`verify_not_permitted` (403). It takes an analysis thread only while another stays free for
+runs and anchors, waiting for one as a run waits, and a materialise permit only while another
+stays free, else refuses retryable `service_unavailable` (503), so verifications never hold
+the last of either; settings that
 grant `verify` need two of each (`DatasetsBuildSettings`). It takes no thread of the analysis
 key executor. It logs no `datasets.delivery` line, since it serves no frame. A `verify` request
 that also sets `latest`, `true` or `"stored"`, or names a Spec root, refuses `request_invalid`
@@ -69,7 +70,9 @@ computes. Any other run then waits for a thread of the analysis executor
 (`DATASETS_ANALYSIS_MAX_CONCURRENCY`) as keying waits for its own, up to `_RUN_WAIT_SECONDS`
 or its deadline with `_RUN_QUEUE_PER_THREAD` runs waiting per thread, refusing retryable
 `service_unavailable` (503) at either bound or on a release swap, and computes the key it was
-given, keying nothing again. A key another request of this process is computing answers the pending body, 202
+given, keying nothing again. An anchor and a verification wait for a thread under the same
+bounds and queue, and while one waits every waiting run leaves free the threads it needs
+(`_Reservations`), so runs queued for every thread never starve it. A key another request of this process is computing answers the pending body, 202
 with `Retry-After` 5 and no operations, so a retry after a timeout joins the one run and later
 finds its answer stored. A run that holds its key reads the stored answer again before it
 computes, so an answer another request stored after this one keyed answers as stored. The key is
@@ -636,10 +639,39 @@ _KEY_WAIT_SECONDS = 5.0
 # The requests that may wait for each thread of the analysis key executor. One more refuses 503
 # at once, so the waits polling the executor's semaphore stay few.
 _KEY_QUEUE_PER_THREAD = 4
-# The longest a run with no stored answer waits for an analysis thread, and the runs that may
-# wait for each one, so two readers that miss at once both compute in turn within the bound.
+# The longest a run with no stored answer, an anchor or a verification waits for an analysis
+# thread, and the requests that may wait for each one, so two readers that miss at once both
+# compute in turn within the bound.
 _RUN_WAIT_SECONDS = 5.0
 _RUN_QUEUE_PER_THREAD = 4
+
+
+class _Reservations:
+    """The analysis threads each waiting anchor or verification needs free, so a run waiting
+    beside it leaves them free (`_AnalysisRoutes._on_analysis_thread`). Written from the event
+    loop and from the job as it starts on its thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[int, int] = {}
+        self._next = 0
+
+    def add(self, threads: int) -> int:
+        with self._lock:
+            self._next += 1
+            self._held[self._next] = threads
+            return self._next
+
+    def drop(self, token: int) -> None:
+        with self._lock:
+            self._held.pop(token, None)
+
+    def headroom(self) -> int:
+        """The threads a run must leave free after it takes one: the most any waiting anchor
+        or verification needs."""
+        with self._lock:
+            return max(self._held.values(), default=0)
+
 
 # What a door answers with: the request's `Deps`, its retrieval view and the call's timings in,
 # the answer body out.
@@ -653,9 +685,11 @@ class _AnalysisRoutes:
         self._cell = cell
         self._analysis_job = functools.partial(_analysis_job, running=running)
         # The requests waiting for or holding a thread of the analysis key executor, and of the
-        # analysis executor for a run. Read and written on the event loop alone.
+        # analysis executor for a run, an anchor or a verification. Read and written on the
+        # event loop alone.
         self._keying = 0
         self._running = 0
+        self._reservations = _Reservations()
 
     async def _run(
         self,
@@ -686,22 +720,74 @@ class _AnalysisRoutes:
         outcome.headers["Server-Timing"] = call.server_timing
         return call.delivered(outcome)
 
-    @staticmethod
-    def _on_analysis_executor(job: Any, *, body: BaseModel, headroom: int = 0) -> _Answering:
-        """Answer with `job` on a thread of the analysis executor. `headroom` is the threads
-        that must stay free after `job` takes one."""
+    async def _on_analysis_thread(
+        self,
+        job: Callable[..., Any],
+        *,
+        current: Deps,
+        deps: DefinitionDeps,
+        timings: PhaseTimings,
+        headroom: int = 0,
+        reserve: bool = False,
+        **kwargs: object,
+    ) -> Any:
+        """Run `job` on a thread of the analysis executor, waiting for one up to
+        `_RUN_WAIT_SECONDS` or the deadline, with `_RUN_QUEUE_PER_THREAD` requests waiting per
+        thread, and refusing 503 past either bound or once a swap replaces the release the
+        request bound. `headroom` is the threads that must stay free after `job` takes one. A
+        `reserve` job, an anchor or a verification, holds the threads it needs while it waits,
+        and a run waiting beside it leaves them free (`_Reservations`), so runs queued for
+        every thread never starve it.
+
+        Raises:
+            AnalysisBackpressure: As above.
+        """
+        assert deps.deadline is not None
+        executor = current.analysis_executor
+        if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
+            raise AnalysisBackpressure()
+        reservations = self._reservations
+        token = reservations.add(1 + headroom) if reserve else None
+
+        def started(**arguments: object) -> Any:
+            if token is not None:
+                reservations.drop(token)
+            return job(**arguments)
+
+        self._running += 1
+        try:
+            return await _run_retrieval(
+                executor,
+                started,
+                deps=deps,
+                timings=timings,
+                refuse=AnalysisBackpressure,
+                wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
+                headroom=headroom if reserve else reservations.headroom,
+                keep_waiting=bound_release_served(),
+                current=current,
+                **kwargs,
+            )
+        finally:
+            self._running -= 1
+            if token is not None:
+                reservations.drop(token)
+
+    def _on_analysis_executor(self, job: Any, *, body: BaseModel, headroom: int = 0) -> _Answering:
+        """Answer with `job`, an anchor or a verification, on a thread of the analysis
+        executor (`_on_analysis_thread`). `headroom` is the threads that must stay free after
+        `job` takes one."""
 
         async def answering(
             current: Deps, deps: DefinitionDeps, timings: PhaseTimings
         ) -> dict[str, Any]:
-            return await _run_retrieval(
-                current.analysis_executor,
+            return await self._on_analysis_thread(
                 job,
+                current=current,
                 deps=deps,
                 timings=timings,
-                refuse=AnalysisBackpressure,
                 headroom=headroom,
-                current=current,
+                reserve=True,
                 body=body,
                 trace_id=get_trace_id(),
             )
@@ -739,25 +825,14 @@ class _AnalysisRoutes:
                 self._keying -= 1
             if keyed.answer is not None:
                 return keyed.answer
-            executor = current.analysis_executor
-            if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
-                raise AnalysisBackpressure()
-            self._running += 1
-            try:
-                return await _run_retrieval(
-                    executor,
-                    self._analysis_job,
-                    deps=deps,
-                    timings=timings,
-                    refuse=AnalysisBackpressure,
-                    wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
-                    keep_waiting=bound_release_served(),
-                    current=current,
-                    keyed=keyed,
-                    trace_id=trace_id,
-                )
-            finally:
-                self._running -= 1
+            return await self._on_analysis_thread(
+                self._analysis_job,
+                current=current,
+                deps=deps,
+                timings=timings,
+                keyed=keyed,
+                trace_id=trace_id,
+            )
 
         return answering
 

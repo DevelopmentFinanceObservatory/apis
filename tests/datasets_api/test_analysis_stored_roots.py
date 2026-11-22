@@ -8,12 +8,14 @@ head names the raw version and the cut is a version of its own recorded from it.
 
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 from typing import Any
 
 import httpx
 import pytest
 
+import datasets_api.analysis_roots as analysis_roots
 import datasets_api.current as current
 import datasets_api.doors.analysis as analysis_door
 from dataset_store.snapshot import LiveSnapshotReader
@@ -35,6 +37,7 @@ from .test_analysis_cut_sums import (
 )
 from .test_definition_door import _client
 from .test_definition_door_currency import _PAST_INTERVAL, _FakeHeadStore
+from .test_meta_doors import _operation
 
 _PATH = "/api/datasets/analysis"
 _CUT = {"without_party_totals": True}
@@ -206,10 +209,19 @@ def test_a_stored_miss_whose_cut_file_is_gone_renders_it_on_the_analysis_thread(
 def test_a_stale_head_resolves_pending_and_submits_one_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Past the recheck window, inside the serve-stale ceiling: the root reads the head as it
-    stands, and the head's check is submitted once for the dataset's two roots."""
+    """Past the recheck window, inside the serve-stale ceiling: the dataset's two roots read
+    the head as it stands from one read of it per resolution, the keying's and, for a root
+    rendered at locate, the analysis thread's, and its check is submitted once."""
     rig = _Rig(monkeypatch)
     rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    reads: list[str] = []
+    head_version = analysis_roots.stored_head_version
+
+    def reading(stored: Any, **kwargs: Any) -> Any:
+        reads.append(threading.current_thread().name)
+        return head_version(stored, **kwargs)
+
+    monkeypatch.setattr(analysis_roots, "stored_head_version", reading)
     root = {"spec_id": rig.spec_id, "rendering": _CUT}
     tree = {
         "verb": "sum_of",
@@ -222,6 +234,8 @@ def test_a_stale_head_resolves_pending_and_submits_one_check(
     assert response.json()["resolved_roots"] == [
         {"spec_id": rig.spec_id, "content_version": rig.raw, "freshness": "pending"}
     ]
+    assert reads
+    assert len(set(reads)) == len(reads)
     assert len(rig.tasks.enqueued) == 1
 
 
@@ -251,13 +265,22 @@ def test_a_head_past_the_serve_stale_ceiling_answers_202(
     assert len(response.json()["operations"]) == 1
 
 
-def test_a_stored_read_of_a_recorded_cut_marks_its_read(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("served", [True, False], ids=["served", "file-gone"])
+def test_a_stored_read_of_a_recorded_cut_marks_its_read(
+    monkeypatch: pytest.MonkeyPatch, served: bool
+) -> None:
+    """A stored request reading the cut marks the cut's read from the head, whether its file
+    is served or gone and the hit renders nothing, so render ahead keeps rendering it."""
     rig = _Rig(monkeypatch)
     assert rig.pinned(_UNSUMMED).status_code == 200
+    if not served:
+        rig.age_rendered_files()
     with rig.store.transaction() as tx:
         tx.execute("UPDATE datasets.version_artifact_head SET read_at = NULL")
+    renders = rig.renders
 
     assert rig.stored(_UNSUMMED).status_code == 200
+    assert rig.renders == renders
 
     with rig.store.transaction() as tx:
         rows = tx.fetch_all(
@@ -267,3 +290,72 @@ def test_a_stored_read_of_a_recorded_cut_marks_its_read(monkeypatch: pytest.Monk
         )
     assert rows
     assert any(row["read_at"] is not None for row in rows)
+
+
+def test_a_stored_root_whose_trace_counts_no_observations_reads_no_frame_while_keying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trace minted before traces counted observations names its sum's StatVars only in the
+    stored frame. Keying under `"stored"` reads no frame: the root resolves on the analysis
+    thread, where the frame is read, under the pinned request's key and answer."""
+    rig = _Rig(monkeypatch)
+    monkeypatch.setattr(analysis_roots, "_counts_recorded", lambda trace: False)
+    threads: list[str] = []
+    read = analysis_roots.LiveRootSource._stored_stat_vars
+
+    def reading(self: Any, *args: Any, **kwargs: Any) -> Any:
+        threads.append(threading.current_thread().name)
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(analysis_roots.LiveRootSource, "_stored_stat_vars", reading)
+    pinned = rig.pinned(_SUMMED)
+    threads.clear()
+    stored = rig.stored(_SUMMED)
+
+    assert pinned.status_code == 200, pinned.text
+    assert stored.status_code == 200, stored.text
+    assert rig.keys[0] == rig.keys[-1]
+    assert stored.json()["ref"] == pinned.json()["ref"]
+    assert threads
+    assert not [name for name in threads if name.startswith("datasets-analysis-key")], threads
+
+
+def _revoke_head(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    with rig.store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation "
+            "(subject_id, content_version, reason, trace_id, revoked_at) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (rig.spec_id, rig.raw, "taken down", None, "2026-10-30"),
+        )
+
+
+def _fail_head_check(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The head past its recheck window, and its check failed for good."""
+    rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    monkeypatch.setattr(
+        current,
+        "head_check_operation",
+        lambda **_: _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("setup", "status", "code"),
+    [
+        pytest.param(_revoke_head, 410, "snapshot_revoked", id="revoked"),
+        pytest.param(_fail_head_check, 500, "internal_error", id="check-failed"),
+    ],
+)
+def test_a_stored_root_refuses_a_head_the_head_get_refuses(
+    monkeypatch: pytest.MonkeyPatch, setup: Any, status: int, code: str
+) -> None:
+    """A head whose version is taken down refuses `snapshot_revoked`, and one whose check failed
+    for good refuses as a dataset root whose queued rebuild failed refuses under `latest:
+    true` (`RefreshRebuildFailed`)."""
+    rig = _Rig(monkeypatch)
+    setup(rig, monkeypatch)
+    response = rig.stored(_UNSUMMED)
+
+    assert response.status_code == status, response.text
+    assert response.json()["code"] == code

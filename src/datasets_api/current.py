@@ -1729,6 +1729,16 @@ def stored_head_version(
     through `serve_current` (`head_check_operation`), in place of a rebuild in the request.
     `revoked_under` is `load_stored`'s.
 
+    One difference from the GET is deliberate: a head whose version is a frame of one year
+    whose year coverage was never counted serves as it stands, where the GET rebuilds it once
+    (`_serve_head`'s `_YEAR_COVERAGE`). That rebuild counts the coverage on the version it
+    makes, the same version, so the version a root reads and its key do not change.
+
+    A head keyed on the bound release's import whose `head_imported_data_max_age_seconds`
+    is at or past the ceiling answers 202 on every request once past the ceiling, since its
+    check rebuilds it only past that max age. Only settings with that ceiling at or below the
+    imported max age reach it.
+
     Raises:
         OperationSubmitted: The rebuild is queued, its row pending or running, or a check or
             rebuild failed for good, its row `failed`.

@@ -154,14 +154,14 @@ from datasets_api.render import (
     resolved_rendering_keys,
     servable_frame_location,
 )
-from datasets_api.render_ahead import mark_root_read, read_recently
+from datasets_api.render_ahead import mark_recorded_read, mark_root_read, read_recently
 from datasets_api.store_errors import (
     read_stored_frame,
     stored_frame_distinct,
     stored_frame_row_count,
 )
 from datasets_api.timings import phase
-from datasets_api.versions import RENDER_FORMAT, enrichment_stamp, rendering_stamp
+from datasets_api.versions import RENDER_FORMAT, HeadVersion, enrichment_stamp, rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -496,10 +496,11 @@ class _Unserved:
 
 
 class RenderNeeded(Exception):
-    """A root under `latest: "stored"` whose minting rendering no record names, so its version,
-    and the request key, are known only once it renders. A source that defers renders raises
-    it, and the caller resolves the request again on a source that renders
-    (`doors.analysis`)."""
+    """A root under `latest: "stored"` whose minting rendering no record names, or whose trace
+    counts no observations so its sums' series are read from the stored frame
+    (`LiveRootSource._contributing`), so its version, and the request key, are known only once
+    a frame is read. A source that defers renders raises it, and the caller resolves the
+    request again on a source that renders (`doors.analysis`)."""
 
     def __init__(self, *, spec_id: str, content_version: str) -> None:
         self.spec_id = spec_id
@@ -654,6 +655,9 @@ class LiveRootSource:
         self._render = render
         self._max_root_rows = max_root_rows
         self._defer_renders = defer_renders
+        # Set while a root under `latest: "stored"` resolves with renders deferred, so nothing
+        # reads a frame (`_contributing`).
+        self._deferring = False
         self._located_rows = 0
         # The stored head each dataset's first root under `latest: "stored"` resolved to, by
         # its served id, or the refusal or pending answer it met, so every root of a dataset
@@ -735,7 +739,7 @@ class LiveRootSource:
         (`current.stored_head_version`), in the rendering it names, as a pinned root naming that
         version reads it (`_at_version`), so the two resolve to one record and one version. The
         first root of a dataset reads the head and submits its check, and every later root of
-        it reads that version. A head the rules cannot serve answers pending on its queued
+        it reads that version, judged for revocation under the id it posts. A head the rules cannot serve answers pending on its queued
         rebuild, and a check or rebuild that failed for good refuses as a dataset root whose
         queued rebuild failed does (`RefreshRebuildFailed`).
 
@@ -748,21 +752,28 @@ class LiveRootSource:
         head = self._heads.get(served.spec_id)
         if head is None:
             head = self._head_of(served, posted=root.spec_id)
-            self._heads[served.spec_id] = head
+            # A revocation is judged under the id each root posts (`_at_version` judges it for
+            # a head read already), so it is never shared with a root posted under another id.
+            if not isinstance(head, SnapshotRevoked):
+                self._heads[served.spec_id] = head
         if isinstance(head, Exception):
             raise head
-        resolved = self._at_version(
-            DatasetRoot(
-                spec_id=served.spec_id,
-                content_version=head.content_version,
-                rendering=root.rendering,
-            ),
-            path_words=path_words,
-            codes=codes,
-            trace_id=trace_id,
-            revoked_under=(root.spec_id,),
-            defer=self._defer_renders,
-        )
+        self._deferring = self._defer_renders
+        try:
+            resolved = self._at_version(
+                DatasetRoot(
+                    spec_id=served.spec_id,
+                    content_version=head.content_version,
+                    rendering=root.rendering,
+                ),
+                path_words=path_words,
+                codes=codes,
+                trace_id=trace_id,
+                revoked_under=(root.spec_id,),
+                defer=self._defer_renders,
+            )
+        finally:
+            self._deferring = False
         return replace(resolved, head=head)
 
     def _head_of(self, served: StoredDefinition, *, posted: str) -> StoredHead | Exception:
@@ -887,10 +898,18 @@ class LiveRootSource:
         """The StatVars with data in the dataset version `content_version`, as bare dcids:
         those its `trace` counts observations for (`summed_refs`), or, for a trace that counts
         none, as a version minted before traces counted them records, the distinct `stat_var`
-        cells of the version's stored frame (`_stored_stat_vars`), read once per version."""
+        cells of the version's stored frame (`_stored_stat_vars`), read once per version. A
+        root resolving with renders deferred reads no frame, so it raises `RenderNeeded` there
+        and is resolved where it may read one, as a pinned root is.
+
+        Raises:
+            RenderNeeded: The trace counts none, while renders are deferred.
+        """
         if _counts_recorded(trace):
             return summed_refs(trace)
         key = (spec_id, content_version)
+        if key not in self._stat_vars and self._deferring:
+            raise RenderNeeded(spec_id=spec_id, content_version=content_version)
         if key not in self._stat_vars:
             self._stat_vars[key] = self._stored_stat_vars(spec_id, content_version, trace)
         return self._stat_vars[key]
@@ -1126,6 +1145,10 @@ class LiveRootSource:
         a rendering the records serve answers as it does without, and one they do not serve
         resolves to the version they name and renders at `locate` (`_deferred`).
 
+        A sum the door refuses (`rollup_not_summable`) records no version, so under `defer` a
+        root implying it raises `RenderNeeded` on every stored request and its analysis thread
+        attempts the fold again before reading the root unsummed.
+
         Raises:
             RenderNeeded: With `defer`, a minting rendering no record names.
         """
@@ -1327,7 +1350,7 @@ class LiveRootSource:
             except SnapshotRevoked:
                 return None
         if servable_frame_location(stored.servable, now=now) is None:
-            return _Unserved(recorded.content_version) if unserved else None
+            return self._unserved(spec_id, content_version, recorded, keys) if unserved else None
         manifest = servable_snapshot_manifest(
             stored,
             id=spec_id,
@@ -1339,7 +1362,7 @@ class LiveRootSource:
         )
         artifact = _data_artifact(manifest)
         if artifact is None:
-            return _Unserved(recorded.content_version) if unserved else None
+            return self._unserved(spec_id, content_version, recorded, keys) if unserved else None
         last_read = next(
             (
                 link.read_at.get(content_version)
@@ -1351,6 +1374,30 @@ class LiveRootSource:
         if not read_recently(last_read, now=now):
             self._mark_read(spec_id, content_version, manifest)
         return manifest
+
+    def _unserved(
+        self,
+        spec_id: str,
+        content_version: str,
+        recorded: HeadVersion,
+        keys: Sequence[str],
+    ) -> _Unserved:
+        """`recorded`, whose rendering keyed by `keys` is not served, as `_Unserved`, its read
+        from `content_version` recorded from the links in hand
+        (`render_ahead.mark_recorded_read`), so render ahead keeps rendering what stored
+        answers still read."""
+        lister = self._deps.version_lister
+        if lister is not None and self._render:
+            mark_recorded_read(
+                lister,
+                subject_id=spec_id,
+                recorded=recorded,
+                head_content_version=content_version,
+                rendering_keys=keys,
+                enrichment_digest=self._deps.code_index.enrichment_digest,
+                now=self._deps.now(),
+            )
+        return _Unserved(recorded.content_version)
 
     def _mark_read(self, spec_id: str, content_version: str, manifest: Manifest | None) -> None:
         """Record a read of the rendering `manifest` lists as made from the dataset version
