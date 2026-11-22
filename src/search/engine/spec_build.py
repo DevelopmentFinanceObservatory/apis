@@ -1439,12 +1439,11 @@ def build_spec(
             ``plan`` was elected for, hashed with its window and populations
             (``CompositeMint.table_components``), is stated from ``plan`` narrowed to the
             years it previews (``ResolvedSpec.component_continued``), so a request reading
-            no preview resolves it no second time. A ``plan`` the request's own filter or
-            window narrowed (``ReadPlan.request_filtered``) elected over inputs the hash
-            does not hold, and one whose years are not the read identity's requested
-            window as a read clamps it, as a trailing answer's settled plan, was elected under another window
-            (``_reads_window_of``), so either states none. Every other field is the table
-            identity's. None mints the table identity itself.
+            no preview resolves it no second time. A plan the request's own filter or window
+            narrowed (``ReadPlan.request_filtered``), or one elected under another window
+            than the read identity's, clamped as a read clamps it (``_reads_window_of``, as
+            a trailing answer's settled plan is), states none. Every other field is the
+            table identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,

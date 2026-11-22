@@ -1247,7 +1247,9 @@ def merge_facets(facets: Sequence[Facet]) -> Facet:
     """The first of `facets` with the others' points added: counts summed, date bounds
     widened, dated points concatenated in order, the earliest series end kept
     (`Facet.first_series_end`), and annual evidence held only when every facet holds it
-    (`Facet.reads_annual`). The merged dates are complete while
+    (`Facet.reads_annual`). A merge of coverage facets alone (`Facet.dates_coarsened`), none
+    merged with evidence against annual, states no evidence (`annual_evidence` None), since
+    coverage's years are none either way. The merged dates are complete while
     each facet's dates account for its observations, so a facet read without dates leaves
     them incomplete. Metadata stays the first facet's.
 
@@ -1270,7 +1272,11 @@ def merge_facets(facets: Sequence[Facet]) -> Facet:
         dates_complete=all(
             _dates_account_for_points(f) if dates else f.dates_complete for f in facets
         ),
-        annual_evidence=all(f.reads_annual for f in facets),
+        annual_evidence=(
+            None
+            if all(f.dates_coarsened and f.annual_evidence is not False for f in facets)
+            else all(f.reads_annual for f in facets)
+        ),
     )
 
 

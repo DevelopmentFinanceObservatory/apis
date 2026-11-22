@@ -42,9 +42,10 @@ its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
 `served_entry` and `as_composite` steps of its `timing_by_step`, a buffered composite
-preview's read under `composite_preview`, and the component plans a composite read with no
-preview states its continuation from under `composite_continuation`, beside the steps `resolve_spec_resubmit` books, so
-the part's total covers the scope compile and the composite answer.
+preview's read under `composite_preview`, and the component-plan resolves that state a
+no-preview composite's continuation under `composite_continuation`, beside the steps
+`resolve_spec_resubmit` books, so the part's total covers the scope compile and the
+composite answer.
 
 An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the

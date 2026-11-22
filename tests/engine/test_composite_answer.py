@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import threading
 import time
 from collections.abc import Sequence
@@ -831,21 +832,21 @@ def test_a_component_read_failing_on_a_code_fault_fails_the_request(monkeypatch,
 
 @pytest.mark.parametrize("door", ["fresh", "resubmit"])
 @pytest.mark.parametrize(
-    ("fault", "degraded"),
+    ("fault", "degraded", "memo_entries"),
     [
-        pytest.param("lost", True, id="lost"),
-        pytest.param("refused", False, id="refused"),
-        pytest.param("no_data", False, id="no_data"),
+        pytest.param("lost", True, 1, id="lost"),
+        pytest.param("refused", False, 1, id="refused"),
+        pytest.param("no_data", False, 2, id="no_data"),
     ],
 )
 def test_a_continuation_resolve_that_states_nothing_still_answers_the_part(
-    monkeypatch, door, fault, degraded
+    monkeypatch, caplog, door, fault, degraded, memo_entries
 ):
     """Asked with no preview, the imputed component's resolve is lost to a graph failure,
     refused, or answers no definite Spec. The part still answers the composite and states no
-    continuation. A lost read is transient, so the answer is degraded and no cache stores
-    it; a refusal or a no-data answer is deterministic, so the answer stays whole and a
-    fresh one is cached."""
+    continuation, and one INFO line names the component's role. A lost read is transient,
+    so the answer is degraded and no cache stores it; a refusal or a no-data answer is
+    deterministic, so the answer stays whole and is cached."""
     first, components = _components(monkeypatch)
     if fault == "lost":
         components.failures["imputed"] = GraphInfraError("down")
@@ -854,17 +855,33 @@ def test_a_continuation_resolve_that_states_nothing_still_answers_the_part(
     else:
         components.statuses["imputed"] = "no_data"
     components.continued.add("imputed")
+    # The fixture graph holds none of the table identity's members, and the memo refuses a
+    # region warning `members_absent_from_graph`.
+    monkeypatch.setattr(response_cache_flow, "is_region_storable", lambda *_a, **_k: True)
     cache = ResponseCache()
+    memo = PartMemo()
     request = _request(door, first).model_copy(update={"response_options": ResolveOptions()})
 
-    events = offline_events(request, response_cache=cache, **_clients())
+    with caplog.at_level(logging.INFO, logger=composite_answer.__name__):
+        events = offline_events(request, response_cache=cache, part_memo=memo, **_clients())
 
     assert _answered(events).spec_id == first.spec_id
     assert "modelled_values" not in {d.code for d in _part(events).departures}
     assert _done(events).degraded_leg is degraded
+    stated_none = [
+        record.json_fields["component_role"]
+        for record in caplog.records
+        if record.levelname == "INFO" and "continuation_cause" in getattr(record, "json_fields", {})
+    ]
+    assert stated_none == ["imputed"]
     if door == "fresh":
-        # The response cache stores fresh answers; a resubmit's parts go to the part memo.
         assert (cache.stats().entries > 0) is not degraded
+    else:
+        # A resubmit's part memo holds the table identity's part, stored before its
+        # components resolve, so a repeat resolves them again, and the imputed component's
+        # answer only where it answered: a no-data answer is stored, a lost or refused
+        # resolve leaves nothing.
+        assert memo.stats()["entries"] == memo_entries
 
 
 @pytest.mark.parametrize("door", ["fresh", "resubmit"])

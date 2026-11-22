@@ -3,6 +3,7 @@ construction. Contested keys keep the rows from the highest-ranked facet."""
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
@@ -10,6 +11,8 @@ from typing import NamedTuple
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from dfo_platform import timings
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.frame_build import (
     # Reuse `frame_build`'s canonicaliser so grain keys match `Frame.build`.
     _canonicalize_stat_var_ref,
@@ -18,6 +21,8 @@ from materialise.window import (
     # Reuse `window`'s year parser so facet ranking matches the window rules.
     _leading_year,
 )
+
+logger = logging.getLogger(__name__)
 
 _FACET_ID_COLUMN = "facetId"
 
@@ -55,7 +60,8 @@ def collapse_duplicate_identity_facets_table(
     only part of the rows they rank over, when it names every facet of `table`. A table
     holding a facet `ranks` lacks (a null `facetId`, one the graph has not listed yet) ranks
     every facet by its rows, since a rank over rows and one over a whole window are on
-    different scales."""
+    different scales; it counts on the request's timings (`collapse_rank_fallbacks`) and
+    logs at DEBUG with the facets `ranks` lacks."""
     facet_id_column = table[_FACET_ID_COLUMN]
     distinct = pc.count_distinct(facet_id_column, mode="all")
     distinct_facets = distinct.as_py()
@@ -66,7 +72,21 @@ def collapse_duplicate_identity_facets_table(
         raise ValueError("ranks are a whole table's; a within-series rank reads the cells")
     sorted_declared_roles = sorted(declared_roles)
     cells = _cells_from_table(table, sorted_declared_roles)
-    if ranks is not None and set(pc.unique(facet_id_column).to_pylist()) - ranks.keys():
+    unranked = (
+        set(pc.unique(facet_id_column).to_pylist()) - ranks.keys() if ranks is not None else set()
+    )
+    if ranks is not None and unranked:
+        timings.count("collapse_rank_fallbacks")
+        logger.debug(
+            "facet collapse ranks by rows: %d facets unranked",
+            len(unranked),
+            extra={
+                JSON_FIELDS_ATTR: {
+                    "collapse_rank_fallback": True,
+                    "unranked_facets": sorted(unranked, key=str),
+                }
+            },
+        )
         ranks = None
     keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series, ranks=ranks)
     if keep is None:

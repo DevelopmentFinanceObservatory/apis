@@ -43,6 +43,8 @@ from typing import TYPE_CHECKING, Protocol, Self, cast
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxClientError
+from dfo_platform import timings
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import bounded_deadline
 from materialise import (
@@ -666,21 +668,20 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
 
 
 def _annual(facet: Facet) -> bool:
-    """Whether `facet` is annual on evidence with none against it: dates that read annual
-    (`Facet.reads_annual`), or a `P1Y` observation period beside dates that are coverage's
-    years, no evidence whatever its cadence (`Facet.dates_coarsened`), or bare years too few
-    to read annual. A `P1Y` facet dated by month, or merged with one
-    (`Facet.annual_evidence`), is not."""
+    """Whether `facet` is annual on evidence with none against it. Every date it lists and
+    each bound it knows must be a bare year, whatever else holds, so a month in an
+    incomplete date list inside bare-year bounds counts against it. Then its dates must read
+    annual (`Facet.reads_annual`), or it carries a `P1Y` observation period beside dates
+    that are coverage's years, no evidence whatever its cadence (`Facet.dates_coarsened`),
+    or bare years too few to read annual. A facet merged with one whose dates are not annual
+    (`Facet.annual_evidence` False) is not, even beside coverage's years: a merge of
+    coverage facets alone states no evidence either way (`materialise.facets.merge_facets`)."""
+    own = (*facet.dates, facet.earliest_date, facet.latest_date)
+    if not all(date is None or (len(date) == 4 and date.isdigit()) for date in own):
+        return False
     if facet.reads_annual:
         return True
-    if facet.observation_period != "P1Y":
-        return False
-    if facet.dates_coarsened:
-        return True
-    if facet.annual_evidence is False:
-        return False
-    own = (*facet.dates, facet.earliest_date, facet.latest_date)
-    return all(date is None or (len(date) == 4 and date.isdigit()) for date in own)
+    return facet.observation_period == "P1Y" and facet.annual_evidence is not False
 
 
 def _window_ranks(
@@ -1008,8 +1009,34 @@ def _shared_spans(
             continue
         fetched = shared[group]
         ranks = span.ranks if fetched is not None else None
+        timings.count("span_reads_widened")
         widened.append(replace(dispatch, span=replace(span, fetched=fetched, ranks=ranks)))
     return widened
+
+
+def _count_span_reads(dispatches: Sequence[_Dispatch]) -> None:
+    """Count each span read of `dispatches` on the request's timings, so the door's log
+    line states how many asked SDMX for bounded years (`span_reads_bounded`) and how many
+    for the whole window (`span_reads_whole_window`), a bulk group's widened reads among
+    them (`_shared_spans` counts those as `span_reads_widened`). A read with no span counts
+    nothing. A debug line states the same counts for the read."""
+    spans = [dispatch.span for dispatch in dispatches if dispatch.span is not None]
+    if not spans:
+        return
+    bounded = sum(span.fetched is not None for span in spans)
+    timings.count("span_reads_bounded", bounded)
+    timings.count("span_reads_whole_window", len(spans) - bounded)
+    logger.debug(
+        "span reads: %d bounded, %d whole window",
+        bounded,
+        len(spans) - bounded,
+        extra={
+            JSON_FIELDS_ATTR: {
+                "span_reads_bounded": bounded,
+                "span_reads_whole_window": len(spans) - bounded,
+            }
+        },
+    )
 
 
 def _union(a: RequestedWindow | None, b: RequestedWindow | None) -> RequestedWindow | None:
@@ -1434,6 +1461,7 @@ def _run_pair_fetch_pool(
         materialise_sdmx = _bulk_pair_sdmx(
             dispatches, inner=materialise_sdmx, member_facts=member_facts, deadline=deadline
         )
+    _count_span_reads(dispatches)
     with ThreadPoolExecutor(
         max_workers=max(1, min(settings().obs_preview_concurrency, len(dispatches))),
         thread_name_prefix="obs-preview",

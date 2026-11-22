@@ -9,10 +9,12 @@ from unittest.mock import patch
 import pytest
 
 import search.engine.region.observations.fetch as region_fetch
+from dfo_platform.timings import PhaseTimings, collecting
 from materialise import (
     MaterialisationRequest,
     SpanRead,
 )
+from materialise.facets import merge_facets
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.rate_tables import RateTableCache
 from materialise.window import RequestedWindow
@@ -700,8 +702,14 @@ def _facet(case: str, facet_id: str) -> MaterialiseFacet:
     [
         pytest.param(None, "coverage", False, id="coverage-years-alone"),
         pytest.param("P1Y", "coverage", True, id="annual-period"),
+        # Coverage's years for two places, merged: still no evidence against annual.
+        pytest.param("P1Y", "coverage-merged", True, id="annual-period-merged-coverage"),
         # The period says annual and the graph's own dates say monthly.
         pytest.param("P1Y", "month", False, id="annual-period-dated-by-month"),
+        # Coverage's years merged with a facet whose own dates are not annual.
+        pytest.param("P1Y", "coverage-merged-with-month", False, id="merged-with-a-month"),
+        # Bare-year bounds read annual while the incomplete date list holds a month.
+        pytest.param(None, "month-in-incomplete-dates", False, id="month-in-incomplete-dates"),
     ],
 )
 def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
@@ -709,10 +717,23 @@ def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
 ):
     """A coverage facet's years are coverage's whatever its cadence, so they alone leave
     the read asking for the whole window; a `P1Y` period lets it ask for the span's years,
-    unless the facet's own dates are months."""
+    unless the facet's own dates, or those of a facet merged into it, are months."""
     facet = replace(_facet("one-facet", "1"), observation_period=observation_period)
     if dated == "coverage":
         facet = replace(facet, dates_coarsened=True)
+    elif dated == "coverage-merged":
+        facet = merge_facets([replace(facet, dates_coarsened=True)] * 2)
+    elif dated == "coverage-merged-with-month":
+        facet = replace(facet, dates_coarsened=True, annual_evidence=False)
+    elif dated == "month-in-incomplete-dates":
+        facet = replace(
+            facet,
+            dates=("2010", "2015-06", "2020"),
+            values=(1.0, 1.0, 1.0),
+            earliest_date="2010",
+            latest_date="2020",
+            dates_complete=False,
+        )
     else:
         facet = replace(
             facet,
@@ -721,9 +742,18 @@ def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
             latest_date=f"{facet.latest_date}-06",
         )
 
-    _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
 
     assert periods == ([[str(year) for year in range(2011, 2025)]] if bounded else [None])
+    # The request's timings count the read on the side it took.
+    counts = timings.count_snapshot()
+    assert (counts["span_reads_bounded"], counts["span_reads_whole_window"]) == (
+        int(bounded),
+        int(not bounded),
+    )
 
 
 def test_an_every_date_span_read_fetches_past_a_lagging_graph_to_the_clock_year(monkeypatch):

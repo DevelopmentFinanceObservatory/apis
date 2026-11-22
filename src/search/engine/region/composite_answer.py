@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, cast
 import dc_graph
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import Catalogue, bound_catalogue, recording_un_blocked_places
@@ -281,8 +282,11 @@ async def read_composite_continuation(
     years (`ResolvedSpec.component_continued`). Each other one resolves its read plan as its
     preview's resolve elects it (`_component_continuation`). The composite serves one when
     any plan narrowed to its component's years does (`read_plan.serves_continuation`), none
-    when every plan serves none, and states nothing when a component's resolve was lost and
-    no other serves one, as `compose_observations` settles it from the reads.
+    when every plan serves none, and states nothing (None) when no plan serves one and a
+    component's resolve states none, as `compose_observations` settles it from the reads.
+    That resolve was lost, which marks the answer degraded so no cache stores it, or it
+    refused the identity or answered no definite Spec, which states no claim and leaves the
+    answer cacheable (`_component_continuation`).
 
     The resolves run together, each holding a permit of `semaphore` when one is given, and
     read no row. Cancelling the caller cancels every resolve still running."""
@@ -335,31 +339,37 @@ async def _component_continuation(
     years `component_preview` names (`_resubmit`), serves a continuation in those years
     (`ResolvedSpec.continued`), or None when its resolve states none.
 
-    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient: it is noted once
-    (`_resubmit` notes its own, `note_lost_read` any other), so the answer is degraded and no
-    cache stores it. A resolve that refuses the identity (`EngineInputError`) or answers no
-    definite Spec is deterministic, so it states no continuation and leaves the answer
-    cacheable. Any other error is a code fault and propagates, as on the preview path."""
-    about = f"composite continuation: component {item.component.role}"
-    try:
-        document, years = component_preview(item)
-        region = await _resubmit(
-            BaseIdentity.model_validate(document),
-            groups,
-            reads=reads,
-            semaphore=semaphore,
-            about=f"component {item.component.role} plan",
-            populations=item.component.populations,
-            years=years,
-            observations=False,
-        )
-    except EngineInputError:
-        return None
-    except LOST_READ_ERRORS as exc:
-        logger.warning("%s lost", about, exc_info=True)
-        note_lost_read(about, exc)
-        return None
+    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient: `_resubmit` notes and
+    logs it, so the answer is degraded and no cache stores it. A resolve that refuses the
+    identity (`EngineInputError`) or answers no definite Spec is deterministic, so it states
+    no continuation and leaves the answer cacheable. Each of these is logged at INFO with the
+    component's role, its identity and the cause, so a component whose resolve keeps
+    refusing shows in the logs while its answers lose their modelled-value claims. Any other
+    error is a code fault and propagates, as on the preview path."""
+    document, years = component_preview(item)
+    region = await _resubmit(
+        BaseIdentity.model_validate(document),
+        groups,
+        reads=reads,
+        semaphore=semaphore,
+        about=f"component {item.component.role} plan",
+        populations=item.component.populations,
+        years=years,
+        observations=False,
+    )
     if isinstance(region, _LostRead):
+        logger.info(
+            "composite continuation: component %s states none: %s",
+            item.component.role,
+            region.cause,
+            extra={
+                JSON_FIELDS_ATTR: {
+                    "component_role": item.component.role,
+                    "component_identity": document,
+                    "continuation_cause": region.cause,
+                }
+            },
+        )
         return None
     return region.spec.resolved.continued
 

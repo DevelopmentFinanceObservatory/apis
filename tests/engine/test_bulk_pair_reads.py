@@ -22,6 +22,7 @@ import pytest
 
 from dc_sdmx import SdmxClient
 from dc_sdmx.results import observation_schema
+from dfo_platform.timings import PhaseTimings, collecting
 from materialise.facets import FacetSelection
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
@@ -372,7 +373,11 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
     per_series, per_series_warn, per_series_requests = _preview(
         case, concurrency=100, search_settings=search_settings
     )
-    bulk, bulk_warn, bulk_requests = _preview(case, concurrency=2, search_settings=search_settings)
+    timings = PhaseTimings()
+    with collecting(timings):
+        bulk, bulk_warn, bulk_requests = _preview(
+            case, concurrency=2, search_settings=search_settings
+        )
 
     assert per_series.series, per_series
     assert bulk.model_dump() == per_series.model_dump()
@@ -389,6 +394,10 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
         # A composite component's reads ask for the union of their years, one request.
         expected = 1 if case.served is not None else len(periods)
         assert len(bulk_requests) == expected * (2 if name == "two_debtors" else 1)
+        # The first member's one-facet read is the one the union widens.
+        assert timings.count_snapshot().get("span_reads_widened") == (
+            1 if case.served is not None else None
+        )
         assert all(len(params["c[variableMeasured]"].split(",")) > 1 for params in bulk_requests)
 
 

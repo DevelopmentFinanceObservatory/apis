@@ -9,6 +9,7 @@ import pyarrow as pa
 import pytest
 
 from dc_sdmx import SdmxObservation
+from dfo_platform.timings import PhaseTimings, collecting
 from materialise.facet_collapse import (
     CollapseCell,
     FacetRankStats,
@@ -378,7 +379,8 @@ def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_
     """The ranks name facet "1" alone, while the table holds facet "2" and a row with no
     facet id too. Ranks over a window and ranks over rows are on different scales, so every
     facet ranks by its rows: "2", two rows, beats "1", one row here though ten over the
-    window, on the 2016 key, and the null facet on 2017."""
+    window, on the 2016 key, and the null facet on 2017. The request's timings count the
+    fallback."""
     rows = (
         _row(facet_id="1", observation_period=None, time_period="2016", value="a"),
         _row(facet_id="2", observation_period=None, time_period="2016", value="b"),
@@ -387,11 +389,15 @@ def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_
     )
     ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
 
-    kept = collapse_duplicate_identity_facets_table(
-        _table(rows), declared_roles=_ROLES, ranks=ranks
-    )
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        kept = collapse_duplicate_identity_facets_table(
+            _table(rows), declared_roles=_ROLES, ranks=ranks
+        )
 
     assert kept["OBS_VALUE"].to_pylist() == ["b", "c"]
+    assert timings.count_snapshot() == {"collapse_rank_fallbacks": 1}
 
 
 def test_keep_mask_refuses_ranks_that_lack_a_facet_of_its_cells():

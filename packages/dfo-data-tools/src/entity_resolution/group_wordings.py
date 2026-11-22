@@ -151,7 +151,7 @@ class Wording:
 
 @dataclass(frozen=True, slots=True)
 class GroupWordings:
-    """`aliases` maps each normalized generated text to the `Wording` it resolves as.
+    """`aliases` maps each normalised generated text to the `Wording` it resolves as.
     `unnamed` lists the names left out, each with its reason. `conflicts` maps a group whose
     curated rows disagree to those rows' keys; it reads as itself."""
 
@@ -237,7 +237,7 @@ def build_group_wordings(
 ) -> GroupWordings:
     """Generate the wording aliases of every group in `groups`.
 
-    `curated` holds the curated query aliases by normalized key; they win over a generated
+    `curated` holds the curated query aliases by normalised key; they win over a generated
     text and give a generated text its reading."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     generated: dict[str, dict[str, Wording]] = {}
