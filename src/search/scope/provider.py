@@ -50,6 +50,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Collection, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal, cast, get_args
@@ -205,7 +206,8 @@ class Withheld:
 @dataclass(frozen=True, slots=True)
 class InclusiveReach:
     """What the inclusive scope serves of a part: `asked`, the years its bilateral answer
-    holds in the window it asks for, and `covered`, those of them the composite serves, in
+    holds in the window it asks for, read under the caller's source scope as the part's own
+    answer reads it, and `covered`, those of them the composite serves, in
     the years both tables cover (`composite.served_components`). For a part asking for the
     latest year, `latest` is the year a `latest` read elects
     (`series_coverage.index.elected_year`) over `covered`, counting the series of both
@@ -226,12 +228,13 @@ def inclusive_reach(identity: BaseIdentity, facts: ScopeFacts, *, composite: str
     document = identity.model_dump(mode="json", exclude_none=True)
     served = served_components(_with_composite(document, composite), facts=facts)
     bilateral = next(c for c in served if c.component.role == "bilateral")
+    asked = component_years(bilateral.component.identity, facts=facts).held
     covered = frozenset[int].intersection(*(c.served for c in served))
     if document["requested_window"]["kind"] == "latest":
         return InclusiveReach(
-            asked=bilateral.years.held, covered=covered, latest=elected_year(_served_counts(served))
+            asked=asked, covered=covered, latest=elected_year(_served_counts(served))
         )
-    return InclusiveReach(asked=bilateral.years.held, covered=covered)
+    return InclusiveReach(asked=asked, covered=covered)
 
 
 def _served_counts(served: Sequence[ServedComponent]) -> dict[int, int]:
@@ -907,21 +910,30 @@ def _latest_sibling_option(
     )
 
 
-def _tables(identity: BaseIdentity, facts: ScopeFacts) -> list[Mapping[str, object]]:
-    """The identity of each table `identity` reads: its components on the OECD headline
-    (`component_identities`), itself otherwise."""
+def _tables(
+    identity: BaseIdentity, facts: ScopeFacts
+) -> tuple[list[Mapping[str, object]], AbstractContextManager[object]]:
+    """The identity of each table `identity` reads, its components on the OECD headline
+    (`component_identities`), itself otherwise, and the scope they read under: no source
+    scope but each component's pin for a composite's components
+    (`origin_catalogue.pinned_reads`), as a mint of it reads them, and the caller's
+    otherwise."""
     document = identity.model_dump(mode="json", exclude_none=True)
     components = component_identities(facts.index, document)
-    return [document] if components is None else [c.identity for c in components]
+    if components is None:
+        return [document], nullcontext()
+    return [c.identity for c in components], pinned_reads(None)
 
 
 def _year_counts(identity: BaseIdentity, facts: ScopeFacts) -> dict[int, int]:
     """How many series of the tables `identity` reads hold each year of its window
     (`component_years`), summed over the tables."""
     counts: dict[int, int] = {}
-    for table in _tables(identity, facts):
-        for year, series in component_years(table, facts=facts).counts.items():
-            counts[year] = counts.get(year, 0) + series
+    tables, reading = _tables(identity, facts)
+    with reading:
+        for table in tables:
+            for year, series in component_years(table, facts=facts).counts.items():
+                counts[year] = counts.get(year, 0) + series
     return counts
 
 
@@ -931,7 +943,9 @@ def _donor_years(identity: BaseIdentity, facts: ScopeFacts) -> list[frozenset[in
     table it reads (`composite.donor_years`). On the OECD headline, a year counts on the
     basis the headline reads it on: net flows before 2018, grant equivalents from 2018
     (`component_identities`)."""
-    held = [donor_years(table, facts=facts) for table in _tables(identity, facts)]
+    tables, reading = _tables(identity, facts)
+    with reading:
+        held = [donor_years(table, facts=facts) for table in tables]
     return [
         frozenset[int]().union(*(years.get(donor, frozenset()) for years in held))
         for donor in identity.entities["origin"]
@@ -1302,13 +1316,18 @@ def _providers_not_offered(
     components = component_identities(facts.index, _with_composite(document, source.composite))
     assert components is not None
     imputed = next(c.identity for c in components if c.role == "imputed")
-    carried = all(
-        component_years(
-            {**imputed, "entities": {"origin": [provider]}, "requested_window": {"kind": "all"}},
-            facts=facts,
-        ).held
-        for provider in providers
-    )
+    with pinned_reads(None):
+        carried = all(
+            component_years(
+                {
+                    **imputed,
+                    "entities": {"origin": [provider]},
+                    "requested_window": {"kind": "all"},
+                },
+                facts=facts,
+            ).held
+            for provider in providers
+        )
     if len(providers) == 1:
         return None if carried else "provider"
     return None if carried and not _pools_redistributed(providers) else "pooled_providers"

@@ -19,9 +19,16 @@ from code_index.declarations import COMPOSITES, CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api.config import DatasetsBuildSettings
 from materialise import composite as composite_module
-from origin_catalogue import CatalogueNotBound, scoped_reads
-from search.models import BaseIdentity
-from search.scope.composite import ServedComponent, composite_download, served_components
+from origin_catalogue import CatalogueNotBound, current_catalogue, scoped_reads
+from search.models import BaseIdentity, ResolvedStatVars
+from search.scope.composite import (
+    CompositeMint,
+    ServedComponent,
+    component_years,
+    composite_download,
+    donor_years,
+    served_components,
+)
 from search.scope.tables import ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -397,11 +404,65 @@ def test_a_part_s_source_scope_leaves_a_composite_s_component_reads_alone():
     assert {item.served for item in unscoped} == {frozenset({2020, 2021})}
 
 
-def test_a_snapshot_behind_a_component_s_rows_drops_and_names_the_years_it_lacks():
+def test_a_plain_pinned_table_read_keeps_the_part_s_source_scope():
+    """The DAC2a imputed line, read as a plain table pinned to DAC2a, holds 2020 and 2021.
+    Under a part's CRS source scope its pin narrows that scope, which admits none of its
+    rows, as a plain answer read under that scope admits none."""
+    populated: _Populated = {_DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021))}
+    facts = ScopeFacts(index=get_index(), coverage=_dac2a_coverage(_rows_of(populated)).snapshot())
+    components = component_identities(get_index(), _dac2a_oda_identity("Net"))
+    assert components is not None
+    table = next(c.identity for c in components if c.role == "imputed")
+
+    with scoped_reads(frozenset({_PROVENANCE[_CRS_FACET]})):
+        scoped = component_years(table, facts=facts).held
+        scoped_donors = donor_years(table, facts=facts)
+
+    assert component_years(table, facts=facts).held == frozenset({2020, 2021})
+    assert donor_years(table, facts=facts) == {_PROVIDER: frozenset({2020, 2021})}
+    assert scoped == frozenset()
+    assert scoped_donors == {}
+
+
+def _composite_reads(mint: CompositeMint) -> tuple[object, ...]:
+    return (
+        mint.headline(None),
+        mint.stat_vars(ResolvedStatVars(member_count=0, member_count_exact=True)),
+        mint.party_split("destination"),
+    )
+
+
+def test_a_composite_mint_reads_its_counts_under_the_request_s_catalogue():
+    """A `CompositeMint` given the request's catalogue reads its headline, StatVar counts and
+    parties under it, so a context with no catalogue bound reads what the bound one reads."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+    facts = ScopeFacts(index=get_index(), coverage=_dac2a_coverage(_rows_of(populated)).snapshot())
+    identity = _dac2a_oda_identity("Net")
+
+    def mint() -> CompositeMint:
+        return CompositeMint(
+            identity=BaseIdentity.model_validate(identity),
+            spec_id="spec",
+            served=tuple(served_components(identity, facts=facts)),
+            facts=facts,
+            catalogue=current_catalogue(),
+        )
+
+    bound = _composite_reads(mint())
+    unbound = contextvars.Context().run(_composite_reads, mint())
+
+    assert bound[0] is not None
+    assert unbound == bound
+
+
+def test_a_snapshot_behind_a_component_s_rows_leaves_the_mint_its_rows_years():
     """SDMX serves total ODA from France to Kenya in 2020 and 2021, while the coverage
     snapshot holds it in 2020 alone, as when a source publishes before the snapshot
-    rebuilds. The mint serves 2020, the year Search states from the same snapshot, and
-    names 2021 among the bilateral line's dropped years."""
+    rebuilds. The mint reads the bilateral line's years from its rows and serves 2021 too,
+    dropping nothing, while Search states 2020 from the snapshot until it rebuilds."""
     populated: _Populated = {
         _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
         _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
@@ -411,21 +472,49 @@ def test_a_snapshot_behind_a_component_s_rows_drops_and_names_the_years_it_lacks
         populated,
         [
             (_BILATERAL_206, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020]),
+            (_BILATERAL_206, _DAC2A_FACET, _OTHER_DONOR, _RECIPIENT, [2021]),
             (_DAC2A_IMPUTED, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020, 2021]),
         ],
     )
 
     assert minted.status_code == 200, minted.text
     by_role = {entry["role"]: entry for entry in minted.json()["trace"]["components"]}
-    assert by_role["bilateral"]["dropped_years"] == [2021]
+    assert by_role["bilateral"]["dropped_years"] == []
+    assert by_role["bilateral"]["periods"] == [[2020, 2021]]
     assert {item.served for item in served} == {frozenset({2020})}
 
 
-def test_the_mint_reads_held_years_only_for_a_stacked_component_that_reads_gaps_as_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """The CRS composite's imputed line zero-fills, so only the bilateral line's held years
-    are read, and the spliced OECD headline reads no component's years."""
+def test_a_snapshot_holding_none_of_a_component_s_years_for_the_keys_serves_its_rows():
+    """The coverage snapshot holds France's total ODA to Kenya in 2019 alone, and another
+    donor's in 2020 and 2021, so the table covers those years while France's line holds
+    none of them. SDMX serves France's rows in 2020 and 2021, and the mint serves them,
+    while Search states no year from the snapshot."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+
+    minted, served = _dac2a_case(
+        populated,
+        [
+            (_BILATERAL_206, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2019]),
+            (_BILATERAL_206, _DAC2A_FACET, _OTHER_DONOR, _RECIPIENT, [2020, 2021]),
+            (_DAC2A_IMPUTED, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020, 2021]),
+        ],
+    )
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    by_role = {entry["role"]: entry for entry in manifest["trace"]["components"]}
+    assert by_role["bilateral"]["periods"] == [[2020, 2021]]
+    assert by_role["imputed"]["periods"] == [[2020, 2021]]
+    assert manifest["coverage"]["rows"] > 0
+    assert {item.served for item in served} == {frozenset()}
+
+
+def test_the_mint_reads_no_held_years_from_the_snapshot(monkeypatch: pytest.MonkeyPatch):
+    """The mint reads a stacked component's held years from its own rows, so neither the
+    CRS composite nor the spliced OECD headline reads any from the coverage snapshot."""
     read: list[Mapping[str, object]] = []
     real = composite_module.held_years
 
@@ -450,19 +539,15 @@ def test_the_mint_reads_held_years_only_for_a_stacked_component_that_reads_gaps_
         )
         assert _mint(client, identity=identity).status_code == 200
 
-    components = component_identities(get_index(), _identity())
-    assert components is not None
-    assert read == [c.identity for c in components if c.role == "bilateral"]
+    assert read == []
 
 
-@pytest.mark.parametrize("role", ["bilateral", "imputed"])
-def test_a_component_s_years_refuse_a_read_with_no_catalogue_bound(role: str):
-    """Each component of the DAC2a composite reads its years under the caller's catalogue,
-    the bilateral line's unpinned and the imputed line's pinned to DAC2a alike, so a context
-    with none bound refuses."""
+def test_a_pinned_component_s_years_refuse_a_read_with_no_catalogue_bound():
+    """The DAC2a composite's imputed line reads its years pinned to DAC2a under the caller's
+    catalogue, so a context with none bound refuses."""
     components = component_identities(get_index(), _dac2a_oda_identity("Net"))
     assert components is not None
-    component = next(c for c in components if c.role == role)
+    component = next(c for c in components if c.role == "imputed")
     coverage = _dac2a_coverage([]).snapshot().index
 
     with pytest.raises(CatalogueNotBound):

@@ -5,8 +5,10 @@ system, and one generation stamp captured per call. Pending texts use the shared
 resolvekit executor, since resolvekit's query cache and sqlite store are thread-affine; a job
 whose deadline passed while it queued does not start. Query aliases run before resolvekit. Pack
 rows that store the text as a name join resolvekit's candidates. A listed-name gate filters
-candidates and records whether each lists the text as its name, an alias or a code. Parse can
-add group results after a miss, and one retry strips a leading article and trailing punctuation.
+candidates and records whether each lists the text as its name, an alias or a code. A group
+phrase resolves only as a whole: through its own listed name, a curated query alias, or a
+wording alias generated from the group's names (`group_wordings`). One retry strips a leading
+article and trailing punctuation.
 
 A top survivor the group registry holds resolves as a `Group`: the registry confirms it and
 its members, so no graph read does. Other survivors map to dcids. Misses use the
@@ -45,7 +47,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field, replace
 
 from cachetools import TLRUCache
-from resolvekit import ResolutionContext, ResolutionStatus, Resolver
+from resolvekit import ResolutionContext, ResolutionStatus
 from resolvekit.core.model.result import CandidateSummary
 
 from dc_graph import label_or_self_name
@@ -54,6 +56,7 @@ from dfo_platform.executor import run_in_executor_with_context
 from entity_resolution import pack
 from entity_resolution.gate import filter_listed_candidates
 from entity_resolution.graph import normalize_or_none, resolve_fallback, resolve_sharing
+from entity_resolution.group_wordings import normalize_key as _normalize_key
 from entity_resolution.kinds import classify
 from entity_resolution.membership import MembershipPolicy, NotRecorded, UnknownMembership
 from entity_resolution.regions import identity_to_dcid
@@ -112,10 +115,6 @@ class EntityResolutionError(Exception):
     Raised when resolvekit returns `ResolutionStatus.ERROR`."""
 
 
-def _normalize_key(text: str) -> str:
-    return re.sub(r"\s+", " ", text.casefold()).strip()
-
-
 _LEADING_ARTICLE_RE = re.compile(r"^\s*the\s+", re.IGNORECASE)
 _TRAILING_PUNCTUATION_RE = re.compile(r"[.,;:!?]+$")
 
@@ -143,8 +142,9 @@ def _load_query_aliases() -> dict[str, _QueryAlias]:
     """Load query aliases keyed by `_normalize_key`.
 
     Entries correct bundled pack name conflicts such as `Central Africa` and cover group phrases
-    that `resolvekit.parse()` cannot recover, including `EU countries`, `EU member states`, and
-    `DAC members`. Texts without an alias pass through unchanged."""
+    the generated wordings (`group_wordings`) do not, or read differently: `DAC countries`
+    reads as the DAC itself, and `low-income countries (LICs)` names its group by an acronym
+    no record lists. Texts without an alias pass through unchanged."""
     rows = json.loads(pack.query_aliases_path().read_text(encoding="utf-8"))
     return {key: _QueryAlias(**row) for key, row in rows.items()}
 
@@ -242,171 +242,32 @@ def _listed(text: str, survivors: Sequence[tuple[CandidateSummary, MatchedAs]]) 
     return tuple((candidate, Matched(text=text, matched_as=how)) for candidate, how in survivors)
 
 
-_GROUP_CODE_HYPHEN_RE = re.compile(r"(?<=[a-z])-(?=\d)")
-_POSSESSIVE_RE = re.compile(r"['\u2019]s\b")
-_NON_WORD_RE = re.compile(r"[^\w]+")
-_PAREN_RE = re.compile(r"\(([^()]*)\)")
-_FILLER_WORDS = frozenset(
-    {"the", "a", "an", "all", "of", "in", "member", "members", "countries", "states"}
-    | {"nations", "economies", "donor", "donors", "creditor", "creditors", "lender", "lenders"}
-    | {"group"}
-)
-
-
-def _words(text: str) -> tuple[str, ...]:
-    """The words of `text`: casefolded, without possessives or punctuation, and without the
-    hyphen in a group code (`G-7` reads `g7`)."""
-    folded = _POSSESSIVE_RE.sub("", text.casefold())
-    folded = _GROUP_CODE_HYPHEN_RE.sub("", folded)
-    return tuple(word for word in _NON_WORD_RE.split(folded) if word)
-
-
-def _leftover_words(phrase: str, span: str) -> list[str]:
-    """The words of `phrase` that `span` does not cover, each span word removed once."""
-    leftover = list(_words(phrase))
-    for word in _words(span):
-        if word in leftover:
-            leftover.remove(word)
-    return leftover
-
-
-def _find_run(words: tuple[str, ...], run: tuple[str, ...]) -> int | None:
-    """The index where `run` first appears as consecutive items of `words`, if it does."""
-    if not run:
-        return None
-    for i in range(len(words) - len(run) + 1):
-        if words[i : i + len(run)] == run:
-            return i
-    return None
-
-
-def _own_words(resolver: Resolver, entity_id: str) -> frozenset[str]:
-    """The words of every name and alias the resolver holds for `entity_id`."""
-    record = resolver.entity(entity_id)
-    if record is None:
-        return frozenset()
-    names = [record.canonical_name, *(name.value for name in record.names)]
-    return frozenset(word for name in names for word in _words(name))
-
-
-def _names_same_group(
-    resolver: Resolver, token: str, context: ResolutionContext, entity_id: str
-) -> bool:
-    """Whether `token` alone resolves to `entity_id`: its top candidate by confidence, since an
-    acronym such as `LICs` is no listed name of its group."""
-    result = resolver.resolve(token, as_result=True, context=context, include_entity=True)
-    if not result.candidates:
-        return False
-    top = max(result.candidates, key=lambda c: c.confidence if c.confidence is not None else 0.0)
-    return top.entity_id == entity_id
-
-
-def _span_covers_phrase(
-    resolver: Resolver,
-    phrase: str,
-    span: str,
-    entity_id: str,
-    context: ResolutionContext,
-) -> bool:
-    """Whether the words `span` leaves of `phrase` add no qualifier.
-
-    The span extends over the words of the group's own names that touch it, so `OECD DAC
-    donors` passes through its `DAC` span. Each remaining word must be a filler word or the one
-    parenthesised token that alone resolves to the same group: `low-income countries (LICs)`
-    and `European Union (EU)` pass, `developing countries (DAC)`, `G7 countries (excluding
-    Canada)` and `OECD countries in the DAC` fail."""
-    phrase_words = _words(phrase)
-    span_words = _words(span)
-    own = _own_words(resolver, entity_id)
-    start = _find_run(phrase_words, span_words)
-    if start is None:
-        leftover = _leftover_words(phrase, span)
-        own = frozenset()
-    else:
-        first, last = start, start + len(span_words)
-        while first > 0 and phrase_words[first - 1] in own:
-            first -= 1
-        while last < len(phrase_words) and phrase_words[last] in own:
-            last += 1
-        leftover = [*phrase_words[:first], *phrase_words[last:]]
-    parens = _PAREN_RE.findall(phrase)
-    if (
-        len(parens) == 1
-        and len(token := _words(parens[0])) == 1
-        and token[0] in leftover
-        and _names_same_group(resolver, parens[0].strip(), context, entity_id)
-    ):
-        leftover.remove(token[0])
-    return all(word in _FILLER_WORDS for word in leftover)
-
-
-def _parse_group_survivors(
-    resolver: Resolver, text: str, context: ResolutionContext, group_types: frozenset[str]
-) -> _Listed:
-    """Recover a membership-group span after full-text resolution and the listed-name gate miss.
-
-    `parse()` bypasses query aliases and the gate, so apply both to each span and accept only
-    spans whose type and top surviving candidate type are in `group_types`. Each survivor
-    matched the span's text.
-
-    Resolvekit excludes `geo.continent` and `geo.continental_union` spans. Aliases cover phrases
-    such as `EU countries` and `EU member states`. `DAC members` parses as `geo.region` and fails
-    the group-type check.
-
-    A span covers the phrase when `_span_covers_phrase` accepts the words it leaves over, so
-    `developing countries (DAC)` does not resolve to the DAC group through its `DAC` span."""
-    for entity in resolver.parse(text, context=context).entities:
-        if entity.entity_type not in group_types:
-            continue
-        survivors = filter_listed_candidates(resolver, entity.surface, entity.resolution.candidates)
-        if not survivors or survivors[0][0].entity_type not in group_types:
-            continue
-        if _span_covers_phrase(resolver, text, entity.surface, survivors[0][0].entity_id, context):
-            return _listed(entity.surface, survivors)
-    return ()
-
-
-def _with_alias_owners(
-    candidates: Sequence[CandidateSummary], alias_index: pack.AliasIndex, text: str
-) -> tuple[CandidateSummary, ...]:
-    """Append each `dfo_graph` row that stores `text` as a name and is missing from `candidates`.
-
-    Resolvekit generates no candidate for many stored aliases. Its org exact-name and acronym
-    sources skip `alias` rows, so `OAPEC` misses its organisation: resolvekit offers only
-    `groups/OPEC`, which the gate rejects. The BYOD build stores each alias with its
-    punctuation, which the org query profile strips, so `C&A Foundation` misses in every
-    source. Appended owners carry no confidence, so they rank after resolvekit's
-    candidates, and they pass the listed-name gate like any other candidate."""
-    present = {candidate.entity_id for candidate in candidates}
-    owners = tuple(owner for owner in alias_index.owners_of(text) if owner.entity_id not in present)
-    return (*candidates, *owners)
-
-
 def _resolve_text_survivors(
     shared: SharedResolver, text: str, context: ResolutionContext
 ) -> tuple[_Listed, tuple[CandidateSummary, ...], Reading]:
-    """Apply query aliases, resolve, add alias owners, gate candidates, and parse group spans
-    after a miss.
+    """Apply query aliases, resolve, add alias owners, and gate candidates.
 
-    Return survivors with the text each matched, the candidates the gate saw, and the reading:
-    `members` when the survivors came through an alias that declares its text names members.
-    A query alias is itself the listed text, so its survivors match `text` as an alias. Near
-    matches use the gate's candidates when group survivors come from `parse()`."""
+    A curated query alias wins over a generated group wording (`shared.group_wordings`), which
+    reads as the group itself, as its bare name does. Return survivors with the text each matched, the candidates the gate
+    saw, and the reading: `members` when the survivors came through an alias that declares its
+    text names members. A query alias is itself the listed text, so its survivors match `text`
+    as an alias."""
     resolver = shared.resolver
-    alias = _QUERY_ALIASES.get(_normalize_key(text))
+    key = _normalize_key(text)
+    alias = _QUERY_ALIASES.get(key)
+    if alias is None and (group_name := shared.group_wordings.aliases.get(key)) is not None:
+        alias = _QueryAlias(name=group_name)
     query_text = text if alias is None else alias.name
     result = resolver.resolve(query_text, as_result=True, context=context, include_entity=True)
     if result.status == ResolutionStatus.ERROR:
         raise EntityResolutionError(f"resolvekit reported an internal error resolving {text!r}")
-    candidates = _with_alias_owners(result.candidates, shared.alias_index, query_text)
+    candidates = shared.alias_index.with_owners(result.candidates, query_text)
     survivors = filter_listed_candidates(resolver, query_text, candidates)
     if survivors and alias is not None:
         reading: Reading = "members" if alias.members else "entity"
         as_alias = _listed(text, [(candidate, "alias") for candidate, _ in survivors])
         return as_alias, candidates, reading
-    if survivors:
-        return _listed(text, survivors), candidates, "entity"
-    return _parse_group_survivors(resolver, text, context, _GROUP_TYPES), candidates, "entity"
+    return _listed(text, survivors), candidates, "entity"
 
 
 def _group_hit(shared: SharedResolver, candidate: CandidateSummary) -> _GroupHit | None:
@@ -437,9 +298,8 @@ def _resolve_batch_job(
 ) -> list[_GateOutcome]:
     """Resolve and gate the batch on the shared resolver's single worker.
 
-    Retry each miss once with a leading article and trailing punctuation stripped. The retry
-    calls `resolve()`, not `parse()`, because `parse()` drops every continental-union span
-    ("the EU"). A top survivor the group registry holds carries the registry's group; any
+    Retry each miss once with a leading article and trailing punctuation stripped, so "the EU"
+    and "the G7 countries." resolve as "EU" and "G7 countries". A top survivor the group registry holds carries the registry's group; any
     other text follows ordinary hit assembly."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     outcomes: list[_GateOutcome] = []

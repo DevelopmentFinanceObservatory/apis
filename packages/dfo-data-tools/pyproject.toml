@@ -51,12 +51,10 @@ formats = ["dfo-data-tools[sdmx]", "openpyxl>=3.1.5"]
 surface = ["fastapi>=0.138", "starlette", "uvicorn"]
 # entity_resolution's custom BYOD pack. Exact pin -- 0.1.x is pre-1.0 and its
 # API edges move; both the engine and graph extras pull this in through
-# dfo-data-tools, so the whole repo resolves to one version. `[parsing]`
-# pulls in `ahocorasick_rs`, which `resolvekit.parse()` needs to recover a
-# group span from inside a longer phrase (e.g. "G7 countries").
+# dfo-data-tools, so the whole repo resolves to one version.
 # entity_resolution also imports graph_generation directly (its own shared
 # GenerationStamp), so `resolve` carries `generation`'s own dependencies too.
-resolve = ["resolvekit[parsing]==0.1.13", "dfo-data-tools[generation]"]
+resolve = ["resolvekit==0.1.13", "dfo-data-tools[generation]"]
 # graph_generation.source.CloudRunGenerationSource authenticates its Cloud
 # Run Admin API read with Application Default Credentials --
 # google.auth.default() plus a bearer-token refresh, the same shape as

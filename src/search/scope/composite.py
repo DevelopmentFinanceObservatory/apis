@@ -5,11 +5,12 @@ A composite identity binds a declared composite provenance (`code_index.composit
 provider-inclusive total of a donor's bilateral flows and its imputed multilateral share
 (stacked), or the OECD headline, net flows to 2017 and grant equivalents from 2018 (spliced).
 The Datasets mint composes its frame from one read per component, keeping the years a stacked
-composite serves for the frame's places (`materialise.composite.read_component_years`,
-`stacked_years`). Search reads those years through the same functions from the request's
-coverage snapshot, in memory, and counts the series each component holds under the part's
-places (`component_years`), so the window a scope option offers is the window the mint
-serves.
+composite serves for the frame's places (`materialise.composite.stacked_years`). Search states
+those years by the same rule from the request's coverage snapshot, in memory
+(`materialise.composite.read_component_years`), and counts the series each component holds
+under the part's places (`component_years`). The mint reads a component's held years from the
+rows it read, so a year a source publishes before the snapshot rebuilds can appear in the mint
+before Search states it.
 
 `CompositeMint` mints a Search answer's Spec as the composite (`spec_build.build_spec(composite=)`)
 over the table identity's arguments (`code_index.composites.table_identity`): its identity and
@@ -26,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
@@ -52,7 +53,7 @@ from materialise.composite import (
     stacked_years,
 )
 from materialise.enrichment import PartySplit, party_split
-from origin_catalogue import Catalogue, bound_catalogue, pinned_reads
+from origin_catalogue import Catalogue, bound_catalogue, pinned_reads, scoped_reads
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
     BaseIdentity,
@@ -123,8 +124,10 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
     year up to its build year for an `all` or `latest` window. A `latest` window also elects
     the year a read of it serves (`series_coverage.index.elected_year`). Empty for a family
     the index does not decide, or one whose named dataset does not publish it. An identity
-    that pins provenances reads under them alone (`_pinned_reads`), as a mint of it reads
-    its rows. Read once per identity and source scope for one `facts`."""
+    that pins provenances reads under them, within the caller's source scope
+    (`_pinned_reads`); a composite's component read clears that scope first
+    (`origin_catalogue.pinned_reads`), as a mint of it reads its rows. Read once per
+    identity and source scope for one `facts`."""
     key = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return facts.remembered(key, lambda: _component_years(identity, facts=facts))
 
@@ -159,9 +162,9 @@ def donor_years(
 ) -> Mapping[str, frozenset[int]]:
     """The years of its window in which each donor `identity` names holds a series of the
     family it reads, as `component_years` counts them, by donor, from one scan of the
-    family's rows in `facts`' coverage snapshot, under the provenances `identity` pins alone
-    where it pins any (`_pinned_reads`). A donor holding no series is absent. Read once per
-    identity and source scope for one `facts`."""
+    family's rows in `facts`' coverage snapshot, under the provenances `identity` pins
+    within the caller's source scope where it pins any (`_pinned_reads`). A donor holding
+    no series is absent. Read once per identity and source scope for one `facts`."""
     key = "donor_years:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return facts.remembered(key, lambda: _donor_years(identity, facts=facts))
 
@@ -174,10 +177,12 @@ def _donor_years(
 
 
 def _pinned_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
-    """Binds the caller's catalogue with its source scope replaced by the provenances
-    `identity` pins (`origin_catalogue.pinned_reads`), and nothing where it pins none."""
-    pins = _pins(identity)
-    return nullcontext() if pins is None else pinned_reads(pins)
+    """Binds the caller's catalogue narrowed to the provenances `identity` pins, within its
+    source scope (`origin_catalogue.scoped_reads`), as a plain pinned table reads under a
+    part's scope; nothing where it pins none. A composite's component reads run under
+    `origin_catalogue.pinned_reads(None)` first, so there the pins replace the part's
+    scope."""
+    return scoped_reads(_pins(identity))
 
 
 def _held_by_donor(
@@ -252,13 +257,15 @@ def served_components(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> list[ServedComponent]:
     """Each component of composite `identity` with the years it serves, as the mint composes
-    them (`materialise.composite`). A stacked composite's years are those the mint keeps
-    (`stacked_years`): every component's table covers them, and every component that reads a
-    missing row as unknown holds a series in them under some of its places. Every component
+    them (`materialise.composite`). A stacked composite's years follow the mint's rule
+    (`stacked_years`) over the coverage snapshot: every component's table covers them, and
+    every component that reads a missing row as unknown holds a series in them under some of
+    its places. The mint reads those held years from its rows, so it can serve a year the
+    snapshot does not hold yet. Every component
     reads with no source scope but the provenances its identity pins
     (`origin_catalogue.pinned_reads`), whatever scope the caller reads under, so a part's
     scope build and its composite answer (`region.composite_answer.composite_served`) read
-    the years the mint reads. In them, a component
+    the tables the mint reads. In them, a component
     serves the years it holds a series in, and a zero-filling one
     (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
     rows fill the cells it lacks. A spliced component serves the years
@@ -293,7 +300,7 @@ def _served(
 
 
 def _read_years(component: ComponentIdentity, *, facts: ScopeFacts) -> ComponentYears:
-    """The years `component` reads in `facts`' coverage snapshot, as the mint reads them
+    """The years `component` reads in `facts`' coverage snapshot
     (`materialise.composite.read_component_years`), read once per identity for one
     `facts`."""
     key = f"years:{component.role}:" + json.dumps(
@@ -485,7 +492,8 @@ class CompositeMint:
 
     def headline(self, stated: Headline | None) -> Headline | None:
         """The composite's headline (`_headline`), naming `stated`'s window."""
-        return _headline(self.served, stated, facts=self.facts)
+        with self._reading():
+            return _headline(self.served, stated, facts=self.facts)
 
     def parties(self, axis: RoleAxis) -> list[str] | None:
         """The members on `axis` of the series every component writes in the years it
@@ -520,18 +528,19 @@ class CompositeMint:
     @cached_property
     def _held_parties(self) -> dict[Role, frozenset[str]] | None:
         coverage = self.facts.coverage.index
-        unlisted = [
-            item for item in self.served if item.served and not _lists_parties(item, coverage)
-        ]
-        if unlisted:
-            logger.warning(
-                "composite %s keeps the open axes of its table read: the snapshot cannot list "
-                "the parties of %s",
-                self.declaration.provenance,
-                ", ".join(item.component.recipe.dataset for item in unlisted),
-            )
-            return None
-        return _served_parties(self.served, coverage)
+        with self._reading():
+            unlisted = [
+                item for item in self.served if item.served and not _lists_parties(item, coverage)
+            ]
+            if unlisted:
+                logger.warning(
+                    "composite %s keeps the open axes of its table read: the snapshot cannot "
+                    "list the parties of %s",
+                    self.declaration.provenance,
+                    ", ".join(item.component.recipe.dataset for item in unlisted),
+                )
+                return None
+            return _served_parties(self.served, coverage)
 
     def open_axes(
         self, scope: ResolvedScope | None, facts: list[RoleAxisFact] | None
@@ -567,7 +576,8 @@ class CompositeMint:
 
     def stat_vars(self, stated: ResolvedStatVars) -> ResolvedStatVars:
         """`stated`, the table identity's StatVar counts, over every component (`_stat_vars`)."""
-        return _stat_vars(self.served, stated, self.declaration, facts=self.facts)
+        with self._reading():
+            return _stat_vars(self.served, stated, self.declaration, facts=self.facts)
 
     def slots(self, stated: Sequence[Slot]) -> list[Slot]:
         """`stated` with the when slot bound to `window` (`_window_binding`), where some

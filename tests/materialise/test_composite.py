@@ -81,14 +81,12 @@ def _component(
     unserved: Sequence[str] = (),
     units: Mapping[str, object] | None = None,
     covered: Sequence[int] | None = None,
-    held: Sequence[int] | None = None,
     imported_data: str | None = None,
 ) -> ComponentResult:
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
     `unserved` the members its facet group election left out and its warning counting them.
     Each row's unit is its recipient's in `units`, USD when `units` is None. Its table covers
-    `covered`, the years of `rows` when None, and, unless it zero-fills, it holds `held`
-    under its places, the years of `rows` when None."""
+    `covered`, the years of `rows` when None."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -193,10 +191,7 @@ def _component(
         recipe=recipe,
         requests=requests,
         result=result,
-        years=ComponentYears(
-            table=row_years if covered is None else frozenset(covered),
-            held=(None if recipe.zero_absent else row_years if held is None else frozenset(held)),
-        ),
+        table_years=row_years if covered is None else frozenset(covered),
     )
 
 
@@ -292,31 +287,32 @@ def test_stacked_years_reads_held_years_only_where_a_missing_row_is_unknown(
     assert stacked_years(components) == served
 
 
-def test_rows_in_a_year_the_snapshot_lacks_are_dropped_and_named():
-    """The bilateral rows hold 2012, a year the coverage snapshot holds no bilateral series
-    in for the frame's places, as when a source publishes before the snapshot rebuilds. The
-    composite serves the years the snapshot states, and the bilateral summary names 2012 as
-    dropped."""
+def test_a_component_that_reads_gaps_as_unknown_holds_the_years_its_rows_hold_for_any_key():
+    """The bilateral rows hold 2011 for Kenya alone and 2012 for Ghana alone, and the imputed
+    table covers both years. The composite serves both, the years the bilateral rows hold
+    for some key of the frame, and drops 2013, which the imputed table covers and no
+    bilateral row holds."""
     bilateral = _component(
         _STACKED,
         "bilateral",
-        [(_B, "country/KEN", year, 10.0) for year in (2011, 2012)],
+        [(_B, "country/KEN", 2011, 10.0), (_B, "country/GHA", 2012, 20.0)],
         provenance=_CRS,
         members=[_B],
-        held=(2011,),
+        covered=(2011, 2012, 2013),
     )
     imputed = _component(
         _STACKED,
         "imputed",
-        [(_I, "country/KEN", year, 1.0) for year in (2011, 2012)],
+        [(_I, "country/KEN", year, 1.0) for year in (2011, 2012, 2013)],
         provenance=_IMPUTED,
         members=[_I],
     )
 
     result = _compose([bilateral, imputed])
 
-    assert {period for _, _, period, _, _ in _rows(result)} == {"2011"}
-    assert _summary(result, "bilateral")["dropped_years"] == [2012]
+    assert {period for _, _, period, _, _ in _rows(result)} == {"2011", "2012"}
+    assert _summary(result, "imputed")["dropped_years"] == [2013]
+    assert _summary(result, "bilateral")["dropped_years"] == []
 
 
 def test_an_internal_gap_leaves_the_year_out_of_every_component():

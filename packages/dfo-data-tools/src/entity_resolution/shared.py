@@ -10,6 +10,7 @@ snapshot."""
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from collections.abc import Callable
@@ -26,6 +27,7 @@ from resolvekit.core.module_registry import register_module
 
 from dfo_platform.singleton import RefCountedSingleton
 from entity_resolution import pack
+from entity_resolution.group_wordings import GroupWordings, build_group_wordings
 from entity_resolution.groups import GroupRegistry, build_group_registry
 from entity_resolution.membership import MembershipPolicy, build_policy
 
@@ -101,8 +103,9 @@ def shared_membership_policy() -> MembershipPolicy:
 
 
 class SharedResolver:
-    """Composed resolver with a dedicated single-worker executor, its pack cache directory and
-    the exact index of the `dfo_graph` pack's names. `groups` and `policy` are the process's
+    """Composed resolver with a dedicated single-worker executor, its pack cache directory,
+    the exact index of the `dfo_graph` pack's names, and the wording aliases generated from
+    every group's names (`group_wordings`). `groups` and `policy` are the process's
     (`shared_memberships`).
 
     Resolvekit's query cache requires serial calls. Use `acquire_shared` and `release_shared`
@@ -115,11 +118,13 @@ class SharedResolver:
         executor: ThreadPoolExecutor,
         cache_dir: Path,
         alias_index: pack.AliasIndex,
+        group_wordings: GroupWordings,
     ) -> None:
         self.resolver = resolver
         self.executor = executor
         self.cache_dir = cache_dir
         self.alias_index = alias_index
+        self.group_wordings = group_wordings
 
     @property
     def groups(self) -> GroupRegistry:
@@ -167,8 +172,25 @@ def _build(cache_dir: Path | None) -> SharedResolver:
         module_ids=list(MODULE_IDS), routing_mode=RoutingMode.EXPLICIT, cache_size=0
     )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="resolvekit")
+    curated = json.loads(pack.query_aliases_path().read_text(encoding="utf-8"))
+    try:
+        group_wordings = executor.submit(
+            build_group_wordings,
+            resolver,
+            alias_index,
+            shared_memberships().groups,
+            curated=frozenset(curated),
+        ).result()
+    except BaseException:
+        executor.shutdown(wait=True)
+        resolver.close()
+        raise
     return SharedResolver(
-        resolver=resolver, executor=executor, cache_dir=resolved, alias_index=alias_index
+        resolver=resolver,
+        executor=executor,
+        cache_dir=resolved,
+        alias_index=alias_index,
+        group_wordings=group_wordings,
     )
 
 
