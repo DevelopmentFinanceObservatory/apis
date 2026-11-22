@@ -22,6 +22,7 @@ from datasets_api.versions import (
     HeadStore,
     NullHeadWriter,
     NullVersionRecordWriter,
+    VersionLister,
     VersionRecordWriter,
 )
 from dc_sdmx import SdmxClient
@@ -79,6 +80,10 @@ class MintDeps:
     # Bound around each materialisation, so a mint binding one place breaks a facet tie on each
     # facet's places across the whole variable. None leaves the tie to the unit's name.
     variable_breadth: VariableBreadthReader | None = None
+    # Lists a subject's versions and the renderings analysis roots read, so a rebuild queues
+    # the render ahead of the version it stored (`operations.render_ahead_queue`). `None`
+    # queues none.
+    version_lister: VersionLister | None = None
 
     def to_definition_deps(self) -> DefinitionDeps:
         """The `current.serve_current` view of this bundle. The head recheck interval and
@@ -111,4 +116,5 @@ class MintDeps:
             settings=self.settings,
             rebuilds=self.rebuilds,
             variable_breadth=self.variable_breadth,
+            version_lister=self.version_lister,
         )
