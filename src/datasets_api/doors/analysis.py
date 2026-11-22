@@ -125,6 +125,7 @@ from datasets_api.doors.definition import (
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
+from datasets_api.operations.renewal import renew_on_hit
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import PhaseTimings, door_call
@@ -473,7 +474,7 @@ def _key_job(
     prepared = prepare_analysis(
         body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
     )
-    answer = stored_answer(prepared, stores=analysis_stores(current))
+    answer = stored_answer(prepared, stores=analysis_stores(current), on_hit=renew_on_hit(current))
     return _Keyed(
         source=source,
         prepared=prepared,
@@ -495,7 +496,7 @@ def _analysis_job(
     The answer stored under the key since it was keyed answers in its place."""
     stores = analysis_stores(current)
     with running.claim(keyed.prepared.key):
-        answer = stored_answer(keyed.prepared, stores=stores)
+        answer = stored_answer(keyed.prepared, stores=stores, on_hit=renew_on_hit(current))
         if answer is None:
             answer = run_prepared(
                 keyed.prepared,

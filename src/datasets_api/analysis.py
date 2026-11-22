@@ -157,6 +157,7 @@ from dataset_store.snapshot import (
     SnapshotNotFound,
     SnapshotReader,
     SnapshotRevoked,
+    StoredArtifactLocation,
     read_servable_version,
 )
 from datasets_api.description_record import MAX_SUMMED_NAMED
@@ -1992,11 +1993,12 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
 
 @dataclass(frozen=True)
 class _HeldFile:
-    """A recorded pair's servable frame file's digest, and the frame hash its version records
-    (`StoredVersion.frame_sha256`)."""
+    """A recorded pair's servable frame file's digest, the frame hash its version records
+    (`StoredVersion.frame_sha256`), and the file's location."""
 
     artifact_digest: str
     recorded_frame_sha256: str | None
+    location: StoredArtifactLocation
 
 
 def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
@@ -2021,6 +2023,7 @@ def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
     return _HeldFile(
         artifact_digest=location.artifact_digest,
         recorded_frame_sha256=stored.version.frame_sha256,
+        location=location,
     )
 
 
@@ -2042,18 +2045,6 @@ def _frame_content_version(stores: AnalysisStores, ref: FrameRef, held: _HeldFil
         locations=links,
     )
     return None if recorded is None else mint_content_version(frame_sha256=recorded)
-
-
-def _stored_file_digest(
-    stores: AnalysisStores, *, spec_id: str, content_version: str
-) -> str | None:
-    """The digest of `_held_file` of a recorded pair, or `None`.
-
-    Raises:
-        SnapshotRevoked: The pair is taken down.
-    """
-    held = _held_file(stores, FrameRef(spec_id=spec_id, content_version=content_version))
-    return None if held is None else held.artifact_digest
 
 
 @dataclass(frozen=True)
@@ -2670,9 +2661,16 @@ def prepare_analysis(
     )
 
 
-def stored_answer(prepared: PreparedAnalysis, *, stores: AnalysisStores) -> dict[str, Any] | None:
+def stored_answer(
+    prepared: PreparedAnalysis,
+    *,
+    stores: AnalysisStores,
+    on_hit: Callable[[str, str, StoredArtifactLocation], None] | None = None,
+) -> dict[str, Any] | None:
     """The body stored under `prepared`'s key while its frame file is still served at the
-    digest the body's ref names, else `None`.
+    digest the body's ref names, else `None`. A hit calls `on_hit` with the pair the body names
+    and its frame file's location, which the door hands to the renewal of a file near the end
+    of its working-tier retention (`operations.renewal.renew_if_expiring`).
 
     Raises:
         SnapshotRevoked: The pair the body names is taken down.
@@ -2680,12 +2678,14 @@ def stored_answer(prepared: PreparedAnalysis, *, stores: AnalysisStores) -> dict
     stored = stores.recipe_store.read_answer(request_key=prepared.key)
     if stored is None:
         return None
-    served = _stored_file_digest(
-        stores, spec_id=stored.spec_id, content_version=stored.content_version
+    held = _held_file(
+        stores, FrameRef(spec_id=stored.spec_id, content_version=stored.content_version)
     )
     body: dict[str, Any] = dict(stored.body)
-    if served is None or served != body["ref"]["members"][0]["artifact"]["digest"]:
+    if held is None or held.artifact_digest != body["ref"]["members"][0]["artifact"]["digest"]:
         return None
+    if on_hit is not None:
+        on_hit(stored.spec_id, stored.content_version, held.location)
     return body
 
 
