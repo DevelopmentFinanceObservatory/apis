@@ -52,7 +52,6 @@ from search.models import (
     ObservationPoint,
     SpecObservations,
     Warning,
-    in_years,
     omitted_observations,
 )
 from search.observations import SeriesRead, assemble_scope_bulk
@@ -183,7 +182,6 @@ def _bulk_scope_series(
     facet_filter: Mapping[str, FacetAxisFilter] | None,
     member_constraints: Mapping[str, Mapping[str, str]] | None = None,
     conversion: BulkConversion | None = None,
-    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Fetch the scope-wide facet `plan` elected for all requested StatVars and entities.
 
@@ -212,10 +210,6 @@ def _bulk_scope_series(
     `member_constraints` supplies row labels, falling back to the resolved StatVar label.
     Rows sort by `search.observations.series_rank`: latest year, then latest value, both
     descending, then `(stat_var, entity)`, within groups of one unit.
-
-    `years`, where set, are the years the preview keeps points in (`search.models.in_years`):
-    a place whose served point lies outside them serves nothing and counts among the places
-    with no data.
     """
     groups = [s for s in plan.served if s.group]
     if plan.scope_facet_id is None or not groups:
@@ -297,10 +291,6 @@ def _bulk_scope_series(
                 # period: coverage and SDMX disagree. The scope-partial warning counts it.
                 short_of_latest.append((sv, entity))
                 continue
-            if years is not None:
-                points = [p for p in points if in_years(p.date, years)]
-                if not points:
-                    continue
             key = (sv, (("observationAbout", entity),))
             served[key] = [(p.date, p.value) for p in points]
             total_rows[key] = pair_obs_count

@@ -244,10 +244,10 @@ def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object
 @dataclass(frozen=True, slots=True)
 class ServedComponent:
     """One component, the series its family holds per year under the part's places, the
-    years it serves in the composite, and the StatVars a mint of it serves (None when the
-    index does not settle them). `elected` is the year a stacked composite under a `latest`
-    window elects, the latest year any of its components serves, and None for any other
-    composite or window."""
+    years it serves in the composite, all within its recipe's periods, and the StatVars a
+    mint of it serves (None when the index does not settle them). `elected` is the year a
+    composite under a `latest` window elects, the latest year any of its components serves,
+    and None for any other window."""
 
     component: ComponentIdentity
     years: YearCounts
@@ -257,12 +257,10 @@ class ServedComponent:
 
     @property
     def preview_years(self) -> frozenset[int]:
-        """The years the component's preview reads rows in: those it serves and its recipe's
-        periods hold, under a `latest` window the year the composite elects (`elected`)
-        alone where it is one of them. Empty when it previews no year, and then it is not
-        read."""
-        years = frozenset(year for year in self.served if _serves_year(self, year))
-        return years if self.elected is None else years & {self.elected}
+        """The years the component's preview reads rows in: those it serves, under a
+        `latest` window the year the composite elects (`elected`) alone where it is one of
+        them. Empty when it previews no year, and then it is not read."""
+        return self.served if self.elected is None else self.served & {self.elected}
 
 
 def served_components(
@@ -279,9 +277,12 @@ def served_components(
     (`region.composite_answer.composite_served`) read the tables the mint reads. In them, a
     component serves the years it holds a series in, and a zero-filling one
     (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
-    rows fill the cells it lacks. A spliced component serves the years it holds. Under a
-    `latest` window, a stacked composite elects the latest year any component serves
-    (`ServedComponent.elected`). Raises `code_index.composites.CompositeNotServable` as
+    rows fill the cells it lacks. A spliced component serves the years it holds within its
+    recipe's periods, so under a `latest` window, which its identity passes unclipped
+    (`code_index.composites.component_identities`), it serves no year after its period
+    ends. Under a `latest` window either kind elects the latest year any component serves
+    (`ServedComponent.elected`); a member holding no data in that year serves nothing.
+    Raises `code_index.composites.CompositeNotServable` as
     `component_identities` does, and `ValueError` for an identity that binds no
     composite."""
     components = component_identities(facts.index, identity)
@@ -297,18 +298,26 @@ def _served(
     counted = [
         (component, component_years(component.identity, facts=facts)) for component in components
     ]
-    if _declaration(facts.index, identity).kind != "stacked":
-        return [ServedComponent(c, years, years.held, _members(c)) for c, years in counted]
-    covered = stacked_years(_read_years(c, facts=facts) for c, _ in counted)
-    held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
-    served = [
-        (c, years, covered & (held_by_any if c.recipe.zero_absent else years.held))
-        for c, years in counted
-    ]
+    if _declaration(facts.index, identity).kind == "stacked":
+        covered = stacked_years(_read_years(c, facts=facts) for c, _ in counted)
+        held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
+        served = [
+            (c, years, covered & (held_by_any if c.recipe.zero_absent else years.held))
+            for c, years in counted
+        ]
+    else:
+        served = [(c, years, years.held) for c, years in counted]
+    served = [(c, years, _in_periods(c, held)) for c, years, held in served]
     window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
     every = frozenset[int]().union(*(years for _, _, years in served))
     elected = max(every) if window.get("kind") == "latest" and every else None
     return [ServedComponent(c, years, held, _members(c), elected) for c, years, held in served]
+
+
+def _in_periods(component: ComponentIdentity, years: frozenset[int]) -> frozenset[int]:
+    """`years` within `component`'s recipe periods, all of them where it declares none."""
+    periods = component.recipe.periods
+    return years if periods is None else frozenset(y for y in years if periods.holds(y))
 
 
 def _read_years(component: ComponentIdentity, *, facts: ScopeFacts) -> ComponentYears:
@@ -345,51 +354,30 @@ def compose_observations(
 
     `reads` holds each component's preview in `served`'s order, None for a component with
     no read (one serving no year, no definite answer, a failed resolve, or one past the
-    deadline). Each component
-    keeps the points of its series dated in a year it serves (`ServedComponent.served`) and
-    its recipe's periods hold, so a spliced component read for `latest` keeps only its own
-    periods, and a series left with no point is dropped. A kept series keeps its own StatVar
-    and is a copy of the component's, so its private estimate marker survives. No zero rows
-    are written for a zero-filling stacked component, since the composite's coverage counts
-    none.
+    deadline). Each component's preview reads rows in its preview years alone
+    (`component_preview`), so its series, points and counts stand as they are: each keeps
+    its own StatVar, and the composite's `total_obs` sums the components'. No zero rows are
+    written for a zero-filling stacked component, since the composite's coverage counts
+    none. `truncated` is true when a component preview holding a series was, and `order`
+    is those previews' when they agree, else None.
 
-    `total_obs`, on each series and in sum, subtracts the points dropped: every point of a
-    dropped series, and the visible points cut from a kept one. A truncated series shows only
-    its latest points, so a cut among its hidden earlier points goes uncounted. Each
-    component's preview reads rows in its preview years alone (`component_preview`), so a
-    read that honoured them loses nothing here. `truncated` is true when a kept component
-    preview was, and `order` is the kept previews' when they agree, else None.
-
-    With no series left, the preview is omitted: `observations_no_points` when every
-    component serving a year read and found no point in the years it serves; else the
-    first omission (in component order) of another reason a component's preview carries;
-    else, when a component serving a year has no read, `observations_probe_failed`. A
-    component previewing no year (`ServedComponent.preview_years`) is not read, so it bears
-    on none of these."""
+    With no series, the preview is omitted: `observations_no_points` when every component
+    serving a year read and found no point in the years it serves; else the first omission
+    (in component order) of another reason a component's preview carries; else, when a
+    component serving a year has no read, `observations_probe_failed`. A component
+    previewing no year (`ServedComponent.preview_years`) is not read, so it bears on none of
+    these."""
     series: list[ObservationSeries] = []
     total = 0
     truncated = False
     orders: set[PreviewOrder | None] = set()
-    for item, read in zip(served, reads, strict=True):
-        if read is None or read.omitted is not None:
+    for read in reads:
+        if read is None or read.omitted is not None or not read.series:
             continue
-        removed = 0
-        kept_any = False
-        for each in read.series:
-            points = [point for point in each.points if _serves(item, point.date)]
-            if not points:
-                removed += each.total_obs
-                continue
-            cut = len(each.points) - len(points)
-            removed += cut
-            series.append(
-                each.model_copy(update={"points": points, "total_obs": each.total_obs - cut})
-            )
-            kept_any = True
-        if kept_any:
-            total += max(read.total_obs - removed, 0)
-            truncated = truncated or read.truncated
-            orders.add(read.order)
+        series.extend(read.series)
+        total += read.total_obs
+        truncated = truncated or read.truncated
+        orders.add(read.order)
     if series:
         order = next(iter(orders)) if len(orders) == 1 else None
         return SpecObservations(series=series, total_obs=total, truncated=truncated, order=order)
@@ -404,12 +392,13 @@ def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozens
 
     The identity is the component's own, so its read elects the facets a Datasets mint of
     the composite elects under the same window, and its window passes every gate a mint's
-    read of it passes. Its read plan then reads rows over the span of the years and keeps
-    the points in them alone (`read_plan.read_in_years`), so the preview's series and points
-    lie in those years. Its counts follow the span of the served years and are exact when
-    the served years are contiguous. A stacked composite under a `latest` window, which no mint serves,
-    previews the year it elects (`ServedComponent.elected`): each component reads that
-    year alone."""
+    read of it passes. Its read plan then reads rows over the span of the years while every
+    election keeps that window (`read_plan.read_in_years`), and keeps the points in the
+    years alone, so the preview's series and points lie in those years. Its counts follow
+    the span of the served years and are exact when the served years are contiguous. A
+    composite under a `latest` window, which no mint serves, previews the year it elects
+    (`ServedComponent.elected`): each component serving that year reads it alone as a
+    range, so every component plan reads a range or every date."""
     identity = dict(item.component.identity)
     if item.elected is not None:
         identity["requested_window"] = {
@@ -418,23 +407,6 @@ def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozens
             "end_year": item.elected,
         }
     return identity, item.preview_years
-
-
-def _serves(item: ServedComponent, date: str) -> bool:
-    """Whether a point of `item` dated `date` lies in a year it serves and its recipe's
-    periods hold. A date with no leading year is kept, as `search.models.in_window` keeps
-    it."""
-    try:
-        year = int(date[:4])
-    except ValueError:
-        return True
-    return _serves_year(item, year)
-
-
-def _serves_year(item: ServedComponent, year: int) -> bool:
-    """Whether `item` serves `year` and its recipe's periods hold it."""
-    periods = item.component.recipe.periods
-    return year in item.served and (periods is None or periods.holds(year))
 
 
 def _composite_omission(reads: Sequence[SpecObservations | None]) -> SpecObservations:
@@ -859,8 +831,8 @@ def composite_download(
     """The facts of the default file a Datasets mint of composite `identity` writes, counted
     from `facts`' coverage snapshot in memory as `materialise.composite` composes the frame.
 
-    Each component writes its members' series-years in the years it serves (`served`, as
-    `ServedComponent.served` and its recipe's periods state them). A zero-filling component
+    Each component writes its members' series-years in the years it serves
+    (`ServedComponent.served`, within its recipe's periods). A zero-filling component
     (`ComponentRecipe.zero_absent`) writes, for each member a mint of it serves, one row per
     cell, a (recipient, donor, year), that some component's series fills in the years it
     serves, its own rows and its zero rows alike. Series count the distinct (StatVar,
@@ -926,7 +898,7 @@ def _served_series(
 ) -> Iterator[tuple[tuple[str, str, str], frozenset[int]]]:
     """Each series of `item`'s members under its identity's places, read under the
     provenances its identity pins alone (`materialise.composite.component_reads`), with the
-    years of it that `item` serves (`_serves_year`), for a series holding one."""
+    years of it that `item` serves, for a series holding one."""
     if item.members is None or not item.served:
         return
     with component_reads(item.component.identity):
@@ -943,7 +915,7 @@ def _served_series(
         held = frozenset(
             year
             for offset in range(bits.bit_length())
-            if bits >> offset & 1 and _serves_year(item, year := epoch + offset)
+            if bits >> offset & 1 and (year := epoch + offset) in item.served
         )
         if held:
             yield key, held

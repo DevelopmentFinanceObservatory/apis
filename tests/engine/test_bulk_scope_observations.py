@@ -170,17 +170,10 @@ def test_happy_path_five_countries_one_shared_facet():
     assert resolved["provenance"].selection is None  # concrete, not per_series
 
 
-@pytest.mark.parametrize(
-    ("years", "served"),
-    [
-        pytest.param(frozenset({2022, 2023}), 5, id="latest-point-in-years"),
-        pytest.param(frozenset({2021}), 0, id="latest-point-outside-years"),
-    ],
-)
-def test_a_dateless_scope_read_in_given_years_keeps_its_latest_points_in_them(years, served):
-    """A dateless scope plan read in given years keeps its own years, so its one latest
-    point per place is read, and shows each place's point where it lies in those years.
-    Each place's latest point is dated 2023."""
+def test_a_scope_read_asked_for_served_years_refuses_without_a_read():
+    """A scope-defaulted read serves one latest point per place, which served years cannot
+    narrow, and no composite component reads one: asked for served years, it refuses as a
+    failed probe, with a warning, and reads nothing."""
     facets_by_entity = {
         c: [Facet(earliest_date="2020", latest_date="2023", obs_count=4, facet_id="F1")]
         for c in _COUNTRIES
@@ -189,12 +182,13 @@ def test_a_dateless_scope_read_in_given_years_keeps_its_latest_points_in_them(ye
         subject_observations={_SV: {c: [_row(c, facet_id="F1")] for c in _COUNTRIES}}
     )
 
-    observations, _warn = _run_bulk(facets_by_entity, sdmx=sdmx, years=years)
+    observations, warn = _run_bulk(facets_by_entity, sdmx=sdmx, years=frozenset({2023}))
 
-    assert len(observations.series) == served
-    if not served:
-        assert observations.omitted is not None
-        assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_PROBE_FAILED
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_PROBE_FAILED
+    assert sdmx.subject_observations_calls == []
 
 
 def test_bulk_path_never_calls_materialise_preview(monkeypatch):

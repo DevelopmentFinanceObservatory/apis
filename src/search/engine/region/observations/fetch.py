@@ -390,7 +390,6 @@ def _bulk_scope_dispatch(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
     member_constraints: Mapping[str, Mapping[str, str]],
     deadline: float | None,
-    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Dispatch a scope-defaulted standard query through the one-facet bulk branch, serving
     the facet `plan` elected.
@@ -398,8 +397,7 @@ def _bulk_scope_dispatch(
     A range plan returns `OBSERVATIONS_WINDOWED_SCOPE_UNSUPPORTED`. `latest` and dateless
     plans supply one latest point per place. A unit request converts those points or narrows
     the plan to the native units (`_bulk_unit`); a conversion without its inputs returns
-    `OBSERVATIONS_CLIENTS_UNAVAILABLE` before any read. `years`, where set, are the years
-    the read keeps points in (`_bulk_scope_series`); the plan reads under its own years.
+    `OBSERVATIONS_CLIENTS_UNAVAILABLE` before any read.
     """
     if isinstance(plan.years, TimeWindow):
         observations = observations_windowed_scope()
@@ -431,7 +429,6 @@ def _bulk_scope_dispatch(
         facet_filter=facet_filter,
         member_constraints=member_constraints,
         conversion=conversion,
-        years=years,
     )
 
 
@@ -464,9 +461,8 @@ def _role_bearing_bulk_dispatch(
     `OBSERVATIONS_CLIENTS_UNAVAILABLE`. A `latest` read serves each member its own latest
     period (`_bulk_role_series`). `years`, where set, are the years the read takes rows in
     (`read_plan.read_in_years`), applied once the unit has narrowed the plan, so the
-    narrowing elects under the plan's own years; the read keeps its points in them, which
-    a `latest` read needs, as its plan is not narrowed. A plan whose years hold none of them
-    returns `OBSERVATIONS_NO_POINTS` with no read.
+    narrowing elects under the plan's own years. `_build_observations` has already checked
+    that the plan's years hold one of them.
     """
     readable = (
         isinstance(plan, BulkPlan)
@@ -502,8 +498,7 @@ def _role_bearing_bulk_dispatch(
     plan, conversion = unit
     if years is not None:
         narrowed = read_in_years(plan, years)
-        if narrowed is None:
-            return _no_points_in_years(years)
+        assert narrowed is not None  # `_build_observations` read the same years first
         plan = narrowed
     return _bulk_role_series(
         plan,
@@ -514,7 +509,6 @@ def _role_bearing_bulk_dispatch(
         deadline=deadline,
         member_constraints=member_constraints,
         conversion=conversion,
-        years=years,
     )
 
 
@@ -528,14 +522,18 @@ class _Dispatch:
     read serves. `bound` holds the roles the answer's entities name. A role a series binds
     beyond them is open on the read, so the series of one bound tuple share the read and
     each takes the rows carrying its own dcid on that role (`_split_series`). A fully bound
-    tuple is one series, read alone. `years` is the window the read takes its rows in, and
-    `elected_year` the year the member elected under `latest`, None when it elected none."""
+    tuple is one series, read alone. `years` is the window the read elects and takes its
+    rows in, and `elected_year` the year the member elected under `latest`, None when it
+    elected none. `served`, set for a plan `read_in_years` narrowed, is the span of the
+    years it serves: the read elects under `years`, the window the plan elected under, and
+    keeps its rows in `served` alone (`materialise_preview`'s `served_window`)."""
 
     stat_var: str
     bound: _RoleTuple
     series: tuple[PlanSeries, ...]
     years: PlanYears
     elected_year: int | None = None
+    served: TimeWindow | None = None
 
     @property
     def group_ids(self) -> frozenset[str]:
@@ -563,9 +561,11 @@ def _dispatches(
     *,
     years: PlanYears,
     elected: Mapping[str, int],
+    served: TimeWindow | None = None,
 ) -> list[_Dispatch]:
     """Group the planned series into reads: one per member and tuple of the roles
-    `obs_entities` names, in series order, each over `years`.
+    `obs_entities` names, in series order, each over `years`, keeping its rows in `served`
+    where set (`_Dispatch.served`).
 
     Under `latest` materialise asks SDMX for `LATEST` rows, and for the rows in the year
     the member elected (`elected`, from `PairPlan.elected_years`) when a series ends after
@@ -583,6 +583,7 @@ def _dispatches(
             series=tuple(members),
             years=years,
             elected_year=elected.get(sv) if years == "latest" else None,
+            served=served,
         )
         for (sv, bound), members in grouped.items()
     ]
@@ -693,6 +694,42 @@ def _in_years(
             cut = len(read.points) - len(points)
             kept[key] = replace(read, points=points, total_rows=read.total_rows - cut)
     return kept
+
+
+def _no_series_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
+    """The omission of a per-series preview none of whose series holds a point in `years`,
+    the years it reads rows in (`read_plan.read_in_years`): no read is dispatched."""
+    return (
+        omitted_observations(
+            OBSERVATIONS_NO_POINTS,
+            f"the observation preview read no rows: no series of the answer holds a point "
+            f"in the {len(years)} years it previews.",
+            dispatched=0,
+            empty=0,
+        ),
+        None,
+    )
+
+
+def _scope_read_in_years(years: frozenset[int]) -> tuple[SpecObservations, Warning]:
+    """The refusal of a scope-defaulted preview asked to read rows in `years`. Its read
+    serves one latest point per place (`_bulk_scope_dispatch`), which served years cannot
+    narrow, and a composite's components, the one caller passing years, read flow families
+    on their roles. Reaching here is a caller defect, logged as an error."""
+    logger.error(
+        "observation preview refused: a scope-defaulted read cannot read rows in the %d "
+        "served years %r",
+        len(years),
+        sorted(years),
+    )
+    message = (
+        "the observation preview was not fetched: a read of defaulted places serves one "
+        "latest point per place and cannot read rows in the years it was asked for."
+    )
+    return (
+        omitted_observations(OBSERVATIONS_PROBE_FAILED, message),
+        Warning(code=OBSERVATIONS_PROBE_FAILED, severity="warn", message=message),
+    )
 
 
 def _no_points_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
@@ -893,6 +930,7 @@ def _preview_one(
             precomputed=merge_facets_by_series(by_series, list(by_series)),
             series_roles=dispatch.open_roles,
             refuse_when_every_row_omitted=False,
+            served_window=plan_window(dispatch.served) if dispatch.served is not None else None,
         )
 
 
@@ -1165,6 +1203,7 @@ def _run_pair_fetch_pool(
     *,
     years: PlanYears,
     elected: Mapping[str, int],
+    served: TimeWindow | None,
     unit_request: UnitRequest | None,
     materialise_graph: GraphReader,
     deadline: float | None,
@@ -1187,7 +1226,7 @@ def _run_pair_fetch_pool(
     """
     if len(series) > observation_settings().obs_preview_max_pairs:
         return _series_too_large(len(series), sv_dcids, obs_entities)
-    dispatches = _dispatches(series, obs_entities, years=years, elected=elected)
+    dispatches = _dispatches(series, obs_entities, years=years, elected=elected, served=served)
     if (
         "observationAbout" not in obs_entities
         and len(dispatches) > settings().obs_preview_concurrency
@@ -1421,6 +1460,13 @@ def _dispatched_series(plan: PairPlan, sv_dcids: Sequence[str]) -> list[PlanSeri
     ]
 
 
+def _places_defaulted(plan: ReadPlan | None, scope: BulkScope | None) -> bool:
+    """Whether `plan`, a standard answer's, reads a plural default scope (`PairPlan.scope`)
+    that `scope`, the answer's bulk scope read (`bulk_scope_for`), serves: the answers
+    `_preview_mode` reads in `PreviewMode.SCOPE_BULK`."""
+    return isinstance(plan, PairPlan) and plan.scope and scope is not None
+
+
 def _preview_mode(
     plan: ReadPlan | None,
     sv_dcids: Sequence[str],
@@ -1442,7 +1488,7 @@ def _preview_mode(
         return PreviewMode.ROLE_BULK if isinstance(plan, BulkPlan) else PreviewMode.PER_SERIES
     return preview_mode(
         role_bearing=role_bearing,
-        places_defaulted=isinstance(plan, PairPlan) and plan.scope and scope is not None,
+        places_defaulted=_places_defaulted(plan, scope),
         bound_pairs=bound_pairs,
         series_count=lambda: (
             len(_dispatched_series(plan, sv_dcids)) if isinstance(plan, PairPlan) else 0
@@ -1466,14 +1512,18 @@ def _fetch_pair_observations(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
     coverage: CoverageSnapshot,
     member_constraints: Mapping[str, Mapping[str, str]],
-    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Fetch each series `plan` serves over the plan's years, one read per member and bound
     role tuple (`_dispatches`), reduce a `latest` read's series to each StatVar's one
-    period (`_at_latest_periods`), keep only the points in `years` where set (`_in_years`),
-    then assemble the result. A planned series that reduction
-    drops is logged and counted among the series the partial-result warning says could not
-    be served.
+    period (`_at_latest_periods`), keep only the points in the years a plan
+    `read_in_years` narrowed serves (`_in_years`), then assemble the result. A planned
+    series that reduction drops is logged and counted among the series the partial-result
+    warning says could not be served.
+
+    A narrowed plan's reads elect, mask and collapse under the window it elected under
+    (`PairPlan.election_years`) and keep their rows in the span of the years it serves
+    (`_Dispatch.served`), so the row limit and `total_rows` read that span; `_in_years`
+    then leaves out the points of a year inside the span the plan does not serve.
 
     Each `materialise_preview` call reads its series' planned candidates and elects among
     the member's group alone, over `obs_preview_max_rows` rows per series, separate from the
@@ -1514,8 +1564,9 @@ def _fetch_pair_observations(
         series,
         sv_dcids,
         obs_entities,
-        years=plan.years,
+        years=plan.election_years,
         elected=plan.elected_years or {},
+        served=None if plan.served_years is None else plan.served_years.span,
         unit_request=translated_unit_request,
         materialise_graph=materialise_graph,
         deadline=deadline,
@@ -1541,8 +1592,8 @@ def _fetch_pair_observations(
                 len(short_of_latest),
                 sorted(short_of_latest),
             )
-    if years is not None:
-        pair_results = _in_years(pair_results, years)
+    if plan.served_years is not None:
+        pair_results = _in_years(pair_results, plan.served_years.years)
     outcome = replace(
         pool_result,
         pair_results=pair_results,
@@ -1623,17 +1674,22 @@ def _build_observations(
     converting.
     `coverage` supplies the index role-bearing materialisation reads.
 
-    `years`, where set, are the years the preview reads rows in (`read_plan.read_in_years`):
-    the plan keeps the facets it elected under its own years and reads over the span of
-    those years, and every path keeps only the points in them before its limits cut. A
-    per-series read narrows its plan to the span and keeps its points in the years
-    (`_in_years`), a bulk role read narrows its plan once `_bulk_unit` has elected under the
-    plan's own years, and a scope-defaulted read keeps its plan, which reads one latest
-    point per place. The counts follow the span of the served years and are exact when the
-    served years are contiguous: a bulk read's population and unread row counts and its
-    fixed-order pair choice, and a per-series read's `total_rows`, also count rows of the
-    span's other years. A plan whose years hold none of them returns
-    `OBSERVATIONS_NO_POINTS` with no read, after the nothing-to-probe checks.
+    `years`, where set, are the years the preview reads rows in, a composite component's
+    served years (`scope.composite.component_preview`). The plan reads a range or every
+    date, and `read_plan.read_in_years` narrows it to the span of those years while every
+    election keeps the window it elected under (`read_plan.ServedYears`). A per-series read
+    elects and collapses each series under that window, keeps its rows in the span, and
+    keeps its points in the years (`_fetch_pair_observations`). A bulk role read narrows
+    its plan once `_bulk_unit` has elected under the plan's own years, lists the years
+    alone to SDMX, and ranks and cuts its facets over coverage in the window
+    (`bulk_role_series._served_pairs`). The counts follow the span of the served years and
+    are exact when the served years are contiguous: a bulk read's population and unread row
+    counts and its fixed-order pair choice, and a per-series read's `total_rows`, also count
+    rows of the span's other years. After the nothing-to-probe checks, a plan whose years
+    hold none of them, or a per-series plan none of whose series holds a point in them,
+    returns `OBSERVATIONS_NO_POINTS` with no read. A scope-defaulted read serves one latest
+    point per place, which served years cannot narrow, so it refuses
+    `OBSERVATIONS_PROBE_FAILED` with a warning and an error log (`_scope_read_in_years`).
     None reads the plan's own years.
     """
     if not sv_dcids or not obs_entities:
@@ -1669,11 +1725,15 @@ def _build_observations(
             ),
             None,
         )
+    if years is not None and not role_bearing and _places_defaulted(plan, scope):
+        return _scope_read_in_years(years)
     narrowed = plan
     if years is not None and plan is not None:
         narrowed = read_in_years(plan, years)
         if narrowed is None:
             return _no_points_in_years(years)
+        if isinstance(narrowed, PairPlan) and not narrowed.series:
+            return _no_series_in_years(years)
     mode = _preview_mode(
         narrowed, sv_dcids, role_bearing=role_bearing, scope=scope, bound_pairs=len(pairs)
     )
@@ -1693,7 +1753,6 @@ def _build_observations(
             elected=elected,
             member_constraints=member_constraints,
             deadline=deadline,
-            years=years,
         )
     if mode is PreviewMode.ROLE_BULK:
         return _role_bearing_bulk_dispatch(
@@ -1757,5 +1816,4 @@ def _build_observations(
         elected=elected,
         coverage=coverage,
         member_constraints=member_constraints,
-        years=years,
     )

@@ -810,42 +810,61 @@ def test_cancelling_the_composite_task_cancels_every_component_read(monkeypatch)
     assert cancelled_reads == [0, 1, 2]
 
 
-def test_the_spliced_headline_under_latest_serves_each_component_in_its_own_periods(
+def test_the_spliced_headline_under_latest_reads_and_states_each_component_in_its_periods(
     monkeypatch,
 ):
-    """Under a `latest` window both headline components read their own latest year. The net
-    component's lies past its periods (to 2017), so the composite serves the grant-equivalent
-    year alone."""
+    """Under a `latest` window the net component's identity passes unclipped and its series
+    run to 2024, past its periods, which end in 2017. The composite elects 2024, the latest
+    year a component serves within its periods: only the grant-equivalent component is
+    read, over 2024 alone, and the net component is never requested. The Spec's components,
+    coverage and headline count the net series in 2017 and before alone."""
     facts = provider._dac1_facts(provider._DAC1_TOTAL_ODA)
     identity = provider._dac1_identity(
         provider._DAC1_TOTAL_ODA, (provider._USA,), window=None, headline=True
     )
-    windows: list[object] = []
+    requested: list[tuple[object, frozenset[int] | None]] = []
 
-    async def read(item: ServedComponent, _groups: object, **_kwargs: object) -> object:
-        windows.append(item.component.identity["requested_window"])
+    async def resubmit(
+        read_identity: BaseIdentity, _groups: object, **kwargs: Any
+    ) -> tuple[SpecObservations, tuple[()]]:
+        requested.append((read_identity.requested_window, kwargs["years"]))
         series = ObservationSeries(
-            stat_var=SeriesStatVarRef(ref=item.component.role),
+            stat_var=SeriesStatVarRef(ref="headline_ge"),
             entities=[],
             points=[ObservationPoint(date="2024", value=1.0)],
             total_obs=1,
         )
         return SpecObservations(series=[series], total_obs=1, truncated=False), ()
 
-    monkeypatch.setattr(composite_answer, "_read_component", read)
+    monkeypatch.setattr(composite_answer, "_resubmit_preview", resubmit)
 
     reads = _reads(facts.coverage)
+    served = composite_served(identity, reads=reads)
     observations, _ = asyncio.run(
-        read_composite_preview(
-            served=composite_served(identity, reads=reads),
-            entity_groups=None,
-            reads=reads,
-            semaphore=None,
-        )
+        read_composite_preview(served=served, entity_groups=None, reads=reads, semaphore=None)
     )
 
-    assert windows == [{"kind": "latest"}, {"kind": "latest"}]
+    assert requested == [(IdentityWindowRange(start_year=2024, end_year=2024), frozenset({2024}))]
     assert _dates(observations) == {"headline_ge": ["2024"]}
+    net, grant_equivalent = served
+    assert max(net.served) == 2017 and min(grant_equivalent.served) == 2018
+    mint = composite.CompositeMint(
+        identity=identity, spec_id="spec", served=tuple(served), facts=facts
+    )
+    periods = {component.role: component.periods for component in mint.components()}
+    assert periods == {
+        net.component.role: [(2005, 2017)],
+        grant_equivalent.component.role: [(2018, 2024)],
+    }
+    counted = sum(
+        item.years.counts.get(year, 0)
+        for item, first, last in ((net, 2005, 2017), (grant_equivalent, 2018, 2024))
+        for year in range(first, last + 1)
+    )
+    assert mint.coverage().observation_count == counted
+    headline = mint.headline(None)
+    assert headline is not None
+    assert (headline.year, headline.observations) == (2024, grant_equivalent.years.counts[2024])
 
 
 _PURPOSES = ("CRSPurposeCode120", "CRSPurposeCode130")

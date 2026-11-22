@@ -79,6 +79,7 @@ def test_per_pair_request_construction_standard_shape():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(request)
         entity = next(iter(request.role_bindings["observationAbout"]))
@@ -127,6 +128,7 @@ def test_per_pair_preview_reads_under_the_obs_preview_max_rows_ceiling():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         bounds.append((limit, ceiling, series_limit))
         return stub_preview_result(sv="Count_Person", entity="country/IND")
@@ -163,6 +165,7 @@ def test_per_pair_request_construction_unwindowed_query_is_kind_all():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(request)
         return stub_preview_result(entity="country/IND")
@@ -198,6 +201,7 @@ def test_per_pair_request_construction_role_bearing_shape():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(request)
         entity = next(iter(request.role_bindings["provider"]))
@@ -250,6 +254,7 @@ def test_declared_roles_widen_to_the_family_signature_when_only_one_role_is_boun
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(request)
         entity = next(iter(request.role_bindings["recipient"]))
@@ -292,6 +297,7 @@ def test_declared_roles_falls_back_to_bound_roles_when_member_facts_has_no_entry
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(request)
         entity = next(iter(request.role_bindings["recipient"]))
@@ -332,6 +338,7 @@ def test_pair_count_at_ceiling_still_previews():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         return stub_preview_result(sv="Count_Person", entity=entity)
@@ -372,6 +379,7 @@ def test_pair_count_over_ceiling_degrades_whole_preview_without_fetching_any_pai
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         raise AssertionError(
             "materialise_preview must not be called once the pair-count ceiling is exceeded"
@@ -415,6 +423,7 @@ def test_pair_count_planned_over_ceiling_but_pairs_with_data_under_ceiling_previ
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         captured.append(request)
@@ -455,6 +464,7 @@ def test_rate_cache_forwarded_to_materialise_preview():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(rate_cache)
         return stub_preview_result(sv="Count_Person", entity="country/IND")
@@ -491,6 +501,7 @@ def test_rate_cache_omitted_serves_existing_fixture_unchanged():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        served_window=None,
     ):
         captured.append(rate_cache)
         return stub_preview_result(sv="Count_Person", entity="country/IND")

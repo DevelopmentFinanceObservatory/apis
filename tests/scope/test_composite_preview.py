@@ -1,6 +1,6 @@
-"""A composite answer's observation preview composes from its components' own: each component
-keeps the points dated in the years it serves, and an empty composite says why. Its download
-facts count the composite file's rows in memory, zero rows included."""
+"""A composite answer's observation preview composes from its components' own, each read in
+the years it serves, and an empty composite says why. Its download facts count the composite
+file's rows in memory, zero rows included."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from series_coverage.schema import RoleNames
 from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
-_CRS_INCLUSIVE, _DAC2A_INCLUSIVE, _DAC2A_BILATERAL, _HEADLINE = COMPOSITES
+_CRS_INCLUSIVE, _, _, _HEADLINE = COMPOSITES
 
 
 def _served(declaration: CompositeDeclaration, *years: range) -> list[ServedComponent]:
@@ -79,19 +79,6 @@ def test_spliced_keeps_both_components_years_and_series() -> None:
     assert (composed.total_obs, composed.truncated, composed.omitted) == (11, False, None)
 
 
-def test_a_point_outside_the_served_years_is_dropped() -> None:
-    # A `latest` read is not clipped to its component's periods. The net component's 2024
-    # point lies past 2017, so the composite drops it and the series it alone filled.
-    served = _served(_HEADLINE, range(2015, 2025), range(2018, 2025))
-    composed = compose_observations(
-        served,
-        [_read(_series("net", 2016, 2024), _series("late", 2024)), _read(_series("ge", 2024))],
-    )
-    assert _dates(composed) == {"net": ["2016"], "ge": ["2024"]}
-    assert [s.total_obs for s in composed.series] == [1, 1]
-    assert composed.total_obs == 2
-
-
 def test_a_kept_series_holds_its_estimates() -> None:
     estimated = _series("ge", 2018, 2019).stating_estimates(True)
     composed = compose_observations(_SPLICED, [None, _read(estimated)])
@@ -102,7 +89,7 @@ def test_components_with_no_point_in_their_years_omit_no_points() -> None:
     composed = compose_observations(
         _SPLICED,
         [
-            _read(_series("net", 2020)),
+            omitted_observations("observations_no_points", "none", dispatched=1, empty=1),
             omitted_observations("observations_no_points", "none", dispatched=3, empty=3),
         ],
     )
@@ -121,21 +108,9 @@ def test_a_component_omission_explains_an_empty_composite() -> None:
 
 
 def test_a_missing_read_omits_probe_failed() -> None:
-    composed = compose_observations(_SPLICED, [None, _read(_series("ge", 2017))])
+    composed = compose_observations(_SPLICED, [None, _read()])
     assert composed.omitted is not None
     assert composed.omitted.reason == "observations_probe_failed"
-
-
-def test_stacked_total_obs_subtracts_the_points_dropped_at_the_tail() -> None:
-    # The tables share 2015-2022, and the bilateral table runs on to 2024. A truncated bilateral
-    # series shows its latest four points of six, so the cut falls among the visible ones.
-    served = _served(_DAC2A_INCLUSIVE, range(2015, 2023), range(2015, 2023))
-    bilateral = _series("bilateral", 2021, 2022, 2023, 2024, total_obs=10)
-    imputed = _series("imputed", 2021, 2022)
-    composed = compose_observations(served, [_read(bilateral, truncated=True), _read(imputed)])
-    assert _dates(composed) == {"bilateral": ["2021", "2022"], "imputed": ["2021", "2022"]}
-    assert [s.total_obs for s in composed.series] == [8, 2]
-    assert (composed.total_obs, composed.truncated) == (10, True)
 
 
 _USA, _KEN, _UGA = "country/USA", "country/KEN", "country/UGA"

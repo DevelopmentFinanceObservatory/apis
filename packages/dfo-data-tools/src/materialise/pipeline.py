@@ -664,6 +664,7 @@ def materialise_preview(
     series_roles: Sequence[str] = (),
     series_limit: int | None = None,
     refuse_when_every_row_omitted: bool = True,
+    served_window: RequestedWindow | None = None,
 ) -> PreviewResult:
     """Generate a write-free, single-member preview through the mint's facet selection and
     dispatch. The preview reads every row a mint reads and reports `truncated` and the full
@@ -698,6 +699,13 @@ def materialise_preview(
     A caller previewing one part of a request passes `refuse_when_every_row_omitted=False`,
     gets the part's empty result with the omissions on its conversion records, and
     decides for the whole request.
+
+    `served_window`, a range inside `request.window`, holds the years the caller serves:
+    the read elects, masks, collapses and converts every row of `request.window`, as a mint
+    of the request does, then keeps the rows in `served_window` alone before it counts,
+    truncates or builds them. A composite's component preview reads so, since a mint of
+    the composite elects each component under its own window and keeps the years the
+    composite serves afterwards (`composite.compose_components`).
     """
     if limit < 1:
         raise MaterialisationUsageError(f"materialise_preview requires limit >= 1, got {limit!r}")
@@ -722,7 +730,7 @@ def materialise_preview(
             series_roles=series_roles,
             series_limit=series_limit,
         )
-        return _finish_preview_member(prepared)
+        return _finish_preview_member(prepared, served_window=served_window)
 
     outcome = _generate()
     if refuse_when_every_row_omitted:

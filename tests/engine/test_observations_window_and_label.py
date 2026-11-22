@@ -159,6 +159,48 @@ def test_a_read_in_given_years_keeps_the_facet_its_own_window_elects():
     assert _dates_read(None, frozenset({2015, 2016, 2017})) == (["2015"], 1)
 
 
+def test_a_read_in_given_years_collapses_its_facets_as_a_mint_of_its_window_does():
+    """`fA` and `fB`, one source, contest 2020. Over every date `fA`'s seven points outrank
+    `fB`'s two; over 2019 and 2020 alone `fB`'s two outrank `fA`'s one. A mint collapses
+    under its window and keeps the served years afterwards, so read in those years the
+    preview serves `fA`'s 2020 value, as its read of every date does there."""
+    obs = {
+        "Count_Person|country/IND": [
+            {
+                "facetId": facet_id,
+                "earliestDate": str(years[0]),
+                "latestDate": str(years[-1]),
+                "obsCount": len(years),
+                "provenanceId": "dc/base/same",
+                "observations": [{"date": str(year), "value": value} for year in years],
+            }
+            for facet_id, years, value in (
+                ("fA", [2010, 2011, 2012, 2013, 2014, 2015, 2020], 1.0),
+                ("fB", [2019, 2020], 2.0),
+            )
+        ],
+    }
+
+    def read(years: frozenset[int] | None) -> list[tuple[str, float | None]]:
+        materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+        observations, _warn = build_observations_planned(
+            ["Count_Person"],
+            {"observationAbout": ["country/IND"]},
+            graph=FakeGraph(),
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            coverage=empty_coverage_snapshot(),
+            years=years,
+        )
+        (series,) = observations.series
+        return [(p.date, p.value) for p in series.points]
+
+    served = frozenset({2019, 2020})
+    whole = [point for point in read(None) if int(point[0]) in served]
+
+    assert read(served) == whole == [("2019", 2.0), ("2020", 1.0)]
+
+
 @pytest.mark.parametrize(
     ("years", "max_rows", "dates"),
     [
@@ -178,8 +220,16 @@ def test_a_read_in_given_years_shows_and_counts_their_points_alone(
     assert _dates_read(TimeWindow(start_year=2016), years) == (dates, len(dates))
 
 
-def test_a_read_in_years_its_window_does_not_hold_omits_with_no_points():
-    """A plan over 2016 onwards read in 2010 alone holds no year to read."""
+@pytest.mark.parametrize(
+    ("window", "years"),
+    [
+        # A plan over 2016 onwards read in 2010 alone holds no year to read.
+        pytest.param(TimeWindow(start_year=2016), frozenset({2010}), id="outside-window"),
+        # Every date holds 2022, and no series holds a point in it.
+        pytest.param(None, frozenset({2022}), id="no-series-in-years"),
+    ],
+)
+def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window, years):
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_old_and_new_obs())
     observations, warn = build_observations_planned(
         ["Count_Person"],
@@ -187,13 +237,14 @@ def test_a_read_in_years_its_window_does_not_hold_omits_with_no_points():
         graph=FakeGraph(),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
-        window=TimeWindow(start_year=2016),
+        window=window,
         coverage=empty_coverage_snapshot(),
-        years=frozenset({2010}),
+        years=years,
     )
     assert warn is None
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert observations.omitted.dispatched == 0
 
 
 def _recorded_and_estimated_obs() -> dict:

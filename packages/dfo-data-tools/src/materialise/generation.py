@@ -3388,10 +3388,16 @@ def _prepare_preview_member(
 
 
 def _finish_preview_member(
-    prepared: _PreparedPreview, *, time_period: str | None = None
+    prepared: _PreparedPreview,
+    *,
+    time_period: str | None = None,
+    served_window: RequestedWindow | None = None,
 ) -> _PreviewOutcome:
     """Apply conversion to a prepared preview's rows at `time_period`, or with none given
-    at the period a mint of the request serves (`columnar.elected_rows`)."""
+    at the period a mint of the request serves (`columnar.elected_rows`). `served_window`,
+    a range, keeps the converted rows within its years alone, before anything is counted,
+    truncated or built: the rows were elected, masked and collapsed under the request's
+    own window, as a mint of it keeps them."""
     request = prepared.request
     table = prepared.table
     if time_period is not None:
@@ -3429,6 +3435,8 @@ def _finish_preview_member(
         if conversion_plan is not None and conversion_plan.recipe is not None
         else None
     )
+    if served_window is not None:
+        table = table.filter(columnar.range_window_mask(table, window=served_window))
 
     applied_window = compute_applied_window(request.window, columnar.served_year_bounds(table))
     coverage = columnar.coverage(
