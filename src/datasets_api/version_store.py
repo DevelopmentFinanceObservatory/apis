@@ -355,18 +355,19 @@ def _refresh_incomplete_after(tx: Transaction, record: VersionRecord) -> None:
     sources mark can differ: a version recorded before versions stored them, or under a release
     whose partial period has since completed, takes the later judgement.
 
-    A dataset version's judgement goes with the `built_at` of the catalogue build that made it
-    (`ManifestFacts.incomplete_after_built_at`). A write judged by an older build than the
-    stored judgement's, or by no known build, leaves the stored one standing, so an instance
-    still bound to the previous build during a rollout cannot undo the next build's judgement;
-    a write judged by the same or a later build replaces it. A computed version stores no
-    build, so its republish always replaces it. It runs under the version's link lock, as
-    `_fill_year_coverage` does.
+    A judgement goes with the `built_at` of the catalogue build that made it, a computed
+    version's with the newest build among the input judgements it read
+    (`ManifestFacts.incomplete_after_built_at`, `FrameLineage.incomplete_after_built_at`). A
+    write judged by an older build than the stored judgement's, or by no known build, leaves
+    the stored one standing, so an instance still bound to the previous build during a
+    rollout, or a republish that read an input's older judgement, cannot undo a newer one; a
+    write judged by the same or a later build replaces it. It runs under the version's link
+    lock, as `_fill_year_coverage` does.
     """
     facts = record.facts
     if facts.incomplete_after is None:
         return
-    built_at = facts.incomplete_after_built_at if isinstance(facts, ManifestFacts) else None
+    built_at = facts.incomplete_after_built_at
     key = (record.subject_id, record.content_version)
     lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
     row = tx.fetch_one(

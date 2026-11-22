@@ -13,11 +13,14 @@
 -- older catalogue build judged it.
 --
 -- `incomplete_after_built_at` holds the `built_at` of the origin catalogue build that judged a
--- dataset version's `incomplete_after`, a collapse's that of its base's
--- (`dataset_store.snapshot.ManifestFacts.incomplete_after_built_at`). A later write judged by
--- an older build, as an instance still bound to the previous build mints during a rollout,
--- leaves the stored judgement standing (`datasets_api.version_store._refresh_incomplete_after`).
--- NULL on a computed version, on an unjudged one, and on a row recorded before this column.
+-- dataset version's `incomplete_after`, a collapse's that of its base's, and a computed
+-- version's the newest among the input judgements it was derived from
+-- (`dataset_store.snapshot.ManifestFacts.incomplete_after_built_at`,
+-- `FrameLineage.incomplete_after_built_at`). A later write judged by an older build, as an
+-- instance still bound to the previous build mints during a rollout, leaves the stored
+-- judgement standing (`datasets_api.version_store._refresh_incomplete_after`). NULL on an
+-- unjudged version, a computed one derived from an input judgement that names no build, and a
+-- row recorded before this column.
 --
 -- Adding nullable columns rewrites no row. Re-running this migration changes nothing.
 

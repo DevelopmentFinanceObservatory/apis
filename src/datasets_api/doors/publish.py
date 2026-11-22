@@ -649,7 +649,8 @@ def publish_built_frame(
         incomplete = derived_incomplete_after(inputs, reader=snapshot_reader, frame=frame)
     requested = replace(
         frame_lineage(input_content_versions=input_content_versions, continuations=continuations),
-        incomplete_after=incomplete,
+        incomplete_after=None if incomplete is None else incomplete.entries,
+        incomplete_after_built_at=None if incomplete is None else incomplete.built_at,
     )
     version = VersionRecord(
         subject_id=spec_id,

@@ -23,17 +23,23 @@ are not.
 
 The record is unknown as a whole, `None`, with no inputs, an input the store does not hold,
 or an input whose record is unknown (recorded before versions stored one).
+
+The record goes with the newest catalogue build among the input judgements it read
+(`ManifestFacts.incomplete_after_built_at`, `FrameLineage.incomplete_after_built_at`), and with
+no build when an input's judgement names none, so the store orders the republishes of one
+computed version by the judgements they read (`version_store._refresh_incomplete_after`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from typing import cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, Frame
 
 from dataset_store.snapshot import ManifestFacts, SnapshotReader, StoredVersion
-from datasets_api.manifest import provenance_refs_of
+from datasets_api.manifest import JudgedIncompleteAfter, provenance_refs_of
 from description.facts import InputVersion
 from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.generation import bare_stat_var_ref
@@ -72,16 +78,17 @@ def frame_cells(frame: Frame) -> set[Cell]:
 
 def derived_incomplete_after(
     inputs: Sequence[InputVersion], *, reader: SnapshotReader, frame: Frame
-) -> list[dict[str, object]] | None:
+) -> JudgedIncompleteAfter | None:
     """The `incomplete_after` record of a computed version over `inputs` whose rows are
     `frame`'s, read through `reader` in one batch: one entry per output `provenance` cell and
-    state, holding the variables of its cells, every cell listed. `None` when unknown as a
-    whole."""
+    state, holding the variables of its cells, every cell listed, with the newest build among
+    the input judgements read, `None` when one names none. `None` when unknown as a whole."""
     if not inputs:
         return None
     held = reader.read_versions_of([one.content_version for one in inputs])
     named: dict[Cell, set[State]] = {}
     carried: set[Cell] = set()
+    builds: list[datetime | None] = []
     for one in inputs:
         versions = [
             version
@@ -95,6 +102,7 @@ def derived_incomplete_after(
             recorded = _recorded(version)
             if recorded is None:
                 return None
+            builds.append(version.facts.incomplete_after_built_at)
             for entry in recorded:
                 state = _state(entry)
                 for cell in _cells(entry):
@@ -118,7 +126,7 @@ def derived_incomplete_after(
             stat_vars = grouped.setdefault((provenance, state), [])
             if stat_var not in stat_vars:
                 stat_vars.append(stat_var)
-    return [
+    entries: list[dict[str, object]] = [
         {
             "provenance": provenance,
             "stat_vars": stat_vars,
@@ -128,6 +136,9 @@ def derived_incomplete_after(
         }
         for (provenance, (status, source, mark)), stat_vars in grouped.items()
     ]
+    stamped = [built for built in builds if built is not None]
+    built_at = max(stamped) if len(stamped) == len(builds) else None
+    return JudgedIncompleteAfter(entries=entries, built_at=built_at)
 
 
 def _states(

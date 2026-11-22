@@ -210,10 +210,12 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
 class JudgedIncompleteAfter:
     """An `incomplete_after` record, `entries`, and the `built_at` of the origin catalogue
     build that judged it, which orders the judgements of one version
-    (`version_store._refresh_incomplete_after`)."""
+    (`version_store._refresh_incomplete_after`). A computed version's record carries the
+    newest build among the judgements it derives from, `None` when one names none
+    (`lineage_incomplete.derived_incomplete_after`)."""
 
     entries: list[dict[str, object]]
-    built_at: datetime
+    built_at: datetime | None
 
 
 def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | None:

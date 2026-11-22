@@ -34,7 +34,6 @@ from dataset_store.snapshot import (
     ArtifactNotFound,
     FrameLineage,
     LiveSnapshotReader,
-    ManifestFacts,
     SnapshotRevoked,
     VersionFactsMissing,
 )
@@ -4139,15 +4138,17 @@ def _delete_versions(live_store, subjects: list[str]) -> None:
         tx.execute("DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,))
 
 
-def test_a_rewrite_judged_by_an_older_catalogue_build_keeps_the_newer_judgement(live_store):
-    """Two instances bound to different catalogue builds record the same dataset version, the
-    later build's first: the older build's write leaves the stored judgement and its build, and
-    a still later build's write replaces both. Each read gives the build's `built_at` in UTC."""
+@pytest.mark.parametrize("kind", ["definition", "published"])
+def test_a_rewrite_judged_by_an_older_catalogue_build_keeps_the_newer_judgement(live_store, kind):
+    """Two writes of one version carry judgements of different catalogue builds, the later
+    build's first: a dataset version recorded by instances bound to different builds, or a
+    computed version republished over its inputs' different judgements. The older build's
+    write leaves the stored judgement and its build, and a still later build's write replaces
+    both. Each read gives the build's `built_at` in UTC."""
     from tests.datasets_api._version_facts import facts_from_body, golden_cases
 
-    case = golden_cases()["definition"]
+    case = golden_cases()[kind]
     facts = facts_from_body(case["body"])
-    assert isinstance(facts, ManifestFacts)
     subject_id = f"{case['subject_id']}_{uuid4().hex}"
     content_version = case["content_version"]
     built = datetime(2026, 11, 1, tzinfo=UTC)
@@ -4166,7 +4167,7 @@ def test_a_rewrite_judged_by_an_older_catalogue_build_keeps_the_newer_judgement(
 
     def stored() -> tuple[object, object]:
         version = LiveSnapshotReader(store=live_store).read_version(subject_id, content_version)
-        assert version is not None and isinstance(version.facts, ManifestFacts)
+        assert version is not None and type(version.facts) is type(facts)
         return version.facts.incomplete_after, version.facts.incomplete_after_built_at
 
     try:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -54,9 +54,14 @@ def _unknown(stat_vars: list[str], *, source: str | None = _SOURCE) -> dict[str,
     }
 
 
-def _record_root(store: FakeVersionRecordDatasetStore, *, recorded: list[object] | None) -> None:
+def _record_root(
+    store: FakeVersionRecordDatasetStore,
+    *,
+    recorded: list[object] | None,
+    built_at: datetime | None = None,
+) -> None:
     """A dataset version of `_PARTIAL` and `_COMPLETE` from `_SOURCE` storing `recorded`,
-    or none for `None`."""
+    or none for `None`, judged by the catalogue build `built_at`."""
     trace = {
         "facets": [{"axis": "provenance", "ref": _SOURCE}],
         "resolved_stat_vars": [{"ref": _PARTIAL}, {"ref": _COMPLETE}],
@@ -65,8 +70,8 @@ def _record_root(store: FakeVersionRecordDatasetStore, *, recorded: list[object]
         tx.execute(
             "INSERT INTO datasets.version_record (subject_id, subject_kind, content_version, "
             "schema_version, immutable_body, recorded_at, prepared_at, definition, coverage, "
-            "citation, trace, warnings, incomplete_after) "
-            "VALUES (%s, 'spec', %s, 1, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "citation, trace, warnings, incomplete_after, incomplete_after_built_at) "
+            "VALUES (%s, 'spec', %s, 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 *_ROOT,
                 json.dumps({}),
@@ -78,6 +83,7 @@ def _record_root(store: FakeVersionRecordDatasetStore, *, recorded: list[object]
                 json.dumps(trace),
                 json.dumps([]),
                 None if recorded is None else json.dumps(recorded),
+                built_at,
             ),
         )
 
@@ -281,3 +287,64 @@ def test_a_republished_computed_version_takes_the_record_derived_then() -> None:
 
     assert again.incomplete_after == [_entry([_PARTIAL])]
     assert flagged
+
+
+def _rejudge_root(
+    store: FakeVersionRecordDatasetStore, recorded: list[object], built_at: datetime | None
+) -> None:
+    """The root's record as the catalogue build `built_at` judged it."""
+    with store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record "
+            "SET incomplete_after = %s, incomplete_after_built_at = %s WHERE content_version = %s",
+            (json.dumps(recorded), built_at, _ROOT[1]),
+        )
+
+
+def test_a_republish_reading_an_older_input_judgement_keeps_the_newer_record() -> None:
+    """Two republishes of one computed version read their root under different judgements.
+    Each record takes the newest build among the judgements it read, so the republish that
+    read the root's older judgement, or one no known build made, leaves the newer record
+    standing, and one that read a later judgement replaces it."""
+    built = datetime(2026, 11, 1, tzinfo=UTC)
+    store = FakeVersionRecordDatasetStore()
+    _record_root(store, recorded=[], built_at=built)
+    first, _ = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+    assert (first.incomplete_after, first.incomplete_after_built_at) == (
+        [_entry([_PARTIAL], None)],
+        built,
+    )
+
+    for stale in (built - timedelta(days=7), None):
+        _rejudge_root(store, [_entry([_PARTIAL])], stale)
+        kept, flagged = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+        assert (kept.incomplete_after, kept.incomplete_after_built_at) == (
+            [_entry([_PARTIAL], None)],
+            built,
+        )
+        assert not flagged
+
+    later = built + timedelta(days=7)
+    _rejudge_root(store, [_entry([_PARTIAL])], later)
+    replaced, flagged = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+    assert (replaced.incomplete_after, replaced.incomplete_after_built_at) == (
+        [_entry([_PARTIAL])],
+        later,
+    )
+    assert flagged
+
+
+def test_an_input_judgement_naming_no_build_leaves_the_record_s_build_unknown() -> None:
+    """A computation over a stamped computed version and a root whose judgement names no build
+    knows no build for its record, though the other input's is known."""
+    built = datetime(2026, 11, 1, tzinfo=UTC)
+    store = FakeVersionRecordDatasetStore()
+    _record_root(store, recorded=[], built_at=built)
+    first, _ = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=_rows(_PARTIAL))
+    assert first.incomplete_after_built_at == built
+    _rejudge_root(store, [], None)
+
+    second, _ = _publish(store, _SECOND, inputs=[_ROOT[1], _FIRST[1]], rows=_rows(_PARTIAL))
+
+    assert second.incomplete_after is not None
+    assert second.incomplete_after_built_at is None
