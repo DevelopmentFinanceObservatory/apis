@@ -99,6 +99,32 @@ def levels_in_frame(
     return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
 
 
+def selected_stat_vars(
+    lookup: Mapping[str, Mapping[str, str]],
+    *,
+    codes: Mapping[str, Sequence[str]] | None,
+    decoded_code_systems: Sequence[str],
+) -> frozenset[str] | None:
+    """Return the StatVar refs of `lookup` whose decoded code on each `groupby.codes` axis this
+    frame decodes is one of that axis's listed codes, or `None` when `codes` names no such
+    axis. `lookup` is the decode lookup after any `levels` roll-up (`roll_up_levels`), so a
+    StatVar is selected by its rolled code. A row's decoded cell is its StatVar's lookup cell,
+    so a row is kept exactly when its `stat_var` is in the result; a StatVar with no cell on an
+    axis reads an empty cell, which no code matches. An axis the frame does not decode filters
+    nothing, as an absent `by` axis collapses nothing."""
+    decoded = frozenset(decoded_code_systems)
+    in_frame = {
+        axis: frozenset(listed) for axis, listed in (codes or {}).items() if axis in decoded
+    }
+    if not in_frame:
+        return None
+    return frozenset(
+        ref
+        for ref, cells in lookup.items()
+        if all(cells.get(axis) in listed for axis, listed in in_frame.items())
+    )
+
+
 def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
     """Return true when the groupby adds the components of `composite`, the composite the
     frame's rows carry as their provenance or `None`, into one total: the composite's

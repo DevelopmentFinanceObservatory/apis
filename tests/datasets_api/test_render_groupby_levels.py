@@ -136,9 +136,13 @@ _TABLE = Table(
 _SUBJECT_ID = "spec_991000"
 
 
-def _options(levels: dict[str, int] | None) -> MintOptions:
+def _options(
+    levels: dict[str, int] | None, *, codes: dict[str, list[str]] | None = None
+) -> MintOptions:
     return MintOptions(
-        groupby=GroupbyOptions(by=["time_period", "crsPurpose"], op="sum", levels=levels)
+        groupby=GroupbyOptions(
+            by=["time_period", "crsPurpose"], op="sum", levels=levels, codes=codes
+        )
     )
 
 
@@ -184,6 +188,22 @@ def test_level_zero_sums_parent_and_child_coded_stat_vars_into_their_root_sector
         "CRSPurposeCode200": 7.0,
         "CRSPurposeCode998": 2.0,
     }
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["whole-table", "streamed"])
+def test_a_code_selection_matches_the_rolled_code_and_keeps_the_rest_of_the_sum(chunked: bool):
+    # Health and malaria are selected through their root sector, 100; 120 names no rolled code.
+    result = _reshape_with(
+        _options(
+            {"crsPurpose": 0},
+            codes={"crsPurpose": ["CRSPurposeCode100", "CRSPurposeCode120"]},
+        ),
+        chunked=chunked,
+    )
+
+    assert _by_sector(result) == {"CRSPurposeCode100": 19.0}
+    assert result.collapse is not None
+    assert result.collapse.contributing_member_count == 5
 
 
 def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_code():

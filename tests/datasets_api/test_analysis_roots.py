@@ -41,6 +41,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import CoverageModel
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
@@ -476,6 +477,35 @@ def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_
 
     assert ref.content_version == _SHARED_PAIR
     assert bare.content_version.startswith("cv_") and bare.content_version != _CV
+
+
+def test_a_code_selection_names_its_own_frame_and_leaves_an_unselected_one_s_name_alone() -> None:
+    """A rendering without `groupby.codes` dumps, and so names its frame and record, as before
+    the field existed. One with codes names another frame, the same for any order of them."""
+
+    def pair(codes: dict[str, list[str]] | None) -> FrameRef:
+        rendering = RootRendering(
+            columns=("party_kind",),
+            without_party_totals=True,
+            groupby=GroupbyOptions(by=["time_period", "origin"], op="sum", codes=codes),
+        )
+        options = mint_options(rendering)
+        return frame_ref_for(
+            spec_id=_SPEC,
+            content_version=_CV,
+            columns=options["columns"],
+            groupby=options["groupby"],
+            without_party_totals=True,
+            enrichment_stamp=None,
+        )
+
+    assert mint_options(RootRendering(groupby=GroupbyOptions(by=["b", "a"], op="sum")))[
+        "groupby"
+    ] == {"by": ["a", "b"], "op": "sum"}
+    assert pair(None).content_version == _SHARED_PAIR
+    selected = pair({"origin": ["B", "A", "B"]})
+    assert selected.content_version not in {_SHARED_PAIR, pair({"origin": ["A"]}).content_version}
+    assert selected == pair({"origin": ["A", "B"]})
 
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:

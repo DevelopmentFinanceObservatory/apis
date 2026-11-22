@@ -26,6 +26,7 @@ from pydantic import (
 from datasets_api.models import CanonicalDefinition, _require_schema_version_int
 from dfo_platform.named import cut, named_capped
 from dfo_platform.validation import refusal_with_alternatives
+from dfo_platform.wire import is_none
 
 FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 NULL_REF_FACET_AXES: tuple[str, ...] = ("measurementMethod", "unit")
@@ -39,6 +40,10 @@ _SDMX_RESERVED_VALUE_CHARS: tuple[str, ...] = ("+", ",")
 # itself, so this refuses only depths no code hierarchy reaches, and it keeps a query depth
 # far inside Python's integer string conversion limit.
 MAX_GROUPBY_LEVEL_DEPTH = 99
+# A `groupby.codes` entry: a code dcid, whose characters leave `|` and `,` free to separate
+# the entries of the `groupby.codes` query value, which splits each at its first `:`.
+GROUPBY_CODE_PATTERN = r"^[A-Za-z0-9_./:-]+$"
+_STAT_VAR_AXIS = "stat_var"
 
 
 class WindowAll(BaseModel):
@@ -295,6 +300,15 @@ class GroupbyOptions(BaseModel):
     depth 0 is the root codes. Each key must also appear in `by`, and must
     be one of the capabilities document's `groupby_level_axes`
     (`datasets_api.render.check_options_supported`).
+
+    `codes` keeps, for each code system it names, only the rows whose decoded
+    code, after any `levels` roll-up, is one of the listed code dcids, and it
+    drops the rest before the first sum, so the sum reads the kept rows alone.
+    Each key must appear in `by`, which must leave out `stat_var`, and must be a
+    summable code system (`datasets_api.render.check_options_supported`). The
+    lists are held sorted and each code once, so two requests listing the same
+    codes are one rendering. Absent, every row is summed, and the options dump
+    as they did before the field existed.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -311,6 +325,24 @@ class GroupbyOptions(BaseModel):
             "code system -> depth: roll each kept code up to its ancestor at that depth "
             "(0 = root codes); a code shallower than the depth stays as itself, under its "
             "own label"
+        ),
+    )
+
+    codes: (
+        dict[
+            Annotated[str, Field(min_length=1)],
+            Annotated[
+                list[Annotated[str, Field(pattern=GROUPBY_CODE_PATTERN)]], Field(min_length=1)
+            ],
+        ]
+        | None
+    ) = Field(
+        default=None,
+        min_length=1,
+        exclude_if=is_none,
+        description=(
+            "code system -> code dcids: keep only the rows whose code on that kept axis, "
+            "after any levels roll-up, is listed, before the sum; by must leave out stat_var"
         ),
     )
 
@@ -336,6 +368,23 @@ class GroupbyOptions(BaseModel):
                     f"groupby.levels names axis(es) {named_capped(outside)} absent from by"
                 )
         return value
+
+    @field_validator("codes")
+    @classmethod
+    def _codes_are_kept_and_sorted(
+        cls, value: dict[str, list[str]] | None, info: ValidationInfo
+    ) -> dict[str, list[str]] | None:
+        """Refuses a `codes` axis absent from `by`, or a `by` that keeps `stat_var`, where no
+        sum runs to filter before, and holds each list sorted with each code once."""
+        by = info.data.get("by")
+        if value is None or by is None:
+            return value
+        outside = sorted(set(value) - set(by))
+        if outside:
+            raise ValueError(f"groupby.codes names axis(es) {named_capped(outside)} absent from by")
+        if _STAT_VAR_AXIS in by:
+            raise ValueError(f"groupby.codes requires a by that leaves out {_STAT_VAR_AXIS!r}")
+        return {axis: sorted(set(codes)) for axis, codes in value.items()}
 
 
 class PivotOptions(BaseModel):

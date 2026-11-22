@@ -125,6 +125,7 @@ from datasets_api.groupby import (
     refuse_unknown_by_axes,
     rekeys_stat_vars,
     roll_up_levels,
+    selected_stat_vars,
     sums_components,
     sums_stat_vars,
     unsummed_axes,
@@ -383,11 +384,22 @@ class FrameMode(StrEnum):
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
-    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`) with
+    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`), and a
+    `groupby.codes` axis outside its summable code systems (`summable_axes`), with
     `QueryOptionsInvalid`, before any resolution or read. A `None` index decodes nothing, so it
     checks nothing. Frame-dependent refusals run in `_reshape`. Groupby, decode, and
     disabled-enrichment checks need the materialised frame."""
-    if code_index is None or options.groupby is None or options.groupby.levels is None:
+    if code_index is None or options.groupby is None:
+        return
+    summable = summable_axes(code_index.declarations)
+    for code_system in options.groupby.codes or {}:
+        if code_system not in summable:
+            raise QueryOptionsInvalid(
+                pointer=f"/options/groupby/codes/{pointer_segment(code_system)}",
+                detail=f"groupby.codes names {code_system!r}, which this deployment does not "
+                "declare a summable code system",
+            )
+    if options.groupby.levels is None:
         return
     allowed = level_axes(code_index.declarations)
     for code_system in options.groupby.levels:
@@ -504,9 +516,11 @@ def _stream_first_axis_collapse(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
+    selected: frozenset[str] | None = None,
 ) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
     """Decodes each frame slice (`_FrameSlice`, as `_reslice_chunks` cuts it) and folds them
-    into `axis` as Arrow (`_fold_frame_slices`). Collects distinct StatVars for the caller's
+    into `axis` as Arrow (`_fold_frame_slices`), keeping only the rows of `selected` StatVars
+    when it is set. Collects distinct StatVars of every row for the caller's
     collision check. `_reshape` checks collisions before raising fold violations, matching
     whole-table error order.
 
@@ -522,6 +536,7 @@ def _stream_first_axis_collapse(
         missing_declared_as_zero=missing_declared_as_zero,
         expected_population=expected_population,
         decode_plan=decode_plan,
+        selected=selected,
     )
 
 
@@ -657,22 +672,31 @@ def _fold_frame_slices(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
+    selected: frozenset[str] | None = None,
 ) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
     """`_stream_first_axis_collapse` over Arrow frame slices: each slice decoded as
     `apply_reshapes` decodes it, with its warnings, then one fold over their rows in order. Unit
-    columns take the recipe layout, which keeps every cell, so slices of either layout join."""
+    columns take the recipe layout, which keeps every cell, so slices of either layout join.
+
+    With `selected` (`groupby.selected_stat_vars`), each slice keeps only the rows whose
+    `stat_var` it holds before it is decoded, so neither the decode nor the fold reads another
+    row. The distinct StatVars are read before that mask, so the collision check and the
+    contributor count see every row, as without a selection."""
     distinct_dcids: set[str] = set()
     warnings: list[MaterialisationWarning] = []
     decoded_slices: list[pa.Table] = []
+    kept_refs = pa.array(sorted(selected), pa.string()) if selected is not None else None
     for frame_slice in slices:
         decoded = widen_frame_table(frame_slice.table, recipe=True)
+        stat_vars = decoded.column(decoded.column_names.index(_STAT_VAR_COLUMN))
+        distinct_dcids.update(cast("list[str]", pc.unique(stat_vars).drop_null().to_pylist()))
+        if kept_refs is not None:
+            decoded = decoded.filter(pc.is_in(stat_vars, value_set=kept_refs))
         if decode_plan is not None:
             decoded, decode_warnings = decode_table(
                 decoded, requests=decode_plan.requests, lookup=decode_plan.lookup
             )
             warnings.extend(decode_warnings)
-        stat_vars = decoded.column(decoded.column_names.index(_STAT_VAR_COLUMN))
-        distinct_dcids.update(cast("list[str]", pc.unique(stat_vars).drop_null().to_pylist()))
         decoded_slices.append(decoded)
     outcome = fold_groupby_sum_table(
         pa.concat_tables(decoded_slices),
@@ -714,9 +738,14 @@ def _reshape_groupby_collapse(
     deadline: float | None,
     levels: Mapping[str, int] | None = None,
     components: bool = False,
+    selected: frozenset[str] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
-    """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
-    `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
+    """Collapses `stat_var` then each requested axis. With `selected`, the StatVars a
+    `groupby.codes` selection keeps (`groupby.selected_stat_vars`), only their rows reach the
+    first fold; the decode-gap, collision and provenance checks and the contributors still read
+    every row, so they refuse and count as the same render without a selection does.
+
+    With `grammar_frame`, it restores `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
     `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
     decoded axis the sum does not collapse (`groupby.unsummed_axes`), which `grammar_frame`
     holds to one value. A member with no rows counts as zero when the frame's dataset declares
@@ -749,6 +778,8 @@ def _reshape_groupby_collapse(
         )
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
+        if selected is not None:
+            current = _rows_of_stat_vars(current, selected)
     else:
         # `current` is one representative chunk, so the fold gathers contributors across the stream.
         # Decode-gap checks use only `decode_lookup` and run before the fold.
@@ -807,6 +838,7 @@ def _reshape_groupby_collapse(
                     missing_declared_as_zero=missing_declared_as_zero,
                     expected_population=axis_population,
                     decode_plan=decode_plan,
+                    selected=selected,
                 )
                 warnings.extend(decode_warnings)
                 decode_plan = None  # already applied per chunk above
@@ -894,6 +926,17 @@ def _reshape_groupby_collapse(
         adds=adds,
     )
     return current, decode_plan, collapse_info
+
+
+def _rows_of_stat_vars(table: Table, selected: frozenset[str]) -> Table:
+    """`table` with only the rows whose `stat_var` is in `selected`, in their order."""
+    pos = table.columns.index(_STAT_VAR_COLUMN)
+    return cast(
+        Table,
+        ReshapeTable(
+            columns=table.columns, rows=tuple(row for row in table.rows if row[pos] in selected)
+        ),
+    )
 
 
 def collapse_frame(
@@ -998,6 +1041,11 @@ def _reshape_groupby(
             requests=decode_plan.requests,
             lookup=roll_up_levels(decode_plan.lookup, index=code_index, levels=levels),
         )
+    selected = selected_stat_vars(
+        decode_plan.lookup if decode_plan is not None else {},
+        codes=options.groupby.codes,
+        decoded_code_systems=decoded_code_systems,
+    )
     axes_to_collapse = collapse_axes(
         by=options.groupby.by,
         decoded_code_systems=decoded_code_systems,
@@ -1039,6 +1087,7 @@ def _reshape_groupby(
             deadline=deadline,
             levels=levels,
             components=components,
+            selected=selected,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
