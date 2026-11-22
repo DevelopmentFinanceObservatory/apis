@@ -621,7 +621,7 @@ async def _run_retrieval[T](
     timings: PhaseTimings,
     refuse: Callable[[], Exception] = DefinitionBackpressure,
     wait_seconds: float = 0.0,
-    headroom: int = 0,
+    headroom: int | Callable[[], int] = 0,
     keep_waiting: Callable[[], bool] | None = None,
     **kwargs: object,
 ) -> T:

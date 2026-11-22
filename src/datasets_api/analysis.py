@@ -74,9 +74,16 @@ runner fills one population list from the whole tree and every period from its o
 period, and the inputs are computed again under that period. A request whose whole `tree` is a
 derived root computes that recipe again under its own ids, which is how a client reads a derived
 frame on its datasets' newest versions.
-With `latest` false every root is read at the version it names. With `latest` true a Spec or dataset root is read at its dataset's current version of the same rendering, and
-each rolling literal follows the latest period of that data. Both read their roots through one
-`RootSource`.
+With `latest` false every root is read at the version it names. With `latest` true a Spec or
+dataset root is read at its dataset's current version of the same rendering, and each rolling
+literal follows the latest period of that data. With `latest` `"stored"` (`STORED`) every Spec
+and dataset root, a derived root's recipe roots and `anchor_roots` included, is read at the
+version its dataset's stored head names, as the rules of the head GET judge the head
+(`analysis_roots.LiveRootSource`), with the head it resolved to on the root
+(`ResolvedRoot.head`, `stored_heads`). The run is then keyed and computed as a `latest` false
+request naming those versions, so the two share one stored answer and one frame, and a
+rolling literal must be the latest period, as a pinned request's must. All three read their
+roots through one `RootSource`.
 
 A run (`run_analysis`) resolves every root first, so a root still building answers
 `AnalysisPending` with every rebuild it waits on submitted. It then holds one materialise permit
@@ -145,6 +152,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -439,24 +447,56 @@ class StepNode(BaseModel):
 StepInputs.model_rebuild()
 
 
+# How a request reads its roots: `False` at the versions they name, `True` at their datasets'
+# current versions, rebuilt as the definition GET rebuilds a stale head, and `"stored"` at the
+# versions their datasets' stored heads name, read from records alone (`STORED`).
+type Latest = bool | Literal["stored"]
+
+STORED: Literal["stored"] = "stored"
+"""The `latest` that resolves each root to its dataset's stored head (see the module
+docstring)."""
+
+# The optional members of a 200 a request names in `include`.
+type Included = Literal["manifest", "summary"]
+
+
 class AnalysisRequest(BaseModel):
-    """`POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
-    datasets' newest versions. A `tree` that is a derived root alone computes that frame's
-    stored recipe again, so `latest` reads it on its datasets' newest versions under the
-    recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
-    rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
-    are computed again under one latest period. Left out, each keeps its stored populations and
-    periods. `verify` computes the tree again at the versions it names, past any stored answer,
-    and stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses
-    `latest` and a Spec root, which reads its dataset's newest version."""
+    """`POST /api/datasets/analysis`: the tree to compute, and how its roots pick their
+    versions (`latest`). A `tree` that is a derived root alone computes that frame's stored
+    recipe again, so `latest` reads it on its datasets' newest versions under the recipe's own
+    ids. `rolling` `"tree"` takes the populations and the latest period of every rolling
+    overlay a derived root's recipe holds from the whole tree, so derived rolling inputs are
+    computed again under one latest period. Left out, each keeps its stored populations and
+    periods. `include` names the optional members of the 200 (`doors.analysis.AnalysisReady`).
+    `verify` computes the tree again at the versions it names, past any stored answer, and
+    stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses `latest`,
+    `include` and a Spec root, which reads its dataset's newest version."""
 
     model_config = ConfigDict(extra="forbid")
 
+    verify: bool = Field(
+        default=False,
+        description="compute the tree again at the versions it names and compare its frame "
+        "with the one stored under its pair, storing nothing; first-party callers only",
+    )
     tree: Annotated[
         Annotated[StepNode, Tag("step")] | Annotated[DerivedRoot, Tag("derived")],
         Discriminator(_node_kind),
     ]
-    latest: bool = False
+    latest: Latest = Field(
+        default=False,
+        description="false reads each root at the version it names; true at its dataset's "
+        'current version, rebuilt when its head is stale; "stored" at the version its '
+        "dataset's stored head names, from records alone, answering 202 pending with the "
+        "queued rebuild when the dataset has no servable head",
+    )
+    include: list[Included] | None = Field(
+        default=None,
+        description="the optional members of the 200: `manifest`, the derived manifest of the "
+        "answer's pair, and `summary`, which a request that states `include` receives only "
+        "when it names it",
+        json_schema_extra={"uniqueItems": True},
+    )
     rolling: Literal["tree"] | None = None
     anchor_roots: (
         list[
@@ -467,18 +507,31 @@ class AnalysisRequest(BaseModel):
         ]
         | None
     ) = Field(default=None, min_length=1, max_length=DEFAULT_MAX_NODES)
-    verify: bool = Field(
-        default=False,
-        description="compute the tree again at the versions it names and compare its frame "
-        "with the one stored under its pair, storing nothing; first-party callers only",
-    )
+
+    @field_validator("latest")
+    @classmethod
+    def _verify_names_no_latest(cls, latest: Latest, info: ValidationInfo) -> Latest:
+        if latest is not False and info.data.get("verify") is True:
+            raise ValueError("verify reads the versions the tree names: send latest=false")
+        return latest
+
+    @field_validator("include")
+    @classmethod
+    def _include_each_once(
+        cls, include: list[Included] | None, info: ValidationInfo
+    ) -> list[Included] | None:
+        if include is None:
+            return None
+        if info.data.get("verify") is True:
+            raise ValueError("verify answers no ready body: send no include")
+        if len(set(include)) != len(include):
+            raise ValueError("include names each member once")
+        return include
 
     @model_validator(mode="after")
     def _verify_reads_pinned_versions(self) -> Self:
         if not self.verify:
             return self
-        if self.latest:
-            raise ValueError("verify reads the versions the tree names: send latest=false")
         if _holds_spec_root(self.tree) or any(
             isinstance(root, SpecRoot) for root in self.anchor_roots or ()
         ):
@@ -643,6 +696,18 @@ class AnalysisPending(Exception):
 
 
 @dataclass(frozen=True, kw_only=True)
+class StoredHead:
+    """The stored head a root resolved to under `latest: "stored"`: its dataset's served
+    `spec_id`, the head's dataset version, and the `freshness` the head GET states for it
+    (`current`, `pending` while its check runs, `stale` when the check could not be
+    submitted)."""
+
+    spec_id: str
+    content_version: str
+    freshness: Literal["current", "pending", "stale"]
+
+
+@dataclass(frozen=True, kw_only=True)
 class ResolvedRoot:
     """A root at the version it is read at.
 
@@ -666,6 +731,9 @@ class ResolvedRoot:
     base_content_version: str | None = None
     # Whether the steps over the root named `stat_var`, which left it unsummed (`_resolve`).
     stat_var_named: bool = False
+    # The stored head the root resolved to under `latest: "stored"`, else `None`. Not part of
+    # the root's identity, so it never reaches a key.
+    head: StoredHead | None = field(default=None, compare=False)
 
     def version(self) -> dict[str, str]:
         """`{spec_id, content_version}`, the version the root reads, with
@@ -704,12 +772,13 @@ class RootSource(Protocol):
         self,
         root: SpecRoot | DatasetRoot,
         *,
-        latest: bool,
+        latest: Latest,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
         codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
-        """The version `root` is read at. `path_words`, set on a request root that states no
+        """The version `root` is read at, as `latest` picks it (`Latest`); under `"stored"` the
+        root names the head it resolved to (`ResolvedRoot.head`). `path_words`, set on a request root that states no
         `groupby`, are the words the steps over it name (`PlannedRoot`): a version whose
         frame holds more than one StatVar is read summed, keeping the summable axes those
         words name, unless they name `stat_var`. `codes`, set only beside `path_words`, are
@@ -717,7 +786,8 @@ class RootSource(Protocol):
         each axis it keeps (`groupby.codes`).
 
         Raises:
-            AnalysisPending: The root's dataset is still building.
+            AnalysisPending: The root's dataset is still building, or under `"stored"` has no
+                servable head and its rebuild is queued.
             FrameUnavailable: The version is not held.
         """
         ...
@@ -2250,7 +2320,7 @@ def resolve_roots(
     roots: Sequence[PlannedRoot],
     *,
     source: RootSource,
-    latest: bool,
+    latest: Latest,
     trace_id: str | None,
 ) -> list[ResolvedRoot]:
     """Every root at the version it is read at. Every root is resolved before any pending one
@@ -2268,14 +2338,17 @@ def resolve_roots(
             pending.append(waiting)
     if pending:
         raise AnalysisPending(
-            operations=[operation for waiting in pending for operation in waiting.operations],
+            # Roots of one dataset wait on one rebuild, named once.
+            operations=list(
+                dict.fromkeys(operation for waiting in pending for operation in waiting.operations)
+            ),
             retry_after_s=max(waiting.retry_after_s for waiting in pending),
         )
     return resolved
 
 
 def _resolve(
-    planned: PlannedRoot, *, source: RootSource, latest: bool, trace_id: str | None
+    planned: PlannedRoot, *, source: RootSource, latest: Latest, trace_id: str | None
 ) -> ResolvedRoot:
     """`planned` resolved, its path words passed only when it has them, and marked when they
     name `stat_var`."""
@@ -2584,7 +2657,9 @@ def compute_analysis(
     working, resolved = merged_roots(working, resolved, roots)
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
-        return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
+        return _evaluated(
+            working, located, source=source, bounds=bounds, latest=request.latest is True
+        )
 
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
@@ -2614,7 +2689,9 @@ def request_key(
     tree, each resolved root's record and the version it reads (`ResolvedRoot.version`, with
     the base version a sum read), `latest`, the execution identity and `ANSWER_FORMAT`. Two
     requests under one key compute one frame and answer one body, so a body's `derived_roots`
-    names the base each root was read through."""
+    names the base each root was read through. A `latest: "stored"` request is keyed with
+    `latest` false, over the versions its roots resolved to, so it shares its key with a pinned
+    request naming them (`prepare_analysis`)."""
     preimage = {
         "answer_format": ANSWER_FORMAT,
         "tree": _keyed_tree(working),
@@ -2629,7 +2706,9 @@ def request_key(
 @dataclass(frozen=True, kw_only=True)
 class PreparedAnalysis:
     """A request planned and resolved, no frame read: its working tree, its roots at the
-    versions they are read at, and its request key."""
+    versions they are read at, and its request key. `latest` is the engine's policy, true only
+    for a `latest: true` request: a `"stored"` request runs as the pinned request naming the
+    versions it resolved to does."""
 
     working: dict[str, Any]
     resolved: tuple[ResolvedRoot, ...]
@@ -2653,29 +2732,43 @@ def prepare_analysis(
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
     working, resolved = merged_roots(working, resolved, roots)
+    latest = request.latest is True
     return PreparedAnalysis(
         working=working,
         resolved=tuple(resolved),
-        latest=request.latest,
-        key=request_key(working, resolved, latest=request.latest),
+        latest=latest,
+        key=request_key(working, resolved, latest=latest),
     )
+
+
+def stored_heads(prepared: PreparedAnalysis) -> list[StoredHead]:
+    """The stored head of each dataset `prepared`'s roots resolved to under `latest:
+    "stored"`, once per dataset, in the order its roots first reach it; empty for any other
+    request."""
+    heads: dict[str, StoredHead] = {}
+    for root in prepared.resolved:
+        if root.head is not None:
+            heads.setdefault(root.head.spec_id, root.head)
+    return list(heads.values())
 
 
 def stored_answer(
     prepared: PreparedAnalysis,
     *,
     stores: AnalysisStores,
+    summary: bool = True,
     on_hit: Callable[[str, str, StoredArtifactLocation], None] | None = None,
 ) -> dict[str, Any] | None:
     """The body stored under `prepared`'s key while its frame file is still served at the
-    digest the body's ref names, else `None`. A hit calls `on_hit` with the pair the body names
-    and its frame file's location, which the door hands to the renewal of a file near the end
-    of its working-tier retention (`operations.renewal.renew_if_expiring`).
+    digest the body's ref names, else `None`. With `summary` false the body is read without
+    its `summary` (`RecipeStore.read_answer`). A hit calls `on_hit` with the pair the body
+    names and its frame file's location, which the door hands to the renewal of a file near
+    the end of its working-tier retention (`operations.renewal.renew_if_expiring`).
 
     Raises:
         SnapshotRevoked: The pair the body names is taken down.
     """
-    stored = stores.recipe_store.read_answer(request_key=prepared.key)
+    stored = stores.recipe_store.read_answer(request_key=prepared.key, summary=summary)
     if stored is None:
         return None
     held = _held_file(
@@ -3150,7 +3243,10 @@ class AnchorRequest(BaseModel):
         ]
     ] = Field(min_length=1, max_length=DEFAULT_MAX_NODES)
     populations: list[dict[str, JsonValue]] = Field(min_length=1)
-    latest: bool = False
+    latest: Latest = Field(
+        default=False,
+        description='as the analysis request\'s: false, true or "stored"',
+    )
 
 
 def run_anchor(
@@ -3196,6 +3292,7 @@ def run_anchor(
 __all__ = [
     "ANSWER_FORMAT",
     "ROOT_MINT_OPTIONS",
+    "STORED",
     "AnalysisBounds",
     "AnalysisPending",
     "AnalysisRequest",
@@ -3208,6 +3305,7 @@ __all__ = [
     "DatasetRoot",
     "DerivedRoot",
     "FrameUnavailable",
+    "Latest",
     "LocatedRoot",
     "PlannedRoot",
     "PreparedAnalysis",
@@ -3222,6 +3320,7 @@ __all__ = [
     "SeveralMembers",
     "SpecRoot",
     "StepNode",
+    "StoredHead",
     "UnavailableRoot",
     "Verification",
     "column_for",
@@ -3240,5 +3339,6 @@ __all__ = [
     "run_anchor",
     "run_prepared",
     "stored_answer",
+    "stored_heads",
     "verify_analysis",
 ]

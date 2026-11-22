@@ -55,6 +55,15 @@
   },
   {
     "has_description": true,
+    "method": "GET",
+    "name": "get_derived_link",
+    "operation_id": "datasets_get_derived_link",
+    "path": "/api/datasets/derived/{id}/{content_version}/files/{digest}",
+    "summary": "Get Derived Link",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
     "method": "POST",
     "name": "post_export",
     "operation_id": "datasets_post_export",

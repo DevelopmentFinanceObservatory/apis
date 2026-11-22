@@ -456,6 +456,27 @@ def _frame_file(
     return data, rendered.media_type
 
 
+def restore_frame_file(
+    source: DerivedFrameSource, *, reads: DerivedReads, site: PublicSiteSettings
+) -> None:
+    """Store and link the derived version's frame file again from the stored frame `source`
+    locates, as `_frame_file` does for a file that is gone, the same bytes under the same
+    digest. The digest link of a derived member renews through this
+    (`doors.derived.renew_derived_link`).
+
+    Raises:
+        ArtifactExpired, StoredFrameUnreadable: As `_read_stored_frame`.
+    """
+    frame = _read_stored_frame(source, reads=reads)
+    _frame_file(
+        frame,
+        spec_id=source.spec_id,
+        content_version=source.content_version,
+        reads=reads,
+        site=site,
+    )
+
+
 def _provenance_refs(table: Table) -> list[str]:
     """The distinct refs of `table`'s `provenance` column, in first-seen order."""
     if PROVENANCE_COLUMN not in table.columns:

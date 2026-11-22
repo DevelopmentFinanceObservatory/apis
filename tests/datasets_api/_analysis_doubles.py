@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from dfo_frame_grammar import Frame
 
@@ -13,14 +13,17 @@ from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from code_index import CodeIndex
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.analysis import (
+    STORED,
     AnalysisPending,
     AnalysisStores,
     DatasetRoot,
+    Latest,
     LocatedRoot,
     ResolvedRoot,
     RootNotStored,
     RootRendering,
     SpecRoot,
+    StoredHead,
     recorded_dataset_root,
 )
 from datasets_api.analysis_roots import mint_options
@@ -114,8 +117,9 @@ class FakeRootSource:
     """Frames by `(spec_id, content_version)`, the newest version of each dataset, and the
     recipes of the stores' derived frames. `pending` names datasets whose newest version is
     still building. A root's version records its frame's rows unless `recorded_rows` is false.
-    Breakdown filter values resolve through `code_index` when it is given. Every resolve is
-    recorded."""
+    Breakdown filter values resolve through `code_index` when it is given. Under `latest:
+    "stored"` a root reads its dataset's newest version and names it as its head, with the
+    dataset's `freshness`, `current` by default. Every resolve is recorded."""
 
     def __init__(
         self,
@@ -126,8 +130,10 @@ class FakeRootSource:
         pending: Mapping[str, str] | None = None,
         recorded_rows: bool = True,
         code_index: CodeIndex | None = None,
+        freshness: Mapping[str, Literal["current", "pending", "stale"]] | None = None,
     ) -> None:
         self.code_index = code_index
+        self.freshness = dict(freshness or {})
         self.frames = dict(frames)
         self.recorded_rows = recorded_rows
         self.newest = dict(newest)
@@ -140,7 +146,7 @@ class FakeRootSource:
         self,
         root: SpecRoot | DatasetRoot,
         *,
-        latest: bool,
+        latest: Latest,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
     ) -> ResolvedRoot:
@@ -158,12 +164,22 @@ class FakeRootSource:
         dataset = FrameRef(spec_id=root.spec_id, content_version=content_version)
         options = _options(root.rendering)
         frame = self.frames[(root.spec_id, content_version)]
+        head = (
+            StoredHead(
+                spec_id=root.spec_id,
+                content_version=content_version,
+                freshness=self.freshness.get(root.spec_id, "current"),
+            )
+            if latest == STORED
+            else None
+        )
         return ResolvedRoot(
             frame=dataset,
             dataset=dataset,
             record=_record(dataset, options),
             rendering=options,
             rows=frame.num_rows if self.recorded_rows else None,
+            head=head,
         )
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:

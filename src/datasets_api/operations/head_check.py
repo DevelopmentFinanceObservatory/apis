@@ -33,6 +33,10 @@ until retention deletes it, so the read sends the call to the work executor, whi
 head in the request and answers the refusal.
 A full backlog, a store error, or a failed task create logs and answers `stale`; none of them
 fails the read.
+
+An analysis root under `latest: "stored"` judges the head by the same rules
+(`current.stored_head_version`), and a dataset with no servable head queues this same operation
+as its rebuild (`head_check_operation`), whose id the 202 names.
 """
 
 from __future__ import annotations
@@ -104,29 +108,14 @@ def submit_head_check(
     row or claimed the retry of a lost create, and return what the served head states:
     `pending` while the check is pending or running with its task created, `stale` when it
     could not be submitted or its task is not created, and `failed` when it failed."""
-    identity = head_check_identity(subject_id)
-    options = HEAD_CHECK_OPTIONS.model_dump(mode="json")
-    build_id = catalogue_build_id()
     try:
-        with phase("head_check"):
-            before = operation_store.get(
-                compute_operation_id(
-                    request_identity=identity, origin_catalogue_build_id=build_id, options=options
-                )
-            )
-            operation = operation_store.create_or_get(
-                request_identity=identity,
-                options=options,
-                coverage_stamp=coverage_stamp,
-                origin_catalogue_build_id=build_id,
-                estimate=_ZERO_ESTIMATE,
-                headroom=backlog_max // HEAD_CHECK_HEADROOM_SHARE,
-            )
-            # A new row, or a reset under a new submission, is this read's to create a task for.
-            wrote = before is None or before.submission_count != operation.submission_count
-            operation = _dispatch(
-                operation, wrote=wrote, operation_store=operation_store, task_client=task_client
-            )
+        operation = head_check_operation(
+            subject_id=subject_id,
+            coverage_stamp=coverage_stamp,
+            operation_store=operation_store,
+            task_client=task_client,
+            backlog_max=backlog_max,
+        )
     except OperationBacklogFull as exc:
         logger.warning(
             "Datasets head check for %r not submitted: %s; serving the head as stale",
@@ -141,7 +130,48 @@ def submit_head_check(
             exc_info=True,
         )
         return "stale"
-    return _state(operation)
+    return head_check_state(operation)
+
+
+def head_check_operation(
+    *,
+    subject_id: str,
+    coverage_stamp: str,
+    operation_store: OperationStore,
+    task_client: TaskClient,
+    backlog_max: int,
+) -> Operation:
+    """The head check row of `subject_id`, recorded or joined as `submit_head_check` records
+    it, with its task created when this read wrote the row or claimed the retry of a lost
+    create. An analysis root under `latest: "stored"` whose dataset has no servable head queues
+    its rebuild here, since the worker's `serve_current` rebuilds a head it cannot confirm.
+
+    Raises:
+        OperationBacklogFull: The backlog leaves no room for a new row.
+        DatasetsStoreUnavailable: The store failed.
+    """
+    identity = head_check_identity(subject_id)
+    options = HEAD_CHECK_OPTIONS.model_dump(mode="json")
+    build_id = catalogue_build_id()
+    with phase("head_check"):
+        before = operation_store.get(
+            compute_operation_id(
+                request_identity=identity, origin_catalogue_build_id=build_id, options=options
+            )
+        )
+        operation = operation_store.create_or_get(
+            request_identity=identity,
+            options=options,
+            coverage_stamp=coverage_stamp,
+            origin_catalogue_build_id=build_id,
+            estimate=_ZERO_ESTIMATE,
+            headroom=backlog_max // HEAD_CHECK_HEADROOM_SHARE,
+        )
+        # A new row, or a reset under a new submission, is this read's to create a task for.
+        wrote = before is None or before.submission_count != operation.submission_count
+        return _dispatch(
+            operation, wrote=wrote, operation_store=operation_store, task_client=task_client
+        )
 
 
 def _dispatch(
@@ -171,7 +201,7 @@ def _dispatch(
     )
 
 
-def _state(operation: Operation) -> HeadCheckState:
+def head_check_state(operation: Operation) -> HeadCheckState:
     """`failed` for a failed check; `stale` for one pending whose task create has not returned;
     `pending` for one running, pending with its task created, or done since the head was
     read."""
@@ -190,5 +220,7 @@ __all__ = [
     "HeadCheckState",
     "HeadFreshness",
     "head_check_identity",
+    "head_check_operation",
+    "head_check_state",
     "submit_head_check",
 ]
