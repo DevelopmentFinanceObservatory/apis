@@ -1098,16 +1098,19 @@ def definition_version_record(
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     base_content_version: str | None = None,
     frame_summed: bool | None = None,
+    code_index_stamp: str | None = None,
     incomplete_after: Sequence[Mapping[str, object]] | None = None,
     incomplete_after_built_at: datetime | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
-    `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
-    (`render.DerivedVersion.summed`). A raw version passes neither. `incomplete_after` is how
+    `base_content_version`, whether its frame holds its summed rows as `frame_summed`
+    (`render.DerivedVersion.summed`), and the content hash of the code index it was rendered
+    under as `code_index_stamp`. A raw version passes none of them. `incomplete_after` is how
     complete the version's rows are (`incomplete_after`), `None` when unjudged, and
-    `incomplete_after_built_at` the `built_at` of the catalogue build that judged it. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
-    observations door, their reader, serves raw versions alone.
+    `incomplete_after_built_at` the `built_at` of the catalogue build that judged it. Only a
+    raw version stores the per-series conversion records. A derived version's rows are not
+    those series, and the observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -1140,6 +1143,7 @@ def definition_version_record(
         frame_grammar_version=materialisation.trace.frame_grammar_version,
         frame_sha256=materialisation.frame_sha256,
         frame_summed=frame_summed,
+        code_index_stamp=code_index_stamp,
     )
 
 
@@ -1204,6 +1208,7 @@ def record_collapsed_head_version(
     output_profile: OutputProfile,
     frame_sha256: str,
     frame_summed: bool,
+    code_index_stamp: str,
     incomplete_after: Sequence[Mapping[str, object]] | None = None,
     incomplete_after_built_at: datetime | None = None,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
@@ -1216,7 +1221,8 @@ def record_collapsed_head_version(
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
     `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
-    collapsed frame's, `incomplete_after` its record (`collapsed_incomplete_after`), and
+    collapsed frame's, `code_index_stamp` the content hash of the code index it was rendered
+    under, `incomplete_after` its record (`collapsed_incomplete_after`), and
     `incomplete_after_built_at` the `built_at` of the build that judged the base's. The
     artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
@@ -1249,6 +1255,7 @@ def record_collapsed_head_version(
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         frame_sha256=frame_sha256,
         frame_summed=frame_summed,
+        code_index_stamp=code_index_stamp,
     )
     if describer_for is not None:
         record = replace(record, describer=describer_for(record))

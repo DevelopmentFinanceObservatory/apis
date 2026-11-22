@@ -43,6 +43,7 @@ from datasets_api.render import (
     is_frame1_rendering,
     is_statistics_rendering,
 )
+from datasets_api.versions import HeadVersion
 from dfo_platform.problem import Refusal
 
 _GROUPBY_KEY = "groupby"
@@ -119,6 +120,40 @@ def _distinct(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
 def recorded_minting(renderings: Iterable[Mapping[str, object]]) -> MintingOptions | None:
     """The minting options the first of `renderings` to record some records, or `None`."""
     return next(iter(recorded_mintings(renderings)), None)
+
+
+def head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
+    """The minting options the files linked under `version` record as made from
+    `head_content_version`, by cases 2 and 3 of the frame refresh's rule
+    (`datasets_api.doors.refresh`): each link naming that head, and every link while `version`'s record names that head as its base and
+    every file of minting options linked under it records one minting. A file recording a
+    groupby this build's grammar refuses records a minting case 3 cannot read, so it keeps
+    case 3 from applying."""
+    links = version.links
+    every = recorded_mintings(link.rendering for link in links)
+    if (
+        version.base_content_version == head_content_version
+        and len(ordered_mintings(every)) == 1
+        and not any(records_unreadable_groupby(link.rendering) for link in links)
+    ):
+        return every
+    return recorded_mintings(link.rendering for link in links if head_content_version in link.heads)
+
+
+def mintings_rendered_under(
+    version: HeadVersion, *, head_content_version: str, code_index_stamp: str
+) -> list[MintingOptions]:
+    """The minting options the files linked under `version` record as rendered from
+    `head_content_version` under `code_index_stamp`, the code index and render format
+    (`versions.rendering_stamp`): each link whose row for that head records that stamp
+    (`HeadLink.rendered_under`). A link written before rows recorded a stamp, under another
+    index, or under an earlier render format (`versions.RENDER_FORMAT`) records none, so a
+    render from that head under this index may make another version."""
+    return recorded_mintings(
+        link.rendering
+        for link in version.links
+        if link.rendered_under.get(head_content_version) == code_index_stamp
+    )
 
 
 def records_plain_file(renderings: Iterable[Mapping[str, object]]) -> bool:

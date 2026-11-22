@@ -155,6 +155,7 @@ from datasets_api.versions import (
     VersionWrite,
     WrittenVersion,
     link_digest,
+    rendering_stamp,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.config import PublicSiteSettings
@@ -1604,6 +1605,7 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
+            code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
             incomplete_after=collapsed_incomplete_after(
                 prewrite.incomplete_after, derived_statistics.figures
             ),

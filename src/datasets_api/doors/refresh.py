@@ -127,17 +127,15 @@ from datasets_api.recorded_rendering import (
     RenderingNotRecorded,
     StoredRendering,
     frame_options,
-    ordered_mintings,
+    head_mintings,
     recorded_mintings,
     recorded_party_cut,
     records_plain_file,
-    records_unreadable_groupby,
     rendering_of,
 )
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import servable_frame_location
 from datasets_api.timings import door_call, phase
-from datasets_api.versions import HeadVersion
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
@@ -290,27 +288,9 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
     return all(minting in target.mintings for minting in stored.mintings)
 
 
-def _head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
-    """The minting options the files linked under `version` record as made from
-    `head_content_version`, by cases 2 and 3 of the rule the module docstring states: each link
-    naming that head, and every link while `version`'s record names that head as its base and
-    every file of minting options linked under it records one minting. A file recording a
-    groupby this build's grammar refuses records a minting case 3 cannot read, so it keeps
-    case 3 from applying."""
-    links = version.links
-    every = recorded_mintings(link.rendering for link in links)
-    if (
-        version.base_content_version == head_content_version
-        and len(ordered_mintings(every)) == 1
-        and not any(records_unreadable_groupby(link.rendering) for link in links)
-    ):
-        return every
-    return recorded_mintings(link.rendering for link in links if head_content_version in link.heads)
-
-
 class _DerivedVersions:
     """The dataset's versions made from one head: those a file linked under them, or their
-    record, says one of their mintings made from it (`_head_mintings`), read with a query by that
+    record, says one of their mintings made from it (`recorded_rendering.head_mintings`), read with a query by that
     head (`VersionLister.list_head_versions`) on the first lookup after `reread`, and the version
     this refresh's renders and rebuild last made from it with each minting. A lookup of another
     head starts over. `named` is the refreshed frame's version, which a lookup puts first among
@@ -336,7 +316,7 @@ class _DerivedVersions:
             self._listed = (
                 [
                     (
-                        _head_mintings(version, head_content_version=head_content_version),
+                        head_mintings(version, head_content_version=head_content_version),
                         version.content_version,
                     )
                     for version in lister.list_head_versions(

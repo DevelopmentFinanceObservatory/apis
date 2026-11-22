@@ -5,7 +5,10 @@ derived record, and the refusal that names the summed read when no sum is read."
 
 from __future__ import annotations
 
+import json
 import logging
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,7 +19,8 @@ import pytest
 from artifact_store.errors import ArtifactNotFoundError
 from code_index import CodeIndex, CodeRow
 from dataset_store import snapshot
-from datasets_api import analysis_roots, current, store_errors
+from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api import analysis, analysis_roots, current, store_errors, versions
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -941,3 +945,460 @@ def test_a_party_totals_cut_root_names_no_dataset_version_as_its_base(route: str
 
     assert response.status_code == 200, response.text
     assert response.json()["derived_roots"] == []
+
+
+def _count_work(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
+    """A counter of the renders of a stored frame, which a root's sum is one of, and of the
+    runs that read root frames and evaluate a tree, from the call on."""
+    work: Counter[str] = Counter()
+
+    def counted(name: str, call: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            work[name] += 1
+            return call(*args, **kwargs)
+
+        return wrapped
+
+    for module, name in ((current, "_render_stored_rendering"), (analysis, "_evaluated")):
+        monkeypatch.setattr(module, name, counted(name, getattr(module, name)))
+    return work
+
+
+@pytest.mark.parametrize("kind", ["dataset", "spec"])
+@pytest.mark.parametrize(
+    "rendering",
+    [{"columns": []}, {"columns": [], "without_party_totals": True}, {}],
+    ids=["stored_frame", "cut", "default_columns"],
+)
+def test_a_repeated_request_over_a_summed_root_renders_and_evaluates_nothing(
+    monkeypatch: pytest.MonkeyPatch, kind: str, rendering: dict
+) -> None:
+    """The sum a root is read with is a version of its own, found by its base version and
+    minting once a request has rendered it, so the same request again reads its stored
+    answer: no sum is rendered, no root frame read and no tree evaluated."""
+    client, _, root = _rig()
+    root = {**root, "rendering": rendering}
+    if kind == "spec":
+        root = {key: value for key, value in root.items() if key != "content_version"}
+    tree = _aggregate(_filter(root), group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    assert [summed["count"] for summed in first.json()["stat_vars_summed"]] == [2]
+    # A cut can leave a period or an entity out, so a summed root that cuts names no base
+    # (conformance C121f).
+    assert len(first.json()["derived_roots"]) == (0 if rendering.get("without_party_totals") else 1)
+
+    work = _count_work(monkeypatch)
+    again = _post(client, tree)
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert work == Counter()
+
+
+def test_a_repeated_spec_root_request_reads_the_version_a_moved_head_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Spec root's repeat is answered from its stored answer while its head stands. Once the
+    head is past its age and the source holds other values, the repeat rebuilds and answers
+    the new version's sum."""
+    body = {"text": _CSV_BODY}
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=body["text"],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+    client, _, root = _rig(sdmx_transport=transport)
+    tree = _aggregate(
+        {"spec_id": root["spec_id"], "rendering": root["rendering"]}, group_by=["recipient"]
+    )
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    body["text"] = _CSV_BODY.replace(",2020,1000,", ",2020,600,")
+
+    standing = _post(client, tree)
+    monkeypatch.setattr(current, "_head_is_fresh", lambda head, *, now, deps: False)
+    monkeypatch.setattr(current, "_max_age", lambda head, *, deps: timedelta(0))
+    moved = _post(client, tree)
+
+    assert standing.json() == first.json()
+    assert moved.status_code == 200, moved.text
+    (before,) = first.json()["derived_roots"]
+    (after,) = moved.json()["derived_roots"]
+    assert after["base_content_version"] != before["base_content_version"]
+    assert moved.json()["frame_content_version"] != first.json()["frame_content_version"]
+
+
+def _derived_version(store: FakeVersionRecordDatasetStore) -> dict[str, Any]:
+    """The one derived version `store` records: its version, base and record row."""
+    with store.transaction() as tx:
+        (row,) = tx.fetch_all(
+            "SELECT * FROM datasets.version_record WHERE base_content_version IS NOT NULL"
+        )
+    return row
+
+
+def _revoke(store: FakeVersionRecordDatasetStore, spec_id: str, content_version: str) -> None:
+    with store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation "
+            "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, %s)",
+            (spec_id, content_version, "takedown", "2026-01-01T00:00:00+00:00"),
+        )
+
+
+def _swapping_transport(body: dict[str, str]) -> httpx.MockTransport:
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=body["text"],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+
+
+# The two members' 2020 values swapped: another dataset version whose sum is the same.
+_SWAPPED_BODY = (
+    _CSV_BODY.replace(",2020,1000,", ",2020,FIRST,")
+    .replace(",2020,500,", ",2020,1000,")
+    .replace(",2020,FIRST,", ",2020,500,")
+)
+
+
+def test_two_mintings_of_one_dataset_version_each_read_their_own_recorded_sum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two sums of one dataset version, keeping different axes, are two recorded versions. In
+    either order, each repeat reads the version its own sum recorded, with no render."""
+    client, _, root = _rig(two_axes=True)
+    by_recipient = _aggregate(root, group_by=["recipient"])
+    by_axis = _aggregate(root, group_by=["recipient", "testAxis"])
+    first = {"recipient": _post(client, by_recipient), "axis": _post(client, by_axis)}
+    assert first["recipient"].status_code == first["axis"].status_code == 200
+    assert (
+        first["recipient"].json()["frame_content_version"]
+        != (first["axis"].json()["frame_content_version"])
+    )
+
+    work = _count_work(monkeypatch)
+    repeats = [
+        ("axis", _post(client, by_axis)),
+        ("recipient", _post(client, by_recipient)),
+        ("recipient", _post(client, by_recipient)),
+        ("axis", _post(client, by_axis)),
+    ]
+
+    for name, repeat in repeats:
+        assert repeat.json() == first[name].json(), name
+    assert work["_render_stored_rendering"] == 0
+
+
+@pytest.mark.parametrize("moved", ["code_index", "render_format"])
+def test_a_recorded_sum_is_read_again_only_under_the_stamp_it_was_rendered_under(
+    monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    """A sum's levels, cut and summable axes follow the code index, and its cells the render
+    format, so a recorded sum answers a repeat only under the stamp of both it was rendered
+    under (`versions.rendering_stamp`): under another index or format the root renders once,
+    which records the new stamp, and the next repeat renders nothing."""
+    index = _hierarchical_code_index()
+    client, _, root = _rig(code_index=index)
+    tree = _aggregate(_filter(root), group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+
+    if moved == "code_index":
+        monkeypatch.setattr(index, "stamp", replace(index.stamp, content_hash="sha256:another"))
+    else:
+        monkeypatch.setattr(versions, "RENDER_FORMAT", "another_format")
+    work = _count_work(monkeypatch)
+    moved = _post(client, tree)
+    renders_under_another_index = work["_render_stored_rendering"]
+    work.clear()
+    again = _post(client, tree)
+
+    assert moved.status_code == again.status_code == 200, moved.text
+    assert again.json()["frame_content_version"] == first.json()["frame_content_version"]
+    assert renders_under_another_index == 1
+    assert work["_render_stored_rendering"] == 0
+
+
+def test_a_newest_recorded_sum_that_cannot_serve_renders_in_place_of_an_older_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the newest version recorded for a dataset version and minting is read. When its
+    stored frame is not servable the root renders, and an older recorded version does not
+    answer in its place."""
+    client, store, root = _rig()
+    tree = _aggregate(root, group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    recorded = _derived_version(store)
+    newer = {
+        **recorded,
+        "content_version": "cv_newer",
+        "recorded_at": recorded["recorded_at"] + timedelta(seconds=1),
+    }
+    # The newer version links the sum's file with the same head and index, and no stored frame.
+    with store.transaction() as tx:
+        rows = {
+            table: [
+                {**row, "content_version": "cv_newer"}
+                for row in tx.fetch_all(
+                    f"SELECT * FROM datasets.{table} WHERE content_version = %s",
+                    (recorded["content_version"],),
+                )
+            ]
+            for table in ("version_artifact", "version_artifact_head")
+        }
+        sums = {
+            row["rendering_key"]
+            for row in rows["version_artifact"]
+            if "groupby" in row["rendering"]
+        }
+        for table, row in [
+            ("version_record", newer),
+            *(("version_artifact", row) for row in rows["version_artifact"]),
+            *(("version_artifact_head", row) for row in rows["version_artifact_head"]),
+        ]:
+            if table != "version_record" and row["rendering_key"] not in sums:
+                continue
+            tx.execute(
+                f"INSERT INTO datasets.{table} ({', '.join(row)}) "
+                f"VALUES ({', '.join('%s' for _ in row)})",
+                tuple(
+                    json.dumps(value) if isinstance(value, list) else value
+                    for value in row.values()
+                ),
+            )
+
+    work = _count_work(monkeypatch)
+    again = _post(client, tree)
+
+    assert again.status_code == 200, again.text
+    assert again.json()["frame_content_version"] == recorded["content_version"]
+    assert work["_render_stored_rendering"] == 1
+
+
+@pytest.mark.parametrize(
+    ("expired", "status"),
+    [("file", 200), ("every_file", 410)],
+    ids=["its_file", "its_frame_too"],
+)
+def test_a_recorded_sum_whose_files_expired_is_rendered_again(
+    monkeypatch: pytest.MonkeyPatch, expired: str, status: int
+) -> None:
+    """A recorded sum past its working tier, its dataset version still servable, is not read:
+    the root renders. With only its file expired the render links a new one and the answer
+    stands. With its stored frame expired too, the render makes the same version, whose frame
+    a render does not store again, so the root refuses `artifact_expired` as it did before
+    sums were recorded."""
+    client, store, root = _rig()
+    tree = _aggregate(root, group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    derived = _derived_version(store)["content_version"]
+    frame_kept = 'AND rendering NOT LIKE \'%"format": "frame"%\'' if expired == "file" else ""
+    with store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest IN ("
+            "SELECT artifact_digest FROM datasets.version_artifact WHERE content_version = %s "
+            f"AND rendering LIKE '%groupby%' {frame_kept})"
+            if expired == "file"
+            else "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest IN ("
+            "SELECT artifact_digest FROM datasets.version_artifact WHERE content_version = %s)",
+            ("2000-01-01T00:00:00+00:00", derived),
+        )
+
+    work = _count_work(monkeypatch)
+    again = _post(client, tree)
+
+    assert again.status_code == status, again.text
+    if status == 200:
+        assert again.json() == first.json()
+    else:
+        assert again.json()["code"] == "artifact_expired"
+    assert work["_render_stored_rendering"] == 1
+
+
+def test_a_revoked_recorded_sum_is_passed_over_and_the_root_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revoked recorded sum, its dataset version not revoked, is passed over and the root
+    renders it from the dataset version's stored frame (conformance C121a). The render makes
+    the same version, so the answer stands: revoking the dataset version withdraws it."""
+    client, store, root = _rig()
+    tree = _aggregate(root, group_by=["recipient"])
+    first = _post(client, tree)
+    assert first.status_code == 200, first.text
+    _revoke(store, root["spec_id"], _derived_version(store)["content_version"])
+
+    work = _count_work(monkeypatch)
+    again = _post(client, tree)
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert work["_render_stored_rendering"] == 1
+
+
+def _moved_head_of_the_same_sum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Any, FakeVersionRecordDatasetStore, dict, str, str]:
+    """A Spec root's client after its head moved to a version whose sum is the first head's:
+    the render from the new head links its file under the version the first head recorded,
+    whose record keeps the first base. Returns the client, its store, the Spec root, that
+    recorded version and the new head."""
+    body = {"text": _CSV_BODY}
+    client, store, root = _rig(sdmx_transport=_swapping_transport(body))
+    spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
+    first = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+    assert first.status_code == 200, first.text
+    body["text"] = _SWAPPED_BODY
+    with monkeypatch.context() as stale:
+        stale.setattr(current, "_head_is_fresh", lambda head, *, now, deps: False)
+        stale.setattr(current, "_max_age", lambda head, *, deps: timedelta(0))
+        moved = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+    assert moved.status_code == 200, moved.text
+    recorded = _derived_version(store)
+    assert moved.json()["frame_content_version"] == recorded["content_version"]
+    assert recorded["base_content_version"] == root["content_version"]
+    with store.transaction() as tx:
+        (new_head,) = {
+            row["head_content_version"]
+            for row in tx.fetch_all(
+                "SELECT head_content_version FROM datasets.version_artifact_head "
+                "WHERE head_content_version != %s",
+                (root["content_version"],),
+            )
+        }
+    return client, store, spec_root, recorded["content_version"], new_head
+
+
+def test_a_repeated_request_over_a_moved_head_of_the_same_sum_names_the_new_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored answer is keyed on the dataset version each root was read from, so the same
+    tree over a moved head whose sum is unchanged names the new head as its base, and its
+    repeat reads that answer with no render and no evaluation."""
+    client, _, spec_root, recorded, new_head = _moved_head_of_the_same_sum(monkeypatch)
+
+    work = _count_work(monkeypatch)
+    again = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+
+    assert again.status_code == 200, again.text
+    assert work == Counter()
+    (read,) = again.json()["derived_roots"]
+    assert (read["content_version"], read["base_content_version"]) == (recorded, new_head)
+
+
+def test_a_spec_root_read_from_a_recorded_sum_names_the_head_it_was_read_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Spec root read from a recorded version through a head other than the base its record
+    keeps names that head as the dataset version it sums."""
+    client, _, spec_root, recorded, new_head = _moved_head_of_the_same_sum(monkeypatch)
+
+    # Another tree over the same root, so no stored answer replays an earlier body.
+    standing = _post(client, _aggregate(_filter(spec_root), group_by=["recipient"]))
+
+    assert standing.status_code == 200, standing.text
+    assert standing.json()["frame_content_version"] == recorded
+    (read,) = standing.json()["derived_roots"]
+    assert read["base_content_version"] == new_head
+
+
+def test_a_head_that_moves_between_two_roots_of_one_derived_version_keeps_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two roots of one Spec that both read one recorded sum, the head moving between their
+    serves to another dataset version of the same sum: the second serve reads the same derived
+    version through the new head, so the second root is read from the version the first serve
+    read, and both name that version as their base."""
+    heads: list[tuple[Any, Any]] = []
+    read_head = _FakeHeadStore.read_head
+
+    def recorded(store: Any, subject_id: str) -> Any:
+        head = read_head(store, subject_id)
+        heads.append((store, head))
+        return head
+
+    monkeypatch.setattr(_FakeHeadStore, "read_head", recorded)
+    client, _, spec_root, _, new_head = _moved_head_of_the_same_sum(monkeypatch)
+    store = heads[-1][0]
+    moved = store._heads[spec_root["spec_id"]]
+    assert moved.content_version == new_head
+    first = next(head for _, head in heads if head is not None and head.content_version != new_head)
+    store._heads[spec_root["spec_id"]] = first
+    serve = analysis_roots.serve_spec
+    serves: list[None] = []
+
+    def moving(**kwargs: Any) -> Any:
+        serves.append(None)
+        if len(serves) == 2:
+            store._heads[spec_root["spec_id"]] = moved
+        return serve(**kwargs)
+
+    monkeypatch.setattr(analysis_roots, "serve_spec", moving)
+    tree = {
+        "verb": "share_of",
+        "arguments": {"on": ["recipient"]},
+        "inputs": {
+            "data": _aggregate(spec_root, group_by=["recipient"]),
+            # Another rendering, so the two roots stay two, of the same derived version.
+            "other": _aggregate({**spec_root, "rendering": {}}, group_by=["recipient"]),
+        },
+    }
+
+    response = _post(client, tree)
+
+    assert response.status_code == 200, response.text
+    assert len(serves) == 2
+    derived = response.json()["derived_roots"]
+    assert {one["base_content_version"] for one in derived} == {first.content_version}
+
+
+def test_a_recorded_sum_is_not_read_through_a_revoked_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recorded version whose record names another base is not read through a revoked head:
+    a root stating the sum refuses `snapshot_revoked` as a render from that head does."""
+    client, store, spec_root, _, new_head = _moved_head_of_the_same_sum(monkeypatch)
+    _revoke(store, spec_root["spec_id"], new_head)
+    # A stated sum, since a revoked head implies none (`LiveRootSource._head_version`).
+    stated = {**spec_root, "rendering": {**spec_root["rendering"], "groupby": _SUMMED}}
+
+    revoked = _post(client, _aggregate(stated, group_by=["recipient"]))
+
+    assert revoked.status_code == 410, revoked.text
+    assert revoked.json()["code"] == "snapshot_revoked"
+
+
+def test_a_repeated_request_reads_its_recorded_sum_in_one_store_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lookup reads the recorded version, its revocation and its locations in one read
+    (`read_version_state`), and no second read of its locations alone."""
+    client, store, root = _rig()
+    tree = _aggregate(root, group_by=["recipient"])
+    assert _post(client, tree).status_code == 200
+    derived = _derived_version(store)["content_version"]
+    reads: Counter[str] = Counter()
+
+    def counted(name: str) -> Callable[..., Any]:
+        call = getattr(LiveSnapshotReader, name)
+
+        def wrapped(reader: Any, subject_id: str, content_version: str, **kwargs: Any) -> Any:
+            if content_version == derived:
+                reads[name] += 1
+            return call(reader, subject_id, content_version, **kwargs)
+
+        return wrapped
+
+    for name in ("read_artifact_locations", "read_version_state"):
+        monkeypatch.setattr(LiveSnapshotReader, name, counted(name))
+    again = _post(client, tree)
+
+    assert again.status_code == 200, again.text
+    assert reads == Counter({"read_version_state": 1})
