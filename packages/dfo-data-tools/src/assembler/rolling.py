@@ -105,7 +105,11 @@ class ResolvedRolling:
 class StoredSelect:
     """How a stored revision's `select` binds a frame other than the one it was written on.
 
-    Each binding of a dimension `D` binds the frame by the first rule that applies:
+    A bound value the frame does not hold that is the label of one code dcid the frame holds
+    for `D` (`ResolvedFrame.codes_by_label`) first reads as that dcid, so a revision written
+    on a frame whose `stat_var_<code_system>` cells held labels binds a frame whose cells hold
+    dcids. A label two codes of the code system carry reads as itself. Each binding of a
+    dimension `D` then binds the frame by the first rule that applies:
 
     1. The frame holds every value: the binding is kept.
     2. A list binding on a dimension other than a facet whose values held every value the
@@ -338,6 +342,7 @@ def _without_absent_values(
                     held=_held_values(resolved_frame=resolved_frame, name=name),
                     scalar=not isinstance(select.get(name), list),
                     stored_select=stored_select,
+                    by_label=resolved_frame.codes_by_label.get(name, {}),
                 )
                 for value in dropped:
                     if not any(one.coordinates.get(name) == value for one in named):
@@ -356,6 +361,18 @@ def _without_absent_values(
     )
 
 
+def _coded(
+    values: Sequence[str], *, held: Mapping[object, None], by_label: Mapping[str, str]
+) -> list[str]:
+    """`values` with each one `held` lacks read as the code dcid `by_label` maps it to, when
+    `held` holds that dcid (`StoredSelect`)."""
+    coded: list[str] = []
+    for value in values:
+        code = by_label.get(value) if value not in held else None
+        coded.append(code if code is not None and code in held else value)
+    return coded
+
+
 def _bound_values(
     *,
     name: str,
@@ -363,10 +380,15 @@ def _bound_values(
     held: Mapping[object, None],
     scalar: bool,
     stored_select: StoredSelect | None,
+    by_label: Mapping[str, str],
 ) -> tuple[Sequence[str], list[str]]:
     """The values a binding of `name` binds on a frame holding `held` for it, and the values
-    it drops. `scalar` says `select` binds `name` to one value.
+    it drops. `scalar` says `select` binds `name` to one value. `by_label` is the frame's
+    `ResolvedFrame.codes_by_label` for `name`.
     `StoredSelect` states the rules a render binds by."""
+    if stored_select is not None:
+        coded = _coded(values, held=held, by_label=by_label)
+        values = values if coded == list(values) else coded
     present = [value for value in values if value in held]
     if len(present) == len(values):
         return values, []
@@ -375,12 +397,19 @@ def _bound_values(
             follows = not present and len(held) == 1
             return (cast("list[str]", list(held)), []) if follows else (values, [])
         stored_frame = stored_select.load_frame()
-        stored_held = (
-            _held_values(resolved_frame=stored_frame, name=name) if stored_frame is not None else {}
+        stored_held = _coded(
+            cast(
+                "list[str]",
+                list(_held_values(resolved_frame=stored_frame, name=name))
+                if stored_frame is not None
+                else [],
+            ),
+            held=held,
+            by_label=by_label,
         )
-        if stored_held and stored_held.keys() <= set(values):
+        if stored_held and set(stored_held) <= set(values):
             widened = [*present, *(cast(str, value) for value in held if value not in present)]
-            return widened, [cast(str, value) for value in stored_held if value not in held]
+            return widened, [value for value in stored_held if value not in held]
     if not present:
         return values, []
     return present, [value for value in values if value not in held]

@@ -23,8 +23,12 @@ and a root whose version holds more than one StatVar is read summed, keeping the
 those words name, unless they name `stat_var` (`analysis_roots.implied_groupby`). The sum is
 the root's `groupby`, so its record, the normal form and the ref state it, and the answer counts
 the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads the
-`stat_var_<axis>` column the sum keeps (`column_for`). A `stat_var_unresolved` names the
-summed read, or the sum the datasets door refused (`_with_summed_read`).
+`stat_var_<axis>` column the sum keeps (`column_for`), whose cells are code dcids. A
+`category_match` value on that column may be a code's dcid, its publisher code or a label naming
+one code of the axis; the planner resolves it before the request is keyed
+(`resolved_breakdown_values`), and a label naming several codes refuses
+`breakdown_label_ambiguous`. A `stat_var_unresolved` names the summed read, or the sum the
+datasets door refused (`_with_summed_read`).
 
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
@@ -86,10 +90,11 @@ answer, and records an engine refusal or a cap the computation meets as its outc
 
 A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
 request key (`request_key`) taken, a hash of the working tree as sent, each resolved root's
-record, `latest`, the engine's execution identity and the answer format (`ANSWER_FORMAT`). The
-run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
-frame is stored, so a later request with the same key answers the stored body
-(`stored_answer`) while the frame file it names is still served, reading no frame. A taken-down
+record and version (with the base version a sum read), `latest`, the engine's execution
+identity and the answer format (`ANSWER_FORMAT`). The run (`run_prepared`) stores its 200
+body under that key (`RecipeStore.write_answer`) once its frame is stored, so a later request
+with the same key answers the stored body (`stored_answer`) while the frame file it names is
+still served, reading no frame. A taken-down
 output pair refuses `snapshot_revoked` on both paths, a stored answer and a run that would reuse
 the stored frame, as a derived read of the pair does.
 
@@ -138,6 +143,8 @@ from pydantic import (
 )
 
 from artifact_store import ArtifactStore
+from code_index import CodeIndex, CodeRow
+from code_index.query import fold_text
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
     SnapshotNotFound,
@@ -679,6 +686,12 @@ class LocatedRoot(ResolvedRoot):
 class RootSource(Protocol):
     """Where the runner reads its roots from (`analysis_roots.LiveRootSource`)."""
 
+    @property
+    def code_index(self) -> CodeIndex | None:
+        """The code index a filter value on a breakdown column resolves through
+        (`resolved_breakdown_values`), `None` where values stay as the caller gave them."""
+        ...
+
     def resolve(
         self,
         root: SpecRoot | DatasetRoot,
@@ -1025,6 +1038,7 @@ def _plan_node(
     match node:
         case StepNode():
             plan.count()
+            node = resolved_breakdown_values(node, source.code_index)
             words = _path_words(node)
             below = reduced or node.verb is not Verb.FILTER
             filtered = (
@@ -1095,7 +1109,8 @@ def _expand(
 ) -> dict[str, Any]:
     """A stored recipe's `tree` as working nodes, its roots read again (`dataset_root`). Under
     `plan.rolling_tree` each rolling overlay follows the larger tree (`_follow_tree`) and the
-    stored `anchor_roots` are dropped, so the period is taken over that tree."""
+    stored `anchor_roots` are dropped, so the period is taken over that tree. Filter values
+    stay as stored, and are matched to the frames read once they are read (`_Engine.matched`)."""
     if "root" in tree:
         return plan.root(source.dataset_root(records[tree["root"]]))
     plan.count()
@@ -1146,6 +1161,101 @@ def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
             )
         )
     return on_axis[0] if on_axis else word
+
+
+def _axis_of(word: object, codes: CodeIndex) -> str | None:
+    """The code system the column word `word` names, as the axis or as its `stat_var_<axis>`
+    column, else `None`."""
+    if not isinstance(word, str):
+        return None
+    axis = word.removeprefix(STAT_VAR_PREFIX)
+    return axis if axis in codes.declarations else None
+
+
+def _codes_named(value: str, axis: str, codes: CodeIndex) -> tuple[CodeRow, ...]:
+    """The codes of `axis` that `value` names: the code whose dcid it is, else the code whose
+    publisher code it is, else the codes whose label it is under `fold_text`, else those
+    whose synonym it is (`CodeIndex.codes_by_text`)."""
+    if (row := codes.code_by_dcid(value)) is not None and row.code_system == axis:
+        return (row,)
+    if (row := codes.code_by_code(axis, value)) is not None:
+        return (row,)
+    hits = [row for row in codes.codes_by_text(value) if row.code_system == axis]
+    folded = fold_text(value)
+    return tuple([row for row in hits if fold_text(row.label) == folded] or hits)
+
+
+def _label_names_one_code(row: CodeRow, codes: CodeIndex) -> bool:
+    """Whether no other code of `row`'s axis has `row`'s label, so a frame whose cells held
+    labels held this one for `row` alone."""
+    folded = fold_text(row.label)
+    return [
+        hit.dcid
+        for hit in codes.codes_by_text(row.label)
+        if hit.code_system == row.code_system and fold_text(hit.label) == folded
+    ] == [row.dcid]
+
+
+def _engine_values(values: list[Any], *, column: str, axis: str, codes: CodeIndex) -> list[Any]:
+    """`values` of a `category_match` on the breakdown column `column` as the engine matches
+    them: a value naming one code of `axis` as the code's dcid, followed by its label when that
+    label names no other code of the axis, and any other value as given.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    sent: list[Any] = []
+    for value in values:
+        named = _codes_named(value, axis, codes) if isinstance(value, str) else ()
+        if len(named) > 1:
+            raise AnalysisRefused(
+                EngineRefusal.breakdown_label_ambiguous(
+                    column=column,
+                    value=value,
+                    candidates=[{"dcid": row.dcid, "label": row.label} for row in named],
+                )
+            )
+        if not named:
+            spelled = [value]
+        elif _label_names_one_code(row := named[0], codes):
+            spelled = [row.dcid, row.label]
+        else:
+            spelled = [row.dcid]
+        sent.extend(one for one in spelled if one not in sent)
+    return sent
+
+
+def resolved_breakdown_values(step: StepNode, codes: CodeIndex | None) -> StepNode:
+    """`step` with each `category_match` value on a breakdown column, `<axis>` or
+    `stat_var_<axis>` for a code system of `codes`, as the engine matches it
+    (`_engine_values`): a code dcid, a publisher code and a label naming one code of the axis
+    all become that code's dcid and, while its label names no other code, that label, so a
+    frame holding dcid cells and one holding label cells both match. A value naming
+    no code of the axis stays as given, and keeps no row the column does not hold. The planner
+    resolves values before the request key is taken, so each spelling of one code keys one
+    stored answer, and the engine's filter stays exact.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    predicates = step.arguments.get("predicates")
+    if codes is None or not isinstance(predicates, list):
+        return step
+    resolved: list[JsonValue] = []
+    for predicate in predicates:
+        if (
+            isinstance(predicate, dict)
+            and predicate.get("kind") == "category_match"
+            and isinstance(values := predicate.get("values"), list)
+            and (axis := _axis_of(column := predicate.get("column"), codes)) is not None
+        ):
+            assert isinstance(column, str)
+            predicate = {
+                **predicate,
+                "values": _engine_values(values, column=column, axis=axis, codes=codes),
+            }
+        resolved.append(predicate)
+    return step.model_copy(update={"arguments": {**step.arguments, "predicates": resolved}})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1310,10 +1420,12 @@ def _follow_tree(parameters: dict[str, Any]) -> None:
 
 @dataclass(kw_only=True)
 class _Engine:
-    """The working tree turned to the engine's tree over the read root frames."""
+    """The working tree turned to the engine's tree over the read root frames. `codes` is the
+    code index a stored op-spec's filter values resolve through (`matched`)."""
 
     frames: Sequence[Frame]
     resolved: Sequence[ResolvedRoot]
+    codes: CodeIndex | None = None
     lifted: bool = False
 
     def columns(self, node: Mapping[str, Any]) -> Sequence[str]:
@@ -1328,6 +1440,56 @@ class _Engine:
                 node = inputs[_PRIMARY_SLOT]
         return role_columns(self.frames[node["root"]])
 
+    def matched(self, node: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The op-spec of the stored recipe node `node`, each `category_match` predicate on a
+        breakdown column of `codes` resolved as a request's is (`_engine_values`) when a value
+        it holds is missing from the column in the root frames under `node` while a code it
+        names is held there, as a stored label is against a frame whose cells hold dcids. Any
+        other predicate stays as stored, so a recipe whose values match its frames keeps its
+        ids.
+
+        Raises:
+            AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+        """
+        op_spec = node["op_spec"]
+        predicates = op_spec["parameters"].get("predicates")
+        codes = self.codes
+        if codes is None or not isinstance(predicates, list):
+            return op_spec
+        resolved: list[Any] = []
+        for predicate in predicates:
+            if (
+                isinstance(predicate, dict)
+                and predicate.get("kind") == "category_match"
+                and isinstance(values := predicate.get("values"), list)
+                and (axis := _axis_of(column := predicate.get("column"), codes)) is not None
+            ):
+                assert isinstance(column, str)
+                held = self.held(node, column)
+                if any(
+                    row.dcid in held
+                    for value in values
+                    if isinstance(value, str) and value not in held
+                    for row in _codes_named(value, axis, codes)
+                ):
+                    predicate = {
+                        **predicate,
+                        "values": _engine_values(values, column=column, axis=axis, codes=codes),
+                    }
+            resolved.append(predicate)
+        if resolved == predicates:
+            return op_spec
+        return {**op_spec, "parameters": {**op_spec["parameters"], "predicates": resolved}}
+
+    def held(self, node: Mapping[str, Any], column: str) -> set[object]:
+        """The values of `column` in the root frames under `node` that hold it."""
+        held: set[object] = set()
+        for index in _roots_under(node):
+            frame = self.frames[index]
+            if column in frame.columns:
+                held.update(frame.table.column(column).unique().to_pylist())
+        return held
+
     def tree(self, node: Mapping[str, Any]) -> dict[str, Any]:
         if "root" in node:
             return {"root": node["root"]}
@@ -1339,7 +1501,7 @@ class _Engine:
                 literal is None for literal, _ in rolling_literals(node["op_spec"]["parameters"])
             )
             return {
-                "op_spec": node["op_spec"],
+                "op_spec": self.matched(node),
                 "inputs": {slot: self.tree(child) for slot, child in node["inputs"].items()},
                 **anchors,
             }
@@ -1364,6 +1526,15 @@ class _Engine:
             "inputs": {slot: self.tree(child) for slot, child in slots.items()},
             **anchors,
         }
+
+
+def _roots_under(node: Mapping[str, Any]) -> Iterator[int]:
+    """The root indices of the working tree `node`, its anchor roots included."""
+    if "root" in node:
+        yield node["root"]
+        return
+    for child in (*node["inputs"].values(), *node.get(_ANCHOR_ROOTS, ())):
+        yield from _roots_under(child)
 
 
 def _renumbered(tree: dict[str, Any], count: int) -> tuple[dict[str, Any], list[int]]:
@@ -1750,31 +1921,45 @@ class _StoredFrame:
     created: bool
 
 
-def _store(
-    evaluation: Evaluation,
-    roots: Sequence[ResolvedRoot],
-    stores: AnalysisStores,
-    *,
-    trace_id: str | None,
-) -> _StoredFrame:
-    """Store the evaluated frame and its recipe, and return the frame a ref names: the frame
-    at `evaluation.ref` when its file is servable, else the servable frame a recipe of the same
-    replay key is stored under (`_replayed`), else the evaluated frame published at
-    `evaluation.ref`. A frame stored already gains the recipe, which the store keeps once.
+def _store(computed: Computed, stores: AnalysisStores, *, trace_id: str | None) -> _StoredFrame:
+    """Store the evaluated frame of `computed` and its recipe, and return the frame a ref
+    names: the frame at `evaluation.ref` when its file is servable, else the servable frame a
+    recipe of the same replay key is stored under (`_replayed`), else the evaluated frame
+    published at `evaluation.ref`. A frame stored already gains the recipe, which the store
+    keeps once. A held frame is reused only when its content matches the evaluated frame's:
+    at `evaluation.ref` its frame `cv_`. Root frames whose cells a render format rewrites are
+    named apart (`analysis_roots.frame_ref_for`), so a held frame of another `cv_` at the
+    run's own pair is a fault, refused loudly.
 
     Raises:
-        AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
+        AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these,
+            or a servable frame whose `cv_` differs from the evaluated frame's.
         SnapshotRevoked: The pair answered is taken down.
         StoredFrameUnreadable: A pair recording no frame hash holds a copy of its stored frame
             that does not decode, read to name it (`_frame_content_version`,
             `publish_built_frame`), and no other copy reads (`render.linked_stored_frame`).
     """
+    evaluation, roots = computed.evaluation, computed.roots
     recipe = _recipe(evaluation, roots)
     ref = evaluation.ref
     frame_content_version = str(evaluation.summary["frame_content_version"])
     held = _held_file(stores, ref)
+    if (
+        held is not None
+        and (stored_cv := _frame_content_version(stores, ref, held)) != frame_content_version
+    ):
+        logger.error(
+            "an analysis run computes another frame than the one stored under its pair "
+            "spec_id=%s content_version=%s stored_frame_content_version=%s "
+            "run_frame_content_version=%s",
+            ref.spec_id,
+            ref.content_version,
+            stored_cv,
+            frame_content_version,
+        )
+        raise AnalysisStoreDiverges(spec_id=ref.spec_id, content_version=ref.content_version)
     artifact_digest = None if held is None else held.artifact_digest
-    if held is None and (replayed := _replayed(ref, recipe, stores)) is not None:
+    if held is None and (replayed := _replayed(computed, recipe, stores)) is not None:
         ref, artifact_digest, frame_content_version = replayed
     try:
         if artifact_digest is not None:
@@ -1856,18 +2041,21 @@ def _log_divergence(
 
 
 def _replayed(
-    computed: FrameRef, recipe: Recipe, stores: AnalysisStores
+    computed: Computed, recipe: Recipe, stores: AnalysisStores
 ) -> tuple[FrameRef, str, str] | None:
     """The pair a recipe of `recipe`'s replay key is stored under, its servable frame file's
-    digest and its frame's `cv_`, for a run whose own pair `computed` holds no frame file. The replay key names the computation over
-    its root versions, and the pair also hashes the root frames' pairs, which differ for one
-    computation when a stored run named a root's pair under an earlier derivation of
-    `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
+    digest and its frame's `cv_`, for a run whose own pair holds no frame file. The replay key
+    names the computation over its root versions, and the pair also hashes the root frames'
+    pairs, which differ for one computation when a stored run named a root's pair under an
+    earlier derivation of `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
 
-    A pair that serves no frame file, or has no frame hash to name its frame by
-    (`_frame_content_version`), gives up the key (`RecipeStore.supersede_replay`) and answers
-    `None`, so the run publishes at `computed`, whose recipe then takes the key. Its new bytes can
-    differ from the stored frame's, since a minting step's rows name its own pair.
+    A pair that serves no frame file, has no frame hash to name its frame by
+    (`_frame_content_version`), or holds a frame whose output digest differs from the run's
+    (`_stored_output_digest`), as a frame computed from root frames of another render format
+    does (`versions.RENDER_FORMAT`) under a replay key that names the same root versions, gives
+    up the key (`RecipeStore.supersede_replay`) and answers `None`, so the run publishes at its
+    own pair, whose recipe then takes the key. The output digest compares the frames, since
+    their bytes differ where a minting step's rows name its own pair.
 
     Raises:
         SnapshotRevoked: The replayed pair is taken down.
@@ -1876,10 +2064,14 @@ def _replayed(
     if replayed is None:
         return None
     ref = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
-    if ref == computed:
+    if ref == computed.evaluation.ref:
         return None
     held = _held_file(stores, ref)
-    if held is not None and (frame_content_version := _frame_content_version(stores, ref, held)):
+    if (
+        held is not None
+        and (frame_content_version := _frame_content_version(stores, ref, held))
+        and _stored_output_digest(stores, ref, computed) == computed.output_digest
+    ):
         return ref, held.artifact_digest, frame_content_version
     stores.recipe_store.supersede_replay(
         replay_key=recipe.replay_key, spec_id=ref.spec_id, content_version=ref.content_version
@@ -2067,7 +2259,39 @@ def _evaluated(
             the publish door stores (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
     frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
-    return _evaluated_frames(working, resolved, frames, bounds=bounds, latest=latest)
+    computed = _evaluated_frames(
+        working, resolved, frames, bounds=bounds, latest=latest, codes=source.code_index
+    )
+    if source.code_index is None:
+        return computed
+    summary = _with_unmatched_codes(computed.evaluation.summary, source.code_index)
+    return replace(computed, evaluation=replace(computed.evaluation, summary=summary))
+
+
+def _with_unmatched_codes(summary: Mapping[str, Any], codes: CodeIndex) -> dict[str, Any]:
+    """`summary` with each `unmatched_breakdown_values` entry naming the codes its `labels`
+    hold as `codes`, `[{dcid, label}]` for each held value that is a code dcid of the entry's
+    axis, so a caller sees the label beside each dcid the column holds."""
+    result = summary.get("result")
+    unmatched = result.get("unmatched_breakdown_values") if isinstance(result, Mapping) else None
+    if not unmatched:
+        return dict(summary)
+    named: list[dict[str, Any]] = []
+    for entry in unmatched:
+        axis = str(entry["column"]).removeprefix(STAT_VAR_PREFIX)
+        held = (codes.code_by_dcid(value) for value in entry["labels"])
+        named.append(
+            {
+                **entry,
+                "codes": [
+                    {"dcid": row.dcid, "label": row.label}
+                    for row in held
+                    if row is not None and row.code_system == axis
+                ],
+            }
+        )
+    assert isinstance(result, Mapping)
+    return {**summary, "result": {**result, "unmatched_breakdown_values": named}}
 
 
 def _evaluated_frames(
@@ -2077,14 +2301,17 @@ def _evaluated_frames(
     *,
     bounds: AnalysisBounds,
     latest: bool,
+    codes: CodeIndex | None,
 ) -> Computed:
-    """Evaluate the working tree over `frames`, the frames of `resolved` in its order.
+    """Evaluate the working tree over `frames`, the frames of `resolved` in its order, a
+    stored op-spec's filter values on a breakdown column matched to them through `codes`
+    (`_Engine.matched`).
 
     Raises:
         AnalysisTooLarge: The frame passes the rows the publish door stores
             (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
-    engine = _Engine(frames=frames, resolved=resolved)
+    engine = _Engine(frames=frames, resolved=resolved, codes=codes)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
     frames = [frames[index] for index in order]
@@ -2211,8 +2438,12 @@ def compute_analysis(
 
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
-# only a body of this format is answered. Raise it whenever the body changes.
-ANSWER_FORMAT = "analysis_answer/2"
+# only a body of this format is answered. Raise it whenever the body changes. Format 4 holds
+# code dcids in `stat_var_<axis>` cells (`datasets_api.decode`). Format 5 reads a party's kind
+# on a declared composite's root rows over the composite's component tables
+# (`code_index.types.PartyRow.kinds_over`), so a verb leaves out a party those tables declare a
+# total, as it leaves out any total.
+ANSWER_FORMAT = "analysis_answer/5"
 
 
 def _keyed_tree(node: object) -> object:
@@ -2324,7 +2555,7 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        stored = _store(computed.evaluation, computed.roots, stores, trace_id=trace_id)
+        stored = _store(computed, stores, trace_id=trace_id)
         evaluation = replace(
             computed.evaluation,
             ref=stored.ref,
@@ -2644,7 +2875,6 @@ def verify_analysis(
             runner does not read.
         SnapshotRevoked: The pair compared with is taken down.
     """
-    working, roots = plan_roots(request, source=source, bounds=bounds)
     identity = asdict(current_execution_identity())
     named = (
         FrameRef(spec_id=request.tree.spec_id, content_version=request.tree.content_version)
@@ -2655,22 +2885,38 @@ def verify_analysis(
     computed: Computed | None = None
     refusal: tuple[str, str] | None = None
     try:
-        located = _readable_roots(roots, source=source, trace_id=trace_id, unavailable=unavailable)
-        if not unavailable:
-            working, located = merged_roots(working, located, roots)
-        recorded = sum(root.rows or 0 for root in located)
-        if recorded > bounds.max_root_rows:
-            raise AnalysisTooLarge(
-                ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
-            )
-        with permit():
-            frames = _read_every_root(
-                located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
+        # Planning resolves filter values, so a label naming several codes refuses here
+        # (`breakdown_label_ambiguous`).
+        working, roots = plan_roots(request, source=source, bounds=bounds)
+    except AnalysisRefused as refused:
+        refusal = _refusal_of(refused)
+    else:
+        try:
+            located = _readable_roots(
+                roots, source=source, trace_id=trace_id, unavailable=unavailable
             )
             if not unavailable:
-                computed = _evaluated_frames(working, located, frames, bounds=bounds, latest=False)
-    except (AnalysisRefused, AnalysisTooLarge, OverCeilingError) as refused:
-        refusal = _refusal_of(refused)
+                working, located = merged_roots(working, located, roots)
+            recorded = sum(root.rows or 0 for root in located)
+            if recorded > bounds.max_root_rows:
+                raise AnalysisTooLarge(
+                    ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
+                )
+            with permit():
+                frames = _read_every_root(
+                    located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
+                )
+                if not unavailable:
+                    computed = _evaluated_frames(
+                        working,
+                        located,
+                        frames,
+                        bounds=bounds,
+                        latest=False,
+                        codes=source.code_index,
+                    )
+        except (AnalysisRefused, AnalysisTooLarge, OverCeilingError) as refused:
+            refusal = _refusal_of(refused)
     if computed is None:
         stored_cv, stored_identity = (None, None) if named is None else _stored_frame(stores, named)
         if unavailable:

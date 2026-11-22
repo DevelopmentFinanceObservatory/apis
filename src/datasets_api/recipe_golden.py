@@ -151,6 +151,12 @@ class FixtureRootSource:
     body: Mapping[str, Any]
     _seen: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
+    @property
+    def code_index(self) -> None:
+        """None: a case computes a stored recipe's op-specs as stored, so a filter value
+        on a breakdown column matches only the cells its root frames hold as written."""
+        return None
+
     @classmethod
     def load(cls, case: Path) -> FixtureRootSource:
         return cls(case=case, body=json.loads((case / CASE_FILE).read_text()))

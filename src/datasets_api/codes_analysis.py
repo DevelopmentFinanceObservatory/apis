@@ -60,6 +60,8 @@ _ENGINE_DEFINITIONS: Mapping[RefusalCode, str] = {
     "calendar years.",
     RefusalCode.ROLLING_POPULATIONS_DIFFER: "The rolling steps of one analysis recipe count "
     "the latest period over different populations of series.",
+    RefusalCode.BREAKDOWN_LABEL_AMBIGUOUS: "A filter value on a breakdown column is a label "
+    "that names several codes of its axis.",
 }
 
 

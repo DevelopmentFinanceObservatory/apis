@@ -160,6 +160,11 @@ class ResolvedFrame:
     revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
     records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
     derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
+    `codes_by_label` holds, for each decoded `stat_var_<code_system>` column of the frame, each
+    code dcid the column holds by its code index label, for the labels no other code of that
+    code system carries. A stored revision's `select` value naming such a label binds that
+    dcid on a render (`assembler.rolling.StoredSelect`), for a revision written on a frame
+    whose column held labels. It is empty for a store that reads no code index.
     """
 
     frame_ref: FrameRef
@@ -178,6 +183,7 @@ class ResolvedFrame:
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
     rendering: Mapping[str, object] | None = None
+    codes_by_label: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 # Why a frame does not load. Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed

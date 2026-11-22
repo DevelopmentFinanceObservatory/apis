@@ -180,21 +180,21 @@ def test_level_zero_sums_parent_and_child_coded_stat_vars_into_their_root_sector
     result = _reshape_with(_options({"crsPurpose": 0}), chunked=chunked)
 
     assert _by_sector(result) == {
-        "Social infrastructure": 19.0,
-        "Economic infrastructure": 7.0,
-        "Unallocated": 2.0,
+        "CRSPurposeCode100": 19.0,
+        "CRSPurposeCode200": 7.0,
+        "CRSPurposeCode998": 2.0,
     }
 
 
-def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_label():
+def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_code():
     result = _reshape_with(_options({"crsPurpose": 1}))
 
-    # 100 and 998 are root codes, so at depth 1 each keeps its own records and label.
+    # 100 and 998 are root codes, so at depth 1 each keeps its own records and code.
     assert _by_sector(result) == {
-        "Social infrastructure": 4.0,
-        "Health": 15.0,
-        "Transport": 7.0,
-        "Unallocated": 2.0,
+        "CRSPurposeCode100": 4.0,
+        "CRSPurposeCode120": 15.0,
+        "CRSPurposeCode210": 7.0,
+        "CRSPurposeCode998": 2.0,
     }
 
 

@@ -4,9 +4,11 @@ The collapse set is the decoded, declared-summable axes minus `by`. Unknown
 names refuse before per-frame checks. An undeclared axis absent from one frame
 is a no-op. `stat_var` joins the collapse only when a CRS axis collapses or a
 kept axis rolls up to a level. A decoded axis not declared summable stays out
-of the collapse. `groupby.levels` rewrites a kept hierarchical axis's decoded labels
-to their ancestors' labels at one depth (`roll_up_levels`), so the sum groups
-each code under its ancestor.
+of the collapse. Each decoded `stat_var_<axis>` cell holds the code's dcid
+(`datasets_api.decode`), so a kept axis groups by code and two codes sharing a
+label stay two rows. `groupby.levels` rewrites a kept hierarchical axis's decoded
+codes to their ancestors at one depth (`roll_up_levels`), so the sum groups each
+code under its ancestor's dcid.
 
 The guards refuse ambiguous measures, unknown axes, decode gaps, and mixed
 provenance. They use code-index declarations and frame data. The reshape engine
@@ -198,10 +200,10 @@ def roll_up_levels(
     index: CodeIndex,
     levels: Mapping[str, int],
 ) -> dict[str, dict[str, str]]:
-    """Return `lookup` with each level axis's label replaced by its depth ancestor's label.
+    """Return `lookup` with each level axis's code replaced by its depth ancestor's dcid.
 
     A StatVar's code maps to `CodeIndex.ancestor_at_depth`. A code shallower than its depth has
-    no ancestor there and keeps its own label, so its row names it. A declared absence and a
+    no ancestor there and keeps its own dcid, so its row names it. A declared absence and a
     missing cell stay as they are, and an ancestor with no code row drops the cell, which
     `refuse_decode_gaps` then refuses.
     """
@@ -218,11 +220,10 @@ def roll_up_levels(
             ancestor = index.ancestor_at_depth(code, depth)
             if ancestor is None:
                 continue
-            ancestor_row = index.code_by_dcid(ancestor)
-            if ancestor_row is None:
+            if index.code_by_dcid(ancestor) is None:
                 del new_cells[code_system]
             else:
-                new_cells[code_system] = ancestor_row.label
+                new_cells[code_system] = ancestor
         rolled[ref] = new_cells
     return rolled
 
@@ -285,43 +286,6 @@ def refuse_stat_var_collision(
                 "collapsing stat_var would merge them with no discriminating column left",
                 axis=_STAT_VAR_COLUMN,
                 precondition="stat_var_ambiguous",
-            )
-
-
-def refuse_shared_labels(
-    lookup: Mapping[str, Mapping[str, str]],
-    *,
-    index: CodeIndex,
-    contributors: Iterable[str],
-    kept: Sequence[str],
-    levels: Mapping[str, int],
-) -> None:
-    """Raise `RollupNotSummableError` (`precondition="labels_not_unique"`) when two distinct
-    codes of a `kept` axis, held by StatVars with rows (`contributors`, `dcid:` refs), carry
-    one label in `lookup`, the decode a sum reads after `roll_up_levels`: a code's own, or for
-    a level axis its ancestor at that depth. A sum groups a kept axis on its label cell, so the
-    two codes would add into one row; a StatVar with no rows writes no cell and merges
-    nothing. A `by` naming `stat_var` still collapses it under a level roll-up, so the check
-    holds there too. This guards the label cells `stat_var_<axis>` holds until it holds codes."""
-    refs = sorted(contributors)
-    for axis in kept:
-        codes_by_label: dict[str, set[str]] = {}
-        for ref in refs:
-            label = lookup.get(ref, {}).get(axis)
-            statvar = index.statvar_by_dcid(_bare_dcid(ref))
-            code = statvar.constraint_properties.get(axis) if statvar is not None else None
-            if label is None or code is None:
-                continue
-            if axis in levels:
-                code = index.ancestor_at_depth(code, levels[axis]) or code
-            codes_by_label.setdefault(label, set()).add(code)
-        shared = sorted(label for label, codes in codes_by_label.items() if len(codes) > 1)
-        if shared:
-            raise RollupNotSummableError(
-                f"groupby axis {axis!r} refused: label(s) {shared!r} name more than one "
-                f"{axis} code, so a sum keeping the axis would add those codes into one row",
-                axis=axis,
-                precondition="labels_not_unique",
             )
 
 
