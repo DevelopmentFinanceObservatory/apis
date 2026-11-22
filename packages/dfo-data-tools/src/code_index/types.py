@@ -839,34 +839,41 @@ class CompositeReadUndeclared(IndexFormatError):
         self.refs = tuple(sorted(refs))
 
 
-@functools.cache
-def declared_composite_reads() -> Mapping[str, CompositeRead]:
-    """Each declared composite's `CompositeRead`, by provenance. Read once:
-    `code_index.composites` imports this module, so the import waits for the first read.
-    Raises `CompositeReadUndeclared` for a composite it cannot read."""
-    from code_index.composites import DECLARED_COMPOSITES
+def composite_read(composite: CompositeDeclaration) -> CompositeRead:
+    """The `CompositeRead` of `composite`'s components, the bound total read from
+    `code_index.scope_conventions.BILATERAL_SOURCES`. Raises `CompositeReadUndeclared` for a
+    composite it cannot read."""
     from code_index.scope_conventions import BILATERAL_SOURCES
 
     rebound = {source.dataset: source.rebound for source in BILATERAL_SOURCES}
-    reads: dict[str, CompositeRead] = {}
-    for ref, composite in DECLARED_COMPOSITES.items():
-        components = composite.components
-        bound = {recipe.dataset for recipe in components if recipe.destinations is not None}
-        if undeclared := bound - rebound.keys():
-            raise CompositeReadUndeclared(
-                code="bound_table_undeclared", composite=ref, refs=tuple(undeclared)
-            )
-        totals = {rebound[dataset] for dataset in bound}
-        if len(totals) > 1:
-            raise CompositeReadUndeclared(
-                code="several_bound_totals", composite=ref, refs=tuple(totals)
-            )
-        reads[ref] = CompositeRead(
-            tables=tuple(dict.fromkeys(recipe.dataset for recipe in components)),
-            marker_table=components[0].dataset if len(components) == 1 else None,
-            bound_total=next(iter(totals), None),
+    components = composite.components
+    bound = {recipe.dataset for recipe in components if recipe.destinations is not None}
+    if undeclared := bound - rebound.keys():
+        raise CompositeReadUndeclared(
+            code="bound_table_undeclared", composite=composite.provenance, refs=tuple(undeclared)
         )
-    return MappingProxyType(reads)
+    totals = {rebound[dataset] for dataset in bound}
+    if len(totals) > 1:
+        raise CompositeReadUndeclared(
+            code="several_bound_totals", composite=composite.provenance, refs=tuple(totals)
+        )
+    return CompositeRead(
+        tables=tuple(dict.fromkeys(recipe.dataset for recipe in components)),
+        marker_table=components[0].dataset if len(components) == 1 else None,
+        bound_total=next(iter(totals), None),
+    )
+
+
+@functools.cache
+def declared_composite_reads() -> Mapping[str, CompositeRead]:
+    """Each declared composite's `CompositeRead` (`composite_read`), by provenance. Read once:
+    `code_index.composites` imports this module, so the import waits for the first read.
+    Raises `CompositeReadUndeclared` for a composite it cannot read."""
+    from code_index.composites import DECLARED_COMPOSITES
+
+    return MappingProxyType(
+        {ref: composite_read(composite) for ref, composite in DECLARED_COMPOSITES.items()}
+    )
 
 
 def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:

@@ -128,16 +128,28 @@ def test_the_loader_refuses_a_malformed_composite(composites, message):
         ),
         pytest.param(
             _with_component(_STACKED, "imputed", dataset=_STACKED.components[0].dataset),
-            tuple(recipe.dataset for recipe in _STACKED.components),
+            _STACKED.provenance,
             id="served-from-other-tables",
+        ),
+        pytest.param(
+            dataclasses.replace(
+                _DAC2A_BILATERAL,
+                components=tuple(
+                    dataclasses.replace(recipe, destinations=None)
+                    for recipe in _DAC2A_BILATERAL.components
+                ),
+            ),
+            _DAC2A_BILATERAL.provenance,
+            id="served-with-destinations-unbound",
         ),
     ],
 )
-def test_the_loader_refuses_a_composite_party_reads_take_as_other_tables(composite, read):
+def test_the_loader_refuses_a_composite_party_reads_take_otherwise(composite, read):
     with pytest.raises(ServedCompositeUndeclared) as refused:
         _parse((composite,))
 
-    assert (refused.value.provenance, refused.value.read) == (composite.provenance, read)
+    declared = None if read is None else declared_composite_reads()[read]
+    assert (refused.value.provenance, refused.value.read) == (composite.provenance, declared)
 
 
 def test_a_composite_whose_component_table_the_index_lacks_is_not_served():
