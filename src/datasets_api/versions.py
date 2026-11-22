@@ -72,15 +72,14 @@ index and its key is the same under every digest. No digest, a hex SHA-256, equa
 RENDER_FORMAT = "axis_dcid_party_kind"
 """The cells a render writes into a frame-layout file and a derived version's frame for unchanged
 data and options. Under `axis_dcid_party_kind` each decoded `stat_var_<code_system>` cell holds
-its code's dcid (`datasets_api.decode`), and a party's kind and class cells, on a row with no
-`provenance`, read over the datasets the version cites (`materialise.enrichment.party_datasets`),
-where earlier renders read every dataset publishing the party. A party-totals cut reads kinds
-by the same rule. It
-salts the link key of a frame-layout file (`version_store.rendering_key`) and joins the stamp a
-derived version's links record (`rendering_stamp`), so a file or version rendered under another
-format matches no request and the next request renders it again. It also names an analysis
-root read from a frame-layout file (`analysis_roots.frame_ref_for`), so an analysis over such
-a root after a change is a new output pair. Change it with any change to those cells."""
+its code's dcid (`datasets_api.decode`), and a party's kind and class cells on a declared
+composite's rows read the composite's component tables (`code_index.types.PartyRow.kinds_over`),
+as a party-totals cut does. It salts the link key of a frame-layout file
+(`version_store.rendering_key`) and joins the stamp a derived version's links record
+(`rendering_stamp`), so a file or version rendered under another format matches no request and
+the next request renders it again. It also names an analysis root read from a frame-layout file
+(`analysis_roots.frame_ref_for`), so an analysis over such a root after a change is a new output
+pair. Change it with any change to those cells."""
 
 
 def holds_frame_cells(rendering: Mapping[str, object]) -> bool:

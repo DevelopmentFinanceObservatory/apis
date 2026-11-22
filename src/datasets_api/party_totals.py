@@ -15,11 +15,8 @@ one dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), 
 on the party and the dataset together. A composite's rows read the kind of its component
 tables (`code_index.types.PartyRow.kinds_over`), so a cut of the DAC2a bilateral composite
 leaves out the IMF trust funds that DAC2A declares a total, though the CRS declares them a
-party. A row with no provenance reads the kind over every dataset the version cites
-(`materialise.enrichment.party_datasets`), and over every dataset publishing the party when the
-cut is told of none. Such a row keeps a party whose kind differs between those datasets. Parties of kind `party` or `residual`,
-and parties the index declares no kind for, stay. A bound role is left alone whatever its
-parties' kinds.
+party. Parties of kind `party` or `residual`, and parties the index declares no kind for,
+stay. A bound role is left alone whatever its parties' kinds.
 
 A role decides each cell on its own. A cell is one series of the role, one full `time_period`
 value and one provenance. A series is the value of every other column of the frame's grain, which
@@ -82,7 +79,6 @@ from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import (
     PARTY_WHOLE_FIELD,
     is_party_role,
-    party_datasets,
     party_kind_of,
     row_party_cell,
 )
@@ -272,24 +268,17 @@ def cut_party_totals(
     *,
     roles: Sequence[str],
     parties: Mapping[str, PartyRow],
-    sources: Sequence[str] = (),
 ) -> PartyTotalsCut:
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds from
-    the code index's `parties` on each role's axis for each row's dataset, read over `sources`,
-    the datasets the frame's version cites, on a row with no `provenance`
-    (`materialise.enrichment.party_datasets`). Reads the frame once per role, each pass after
-    the cuts of the roles before it, and a role with total rows reads again the chunks before
-    its first (`_role_cells`)."""
+    the code index's `parties` on each role's axis for each row's dataset. Reads the frame once per
+    role, each pass after the cuts of the roles before it, and a role with total rows reads again
+    the chunks before its first (`_role_cells`)."""
     left_out: dict[str, dict[_Provenance, dict[str, frozenset[_Cell]]]] = {}
     for role in roles:
         if (axis := role_key_axis(role)) is None:
             continue  # A role on no flow axis holds no party kinds, so no totals to cut.
-        cells = _role_cells(
-            frame_chunks, role, axis=axis, parties=parties, sources=sources, left_out=left_out
-        )
-        if cells is not None and (
-            cell_cut := _cell_cut(cells, role=role, parties=parties, sources=sources)
-        ):
+        cells = _role_cells(frame_chunks, role, axis=axis, parties=parties, left_out=left_out)
+        if cells is not None and (cell_cut := _cell_cut(cells, role=role, parties=parties)):
             left_out[role] = cell_cut
     return PartyTotalsCut(left_out=left_out)
 
@@ -300,7 +289,6 @@ def _role_cells(
     *,
     axis: RoleAxis,
     parties: Mapping[str, PartyRow],
-    sources: Sequence[str],
     left_out: _LeftOut,
 ) -> _RoleCells | None:
     """The cells of `role` in the frame `frame_chunks` passes over, less what `left_out` leaves
@@ -313,9 +301,7 @@ def _role_cells(
         if role not in chunk.columns:
             break
         kept = _without(chunk, left_out)
-        total = _total_rows(
-            kept.table, role, axis=axis, parties=parties, sources=sources, is_total=is_total
-        )
+        total = _total_rows(kept.table, role, axis=axis, parties=parties, is_total=is_total)
         if cells is None:
             if total is None:
                 continue
@@ -387,7 +373,6 @@ def _cell_cut(
     *,
     role: str,
     parties: Mapping[str, PartyRow],
-    sources: Sequence[str],
 ) -> dict[_Provenance, dict[str, frozenset[_Cell]]]:
     """The refs `role` loses in each provenance and the cells each keeps there, from `cells`.
     A cell holding another party loses every total. Any other cell keeps its whole totals and
@@ -410,13 +395,7 @@ def _cell_cut(
     candidates = _distinct_rows(may_be_whole.select([_REF_KEY, _PERIOD_KEY, _DATASET_KEY]))
     whole = [
         row_party_cell(
-            PARTY_WHOLE_FIELD,
-            ref,
-            role=role,
-            parties=parties,
-            period=period,
-            provenance=dataset,
-            sources=sources,
+            PARTY_WHOLE_FIELD, ref, role=role, parties=parties, period=period, provenance=dataset
         )
         == "true"
         for ref, period, dataset in _rows(candidates)
@@ -481,13 +460,11 @@ def _total_rows(
     *,
     axis: RoleAxis,
     parties: Mapping[str, PartyRow],
-    sources: Sequence[str],
     is_total: dict[tuple[str, str | None], bool],
 ) -> pa.ChunkedArray | None:
     """The mask of `table`'s rows whose `role` party the code index's `parties` declares a
-    total on `axis` over the row's datasets (`party_datasets` of its provenance and
-    `sources`), `None` when no row's is. `is_total` caches each `(ref, provenance)` kind
-    across chunks."""
+    total on `axis` in the row's dataset, `None` when no row's is. `is_total` caches each
+    `(ref, provenance)` kind across chunks."""
     with_provenance = PROVENANCE_COLUMN in table.column_names
     keys = [role, PROVENANCE_COLUMN] if with_provenance else [role]
     found = pa.table({name: _text(table.column(name)) for name in keys})
@@ -503,10 +480,7 @@ def _total_rows(
         if (key := (ref, dataset)) not in is_total:
             is_total[key] = (
                 party_kind_of(
-                    ref,
-                    axis=axis,
-                    parties=parties,
-                    datasets=party_datasets(dataset, sources=sources),
+                    ref, axis=axis, parties=parties, datasets=() if dataset is None else (dataset,)
                 )
                 == _TOTAL_KIND
             )

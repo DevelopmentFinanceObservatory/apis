@@ -195,12 +195,7 @@ from materialise.bundle_sources import (
 )
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import (
-    PARTY_FIELDS,
-    EnrichmentLookup,
-    party_datasets,
-    pivot_party_cell,
-)
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
 from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -1132,7 +1127,6 @@ def _reshape_select_pivot_enrich(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
             parties=reads.parties,
-            sources=reads.sources,
         )
     warning_order = (
         *decoded_column_names,
@@ -1868,15 +1862,12 @@ class _RenderReads:
     outright: a cited source's label, a summed family's label. Every other value is read
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
-    one read's wait. A party's fields come from `parties`, the code index's party rows, read
-    over `sources`, the datasets the rendered version cites, on a row with no `provenance`
-    (`materialise.enrichment.party_datasets`)."""
+    one read's wait. A party's fields come from `parties`, the code index's party rows."""
 
     enrichment: EnrichmentLookup
     parties: Mapping[str, PartyRow]
     known: Mapping[str, str]
     deadline: float | None
-    sources: tuple[str, ...] = ()
     failed: bool = False
 
     @classmethod
@@ -1889,7 +1880,6 @@ class _RenderReads:
         family: tuple[str, str] | None,
         deadline: float | None,
         code_index: CodeIndex | None,
-        sources: Sequence[str] = (),
     ) -> _RenderReads:
         known = _known_labels(citations, family, code_index=code_index)
         return cls(
@@ -1897,7 +1887,6 @@ class _RenderReads:
             parties=parties,
             known=known,
             deadline=deadline,
-            sources=tuple(dict.fromkeys(sources)),
         )
 
     def lookup(self, nodes: Sequence[str]) -> Mapping[str, Mapping[str, str]]:
@@ -2068,9 +2057,7 @@ class _LongLayout:
     same render has the same columns.
 
     A party's kind cell is the one the code index declares
-    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, a
-    composite's as its component tables, and over the datasets the version cites on a row with
-    no `provenance` (`_RenderReads.sources`), read with no
+    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, read with no
     graph call, so the split of totals is the same in every chunk and every render of a
     version, whether or not a graph read succeeds. A whole total (`PartyRow.whole`) reads
     `whole total` in the dataset and years its marker holds and `total` outside them. A party
@@ -2156,9 +2143,7 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(
-            table, names=self.names, parties=self.reads.parties, sources=self.reads.sources
-        )
+        projected = self.projection.apply(table, names=self.names, parties=self.reads.parties)
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -2324,8 +2309,7 @@ def _stream_bare_pivot(
 
     The fold counts rows per enrichment ref, and one `_RenderReads.fields_of` read after it
     gives the whole-table missing-value warnings. A party field counts as a pivot reads it,
-    over the datasets the fold finds the party in, each row's read as `reads.sources` gives it
-    (`materialise.enrichment.party_datasets`, `pivot_party_cell`). Pivot output carries
+    over the datasets the fold finds the party in (`pivot_party_cell`). Pivot output carries
     the index and pivoted values.
 
     `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
@@ -2419,7 +2403,7 @@ def _stream_bare_pivot(
         for entity_column, field in (parsed.enrichments if parsed is not None else ())
         if field in PARTY_FIELDS
     )
-    served_from: dict[tuple[str, str], set[str]] = {}
+    party_datasets: dict[tuple[str, str], set[str]] = {}
 
     def _decoded_selected_chunks() -> Iterator[Table]:
         for chunk in rest_of_frame_chunks:
@@ -2447,18 +2431,14 @@ def _stream_bare_pivot(
             for entity_column in enrichment_entity_columns:
                 entity_pos = decoded.columns.index(entity_column)
                 counts = enrichment_ref_counts[entity_column]
+                gathered = provenance_pos if entity_column in party_columns else None
                 for row in decoded.rows:
                     ref = row[entity_pos]
                     if isinstance(ref, str):
                         counts[ref] = counts.get(ref, 0) + 1
-                        if entity_column not in party_columns:
-                            continue
-                        provenance = None if provenance_pos is None else row[provenance_pos]
-                        read = party_datasets(
-                            provenance if isinstance(provenance, str) else None,
-                            sources=reads.sources,
-                        )
-                        served_from.setdefault((entity_column, ref), set()).update(read)
+                        provenance = None if gathered is None else row[gathered]
+                        if isinstance(provenance, str):
+                            party_datasets.setdefault((entity_column, ref), set()).add(provenance)
                     else:
                         enrichment_non_string_counts[entity_column] += 1
             if select is not None:
@@ -2525,7 +2505,7 @@ def _stream_bare_pivot(
                         ref,
                         role=entity_column,
                         parties=reads.parties,
-                        datasets=served_from.get((entity_column, ref), ()),
+                        datasets=party_datasets.get((entity_column, ref), ()),
                     )
                     if field_name in PARTY_FIELDS
                     else lookup_cell(lookup, ref, field_name)
@@ -3037,8 +3017,7 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from the code index's party rows, a composite's rows over its component tables and a
-    row with no provenance over `citation_refs`. A cut that leaves rows out renders from the cut frame,
+    kinds from the code index's party rows. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. `recorded_cut` is the cut a derived version's trace records
@@ -3071,7 +3050,6 @@ def render_and_store(
                 frame_chunks,
                 roles=open_party_roles(identity, entity_columns),
                 parties=parties,
-                sources=cited_refs,
             )
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
@@ -3104,7 +3082,6 @@ def render_and_store(
             else None
         ),
         deadline=deadline,
-        sources=cited_refs,
     )
     totals = _TotalRows.for_render(
         options,
@@ -3369,9 +3346,7 @@ request while each old bundle stays listed under its own rendering key. Version 
 integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
 writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`. Version 5
 writes a pivot's decoded `stat_var_<code_system>` cells as code dcids, describes that column as a
-code and names its codes in the codes table, and reads a party's kind and class cells over the
-datasets the version cites on a row with no `provenance`
-(`materialise.enrichment.party_datasets`)."""
+code and names its codes in the codes table."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -3399,9 +3374,7 @@ and cannot match one written in the old layout. Version 2 is the long layout of
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
 XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
 `<role>_kind` in place of `<role>_party_kind`. Version 5 writes a pivot's decoded
-`stat_var_<code_system>` cells as code dcids, and reads a party's `<role>_kind` and pivot party
-cells over the datasets the version cites on a row with no `provenance`
-(`materialise.enrichment.party_datasets`). A rendering without `LAYOUT_KEY` predates
+`stat_var_<code_system>` cells as code dcids. A rendering without `LAYOUT_KEY` predates
 version 2."""
 
 FRAME_LAYOUT = "frame"

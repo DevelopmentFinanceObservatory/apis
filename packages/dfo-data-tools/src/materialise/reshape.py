@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Collection, Iterator, Mapping, Sequence, Set
+from collections.abc import Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -24,7 +24,6 @@ from materialise.codes import MaterialisationWarning
 from materialise.enrichment import (
     PARTY_FIELDS,
     is_party_role,
-    party_datasets,
     period_year,
     pivot_party_cell,
     row_party_cell,
@@ -1182,7 +1181,6 @@ def _fill_lookup_columns(
     lookup: Mapping[str, Mapping[str, str]],
     parties: Mapping[str, PartyRow] | None = None,
     per_row: bool = True,
-    sources: Collection[str] = (),
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append one `{entity_column}_{field}` column per request, in request
     order. Missing refs or fields become empty cells; each affected request
@@ -1195,9 +1193,7 @@ def _fill_lookup_columns(
     whole total's marker holds (`PartyRow.whole`). With `per_row` false every row of a party
     takes one cell, as a pivot reads it (`pivot_party_cell`): its kind and class over the
     `provenance` cells of the table's rows holding it, and `party_whole` for no dataset and
-    year. `sources` are the datasets the table was read from: a party's kind and class read
-    over a row's `provenance`, a composite's as its component tables, and over all of `sources`
-    on a row with none (`party_datasets`). Where a table has no `provenance` or `time_period`
+    year. Where a table has no `provenance` or `time_period`
     column, or a row no readable value in one, the `party_whole` cell of a party with whole markers
     is empty (`materialise.enrichment.whole_cell`). Without `parties` the cell comes from `lookup`
     like every field. Only a cell `lookup_cell` reads as absent counts as missing.
@@ -1216,9 +1212,7 @@ def _fill_lookup_columns(
         else None
     )
     pivot_datasets = (
-        _party_datasets(
-            table, requests=requests, entity_positions=entity_positions, sources=sources
-        )
+        _party_datasets(table, requests=requests, entity_positions=entity_positions)
         if parties is not None and not per_row
         else {}
     )
@@ -1258,7 +1252,6 @@ def _fill_lookup_columns(
                         parties=parties,
                         period=year,
                         provenance=provenance,
-                        sources=sources,
                     )
                 value = party_cells[key]
             else:
@@ -1289,28 +1282,22 @@ def _party_datasets(
     *,
     requests: Sequence[tuple[str, str]],
     entity_positions: Mapping[str, int],
-    sources: Collection[str],
 ) -> dict[tuple[str, object], set[str]]:
-    """The datasets a pivot reads each ref's kind over, by (entity column, ref), for the
-    entity columns `requests` asks a party field of: the union over the rows holding it of
-    `party_datasets` of the row's `provenance` cell, for a table read from `sources`. A
-    table without a `provenance` column reads every ref over `sources`, and with no
-    `sources` either gives none, so each party reads over every dataset that publishes it."""
-    provenance_at = (
-        table.columns.index(PROVENANCE_COLUMN) if PROVENANCE_COLUMN in table.columns else None
-    )
-    if provenance_at is None and not sources:
+    """The `provenance` cells of the rows of `table` holding each ref, by (entity column,
+    ref), for the entity columns `requests` asks a party field of. Empty for a table without
+    a `provenance` column."""
+    if PROVENANCE_COLUMN not in table.columns:
         return {}
+    provenance_at = table.columns.index(PROVENANCE_COLUMN)
     columns = {entity_column for entity_column, field in requests if field in PARTY_FIELDS}
     datasets: dict[tuple[str, object], set[str]] = {}
     for row in table.rows:
-        provenance = None if provenance_at is None else row[provenance_at]
-        read = party_datasets(provenance if isinstance(provenance, str) else None, sources=sources)
-        if not read:
+        provenance = row[provenance_at]
+        if not isinstance(provenance, str):
             continue
         for entity_column in columns:
             ref = row[entity_positions[entity_column]]
-            datasets.setdefault((entity_column, ref), set()).update(read)
+            datasets.setdefault((entity_column, ref), set()).add(provenance)
     return datasets
 
 
@@ -1364,14 +1351,13 @@ def enrich_columns(
     lookup: Mapping[str, Mapping[str, str]],
     parties: Mapping[str, PartyRow] | None = None,
     per_row: bool = True,
-    sources: Collection[str] = (),
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append `{entity_column}_{field}` columns in request order.
     Fields must be supported, entity columns must exist, and requests must
     be unique. Invalid input raises `MaterialisationUsageError` before rows
     are processed. `parties` gives party fields' cells their reading on each
-    column's axis, for each row's dataset and year unless `per_row` is false, a table read
-    from `sources` (`_fill_lookup_columns`).
+    column's axis, for each row's dataset and year unless `per_row` is false
+    (`_fill_lookup_columns`).
     """
     unsupported = sorted(
         {
@@ -1389,7 +1375,7 @@ def enrich_columns(
     _refuse_duplicate_requests(requests, caller_name="enrich_columns", field_noun="field")
 
     return _fill_lookup_columns(
-        table, requests=requests, lookup=lookup, parties=parties, per_row=per_row, sources=sources
+        table, requests=requests, lookup=lookup, parties=parties, per_row=per_row
     )
 
 
@@ -2057,15 +2043,12 @@ class EnrichmentPlan:
     each row's party cells (`PARTY_FIELDS`) on its entity column's axis, for the
     dataset and year of the row, or one cell per party where the plan pivots
     (`ReshapePlan.pivot`, `pivot_party_cell`), since a pivot's index groups rows;
-    `None` reads the cells from `lookup`, as for every other field. `sources` are the
-    datasets the table was read from, which a party's kind reads over on a row with no
-    `provenance` (`materialise.enrichment.party_datasets`).
+    `None` reads the cells from `lookup`, as for every other field.
     """
 
     requests: tuple[tuple[str, str], ...]
     lookup: Mapping[str, Mapping[str, str]]
     parties: Mapping[str, PartyRow] | None = None
-    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2223,7 +2206,6 @@ def apply_reshapes(
             requests=plan.enrichment.requests,
             lookup=plan.enrichment.lookup,
             parties=plan.enrichment.parties,
-            sources=plan.enrichment.sources,
             # A pivot's index and columns group rows, so a cell that varied with the period or
             # the dataset would split one party into several index rows. A party takes one cell,
             # its kind over the datasets the frame serves it from (`pivot_party_cell`).
