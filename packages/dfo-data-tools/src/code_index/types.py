@@ -5,10 +5,12 @@ This module has no graph or file-I/O imports.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, get_args
 
 from dfo_platform.roles import FlowAccount, RoleAxis
@@ -534,7 +536,14 @@ class CompositeDeclaration:
     the words a sentence names its measure by. It follows the measure label of a stacked
     composite, whose components share the measure, and replaces it for a spliced one, whose
     measure changes between its periods. Each component table gives a provider's account of
-    a flow, and so does the composite."""
+    a flow, and so does the composite.
+
+    A composite of one component reads that component's table's whole markers, and one of
+    several components reads none (`PartyRow.marker_over`). The export refuses a whole marker
+    in any table of a composite of several tables
+    (`code_index.export.check_composite_whole_totals`). A whole total under a composite of
+    several components needs its own marker declared on the composite, backed by its own
+    composition check on recorded data."""
 
     provenance: str
     label: str
@@ -694,9 +703,11 @@ class PartyRow:
 
     def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
         """Whether one of `datasets` publishes the party on `axis`, or any dataset does for
-        `ANY_DATASET`. Empty `datasets` publish nothing."""
+        `ANY_DATASET`. A declared composite among `datasets` reads as its component tables
+        (`code_index.composites.provenance_datasets`). Empty `datasets` publish nothing."""
+        tables = None if datasets is ANY_DATASET else _component_datasets(datasets)
         return any(
-            published_axis == axis and (datasets is ANY_DATASET or dataset in datasets)
+            published_axis == axis and (tables is None or dataset in tables)
             for dataset, published_axis in self.published
         )
 
@@ -715,6 +726,26 @@ class PartyRow:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
 
+    def marker_over(self, provenance: str) -> WholeMarker | None:
+        """The party's whole marker on rows of `provenance`: its marker in `provenance` itself
+        (`marker`), or in the table of a declared composite of one component
+        (`CompositeRead.marker_table`). A composite of several components, whether of one
+        table or several, reads none, since no composition check covers their sum. A
+        composite whose component binds the table's destinations to one side reads a
+        population that drops the destinations off that side, so a recipient's marker, which
+        covers the table's whole population, holds there only for the bound population's total
+        (`CompositeRead.bound_total`); a donor's marker holds unchanged. `None` where it has
+        none there, or the composite reads none."""
+        read = declared_composite_reads().get(provenance)
+        if read is None:
+            return self.marker(provenance)
+        if read.marker_table is None:
+            return None
+        marker = self.marker(read.marker_table)
+        if marker is None or read.bound_total in (None, self.dcid):
+            return marker
+        return None if self.publishes("destination", (read.marker_table,)) else marker
+
     def kind_in(self, dataset: str) -> PartyKind:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
         return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
@@ -723,18 +754,26 @@ class PartyRow:
         self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
     ) -> frozenset[PartyKind]:
         """The kinds the party takes in those of `datasets` that publish it on `axis` (on
-        either axis for `ANY_AXIS`), or in every dataset that publishes it there when none of
-        `datasets` does, as for an empty `datasets`. A party no dataset publishes on `axis`
-        takes no kind there. A row without `dataset_kinds` takes `kind` alone wherever it is
-        published."""
+        either axis for `ANY_AXIS`), or in every dataset that publishes it there for an empty
+        `datasets`, a reader that serves every dataset. A declared composite among `datasets`
+        reads as its component tables (`code_index.composites.provenance_datasets`), since a
+        composite's rows carry its provenance and no dataset publishes it. A party no dataset
+        publishes on `axis` takes no kind there. A row without `dataset_kinds` takes `kind`
+        alone wherever some dataset publishes it on `axis`, whether or not one of `datasets`
+        does, since every dataset gives it that kind. A row with `dataset_kinds` takes no kind
+        over `datasets` none of which publishes it on `axis`, whatever kind another dataset
+        gives it."""
         publishing = {
             dataset
             for dataset, published_axis in self.published
             if axis is ANY_AXIS or published_axis == axis
         }
+        # A row with one kind holds it wherever it is published, so a provenance cell the
+        # index does not list for it still reads that kind. A row with a kind per dataset
+        # needs a read dataset that publishes it, or it would borrow another dataset's kind.
         if not self.dataset_kinds:
             return frozenset((self.kind,)) if publishing else frozenset()
-        named = (publishing & set(datasets)) or publishing
+        named = publishing & _component_datasets(datasets) if datasets else publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
     def kind_over(
@@ -750,6 +789,96 @@ class PartyRow:
         its own `kind`, and for another kind the class that kind gives a row with no whole
         marker (`KIND_CLASSES`)."""
         return self.party_class if kind == self.kind else KIND_CLASSES[kind]
+
+
+def _component_datasets(datasets: Collection[str]) -> frozenset[str]:
+    """`datasets` with each declared composite replaced by its component tables."""
+    return _component_tables(frozenset(datasets))
+
+
+@functools.lru_cache(maxsize=1024)
+def _component_tables(datasets: frozenset[str]) -> frozenset[str]:
+    """`_component_datasets` for one set of datasets, built once: a frame reads the same few
+    provenances on every row."""
+    reads = declared_composite_reads()
+    return frozenset(
+        table for ref in datasets for table in (reads[ref].tables if ref in reads else (ref,))
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeRead:
+    """How a `PartyRow` reads the rows of one declared composite provenance.
+
+    `tables` are its component tables, each once in declaration order, which its kinds and
+    publications read. `marker_table` is the table whose whole markers it inherits, set only
+    for a composite of one component. `bound_total` is the total of the destination
+    population its components bind (`code_index.scope_conventions.RolePopulation.total`, the
+    table's `BilateralSource.rebound`), `None` where they bind none."""
+
+    tables: tuple[str, ...]
+    marker_table: str | None
+    bound_total: str | None
+
+
+class IndexFormatError(ValueError):
+    """A `CodeIndex` export has a missing required key or a value of the wrong type, or the
+    declarations it is read under cannot read it."""
+
+
+class CompositeReadUndeclared(IndexFormatError):
+    """A declared composite a `PartyRow` cannot read: a component binds the destinations of a
+    table no `BILATERAL_SOURCES` row declares (`code` `bound_table_undeclared`), or its
+    components bind populations with different totals (`code` `several_bound_totals`).
+    `composite` is its provenance and `refs` the tables or totals at fault, sorted."""
+
+    def __init__(self, *, code: str, composite: str, refs: Sequence[str]) -> None:
+        super().__init__(f"{code}: composite {composite!r} names {sorted(refs)!r}")
+        self.code = code
+        self.composite = composite
+        self.refs = tuple(sorted(refs))
+
+
+def composite_read(composite: CompositeDeclaration) -> CompositeRead:
+    """The `CompositeRead` of `composite`'s components, the bound total read from
+    `code_index.scope_conventions.BILATERAL_SOURCES`. Raises `CompositeReadUndeclared` for a
+    composite it cannot read."""
+    from code_index.scope_conventions import BILATERAL_SOURCES
+
+    rebound = {source.dataset: source.rebound for source in BILATERAL_SOURCES}
+    components = composite.components
+    bound = {recipe.dataset for recipe in components if recipe.destinations is not None}
+    if undeclared := bound - rebound.keys():
+        raise CompositeReadUndeclared(
+            code="bound_table_undeclared", composite=composite.provenance, refs=tuple(undeclared)
+        )
+    totals = {rebound[dataset] for dataset in bound}
+    if len(totals) > 1:
+        raise CompositeReadUndeclared(
+            code="several_bound_totals", composite=composite.provenance, refs=tuple(totals)
+        )
+    return CompositeRead(
+        tables=tuple(dict.fromkeys(recipe.dataset for recipe in components)),
+        marker_table=components[0].dataset if len(components) == 1 else None,
+        bound_total=next(iter(totals), None),
+    )
+
+
+@functools.cache
+def declared_composite_reads() -> Mapping[str, CompositeRead]:
+    """Each declared composite's `CompositeRead` (`composite_read`), by provenance. Read once:
+    `code_index.composites` imports this module, so the import waits for the first read.
+    Raises `CompositeReadUndeclared` for a composite it cannot read."""
+    from code_index.composites import DECLARED_COMPOSITES
+
+    return MappingProxyType(
+        {ref: composite_read(composite) for ref, composite in DECLARED_COMPOSITES.items()}
+    )
+
+
+def declared_composite_tables() -> Mapping[str, tuple[str, ...]]:
+    """Each declared composite's component tables (`CompositeRead.tables`), by provenance."""
+    return MappingProxyType({ref: read.tables for ref, read in declared_composite_reads().items()})
 
 
 KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {

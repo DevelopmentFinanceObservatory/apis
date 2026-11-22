@@ -177,12 +177,15 @@ def build_dfo_parts(inputs: DfoInputs, base_parties: bytes) -> DfoParts:
     the release does not.
 
     Raises `PlatformRefusal` with code `code_index_export_refused` where the code-index export
-    refuses the graph, as for a party neither the release nor `base_parties` answers.
+    refuses the graph, as for a party neither the release nor `base_parties` answers, carrying
+    the export's own code and rows where it gives them (`ExportRefused.code`, `.rows`).
     """
     try:
         document = _code_index_document(inputs, json.loads(base_parties))
     except ExportRefused as exc:
-        raise PlatformRefusal("code_index_export_refused", str(exc)) from exc
+        raise PlatformRefusal(
+            "code_index_export_refused", str(exc), detail_code=exc.code, rows=exc.rows
+        ) from exc
     return DfoParts(
         declarations=inputs.declarations.declarations_json(),
         code_index_blocks=index_bytes(document),

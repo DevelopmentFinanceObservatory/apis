@@ -193,6 +193,34 @@ def test_a_party_counts_under_its_kind_on_each_role_s_axis() -> None:
     }
 
 
+def test_a_party_held_where_no_dataset_publishes_it_on_the_axis_counts_unclassified() -> None:
+    """A coverage build newer than the index can hold a party in a dataset the index does not
+    list it in on that axis. A party with a kind per dataset then counts unclassified there,
+    and borrows no kind from the dataset that does publish it."""
+    mixed = "MixedParty"
+    table, horizon = coverage_table([("V-a", "f-b", mixed, KEN, [2020])])
+    index = CoverageIndex(
+        table,
+        {"V-a": _FLOW_ROLES},
+        horizon=horizon,
+        facet_metadata={"f-b": FacetMetadata(provenance_id="B")},
+    )
+    parties = {
+        mixed: PartyRow(
+            dcid=mixed,
+            kind="party",
+            party_class="official",
+            published=(("A", "origin"), ("B", "destination")),
+            dataset_kinds=(("A", "total"),),
+        )
+    }
+
+    summary = index.facet_summary.variable("V-a")
+
+    assert summary is not None
+    assert summary.party_counts(parties=parties)["donor"] == PartyCounts(unclassified=1)
+
+
 def test_a_one_role_variable_has_no_parties_in_the_role_it_lacks() -> None:
     table, horizon = coverage_table(
         [
