@@ -1319,7 +1319,7 @@ def read_by_vocabulary(
     token from two parses. Measure values take the reading in every code system, shared by
     every vocabulary. Each match and tie row carries its offsets in its own text. The scan
     in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
-    variable (`interpret._detect`) and the bind phase's share one scan.
+    variable (`interpret._code_phrases`) and the bind phase's share one scan.
     """
     lexicon = _lexicon(index, measure_index)
     vocabularies = tuple(dict.fromkeys(vocabularies))

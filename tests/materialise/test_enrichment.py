@@ -11,6 +11,14 @@ import httpx
 import pytest
 
 import materialise.enrichment as enrichment_module
+from code_index.composites import provenance_datasets
+from code_index.declarations import (
+    COMPOSITES,
+    CRS_INCLUSIVE,
+    DAC1,
+    DAC2A_BILATERAL,
+    DAC2A_INCLUSIVE,
+)
 from code_index.shared import get_index
 from code_index.types import PartyRow, WholeMarker
 from datasets_api.render import _RenderReads
@@ -21,7 +29,7 @@ from materialise.enrichment import (
     EnrichmentLookup,
     is_whole_total,
     party_cell,
-    party_count,
+    party_split,
     period_year,
     read_party_kinds,
     row_party_cell,
@@ -249,6 +257,13 @@ _UNWINDOWED = PartyRow(
     published=((_DAC2A, "origin"),),
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",)),),
 )
+_CRS, _IMPUTED = provenance_datasets(CRS_INCLUSIVE)
+_MARKED_IN_ONE_TABLE = PartyRow(
+    dcid="W",
+    kind="total",
+    published=((_CRS, "origin"), (_IMPUTED, "origin")),
+    whole=(WholeMarker(dataset=_CRS, covers=("official",)),),
+)
 
 
 @pytest.mark.parametrize(
@@ -263,6 +278,16 @@ _UNWINDOWED = PartyRow(
         pytest.param(_WINDOWED, None, _DAC2B, False, "false", id="no-marker-needs-no-year"),
         pytest.param(_WINDOWED, 2021, _DAC2B, False, "false", id="a-dataset-with-no-marker"),
         pytest.param(_WINDOWED, 2021, None, False, "", id="no-provenance"),
+        pytest.param(_WINDOWED, 2021, DAC2A_BILATERAL, True, "true", id="a-composites-table"),
+        pytest.param(_MARKED_IN_ONE_TABLE, 2021, _CRS, True, "true", id="the-marked-table"),
+        pytest.param(
+            _MARKED_IN_ONE_TABLE,
+            2021,
+            CRS_INCLUSIVE,
+            False,
+            "false",
+            id="a-composite-of-several-tables-reads-no-marker",
+        ),
         pytest.param(_UNWINDOWED, None, _DAC2A, True, "true", id="no-window-needs-no-year"),
         pytest.param(_UNWINDOWED, 1960, _DAC2A, True, "true", id="no-window-in-an-early-year"),
         pytest.param(_UNWINDOWED, 2021, None, False, "", id="no-window-still-needs-a-dataset"),
@@ -386,7 +411,7 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
         pytest.param(None, (_DAC2A,), "total", id="no-provenance-of-dac2a"),
         pytest.param(_CRS, (_CRS, _DAC2A), "party", id="row-of-a-cited-dataset"),
         pytest.param(_DAC2A_BILATERAL, (_CRS, _DAC2A), None, id="composite-of-both"),
-        pytest.param(_DAC2A_BILATERAL, (), None, id="composite-citing-nothing"),
+        pytest.param(_DAC2A_BILATERAL, (), "total", id="composite-citing-nothing"),
     ],
 )
 def test_a_row_reads_a_party_s_kind_over_the_datasets_its_frame_cites(provenance, sources, kind):
@@ -424,7 +449,7 @@ def test_a_party_s_kind_and_count_read_the_role_s_axis():
         [("origin", mixed.dcid), ("destination", mixed.dcid)], parties=parties, datasets=()
     ) == {("origin", mixed.dcid): "party", ("destination", mixed.dcid): "total"}
     assert [
-        party_count(members, axis=axis, parties=parties, datasets=())
+        party_split(members, axis=axis, parties=parties, datasets=()).member_count
         for axis in ("origin", "destination")
     ] == [2, 1]
 
@@ -655,6 +680,58 @@ def test_budget_bounds_individual_probes_and_the_graph_logs_the_unprobed_count(m
 )
 def test_a_period_has_a_year_only_when_it_lies_in_one(cell: object, year: int | None):
     assert period_year(cell) == year
+
+
+@pytest.mark.parametrize(
+    ("dcid", "provenance", "inherits"),
+    [
+        pytest.param("DACOfficialDonors", DAC2A_BILATERAL, True, id="donor-total-bound-composite"),
+        pytest.param("DACAllRecipients", _DAC2A, True, id="recipient-total-its-table"),
+        pytest.param("DACAllRecipients", DAC2A_BILATERAL, False, id="spanning-total-bound-off"),
+    ],
+)
+def test_a_bound_composite_inherits_its_tables_marker_only_where_its_population_holds_it(
+    dcid: str, provenance: str, inherits: bool
+):
+    """A DAC2a composite binds its destinations to the bilateral side, so "All Recipients,
+    Total", marked whole over every recipient in DAC2A, is no whole total on its rows. A
+    donor total's marker is untouched by a destination binding."""
+    party = get_index().parties[dcid]
+    marker = party.marker(_DAC2A)
+
+    assert marker is not None
+    assert party.marker_over(provenance) == (marker if inherits else None)
+    assert is_whole_total(party, year=2021, provenance=provenance) is inherits
+
+
+_HEADLINE = next(composite.provenance for composite in COMPOSITES if composite.kind == "spliced")
+_MARKED_IN_DAC1_AND_DAC2A = PartyRow(
+    dcid="W",
+    kind="total",
+    published=((DAC1, "origin"), (_DAC2A, "origin")),
+    whole=(
+        WholeMarker(dataset=DAC1, covers=("official",)),
+        WholeMarker(dataset=_DAC2A, covers=("official",)),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "table"),
+    [
+        pytest.param(DAC2A_BILATERAL, _DAC2A, id="one-component"),
+        pytest.param(DAC2A_INCLUSIVE, None, id="stacked-components-of-one-table"),
+        pytest.param(_HEADLINE, None, id="spliced-components-of-one-table"),
+    ],
+)
+def test_a_composite_reads_its_tables_marker_only_with_one_component(
+    provenance: str, table: str | None
+):
+    """No composition check covers a sum of components, whether they read one table or
+    several, so only a composite of one component inherits its table's marker."""
+    row = _MARKED_IN_DAC1_AND_DAC2A
+
+    assert row.marker_over(provenance) == (None if table is None else row.marker(table))
 
 
 def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():

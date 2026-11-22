@@ -40,7 +40,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -66,6 +66,7 @@ from datasets_api.manifest_models import (
     DefinitionModel,
     DiagnosticModel,
     DimensionNoun,
+    IncompleteAfter,
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
@@ -95,6 +96,7 @@ from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
 from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
+from materialise.partial_period import reaches, start_of
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
     CoverageFacts,
@@ -109,9 +111,11 @@ from materialise.series_conversion import (
     decode_series_conversion_entries,
     encode_series_conversions,
 )
+from materialise.statistics import SeriesFigures
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
-from origin_catalogue import current_catalogue
+from origin_catalogue import Catalogue, CatalogueNotBound, current_catalogue
+from origin_catalogue.catalogue import Undocumented, partial_period_of
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -200,6 +204,175 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
         ],
         window=coverage.window,
     )
+
+
+@dataclass(frozen=True)
+class JudgedIncompleteAfter:
+    """An `incomplete_after` record, `entries`, and the `built_at` of the origin catalogue
+    build that judged it, which orders the judgements of one version
+    (`version_store._refresh_incomplete_after`). A computed version's record carries the
+    newest build among the judgements it derives from, `None` when one names none
+    (`lineage_incomplete.derived_incomplete_after`)."""
+
+    entries: list[dict[str, object]]
+    built_at: datetime | None
+
+
+def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | None:
+    """How complete the rows of the frame `result` holds are, judged per source against the
+    origin catalogue bound to the mint, which joins the graph release the rows were read from
+    (`IncompleteAfter`), with that catalogue's `built_at`. The source of a `(provenance, stat_var)` pair is the composite
+    component serving the variable (`trace.components`), else the provenance itself. A pair
+    is `partial` when its rows reach the period its source's import holds only part of
+    (`origin_catalogue.partial_period_of`, `materialise.partial_period.reaches`), the latest
+    period any of its series reaches (`SeriesFigures.latest_by_source`), and `unknown` when
+    the catalogue does not document its source (`Undocumented`), its rows name no provenance,
+    or the frame grammar cannot read the mark or the period. A complete pair is left out, so an empty list is judged and complete.
+
+    `None`, unknown as a whole, with no catalogue bound or when the catalogue judged no pair, so
+    a stale catalogue's mint leaves a stored record standing (`version_store`)."""
+    try:
+        catalogue = current_catalogue()
+    except CatalogueNotBound:
+        return None
+    component_of = {
+        bare_stat_var_ref(cast(str, ref)): cast(str, component["provenance"])
+        for component in result.trace.components
+        if component.get("provenance") is not None
+        for ref in cast("list[object]", component.get("stat_vars") or [])
+    }
+    grouped = _grouped(
+        result.series_statistics.figures,
+        lambda provenance, stat_var, period: _judged(
+            provenance, stat_var, period, catalogue=catalogue, component_of=component_of
+        ),
+    )
+    judged = any(key is None or key[2] == "partial" for key in grouped)
+    entries = _entries(grouped)
+    if entries and not judged:
+        return None
+    return JudgedIncompleteAfter(entries=entries, built_at=catalogue.built_at)
+
+
+def collapsed_incomplete_after(
+    raw: Sequence[Mapping[str, object]] | None, figures: SeriesFigures
+) -> list[dict[str, object]] | None:
+    """The `incomplete_after` of a collapse, whose series reach the periods `figures` gives,
+    of a version whose record is `raw` (a groupby or party-totals cut, `serve` and
+    `current`). A collapse keeps each row's `provenance` cell and period; a party-totals
+    cut keeps its `stat_var` cell too, and a sum names its rows by the definition's spec id. A
+    pair whose variable `raw` names under its provenance takes those entries; any other pair is
+    the sum of its provenance's raw cells, so it is partial from the earliest partial period
+    among its provenance's raw entries that its rows reach (by start, ties broken by source),
+    else unknown when its provenance holds an unknown cell, else complete. `None` when `raw` is.
+    """
+    if raw is None:
+        return None
+    by_provenance: dict[object, list[Mapping[str, object]]] = {}
+    for entry in raw:
+        by_provenance.setdefault(entry.get("provenance"), []).append(entry)
+
+    def judged(
+        provenance: str | None, stat_var: str, period: str
+    ) -> tuple[str | None, str | None, str, str | None] | None:
+        held = by_provenance.get(provenance, [])
+        named = [
+            entry
+            for entry in held
+            if bare_stat_var_ref(stat_var)
+            in {bare_stat_var_ref(one) for one in cast("list[str]", entry["stat_vars"])}
+        ]
+        if named:
+            entry = named[0]
+        else:
+            marked = [entry for entry in held if entry.get("status") == "partial"]
+            reached = [reaches(period, cast(str, entry["partial_period"])) for entry in marked]
+            partial = [entry for entry, hit in zip(marked, reached, strict=True) if hit]
+            unknown = [entry for entry in held if entry.get("status") == "unknown"] + [
+                {**entry, "status": "unknown", "partial_period": None}
+                for entry, hit in zip(marked, reached, strict=True)
+                if hit is None
+            ]
+            if partial:
+                entry = min(
+                    partial,
+                    key=lambda one: (
+                        start_of(cast(str, one["partial_period"])),
+                        cast(str, one["source"]),
+                    ),
+                )
+            elif unknown:
+                entry = unknown[0]
+            else:
+                return None
+        return (
+            provenance,
+            cast("str | None", entry.get("source")),
+            cast(str, entry["status"]),
+            cast("str | None", entry.get("partial_period")),
+        )
+
+    return _entries(_grouped(figures, judged))
+
+
+type _Group = tuple[str | None, str | None, str, str | None]
+"""An `incomplete_after` entry's provenance, source, status and partial period."""
+
+
+def _grouped(
+    figures: SeriesFigures,
+    judge: Callable[[str | None, str, str], _Group | None],
+) -> dict[_Group | None, list[str]]:
+    """The variables of the `(provenance, stat_var)` pairs of `figures` under the group `judge`
+    gives each from its latest period (`SeriesFigures.latest_by_source`), `None` for a
+    complete pair."""
+    grouped: dict[_Group | None, list[str]] = {}
+    for (provenance, stat_var), period in sorted(
+        figures.latest_by_source.items(),
+        key=lambda item: (item[0][0] or "", item[0][1]),
+    ):
+        stat_vars = grouped.setdefault(judge(provenance, stat_var, period), [])
+        if stat_var not in stat_vars:
+            stat_vars.append(stat_var)
+    return grouped
+
+
+def _entries(grouped: Mapping[_Group | None, list[str]]) -> list[dict[str, object]]:
+    """The `IncompleteAfter` entries of `grouped`'s partial and unknown groups."""
+    fields = ("provenance", "source", "status", "partial_period")
+    return [
+        IncompleteAfter.model_validate(
+            {**dict(zip(fields, group, strict=True)), "stat_vars": stat_vars}
+        ).model_dump()
+        for group, stat_vars in grouped.items()
+        if group is not None
+    ]
+
+
+def _judged(
+    provenance: str | None,
+    stat_var: str,
+    period: str,
+    *,
+    catalogue: Catalogue,
+    component_of: Mapping[str, str],
+) -> _Group | None:
+    """The `(provenance, source, status, partial period)` group of one pair of
+    `incomplete_after`, `None` for a complete pair."""
+    if provenance is None:
+        return None, None, "unknown", None
+    source = component_of.get(bare_stat_var_ref(stat_var), provenance)
+    try:
+        mark = partial_period_of(catalogue, source)
+    except Undocumented:
+        return provenance, source, "unknown", None
+    if mark is None:
+        return None
+    reached = reaches(period, mark)
+    if reached is None:
+        # The frame grammar reads the mark or the period not at all, so nothing says.
+        return provenance, source, "unknown", None
+    return (provenance, source, "partial", mark) if reached else None
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
@@ -688,6 +861,8 @@ def manifest_facts(
     output_profile: OutputProfile | None = None,
     series_conversions: Mapping[SeriesKey, SeriesConversion] | None = None,
     default_scope: Sequence[str] | None = None,
+    incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
 ) -> ManifestFacts:
     """The facts a definition version stores for `manifest`: every manifest member but
     `artifacts`, `output_options` and `content_version` (the record's own column), with
@@ -699,6 +874,8 @@ def manifest_facts(
     stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
+    `incomplete_after` and `incomplete_after_built_at` are stored as given
+    (`ManifestFacts.incomplete_after`, `ManifestFacts.incomplete_after_built_at`).
     """
     dumped = manifest.model_dump(
         mode="json", include={"definition", "coverage", "trace", "warnings"}
@@ -717,6 +894,8 @@ def manifest_facts(
             encode_series_conversions(series_conversions) if series_conversions else None
         ),
         default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
+        incomplete_after=None if incomplete_after is None else list(incomplete_after),
+        incomplete_after_built_at=incomplete_after_built_at,
     )
 
 
@@ -820,8 +999,10 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
     published frame's `op_spec_hash` (its subject id), `input_content_versions` and
     `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
     they are unknown, on a version recorded before versions stored them until
-    `backfill-descriptions` fills them, and left out when nothing continues its series. Its
-    `citation` is the served form, `licence*` members included. `version_body` stores the
+    `backfill-descriptions` fills them, and left out when nothing continues its series. Either
+    adds `incomplete_after`, how complete the version's rows are, judged per source
+    (`ManifestFacts.incomplete_after`, `FrameLineage.incomplete_after`), left out while unknown.
+    Its `citation` is the served form, `licence*` members included. `version_body` stores the
     citation through `CitationModel.stored_json`, which drops them."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
@@ -833,10 +1014,13 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
             document["continuations"] = None
         elif continuations:
             document["continuations"] = [dict(entry) for entry in continuations]
-        return document
-    return stored_manifest(stored).model_dump(
-        mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
-    )
+    else:
+        document = stored_manifest(stored).model_dump(
+            mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
+        )
+    if stored.facts.incomplete_after is not None:
+        document["incomplete_after"] = [dict(entry) for entry in stored.facts.incomplete_after]
+    return document
 
 
 def version_body(record: VersionRecord) -> dict[str, object]:
@@ -847,10 +1031,12 @@ def version_body(record: VersionRecord) -> dict[str, object]:
     added. The `series_conversions` column alone holds the per-series
     conversion records, which run to tens of megabytes on a wide converted mint. A published
     frame's body is its `version_document`, which holds its `continuations` when they are known and some continue
-    its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
-    body.
+    its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Neither
+    holds `incomplete_after`, which its own column alone stores, so a body stays one the
+    previous image decodes. Nothing in this image reads the body.
     """
     body = version_document(unlinked_state(record).version)
+    body.pop("incomplete_after", None)
     facts = record.facts
     if isinstance(facts, FrameLineage):
         if facts.continuations is None:
@@ -913,14 +1099,18 @@ def definition_version_record(
     base_content_version: str | None = None,
     frame_summed: bool | None = None,
     code_index_stamp: str | None = None,
+    incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, whether its frame holds its summed rows as `frame_summed`
     (`render.DerivedVersion.summed`), and the stamp of the code index and render format it was
     rendered under (`versions.rendering_stamp`) as `code_index_stamp`. A raw version passes none of
-    them. Only a raw version stores the per-series conversion records. A derived version's rows are
-    not those series, and the observations door, their reader, serves raw versions alone.
+    them. `incomplete_after` is how complete the version's rows are (`incomplete_after`), `None`
+    when unjudged, and `incomplete_after_built_at` the `built_at` of the catalogue build that
+    judged it. Only a raw version stores the per-series conversion records. A derived version's
+    rows are not those series, and the observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -936,6 +1126,8 @@ def definition_version_record(
                 materialisation.series_conversions if base_content_version is None else None
             ),
             default_scope=materialisation.default_scope,
+            incomplete_after=incomplete_after,
+            incomplete_after_built_at=incomplete_after_built_at,
         ),
         artifacts=tuple(
             ArtifactRecord(
@@ -1017,6 +1209,8 @@ def record_collapsed_head_version(
     frame_sha256: str,
     frame_summed: bool,
     code_index_stamp: str,
+    incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -1027,8 +1221,10 @@ def record_collapsed_head_version(
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
     `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
-    collapsed frame's, and `code_index_stamp` the stamp of the code index and render format it
-    was rendered under (`versions.rendering_stamp`). The artifacts in `manifest`
+    collapsed frame's, `code_index_stamp` the stamp of the code index and render format it was
+    rendered under (`versions.rendering_stamp`), `incomplete_after` its record
+    (`collapsed_incomplete_after`), and `incomplete_after_built_at` the `built_at` of the build
+    that judged the base's. The artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
     makes repeated writes idempotent. `describer_for` gives the describer that writes the
     version's description record in the same transaction, from the record this call stores;
@@ -1039,7 +1235,12 @@ def record_collapsed_head_version(
         subject_kind="spec",
         content_version=manifest.content_version,
         schema_version=schema_version,
-        facts=manifest_facts(manifest, output_profile=output_profile),
+        facts=manifest_facts(
+            manifest,
+            output_profile=output_profile,
+            incomplete_after=incomplete_after,
+            incomplete_after_built_at=incomplete_after_built_at,
+        ),
         artifacts=tuple(
             ArtifactRecord(
                 artifact_digest=artifact.artifact_digest,

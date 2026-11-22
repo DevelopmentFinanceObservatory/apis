@@ -80,7 +80,12 @@ from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import (
+    ManifestFacts,
+    SnapshotReader,
+    StoredArtifactLocation,
+    StoredVersion,
+)
 from datasets_api.adapter import definition_read_scope, family_basis, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
@@ -102,6 +107,7 @@ from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
 from datasets_api.manifest import (
     collapsed_head_manifest,
+    collapsed_incomplete_after,
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
@@ -454,7 +460,9 @@ def _record_head_hit_derived(
     (`persisted_response`): its stored body with the artifacts linked for it, so its stored
     warnings stand. An incomplete render gives way to a complete artifact a concurrent call
     linked under the derived version (`with_linked_artifacts`). The base record precedes
-    the render, so every writer dates and cites the derived version as the base does. The
+    the render, so every writer dates and cites the derived version as the base does, and the
+    derived version's `incomplete_after` derives from the base version's stored one
+    (`collapsed_incomplete_after`) and takes its build's `built_at`. The
     derived version's description record derives from the base version's in the transaction
     that records it (`version_descriptions.collapse_describer`).
     """
@@ -499,6 +507,8 @@ def _record_head_hit_derived(
         ),
         extra_warnings=reshape_models,
     )
+    with phase("snapshot_state"):
+        base = deps.snapshot_reader.read_version(subject_id, base_content_version)
     created = record_collapsed_head_version(
         manifest=derived_manifest,
         subject_id=subject_id,
@@ -508,6 +518,14 @@ def _record_head_hit_derived(
         frame_sha256=derived.frame_sha256,
         frame_summed=derived.summed,
         code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
+        incomplete_after=collapsed_incomplete_after(
+            None if base is None else base.facts.incomplete_after, derived_statistics.figures
+        ),
+        incomplete_after_built_at=(
+            base.facts.incomplete_after_built_at
+            if base is not None and isinstance(base.facts, ManifestFacts)
+            else None
+        ),
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,

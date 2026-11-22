@@ -23,6 +23,7 @@ from assembler.mint.provenance import (
     _build_provenance,
     _build_sources,
     card_derivation_steps,
+    drawn_rows,
 )
 from assembler.mint.source_refs import check_source_refs
 from assembler.mint.validate import _validate, component_registry
@@ -39,13 +40,16 @@ class MintedComponent:
     """Minted component and provenance, plus observed periods for stat-card
     validation. `description` is the card revision's description, and `None` for a card that
     carries none (`assembler.mint.card_description`). `source_ids` maps the frame's source ref
-    behind each `provenance.sources` entry, `None` for rows naming none, to the entry's id."""
+    behind each `provenance.sources` entry, `None` for rows naming none, to the entry's id.
+    `drawn` is the frame rows the card draws (`provenance.drawn_rows`), `None` for a card that
+    binds no series and so draws the whole frame."""
 
     component: Mapping[str, object]
     provenance: Mapping[str, object]
     observed_periods: frozenset[str]
     description: Mapping[str, object] | None = None
     source_ids: Mapping[str | None, str] = field(default_factory=dict)
+    drawn: Sequence[Mapping[str, object]] | None = None
 
 
 def mint_component(
@@ -139,18 +143,52 @@ def mint_component(
         registry=component_registry(release),
     )
 
+    drawn = drawn_rows(
+        series=series,
+        periods=_drawn_periods(
+            member=member,
+            component=component,
+            bound_series=bound_series,
+            observed_periods=observed_periods,
+        ),
+    )
     provenance = _build_provenance(
         resolved_frame=resolved_frame,
         sources=sources,
         card_steps=card_derivation_steps(component),
         clock=clock,
+        drawn=drawn,
     )
     return MintedComponent(
         component=component,
         provenance=provenance,
         observed_periods=observed_periods,
         source_ids=source_id_by_raw_ref,
+        drawn=drawn,
     )
+
+
+def _drawn_periods(
+    *,
+    member: str,
+    component: Mapping[str, object],
+    bound_series: Sequence[BoundSeries],
+    observed_periods: frozenset[str],
+) -> dict[str, frozenset[str]]:
+    """The periods of each bound series the card draws. A stat card draws its headline period
+    and its change's basis periods of its primary series alone. Any other card draws each
+    series' own points holding a value among the periods its builder observed
+    (`observed_periods`), such as an entity-mode bar chart's one shared period."""
+    if member == "stat_card":
+        change = cast("Mapping[str, object] | None", component.get("change"))
+        basis = cast("Sequence[str]", change["basis"]) if change is not None else ()
+        drawn = frozenset({cast(str, component["period"]), *basis})
+        return {bound_series[0].id: drawn} if bound_series else {}
+    return {
+        bound.id: observed_periods
+        & {cast(str, point["period"]) for point in bound.points if "value" in point}
+        for bound in bound_series
+    }
 
 
 def stamp_envelope(

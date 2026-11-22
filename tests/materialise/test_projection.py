@@ -7,6 +7,8 @@ from collections.abc import Mapping
 import pytest
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
+from code_index.composites import provenance_datasets
+from code_index.declarations import CRS_INCLUSIVE, DAC2A_BILATERAL
 from code_index.types import PartyClass, PartyKind, PartyRow, RoleAxis, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
@@ -632,7 +634,7 @@ def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
     assert _kinds(columns, rows, role="financingRecipient") == ["total"]
 
 
-_CRS = "provenance/OECDCreditorReportingSystem"
+_CRS, _IMPUTED = provenance_datasets(CRS_INCLUSIVE)
 
 _SIDE_PARTIES = {
     "country/FRA": PartyRow(
@@ -645,6 +647,12 @@ _SIDE_PARTIES = {
         dcid="DACAfricaUnallocated", kind="residual", party_class="residual", published=_BOTH_SIDES
     ),
     **_WHOLE_PARTIES,
+    "MarkedInOneTable": PartyRow(
+        dcid="MarkedInOneTable",
+        kind="total",
+        published=((_CRS, "origin"), (_IMPUTED, "origin")),
+        whole=(WholeMarker(dataset=_CRS, covers=("official",)),),
+    ),
 }
 
 
@@ -683,6 +691,23 @@ _SIDE_PARTIES = {
         ),
         pytest.param(
             "financingRecipient", "DACAllRecipients", _DAC2B, "total", id="total-not-whole-here"
+        ),
+        pytest.param(
+            "financingProvider",
+            "DACOfficialDonors",
+            DAC2A_BILATERAL,
+            "whole total",
+            id="whole-total-on-a-composites-row",
+        ),
+        pytest.param(
+            "financingProvider", "MarkedInOneTable", _CRS, "whole total", id="the-marked-table"
+        ),
+        pytest.param(
+            "financingProvider",
+            "MarkedInOneTable",
+            CRS_INCLUSIVE,
+            "total",
+            id="a-composite-of-several-tables-reads-no-marker",
         ),
         pytest.param("financingRecipient", "country/NOWHERE", _DAC2A, None, id="not-listed"),
     ],

@@ -492,16 +492,32 @@ def plan_long_projection(
         at = position[entity]
         period_at = position.get(TIME_PERIOD_COLUMN)
         provenance_at = position.get(PROVENANCE_COLUMN)
+        # A frame repeats each party, year and provenance across rows, so each reading is made
+        # once for the parties and sources it was read from.
+        memo: dict[tuple[str, int | None, str | None], str | None] = {}
+        read_from: list[NodeReads] = []
 
         def kind(row: Row, reads: NodeReads) -> str | None:
-            return long_kind_cell(
-                row[at],
-                role=entity,
-                parties=reads.parties,
-                period=None if period_at is None else row[period_at],
-                provenance=None if provenance_at is None else row[provenance_at],
-                sources=reads.sources,
-            )
+            if not read_from or read_from[0] is not reads:
+                memo.clear()
+                read_from[:] = [reads]
+            ref = row[at]
+            if not isinstance(ref, str):
+                return None
+            year = None if period_at is None else period_year(row[period_at])
+            cell = None if provenance_at is None else row[provenance_at]
+            provenance = cell if isinstance(cell, str) else None
+            key = (ref, year, provenance)
+            if key not in memo:
+                memo[key] = long_kind_cell(
+                    ref,
+                    role=entity,
+                    parties=reads.parties,
+                    period=year,
+                    provenance=provenance,
+                    sources=reads.sources,
+                )
+            return memo[key]
 
         def missing(row: Row, reads: NodeReads) -> bool:
             cell = row[at]

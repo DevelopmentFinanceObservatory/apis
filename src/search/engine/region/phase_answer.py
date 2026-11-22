@@ -174,7 +174,7 @@ from search.engine.unit.conversion import (
     with_unit_conversion,
 )
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
-from search.engine.unit.refs import unit_currency
+from search.engine.unit.refs import unit_currency, unit_prices
 from search.models import (
     Confidence,
     Entity,
@@ -633,6 +633,9 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         request_basis=state.unit_request_basis,
         unit_request=_converted_by,
         currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
+        prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
+        qualifier=state.shape_draft.meas_qual_dcid,
+        member_facts=mat_result.member_facts,
     )
     state.slot_options = slot_options
     state.warnings.extend(_ground_warnings)

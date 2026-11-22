@@ -708,3 +708,19 @@ def _build_worked_example_response() -> dict:
 def worked_example_response() -> dict:
     """Return the v1 worked example as a valid resolution dict."""
     return _build_worked_example_response()
+
+
+@pytest.fixture
+def fresh_composite_reads() -> Iterator[None]:
+    """Clear the caches of `code_index.types` that read the declared composites
+    (`declared_composite_reads` and the component tables built from it) around a test that
+    patches `DECLARED_COMPOSITES`, `COMPOSITES` or `BILATERAL_SOURCES`, so neither the test
+    nor a later one reads a cache built from other declarations."""
+    from code_index import types as code_index_types
+
+    caches = (code_index_types.declared_composite_reads, code_index_types._component_tables)
+    for cache in caches:
+        cache.cache_clear()
+    yield
+    for cache in caches:
+        cache.cache_clear()

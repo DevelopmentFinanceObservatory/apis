@@ -18,7 +18,7 @@ from typing import Any, Final
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
 from artifact_publication.jobs import Ingestion
 
-CATALOGUE_FORMAT_VERSION: Final[int] = 5
+CATALOGUE_FORMAT_VERSION: Final[int] = 6
 """The on-disk shape: file names, Parquet schemas and manifest fields. Every
 artifact lives under its format's own root, so a change to this number
 starts a new, empty root that the next job run fills, and the loader refuses
