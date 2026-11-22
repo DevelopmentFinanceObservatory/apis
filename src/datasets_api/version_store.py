@@ -9,7 +9,8 @@ Two facts a version stored before versions held them are filled once, by a later
 same version: a published frame's `continuations` (`_write_description`), and the year members
 and member nouns of a dataset version's `coverage` (`_fill_year_coverage`). A later write of a
 version, dataset or computed, also replaces its `incomplete_after` with the one that write
-judged (`_refresh_incomplete_after`).
+judged, unless an older catalogue build judged it than the stored one's
+(`_refresh_incomplete_after`).
 Every version insert goes through `_insert_version`, which also writes the version's description
 record (`datasets.description_record`) in the same transaction when the record carries a
 `VersionDescriber` (`_record_description`), so a failed record insert rolls the version row back.
@@ -352,26 +353,40 @@ def _refresh_incomplete_after(tx: Transaction, record: VersionRecord) -> None:
     its inputs' records (`FrameLineage.incomplete_after`). A write that could not judge it
     (`None`) changes nothing. The frame's rows are the same, so only the partial periods its
     sources mark can differ: a version recorded before versions stored them, or under a release
-    whose partial period has since completed, takes the later judgement. It runs under the
-    version's link lock, as `_fill_year_coverage` does.
+    whose partial period has since completed, takes the later judgement.
+
+    A dataset version's judgement goes with the `built_at` of the catalogue build that made it
+    (`ManifestFacts.incomplete_after_built_at`). A write judged by an older build than the
+    stored judgement's, or by no known build, leaves the stored one standing, so an instance
+    still bound to the previous build during a rollout cannot undo the next build's judgement;
+    a write judged by the same or a later build replaces it. A computed version stores no
+    build, so its republish always replaces it. It runs under the version's link lock, as
+    `_fill_year_coverage` does.
     """
     facts = record.facts
     if facts.incomplete_after is None:
         return
+    built_at = facts.incomplete_after_built_at if isinstance(facts, ManifestFacts) else None
     key = (record.subject_id, record.content_version)
     lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
     row = tx.fetch_one(
-        "SELECT incomplete_after FROM datasets.version_record "
+        "SELECT incomplete_after, incomplete_after_built_at FROM datasets.version_record "
         "WHERE subject_id = %s AND content_version = %s",
         key,
     )
+    if row is None:
+        return
+    stored_built_at = cast("datetime | None", row["incomplete_after_built_at"])
+    if stored_built_at is not None and (built_at is None or built_at < stored_built_at):
+        return
     judged = [dict(entry) for entry in facts.incomplete_after]
-    if row is None or row["incomplete_after"] == judged:
+    if row["incomplete_after"] == judged and stored_built_at == built_at:
         return
     tx.execute(
-        "UPDATE datasets.version_record SET incomplete_after = %s "
+        "UPDATE datasets.version_record "
+        "SET incomplete_after = %s, incomplete_after_built_at = %s "
         "WHERE subject_id = %s AND content_version = %s",
-        (json.dumps(judged), *key),
+        (json.dumps(judged), built_at, *key),
     )
 
 

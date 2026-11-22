@@ -40,7 +40,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -206,10 +206,20 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
     )
 
 
-def incomplete_after(result: MaterialisationResult) -> list[dict[str, object]] | None:
+@dataclass(frozen=True)
+class JudgedIncompleteAfter:
+    """An `incomplete_after` record, `entries`, and the `built_at` of the origin catalogue
+    build that judged it, which orders the judgements of one version
+    (`version_store._refresh_incomplete_after`)."""
+
+    entries: list[dict[str, object]]
+    built_at: datetime
+
+
+def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | None:
     """How complete the rows of the frame `result` holds are, judged per source against the
     origin catalogue bound to the mint, which joins the graph release the rows were read from
-    (`IncompleteAfter`). The source of a `(provenance, stat_var)` pair is the composite
+    (`IncompleteAfter`), with that catalogue's `built_at`. The source of a `(provenance, stat_var)` pair is the composite
     component serving the variable (`trace.components`), else the provenance itself. A pair
     is `partial` when its rows reach the period its source's import holds only part of
     (`origin_catalogue.partial_period_of`, `materialise.partial_period.reaches`), the latest
@@ -237,7 +247,9 @@ def incomplete_after(result: MaterialisationResult) -> list[dict[str, object]] |
     )
     judged = any(key is None or key[2] == "partial" for key in grouped)
     entries = _entries(grouped)
-    return None if entries and not judged else entries
+    if entries and not judged:
+        return None
+    return JudgedIncompleteAfter(entries=entries, built_at=catalogue.built_at)
 
 
 def collapsed_incomplete_after(
@@ -848,6 +860,7 @@ def manifest_facts(
     series_conversions: Mapping[SeriesKey, SeriesConversion] | None = None,
     default_scope: Sequence[str] | None = None,
     incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
 ) -> ManifestFacts:
     """The facts a definition version stores for `manifest`: every manifest member but
     `artifacts`, `output_options` and `content_version` (the record's own column), with
@@ -859,7 +872,8 @@ def manifest_facts(
     stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
-    `incomplete_after` is stored as given (`ManifestFacts.incomplete_after`).
+    `incomplete_after` and `incomplete_after_built_at` are stored as given
+    (`ManifestFacts.incomplete_after`, `ManifestFacts.incomplete_after_built_at`).
     """
     dumped = manifest.model_dump(
         mode="json", include={"definition", "coverage", "trace", "warnings"}
@@ -879,6 +893,7 @@ def manifest_facts(
         ),
         default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
         incomplete_after=None if incomplete_after is None else list(incomplete_after),
+        incomplete_after_built_at=incomplete_after_built_at,
     )
 
 
@@ -1082,12 +1097,14 @@ def definition_version_record(
     base_content_version: str | None = None,
     frame_summed: bool | None = None,
     incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
     (`render.DerivedVersion.summed`). A raw version passes neither. `incomplete_after` is how
-    complete the version's rows are (`incomplete_after`), `None` when unjudged. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
+    complete the version's rows are (`incomplete_after`), `None` when unjudged, and
+    `incomplete_after_built_at` the `built_at` of the catalogue build that judged it. Only a raw version stores the per-series conversion records. A derived version's rows are not those series, and the
     observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
@@ -1105,6 +1122,7 @@ def definition_version_record(
             ),
             default_scope=materialisation.default_scope,
             incomplete_after=incomplete_after,
+            incomplete_after_built_at=incomplete_after_built_at,
         ),
         artifacts=tuple(
             ArtifactRecord(
@@ -1185,6 +1203,7 @@ def record_collapsed_head_version(
     frame_sha256: str,
     frame_summed: bool,
     incomplete_after: Sequence[Mapping[str, object]] | None = None,
+    incomplete_after_built_at: datetime | None = None,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -1195,7 +1214,8 @@ def record_collapsed_head_version(
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
     `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
-    collapsed frame's, and `incomplete_after` its record (`collapsed_incomplete_after`). The
+    collapsed frame's, `incomplete_after` its record (`collapsed_incomplete_after`), and
+    `incomplete_after_built_at` the `built_at` of the build that judged the base's. The
     artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
     makes repeated writes idempotent. `describer_for` gives the describer that writes the
@@ -1208,7 +1228,10 @@ def record_collapsed_head_version(
         content_version=manifest.content_version,
         schema_version=schema_version,
         facts=manifest_facts(
-            manifest, output_profile=output_profile, incomplete_after=incomplete_after
+            manifest,
+            output_profile=output_profile,
+            incomplete_after=incomplete_after,
+            incomplete_after_built_at=incomplete_after_built_at,
         ),
         artifacts=tuple(
             ArtifactRecord(

@@ -106,6 +106,9 @@ class ManifestFacts:
     (`datasets_api.manifest.incomplete_after`): one `datasets_api.manifest_models.IncompleteAfter`
     per group of partial or unjudged cells, empty when every cell is complete, and `None` when
     the mint had no catalogue or the version was recorded before versions stored it.
+    `incomplete_after_built_at` is the `built_at` of the origin catalogue build that judged
+    `incomplete_after`, a collapse's that of its base's, and `None` with it or on a version
+    recorded before versions stored it.
     """
 
     prepared_at: datetime
@@ -120,6 +123,7 @@ class ManifestFacts:
     series_conversions: dict[str, object] | list[Mapping[str, object]] | None = None
     default_scope_plural: bool | None = None
     incomplete_after: Sequence[Mapping[str, object]] | None = None
+    incomplete_after_built_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,7 @@ VERSION_FACT_COLUMNS = (
     "composed_stat_vars",
     "continuations",
     "incomplete_after",
+    "incomplete_after_built_at",
 )
 
 
@@ -184,6 +189,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
             _json(None if facts.composed_stat_vars is None else list(facts.composed_stat_vars)),
             _json(None if facts.continuations is None else list(facts.continuations)),
             _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
+            None,
         )
     return (
         facts.prepared_at,
@@ -201,6 +207,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
         None,
         None,
         _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
+        facts.incomplete_after_built_at,
     )
 
 
@@ -223,12 +230,13 @@ class VersionFactsMissing(Exception):
 def _version_facts(
     row: Mapping[str, object], *, subject_id: str, content_version: str
 ) -> VersionFacts:
-    """The facts a `VERSION_FACT_COLUMNS` row holds. `prepared_at` reads in UTC, whatever the
-    session's time zone."""
+    """The facts a `VERSION_FACT_COLUMNS` row holds. `prepared_at` and
+    `incomplete_after_built_at` read in UTC, whatever the session's time zone."""
     prepared_at = cast("datetime | None", row["prepared_at"])
     if prepared_at is not None:
         series_count = row["series_count"]
         default_scope_plural = row["default_scope_plural"]
+        incomplete_after_built_at = cast("datetime | None", row["incomplete_after_built_at"])
         return ManifestFacts(
             prepared_at=prepared_at.astimezone(UTC),
             definition=cast("Mapping[str, object]", row["definition"]),
@@ -247,6 +255,11 @@ def _version_facts(
                 None if default_scope_plural is None else bool(default_scope_plural)
             ),
             incomplete_after=cast("list[Mapping[str, object]] | None", row["incomplete_after"]),
+            incomplete_after_built_at=(
+                None
+                if incomplete_after_built_at is None
+                else incomplete_after_built_at.astimezone(UTC)
+            ),
         )
     input_content_versions = cast("list[str] | None", row["input_content_versions"])
     if input_content_versions is not None:

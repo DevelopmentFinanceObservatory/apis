@@ -50,6 +50,7 @@ CREATE TABLE datasets.version_record (
     composed_stat_vars TEXT,
     continuations TEXT,
     incomplete_after TEXT,
+    incomplete_after_built_at TEXT,
     frame_sha256 TEXT,
     frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
@@ -268,6 +269,7 @@ _TIMESTAMP_COLUMNS = frozenset(
         "confirmed_at",
         "materialised_at",
         "prepared_at",
+        "incomplete_after_built_at",
         "claimed_at",
         "updated_at",
         "dispatched_at",

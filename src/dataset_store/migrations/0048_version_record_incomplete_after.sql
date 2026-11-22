@@ -9,11 +9,20 @@
 -- (`datasets_api.lineage_incomplete.derived_incomplete_after`). `[]` means judged and nothing
 -- partial. NULL means unknown as a whole: a version the mint or the publish could not judge, a
 -- row recorded before this column, and a row written by the previous image, which names its
--- columns and leaves this one out. A later write of the same version replaces it.
+-- columns and leaves this one out. A later write of the same version replaces it, unless an
+-- older catalogue build judged it.
 --
--- Adding a nullable column rewrites no row. Re-running this migration changes nothing.
+-- `incomplete_after_built_at` holds the `built_at` of the origin catalogue build that judged a
+-- dataset version's `incomplete_after`, a collapse's that of its base's
+-- (`dataset_store.snapshot.ManifestFacts.incomplete_after_built_at`). A later write judged by
+-- an older build, as an instance still bound to the previous build mints during a rollout,
+-- leaves the stored judgement standing (`datasets_api.version_store._refresh_incomplete_after`).
+-- NULL on a computed version, on an unjudged one, and on a row recorded before this column.
+--
+-- Adding nullable columns rewrites no row. Re-running this migration changes nothing.
 
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE datasets.version_record
-    ADD COLUMN IF NOT EXISTS incomplete_after jsonb;
+    ADD COLUMN IF NOT EXISTS incomplete_after jsonb,
+    ADD COLUMN IF NOT EXISTS incomplete_after_built_at timestamptz;

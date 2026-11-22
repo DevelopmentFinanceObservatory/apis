@@ -551,8 +551,10 @@ class DefinitionPrewrite:
     # from the index the run elected over and joined to every manifest the write half builds.
     year_coverage: Mapping[str, object] = field(default_factory=dict)
     # How complete the rows are, judged per source (`manifest.incomplete_after`) against the
-    # catalogue bound to the mint, `None` when it could not be judged.
+    # catalogue bound to the mint, `None` when it could not be judged, and that catalogue's
+    # `built_at`, `None` with it.
     incomplete_after: list[dict[str, object]] | None = None
+    incomplete_after_built_at: datetime | None = None
 
 
 def _documentation_complete(source_citations: Mapping[str, SourceCitation]) -> bool:
@@ -939,6 +941,7 @@ def prewrite_definition(
             "identity": stored.identity,
         }
         years = year_coverage(result, requests=requests, index=coverage_index)
+        judged = incomplete_after(result)
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -969,7 +972,8 @@ def prewrite_definition(
             documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
             year_coverage=years,
-            incomplete_after=incomplete_after(result),
+            incomplete_after=None if judged is None else judged.entries,
+            incomplete_after_built_at=None if judged is None else judged.built_at,
         )
 
 
@@ -1082,8 +1086,9 @@ def _base_record(
     `describer`. It takes the stored body when the version is on record (`persisted`), else
     this call's. A stored body whose year coverage was never counted
     (`year_coverage_counted`) takes this call's `coverage`, and every stored body takes this
-    call's `incomplete_after` when this call judged one, which the write stores on the version
-    (`VersionRecordWriter.write_version`)."""
+    call's `incomplete_after` and the build that judged it when this call judged one, which the
+    write stores on the version unless an older build judged it than the one that judged the
+    stored record (`VersionRecordWriter.write_version`)."""
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
@@ -1091,6 +1096,7 @@ def _base_record(
         artifacts=[],
         record_only_artifacts=artifacts,
         incomplete_after=prewrite.incomplete_after,
+        incomplete_after_built_at=prewrite.incomplete_after_built_at,
     )
     record = replace(record, describer=describer)
     if persisted is None:
@@ -1100,7 +1106,11 @@ def _base_record(
         assert isinstance(record.facts, ManifestFacts)
         facts = replace(facts, coverage=record.facts.coverage)
     if isinstance(facts, ManifestFacts) and prewrite.incomplete_after is not None:
-        facts = replace(facts, incomplete_after=prewrite.incomplete_after)
+        facts = replace(
+            facts,
+            incomplete_after=prewrite.incomplete_after,
+            incomplete_after_built_at=prewrite.incomplete_after_built_at,
+        )
     return replace(record, facts=facts)
 
 
@@ -1597,6 +1607,7 @@ def _render_pass(
             incomplete_after=collapsed_incomplete_after(
                 prewrite.incomplete_after, derived_statistics.figures
             ),
+            incomplete_after_built_at=prewrite.incomplete_after_built_at,
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,

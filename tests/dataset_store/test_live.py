@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from dataset_store.snapshot import (
     ArtifactNotFound,
     FrameLineage,
     LiveSnapshotReader,
+    ManifestFacts,
     SnapshotRevoked,
     VersionFactsMissing,
 )
@@ -4135,6 +4137,46 @@ def _stored_fact_columns(
 def _delete_versions(live_store, subjects: list[str]) -> None:
     with live_store.transaction() as tx:
         tx.execute("DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,))
+
+
+def test_a_rewrite_judged_by_an_older_catalogue_build_keeps_the_newer_judgement(live_store):
+    """Two instances bound to different catalogue builds record the same dataset version, the
+    later build's first: the older build's write leaves the stored judgement and its build, and
+    a still later build's write replaces both. Each read gives the build's `built_at` in UTC."""
+    from tests.datasets_api._version_facts import facts_from_body, golden_cases
+
+    case = golden_cases()["definition"]
+    facts = facts_from_body(case["body"])
+    assert isinstance(facts, ManifestFacts)
+    subject_id = f"{case['subject_id']}_{uuid4().hex}"
+    content_version = case["content_version"]
+    built = datetime(2026, 11, 1, tzinfo=UTC)
+    partial = [{"provenance": "p", "stat_vars": ["dcid:X"], "source": "p", "status": "partial"}]
+
+    def write(entries: list[dict[str, object]], built_at: datetime) -> None:
+        LiveVersionRecordWriter(store=live_store).record_version(
+            VersionRecord(
+                subject_id=subject_id,
+                subject_kind="spec",
+                content_version=content_version,
+                schema_version=1,
+                facts=replace(facts, incomplete_after=entries, incomplete_after_built_at=built_at),
+            )
+        )
+
+    def stored() -> tuple[object, object]:
+        version = LiveSnapshotReader(store=live_store).read_version(subject_id, content_version)
+        assert version is not None and isinstance(version.facts, ManifestFacts)
+        return version.facts.incomplete_after, version.facts.incomplete_after_built_at
+
+    try:
+        write([], built + timedelta(days=7))
+        write(partial, built)
+        assert stored() == ([], built + timedelta(days=7))
+        write(partial, built + timedelta(days=14))
+        assert stored() == (partial, built + timedelta(days=14))
+    finally:
+        _delete_versions(live_store, [subject_id])
 
 
 def test_0031_backfills_frame_grammar_version_from_the_stored_trace(live_store):

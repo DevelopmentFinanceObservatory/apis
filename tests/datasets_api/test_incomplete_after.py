@@ -12,6 +12,7 @@ nothing.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -25,7 +26,12 @@ from datasets_api.manifest_models import Manifest
 from materialise import MaterialisationResult
 from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue, bound_catalogue
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue, dev_provenance_nodes, documenting
+from tests.origin_catalogue.fake_catalogue import (
+    FAKE_BUILT_AT,
+    FakeCatalogue,
+    dev_provenance_nodes,
+    documenting,
+)
 
 from ._description_doubles import FAMILY_MEMBERS, GROUPBY_QUERY, datasets_client, mint_family
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -184,8 +190,10 @@ def test_each_source_is_judged_on_its_own() -> None:
     result = _result({(_CRS, "dcid:X"): "2025", (_UN, "dcid:Y"): "2025", (None, "dcid:Z"): "2025"})
 
     with bound_catalogue(documenting({_CRS: dev_provenance_nodes()[_CRS]})):
-        recorded = incomplete_after(result)
+        judged = incomplete_after(result)
 
+    assert judged is not None
+    recorded = judged.entries
     assert recorded == [
         {
             "provenance": None,
@@ -244,8 +252,10 @@ def test_a_mark_the_frame_grammar_cannot_read_records_its_rows_unknown() -> None
     result = _result({(_CRS, "dcid:X"): "2025", (_DAC1, "dcid:Y"): "2025"})
 
     with bound_catalogue(catalogue):
-        recorded = incomplete_after(result)
+        judged = incomplete_after(result)
 
+    assert judged is not None
+    recorded = judged.entries
     assert recorded == [
         {
             "provenance": _CRS,
@@ -264,7 +274,10 @@ def test_a_mint_with_no_catalogue_bound_records_nothing(
     a result whose rows reach a partial year."""
     result = _result({(_PROVENANCE, f"dcid:{_AID}"): "2025"})
     with bound_catalogue(_source_as(_DAC2A)):
-        assert incomplete_after(result) == _PARTIAL_2025
+        judged = incomplete_after(result)
+    assert judged is not None
+    assert judged.entries == _PARTIAL_2025
+    assert judged.built_at == FAKE_BUILT_AT
     bind_catalogue(cast("Catalogue", None))
 
     assert incomplete_after(result) is None
@@ -302,6 +315,32 @@ def test_a_later_mint_of_the_same_version_replaces_its_partial_years(
     assert second.content_version == first.content_version
     assert _stored_record(rig) == []
     assert _recorded(rig, second) == []
+
+
+def test_a_mint_under_an_older_catalogue_build_leaves_a_newer_judgement_standing(
+    version_store: FakeVersionRecordDatasetStore,
+) -> None:
+    """During a rollout an instance still bound to the previous catalogue build mints the
+    same version after an instance bound to the next one. The store keeps the next build's
+    judgement, and a later build's mint replaces it again."""
+    rig = _Rig(version_store, indexed={_AID: _MALAWI})
+    newer = replace(_source_as(_DAC2A, marked=False), built_at=FAKE_BUILT_AT + timedelta(days=7))
+    with bound_catalogue(newer):
+        first, _ = rig.mint(_ALL)
+    assert _stored_record(rig) == []
+
+    rig.clock.at += timedelta(hours=25)
+    with bound_catalogue(_source_as(_DAC2A)):
+        stale, _ = rig.mint(_ALL)
+    assert stale.trace["served_from"] == "materialise"
+    assert stale.content_version == first.content_version
+    assert _stored_record(rig) == []
+
+    rig.clock.at += timedelta(hours=25)
+    latest = replace(_source_as(_DAC2A), built_at=FAKE_BUILT_AT + timedelta(days=14))
+    with bound_catalogue(latest):
+        rig.mint(_ALL)
+    assert _stored_record(rig) == _PARTIAL_2025
 
 
 def _marked(mark: str) -> dict[str, tuple[str, ...]]:
@@ -355,3 +394,11 @@ def test_a_groupby_served_from_the_head_stores_the_judgement_of_its_base(
         sorted(f"dcid:{member}" for member in FAMILY_MEMBERS), "1900"
     )
     assert recorded[collapsed["content_version"]] == _partial([f"dcid:{spec_id}"], "1900")
+    with store.transaction() as tx:
+        built = {
+            row["content_version"]: row["incomplete_after_built_at"]
+            for row in tx.fetch_all(
+                "SELECT content_version, incomplete_after_built_at FROM datasets.version_record"
+            )
+        }
+    assert built[collapsed["content_version"]] == built[base["content_version"]] == FAKE_BUILT_AT
