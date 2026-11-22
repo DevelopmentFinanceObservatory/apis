@@ -832,7 +832,9 @@ def _folded(first: DepartureFact, other: DepartureFact) -> DepartureFact:
 def _modelled_fact(spec: Spec) -> DepartureFact | None:
     """`modelled_values` when the served method is modelled or estimated. Otherwise it fires
     with `partial` set when the answer serves the estimates continuing a reported series
-    past its last period (`ResolvedSpec.continued`), with or without observations, or when
+    past its last period (`ResolvedSpec.continued`, or the preview's
+    `SpecObservations.continued` where it states one, as a composite's component reads
+    do), with or without observations, or when
     any series in the Spec's observations is modelled, serves a point whose own method is
     classed estimated (`ObservationSeries.holds_estimates`), or holds points converted with
     a projected exchange rate or deflator (`ObservationSeriesConversion.projected_count`,
@@ -842,7 +844,10 @@ def _modelled_fact(spec: Spec) -> DepartureFact | None:
         return DepartureFact(code="modelled_values", binding_ref=None, shown=method.label)
     observations = spec.resolved.observations
     series = observations.series if observations is not None else []
-    if not spec.resolved.continued and not any(_holds_estimates(one) for one in series):
+    continued = spec.resolved.continued
+    if observations is not None and observations.continued is not None:
+        continued = observations.continued
+    if not continued and not any(_holds_estimates(one) for one in series):
         return None
     return DepartureFact(code="modelled_values", binding_ref=None, partial=True)
 

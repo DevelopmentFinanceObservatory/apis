@@ -1635,7 +1635,9 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     a date under the plan's years after the last date any facet of the selection holds at
     that series, the rows `materialise.columnar.continuation_mask` keeps. A scope read
     serves one facet of the selection, and a mint of its Spec all of them, so the last date
-    is read from the series' candidates. In bulk a continuing facet serves when
+    is read from the series' candidates, under the years the plan's election reads
+    (`election_years`), as a mint cuts its rows to them before it masks them and as
+    `BulkPlan.selected_ends` reads them. In bulk a continuing facet serves when
     it adds an observation to a role tuple (`BulkPlan.continued_pairs`). A plan
     `read_in_years` narrowed serves a continuation only where it holds a date in a year the
     plan serves (`ServedYears.years`), since its reads keep their points in those years
@@ -1664,7 +1666,9 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     for s in plan.served:
         selection = plan.selections.get(s.stat_var, frozenset())
         hull = _hull(
-            d for f in s.candidates if f.facet_id in selection and (d := facet_dates(f, None))
+            d
+            for f in s.candidates
+            if f.facet_id in selection and (d := facet_dates(f, plan.election_years))
         )
         last = hull[1] if hull is not None else None
         for f in s.group:

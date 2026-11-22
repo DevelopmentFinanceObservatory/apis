@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
+from origin_catalogue import bound_catalogue, current_catalogue
 from search.engine.departures import spec_departure_facts
 from search.engine.region.codes import OBSERVATIONS_NO_POINTS
+from search.engine.region.observations.served_years import (
+    no_points_in_served_years,
+    year_count,
+)
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import (
     PlanSeries,
@@ -17,6 +24,7 @@ from search.engine.spec_build import build_spec
 from search.models import (
     TimeWindow,
 )
+from search.scope.composite import CompositeMint, served_components
 from tests.engine._assemble_fixtures import _make_coverage, _make_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
@@ -24,6 +32,7 @@ from tests.engine._harness import (
     materialise_double_from_obs,
 )
 from tests.fixtures import FakeGraph
+from tests.scope import test_provider as provider
 
 # ---------------------------------------------------------------------------
 # region/observations/fetch.py: _build_observations -- window filtering (the spec's own
@@ -231,15 +240,25 @@ def test_a_read_in_given_years_shows_and_counts_their_points_alone(
 
 
 @pytest.mark.parametrize(
-    ("window", "years"),
+    ("window", "years", "served"),
     [
         # A plan over 2016 onwards read in 2010 alone holds no year to read.
-        pytest.param(TimeWindow(start_year=2016), frozenset({2010}), id="outside-window"),
+        pytest.param(TimeWindow(start_year=2016), frozenset({2010}), None, id="outside-window"),
         # Every date holds 2022, and no series holds a point in it.
-        pytest.param(None, frozenset({2022}), id="no-series-in-years"),
+        pytest.param(None, frozenset({2022}), frozenset({2022}), id="no-series-in-years"),
+        # The plan holds 2022 of the two years alone, and no series holds a point in it.
+        pytest.param(
+            TimeWindow(start_year=2016),
+            frozenset({2010, 2022}),
+            frozenset({2022}),
+            id="no-series-in-the-years-the-plan-holds",
+        ),
     ],
 )
-def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window, years):
+def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window, years, served):
+    """A preview whose series hold no point in the years its plan serves omits as every
+    read holding none in them does (`served_years.no_points_in_served_years`), counting
+    those years."""
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_old_and_new_obs())
     observations, warn = build_observations_planned(
         ["Count_Person"],
@@ -255,6 +274,8 @@ def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
     assert observations.omitted.dispatched == 0
+    if served is not None:
+        assert observations == no_points_in_served_years(served, dispatched=0, empty=0)
 
 
 def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
@@ -362,11 +383,38 @@ def test_a_plan_read_in_years_states_a_continuation_only_in_a_served_year(years,
         if fact.code == "modelled_values"
     ]
 
+    # A composite answer minted over the table identity's plan, its components serving
+    # these years, states the continuation in them alone, as its component reads do.
+    facts = provider._dac1_facts(provider._DAC1_TOTAL_ODA)
+    identity = provider._dac1_identity(
+        provider._DAC1_TOTAL_ODA, (provider._USA,), window=(2010, 2024), headline=True
+    )
+    with bound_catalogue(current_catalogue()):
+        served = served_components(identity.model_dump(mode="json", exclude_none=True), facts=facts)
+    mint = CompositeMint(
+        identity=identity,
+        spec_id="composite",
+        served=tuple(dataclasses.replace(item, served=years) for item in served),
+        facts=facts,
+    )
+    minted = build_spec(
+        composite=mint,
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=spec.resolved.shape,
+        slots=[],
+        stat_vars=[],
+        entities=[],
+        coverage=_make_coverage(),
+        plan=plan,
+    )
+
     assert narrowed is not None
     assert serves_continuation(plan) is True
     assert serves_continuation(narrowed) is continued
     assert any(series.holds_estimates for series in observations.series) is continued
     assert bool(modelled) is continued
+    assert minted.resolved.continued is continued
 
 
 def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
@@ -379,10 +427,16 @@ def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
     assert (observations.omitted.dispatched, observations.omitted.empty) == (1, 1)
-    assert observations.omitted.message == (
-        "1 requested series were fetched; none holds a point in the 1 years the "
-        "observation preview reads."
+    assert observations == no_points_in_served_years(
+        frozenset({2018}), dispatched=1, empty=1, hard_failed=0, facet_rejected=0
     )
+
+
+@pytest.mark.parametrize(
+    ("years", "counted"), [({2018}, "1 year"), ({2018, 2020, 2021}, "3 years")]
+)
+def test_served_years_are_counted_with_their_noun(years, counted):
+    assert year_count(frozenset(years)) == counted
 
 
 def _recorded_and_estimated_obs() -> dict:

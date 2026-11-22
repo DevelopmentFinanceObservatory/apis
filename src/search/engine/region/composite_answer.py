@@ -299,7 +299,9 @@ async def _resubmit_preview(
     (`ComponentIdentity.populations`), reads as open within it
     (`ResubmitIdentityPayload.populations`). The preview reads rows in `years`, its members
     elected under `identity`'s own window (`EngineOptions.preview_years`), and in the
-    years its read plan elected under where None.
+    years its read plan elected under where None. A preview read in `years`, a composite
+    component's, states whether the answer serves a continuation in them
+    (`SpecObservations.continued`), which the composite's own Spec cannot state.
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
     by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost
@@ -352,6 +354,10 @@ async def _resubmit_preview(
     observations = region.spec.resolved.observations
     if observations is None:
         return _LostRead(timed_out=False, cause="embedded no preview")
+    if years is not None:
+        # The answer's Spec states the continuation its plan serves in `years` alone
+        # (`spec_build.build_spec`'s `preview_years`), which the composite answer states.
+        observations = observations.stating_continued(region.spec.resolved.continued)
     raised = tuple(warning for warning in region.warnings if warning.code in PREVIEW_WARNING_CODES)
     return observations, raised
 

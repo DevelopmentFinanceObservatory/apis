@@ -48,6 +48,7 @@ from search.engine.region.observations.bulk_role_series import (
     _preview_pairs,
     _served_pairs,
 )
+from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.facet_election import (
@@ -2076,12 +2077,13 @@ def test_a_read_in_served_years_serves_the_points_a_mint_of_its_window_keeps(
     assert read(narrowed) == whole == served
 
 
-def _read_in_years(monkeypatch, window, years: frozenset[int]):
+def _read_in_years(monkeypatch, window, years: frozenset[int], *, covered=(2019, 2020)):
     """The bulk preview of five recipients holding `F1` in 2019 and 2020 under a plan over
-    `window`, read in `years`, and the SDMX double."""
+    `window`, read in `years`, and the SDMX double. Coverage counts their series in
+    `covered`."""
     recipients = [f"country/BRYear{i}" for i in range(5)]
     coverage = _patch_role_coverage(
-        monkeypatch, [("F1", _DONOR, r, [2019, 2020]) for r in recipients]
+        monkeypatch, [("F1", _DONOR, r, list(covered)) for r in recipients]
     )
     entities = _obs_entities(recipients)
     sdmx = FakeSdmxClient(
@@ -2118,6 +2120,31 @@ def test_a_bulk_read_in_years_its_plan_does_not_hold_omits_with_no_points_and_no
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
     assert (observations.omitted.dispatched, observations.omitted.empty) == (0, 0)
     assert sdmx.series_calls == []
+
+
+@pytest.mark.parametrize(
+    ("covered", "dispatched"),
+    [
+        pytest.param((2019, 2020), 0, id="no-series-to-read"),
+        # Coverage counts 2017, which the read returns no point in.
+        pytest.param((2017, 2019, 2020), 5, id="read-returns-none"),
+    ],
+)
+def test_a_bulk_read_in_years_holding_no_point_omits_as_a_per_series_read_does(
+    monkeypatch, covered, dispatched
+):
+    """The plan over 2015 to 2020 holds 2017, where no recipient's read holds a point: the
+    preview omits for want of points in the year it serves, stated as a per-series read
+    states it (`served_years.no_points_in_served_years`)."""
+    years = frozenset({2017})
+    observations, sdmx = _read_in_years(
+        monkeypatch, TimeWindow(start_year=2015, end_year=2020), years, covered=covered
+    )
+
+    assert len(sdmx.series_calls) == (1 if dispatched else 0)
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert observations == no_points_in_served_years(years, dispatched=dispatched, empty=dispatched)
 
 
 def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():

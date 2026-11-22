@@ -92,6 +92,10 @@ from search.engine.region.observations.bulk_conversion import (
 from search.engine.region.observations.bulk_pair_reads import BulkPairSdmx, PlannedRead
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
+from search.engine.region.observations.served_years import (
+    no_points_in_served_years,
+    year_count,
+)
 from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.read_plan import (
     Admits,
@@ -707,21 +711,6 @@ def _in_years(
     return kept
 
 
-def _no_series_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
-    """The omission of a per-series preview none of whose series holds a point in `years`,
-    the years it reads rows in (`read_plan.read_in_years`): no read is dispatched."""
-    return (
-        omitted_observations(
-            OBSERVATIONS_NO_POINTS,
-            f"the observation preview read no rows: no series of the answer holds a point "
-            f"in the {len(years)} years it previews.",
-            dispatched=0,
-            empty=0,
-        ),
-        None,
-    )
-
-
 def _scope_read_in_years(years: frozenset[int]) -> tuple[SpecObservations, Warning]:
     """The refusal of a scope-defaulted preview asked to read rows in `years`. Its read
     serves one latest point per place (`_bulk_scope_dispatch`), which served years cannot
@@ -750,7 +739,7 @@ def _no_points_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
         omitted_observations(
             OBSERVATIONS_NO_POINTS,
             f"the observation preview read no rows: the answer's years hold none of the "
-            f"{len(years)} years it previews.",
+            f"{year_count(years)} it previews.",
             dispatched=0,
             empty=0,
         ),
@@ -1273,7 +1262,7 @@ def _no_pairs_succeeded_omission(
     *,
     facet_filter: Mapping[str, FacetAxisFilter] | None,
     elected_mode: bool,
-    emptied_in: frozenset[int] | None = None,
+    served_years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Classify a round with no successful pair, prioritising hard failures over timeouts.
 
@@ -1281,10 +1270,10 @@ def _no_pairs_succeeded_omission(
     failures return `OBSERVATIONS_PROBE_FAILED` and name failed reads. Otherwise timeouts
     return `OBSERVATIONS_TIMED_OUT`. Active filters or elected conversions with rejected
     pairs return `OBSERVATIONS_NO_MATCHING_SOURCE`, including any conversion cause.
-    Remaining empty fetches return `OBSERVATIONS_NO_POINTS` without a warning, saying the
-    series hold no point in the years previewed when `emptied_in`, the years a narrowed
-    plan serves, is set: cutting the reads to them emptied every empty series
-    (`_in_years`).
+    Remaining empty fetches return `OBSERVATIONS_NO_POINTS` without a warning, stating
+    the series hold no point in `served_years`, the years a narrowed plan serves, when set
+    (`served_years.no_points_in_served_years`): every read of such a plan keeps its points
+    in them alone (`_in_years`).
     """
     if not requested:
         return (
@@ -1343,17 +1332,22 @@ def _no_pairs_succeeded_omission(
             ),
             Warning(code=OBSERVATIONS_NO_MATCHING_SOURCE, severity="warn", message=message),
         )
-    message = (
-        f"{requested} requested series were fetched; none carried an "
-        "observation on their own selected facet."
-        if emptied_in is None
-        else f"{requested} requested series were fetched; none holds a point in the "
-        f"{len(emptied_in)} years the observation preview reads."
-    )
+    if served_years is not None:
+        return (
+            no_points_in_served_years(
+                served_years,
+                dispatched=requested,
+                empty=outcome.unfiltered_empty_pairs,
+                hard_failed=0,
+                facet_rejected=0,
+            ),
+            None,
+        )
     return (
         omitted_observations(
             OBSERVATIONS_NO_POINTS,
-            message,
+            f"{requested} requested series were fetched; none carried an "
+            "observation on their own selected facet.",
             dispatched=requested,
             empty=outcome.unfiltered_empty_pairs,
             hard_failed=0,
@@ -1641,19 +1635,12 @@ def _fetch_pair_observations(
     )
 
     if not outcome.pair_results:
-        emptied_in = (
-            plan.served_years.years
-            if plan.served_years is not None
-            and served_empty
-            and served_empty == outcome.unfiltered_empty_pairs
-            else None
-        )
         return _no_pairs_succeeded_omission(
             requested,
             outcome,
             facet_filter=facet_filter,
             elected_mode=elected_mode,
-            emptied_in=emptied_in,
+            served_years=None if plan.served_years is None else plan.served_years.years,
         )
     return _assemble_pair_series(
         outcome,
@@ -1774,7 +1761,10 @@ def _build_observations(
         if narrowed is None:
             return _no_points_in_years(years)
         if isinstance(narrowed, PairPlan) and not narrowed.series:
-            return _no_series_in_years(years)
+            assert narrowed.served_years is not None  # `read_in_years`
+            return no_points_in_served_years(
+                narrowed.served_years.years, dispatched=0, empty=0
+            ), None
     mode = _preview_mode(
         narrowed, sv_dcids, role_bearing=role_bearing, scope=scope, bound_pairs=len(pairs)
     )

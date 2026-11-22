@@ -107,13 +107,17 @@ class _Components:
     """`resolve_spec_resubmit` for the inclusive composite's components: each answers
     `template` with one series named for its table, holding a point in each year of `_WINDOW`
     and estimates where `estimated`, or raises its entry of `failures`, and answers degraded
-    where named in `degraded`. The bilateral component warns once under a preview code and
+    where named in `degraded`, and serves a continuation where named in `continued`. The
+    bilateral component warns once under a preview code and
     once under another, and each component adds its entry of `warned`. Each call records the
     source scope of the catalogue it reads through."""
 
     def __init__(self, template: Spec, *, estimated: bool) -> None:
         self.template = template
         self.estimated = estimated
+        # The components whose answer serves a continuation in the years it previews
+        # (`ResolvedSpec.continued`).
+        self.continued: set[str] = set()
         self.failures: dict[str, Exception] = {}
         self.degraded: set[str] = set()
         self.warned: dict[str, tuple[Warning, ...]] = {}
@@ -164,7 +168,7 @@ class _Components:
                 "spec_id": f"component-{name}",
                 "resolved": self.template.resolved.model_copy(
                     update={"observations": observations}
-                ),
+                ).stating_continued(name in self.continued),
             }
         )
         warned = ((_PARTIAL, _DEFAULTED) if name == "bilateral" else ()) + self.warned.get(name, ())
@@ -244,6 +248,15 @@ def _answered(events: Sequence[Event]) -> Spec:
     (part,) = resolution.parts
     assert isinstance(part, DefinitePart)
     return part.spec
+
+
+def _part(events: Sequence[Event]) -> DefinitePart:
+    (response,) = [e for e in events if isinstance(e, ResponseEvent)]
+    resolution = response.response
+    assert isinstance(resolution, Resolution)
+    (part,) = resolution.parts
+    assert isinstance(part, DefinitePart)
+    return part
 
 
 def _observed(events: Sequence[Event]) -> ObservationsEvent:
@@ -357,6 +370,34 @@ def test_a_composite_preview_keeps_each_component_s_estimates_for_the_late_depar
     (late,) = _done(events).late_departures
     assert late.spec_id == _answered(events).spec_id
     assert "modelled_values" in {d.code for d in late.departures}
+
+
+@pytest.mark.parametrize("continued", [set(), {"imputed"}], ids=["none", "imputed"])
+@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "buffered"])
+def test_a_composite_states_modelled_values_exactly_when_a_component_read_continues(
+    monkeypatch, stream, continued
+):
+    """No series of either component holds an estimate, and the composite's own Spec states
+    no continuation. The part names modelled values once its preview is read exactly when a
+    component's answer serves a continuation in the years it previews, streamed in its late
+    departures and buffered in its own."""
+    first, components = _components(monkeypatch)
+    components.continued = continued
+
+    if stream:
+        events = _stream(_fresh())
+        assert "modelled_values" not in {d.code for d in _part(events).departures}
+        late = _done(events).late_departures
+        departures = late[0].departures if late else _part(events).departures
+    else:
+        response = offline_resolve(_fresh(), **_clients())
+        assert isinstance(response, Resolution)
+        (part,) = response.parts
+        assert isinstance(part, DefinitePart)
+        assert part.spec.spec_id == first.spec_id
+        departures = part.departures
+
+    assert ("modelled_values" in {d.code for d in departures}) is bool(continued)
 
 
 def _coverage(monkeypatch: pytest.MonkeyPatch) -> CoverageSnapshot:

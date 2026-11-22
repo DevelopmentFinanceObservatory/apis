@@ -1426,8 +1426,10 @@ def build_spec(
             and each field the composite states is the mint's (`CompositeMint`): coverage
             in place of ``coverage``, headline, open role axes, StatVar counts, when slot,
             download, measure label, published tables and sources, provenance facet and
-            data years, with no observation preview. Every other field is the table
-            identity's. None mints the table identity itself.
+            data years, with no observation preview. ``ResolvedSpec.continued`` reads
+            ``plan`` in the years some component serves (``CompositeMint.years``), as
+            ``preview_years`` reads it. Every other field is the table identity's. None
+            mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
@@ -1640,6 +1642,10 @@ def build_spec(
         published_tables = composite.published_tables()
         observations = None
         years = composite.data_years()
+        # The table identity's plan reads the composite's whole window; it continues a
+        # series only in a year the composite serves. Its component reads state their own
+        # (`SpecObservations.continued`), which the part's departures read in its place.
+        preview_years = frozenset(composite.years)
     spec = Spec(
         spec_id=definition.spec_id,
         definition=definition,

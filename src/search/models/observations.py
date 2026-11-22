@@ -425,6 +425,30 @@ class SpecObservations(StrictModel):
             "preview is not a role-bearing bulk one"
         ),
     )
+    # Whether the reads behind a composite's preview, its component answers, serve the
+    # estimates continuing a series past its last period (`ResolvedSpec.continued`), None
+    # where the preview states nothing of it. The part states it in a `modelled_values`
+    # departure in place of the Spec's own (`engine.departures`), so it reaches the wire
+    # there alone. Equality compares the wire state (`__eq__`).
+    _continued: bool | None = PrivateAttr(default=None)
+
+    @property
+    def continued(self) -> bool | None:
+        """Whether the reads behind the preview serve a continuation, None when unstated."""
+        return self._continued
+
+    def stating_continued(self, continued: bool | None) -> SpecObservations:
+        """A copy whose `continued` is `continued`."""
+        stated = self.model_copy()
+        stated._continued = continued
+        return stated
+
+    def __eq__(self, other: object) -> bool:
+        """Equal when the wire state is: `continued` is an input to the part's departures,
+        which a cached response carries already written."""
+        if not isinstance(other, SpecObservations):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
 
 
 def omitted_observations(

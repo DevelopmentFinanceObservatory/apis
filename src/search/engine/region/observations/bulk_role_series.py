@@ -79,6 +79,7 @@ from search.engine.region.observations.bulk_conversion import (
     left_out_omission,
     left_out_warning,
 )
+from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
@@ -608,16 +609,20 @@ def _assemble_role_bulk_series(
     converted: ConvertedPairs | None = None,
     target_unit_ref: str | None = None,
     estimated: frozenset[tuple[str, RoleTuple]] = frozenset(),
+    served_years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Build series from the dispatched pairs and return any warning. The pairs in
     `estimated` serve a point of an estimated method (`SeriesRead.holds_estimates`).
+    `served_years` are the years a narrowed plan serves (`ServedYears.years`), which every
+    pair is read in alone.
 
     `converted` holds each converted pair's conversion: its series states the conversion
     and is in `target_unit_ref`, or states no unit for a conversion into each entity's own
     currency, as the per-series path's do.
 
-    No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, or, when `converted`
-    left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
+    No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, stating no point in
+    `served_years` where set (`served_years.no_points_in_served_years`), or, when
+    `converted` left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
     `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` omission naming them. Otherwise each pair
     is a series stating the refs its pair's serving facets share (`stated`, `_series_refs`),
     assembled by `search.observations.assemble_role_bulk`,
@@ -630,6 +635,12 @@ def _assemble_role_bulk_series(
     """
     if not pair_points and converted is not None and converted.leaves_out:
         return left_out_omission(converted)
+    if not pair_points and served_years is not None:
+        dispatched = len(plan.to_fetch)
+        return (
+            no_points_in_served_years(served_years, dispatched=dispatched, empty=dispatched),
+            None,
+        )
     if not pair_points:
         return (
             omitted_observations(
@@ -758,6 +769,7 @@ def _bulk_role_series(
                 {},
                 member_constraints=member_constraints,
                 graph=graph,
+                served_years=None if plan.served_years is None else plan.served_years.years,
             )
         return _read_and_assemble(
             plan,
@@ -934,6 +946,7 @@ def _read_and_assemble(
         converted=converted,
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
         estimated=served.estimated,
+        served_years=None if plan.served_years is None else plan.served_years.years,
     )
 
 
