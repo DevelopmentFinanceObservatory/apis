@@ -88,6 +88,7 @@ from search.models import (
     GraphRef,
     Headline,
     IdentityFacetBinding,
+    IdentityFacetValueRequest,
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
@@ -826,9 +827,10 @@ def _measure_alternatives(
     differs only in price basis is published with axis "unit" and labelled by its prices; the rest are the measure menu, axis "what" (see
     ``_menu_siblings``). The main label is `measure_label_for_partition`'s. Each
     alternative carries its own identity definition so resubmission can recover that
-    measure family. ``served_rows`` counts the rows a resubmit of a sibling's identity
-    would serve (`option_coverage.measure_served_counter`), and omits a sibling it counts
-    none for.
+    measure family. A unit option's definition binds no unit request
+    (`_without_unit_request`), so it serves the basis its qualifier names. ``served_rows``
+    counts the rows a resubmit of a sibling's identity would serve
+    (`option_coverage.measure_served_counter`), and omits a sibling it counts none for.
     """
     from search.models import (
         SpecAlternativeMeasure,
@@ -846,7 +848,12 @@ def _measure_alternatives(
         *((sibling, "unit", basis) for sibling, basis in unit_options),
     ]
     for sibling_partition, axis, basis in entries:
-        sibling = mint_sibling_identity(identity, sibling_partition, axes, labels)
+        sibling = mint_sibling_identity(
+            identity if basis is None else _without_unit_request(identity),
+            sibling_partition,
+            axes,
+            labels,
+        )
         if sibling.label is None:
             continue
         counted = served_rows(sibling.identity) if served_rows is not None else None
@@ -867,6 +874,18 @@ def _measure_alternatives(
             )
         )
     return alternatives, measure_label_for_partition(partition)
+
+
+def _without_unit_request(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` with its unit request unbound. A unit request names the prices it
+    serves, so a sibling at another price basis that kept it would serve the request's
+    basis, not its own, or refuse: a constant-price series converts to no currency. The
+    sibling then serves its series in the currency they are published in."""
+    facets = identity.facets or {}
+    if not isinstance(facets.get("unit"), IdentityFacetValueRequest):
+        return identity
+    kept = {axis: binding for axis, binding in facets.items() if axis != "unit"}
+    return identity.model_copy(update={"facets": kept or None})
 
 
 class MeasureLabel(NamedTuple):
