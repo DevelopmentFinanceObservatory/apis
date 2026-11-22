@@ -170,7 +170,6 @@ from materialise import (
 )
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
-    CompositeYearsStaleError,
     DatasetDisagreementError,
     DefaultFacetUndefinedError,
     DestinationUnclassifiedError,
@@ -877,9 +876,6 @@ _RUN_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     MixedGrainError,
     MembersNotHeldError,
     DatasetDisagreementError,
-    # A stacked composite's component whose rows hold a year the coverage snapshot lacks
-    # (`materialise.composite`).
-    CompositeYearsStaleError,
     CollectionProbeCeilingExceededError,
     UpstreamVersionChangedError,
     UpstreamResponseError,

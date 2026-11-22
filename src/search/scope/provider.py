@@ -83,6 +83,7 @@ from code_index.scope_conventions import (
 )
 from dfo_platform.roles import role_key_axis
 from materialise.composite import spans
+from origin_catalogue import pinned_reads
 from search.catalogue.counts import COUNTRY_PREFIX
 from search.engine.spec_id import identity_spec_id
 from search.models import (
@@ -603,7 +604,9 @@ def _composite_years(
     if not donors:
         own = frozenset(y for y, n in _year_counts(identity, facts).items() if n > 0)
         return _CompositeYears(own=[own], held=[covered], counts=counts)
-    by_component = [donor_years(c.component.identity, facts=facts) for c in served]
+    # Each component reads as `served_components` reads it, with no source scope but its pin.
+    with pinned_reads(None):
+        by_component = [donor_years(c.component.identity, facts=facts) for c in served]
     held = [
         covered & frozenset[int]().union(*(years.get(donor, frozenset()) for years in by_component))
         for donor in donors

@@ -8,6 +8,7 @@ them."""
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Mapping, Sequence
 
 import httpx
@@ -18,6 +19,7 @@ from code_index.declarations import COMPOSITES, CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api.config import DatasetsBuildSettings
 from materialise import composite as composite_module
+from origin_catalogue import CatalogueNotBound, scoped_reads
 from search.models import BaseIdentity
 from search.scope.composite import ServedComponent, composite_download, served_components
 from search.scope.tables import ScopeFacts
@@ -279,7 +281,22 @@ def _dac2a_case(
     """France's DAC2a ODA to Kenya including imputed ODA, minted from SDMX rows `populated`
     holds over a coverage snapshot of `snapshot`, and Search's served components over the
     same snapshot."""
-    coverage = FakeCoverageService(
+    coverage = _dac2a_coverage(snapshot)
+    client = _client(
+        graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
+        sdmx_transport=httpx.MockTransport(lambda request: _sdmx_response(populated, request)),
+        coverage=coverage,
+        artifact_store=FakeArtifactStore(),
+        settings=DatasetsBuildSettings.from_env(),
+    )
+    identity = _dac2a_oda_identity("Net")
+    facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
+    return _mint(client, identity=identity), served_components(identity, facts=facts)
+
+
+def _dac2a_coverage(snapshot: Sequence[_SnapshotRow]) -> FakeCoverageService:
+    """A coverage snapshot of DAC2a rows `snapshot`."""
+    return FakeCoverageService(
         build_coverage_index(
             list(snapshot),
             role_names={
@@ -294,16 +311,6 @@ def _dac2a_case(
             },
         )
     )
-    client = _client(
-        graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
-        sdmx_transport=httpx.MockTransport(lambda request: _sdmx_response(populated, request)),
-        coverage=coverage,
-        artifact_store=FakeArtifactStore(),
-        settings=DatasetsBuildSettings.from_env(),
-    )
-    identity = _dac2a_oda_identity("Net")
-    facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
-    return _mint(client, identity=identity), served_components(identity, facts=facts)
 
 
 def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_s_keys():
@@ -341,7 +348,8 @@ def test_a_component_s_held_years_read_only_the_provenance_it_pins():
     """DAC2a's imputed line from France to Kenya holds 2018 and 2019 only under the CRS's
     provenance, which the imputed component's DAC2a pin does not read. The composite serves
     2020 and 2021, the years the line holds under DAC2a, so the mint drops total ODA's 2018
-    and 2019 in place of serving them alone, and Search states the same years."""
+    and 2019 in place of serving them alone, and Search states the same years and counts
+    the imputed line's series in those alone."""
     populated: _Populated = {
         _BILATERAL_206: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
         _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
@@ -361,18 +369,45 @@ def test_a_component_s_held_years_read_only_the_provenance_it_pins():
         "bilateral": frozenset({2020, 2021}),
         "imputed": frozenset({2020, 2021}),
     }
+    assert {item.component.role: item.years.held for item in served} == {
+        "bilateral": frozenset({2018, 2019, 2020, 2021}),
+        "imputed": frozenset({2020, 2021}),
+    }
 
 
-def test_a_snapshot_behind_a_component_s_rows_refuses_the_mint():
+def test_a_part_s_source_scope_leaves_a_composite_s_component_reads_alone():
+    """A part read under the CRS's source scope builds its scope over the DAC2a composite.
+    Each component reads under its own DAC2a pin alone, as the composite answer
+    (`region.composite_answer.composite_served`) and the mint read it, so the composite
+    serves the years and counts it serves under no source scope."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+    coverage = _dac2a_coverage(_rows_of(populated)).snapshot()
+    identity = _dac2a_oda_identity("Net")
+
+    with scoped_reads(frozenset({_PROVENANCE[_CRS_FACET]})):
+        scoped = served_components(identity, facts=ScopeFacts(index=get_index(), coverage=coverage))
+    unscoped = served_components(identity, facts=ScopeFacts(index=get_index(), coverage=coverage))
+
+    assert [(item.served, item.years) for item in scoped] == [
+        (item.served, item.years) for item in unscoped
+    ]
+    assert {item.served for item in unscoped} == {frozenset({2020, 2021})}
+
+
+def test_a_snapshot_behind_a_component_s_rows_drops_and_names_the_years_it_lacks():
     """SDMX serves total ODA from France to Kenya in 2020 and 2021, while the coverage
-    snapshot holds it in 2020 alone. Serving the snapshot's years would drop 2021's rows with
-    no trace, so the mint refuses as a server fault."""
+    snapshot holds it in 2020 alone, as when a source publishes before the snapshot
+    rebuilds. The mint serves 2020, the year Search states from the same snapshot, and
+    names 2021 among the bilateral line's dropped years."""
     populated: _Populated = {
         _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
         _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
     }
 
-    minted, _served = _dac2a_case(
+    minted, served = _dac2a_case(
         populated,
         [
             (_BILATERAL_206, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020]),
@@ -380,8 +415,10 @@ def test_a_snapshot_behind_a_component_s_rows_refuses_the_mint():
         ],
     )
 
-    assert minted.status_code == 500, minted.text
-    assert minted.json()["code"] == "internal_error"
+    assert minted.status_code == 200, minted.text
+    by_role = {entry["role"]: entry for entry in minted.json()["trace"]["components"]}
+    assert by_role["bilateral"]["dropped_years"] == [2021]
+    assert {item.served for item in served} == {frozenset({2020})}
 
 
 def test_the_mint_reads_held_years_only_for_a_stacked_component_that_reads_gaps_as_unknown(
@@ -416,3 +453,19 @@ def test_the_mint_reads_held_years_only_for_a_stacked_component_that_reads_gaps_
     components = component_identities(get_index(), _identity())
     assert components is not None
     assert read == [c.identity for c in components if c.role == "bilateral"]
+
+
+@pytest.mark.parametrize("role", ["bilateral", "imputed"])
+def test_a_component_s_years_refuse_a_read_with_no_catalogue_bound(role: str):
+    """Each component of the DAC2a composite reads its years under the caller's catalogue,
+    the bilateral line's unpinned and the imputed line's pinned to DAC2a alike, so a context
+    with none bound refuses."""
+    components = component_identities(get_index(), _dac2a_oda_identity("Net"))
+    assert components is not None
+    component = next(c for c in components if c.role == role)
+    coverage = _dac2a_coverage([]).snapshot().index
+
+    with pytest.raises(CatalogueNotBound):
+        contextvars.Context().run(
+            composite_module.read_component_years, get_index(), coverage, component
+        )

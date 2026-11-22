@@ -717,9 +717,7 @@ def _materialise_components(
     left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
     years are read from, and `DestinationUnclassifiedError` before any read when a component
     reads a population `coverage_index` holds a destination outside of, or cannot list the
-    recipients of (`code_index.composites.population_check`). Composing raises
-    `materialise.errors.CompositeYearsStaleError` where a component's rows hold a year
-    `coverage_index` holds none of its series in for the frame's places."""
+    recipients of (`code_index.composites.population_check`)."""
     if coverage_index is None:
         raise MaterialisationUsageError(
             "a composite reads its components' years from the coverage snapshot"

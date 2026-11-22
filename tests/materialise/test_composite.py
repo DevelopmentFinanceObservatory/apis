@@ -34,7 +34,7 @@ from materialise.composite import (
 from materialise.content_version import mint_version_from_chunks
 from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
-from materialise.errors import CompositeYearsStaleError, MaterialisationUsageError
+from materialise.errors import MaterialisationUsageError
 from materialise.finish import _coverage_below_scope_warning
 from materialise.frame_build import build_frame
 from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
@@ -292,22 +292,18 @@ def test_stacked_years_reads_held_years_only_where_a_missing_row_is_unknown(
     assert stacked_years(components) == served
 
 
-@pytest.mark.parametrize(
-    "held", [pytest.param((2011,), id="one-year"), pytest.param((), id="none")]
-)
-def test_rows_in_a_year_the_snapshot_holds_no_series_in_refuse_the_composite(
-    held: tuple[int, ...],
-):
+def test_rows_in_a_year_the_snapshot_lacks_are_dropped_and_named():
     """The bilateral rows hold 2012, a year the coverage snapshot holds no bilateral series
-    in for the frame's places, so the snapshot the composite's years came from is behind the
-    rows, and composing refuses where it would drop them."""
+    in for the frame's places, as when a source publishes before the snapshot rebuilds. The
+    composite serves the years the snapshot states, and the bilateral summary names 2012 as
+    dropped."""
     bilateral = _component(
         _STACKED,
         "bilateral",
         [(_B, "country/KEN", year, 10.0) for year in (2011, 2012)],
         provenance=_CRS,
         members=[_B],
-        held=held,
+        held=(2011,),
     )
     imputed = _component(
         _STACKED,
@@ -317,13 +313,10 @@ def test_rows_in_a_year_the_snapshot_holds_no_series_in_refuse_the_composite(
         members=[_I],
     )
 
-    with pytest.raises(CompositeYearsStaleError) as refused:
-        _compose([bilateral, imputed])
+    result = _compose([bilateral, imputed])
 
-    assert (refused.value.role, refused.value.years) == (
-        "bilateral",
-        tuple(year for year in (2011, 2012) if year not in held),
-    )
+    assert {period for _, _, period, _, _ in _rows(result)} == {"2011"}
+    assert _summary(result, "bilateral")["dropped_years"] == [2012]
 
 
 def test_an_internal_gap_leaves_the_year_out_of_every_component():

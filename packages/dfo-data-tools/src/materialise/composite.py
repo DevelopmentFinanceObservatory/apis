@@ -8,11 +8,10 @@ served from. Each component materialises through `pipeline.materialise_group` al
   snapshot and every component that reads a missing row as unknown holds a series in under
   some of the frame's places (`read_component_years`, `stacked_years`), inside the
   requested window. Rows of other years are dropped, and each component's summary names
-  the years it lost. A component of the second kind whose rows hold a year the snapshot
-  holds none of its series in refuses the composite (`CompositeYearsStaleError`), since the
-  snapshot the years were read from is behind the rows. Search reads the same years
-  through the same function (`search.scope.composite.served_components`). A spliced
-  composite serves each component's rows in its own declared years.
+  the years it lost (`dropped_years`), those of a snapshot that lags the rows included.
+  Search reads the same years through the same function
+  (`search.scope.composite.served_components`). A spliced composite serves each
+  component's rows in its own declared years.
 - Inside those years, each member of a component whose absence reads as zero
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and
   period, that another component fills and it does not. Outside them no zero row is
@@ -42,6 +41,7 @@ from __future__ import annotations
 import heapq
 import itertools
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
@@ -72,7 +72,7 @@ from materialise.content_version import mint_version_from_digest, stream_frame_s
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.dependencies import Dependencies, members_digest
 from materialise.enrichment import EnrichmentLookup
-from materialise.errors import CompositeYearsStaleError, MaterialisationUsageError
+from materialise.errors import MaterialisationUsageError
 from materialise.finish import (
     _clamped_years,
     _conversion_trace,
@@ -87,7 +87,7 @@ from materialise.profile import OutputProfileFold
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
 from materialise.window import AppliedWindow, Coverage, RequestedWindow, compute_applied_window
-from origin_catalogue import scoped_reads
+from origin_catalogue import pinned_reads
 from series_coverage.coverage_types import AXIS_COVERAGE_ROLES
 
 if TYPE_CHECKING:
@@ -209,15 +209,23 @@ def held_years(
     return coverage.years_held(variables=variables, bound=bound_roles(identity))
 
 
+def component_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+    """Binds the caller's catalogue with no source scope but the provenances component
+    `identity` pins (`code_index.members.pinned_refs`, `origin_catalogue.pinned_reads`),
+    whatever source scope the caller reads under, as a Datasets mint of the composite reads
+    the component's rows. Raises `origin_catalogue.CatalogueNotBound` with no catalogue bound
+    to the caller's context."""
+    facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets") or {})
+    return pinned_reads(frozenset(pinned_refs(facets)) or None)
+
+
 def read_component_years(
     index: CodeIndex, coverage: CoverageIndex, component: ComponentIdentity
 ) -> ComponentYears:
     """The years `component` of a stacked composite reads in `coverage` (`ComponentYears`),
-    under the provenances its identity pins (`code_index.members.pinned_refs`,
-    `origin_catalogue.scoped_reads`), as the mint reads its rows. Needs a catalogue bound to
-    the caller's context when the identity pins a provenance."""
-    facets = cast("Mapping[str, Mapping[str, object]]", component.identity.get("facets") or {})
-    with scoped_reads(frozenset(pinned_refs(facets)) or None):
+    under the provenances its identity pins alone (`component_reads`), as the mint reads its
+    rows."""
+    with component_reads(component.identity):
         return ComponentYears(
             table=table_years(index, coverage, component.identity),
             held=(
@@ -475,13 +483,8 @@ def _check_components(
                 )
 
 
-def _stacked_component_years(
-    components: Sequence[ComponentResult], *, held: Mapping[ComponentRole, set[int]]
-) -> list[ComponentYears]:
-    """Each stacked component's years in the coverage snapshot, `held` the years its rows
-    hold. Raises `CompositeYearsStaleError` for a component whose rows hold a year the
-    snapshot holds none of its series in under the frame's places (`ComponentYears.held`),
-    so a snapshot behind the rows refuses where it would drop them, and
+def _stacked_component_years(components: Sequence[ComponentResult]) -> list[ComponentYears]:
+    """Each stacked component's years in the coverage snapshot. Raises
     `MaterialisationUsageError` for a component whose years were not read."""
     found: list[ComponentYears] = []
     for component in components:
@@ -489,10 +492,6 @@ def _stacked_component_years(
             raise MaterialisationUsageError(
                 f"stacked component {component.role!r} carries no coverage years"
             )
-        if component.years.held is not None:
-            unheld = held[component.role] - component.years.held
-            if unheld:
-                raise CompositeYearsStaleError(role=component.role, years=sorted(unheld))
         found.append(component.years)
     return found
 
@@ -537,7 +536,7 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
                     table, templates, component_templates.setdefault(component.role, {})
                 )
     if composite.kind == "stacked":
-        shared = stacked_years(_stacked_component_years(components, held=held))
+        shared = stacked_years(_stacked_component_years(components))
         kept = {component.role: shared for component in components}
     else:
         kept = {

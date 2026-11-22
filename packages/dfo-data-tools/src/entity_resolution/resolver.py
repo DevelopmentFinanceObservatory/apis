@@ -270,6 +270,16 @@ def _leftover_words(phrase: str, span: str) -> list[str]:
     return leftover
 
 
+def _find_run(words: tuple[str, ...], run: tuple[str, ...]) -> int | None:
+    """The index where `run` first appears as consecutive items of `words`, if it does."""
+    if not run:
+        return None
+    for i in range(len(words) - len(run) + 1):
+        if words[i : i + len(run)] == run:
+            return i
+    return None
+
+
 def _own_words(resolver: Resolver, entity_id: str) -> frozenset[str]:
     """The words of every name and alias the resolver holds for `entity_id`."""
     record = resolver.entity(entity_id)
@@ -300,11 +310,25 @@ def _span_covers_phrase(
 ) -> bool:
     """Whether the words `span` leaves of `phrase` add no qualifier.
 
-    Each leftover word must be a filler word, a word of the group's own names, or the one
+    The span extends over the words of the group's own names that touch it, so `OECD DAC
+    donors` passes through its `DAC` span. Each remaining word must be a filler word or the one
     parenthesised token that alone resolves to the same group: `low-income countries (LICs)`
-    and `European Union (EU)` pass, `developing countries (DAC)` and `G7 countries
-    (excluding Canada)` fail."""
-    leftover = _leftover_words(phrase, span)
+    and `European Union (EU)` pass, `developing countries (DAC)`, `G7 countries (excluding
+    Canada)` and `OECD countries in the DAC` fail."""
+    phrase_words = _words(phrase)
+    span_words = _words(span)
+    own = _own_words(resolver, entity_id)
+    start = _find_run(phrase_words, span_words)
+    if start is None:
+        leftover = _leftover_words(phrase, span)
+        own = frozenset()
+    else:
+        first, last = start, start + len(span_words)
+        while first > 0 and phrase_words[first - 1] in own:
+            first -= 1
+        while last < len(phrase_words) and phrase_words[last] in own:
+            last += 1
+        leftover = [*phrase_words[:first], *phrase_words[last:]]
     parens = _PAREN_RE.findall(phrase)
     if (
         len(parens) == 1
@@ -313,8 +337,7 @@ def _span_covers_phrase(
         and _names_same_group(resolver, parens[0].strip(), context, entity_id)
     ):
         leftover.remove(token[0])
-    allowed = _FILLER_WORDS | _own_words(resolver, entity_id)
-    return all(word in allowed for word in leftover)
+    return all(word in _FILLER_WORDS for word in leftover)
 
 
 def _parse_group_survivors(

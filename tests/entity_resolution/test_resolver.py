@@ -754,7 +754,13 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 
 @pytest.mark.parametrize(
     "text",
-    ["developing countries (DAC)", "African countries (G20)", "G7 countries (excluding Canada)"],
+    [
+        "developing countries (DAC)",
+        "African countries (G20)",
+        "G7 countries (excluding Canada)",
+        "OECD countries in the DAC",
+        "OECD members of the DAC",
+    ],
 )
 def test_a_phrase_wider_than_its_group_span_does_not_resolve_to_the_group(
     shared_resolver, text: str
