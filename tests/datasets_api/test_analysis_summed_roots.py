@@ -134,9 +134,10 @@ def _rig(
 ):
     """A client over a minted dataset of two StatVars (one with `sole`), each 2020 value of one
     recipient, its version store, and the root naming that version with no enrichment. With
-    `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`)."""
+    `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`, unless
+    `code_index` is given)."""
     store = FakeVersionRecordDatasetStore()
-    if two_axes:
+    if two_axes and code_index is None:
         code_index = _two_axis_code_index()
     client = _client(
         graph=_two_axis_graph() if two_axes else _graph(),

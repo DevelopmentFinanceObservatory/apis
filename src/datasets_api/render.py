@@ -81,6 +81,7 @@ from urllib.parse import urlencode
 import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_table
+from dfo_frame_grammar.arrow import build_frame_from_arrow
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -136,7 +137,7 @@ from datasets_api.manifest_models import (
     Manifest,
     PartyTotalsLeftOutModel,
 )
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import (
     CutFrame,
@@ -164,6 +165,7 @@ from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.named import named_capped
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
 from materialise.bundle import (
@@ -194,7 +196,7 @@ from materialise.bundle_sources import (
     source_provenance,
 )
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import mint_version_from_digest
+from materialise.content_version import mint_version_from_digest, stream_frame_sha256
 from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
 from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.formats import (
@@ -299,9 +301,10 @@ class GroupbyCollapseRendering:
     `frame_sha256` is the hash of `frame`. `content_version` is the version `frame` is: minted
     from that hash alone, or the base version's own token when `frame` is the base frame
     (`render_and_store`).
-    `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
-    sums. `adds` says whether the collapse added StatVars together (`groupby.adds_stat_vars`);
-    a re-key that keeps each StatVar in a tuple of its own adds none."""
+    `contributing_member_count` counts distinct StatVars with rows that a `groupby.codes`
+    selection keeps, every one with no selection. Callers use it to warn about sums. `adds` says
+    whether the collapse added those StatVars together (`groupby.adds_stat_vars`); a re-key
+    that keeps each StatVar in a tuple of its own adds none."""
 
     frame: Frame
     role_columns: tuple[str, ...]
@@ -346,7 +349,8 @@ class DerivedVersion:
     `summed` is set when the frame is a collapse, which sums the definition's variables.
     `party_totals_left_out` holds the trace entries of the totals the cut left out
     (`PartyTotalsCut.trace_entries`), empty when none. `adds` says whether a collapse added
-    StatVars together (`GroupbyCollapseRendering.adds`)."""
+    StatVars together (`GroupbyCollapseRendering.adds`). `groupby` is the groupby that summed a
+    collapse, whose `codes` select the StatVars it adds, `None` for a cut alone."""
 
     frame_chunks: Callable[[], Iterator[Frame]]
     role_columns: tuple[str, ...]
@@ -357,6 +361,7 @@ class DerivedVersion:
     summed: bool
     party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
     adds: bool = True
+    groupby: GroupbyOptions | None = None
 
 
 class FrameMode(StrEnum):
@@ -377,11 +382,37 @@ class FrameMode(StrEnum):
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
-    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`) with
-    `QueryOptionsInvalid`, before any resolution or read. A `None` index decodes nothing, so it
-    checks nothing. Frame-dependent refusals run in `_reshape`. Groupby, decode, and
-    disabled-enrichment checks need the materialised frame."""
-    if code_index is None or options.groupby is None or options.groupby.levels is None:
+    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`), and a
+    `groupby.codes` axis outside its summable code systems (`summable_axes`) or listing a code
+    that matches no row of its axis (`_unselectable_codes`), with `QueryOptionsInvalid`, before
+    any resolution or read. A `None` index decodes nothing, so it checks nothing.
+    Frame-dependent refusals run in `_reshape`. Groupby, decode, and disabled-enrichment checks
+    need the materialised frame."""
+    if code_index is None or options.groupby is None:
+        return
+    summable = summable_axes(code_index.declarations)
+    levels = options.groupby.levels or {}
+    for code_system, listed in (options.groupby.codes or {}).items():
+        pointer = f"/options/groupby/codes/{pointer_segment(code_system)}"
+        if code_system not in summable:
+            raise QueryOptionsInvalid(
+                pointer=pointer,
+                detail=f"groupby.codes names {code_system!r}, which this deployment does not "
+                "declare a summable code system",
+            )
+        depth = levels.get(code_system)
+        if unselectable := _unselectable_codes(
+            listed, code_system=code_system, depth=depth, code_index=code_index
+        ):
+            at_depth = "" if depth is None else f" at or above levels depth {depth}"
+            raise QueryOptionsInvalid(
+                pointer=pointer,
+                detail=f"groupby.codes lists {named_capped(unselectable)} under "
+                f"{code_system!r}, which are no {code_system} code dcids{at_depth} in this "
+                f"deployment's code index, so they select no row; list the dcids the "
+                f"stat_var_{code_system} column holds",
+            )
+    if options.groupby.levels is None:
         return
     allowed = level_axes(code_index.declarations)
     for code_system in options.groupby.levels:
@@ -392,6 +423,24 @@ def check_options_supported(options: MintOptions, *, code_index: CodeIndex | Non
                 "declare a summable hierarchical code system disjoint from its children; GET "
                 f"/api/datasets/capabilities lists them as groupby_level_axes: {sorted(allowed)!r}",
             )
+
+
+def _unselectable_codes(
+    listed: Sequence[str], *, code_system: str, depth: int | None, code_index: CodeIndex
+) -> list[str]:
+    """The entries of `listed`, a `groupby.codes` list on `code_system`, that no row of the
+    rendering can hold, so they would select nothing: each that is no dcid of a `code_system`
+    code in `code_index` (a publisher code, a label, a `dcid:`-prefixed dcid), and, with a
+    `levels` `depth`, each code below that depth, which the roll-up rewrites to its ancestor
+    (`groupby.roll_up_levels`). A code shallower than the depth keeps its own dcid, so it
+    stays selectable."""
+    unselectable: list[str] = []
+    for code in listed:
+        row = code_index.code_by_dcid(code)
+        rolled = None if depth is None else code_index.ancestor_at_depth(code, depth)
+        if row is None or row.code_system != code_system or rolled not in (None, code):
+            unselectable.append(code)
+    return unselectable
 
 
 def _column_cap(format: str) -> int:
@@ -523,7 +572,7 @@ def _stream_first_axis_collapse(
 def _fold_permits() -> threading.BoundedSemaphore:
     """The process's groupby fold permits, `DatasetsBuildSettings.groupby_fold_max_concurrency`
     of them, shared by every render of the process: mint, operation worker and head hit. A
-    collapse holds one from its first fold to its tuple rows (`_reshape_groupby_collapse`),
+    collapse holds one from its first fold to its last sum (`_reshape_groupby_collapse`),
     so a further collapse waits for a permit. Read from the
     environment once, at the first collapse."""
     return threading.BoundedSemaphore(DatasetsBuildSettings.from_env().groupby_fold_max_concurrency)
@@ -708,10 +757,19 @@ def _reshape_groupby_collapse(
     deadline: float | None,
     levels: Mapping[str, int] | None = None,
     components: bool = False,
+    selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
-    """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
-    `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
-    `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
+    """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
+    selection on axes the frame decodes, every fold still reads every row, so the decode-gap,
+    collision, provenance and fold refusals refuse exactly as the same render without a
+    selection does; only then are the summed rows whose code on a selected axis is unlisted
+    dropped (`_selected_rows`). Each kept axis is a key of every sum, so a summed row holds the
+    rows of the StatVars its kept codes name alone, and the rows left equal a sum of the selected
+    StatVars. The contributors are the selected StatVars with rows, so the collapse counts and
+    adds only what its rows hold.
+
+    With `grammar_frame`, it restores `stat_var` on every row and builds a frame whose roles are
+    `entity_columns` plus the `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
     decoded axis the sum does not collapse (`groupby.unsummed_axes`), which `grammar_frame`
     holds to one value. A member with no rows counts as zero when the frame's dataset declares
     it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
@@ -766,9 +824,10 @@ def _reshape_groupby_collapse(
         lookup=decode_lookup,
     )
     remaining_columns = population_columns
-    # One fold permit covers the collapse from its first fold to its tuple rows.
+    # One fold permit covers the collapse from its first fold to its last sum.
     with _fold_permit(deadline):
-        # Arrow from a fold over frame slices until the last axis sums, then tuple rows.
+        # Arrow from a fold over frame slices until the last axis sums. A grammar frame is built
+        # from that output (`collapse_frame`), any other output read as tuple rows.
         collapsed: GroupedTable = cast(ReshapeTable, current)
         for axis_index, axis in enumerate(collapse_columns):
             positions = tuple(population_columns.index(c) for c in remaining_columns)
@@ -841,7 +900,18 @@ def _reshape_groupby_collapse(
                     ),
                 )
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
-        current = cast(Table, rows_table(collapsed))
+        if selection is not None:
+            collapsed = _selected_rows(collapsed, selection)
+            contributors = {
+                ref
+                for ref in contributors
+                if all(
+                    decode_lookup.get(ref, {}).get(axis) in codes
+                    for axis, codes in selection.items()
+                )
+            }
+        if not grammar_frame:
+            current = cast(Table, rows_table(collapsed))
 
     adds = adds_stat_vars(
         contributors, index=code_index, kept=kept, levels=levels or {}, components=components
@@ -870,22 +940,12 @@ def _reshape_groupby_collapse(
             decoded_code_systems=decoded_code_systems, declarations=code_index.declarations
         )
     }
-    # Unwrap `UnitRequest` cells to the shape `build_frame` accepts.
-    rows_as_dicts = [
-        {
-            **{
-                column: unit_cell_for_rebuild(value)
-                for column, value in zip(current.columns, row, strict=True)
-                if column not in left_out
-            },
-            _STAT_VAR_COLUMN: stat_var_ref,
-        }
-        for row in current.rows
-    ]
     role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
-    collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
+    collapsed_frame = collapse_frame(
+        collapsed, left_out=left_out, stat_var_ref=stat_var_ref, role_columns=role_columns
+    )
     current = cast(Table, collapsed_frame)
-    collapsed_frame_sha256 = frame_sha256(collapsed_frame)
+    collapsed_frame_sha256 = stream_frame_sha256((collapsed_frame,))
     collapse_info = GroupbyCollapseRendering(
         frame=collapsed_frame,
         role_columns=role_columns,
@@ -896,6 +956,97 @@ def _reshape_groupby_collapse(
         adds=adds,
     )
     return current, decode_plan, collapse_info
+
+
+def _selected_rows(
+    collapsed: GroupedTable, selection: Mapping[str, frozenset[str]]
+) -> GroupedTable:
+    """The rows of a collapse's output `collapsed` whose `stat_var_<axis>` cell is one of
+    `selection`'s codes on each of its axes, in their order: an Arrow table stays Arrow, any
+    other output is read as tuple rows."""
+    if isinstance(collapsed, pa.Table):
+        mask = None
+        for axis, codes in selection.items():
+            column = collapsed.column(f"{_KEPT_AXIS_PREFIX}{axis}")
+            kept = pc.is_in(column, value_set=pa.array(sorted(codes), column.type))
+            mask = kept if mask is None else pc.and_(mask, kept)
+        return collapsed if mask is None else collapsed.filter(mask)
+    rows = rows_table(collapsed)
+    positions = {
+        rows.columns.index(f"{_KEPT_AXIS_PREFIX}{axis}"): codes for axis, codes in selection.items()
+    }
+    return ReshapeTable(
+        columns=rows.columns,
+        rows=tuple(
+            row
+            for row in rows.rows
+            if all(row[position] in codes for position, codes in positions.items())
+        ),
+    )
+
+
+def collapse_frame(
+    collapsed: GroupedTable,
+    *,
+    left_out: Collection[str],
+    stat_var_ref: str,
+    role_columns: Sequence[str],
+) -> Frame:
+    """The grammar frame of a collapse's output `collapsed`: every column but `left_out`, with
+    `stat_var_ref` in `stat_var` on every row, keyed by `role_columns`. An Arrow table, which
+    the streamed fold gives when its sums need no row fold, is built column by column
+    (`build_frame_from_arrow`). A table of tuple rows is built row by row (`Frame.build`), with
+    each `UnitRequest` cell unwrapped to the JSON `Frame.build` accepts. Both builders normalise
+    and sort each cell alike, so the frames, their bytes and their hashes are equal
+    (`tests/datasets_api/test_render_collapse_frame_columnar.py`)."""
+    if isinstance(collapsed, pa.Table):
+        table = collapsed.select(
+            [
+                column
+                for column in collapsed.column_names
+                if column not in left_out and column != _STAT_VAR_COLUMN
+            ]
+        ).append_column(
+            _STAT_VAR_COLUMN,
+            pa.repeat(pa.scalar(stat_var_ref, type=pa.string()), collapsed.num_rows),
+        )
+        return build_frame_from_arrow(table, role_keys=role_columns)
+    rows = rows_table(collapsed)
+    rows_as_dicts = [
+        {
+            **{
+                column: unit_cell_for_rebuild(value)
+                for column, value in zip(rows.columns, row, strict=True)
+                if column not in left_out
+            },
+            _STAT_VAR_COLUMN: stat_var_ref,
+        }
+        for row in rows.rows
+    ]
+    return build_frame(role_keys=role_columns, rows=rows_as_dicts)
+
+
+def _decoded_selection(
+    groupby: GroupbyOptions, *, decoded_code_systems: Sequence[str]
+) -> dict[str, frozenset[str]] | None:
+    """The `groupby.codes` selection of `groupby` as sets, `None` with none.
+
+    Raises:
+        QueryOptionsInvalid: A `codes` axis this frame does not decode, at
+            `/options/groupby/codes/<axis>`. Its rows hold no code to select on, so the
+            selection would keep every row, which a caller could not tell from a selection
+            that held.
+    """
+    if groupby.codes is None:
+        return None
+    for code_system in groupby.codes:
+        if code_system not in decoded_code_systems:
+            raise QueryOptionsInvalid(
+                pointer=f"/options/groupby/codes/{pointer_segment(code_system)}",
+                detail=f"groupby.codes names {code_system!r}, which this frame's StatVars do "
+                "not carry, so it selects no row; leave it out of groupby.codes",
+            )
+    return {axis: frozenset(listed) for axis, listed in groupby.codes.items()}
 
 
 def _reshape_groupby(
@@ -959,6 +1110,7 @@ def _reshape_groupby(
             requests=decode_plan.requests,
             lookup=roll_up_levels(decode_plan.lookup, index=code_index, levels=levels),
         )
+    selection = _decoded_selection(options.groupby, decoded_code_systems=decoded_code_systems)
     axes_to_collapse = collapse_axes(
         by=options.groupby.by,
         decoded_code_systems=decoded_code_systems,
@@ -1000,6 +1152,7 @@ def _reshape_groupby(
             deadline=deadline,
             levels=levels,
             components=components,
+            selection=selection,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
@@ -2134,6 +2287,9 @@ class _LongLayout:
     def apply(self, table: Table) -> Table:
         if self.frame:
             return table
+        if isinstance(table, Frame):
+            # `Frame.rows` rebuilds every row on each read, and the projection reads them twice.
+            table = _frame_rows(table.columns, table.table)
         if self.projection is None:
             self.projection = plan_long_projection(
                 table.columns,
@@ -3132,7 +3288,11 @@ def render_and_store(
         ):
             collapse = replace(collapse, content_version=content_version)
         derived = _derived_version(
-            collapse, cut=cut, content_version=content_version, entity_columns=entity_columns
+            collapse,
+            cut=cut,
+            content_version=content_version,
+            entity_columns=entity_columns,
+            groupby=options.groupby,
         )
         effective_content_version = (
             derived.content_version if derived is not None else content_version
@@ -3302,10 +3462,11 @@ def _derived_version(
     cut: CutFrame | None,
     content_version: str,
     entity_columns: Sequence[str],
+    groupby: GroupbyOptions | None = None,
 ) -> DerivedVersion | None:
     """The version a render's artifact belongs to when it is not `content_version`, the version
-    of the frame the render read: the collapse when it is a frame of its own, else the cut
-    frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
+    of the frame the render read: the collapse when it is a frame of its own, summed by
+    `groupby`, else the cut frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
     kept) is that frame, so a collapse of the cut frame equal to it is the cut frame."""
     if collapse is not None and collapse.content_version == content_version:
         return None
@@ -3323,6 +3484,7 @@ def _derived_version(
             summed=True,
             party_totals_left_out=left_out,
             adds=collapse.adds,
+            groupby=groupby,
         )
     if cut is None or cut_version is None:
         return None

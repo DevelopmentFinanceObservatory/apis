@@ -99,6 +99,58 @@ def levels_in_frame(
     return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
 
 
+def selected_stat_vars(
+    lookup: Mapping[str, Mapping[str, str]],
+    *,
+    codes: Mapping[str, Sequence[str]] | None,
+    decoded_code_systems: Sequence[str],
+) -> frozenset[str] | None:
+    """Return the StatVar refs of `lookup` whose decoded code on each `groupby.codes` axis this
+    frame decodes is one of that axis's listed codes, or `None` when `codes` names no such
+    axis. `lookup` is the decode lookup after any `levels` roll-up (`roll_up_levels`), so a
+    StatVar is selected by its rolled code. A row's decoded cell is its StatVar's lookup cell,
+    so a row is kept exactly when its `stat_var` is in the result; a StatVar with no cell on an
+    axis reads an empty cell, which no code matches. An axis outside `decoded_code_systems`
+    selects on nothing; a render refuses a selection on one (`render._decoded_selection`)."""
+    decoded = frozenset(decoded_code_systems)
+    in_frame = {
+        axis: frozenset(listed) for axis, listed in (codes or {}).items() if axis in decoded
+    }
+    if not in_frame:
+        return None
+    return frozenset(
+        ref
+        for ref, cells in lookup.items()
+        if all(cells.get(axis) in listed for axis, listed in in_frame.items())
+    )
+
+
+def selected_contributors(
+    contributors: Iterable[str],
+    *,
+    index: CodeIndex,
+    codes: Mapping[str, Sequence[str]] | None,
+    levels: Mapping[str, int] | None = None,
+) -> list[str]:
+    """Return `contributors` (`dcid:` refs or bare dcids), in their order, that a groupby with
+    the selection `codes` and the roll-up `levels` sums: each one whose code-index code on every
+    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed, as the render keeps
+    the summed rows of those codes (`selected_stat_vars`). An axis no contributor carries
+    selects on nothing."""
+    refs = list(contributors)
+    if not codes:
+        return refs
+    lookup: dict[str, dict[str, str]] = {}
+    for ref in refs:
+        statvar = index.statvar_by_dcid(_bare_dcid(ref))
+        lookup[ref] = dict(statvar.constraint_properties) if statvar is not None else {}
+    if levels:
+        lookup = roll_up_levels(lookup, index=index, levels=levels)
+    carried = sorted({axis for cells in lookup.values() for axis in cells})
+    selected = selected_stat_vars(lookup, codes=codes, decoded_code_systems=carried)
+    return refs if selected is None else [ref for ref in refs if ref in selected]
+
+
 def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
     """Return true when the groupby adds the components of `composite`, the composite the
     frame's rows carry as their provenance or `None`, into one total: the composite's

@@ -560,9 +560,28 @@ def test_a_duplicate_columns_entry_refuses_request_invalid_before_any_sdmx_call(
             "/options/groupby/levels/crsPurpose",
             id="negative-depth",
         ),
+        pytest.param(
+            {"by": ["time_period"], "op": "sum", "codes": {"crsPurpose": ["CRSPurposeCode120"]}},
+            "/options/groupby/codes",
+            id="code-axis-not-kept",
+        ),
+        pytest.param(
+            {
+                "by": ["stat_var", "crsPurpose"],
+                "op": "sum",
+                "codes": {"crsPurpose": ["CRSPurposeCode120"]},
+            },
+            "/options/groupby/codes",
+            id="codes-beside-a-kept-stat-var",
+        ),
+        pytest.param(
+            {"by": ["time_period", "recipient"], "op": "sum", "codes": {"recipient": ["KEN"]}},
+            "/options/groupby/codes/recipient",
+            id="codes-on-a-role-column",
+        ),
     ],
 )
-def test_a_groupby_level_the_deployment_cannot_roll_up_refuses_request_invalid(
+def test_a_groupby_level_or_code_selection_the_deployment_cannot_serve_refuses_request_invalid(
     groupby: dict, pointer: str
 ):
     client = _client()
