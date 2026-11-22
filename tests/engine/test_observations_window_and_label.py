@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.departures import spec_departure_facts
 from search.engine.region.codes import OBSERVATIONS_NO_POINTS
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
+from search.engine.retrieval.read_plan import (
+    PlanSeries,
+    plan_pairs,
+    read_in_years,
+    serves_continuation,
+)
+from search.engine.spec_build import build_spec
 from search.models import (
     TimeWindow,
 )
+from tests.engine._assemble_fixtures import _make_coverage, _make_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
     build_observations_planned,
@@ -251,6 +261,12 @@ def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
     """A read of Kenya in `years` under a 2010 to 2027 window, where a recorded facet holds
     2010 to 2016 and 2019 and an `Estimated` facet of one source continues it in
     `estimated_years`: the observations and the warning."""
+    preview, _reader = _continued_preview_and_reader(estimated_years, years)
+    return preview
+
+
+def _continued_preview_and_reader(estimated_years: list[int], years: frozenset[int]):
+    """`_continued_in_years`' preview and the graph double it read the facets from."""
 
     def facet(dates: list[int], value: float, **method: str) -> dict:
         return {
@@ -270,7 +286,7 @@ def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
             ]
         }
     )
-    return build_observations_planned(
+    preview = build_observations_planned(
         ["Count_Person"],
         {"observationAbout": ["country/KEN"]},
         graph=FakeGraph(),
@@ -280,6 +296,7 @@ def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
         coverage=empty_coverage_snapshot(),
         years=years,
     )
+    return preview, materialise_graph
 
 
 def test_a_read_in_years_states_estimates_only_where_a_served_point_is_one():
@@ -294,6 +311,64 @@ def test_a_read_in_years_states_estimates_only_where_a_served_point_is_one():
     assert series.holds_estimates is False
 
 
+@pytest.mark.parametrize(
+    ("years", "continued"),
+    [
+        pytest.param(frozenset({2019, 2021}), False, id="estimate-between-served-years"),
+        pytest.param(frozenset({2019, 2020}), True, id="estimate-in-a-served-year"),
+    ],
+)
+def test_a_plan_read_in_years_states_a_continuation_only_in_a_served_year(years, continued):
+    """The estimates continue the recorded series in 2020 and from 2022, so the plan over
+    its 2010 to 2027 window, its facets carrying their dates, serves them. Narrowed to the
+    served years, it states the continuation only where an estimate falls in one of them,
+    as the preview shows it, so a part reading the recorded 2019 alone states no modelled
+    values."""
+    (observations, _warn), materialise_graph = _continued_preview_and_reader(
+        [2020, *range(2022, 2030)], years
+    )
+    candidates = materialise_graph.variable_facets_batch(
+        stat_var="Count_Person", entities=["country/KEN"], needs_dates=True
+    )["country/KEN"]
+    plan = plan_pairs(
+        [
+            PlanSeries(
+                stat_var="Count_Person",
+                role_tuple=(("observationAbout", "country/KEN"),),
+                candidates=tuple(candidates),
+            )
+        ],
+        members=["Count_Person"],
+        years=TimeWindow(start_year=2010, end_year=2027),
+        declared=NO_DECLARED_POLICIES,
+    )
+    narrowed = read_in_years(plan, years)
+    spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/KEN")
+    previewed = build_spec(
+        composite=None,
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=spec.resolved.shape,
+        slots=[],
+        stat_vars=[],
+        entities=[],
+        coverage=_make_coverage(),
+        plan=plan,
+        preview_years=years,
+    )
+    modelled = [
+        fact
+        for fact in spec_departure_facts(previewed, operations=())
+        if fact.code == "modelled_values"
+    ]
+
+    assert narrowed is not None
+    assert serves_continuation(plan) is True
+    assert serves_continuation(narrowed) is continued
+    assert any(series.holds_estimates for series in observations.series) is continued
+    assert bool(modelled) is continued
+
+
 def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
     """The estimates hold 2017 to 2029, so the series holds a point in 2018. A mint of the
     window cuts the estimates up to the recorded 2019, so read in 2018 the series serves
@@ -304,6 +379,10 @@ def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
     assert (observations.omitted.dispatched, observations.omitted.empty) == (1, 1)
+    assert observations.omitted.message == (
+        "1 requested series were fetched; none holds a point in the 1 years the "
+        "observation preview reads."
+    )
 
 
 def _recorded_and_estimated_obs() -> dict:

@@ -44,6 +44,7 @@ from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
     data_years,
+    read_in_years,
     served_dates,
     served_provenances,
     serves_continuation,
@@ -1408,6 +1409,7 @@ def build_spec(
     stat_vars_member_count_exact: bool = True,
     walked: WalkedMembers | None = None,
     plan: ReadPlan | None = None,
+    preview_years: frozenset[int] | None = None,
     named_groups: Iterable[NamedGroup] = (),
     coverage_index: CoverageIndex | None = None,
     measure_served_rows: Callable[[BaseIdentity], ServedRows | None] | None = None,
@@ -1442,6 +1444,11 @@ def build_spec(
             continuation's points (``read_plan.serves_continuation``) becomes
             ``ResolvedSpec.continued``. The part's departures state all four. They never
             feed identity.
+        preview_years: The years the preview reads rows in, a composite component's
+            served years (`EngineOptions.preview_years`). ``ResolvedSpec.continued`` then
+            reads ``plan`` narrowed to them (``read_plan.read_in_years``), so it states a
+            continuation only where one serves a point the preview shows. None reads
+            ``plan`` as it stands.
         coverage_index: The request's coverage index, which ``ResolvedSpec.download``
             counts a role-bearing plan from (``download.download_facts``). Without it, or
             without a plan, the Spec states no download facts.
@@ -1691,12 +1698,21 @@ def build_spec(
         )
         .stating_group_totals(role_group_totals(named_groups, hashed_entities))
         .stating_data_years(years)
-        .stating_continued(serves_continuation(plan))
+        .stating_continued(serves_continuation(_previewed(plan, preview_years)))
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
     )
     return with_members_left_out(spec)
+
+
+def _previewed(plan: ReadPlan | None, years: frozenset[int] | None) -> ReadPlan | None:
+    """`plan` narrowed to `years`, the years its preview reads rows in
+    (`read_plan.read_in_years`), None when its own years hold none of them. A plan with no
+    years given, or a `latest` plan, which served years cannot narrow, stands as it is."""
+    if plan is None or years is None or plan.years == "latest":
+        return plan
+    return read_in_years(plan, years)
 
 
 def with_members_left_out(spec: Spec) -> Spec:

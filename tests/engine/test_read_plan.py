@@ -1440,6 +1440,61 @@ def test_a_continuation_counted_in_given_years_cuts_after_the_selection_s_last_y
     ] == [("fE", ((2019, 1),))]
 
 
+@pytest.mark.parametrize(
+    ("years", "continued"),
+    [
+        pytest.param(frozenset({2020, 2022}), False, id="estimate-between-served-years"),
+        pytest.param(frozenset({2020, 2021}), True, id="estimate-in-a-served-year"),
+    ],
+)
+def test_a_bulk_plan_read_in_years_states_a_continuation_only_in_a_served_year(
+    search_settings, years, continued
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_BBB` to 2020, and `fE`, an estimate of one source
+    and unit, at `_AAA` in 2021 alone, so over 2015 to 2022 `fE` continues `fM1` there in
+    2021. Narrowed to served years whose span holds 2021, the plan states the continuation
+    only when 2021 is one of them, as its read lists the served years alone to SDMX."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2021))) for place in (_AAA, _BBB)),
+        (_FLOW, "fE", ABSENT_ENTITY, _AAA, [2021]),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fE", "Estimated"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(
+            DateRequest(window=TimeWindow(start_year=2015, end_year=2022), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    assert isinstance(plan, BulkPlan)
+    assert (plan.facet_id, plan.continuing) == ("fM1", ("fE",))
+    narrowed = read_plan.read_in_years(plan, years)
+
+    assert narrowed is not None
+    assert read_plan.serves_continuation(plan) is True
+    assert read_plan.serves_continuation(narrowed) is continued
+
+
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     search_settings,
 ) -> None:

@@ -1636,15 +1636,31 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     that series, the rows `materialise.columnar.continuation_mask` keeps. A scope read
     serves one facet of the selection, and a mint of its Spec all of them, so the last date
     is read from the series' candidates. In bulk a continuing facet serves when
-    it adds an observation to a role tuple (`BulkPlan.continued_pairs`). False for no
-    plan."""
+    it adds an observation to a role tuple (`BulkPlan.continued_pairs`). A plan
+    `read_in_years` narrowed serves a continuation only where it holds a date in a year the
+    plan serves (`ServedYears.years`), since its reads keep their points in those years
+    alone, so a continuation dated in a year of the span the plan does not serve serves no
+    point. False for no plan."""
     if plan is None:
         return False
+    served = plan.served_years
     if isinstance(plan, BulkPlan):
+        if served is not None:
+            return any(
+                year in served.years
+                for sv in plan.served_members
+                for _facet_id, _role_tuple, by_year in plan.continued_years(sv)
+                for year, _n in by_year
+            )
         return any(
             sum(counts.values()) > sum(plan.elected_pairs[sv].values())
             for sv, counts in plan.continued_pairs.items()
         )
+    windows: list[PlanYears] = (
+        [plan.years]
+        if served is None
+        else [TimeWindow(start_year=year, end_year=year) for year in sorted(served.years)]
+    )
     for s in plan.served:
         selection = plan.selections.get(s.stat_var, frozenset())
         hull = _hull(
@@ -1654,9 +1670,10 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
         for f in s.group:
             if f.facet_id in selection:
                 continue
-            dates = facet_dates(f, plan.years)
-            if dates is not None and dates[1] is not None and (last is None or dates[1] > last):
-                return True
+            for window in windows:
+                dates = facet_dates(f, window)
+                if dates is not None and dates[1] is not None and (last is None or dates[1] > last):
+                    return True
     return False
 
 
