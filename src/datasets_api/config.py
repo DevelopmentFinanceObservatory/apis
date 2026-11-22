@@ -140,9 +140,9 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
     # Analysis keying threads (`datasets_api.doors.analysis`): a run's roots resolved, its key
-    # taken and its stored answer read, before it takes an analysis thread. A request waits for
-    # one up to its deadline, so a burst of stored answers queues here and meets no 503 of a
-    # busy analysis executor. A warm key reads a few rows, and a cold one can serve a root's
+    # taken and its stored answer read, before it takes an analysis thread. A request waits up to
+    # 5 seconds for one, four requests to a thread, so a burst of stored answers queues here and
+    # meets no 503 of a busy analysis executor. A warm key reads a few rows, and a cold one can serve a root's
     # rebuild inline, so the pool stays small to bound the dataset store connections it borrows.
     analysis_key_max_concurrency: int = Field(default=4, ge=1)
 
