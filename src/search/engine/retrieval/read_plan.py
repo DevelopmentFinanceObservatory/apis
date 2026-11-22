@@ -1642,7 +1642,10 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     `read_in_years` narrowed serves a continuation only where it holds a date in a year the
     plan serves (`ServedYears.years`), since its reads keep their points in those years
     alone, so a continuation dated in a year of the span the plan does not serve serves no
-    point. False for no plan."""
+    point. Such a plan compares the two dates by year (`year_of`): a selection's last date
+    read under a range clips to a bare year where its facet lacks complete dates
+    (`facet_dates`), which a full date in that same year would otherwise pass. False for no
+    plan."""
     if plan is None:
         return False
     served = plan.served_years
@@ -1676,9 +1679,24 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
                 continue
             for window in windows:
                 dates = facet_dates(f, window)
-                if dates is not None and dates[1] is not None and (last is None or dates[1] > last):
+                if (
+                    dates is not None
+                    and dates[1] is not None
+                    and _after_last(dates[1], last, by_year=served is not None)
+                ):
                     return True
     return False
+
+
+def _after_last(date: str, last: str | None, *, by_year: bool) -> bool:
+    """Whether `date` falls after `last`, a selection's last date (`serves_continuation`),
+    compared `by_year` (`year_of`) or as dates. True when the selection holds no date."""
+    if last is None:
+        return True
+    if not by_year:
+        return date > last
+    year, last_year = year_of(date), year_of(last)
+    return year is not None and last_year is not None and year > last_year
 
 
 def plan_coverage(plan: ReadPlan) -> ReadingCoverage | None:

@@ -360,8 +360,9 @@ def compose_observations(
     written for a zero-filling stacked component, since the composite's coverage counts
     none. `truncated` is true when a component preview holding a series was, and `order`
     is those previews' when they agree, else None. It serves a continuation
-    (`SpecObservations.continued`) when a component's read does, and states nothing of one
-    when no read states it.
+    (`SpecObservations.continued`) when a component's read does, serves none when every
+    component previewing a year read and serves none, and states nothing of one otherwise,
+    when a read is lost and no other states one.
 
     With no series, the preview is omitted: `observations_no_points` when every component
     serving a year read and found no point in the years it serves; else the first omission
@@ -380,17 +381,21 @@ def compose_observations(
         total += read.total_obs
         truncated = truncated or read.truncated
         orders.add(read.order)
-    stated = [read.continued for read in reads if read is not None and read.continued is not None]
-    continued = any(stated) if stated else None
+    previewed = [read for item, read in zip(served, reads, strict=True) if item.preview_years]
+    continued = (
+        True
+        if any(read is not None and read.continued for read in reads)
+        else False
+        if all(read is not None and read.continued is False for read in previewed)
+        else None
+    )
     if series:
         order = next(iter(orders)) if len(orders) == 1 else None
         composed = SpecObservations(
             series=series, total_obs=total, truncated=truncated, order=order
         )
         return composed.stating_continued(continued)
-    return _composite_omission(
-        [read for item, read in zip(served, reads, strict=True) if item.preview_years]
-    ).stating_continued(continued)
+    return _composite_omission(previewed).stating_continued(continued)
 
 
 def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozenset[int]]:

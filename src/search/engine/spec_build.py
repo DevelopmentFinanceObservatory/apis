@@ -1426,10 +1426,11 @@ def build_spec(
             and each field the composite states is the mint's (`CompositeMint`): coverage
             in place of ``coverage``, headline, open role axes, StatVar counts, when slot,
             download, measure label, published tables and sources, provenance facet and
-            data years, with no observation preview. ``ResolvedSpec.continued`` reads
-            ``plan`` in the years some component serves (``CompositeMint.years``), as
-            ``preview_years`` reads it. Every other field is the table identity's. None
-            mints the table identity itself.
+            data years, with no observation preview and ``ResolvedSpec.continued``
+            false: the table identity's plan reads none of the components a composite
+            stacks or splices, and its component reads state their continuation
+            (``SpecObservations.continued``). Every other field is the table identity's.
+            None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
@@ -1642,10 +1643,6 @@ def build_spec(
         published_tables = composite.published_tables()
         observations = None
         years = composite.data_years()
-        # The table identity's plan reads the composite's whole window; it continues a
-        # series only in a year the composite serves. Its component reads state their own
-        # (`SpecObservations.continued`), which the part's departures read in its place.
-        preview_years = frozenset(composite.years)
     spec = Spec(
         spec_id=definition.spec_id,
         definition=definition,
@@ -1704,7 +1701,9 @@ def build_spec(
         )
         .stating_group_totals(role_group_totals(named_groups, hashed_entities))
         .stating_data_years(years)
-        .stating_continued(serves_continuation(_previewed(plan, preview_years)))
+        .stating_continued(
+            composite is None and serves_continuation(_previewed(plan, preview_years))
+        )
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),

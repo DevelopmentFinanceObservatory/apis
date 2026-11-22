@@ -48,7 +48,6 @@ from search.engine.region.observations.bulk_role_series import (
     _preview_pairs,
     _served_pairs,
 )
-from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.facet_election import (
@@ -2134,8 +2133,8 @@ def test_a_bulk_read_in_years_holding_no_point_omits_as_a_per_series_read_does(
     monkeypatch, covered, dispatched
 ):
     """The plan over 2015 to 2020 holds 2017, where no recipient's read holds a point: the
-    preview omits for want of points in the year it serves, stated as a per-series read
-    states it (`served_years.no_points_in_served_years`)."""
+    preview omits for want of points, counting every dispatched pair empty, as a
+    per-series read does."""
     years = frozenset({2017})
     observations, sdmx = _read_in_years(
         monkeypatch, TimeWindow(start_year=2015, end_year=2020), years, covered=covered
@@ -2144,7 +2143,10 @@ def test_a_bulk_read_in_years_holding_no_point_omits_as_a_per_series_read_does(
     assert len(sdmx.series_calls) == (1 if dispatched else 0)
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
-    assert observations == no_points_in_served_years(years, dispatched=dispatched, empty=dispatched)
+    assert (observations.omitted.dispatched, observations.omitted.empty) == (
+        dispatched,
+        dispatched,
+    )
 
 
 def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():

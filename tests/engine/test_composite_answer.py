@@ -372,32 +372,47 @@ def test_a_composite_preview_keeps_each_component_s_estimates_for_the_late_depar
     assert "modelled_values" in {d.code for d in late.departures}
 
 
-@pytest.mark.parametrize("continued", [set(), {"imputed"}], ids=["none", "imputed"])
+@pytest.mark.parametrize(
+    ("continued", "lost"),
+    [
+        pytest.param(set(), None, id="none"),
+        pytest.param({"imputed"}, None, id="imputed"),
+        # The imputed read is lost, and the bilateral one states no continuation.
+        pytest.param(set(), "imputed", id="lost-beside-none"),
+        # The imputed read is lost, and the bilateral one states a continuation.
+        pytest.param({"bilateral"}, "imputed", id="lost-beside-a-continuation"),
+    ],
+)
 @pytest.mark.parametrize("stream", [True, False], ids=["streamed", "buffered"])
 def test_a_composite_states_modelled_values_exactly_when_a_component_read_continues(
-    monkeypatch, stream, continued
+    monkeypatch, stream, continued, lost
 ):
     """No series of either component holds an estimate, and the composite's own Spec states
     no continuation. The part names modelled values once its preview is read exactly when a
-    component's answer serves a continuation in the years it previews, streamed in its late
-    departures and buffered in its own."""
+    component's answer it read serves a continuation in the years it previews, streamed in
+    its late departures and buffered in its own. A lost read states none, and the part
+    warns of it."""
     first, components = _components(monkeypatch)
     components.continued = continued
+    if lost is not None:
+        components.failures[lost] = GraphInfraError("down")
 
     if stream:
         events = _stream(_fresh())
         assert "modelled_values" not in {d.code for d in _part(events).departures}
         late = _done(events).late_departures
         departures = late[0].departures if late else _part(events).departures
+        warnings = _done(events).warnings
     else:
         response = offline_resolve(_fresh(), **_clients())
         assert isinstance(response, Resolution)
         (part,) = response.parts
         assert isinstance(part, DefinitePart)
         assert part.spec.spec_id == first.spec_id
-        departures = part.departures
+        departures, warnings = part.departures, part.warnings
 
     assert ("modelled_values" in {d.code for d in departures}) is bool(continued)
+    assert ("observations_probe_failed" in {w.code for w in warnings}) is (lost is not None)
 
 
 def _coverage(monkeypatch: pytest.MonkeyPatch) -> CoverageSnapshot:
@@ -799,6 +814,39 @@ def test_a_component_serving_no_year_leaves_the_omission_to_those_that_serve_one
     assert composed.omitted is not None
     assert composed.omitted.reason == "observations_no_points"
     assert composed.omitted.dispatched == 1
+
+
+@pytest.mark.parametrize(
+    ("stated", "continued"),
+    [
+        pytest.param((False, False), False, id="every-read-serves-none"),
+        pytest.param((True, None), True, id="a-read-continues-beside-a-lost-one"),
+        pytest.param((False, None), None, id="a-read-is-lost"),
+    ],
+)
+def test_a_composite_preview_states_a_continuation_only_as_its_reads_settle_it(stated, continued):
+    """Two components serve 2020, each read stating whether it serves a continuation there,
+    None for a lost read. The composed preview serves one when a read does, serves none when
+    every read serves none, and states nothing when a lost read could hold one."""
+    items = [
+        ServedComponent(
+            component=_unperiodised(index),
+            years=cast(Any, None),
+            served=frozenset({2020}),
+            members=None,
+        )
+        for index in range(2)
+    ]
+    reads = [
+        None
+        if one is None
+        else omitted_observations(
+            "observations_no_points", "none", dispatched=1, empty=1
+        ).stating_continued(one)
+        for one in stated
+    ]
+
+    assert compose_observations(items, reads).continued is continued
 
 
 def test_cancelling_the_composite_task_cancels_every_component_read(monkeypatch):

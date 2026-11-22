@@ -1495,6 +1495,71 @@ def test_a_bulk_plan_read_in_years_states_a_continuation_only_in_a_served_year(
     assert read_plan.serves_continuation(narrowed) is continued
 
 
+def _facet_dated(
+    facet_id: str, dates: list[str], *, complete: bool, first_series_end: str | None = None
+) -> Facet:
+    """An annual facet of `dc/base/P` from its first to its last date, listing `dates`, the
+    whole of its dates where `complete`."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id="dc/base/P",
+        observation_period="P1Y",
+        obs_count=len(dates) if complete else len(dates) + 10,
+        earliest_date=dates[0],
+        latest_date=dates[-1],
+        dates=tuple(dates),
+        dates_complete=complete,
+        first_series_end=first_series_end,
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded", "continued"),
+    [
+        # The recorded facet's dates end in 2019, so the June 2020 estimate continues it.
+        pytest.param(
+            _facet_dated("fR", [str(y) for y in range(2010, 2020)], complete=True),
+            True,
+            id="recorded-ends-the-year-before",
+        ),
+        # The recorded facet runs to June 2021 at this place, another of its series ending
+        # in 2019, without complete dates, so under the window its last date clips to the
+        # bare 2020, the year the estimate falls in.
+        pytest.param(
+            _facet_dated("fR", ["2010", "2021-06"], complete=False, first_series_end="2019"),
+            False,
+            id="recorded-clipped-to-the-estimate-s-year",
+        ),
+    ],
+)
+def test_a_pair_plan_read_in_years_states_a_continuation_only_past_the_selection_s_year(
+    recorded, continued
+) -> None:
+    """An `Estimated` facet of the recorded facet's source holds June 2020. Read in 2020
+    alone, the plan states a continuation only when the estimate's year follows the year
+    the recorded facet's last date falls in under the 2010 to 2020 window."""
+    estimate = replace(
+        _facet_dated("fE", ["2020-06"], complete=True), measurement_method="Estimated"
+    )
+    plan = read_plan.plan_pairs(
+        [
+            PlanSeries(
+                stat_var="sv",
+                role_tuple=(("observationAbout", "country/KEN"),),
+                candidates=(recorded, estimate),
+            )
+        ],
+        members=["sv"],
+        years=TimeWindow(start_year=2010, end_year=2020),
+        declared=NO_DECLARED_POLICIES,
+    )
+    narrowed = read_plan.read_in_years(plan, frozenset({2020}))
+
+    assert isinstance(narrowed, PairPlan)
+    assert [(s.stat_var, s.group_ids) for s in narrowed.served] == [("sv", frozenset({"fR", "fE"}))]
+    assert read_plan.serves_continuation(narrowed) is continued
+
+
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     search_settings,
 ) -> None:
