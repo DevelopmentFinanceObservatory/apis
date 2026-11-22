@@ -10,6 +10,7 @@ the currency tests' doubles, and the task queue records its tasks.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -20,6 +21,7 @@ from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
 from datasets_api.operations.head_check import HEAD_CHECK_OPTIONS
 from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, FakeTaskClient
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from graph_release.context import current_release
 
 from ._operation_store import FakeOperationDatasetStore
 from .test_definition_door import _CSV_HEADER, _RECIPIENT, _STAT_VAR, _STAT_VAR_REF, _mint_one_spec
@@ -35,8 +37,11 @@ from .test_definition_door_currency import (
     _row,
 )
 
-# Past the 7-day `head_serve_stale_max_age_seconds` default.
-_PAST_SERVE_STALE_CEILING = timedelta(days=8)
+# Past the 14-day `head_serve_stale_max_age_seconds` default.
+_PAST_SERVE_STALE_CEILING = timedelta(days=15)
+
+# Past the 7-day `head_imported_data_max_age_seconds` default, inside the ceiling.
+_PAST_IMPORT_MAX_AGE = timedelta(days=10)
 
 _IDENTITY = {"accept-encoding": "identity"}
 
@@ -180,6 +185,28 @@ def test_a_get_past_the_serve_stale_ceiling_rebuilds_in_the_request(
     assert resp.headers["x-dfo-freshness"] == "current"
     assert rig.sdmx_calls.n == sdmx_calls + 1
     assert rig.task_client.enqueued == []
+
+
+def test_an_import_keyed_head_past_its_maximum_age_serves_at_once_and_is_checked_on_the_worker():
+    rig = _Rig()
+    head = rig.head_store.head_for(rig.spec_id)
+    rig.head_store._heads[rig.spec_id] = dataclasses.replace(
+        head,
+        dependencies={
+            **(head.dependencies or {}),
+            "imported_data": current_release().imported_data,
+        },
+    )
+    rig.head_store.age_head(rig.spec_id, age=_PAST_IMPORT_MAX_AGE)
+    sdmx_calls, advances = rig.sdmx_calls.n, rig.head_store.advance_head_calls
+
+    resp = rig.get()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trace"]["served_from"] == "head"
+    assert resp.headers["x-dfo-freshness"] == "pending"
+    assert (rig.sdmx_calls.n, rig.head_store.advance_head_calls) == (sdmx_calls, advances)
+    assert len(rig.task_client.enqueued) == 1
 
 
 def test_a_get_past_the_window_for_a_rendering_the_head_lacks_checks_in_the_request():
