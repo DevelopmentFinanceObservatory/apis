@@ -21,7 +21,8 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   of a converted unit.
 
 The frame is named by the pair `frame_ref_for` derives from the columns, the groupby and the
-party-totals cut, as data-mcp names it, so two renderings of one version are two frames.
+party-totals cut, and for a frame-layout file from the render format its cells were written
+under (`versions.RENDER_FORMAT`), so two renderings of one version are two frames.
 
 A root that leaves `columns` to the default is read with the version's default enrichment
 (`default_enrichment`): the root asks the mint for `enrichment: "default"`, which resolves the
@@ -32,8 +33,10 @@ places at one level.
 A request root that states no `groupby`, under a step other than `filter`, and whose
 version's frame holds more than one StatVar with data (`description_record.summed_refs`) is
 read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
-`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, so its
-record, the recipe's normal form and the format 2 ref state the sum. When the sum refuses
+`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, and
+`codes`, the code dcids the filters over it keep on each axis `by` keeps, when they keep some
+(`analysis.PlannedRoot`), so its record, the recipe's normal form and the format 2 ref state the
+sum. When the sum refuses
 `rollup_not_summable`, inline or as a queued rebuild that failed with that code, the root is
 read unsummed, records the refusal (`ResolvedRoot.sum_refused`) and logs one
 `datasets_analysis_root_sum_refused` line. A root whose groupby summed StatVars names them
@@ -123,13 +126,14 @@ from datasets_api.description_record import summed_refs
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.doors.snapshot import servable_snapshot_manifest
-from datasets_api.groupby import adds_stat_vars
+from datasets_api.groupby import adds_stat_vars, selected_contributors
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
 from datasets_api.render import (
+    check_options_supported,
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
     refuse_past_fold_ceiling,
@@ -142,7 +146,7 @@ from datasets_api.store_errors import (
     stored_frame_row_count,
 )
 from datasets_api.timings import phase
-from datasets_api.versions import rendering_stamp
+from datasets_api.versions import RENDER_FORMAT, rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -184,12 +188,43 @@ def frame_ref_for(
     `{spec_id, content_version}` is named by: the version's own pair with none of them, else
     `cv_` and 32 hex digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted,
     "content_version"}`, with `groupby` when set, its `by` sorted, `"without_party_totals":
-    true` when the cut is asked for, and the `enrichment_stamp` of its file when the columns
-    ask for kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way.
+    true` when the cut is asked for, the `enrichment_stamp` of its file when the columns ask
+    for kinds, and `"render_format": versions.RENDER_FORMAT` when `columns` is not empty.
+    data-mcp's `frame_materialisation.frame_ref_for` names frames from the columns, the
+    content version and the groupby alone.
 
     The pair names what a recipe replays: a cut that leaves nothing out serves its base
     version, and the frame read with it is still named apart from the frame read without it,
-    since the two replay differently once the data holds party totals."""
+    since the two replay differently once the data holds party totals. A root with `columns`
+    reads its frame-layout file, whose decoded `stat_var_<code_system>` and party-kind cells
+    are the render format's, so a frame rendered under another format is another frame. The
+    other roots read a stored frame, which a format change gives a new `content_version`
+    (`render.DerivedVersion`) or leaves as it is."""
+    return frame_ref_under(
+        spec_id=spec_id,
+        content_version=content_version,
+        columns=columns,
+        groupby=groupby,
+        without_party_totals=without_party_totals,
+        enrichment_stamp=enrichment_stamp,
+        render_format=RENDER_FORMAT,
+    )
+
+
+def frame_ref_under(
+    *,
+    spec_id: str,
+    content_version: str,
+    columns: Sequence[str],
+    groupby: Mapping[str, Any] | None,
+    without_party_totals: bool,
+    enrichment_stamp: str | None,
+    render_format: str | None,
+) -> FrameRef:
+    """The pair `frame_ref_for` names a frame by when frame-layout files are written in
+    `render_format`. `None` names it as a root was named before its name carried a render
+    format, with no `render_format` member, so a stored recipe's root names the format of the
+    file it read (`recipe_replay.StoredRootSource`)."""
     if not columns and groupby is None and not without_party_totals:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
@@ -199,6 +234,8 @@ def frame_ref_for(
         preimage["without_party_totals"] = True
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
+    if columns and render_format is not None:
+        preimage["render_format"] = render_format
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
     return FrameRef(spec_id=spec_id, content_version=f"cv_{digest}")
 
@@ -239,7 +276,11 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
 
 
 def implied_groupby(
-    stat_vars: Sequence[str], *, path_words: frozenset[str], code_index: CodeIndex
+    stat_vars: Sequence[str],
+    *,
+    path_words: frozenset[str],
+    code_index: CodeIndex,
+    codes: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any] | None:
     """The `groupby` a root read with no stated one is read with, from the StatVars with data
     in its version, `stat_vars` as bare dcids (`LiveRootSource._contributing`), and the words
@@ -248,7 +289,15 @@ def implied_groupby(
     decode (`code_index` declarations) that the words name, as the axis or as its
     `stat_var_<axis>` column, sorted as `mint_options` sorts a stated `by`: the groupby a
     caller following the refusal's summed read states. The datasets door sums every other
-    summable axis away, and `stat_var` with them (conformance C120)."""
+    summable axis away, and `stat_var` with them (conformance C120).
+
+    `codes`, the code dcids the filters over the root keep on each axis
+    (`analysis.PlannedRoot`), becomes the groupby's `codes` on each axis `by` keeps, sorted and
+    each once as `GroupbyOptions` holds them, so the sum reads only the StatVars whose rows
+    those filters keep (conformance C120b); a groupby keeping none of their axes has none, and
+    neither has one selecting none of `stat_vars` (`selected_contributors`), whose sum would be
+    empty where the filter over the unselected sum lists the values its column holds
+    (`unmatched_breakdown_values`)."""
     if STAT_VAR_WORD in path_words:
         return None
     if len(stat_vars) < 2:
@@ -259,7 +308,11 @@ def implied_groupby(
         if (row := code_index.statvar_by_dcid(dcid)) is not None:
             axes.update(summable.intersection(row.constraint_properties))
     named = {word.removeprefix(STAT_VAR_PREFIX) for word in path_words} & axes
-    return {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
+    groupby: dict[str, Any] = {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
+    selected = {axis: sorted(set(kept)) for axis, kept in (codes or {}).items() if axis in named}
+    if selected and selected_contributors(stat_vars, index=code_index, codes=selected):
+        groupby["codes"] = dict(sorted(selected.items()))
+    return groupby
 
 
 def _sum_refused(refused: RollupNotSummableError) -> dict[str, str]:
@@ -304,8 +357,9 @@ def summed_count(
 ) -> int:
     """How many StatVars a groupby rendering summed into its version, whose record is
     `version`: the count a stored `stat_vars_summed` warning states (`rendered`), else
-    `contributors`, the StatVars with rows in the dataset version it renders, the ones the
-    renderer sums (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
+    `contributors`, the StatVars with rows in the dataset version it renders that its
+    `groupby.codes` selection keeps, the ones the renderer sums
+    (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
     when the record says the frame summed nothing, as for a version with no base version or a
     derived one whose `frame_summed` is false, and when the groupby `adds` nothing, a re-key
     keeping each StatVar in a tuple of its own (`groupby.adds_stat_vars`). A missing record or
@@ -321,20 +375,22 @@ def summed_count(
 
 def _listed_base(options: Mapping[str, Any], base: str) -> str | None:
     """The dataset version a root read with `options` names as its rendering's base: `base`,
-    the version a groupby sums, for a sum alone, which keeps the dataset's periods and
-    entities. A party-totals cut can leave a period or an entity out, so a rendering that cuts
-    names no base and is matched to no dataset version (conformance C121f)."""
-    if "groupby" not in options or options.get("without_party_totals") is True:
+    the version a groupby sums, for a sum of every StatVar, which keeps the dataset's periods
+    and entities. A party-totals cut, and a sum whose groupby selects `codes`, can each leave a
+    period or an entity out, so a rendering that cuts or selects names no base and is matched
+    to no dataset version (conformance C121f)."""
+    groupby = options.get("groupby")
+    if groupby is None or options.get("without_party_totals") is True or groupby.get("codes"):
         return None
     return base
 
 
-def _with_summed(root: ResolvedRoot, count: int, trace: Mapping[str, Any]) -> ResolvedRoot:
-    """`root` with the `count` StatVars its groupby summed, named as far as `trace` names
+def _with_summed(root: ResolvedRoot, count: int, named: Sequence[str]) -> ResolvedRoot:
+    """`root` with the `count` StatVars its groupby summed, `named` as far as its trace names
     them."""
     if not count:
         return root
-    return replace(root, summed_count=count, stat_vars_summed=tuple(summed_refs(trace)))
+    return replace(root, summed_count=count, stat_vars_summed=tuple(named))
 
 
 def _rendered_count(manifest: Manifest) -> int | None:
@@ -547,6 +603,11 @@ class LiveRootSource:
         # The StatVars with rows in each old-trace dataset version, by (spec id, version).
         self._stat_vars: dict[tuple[str, str], list[str]] = {}
 
+    @property
+    def code_index(self) -> CodeIndex:
+        """The request's code index, which breakdown filter values resolve through."""
+        return self._deps.code_index
+
     def _refuse_rendering_past_bound(self, rows: int) -> None:
         """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
         roots located past `max_root_rows`.
@@ -566,8 +627,21 @@ class LiveRootSource:
         latest: bool,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
+        """The version `root` is read at (`RootSource.resolve`). A stated groupby the code
+        index cannot serve refuses first (`check_options_supported`), before any version,
+        stored rendering or answer is looked up by it.
+
+        Raises:
+            QueryOptionsInvalid: As `check_options_supported` refuses `root`'s rendering.
+        """
         deps = self._deps
+        if root.rendering.groupby is not None:
+            check_options_supported(
+                MintOptions.model_validate(mint_options(root.rendering)),
+                code_index=deps.code_index,
+            )
         if (
             isinstance(root, DatasetRoot)
             and deps.snapshot_reader.read_version(root.spec_id, root.content_version) is None
@@ -578,8 +652,8 @@ class LiveRootSource:
                 reason="no such version is stored",
             )
         if isinstance(root, SpecRoot) or latest:
-            return self._newest(root, path_words=path_words, trace_id=trace_id)
-        return self._at_version(root, path_words=path_words, trace_id=trace_id)
+            return self._newest(root, path_words=path_words, codes=codes, trace_id=trace_id)
+        return self._at_version(root, path_words=path_words, codes=codes, trace_id=trace_id)
 
     def _at_version(
         self,
@@ -588,6 +662,7 @@ class LiveRootSource:
         path_words: frozenset[str] | None,
         trace_id: str | None,
         revoked_under: Sequence[str] = (),
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """The version `root` names, read in the rendering it names, summed as the planner
         implies (`_implied`) from the version's trace. A sum the door refuses reads the
@@ -609,7 +684,9 @@ class LiveRootSource:
         groupby = (
             None
             if path_words is None
-            else self._implied(spec_id, content_version, stored.trace, path_words=path_words)
+            else self._implied(
+                spec_id, content_version, stored.trace, path_words=path_words, codes=codes
+            )
         )
         if (groupby is not None or "groupby" in options) and (
             base := self._cut_base(spec_id, content_version)
@@ -620,6 +697,7 @@ class LiveRootSource:
                 path_words=path_words,
                 trace_id=trace_id,
                 revoked_under=revoked_under,
+                codes=codes,
             )
         read = partial(self._stored, root, stored, trace_id=trace_id, revoked_under=revoked_under)
         if groupby is None:
@@ -648,16 +726,18 @@ class LiveRootSource:
         trace: Mapping[str, Any],
         *,
         path_words: frozenset[str] | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> dict[str, Any] | None:
         """The groupby the planner implies for a root of the version `content_version`, whose
-        trace is `trace`, read under `path_words` (`implied_groupby`), or `None` for a root it
-        implies none for."""
+        trace is `trace`, read under `path_words` with the selection `codes`
+        (`implied_groupby`), or `None` for a root it implies none for."""
         if path_words is None:
             return None
         return implied_groupby(
             self._contributing(spec_id, content_version, trace),
             path_words=path_words,
             code_index=self._deps.code_index,
+            codes=codes,
         )
 
     def _contributing(
@@ -725,6 +805,7 @@ class LiveRootSource:
         *,
         path_words: frozenset[str] | None,
         trace_id: str | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """`root` read at its dataset's newest version, in the rendering it names, summed as
         the planner implies (`_implied`).
@@ -737,7 +818,7 @@ class LiveRootSource:
         served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
         read = self._first_read(served.spec_id)
         newest = self._serve_newest(
-            served, root, path_words=path_words, trace_id=trace_id, read=read
+            served, root, path_words=path_words, codes=codes, trace_id=trace_id, read=read
         )
         if newest is not None:
             return newest
@@ -750,7 +831,11 @@ class LiveRootSource:
             rendering=root.rendering,
         )
         return self._at_version(
-            version, path_words=path_words, trace_id=trace_id, revoked_under=(root.spec_id,)
+            version,
+            path_words=path_words,
+            codes=codes,
+            trace_id=trace_id,
+            revoked_under=(root.spec_id,),
         )
 
     def _serve_newest(
@@ -761,6 +846,7 @@ class LiveRootSource:
         path_words: frozenset[str] | None,
         trace_id: str | None,
         read: str | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot | None:
         """A root of `served` read at its newest version, served in the one rendering it
         reads: summed as the planner implies from the stored head's version and trace
@@ -775,7 +861,9 @@ class LiveRootSource:
         requested = mint_options(root.rendering)
         head = self._head_version(served.spec_id, posted=root.spec_id, path_words=path_words)
         groupby = (
-            None if head is None else self._implied(served.spec_id, *head, path_words=path_words)
+            None
+            if head is None
+            else self._implied(served.spec_id, *head, path_words=path_words, codes=codes)
         )
         served_manifest: tuple[Manifest, str | None] | None = None
         sum_refused: dict[str, str] | None = None
@@ -824,6 +912,7 @@ class LiveRootSource:
                 base or self._base_version(served.spec_id, manifest.content_version),
                 manifest.trace,
                 path_words=path_words,
+                codes=codes,
             )
             != groupby
         ):
@@ -1133,14 +1222,28 @@ class LiveRootSource:
             # A stored warning is a collapse's from before re-keys, so it summed.
             count = summed_count(version, rendered=rendered, contributors=0)
         else:
-            contributors = self._contributing(spec_id, base, manifest.trace)
+            contributors = self._selected(
+                self._contributing(spec_id, base, manifest.trace), options["groupby"]
+            )
             count = summed_count(
                 version,
                 rendered=None,
                 contributors=len(contributors),
                 adds=self._adds(contributors, options["groupby"]),
             )
-        return _with_summed(root, count, manifest.trace)
+        return _with_summed(
+            root, count, self._selected(summed_refs(manifest.trace), options["groupby"])
+        )
+
+    def _selected(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> list[str]:
+        """`contributors` that `groupby` sums: those its `codes` selection keeps after its
+        `levels` roll-up (`selected_contributors`), every one with no selection."""
+        return selected_contributors(
+            contributors,
+            index=self._deps.code_index,
+            codes=groupby.get("codes"),
+            levels=groupby.get("levels"),
+        )
 
     def _adds(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> bool:
         """Whether `groupby` adds `contributors`, bare dcids, together (`adds_stat_vars`), on
@@ -1190,14 +1293,18 @@ class LiveRootSource:
         )
         if "groupby" not in options or unstored.content_version == content_version:
             return root
-        contributors = self._contributing(spec_id, content_version, stored.trace)
+        contributors = self._selected(
+            self._contributing(spec_id, content_version, stored.trace), options["groupby"]
+        )
         count = summed_count(
             None,
             rendered=None,
             contributors=len(contributors),
             adds=self._adds(contributors, options["groupby"]),
         )
-        return _with_summed(root, count, stored.trace)
+        return _with_summed(
+            root, count, self._selected(summed_refs(stored.trace), options["groupby"])
+        )
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root`, with the version's servable stored frame located when `read` reads it, and a

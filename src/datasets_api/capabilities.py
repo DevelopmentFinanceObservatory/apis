@@ -221,7 +221,7 @@ class Capabilities(BaseModel):
             "Long output writes each as a {code_system} column (the StatVar's code in that "
             "system) and a {code_system}_label column (its label); pivot output, frame-layout "
             'output (layout: "frame"), groupby.by and the columns option name it '
-            "stat_var_{code_system}, the label column"
+            "stat_var_{code_system}, a column of code dcids"
         )
     )
     default_facet_policies_live: bool = Field(

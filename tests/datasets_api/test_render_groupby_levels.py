@@ -13,7 +13,15 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import ReshapeResult, _RenderReads, _reshape, _reslice_chunks
+from datasets_api.query_options import QueryOptionsInvalid
+from datasets_api.render import (
+    ReshapeResult,
+    _RenderReads,
+    _reshape,
+    _reslice_chunks,
+    check_options_supported,
+)
+from dfo_platform.named import named_capped
 from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import build_frame
@@ -136,9 +144,13 @@ _TABLE = Table(
 _SUBJECT_ID = "spec_991000"
 
 
-def _options(levels: dict[str, int] | None) -> MintOptions:
+def _options(
+    levels: dict[str, int] | None, *, codes: dict[str, list[str]] | None = None
+) -> MintOptions:
     return MintOptions(
-        groupby=GroupbyOptions(by=["time_period", "crsPurpose"], op="sum", levels=levels)
+        groupby=GroupbyOptions(
+            by=["time_period", "crsPurpose"], op="sum", levels=levels, codes=codes
+        )
     )
 
 
@@ -180,21 +192,91 @@ def test_level_zero_sums_parent_and_child_coded_stat_vars_into_their_root_sector
     result = _reshape_with(_options({"crsPurpose": 0}), chunked=chunked)
 
     assert _by_sector(result) == {
-        "Social infrastructure": 19.0,
-        "Economic infrastructure": 7.0,
-        "Unallocated": 2.0,
+        "CRSPurposeCode100": 19.0,
+        "CRSPurposeCode200": 7.0,
+        "CRSPurposeCode998": 2.0,
     }
 
 
-def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_label():
+@pytest.mark.parametrize("chunked", [False, True], ids=["whole-table", "streamed"])
+def test_a_code_selection_matches_the_rolled_code_and_keeps_the_rest_of_the_sum(chunked: bool):
+    # Health and malaria are selected through their root sector, 100, beside social itself.
+    result = _reshape_with(
+        _options({"crsPurpose": 0}, codes={"crsPurpose": ["CRSPurposeCode100"]}),
+        chunked=chunked,
+    )
+
+    assert _by_sector(result) == {"CRSPurposeCode100": 19.0}
+    assert result.collapse is not None
+    # The three StatVars coded under 100, not the five with rows.
+    assert result.collapse.contributing_member_count == 3
+    assert result.collapse.adds
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["whole-table", "streamed"])
+def test_a_selection_keeping_one_stat_var_per_kept_code_adds_none(chunked: bool):
+    """Transport alone is selected, so the collapse re-keys one StatVar and adds nothing,
+    though the frame's other StatVars hold codes that would add."""
+    result = _reshape_with(
+        _options(None, codes={"crsPurpose": ["CRSPurposeCode210"]}), chunked=chunked
+    )
+
+    assert result.collapse is not None
+    assert result.collapse.contributing_member_count == 1
+    assert not result.collapse.adds
+
+
+@pytest.mark.parametrize(
+    ("levels", "listed", "refused"),
+    [
+        pytest.param(None, ["CRSPurposeCode120", "120"], ["120"], id="publisher-code"),
+        pytest.param(None, ["Health"], ["Health"], id="label"),
+        pytest.param(
+            None, ["dcid:CRSPurposeCode120"], ["dcid:CRSPurposeCode120"], id="dcid-prefixed"
+        ),
+        pytest.param(None, ["CRSTypeOfFinance110"], ["CRSTypeOfFinance110"], id="other-axis"),
+        pytest.param(
+            {"crsPurpose": 0},
+            ["CRSPurposeCode100", "CRSPurposeCode120", "CRSPurposeCode12250"],
+            ["CRSPurposeCode120", "CRSPurposeCode12250"],
+            id="below-the-depth",
+        ),
+    ],
+)
+def test_a_listed_code_no_row_can_hold_refuses_before_any_read(
+    levels: dict[str, int] | None, listed: list[str], refused: list[str]
+):
+    with pytest.raises(QueryOptionsInvalid) as raised:
+        check_options_supported(_options(levels, codes={"crsPurpose": listed}), code_index=_INDEX)
+
+    assert raised.value.pointer == "/options/groupby/codes/crsPurpose"
+    # The refusal names exactly the codes no row can hold, in the order the options hold them.
+    assert f" {named_capped(refused)} " in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("levels", "listed"),
+    [
+        pytest.param(None, ["CRSPurposeCode12250", "CRSPurposeCode998"], id="any-depth"),
+        pytest.param({"crsPurpose": 1}, ["CRSPurposeCode120", "CRSPurposeCode998"], id="at-depth"),
+    ],
+)
+def test_a_code_at_or_above_the_depth_is_selectable(
+    levels: dict[str, int] | None, listed: list[str]
+):
+    """998 is a root, shallower than depth 1, so the roll-up keeps its own code."""
+    check_options_supported(_options(levels, codes={"crsPurpose": listed}), code_index=_INDEX)
+
+
+def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_code():
     result = _reshape_with(_options({"crsPurpose": 1}))
 
-    # 100 and 998 are root codes, so at depth 1 each keeps its own records and label.
+    # 100 and 998 are root codes, so at depth 1 each keeps its own records and code.
     assert _by_sector(result) == {
-        "Social infrastructure": 4.0,
-        "Health": 15.0,
-        "Transport": 7.0,
-        "Unallocated": 2.0,
+        "CRSPurposeCode100": 4.0,
+        "CRSPurposeCode120": 15.0,
+        "CRSPurposeCode210": 7.0,
+        "CRSPurposeCode998": 2.0,
     }
 
 

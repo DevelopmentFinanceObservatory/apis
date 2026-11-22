@@ -10,6 +10,7 @@ from typing import Any
 from dfo_frame_grammar import Frame
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
+from code_index import CodeIndex
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.analysis import (
     AnalysisPending,
@@ -113,7 +114,8 @@ class FakeRootSource:
     """Frames by `(spec_id, content_version)`, the newest version of each dataset, and the
     recipes of the stores' derived frames. `pending` names datasets whose newest version is
     still building. A root's version records its frame's rows unless `recorded_rows` is false.
-    Every resolve is recorded."""
+    Breakdown filter values resolve through `code_index` when it is given. Every resolve is
+    recorded."""
 
     def __init__(
         self,
@@ -123,7 +125,9 @@ class FakeRootSource:
         recipes: LiveRecipeStore | None = None,
         pending: Mapping[str, str] | None = None,
         recorded_rows: bool = True,
+        code_index: CodeIndex | None = None,
     ) -> None:
+        self.code_index = code_index
         self.frames = dict(frames)
         self.recorded_rows = recorded_rows
         self.newest = dict(newest)

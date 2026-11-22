@@ -1067,8 +1067,14 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
 
     hashed: list[object] = []
     hash_frame = render_module.frame_sha256
+    hash_chunks = render_module.stream_frame_sha256
     monkeypatch.setattr(
         render_module, "frame_sha256", lambda frame: hashed.append(frame) or hash_frame(frame)
+    )
+    monkeypatch.setattr(
+        render_module,
+        "stream_frame_sha256",
+        lambda chunks: hashed.append(chunks) or hash_chunks(chunks),
     )
 
     got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")

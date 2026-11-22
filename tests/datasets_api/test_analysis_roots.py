@@ -32,6 +32,7 @@ from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
     frame_ref_for,
+    frame_ref_under,
     mint_options,
     record_options,
     summed_count,
@@ -40,9 +41,11 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import CoverageModel
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from datasets_api.versions import RENDER_FORMAT
 from dfo_analysis_engine.frame_ref import FrameRef
 
 from ._deps_doubles import Unwired, closable_permits
@@ -267,6 +270,7 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
         coverage=SimpleNamespace(snapshot=lambda: None),
         now=lambda: datetime.now(UTC),
         version_lister=None,
+        code_index=None,
     )
     roots = LiveRootSource(
         deps=deps,  # ty: ignore[invalid-argument-type]
@@ -388,9 +392,32 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     )
 
     assert (plain.spec_id, plain.content_version) == (_SPEC, _CV)
-    preimage = {"columns": ["observationAbout_type"], "content_version": _CV}
+    preimage = {
+        "columns": ["observationAbout_type"],
+        "content_version": _CV,
+        "render_format": RENDER_FORMAT,
+    }
     assert typed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
-    salted = {"columns": ["party_kind"], "content_version": _CV, "enrichment_stamp": "s"}
+    before_formats = frame_ref_under(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=("observationAbout_type",),
+        groupby=None,
+        without_party_totals=False,
+        enrichment_stamp="s",
+        render_format=None,
+    )
+    del preimage["render_format"]
+    assert (
+        before_formats.content_version
+        == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
+    )
+    salted = {
+        "columns": ["party_kind"],
+        "content_version": _CV,
+        "enrichment_stamp": "s",
+        "render_format": RENDER_FORMAT,
+    }
     assert kinds.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(salted)).hexdigest()[:32]
     summed = frame_ref_for(
         spec_id=_SPEC,
@@ -407,9 +434,26 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     assert summed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(grouped)).hexdigest()[:32]
 
 
-# data-mcp's `test_frame_materialisation` pins the same pair for the same rendering, so the two
-# producers of a root frame's pair cannot drift apart.
-_SHARED_PAIR = "cv_bb722d06259f357e6961a081f1c1f141"
+@pytest.mark.parametrize(
+    "columns",
+    [("party_kind",), ("stat_var_crsPurpose",), ("observationAbout_type",)],
+    ids=["kinds", "decoded_axis", "graph_field"],
+)
+def test_a_frame_of_columns_rendered_under_another_format_is_another_frame(
+    monkeypatch: pytest.MonkeyPatch, columns: tuple[str, ...]
+) -> None:
+    """A frame read from a frame-layout file is named by the render format its cells were
+    written under, so an analysis over it after a format change is a new output pair. A
+    stored frame, read with no columns, keeps its pair."""
+    named = {"spec_id": _SPEC, "content_version": _CV, "enrichment_stamp": "s"}
+    old, old_plain = frame_ref_for(columns=columns, **named), frame_ref_for(columns=(), **named)
+    monkeypatch.setattr(analysis_roots, "RENDER_FORMAT", "another_format")
+
+    assert frame_ref_for(columns=columns, **named) != old
+    assert frame_ref_for(columns=(), **named) == old_plain
+
+
+_SHARED_PAIR = "cv_e244d79cb074364845d27ee6558b1d65"
 
 
 @pytest.mark.parametrize("by", [["origin", "time_period"], ["time_period", "origin"]])
@@ -434,6 +478,36 @@ def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_
 
     assert ref.content_version == _SHARED_PAIR
     assert bare.content_version.startswith("cv_") and bare.content_version != _CV
+
+
+def test_a_code_selection_names_its_own_frame_and_leaves_an_unselected_one_s_name_alone() -> None:
+    """A rendering without `groupby.codes` leaves it out of the dump, so it names its frame and
+    record as a groupby that never states it does. One with codes names another frame, the
+    same for any order of them."""
+
+    def pair(codes: dict[str, list[str]] | None) -> FrameRef:
+        rendering = RootRendering(
+            columns=("party_kind",),
+            without_party_totals=True,
+            groupby=GroupbyOptions(by=["time_period", "origin"], op="sum", codes=codes),
+        )
+        options = mint_options(rendering)
+        return frame_ref_for(
+            spec_id=_SPEC,
+            content_version=_CV,
+            columns=options["columns"],
+            groupby=options["groupby"],
+            without_party_totals=True,
+            enrichment_stamp=None,
+        )
+
+    assert mint_options(RootRendering(groupby=GroupbyOptions(by=["b", "a"], op="sum")))[
+        "groupby"
+    ] == {"by": ["a", "b"], "op": "sum"}
+    assert pair(None).content_version == _SHARED_PAIR
+    selected = pair({"origin": ["B", "A", "B"]})
+    assert selected.content_version not in {_SHARED_PAIR, pair({"origin": ["A"]}).content_version}
+    assert selected == pair({"origin": ["A", "B"]})
 
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:

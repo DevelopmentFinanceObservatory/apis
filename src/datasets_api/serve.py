@@ -116,7 +116,7 @@ from datasets_api.manifest_models import (
     WarningModel,
     year_coverage_counted,
 )
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.origin import (
     OriginGap,
     catalogue_build_id,
@@ -1143,6 +1143,7 @@ def _describers(
         collapsed=collapsed,
         collapsed_summed=rendered is None or rendered.collapsed_summed,
         collapsed_adds=rendered is None or rendered.collapsed_adds,
+        collapsed_groupby=None if rendered is None else rendered.collapsed_groupby,
         code_index=deps.code_index,
         enrichment=deps.enrichment,
         deadline=deps.deadline,
@@ -1371,6 +1372,8 @@ class _RenderPass:
     collapsed_summed: bool = True
     # Whether that collapse added StatVars together (`render.DerivedVersion.adds`).
     collapsed_adds: bool = True
+    # The groupby that summed it, whose `codes` select the StatVars it adds.
+    collapsed_groupby: GroupbyOptions | None = None
 
     def write(
         self,
@@ -1627,6 +1630,7 @@ def _render_pass(
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,
         collapsed_adds=derived.adds,
+        collapsed_groupby=derived.groupby,
     )
 
 

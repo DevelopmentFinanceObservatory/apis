@@ -519,3 +519,96 @@ def test_a_card_bound_to_a_key_without_a_basis_renders_on_a_rebuilt_frame_of_one
         assert excinfo.value.pointer == "/select/unit"
     else:
         assert _values(render().resolved_payload) == _values(created.resolved_payload)
+
+
+_SECTOR = "stat_var_crsPurpose"
+_SECTOR_CODES = {
+    "Malaria control": "dcid:CRSPurposeCode12262",
+    "Basic health care": "dcid:CRSPurposeCode122",
+}
+
+
+def _sector_frame(frame_ref: FrameRef, *, cells: dict[str, str], moved_by: float = 0.0):
+    """The malaria rows once per sector, each sector's `stat_var_crsPurpose` cell as `cells`
+    maps its label, every value `moved_by` higher and basic health care's 500 higher again."""
+    return build_resolved_frame(
+        frame_ref=frame_ref,
+        role_keys=("recipient", _SECTOR),
+        rows=[
+            {
+                **row,
+                _SECTOR: cells[label],
+                "value": row["value"] + moved_by + (label == "Basic health care") * 500,
+            }
+            for label in _SECTOR_CODES
+            for row in malaria_ethiopia_rows()
+        ],
+        labels={"country/ETH": "Ethiopia"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("codes_by_label", "drawn"),
+    [
+        pytest.param({_SECTOR: _SECTOR_CODES}, True, id="label-of-one-code"),
+        # The code index leaves out a label two codes of the code system carry.
+        pytest.param(
+            {_SECTOR: {"Basic health care": _SECTOR_CODES["Basic health care"]}},
+            False,
+            id="shared-label",
+        ),
+    ],
+)
+def test_a_card_selecting_a_sector_label_renders_on_a_frame_of_sector_dcids(
+    codes_by_label, drawn, frame_store, revision_store, release_registry
+):
+    """A card written on a frame whose `stat_var_crsPurpose` cells held labels binds the code
+    dcid its label names on a frame holding dcids (`ResolvedFrame.codes_by_label`), and a
+    label the code index does not map refuses as before."""
+    stored = _sector_frame(
+        malaria_ethiopia_frame_ref(), cells={label: label for label in _SECTOR_CODES}
+    )
+    frame_store.put(resolved_frame=stored)
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _sector_frame(_TARGET, cells=_SECTOR_CODES, moved_by=_MOVED_BY),
+            codes_by_label=codes_by_label,
+        )
+    )
+    created = write_component(
+        intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": stored.frame_ref.spec_id,
+                "content_version": stored.frame_ref.content_version,
+            },
+            "select": {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": "country/ETH",
+                _SECTOR: "Malaria control",
+            },
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    def render():
+        return render_component(
+            component_id=created.component_id,
+            revision=created.revision,
+            target_frame=_TARGET,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+
+    if not drawn:
+        with pytest.raises(BindingInvalid) as excinfo:
+            render()
+        assert excinfo.value.pointer == f"/select/{_SECTOR}"
+        return
+    rendered = render()
+    assert _values(rendered.resolved_payload) == [
+        value + _MOVED_BY for value in _values(created.resolved_payload)
+    ]

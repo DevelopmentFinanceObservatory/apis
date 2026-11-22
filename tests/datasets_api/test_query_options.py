@@ -91,6 +91,51 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         None,
     ),
     (
+        "groupby.by=time_period,crsPurpose&groupby.op=sum"
+        "&groupby.codes=crsPurpose:CRSPurposeCode120|CRSPurposeCode111",
+        {
+            "groupby": {
+                "by": ["time_period", "crsPurpose"],
+                "op": "sum",
+                "codes": {"crsPurpose": ["CRSPurposeCode120", "CRSPurposeCode111"]},
+            }
+        },
+        None,
+    ),
+    (
+        "groupby.by=time_period&groupby.op=sum&groupby.codes=crsPurpose:CRSPurposeCode120",
+        {
+            "groupby": {
+                "by": ["time_period"],
+                "op": "sum",
+                "codes": {"crsPurpose": ["CRSPurposeCode120"]},
+            }
+        },
+        "/options/groupby/codes",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.codes=crsPurpose:",
+        {"groupby": {"by": ["crsPurpose"], "op": "sum", "codes": {"crsPurpose": [""]}}},
+        "/options/groupby/codes/crsPurpose/0",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.codes=crsPurpose:" + "C" * 129,
+        {"groupby": {"by": ["crsPurpose"], "op": "sum", "codes": {"crsPurpose": ["C" * 129]}}},
+        "/options/groupby/codes/crsPurpose/0",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.codes=crsPurpose:"
+        + "|".join(f"C{n}" for n in range(1001)),
+        {
+            "groupby": {
+                "by": ["crsPurpose"],
+                "op": "sum",
+                "codes": {"crsPurpose": [f"C{n}" for n in range(1001)]},
+            }
+        },
+        "/options/groupby/codes/crsPurpose",
+    ),
+    (
         "groupby.by=time_period&groupby.op=sum&groupby.levels=crsPurpose:0",
         {"groupby": {"by": ["time_period"], "op": "sum", "levels": {"crsPurpose": 0}}},
         "/options/groupby/levels",
@@ -142,7 +187,9 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
 
 
 @pytest.mark.parametrize(
-    "query, body, fault_pointer", GOLDEN_TABLE, ids=[row[0] or "empty" for row in GOLDEN_TABLE]
+    "query, body, fault_pointer",
+    GOLDEN_TABLE,
+    ids=[(row[0] or "empty")[:120] for row in GOLDEN_TABLE],
 )
 def test_query_and_body_agree(
     query: str, body: dict[str, object], fault_pointer: str | None
@@ -243,6 +290,17 @@ class TestLevelsGrammar:
         )
 
 
+class TestCodesGrammar:
+    @pytest.mark.parametrize("value", ["crsPurpose", "a:X,a:Y"])
+    def test_a_malformed_codes_entry_refuses_at_the_codes_pointer(self, value: str):
+        with pytest.raises(QueryOptionsInvalid) as exc_info:
+            parse_query_options(
+                [("groupby.by", "a"), ("groupby.op", "sum"), ("groupby.codes", value)]
+            )
+
+        assert exc_info.value.pointer == "/options/groupby/codes"
+
+
 class TestDefaults:
     def test_no_items_parses_to_mint_options_defaults(self):
         assert parse_query_options([]) == MintOptions()
@@ -261,6 +319,16 @@ _ROUND_TRIP_OPTIONS: list[MintOptions] = [
             "by": ["time_period", "crsPurpose", "crsTypeOfFinance"],
             "op": "sum",
             "levels": {"crsTypeOfFinance": 1, "crsPurpose": 0},
+        }
+    ),
+    MintOptions(
+        groupby={
+            "by": ["time_period", "crsPurpose", "crsTypeOfFinance"],
+            "op": "sum",
+            "codes": {
+                "crsTypeOfFinance": ["dcid:CRSTypeOfFinanceCode421"],
+                "crsPurpose": ["CRSPurposeCode120", "CRSPurposeCode111"],
+            },
         }
     ),
     MintOptions(columns=["year", "recipient", "value", "unit"]),

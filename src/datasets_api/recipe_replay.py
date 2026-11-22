@@ -2,8 +2,11 @@
 
 `StoredRootSource` is an `analysis.RootSource` that reads only what the stores already hold: a
 root read with no `columns` is its version's stored frame, and a root read with `columns` is
-the frame-layout file of those columns its version links, the newest one. A version with no
-record answers `RootNotStored`, and a frame or file the version no longer holds `RootExpired`.
+the frame-layout file of those columns its version links in the render format and code index
+the root's recorded frame pair names, so a file a later format rendered is never read under an
+earlier pair; a root record carrying `artifact_digest` reads the file of those bytes. A version with no record answers `RootNotStored`, a frame or file the version no
+longer holds `RootExpired`, and a frame pair named under no format this build knows
+`RootRenderingUnreadable`.
 A root read from a stored frame1 document past `render.frame1_decode_max_bytes` refuses
 `over_ceiling` (`bytes`) when it is located, before any root is read, and each root carries the
 rows its version's coverage records, so `analysis.locate_roots` checks the run's root-row cap
@@ -73,7 +76,7 @@ from datasets_api.analysis import (
     compute_analysis,
     recorded_dataset_root,
 )
-from datasets_api.analysis_roots import frame_from_frame_layout
+from datasets_api.analysis_roots import frame_from_frame_layout, frame_ref_under
 from datasets_api.derived import root_rendering
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_digest import minted_variable_names, output_digest
@@ -86,6 +89,8 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.store_errors import read_stored_frame
+from datasets_api.version_store import rendering_key_under
+from datasets_api.versions import NO_PARTY_ROLE, RENDER_FORMAT
 from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes
@@ -119,6 +124,12 @@ class StoredRootSource:
     fold_max_rows: int
     _records: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
+    @property
+    def code_index(self) -> None:
+        """None: a replay computes a stored recipe's op-specs as stored, so a filter value
+        on a breakdown column matches only the cells its root frames hold as written."""
+        return None
+
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
         record = self.recipes.read_recipe(spec_id=spec_id, content_version=content_version)
         return None if record is None else record.body
@@ -143,9 +154,10 @@ class StoredRootSource:
         latest: bool,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """`root` as its stored recipe's record names it. A recipe's roots carry no path words
-        (`analysis.PlannedRoot`), so `path_words` stays `None`."""
+        (`analysis.PlannedRoot`), so `path_words` and `codes` stay `None`."""
         record = next((held for seen, held in self._records if seen == root), None)
         if record is None or latest:
             raise RootRenderingUnreadable(
@@ -164,22 +176,24 @@ class StoredRootSource:
         options = record.get("options") or {}
         columns = options.get("columns") or ()
         if columns:
-            wanted = artifact_rendering(MintOptions.model_validate(options), site=_NO_SITE)
-            files = [
-                location
-                for location in servable
-                if not is_statistics_rendering(location.rendering)
-                and complete_rendering(location.rendering) == wanted
-            ]
-            location = max(files, key=lambda held: held.created_at, default=None)
+            location = _recorded_file(record, servable)
+            if location is None:
+                raise RootExpired(
+                    spec_id=spec_id,
+                    content_version=content_version,
+                    reason=(
+                        "no frame-layout file of its rendering in the render format and code "
+                        "index its frame names is held"
+                    ),
+                )
         else:
             location = stored_frame_location(servable)
-        if location is None:
-            raise RootExpired(
-                spec_id=spec_id,
-                content_version=content_version,
-                reason="no frame of its rendering is held",
-            )
+            if location is None:
+                raise RootExpired(
+                    spec_id=spec_id,
+                    content_version=content_version,
+                    reason="no frame of its rendering is held",
+                )
         facts = state.version.facts
         return ResolvedRoot(
             frame=FrameRef.model_validate(record["frame"]),
@@ -246,6 +260,78 @@ class StoredRootSource:
         return read_stored_frame(
             data, media_type=location.media_type, digest=location.artifact_digest
         )
+
+
+def _recorded_file(
+    record: Mapping[str, Any], servable: Sequence[StoredArtifactLocation]
+) -> StoredArtifactLocation | None:
+    """The frame-layout file `record`, a root record with `columns`, read: one of its
+    rendering linked under the key of the render format and code index its frame is named
+    by, or `None` when none is held.
+
+    The frame's pair is the only record of the format its file was written in: it is
+    `analysis_roots.frame_ref_under` of the record's options and `enrichment_stamp` under
+    `RENDER_FORMAT`, or under no format for a root named before the pair carried one. A
+    record whose `enrichment_stamp` is set read a file linked under that digest; one without
+    read a file linked under no digest or `NO_PARTY_ROLE` (`versions.link_digest`).
+
+    A record carrying `artifact_digest` names its frame by the digest of the file it read
+    (data-mcp's `frame_ref_for`), a pair no format here reproduces, so it reads the file of its
+    rendering holding those bytes and its pair is not checked.
+
+    Raises:
+        RootRenderingUnreadable: The frame's pair is that of neither format, on a record
+            without `artifact_digest`.
+    """
+    options = record.get("options") or {}
+    wanted = artifact_rendering(MintOptions.model_validate(options), site=_NO_SITE)
+    if (artifact_digest := record.get("artifact_digest")) is not None:
+        return next(
+            (
+                location
+                for location in servable
+                if location.artifact_digest == artifact_digest
+                and not is_statistics_rendering(location.rendering)
+                and complete_rendering(location.rendering) == wanted
+            ),
+            None,
+        )
+    dataset = FrameRef.model_validate(record["dataset"])
+    stamp = record.get("enrichment_stamp")
+    frame = FrameRef.model_validate(record["frame"])
+    for render_format in (RENDER_FORMAT, None):
+        named = frame_ref_under(
+            spec_id=dataset.spec_id,
+            content_version=dataset.content_version,
+            columns=options["columns"],
+            groupby=options.get("groupby"),
+            without_party_totals=options.get("without_party_totals") is True,
+            enrichment_stamp=stamp,
+            render_format=render_format,
+        )
+        if named == frame:
+            break
+    else:
+        raise RootRenderingUnreadable(
+            spec_id=dataset.spec_id,
+            content_version=dataset.content_version,
+            reason="its frame is named under a render format this runner does not read",
+        )
+    digests = (stamp,) if stamp is not None else (None, NO_PARTY_ROLE)
+    files = [
+        location
+        for location in servable
+        if not is_statistics_rendering(location.rendering)
+        and complete_rendering(location.rendering) == wanted
+        and location.rendering_key
+        in {
+            rendering_key_under(location.rendering, digest, render_format=render_format)
+            for digest in digests
+        }
+    ]
+    if not files:
+        return None
+    return max(files, key=lambda held: held.created_at)
 
 
 def _frame_layout(options: Mapping[str, Any]) -> bool:

@@ -180,7 +180,7 @@ def test_the_same_zero_row_member_under_an_undeclared_provenance_still_refuses()
         )
     except RollupNotSummableError as exc:
         assert exc.precondition == "missing_members"
-        assert "Malaria control" in str(exc)
+        assert _PURPOSE_MALARIA.dcid in str(exc)
     else:
         raise AssertionError("expected RollupNotSummableError")
 

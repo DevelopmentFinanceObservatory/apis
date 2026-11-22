@@ -11,21 +11,21 @@ Decode runs first and adds `stat_var_{code_system}` columns, so selection and pi
 select; a list that names none keeps every default column and only adds the enrichments. Unknown
 tokens list the parseable qualified tokens as `alternatives`.
 
-Long (unpivoted) output is written in the layout `materialise.projection` defines: each decoded
+Decoded `stat_var_<code_system>` cells hold code dcids (`datasets_api.decode`). Long (unpivoted)
+output is written in the layout `materialise.projection` defines: each decoded
 `stat_var_<code_system>` column becomes a `<code_system>` code column and a `<code_system>_label`
-column, each entity, `measurementMethod` and `provenance` gets a `_label` name column (and
-`stat_var` one when no axis decodes), `unit` splits into `unit`, `unit_label`, `currency`,
-`price_basis` and `base_year`, enrichments sit beside their entity, the order is fixed whatever
-order `columns` names, and `status` is left out. Names are cited source labels, else graph
-names read per chunk within the render's deadline (`_LongLayout`). A missing name, a failed or
-late read, or an axis label two codes share leaves the cell empty and adds
-`enrichment_unavailable`. A failed read also links the artifact as incomplete
-(`incomplete_rendering`). `measurementMethod_label`
-holds only a name that differs from the method's dcid and raises no warning. A selection keeps every
-decoded column unless it names some, and `status` and `<role>_label` tokens are accepted and
-ignored. Requests, pivot output, frames and collapse frames keep the grammar names, and so
-does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
-written as reshaped, with no projection and no name read.
+column holding the code's `code_index` label, each entity, `measurementMethod` and `provenance` gets
+a `_label` name column (and `stat_var` one when no axis decodes), `unit` splits into `unit`,
+`unit_label`, `currency`, `price_basis` and `base_year`, enrichments sit beside their entity, the
+order is fixed whatever order `columns` names, and `status` is left out. Names are cited source
+labels, else graph names read per chunk within the render's deadline (`_LongLayout`). A missing name
+or a failed or late read leaves the cell empty and adds `enrichment_unavailable`. A failed read also
+links the artifact as incomplete (`incomplete_rendering`). `measurementMethod_label` holds only a
+name that differs from the method's dcid and raises no warning. A selection keeps every decoded
+column unless it names some, and `status` and `<role>_label` tokens are accepted and ignored.
+Requests, pivot output, frames and collapse frames keep the grammar names, and so does a bare
+parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is written as
+reshaped, with no projection and no name read.
 
 Long output gives each party role one `<role>_kind` column in words
 (`materialise.projection.long_kind_cell`): `official` or `private` for a provider, `country or
@@ -81,6 +81,7 @@ from urllib.parse import urlencode
 import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_table
+from dfo_frame_grammar.arrow import build_frame_from_arrow
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -120,7 +121,6 @@ from datasets_api.groupby import (
     levels_in_frame,
     refuse_decode_gaps,
     refuse_provenance_disagreement,
-    refuse_shared_labels,
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
     rekeys_stat_vars,
@@ -137,7 +137,7 @@ from datasets_api.manifest_models import (
     Manifest,
     PartyTotalsLeftOutModel,
 )
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import (
     CutFrame,
@@ -153,7 +153,6 @@ from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
     current_rendering_keys,
     enriched_rendering_key,
-    rendering_key,
 )
 from datasets_api.versions import (
     ArtifactRecord,
@@ -166,6 +165,7 @@ from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.named import named_capped
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
 from materialise.bundle import (
@@ -196,7 +196,7 @@ from materialise.bundle_sources import (
     source_provenance,
 )
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import mint_version_from_digest
+from materialise.content_version import mint_version_from_digest, stream_frame_sha256
 from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
 from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.formats import (
@@ -301,9 +301,10 @@ class GroupbyCollapseRendering:
     `frame_sha256` is the hash of `frame`. `content_version` is the version `frame` is: minted
     from that hash alone, or the base version's own token when `frame` is the base frame
     (`render_and_store`).
-    `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
-    sums. `adds` says whether the collapse added StatVars together (`groupby.adds_stat_vars`);
-    a re-key that keeps each StatVar in a tuple of its own adds none."""
+    `contributing_member_count` counts distinct StatVars with rows that a `groupby.codes`
+    selection keeps, every one with no selection. Callers use it to warn about sums. `adds` says
+    whether the collapse added those StatVars together (`groupby.adds_stat_vars`); a re-key
+    that keeps each StatVar in a tuple of its own adds none."""
 
     frame: Frame
     role_columns: tuple[str, ...]
@@ -348,7 +349,8 @@ class DerivedVersion:
     `summed` is set when the frame is a collapse, which sums the definition's variables.
     `party_totals_left_out` holds the trace entries of the totals the cut left out
     (`PartyTotalsCut.trace_entries`), empty when none. `adds` says whether a collapse added
-    StatVars together (`GroupbyCollapseRendering.adds`)."""
+    StatVars together (`GroupbyCollapseRendering.adds`). `groupby` is the groupby that summed a
+    collapse, whose `codes` select the StatVars it adds, `None` for a cut alone."""
 
     frame_chunks: Callable[[], Iterator[Frame]]
     role_columns: tuple[str, ...]
@@ -359,6 +361,7 @@ class DerivedVersion:
     summed: bool
     party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
     adds: bool = True
+    groupby: GroupbyOptions | None = None
 
 
 class FrameMode(StrEnum):
@@ -379,11 +382,37 @@ class FrameMode(StrEnum):
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
-    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`) with
-    `QueryOptionsInvalid`, before any resolution or read. A `None` index decodes nothing, so it
-    checks nothing. Frame-dependent refusals run in `_reshape`. Groupby, decode, and
-    disabled-enrichment checks need the materialised frame."""
-    if code_index is None or options.groupby is None or options.groupby.levels is None:
+    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`), and a
+    `groupby.codes` axis outside its summable code systems (`summable_axes`) or listing a code
+    that matches no row of its axis (`_unselectable_codes`), with `QueryOptionsInvalid`, before
+    any resolution or read. A `None` index decodes nothing, so it checks nothing.
+    Frame-dependent refusals run in `_reshape`. Groupby, decode, and disabled-enrichment checks
+    need the materialised frame."""
+    if code_index is None or options.groupby is None:
+        return
+    summable = summable_axes(code_index.declarations)
+    levels = options.groupby.levels or {}
+    for code_system, listed in (options.groupby.codes or {}).items():
+        pointer = f"/options/groupby/codes/{pointer_segment(code_system)}"
+        if code_system not in summable:
+            raise QueryOptionsInvalid(
+                pointer=pointer,
+                detail=f"groupby.codes names {code_system!r}, which this deployment does not "
+                "declare a summable code system",
+            )
+        depth = levels.get(code_system)
+        if unselectable := _unselectable_codes(
+            listed, code_system=code_system, depth=depth, code_index=code_index
+        ):
+            at_depth = "" if depth is None else f" at or above levels depth {depth}"
+            raise QueryOptionsInvalid(
+                pointer=pointer,
+                detail=f"groupby.codes lists {named_capped(unselectable)} under "
+                f"{code_system!r}, which are no {code_system} code dcids{at_depth} in this "
+                f"deployment's code index, so they select no row; list the dcids the "
+                f"stat_var_{code_system} column holds",
+            )
+    if options.groupby.levels is None:
         return
     allowed = level_axes(code_index.declarations)
     for code_system in options.groupby.levels:
@@ -394,6 +423,24 @@ def check_options_supported(options: MintOptions, *, code_index: CodeIndex | Non
                 "declare a summable hierarchical code system disjoint from its children; GET "
                 f"/api/datasets/capabilities lists them as groupby_level_axes: {sorted(allowed)!r}",
             )
+
+
+def _unselectable_codes(
+    listed: Sequence[str], *, code_system: str, depth: int | None, code_index: CodeIndex
+) -> list[str]:
+    """The entries of `listed`, a `groupby.codes` list on `code_system`, that no row of the
+    rendering can hold, so they would select nothing: each that is no dcid of a `code_system`
+    code in `code_index` (a publisher code, a label, a `dcid:`-prefixed dcid), and, with a
+    `levels` `depth`, each code below that depth, which the roll-up rewrites to its ancestor
+    (`groupby.roll_up_levels`). A code shallower than the depth keeps its own dcid, so it
+    stays selectable."""
+    unselectable: list[str] = []
+    for code in listed:
+        row = code_index.code_by_dcid(code)
+        rolled = None if depth is None else code_index.ancestor_at_depth(code, depth)
+        if row is None or row.code_system != code_system or rolled not in (None, code):
+            unselectable.append(code)
+    return unselectable
 
 
 def _column_cap(format: str) -> int:
@@ -525,7 +572,7 @@ def _stream_first_axis_collapse(
 def _fold_permits() -> threading.BoundedSemaphore:
     """The process's groupby fold permits, `DatasetsBuildSettings.groupby_fold_max_concurrency`
     of them, shared by every render of the process: mint, operation worker and head hit. A
-    collapse holds one from its first fold to its tuple rows (`_reshape_groupby_collapse`),
+    collapse holds one from its first fold to its last sum (`_reshape_groupby_collapse`),
     so a further collapse waits for a permit. Read from the
     environment once, at the first collapse."""
     return threading.BoundedSemaphore(DatasetsBuildSettings.from_env().groupby_fold_max_concurrency)
@@ -710,10 +757,19 @@ def _reshape_groupby_collapse(
     deadline: float | None,
     levels: Mapping[str, int] | None = None,
     components: bool = False,
+    selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
-    """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
-    `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
-    `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
+    """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
+    selection on axes the frame decodes, every fold still reads every row, so the decode-gap,
+    collision, provenance and fold refusals refuse exactly as the same render without a
+    selection does; only then are the summed rows whose code on a selected axis is unlisted
+    dropped (`_selected_rows`). Each kept axis is a key of every sum, so a summed row holds the
+    rows of the StatVars its kept codes name alone, and the rows left equal a sum of the selected
+    StatVars. The contributors are the selected StatVars with rows, so the collapse counts and
+    adds only what its rows hold.
+
+    With `grammar_frame`, it restores `stat_var` on every row and builds a frame whose roles are
+    `entity_columns` plus the `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
     decoded axis the sum does not collapse (`groupby.unsummed_axes`), which `grammar_frame`
     holds to one value. A member with no rows counts as zero when the frame's dataset declares
     it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
@@ -768,9 +824,10 @@ def _reshape_groupby_collapse(
         lookup=decode_lookup,
     )
     remaining_columns = population_columns
-    # One fold permit covers the collapse from its first fold to its tuple rows.
+    # One fold permit covers the collapse from its first fold to its last sum.
     with _fold_permit(deadline):
-        # Arrow from a fold over frame slices until the last axis sums, then tuple rows.
+        # Arrow from a fold over frame slices until the last axis sums. A grammar frame is built
+        # from that output (`collapse_frame`), any other output read as tuple rows.
         collapsed: GroupedTable = cast(ReshapeTable, current)
         for axis_index, axis in enumerate(collapse_columns):
             positions = tuple(population_columns.index(c) for c in remaining_columns)
@@ -843,11 +900,19 @@ def _reshape_groupby_collapse(
                     ),
                 )
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
-        current = cast(Table, rows_table(collapsed))
+        if selection is not None:
+            collapsed = _selected_rows(collapsed, selection)
+            contributors = {
+                ref
+                for ref in contributors
+                if all(
+                    decode_lookup.get(ref, {}).get(axis) in codes
+                    for axis, codes in selection.items()
+                )
+            }
+        if not grammar_frame:
+            current = cast(Table, rows_table(collapsed))
 
-    refuse_shared_labels(
-        decode_lookup, index=code_index, contributors=contributors, kept=kept, levels=levels or {}
-    )
     adds = adds_stat_vars(
         contributors, index=code_index, kept=kept, levels=levels or {}, components=components
     )
@@ -875,22 +940,12 @@ def _reshape_groupby_collapse(
             decoded_code_systems=decoded_code_systems, declarations=code_index.declarations
         )
     }
-    # Unwrap `UnitRequest` cells to the shape `build_frame` accepts.
-    rows_as_dicts = [
-        {
-            **{
-                column: unit_cell_for_rebuild(value)
-                for column, value in zip(current.columns, row, strict=True)
-                if column not in left_out
-            },
-            _STAT_VAR_COLUMN: stat_var_ref,
-        }
-        for row in current.rows
-    ]
     role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
-    collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
+    collapsed_frame = collapse_frame(
+        collapsed, left_out=left_out, stat_var_ref=stat_var_ref, role_columns=role_columns
+    )
     current = cast(Table, collapsed_frame)
-    collapsed_frame_sha256 = frame_sha256(collapsed_frame)
+    collapsed_frame_sha256 = stream_frame_sha256((collapsed_frame,))
     collapse_info = GroupbyCollapseRendering(
         frame=collapsed_frame,
         role_columns=role_columns,
@@ -901,6 +956,97 @@ def _reshape_groupby_collapse(
         adds=adds,
     )
     return current, decode_plan, collapse_info
+
+
+def _selected_rows(
+    collapsed: GroupedTable, selection: Mapping[str, frozenset[str]]
+) -> GroupedTable:
+    """The rows of a collapse's output `collapsed` whose `stat_var_<axis>` cell is one of
+    `selection`'s codes on each of its axes, in their order: an Arrow table stays Arrow, any
+    other output is read as tuple rows."""
+    if isinstance(collapsed, pa.Table):
+        mask = None
+        for axis, codes in selection.items():
+            column = collapsed.column(f"{_KEPT_AXIS_PREFIX}{axis}")
+            kept = pc.is_in(column, value_set=pa.array(sorted(codes), column.type))
+            mask = kept if mask is None else pc.and_(mask, kept)
+        return collapsed if mask is None else collapsed.filter(mask)
+    rows = rows_table(collapsed)
+    positions = {
+        rows.columns.index(f"{_KEPT_AXIS_PREFIX}{axis}"): codes for axis, codes in selection.items()
+    }
+    return ReshapeTable(
+        columns=rows.columns,
+        rows=tuple(
+            row
+            for row in rows.rows
+            if all(row[position] in codes for position, codes in positions.items())
+        ),
+    )
+
+
+def collapse_frame(
+    collapsed: GroupedTable,
+    *,
+    left_out: Collection[str],
+    stat_var_ref: str,
+    role_columns: Sequence[str],
+) -> Frame:
+    """The grammar frame of a collapse's output `collapsed`: every column but `left_out`, with
+    `stat_var_ref` in `stat_var` on every row, keyed by `role_columns`. An Arrow table, which
+    the streamed fold gives when its sums need no row fold, is built column by column
+    (`build_frame_from_arrow`). A table of tuple rows is built row by row (`Frame.build`), with
+    each `UnitRequest` cell unwrapped to the JSON `Frame.build` accepts. Both builders normalise
+    and sort each cell alike, so the frames, their bytes and their hashes are equal
+    (`tests/datasets_api/test_render_collapse_frame_columnar.py`)."""
+    if isinstance(collapsed, pa.Table):
+        table = collapsed.select(
+            [
+                column
+                for column in collapsed.column_names
+                if column not in left_out and column != _STAT_VAR_COLUMN
+            ]
+        ).append_column(
+            _STAT_VAR_COLUMN,
+            pa.repeat(pa.scalar(stat_var_ref, type=pa.string()), collapsed.num_rows),
+        )
+        return build_frame_from_arrow(table, role_keys=role_columns)
+    rows = rows_table(collapsed)
+    rows_as_dicts = [
+        {
+            **{
+                column: unit_cell_for_rebuild(value)
+                for column, value in zip(rows.columns, row, strict=True)
+                if column not in left_out
+            },
+            _STAT_VAR_COLUMN: stat_var_ref,
+        }
+        for row in rows.rows
+    ]
+    return build_frame(role_keys=role_columns, rows=rows_as_dicts)
+
+
+def _decoded_selection(
+    groupby: GroupbyOptions, *, decoded_code_systems: Sequence[str]
+) -> dict[str, frozenset[str]] | None:
+    """The `groupby.codes` selection of `groupby` as sets, `None` with none.
+
+    Raises:
+        QueryOptionsInvalid: A `codes` axis this frame does not decode, at
+            `/options/groupby/codes/<axis>`. Its rows hold no code to select on, so the
+            selection would keep every row, which a caller could not tell from a selection
+            that held.
+    """
+    if groupby.codes is None:
+        return None
+    for code_system in groupby.codes:
+        if code_system not in decoded_code_systems:
+            raise QueryOptionsInvalid(
+                pointer=f"/options/groupby/codes/{pointer_segment(code_system)}",
+                detail=f"groupby.codes names {code_system!r}, which this frame's StatVars do "
+                "not carry, so it selects no row; leave it out of groupby.codes",
+            )
+    return {axis: frozenset(listed) for axis, listed in groupby.codes.items()}
 
 
 def _reshape_groupby(
@@ -918,8 +1064,8 @@ def _reshape_groupby(
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
     declared-summable axes absent from `by`. `groupby.levels` first rewrites each level axis's
-    decoded labels to their depth ancestors' (`groupby.roll_up_levels`); a code above the depth
-    keeps its own label. A `by` that leaves out `stat_var` and keeps every decoded summable axis
+    decoded codes to their depth ancestors' dcids (`groupby.roll_up_levels`); a code above the
+    depth keeps its own. A `by` that leaves out `stat_var` and keeps every decoded summable axis
     collapses `stat_var` alone, each kept tuple holding one StatVar, so the frame is keyed by
     the kept axes under one `stat_var` as any other sum's is (`groupby.rekeys_stat_vars`).
 
@@ -964,6 +1110,7 @@ def _reshape_groupby(
             requests=decode_plan.requests,
             lookup=roll_up_levels(decode_plan.lookup, index=code_index, levels=levels),
         )
+    selection = _decoded_selection(options.groupby, decoded_code_systems=decoded_code_systems)
     axes_to_collapse = collapse_axes(
         by=options.groupby.by,
         decoded_code_systems=decoded_code_systems,
@@ -1005,6 +1152,7 @@ def _reshape_groupby(
             deadline=deadline,
             levels=levels,
             components=components,
+            selection=selection,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
@@ -1327,9 +1475,11 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
     whatever its shape (`format`, `bundle`, a bundle's `RENDITION_KEY` and a bare file's
     `LAYOUT_KEY = DATA_LAYOUT_VERSION`), so the default table keeps its name. The token names
     each field in key order, by its value when that is a short lowercase word (`frame`, `incomplete`) and by its
-    key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of the
-    fields' `rendering_key`, so two renderings that differ in any field, such as two pivots on
-    other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`."""
+    key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of a
+    SHA-256 over the fields' sorted JSON, so two renderings that differ in any field, such as two
+    pivots on other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`. The hash covers the
+    fields alone and omits the `versions.RENDER_FORMAT` salt that `rendering_key` adds to a
+    frame-layout file's key, so a file's name holds when its format changes."""
     if _file_kind(rendering) is not None:
         return None
     shaping = {
@@ -1344,7 +1494,8 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
         value if isinstance(value, str) and _SHAPE_WORD.fullmatch(value) else key
         for key, value in sorted(shaping.items())
     ]
-    return "-".join([*words, rendering_key(shaping)[:6]])
+    canonical = json.dumps(shaping, sort_keys=True, default=str)
+    return "-".join([*words, hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:6]])
 
 
 def stored_artifact_entry(
@@ -1594,16 +1745,17 @@ def _table_scan(
     role_columns: Sequence[str], *, options: MintOptions, code_index: CodeIndex | None
 ) -> TableScan:
     """A scan of one data file written under `options`, told the pivot that shaped it and the
-    axis code columns long output writes, each code taking its code system's plain name as its
-    kind."""
+    axis code columns the file can hold, each code taking its code system's plain name as its
+    kind: `<code_system>` in long output and `stat_var_<code_system>` in pivot output."""
     pivot = options.pivot
+    axis_kinds: dict[str, str] = {}
+    if code_index is not None:
+        for name, declaration in code_index.declarations.items():
+            column = name if pivot is None else axis_source_column(name)
+            axis_kinds[column] = declaration.plain_name
     return TableScan(
         role_columns=role_columns,
-        axis_kinds=(
-            {name: declaration.plain_name for name, declaration in code_index.declarations.items()}
-            if code_index is not None and pivot is None
-            else None
-        ),
+        axis_kinds=axis_kinds,
         pivot_index=pivot.index if pivot is not None else None,
         pivot_columns=pivot.columns if pivot is not None else None,
     )
@@ -1651,17 +1803,20 @@ def _codes(
     reads: _RenderReads,
 ) -> BundleCodes:
     """The codes table of the scanned files. Cited sources take their cited names, a collapsed
-    family's `(ref, label)` takes its label, and an axis code takes its `code_index` label, the
-    name its `<code_system>_label` cell holds. The graph names every other code through the
+    family's `(ref, label)` takes its label, and an axis code, in a cell or a pivot heading,
+    takes its `code_index` label, the name a long file's `<code_system>_label` cell holds. The
+    graph names every other code through the
     render's `reads`, so the read shares the render's deadline and makes none after a failed
     name read."""
     known = _known_labels(citations, family, code_index=code_index)
     if code_index is not None:
         for scan in scans:
-            for column in scan.axis_kinds:
-                for code in scan.codes(column):
-                    if (row := code_index.code_by_dcid(code)) is not None:
-                        known[code] = row.label
+            codes = [code for column in scan.axis_kinds for code in scan.codes(column)]
+            if scan.pivot_columns in scan.axis_kinds and scan.heading_kind is not None:
+                codes.extend(scan.headings)
+            for code in codes:
+                if (row := code_index.code_by_dcid(code)) is not None:
+                    known[code] = row.label
     return bundle_codes(scans, known_labels=known, lookup=reads.lookup)
 
 
@@ -1815,22 +1970,16 @@ def _axis_columns(columns: Sequence[str], *, code_index: CodeIndex | None) -> tu
     )
 
 
-def _axis_codes(code_index: CodeIndex | None) -> dict[str, dict[str, str | None]]:
-    """Each declared code system's `{label: code dcid}`, the lookup a long output's axis code
-    columns read (`materialise.projection.plan_long_projection`). A label two codes of one system
-    share maps to `None`, so its rows get an empty code cell and an `enrichment_unavailable`
-    warning naming the code column."""
+def _axis_labels(code_index: CodeIndex | None) -> dict[str, dict[str, str]]:
+    """Each declared code system's `{code dcid: label}`, the lookup a long output's axis label
+    columns read (`materialise.projection.plan_long_projection`)."""
     if code_index is None:
         return {}
-    codes: dict[str, dict[str, str | None]] = {
-        code_system: {} for code_system in code_index.declarations
-    }
+    labels: dict[str, dict[str, str]] = {code_system: {} for code_system in code_index.declarations}
     for row in code_index.codes:
-        by_label = codes.get(row.code_system)
-        if by_label is None:
-            continue
-        by_label[row.label] = None if row.label in by_label else row.dcid
-    return codes
+        if (by_dcid := labels.get(row.code_system)) is not None:
+            by_dcid[row.dcid] = row.label
+    return labels
 
 
 def _native_price_basis(
@@ -2070,7 +2219,7 @@ class _LongLayout:
     enrichment also uses, and a value is asked for once per layout. A graph read that fails or runs out of time
     leaves the names it would have given empty and stops further reads for the whole render
     (`_RenderReads`), so the render completes with those cells empty. `warnings` then counts
-    the empty name, kind and code cells per column as `enrichment_unavailable`.
+    the empty name and kind cells per column as `enrichment_unavailable`.
 
     `grain` is the whole frame's period grain (`materialise.projection.period_grain`), read by
     `render_and_store` before the first chunk. With `year` every `time_period` cell is an
@@ -2082,7 +2231,7 @@ class _LongLayout:
     columns."""
 
     entity_columns: Sequence[str]
-    axis_codes: Mapping[str, Mapping[str, str | None]]
+    axis_labels: Mapping[str, Mapping[str, str]]
     unit_naming: UnitNaming
     reads: _RenderReads
     grain: str | None = None
@@ -2109,7 +2258,7 @@ class _LongLayout:
         if options.layout == FRAME_LAYOUT:
             return cls(
                 entity_columns=entity_columns,
-                axis_codes={},
+                axis_labels={},
                 unit_naming=UnitNaming(
                     currency_of=unit_currency,
                     native_price_basis=lambda _stat_var: None,
@@ -2120,7 +2269,7 @@ class _LongLayout:
             )
         return cls(
             entity_columns=entity_columns,
-            axis_codes=_axis_codes(code_index),
+            axis_labels=_axis_labels(code_index),
             unit_naming=UnitNaming(
                 currency_of=unit_currency,
                 native_price_basis=_native_price_basis(
@@ -2138,11 +2287,14 @@ class _LongLayout:
     def apply(self, table: Table) -> Table:
         if self.frame:
             return table
+        if isinstance(table, Frame):
+            # `Frame.rows` rebuilds every row on each read, and the projection reads them twice.
+            table = _frame_rows(table.columns, table.table)
         if self.projection is None:
             self.projection = plan_long_projection(
                 table.columns,
                 entity_columns=self.entity_columns,
-                axis_codes=self.axis_codes,
+                axis_labels=self.axis_labels,
                 unit_naming=self.unit_naming,
                 grain=self.grain,
             )
@@ -2181,7 +2333,7 @@ class _LongLayout:
         self, warnings: Sequence[MaterialisationWarning]
     ) -> tuple[MaterialisationWarning, ...]:
         """`warnings` with each `enrichment_unavailable` column named as the output names it,
-        then one `enrichment_unavailable` per name or code column with empty cells, in column
+        then one `enrichment_unavailable` per name or kind column with empty cells, in column
         order."""
         renamed = self.projection.renamed if self.projection is not None else {}
         out: list[MaterialisationWarning] = []
@@ -3136,7 +3288,11 @@ def render_and_store(
         ):
             collapse = replace(collapse, content_version=content_version)
         derived = _derived_version(
-            collapse, cut=cut, content_version=content_version, entity_columns=entity_columns
+            collapse,
+            cut=cut,
+            content_version=content_version,
+            entity_columns=entity_columns,
+            groupby=options.groupby,
         )
         effective_content_version = (
             derived.content_version if derived is not None else content_version
@@ -3306,10 +3462,11 @@ def _derived_version(
     cut: CutFrame | None,
     content_version: str,
     entity_columns: Sequence[str],
+    groupby: GroupbyOptions | None = None,
 ) -> DerivedVersion | None:
     """The version a render's artifact belongs to when it is not `content_version`, the version
-    of the frame the render read: the collapse when it is a frame of its own, else the cut
-    frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
+    of the frame the render read: the collapse when it is a frame of its own, summed by
+    `groupby`, else the cut frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
     kept) is that frame, so a collapse of the cut frame equal to it is the cut frame."""
     if collapse is not None and collapse.content_version == content_version:
         return None
@@ -3327,6 +3484,7 @@ def _derived_version(
             summed=True,
             party_totals_left_out=left_out,
             adds=collapse.adds,
+            groupby=groupby,
         )
     if cut is None or cut_version is None:
         return None
@@ -3342,13 +3500,15 @@ def _derived_version(
     )
 
 
-BUNDLE_LAYOUT_VERSION = 4
+BUNDLE_LAYOUT_VERSION = 5
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
 request while each old bundle stays listed under its own rendering key. Version 3 writes
 integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
-writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`."""
+writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`. Version 5
+writes a pivot's decoded `stat_var_<code_system>` cells as code dcids, describes that column as a
+code and names its codes in the codes table."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -3368,23 +3528,26 @@ METADATA_INCOMPLETE = "incomplete"
 """The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
 without graph names, because the read failed."""
 
-DATA_LAYOUT_VERSION = 4
+DATA_LAYOUT_VERSION = 5
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
 cells for unchanged data and options, so a request renders a new file under a new rendering key
 and cannot match one written in the old layout. Version 2 is the long layout of
 `materialise.projection`. Version 3 adds integer years and keeps total rows out of the main
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
 XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
-`<role>_kind` in place of `<role>_party_kind`. A rendering without `LAYOUT_KEY` predates
+`<role>_kind` in place of `<role>_party_kind`. Version 5 writes a pivot's decoded
+`stat_var_<code_system>` cells as code dcids. A rendering without `LAYOUT_KEY` predates
 version 2."""
 
 FRAME_LAYOUT = "frame"
 """The `options.layout` value that asks for a bare parquet file in the frame layout: the
-frame's grammar columns as reshaped (`stat_var`, the roles, decoded `stat_var_<code_system>`
-axes, `time_period`, `value`, `unit` with a converted unit as its JCS request text,
-`measurementMethod`, `provenance`, `status`), the file machine readers parse. Its rendering
-carries `LAYOUT_KEY = FRAME_LAYOUT` from the request and no `DATA_LAYOUT_VERSION` stamp. A
-change to this layout ships under a new value."""
+frame's grammar columns as reshaped (`stat_var`, the roles, decoded `stat_var_<code_system>` axes
+holding code dcids, `time_period`, `value`, `unit` with a converted unit as its JCS request text,
+`measurementMethod`, `provenance`, `status`), the file machine readers parse. Its rendering carries
+`LAYOUT_KEY = FRAME_LAYOUT` from the request and no `DATA_LAYOUT_VERSION` stamp. A change to its
+columns ships under a new value. A change to its cells for unchanged data and options changes
+`versions.RENDER_FORMAT`, which salts the file's link key, so its rendering stays the one a caller
+selects it by."""
 
 
 def rendition_token(site: PublicSiteSettings) -> str:

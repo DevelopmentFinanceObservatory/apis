@@ -71,6 +71,10 @@ its own refs. A provenance is named as a source citation names it (`read_source_
 its catalogue row, else its parent Dataset's name, else its own. A card names them all by
 label.
 
+A decoded `stat_var_<code_system>` column holds code dcids (`datasets_api.decode`). Each is
+labelled from the code index (`_code_labels`), with no graph read and outside the label read's
+caps, so a series split by a breakdown is named by the code's label.
+
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
 `continuations` a computed version stored when it was published, inherited from the versions it
@@ -157,7 +161,7 @@ import datetime
 import logging
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -353,6 +357,9 @@ PRESENTATION_PRINCIPAL_PREFIX = "presentation:"
 the reference table (e.g. `LivePresentationStore
 .list_orphaned_presentation_references`'s own caller) can invert it back to
 a `component_id` without duplicating the literal."""
+
+# A decoded code system's column (`stat_var_<code_system>`), whose cells are code dcids.
+_AXIS_COLUMN_PREFIX = f"{STAT_VAR_COLUMN}_"
 
 # Route `spec_` family refs to `_resolve_family_labels`.
 # Graph refs use other prefixes.
@@ -660,6 +667,80 @@ def _capped_refs(
     )
     capped.update((ref, ref) for ref in tuple(unit_refs)[:_UNIT_LABEL_CAP])
     return capped
+
+
+def _axis_positions(*, columns: Sequence[str], rows: Sequence[Sequence[object]]) -> dict[int, str]:
+    """The position of each decoded `stat_var_<code_system>` column of `rows` that holds a code
+    cell, mapped to its code system. Empty for a frame with no breakdown cell to label, which
+    then reads no code index."""
+    return {
+        position: column.removeprefix(_AXIS_COLUMN_PREFIX)
+        for position, column in enumerate(columns)
+        if column.startswith(_AXIS_COLUMN_PREFIX)
+        and any(isinstance(row[position], str) for row in rows)
+    }
+
+
+def _code_labels(
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    index: Callable[[], CodeIndex],
+) -> dict[str, str]:
+    """The code index's label of each code dcid a decoded `stat_var_<code_system>` column of
+    `rows` holds (`datasets_api.decode`), the label the long layout's `<code_system>_label`
+    writes. A breakdown cell is named so with no graph read and outside the label read's caps.
+    `index` is called only when some such column holds a code cell."""
+    axes = _axis_positions(columns=columns, rows=rows)
+    if not axes:
+        return {}
+    code_index = index()
+    positions = [position for position, axis in axes.items() if axis in code_index.declarations]
+    labels: dict[str, str] = {}
+    for row in rows:
+        for position in positions:
+            cell = row[position]
+            if (
+                isinstance(cell, str)
+                and cell not in labels
+                and (code := code_index.code_by_dcid(cell)) is not None
+            ):
+                labels[cell] = code.label
+    return labels
+
+
+def _codes_by_label(
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    index: Callable[[], CodeIndex],
+) -> dict[str, dict[str, str]]:
+    """For each decoded `stat_var_<code_system>` column of `rows`, each code dcid it holds by
+    the code's label, for the labels no other code of the code system carries
+    (`ResolvedFrame.codes_by_label`). A frame whose cells hold labels holds these, each naming
+    one code. `index` is called only when some such column holds a code cell."""
+    axes = _axis_positions(columns=columns, rows=rows)
+    if not axes:
+        return {}
+    code_index = index()
+    by_label: dict[str, dict[str, str]] = {}
+    for position, axis in axes.items():
+        if axis not in code_index.declarations:
+            continue
+        held: dict[str, str] = {}
+        for cell in dict.fromkeys(row[position] for row in rows):
+            if not isinstance(cell, str) or (code := code_index.code_by_dcid(cell)) is None:
+                continue
+            carriers = [
+                hit.dcid
+                for hit in code_index.codes_by_text(code.label)
+                if hit.code_system == axis and hit.label == code.label
+            ]
+            if carriers == [cell]:
+                held[code.label] = cell
+        if held:
+            by_label[columns[position]] = held
+    return by_label
 
 
 def _composed(
@@ -1079,6 +1160,11 @@ class LiveFrameStore:
                 graph_generation=graph_generation,
                 catalogue_build=catalogue_build,
                 rendering=rendering,
+                codes_by_label=_codes_by_label(
+                    columns=cast("Sequence[str]", doc["columns"]),
+                    rows=cast("Sequence[Sequence[object]]", doc["rows"]),
+                    index=lambda: self._code_index,
+                ),
             )
             citation_due, citation_retry_at, anchor_final = True, None, False
             recheck_at = (
@@ -1329,15 +1415,16 @@ class LiveFrameStore:
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
         columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
         rows = [[one.get(column) for column in columns] for one in coordinates]
+        coded = _code_labels(columns=columns, rows=rows, index=lambda: self._code_index)
         refs = {
             ref: bare
             for ref, bare in _capped_refs(columns=columns, rows=rows).items()
-            if ref not in frame.labels
+            if ref not in frame.labels and ref not in coded
         }
         read, labelled = self._label_refs(
             refs, provenances=_provenance_cells(columns=columns, rows=rows), deadline=deadline
         )
-        labels = {**frame.labels, **read}
+        labels = {**frame.labels, **coded, **read}
         anchor = RollingAnchor(
             period=cast(str, body["period"]),
             rule=cast(str, body["rule"]),
@@ -1914,34 +2001,36 @@ class LiveFrameStore:
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
-        order, then unit dcid refs, capped at 100 in row order, with the `dcid:` refs of
-        `warned_provenances` past both caps, and say whether the graph read succeeded. The
-        provenance cells and `warned_provenances` are named as `_label_refs` names a
-        provenance. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
-        refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
-        A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
-        first cap after `leading_refs`. `dcid:spec_...` family refs use stored
-        definitions and `CodeIndex`. Other refs use one graph batch that stops at the absolute
-        monotonic `deadline`. Missing readers, lookup/store failures, and over-cap refs remain
-        unlabelled without failing the load. A graph failure, the deadline included, preserves
-        family labels. A graph failure or a failed family definition read returns `False`, so
-        `load` skips the cache.
+        order, with each code dcid a decoded axis column holds labelled from the code index outside
+        the caps (`_code_labels`), then unit dcid refs, capped at 100 in row order, with the `dcid:`
+        refs of `warned_provenances` past both caps, and say whether the graph read succeeded. The
+        provenance cells and `warned_provenances` are named as `_label_refs` names a provenance.
+        `leading_refs`, then a composed unit's StatVar sides, count as stat_var refs ahead of the
+        columns' own refs, and a composed unit's string sides as unit refs. A ref in `named` is left
+        out of the read. Each bare dcid in `worded` counts under the first cap after `leading_refs`.
+        `dcid:spec_...` family refs use stored definitions and `CodeIndex`. Other refs use one graph
+        batch that stops at the absolute monotonic `deadline`. Missing readers, lookup/store
+        failures, and over-cap refs remain unlabelled without failing the load. A graph failure, the
+        deadline included, preserves family labels. A graph failure or a failed family definition
+        read returns `False`, so `load` skips the cache.
         """
         columns = tuple(cast("Sequence[str]", doc["columns"]))
         if STAT_VAR_COLUMN not in columns:
             return {}, True
         rows = tuple(cast("Sequence[Sequence[object]]", doc["rows"]))
+        coded = _code_labels(columns=columns, rows=rows, index=lambda: self._code_index)
         refs = _capped_refs(
             columns=columns,
             rows=rows,
             leading_refs=leading_refs,
             worded=worded,
-            named=named,
+            named=named | coded.keys(),
         )
         warned = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in warned_provenances}
         refs.update(warned)
         provenances = _provenance_cells(columns=columns, rows=rows) | set(warned.values())
-        return self._label_refs(refs, provenances=provenances, deadline=deadline)
+        labels, resolved = self._label_refs(refs, provenances=provenances, deadline=deadline)
+        return {**labels, **coded}, resolved
 
     def _computed_labels(
         self,

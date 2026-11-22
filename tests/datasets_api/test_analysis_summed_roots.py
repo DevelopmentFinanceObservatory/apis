@@ -20,7 +20,10 @@ from artifact_store.errors import ArtifactNotFoundError
 from code_index import CodeIndex, CodeRow
 from dataset_store import snapshot
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api import analysis, analysis_roots, current, store_errors, versions
+from datasets_api import analysis, analysis_roots, current, store_errors
+from datasets_api import render as render_module
+from datasets_api import version_store as version_store_module
+from datasets_api import versions as versions_module
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -131,9 +134,10 @@ def _rig(
 ):
     """A client over a minted dataset of two StatVars (one with `sole`), each 2020 value of one
     recipient, its version store, and the root naming that version with no enrichment. With
-    `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`)."""
+    `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`, unless
+    `code_index` is given)."""
     store = FakeVersionRecordDatasetStore()
-    if two_axes:
+    if two_axes and code_index is None:
         code_index = _two_axis_code_index()
     client = _client(
         graph=_two_axis_graph() if two_axes else _graph(),
@@ -1112,7 +1116,7 @@ def test_a_recorded_sum_is_read_again_only_under_the_stamp_it_was_rendered_under
     if moved == "code_index":
         monkeypatch.setattr(index, "stamp", replace(index.stamp, content_hash="sha256:another"))
     else:
-        monkeypatch.setattr(versions, "RENDER_FORMAT", "another_format")
+        monkeypatch.setattr(versions_module, "RENDER_FORMAT", "another_format")
     work = _count_work(monkeypatch)
     moved = _post(client, tree)
     renders_under_another_index = work["_render_stored_rendering"]
@@ -1182,19 +1186,14 @@ def test_a_newest_recorded_sum_that_cannot_serve_renders_in_place_of_an_older_on
     assert work["_render_stored_rendering"] == 1
 
 
-@pytest.mark.parametrize(
-    ("expired", "status"),
-    [("file", 200), ("every_file", 410)],
-    ids=["its_file", "its_frame_too"],
-)
+@pytest.mark.parametrize("expired", ["file", "every_file"], ids=["its_file", "its_frame_too"])
 def test_a_recorded_sum_whose_files_expired_is_rendered_again(
-    monkeypatch: pytest.MonkeyPatch, expired: str, status: int
+    monkeypatch: pytest.MonkeyPatch, expired: str
 ) -> None:
     """A recorded sum past its working tier, its dataset version still servable, is not read:
-    the root renders. With only its file expired the render links a new one and the answer
-    stands. With its stored frame expired too, the render makes the same version, whose frame
-    a render does not store again, so the root refuses `artifact_expired` as it did before
-    sums were recorded."""
+    the root renders. With only its file expired the render links a new one. With its stored
+    frame expired too, the render makes the same version and stores its frame again, which
+    renews the frame's location (`<digest>#r<n>`), so the answer stands either way."""
     client, store, root = _rig()
     tree = _aggregate(root, group_by=["recipient"])
     first = _post(client, tree)
@@ -1215,12 +1214,21 @@ def test_a_recorded_sum_whose_files_expired_is_rendered_again(
     work = _count_work(monkeypatch)
     again = _post(client, tree)
 
-    assert again.status_code == status, again.text
-    if status == 200:
-        assert again.json() == first.json()
-    else:
-        assert again.json()["code"] == "artifact_expired"
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
     assert work["_render_stored_rendering"] == 1
+    if expired == "every_file":
+        with store.transaction() as tx:
+            renewals = {
+                row["renewal"]
+                for row in tx.fetch_all(
+                    "SELECT renewal FROM datasets.artifact_location WHERE artifact_digest IN ("
+                    "SELECT artifact_digest FROM datasets.version_artifact "
+                    'WHERE content_version = %s AND rendering LIKE \'%"format": "frame"%\')',
+                    (derived,),
+                )
+            }
+        assert renewals == {1}
 
 
 def test_a_revoked_recorded_sum_is_passed_over_and_the_root_renders(
@@ -1293,15 +1301,18 @@ def test_a_repeated_request_over_a_moved_head_of_the_same_sum_names_the_new_head
     assert (read["content_version"], read["base_content_version"]) == (recorded, new_head)
 
 
+@pytest.mark.parametrize("tree", ["filtered", "repeated"])
 def test_a_spec_root_read_from_a_recorded_sum_names_the_head_it_was_read_through(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tree: str
 ) -> None:
     """A Spec root read from a recorded version through a head other than the base its record
-    keeps names that head as the dataset version it sums."""
+    keeps names that head as the dataset version it sums. The tree the first head answered,
+    repeated, answers under another key, since the key holds each root's base version, so no
+    stored body names the first head."""
     client, _, spec_root, recorded, new_head = _moved_head_of_the_same_sum(monkeypatch)
+    data = _filter(spec_root) if tree == "filtered" else spec_root
 
-    # Another tree over the same root, so no stored answer replays an earlier body.
-    standing = _post(client, _aggregate(_filter(spec_root), group_by=["recipient"]))
+    standing = _post(client, _aggregate(data, group_by=["recipient"]))
 
     assert standing.status_code == 200, standing.text
     assert standing.json()["frame_content_version"] == recorded
@@ -1402,3 +1413,69 @@ def test_a_repeated_request_reads_its_recorded_sum_in_one_store_read(
 
     assert again.status_code == 200, again.text
     assert reads == Counter({"read_version_state": 1})
+
+
+@pytest.mark.parametrize(
+    "stamped",
+    [versions_module, version_store_module],
+    ids=["recorded-sum-stamp", "frame-file-key"],
+)
+def test_a_sum_recorded_under_an_earlier_render_format_renders_once_with_code_cells(
+    monkeypatch: pytest.MonkeyPatch, stamped: Any
+) -> None:
+    """A sum recorded while `stat_var_<axis>` cells held labels, under an earlier answer format
+    and an earlier render format in its head rows' stamp (`versions.rendering_stamp`) or in its
+    frame-layout file's link key (`version_store.rendering_key`), is not read again: either
+    alone makes the root render once, the answer is the one a current build gives, and the next
+    repeat renders nothing."""
+
+    def posted(client: Any, root: dict) -> Any:
+        return _post(client, _aggregate(_filter(root), group_by=["recipient", "testAxis"]))
+
+    control_client, _, control_root = _rig()
+    control = posted(control_client, control_root)
+    assert control.status_code == 200, control.text
+
+    client, store, root = _rig()
+    with monkeypatch.context() as earlier:
+        build = render_module.build_decode_plan
+
+        def label_cells(table: Any, *, index: CodeIndex, extra_refs: Any = ()) -> Any:
+            plan = build(table, index=index, extra_refs=extra_refs)
+            if plan is None:
+                return None
+            return replace(
+                plan,
+                lookup={
+                    ref: {
+                        system: (code.label if (code := index.code_by_dcid(cell)) else cell)
+                        for system, cell in cells.items()
+                    }
+                    for ref, cells in plan.lookup.items()
+                },
+            )
+
+        earlier.setattr(render_module, "build_decode_plan", label_cells)
+        earlier.setattr(stamped, "RENDER_FORMAT", "axis_label")
+        earlier.setattr(analysis, "ANSWER_FORMAT", "analysis_answer/3")
+        old = posted(client, root)
+    assert old.status_code == 200, old.text
+    assert old.json()["frame_content_version"] != control.json()["frame_content_version"]
+
+    work = _count_work(monkeypatch)
+    renewed = posted(client, root)
+    renders = work["_render_stored_rendering"]
+    work.clear()
+    again = posted(client, root)
+
+    assert renewed.status_code == again.status_code == 200, renewed.text
+    assert renders == 1
+    assert renewed.json()["frame_content_version"] == control.json()["frame_content_version"]
+    assert again.json() == renewed.json()
+    assert work == Counter()
+    with store.transaction() as tx:
+        derived = tx.fetch_all(
+            "SELECT content_version FROM datasets.version_record "
+            "WHERE base_content_version IS NOT NULL"
+        )
+    assert len(derived) == 2
