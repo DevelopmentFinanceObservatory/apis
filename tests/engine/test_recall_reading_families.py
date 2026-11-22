@@ -244,9 +244,10 @@ def _graph(
     series: dict[str, str] | None = None,
     *,
     rows: tuple[StatVarRow, ...] = _ROWS,
+    nodes: dict[str, dict] | None = None,
 ) -> FakeGraph:
     """The test graph of index `rows`, recalling `recalled` for `query`, with `series`
-    (dcid to label) as further series outside the index."""
+    (dcid to label) as further series outside the index, and `nodes` as further nodes."""
     return FakeGraph(
         nodes={
             **{row.dcid: _row_node(row) for row in rows},
@@ -255,6 +256,7 @@ def _graph(
             **{dcid: _series_node(label) for dcid, label in (series or {}).items()},
             _DEU: {"label": "Germany", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
+            **(nodes or {}),
         },
         detect={
             query: {
