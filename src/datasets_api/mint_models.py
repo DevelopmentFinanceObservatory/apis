@@ -308,11 +308,13 @@ class GroupbyOptions(BaseModel):
     be one of the capabilities document's `groupby_level_axes`
     (`datasets_api.render.check_options_supported`).
 
-    `codes` keeps, for each code system it names, only the summed rows whose
-    code, after any `levels` roll-up, is one of the listed code dcids. Each
-    kept axis is a key of the sum, so those rows equal a sum of the selected
-    rows alone. Every fold still reads every row, so a selected sum refuses
-    exactly when the same sum with no selection does.
+    `codes` sums, for each code system it names, only the rows whose code,
+    after any `levels` roll-up, is one of the listed code dcids. Each kept
+    axis is a key of the sum, so a listed group's rows and total are those of
+    the same group with no selection. The checks before the folds read every
+    row (decode gaps, StatVar collision, provenance), and the folds'
+    preconditions read the selected groups alone, so a fault in a group the
+    selection leaves out refuses nothing.
     Each key must appear in `by`, which must leave out `stat_var`, and must be a
     summable code system (`datasets_api.render.check_options_supported`). The
     lists are held sorted and each code once, so two requests listing the same
