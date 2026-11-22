@@ -25,7 +25,7 @@ from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
 from materialise import composite as composite_module
-from materialise.composite import ComponentResult, compose_components
+from materialise.composite import ComponentResult, ComponentYears, compose_components
 from materialise.content_version import mint_version_from_chunks
 from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
@@ -81,7 +81,8 @@ def _component(
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
     `unserved` the members its facet group election left out and its warning counting them.
     Each row's unit is its recipient's in `units`, USD when `units` is None. Its table covers
-    `covered`, the years of `rows` when None."""
+    `covered`, the years of `rows` when None, and it holds the years of `rows` under its
+    places."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -179,12 +180,18 @@ def _component(
             imported_data=imported_data,
         ),
     )
+    recipe = _recipe(composite, role)
+    held = frozenset(year for _, _, year, _ in rows)
     return ComponentResult(
         role=role,
-        recipe=_recipe(composite, role),
+        recipe=recipe,
         requests=requests,
         result=result,
-        covered_years=frozenset((year for _, _, year, _ in rows) if covered is None else covered),
+        years=ComponentYears(
+            zero_absent=recipe.zero_absent,
+            table=held if covered is None else frozenset(covered),
+            held=held,
+        ),
     )
 
 

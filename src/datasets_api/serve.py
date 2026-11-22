@@ -172,9 +172,9 @@ from materialise.ceiling import check_ceiling
 from materialise.composite import (
     ComponentResult,
     compose_components,
+    read_component_years,
     rows_in_years,
     stacked_years,
-    table_years,
 )
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.errors import (
@@ -709,7 +709,7 @@ def _materialise_components(
     declaration order, sharing `ceiling`, then composed into one frame
     (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
     `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
-    it keep: a stacked composite keeps the rows in the years every component's table covers
+    it keep: a stacked composite keeps the rows in the years it serves for the frame's places
     in `coverage_index` (`materialise.composite.stacked_years`), read before any run. A run's
     origin findings are read only for a version not on record (`_component_findings`). A
     component no request names, a spliced one whose periods the window does not reach, is
@@ -731,7 +731,7 @@ def _materialise_components(
         )
     composite = cast("CompositeDeclaration", code_index.composite(ref))
     covered = {
-        component.role: table_years(code_index, coverage_index, component.identity)
+        component.role: read_component_years(code_index, coverage_index, component)
         for component in components
     }
     kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
@@ -764,7 +764,7 @@ def _materialise_components(
                 recipe=component.recipe,
                 requests=part,
                 result=result,
-                covered_years=covered[component.role],
+                years=covered[component.role],
             )
         )
     with phase("materialise"):

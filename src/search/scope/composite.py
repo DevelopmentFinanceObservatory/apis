@@ -4,11 +4,12 @@ as the composite it serves.
 A composite identity binds a declared composite provenance (`code_index.composites`): the
 provider-inclusive total of a donor's bilateral flows and its imputed multilateral share
 (stacked), or the OECD headline, net flows to 2017 and grant equivalents from 2018 (spliced).
-The Datasets mint composes its frame from one read per component, keeping the years every
-stacked component's table covers (`materialise.composite.table_years`, `stacked_years`). Search
-reads the same years from the request's coverage snapshot, in memory, and the years each
-component holds under the part's places (`component_years`), so the window a scope option
-offers is the window the mint serves.
+The Datasets mint composes its frame from one read per component, keeping the years a stacked
+composite serves for the frame's places (`materialise.composite.read_component_years`,
+`stacked_years`). Search reads those years through the same functions from the request's
+coverage snapshot, in memory, and counts the series each component holds under the part's
+places (`component_years`), so the window a scope option offers is the window the mint
+serves.
 
 `CompositeMint` mints a Search answer's Spec as the composite (`spec_build.build_spec(composite=)`)
 over the table identity's arguments (`code_index.composites.table_identity`): its identity and
@@ -38,11 +39,16 @@ from code_index.composites import (
     provenance_account,
     table_identity,
 )
-from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration
-from dfo_platform.roles import role_key_axis
-from materialise.composite import spans, stacked_years, table_years
+from materialise.composite import (
+    ComponentYears,
+    bound_roles,
+    family_variables,
+    read_component_years,
+    spans,
+    stacked_years,
+)
 from materialise.enrichment import PartySplit, party_split
 from origin_catalogue import Catalogue, bound_catalogue
 from search.engine.retrieval.bound_values import served_members
@@ -124,25 +130,22 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
 
 
 def _component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> YearCounts:
-    index, coverage = facts.index, facts.coverage.index
-    try:
-        family = index_family(index, identity_family_query(index, identity))
-    except SourceNotInFamily:
-        family = None
-    if family is None or not family.rows:
+    coverage = facts.coverage.index
+    variables = family_variables(facts.index, identity)
+    if not variables:
         return YearCounts(counts={})
     window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
     first, last = _years_asked(window, coverage)
     if first > last:
         return YearCounts(counts={})
     counts = coverage.series_by_year(
-        variables=[row.dcid for row in family.rows],
-        bound=_bound(identity),
+        variables=variables,
+        bound=bound_roles(identity),
         first_year=first,
         last_year=last,
     )
     latest = elected_year(counts) if window.get("kind") == "latest" else None
-    settled = all(coverage.covers(row.dcid) for row in family.rows)
+    settled = all(coverage.covers(variable) for variable in variables)
     return YearCounts(counts=counts, latest=latest, settled=settled)
 
 
@@ -160,20 +163,17 @@ def donor_years(
 def _donor_years(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> Mapping[str, frozenset[int]]:
-    index, coverage = facts.index, facts.coverage.index
-    try:
-        family = index_family(index, identity_family_query(index, identity))
-    except SourceNotInFamily:
-        family = None
-    if family is None or not family.rows:
+    coverage = facts.coverage.index
+    variables = family_variables(facts.index, identity)
+    if not variables:
         return {}
     window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
     first, last = _years_asked(window, coverage)
     if first > last:
         return {}
     found = coverage.series_years(
-        variables=[row.dcid for row in family.rows],
-        bound=_bound(identity),
+        variables=variables,
+        bound=bound_roles(identity),
         first_year=first,
         last_year=last,
     )
@@ -204,20 +204,6 @@ def _years_asked(window: Mapping[str, object], coverage: CoverageIndex) -> tuple
     return first, last
 
 
-def _bound(identity: Mapping[str, object]) -> BoundRoles:
-    """The places `identity` binds on each coverage role, every entities key read by the
-    flow axis it names (`role_key_axis`), as `code_index.composites` binds a component's
-    destinations."""
-    entities = cast("Mapping[str, Sequence[str]]", identity.get("entities") or {})
-    bound: dict[Role, frozenset[str]] = {}
-    for key, dcids in entities.items():
-        axis = role_key_axis(key)
-        if axis is not None and dcids:
-            role = _ROLES[axis]
-            bound[role] = bound.get(role, frozenset()) | frozenset(dcids)
-    return bound
-
-
 def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object] | None:
     """`identity` as the document a reader of one table's family reads
     (`code_index.composites.table_identity`): itself, or the identity a composite's option was
@@ -246,10 +232,12 @@ def served_components(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> list[ServedComponent]:
     """Each component of composite `identity` with the years it serves, as the mint composes
-    them (`materialise.composite`). A stacked composite's years are those every component's
-    table covers (`stacked_years`); in them, a component serves the years it holds a series
-    in, and a zero-filling one (`ComponentRecipe.zero_absent`) every year any component holds
-    one in, since its zero rows fill the cells it lacks. A spliced component serves the years
+    them (`materialise.composite`). A stacked composite's years are those the mint keeps
+    (`stacked_years`): every component's table covers them, and every component that reads a
+    missing row as unknown holds a series in them under its places. In them, a component
+    serves the years it holds a series in, and a zero-filling one
+    (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
+    rows fill the cells it lacks. A spliced component serves the years
     it holds. Raises `code_index.composites.CompositeNotServable` as `component_identities`
     does, and `ValueError` for an identity that binds no composite."""
     components = component_identities(facts.index, identity)
@@ -260,7 +248,7 @@ def served_components(
     ]
     if _declaration(facts.index, identity).kind != "stacked":
         return [ServedComponent(c, years, years.held, _members(c)) for c, years in counted]
-    covered = stacked_years(_table_years(c.identity, facts=facts) for c, _ in counted)
+    covered = stacked_years(_read_years(c, facts=facts) for c, _ in counted)
     held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
     return [
         ServedComponent(
@@ -273,11 +261,16 @@ def served_components(
     ]
 
 
-def _table_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> frozenset[int]:
-    """The years the table component `identity` reads covers in `facts`' coverage snapshot
-    (`materialise.composite.table_years`), read once per identity for one `facts`."""
-    key = "table:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
-    return facts.remembered(key, lambda: table_years(facts.index, facts.coverage.index, identity))
+def _read_years(component: ComponentIdentity, *, facts: ScopeFacts) -> ComponentYears:
+    """The years `component` reads in `facts`' coverage snapshot, as the mint reads them
+    (`materialise.composite.read_component_years`), read once per identity for one
+    `facts`."""
+    key = f"years:{component.role}:" + json.dumps(
+        component.identity, sort_keys=True, separators=(",", ":")
+    )
+    return facts.remembered(
+        key, lambda: read_component_years(facts.index, facts.coverage.index, component)
+    )
 
 
 def _members(component: ComponentIdentity) -> frozenset[str] | None:
@@ -759,7 +752,11 @@ def _stat_vars(
     mint sums by."""
     years = sorted({year for item in served for year in item.served})
     confirmed = sum(
-        len(_with_data(item, _bound(item.component.identity), facts.coverage.index, item.served))
+        len(
+            _with_data(
+                item, bound_roles(item.component.identity), facts.coverage.index, item.served
+            )
+        )
         for item in served
     )
     counts = [len(item.members) if item.members is not None else None for item in served]
@@ -853,7 +850,7 @@ def _served_series(
         return
     found = coverage.series_years(
         variables=sorted(item.members),
-        bound=_bound(item.component.identity),
+        bound=bound_roles(item.component.identity),
         first_year=min(item.served),
         last_year=max(item.served),
     )
@@ -902,7 +899,7 @@ def _headline(
         reads: dict[tuple[tuple[Role, frozenset[str]], ...], set[str]] = {}
         for item in served:
             if year in item.served and item.members is not None:
-                bound = _bound(item.component.identity)
+                bound = bound_roles(item.component.identity)
                 reads.setdefault(tuple(sorted(bound.items())), set()).update(item.members)
         found = _headline_year(coverage, reads, year)
         if found is not None:

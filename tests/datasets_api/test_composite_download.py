@@ -255,3 +255,64 @@ def test_the_snapshot_settles_a_component_s_years_only_while_it_holds_every_memb
 
     assert settled(populated)["bilateral"]
     assert not settled(partial)["bilateral"]
+
+
+_OTHER_DONOR = "country/DEU"
+
+
+def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_s_keys():
+    """Another donor's imputed line starts in 2018, so the imputed table covers 2018, while
+    France's to Kenya starts in 2020. A composite of France to Kenya serves 2020 and 2021,
+    the years both lines hold for its keys: Search states them, and the mint keeps them and
+    drops total ODA's 2018 and 2019."""
+    bilateral = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+    populated: _Populated = {
+        bilateral: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021, 2022)),
+    }
+    coverage = FakeCoverageService(
+        build_coverage_index(
+            [
+                *(
+                    (dcid, facet, _PROVIDER, _RECIPIENT, list(years))
+                    for dcid, (facet, _value, years) in populated.items()
+                ),
+                (_DAC2A_IMPUTED, _DAC2A_FACET, _OTHER_DONOR, _RECIPIENT, [2018, 2019]),
+            ],
+            role_names={
+                dcid: RoleNames(donor="financingProvider", recipient="financingRecipient")
+                for dcid in populated
+            },
+            facet_metadata={
+                _DAC2A_FACET: FacetMetadata(
+                    provenance_id=_PROVENANCE[_DAC2A_FACET],
+                    measurement_method="GrantEquivalent",
+                    unit="USD",
+                )
+            },
+        )
+    )
+    client = _client(
+        graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
+        sdmx_transport=httpx.MockTransport(lambda request: _sdmx_response(populated, request)),
+        coverage=coverage,
+        artifact_store=FakeArtifactStore(),
+        settings=DatasetsBuildSettings.from_env(),
+    )
+    identity = _dac2a_oda_identity("Net")
+    facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
+
+    minted = _mint(client, identity=identity)
+    served = served_components(identity, facts=facts)
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    by_role = {entry["role"]: entry for entry in manifest["trace"]["components"]}
+    assert by_role["bilateral"]["dropped_years"] == [2018, 2019]
+    assert by_role["bilateral"]["periods"] == [[2020, 2021]]
+    window = manifest["coverage"]["window"]
+    assert (window["start_year"], window["end_year"]) == (2020, 2021)
+    assert {item.component.role: item.served for item in served} == {
+        "bilateral": frozenset({2020, 2021}),
+        "imputed": frozenset({2020, 2021}),
+    }

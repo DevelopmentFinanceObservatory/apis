@@ -716,6 +716,10 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
         ("UN", "United Nations", "entity"),
         ("the UN", "United Nations", "entity"),
         ("UN members", "United Nations", "entity"),
+        ("G7 member countries", "G7", "entity"),
+        ("G-7 countries", "G7", "entity"),
+        ("DAC donor countries", "OECD Development Assistance Committee", "entity"),
+        ("G20 creditors", "G20", "entity"),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(
@@ -740,6 +744,19 @@ def test_group_phrase_recovers_the_bare_groups_membership(
     assert isinstance(result, Group), (text, result)
     assert [e.dcid for e in result.members] == sorted(member_ids)
     assert result.reading == reading
+
+
+@pytest.mark.parametrize("text", ["developing countries (DAC)", "African countries (G20)"])
+def test_a_phrase_wider_than_its_group_span_does_not_resolve_to_the_group(
+    shared_resolver, text: str
+):
+    """The parsed span "DAC" covers part of the phrase. The phrase names a different set, so
+    it must not resolve to the span's group."""
+    resolver = EntityResolver(graph=FakeGraphLookup(nodes={}), shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve([text]))
+
+    assert isinstance(result, NotFound), (text, result)
 
 
 def test_an_alias_that_declares_no_members_resolves_as_the_whole(shared_resolver):

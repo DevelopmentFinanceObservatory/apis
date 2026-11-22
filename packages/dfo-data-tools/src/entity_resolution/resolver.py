@@ -242,6 +242,23 @@ def _listed(text: str, survivors: Sequence[tuple[CandidateSummary, MatchedAs]]) 
     return tuple((candidate, Matched(text=text, matched_as=how)) for candidate, how in survivors)
 
 
+_GROUP_CODE_HYPHEN_RE = re.compile(r"(?<=[a-z])-(?=\d)")
+_POSSESSIVE_RE = re.compile(r"['\u2019]s\b")
+_NON_WORD_RE = re.compile(r"[^\w]+")
+_FILLER_WORDS = frozenset(
+    {"the", "a", "an", "member", "members", "countries", "states", "nations", "economies"}
+    | {"donor", "donors", "creditor", "creditors", "lender", "lenders", "group"}
+)
+
+
+def _span_words(text: str) -> tuple[str, ...]:
+    """The words of `text` that identify a group: casefolded, without articles, possessives,
+    punctuation, member nouns, or the hyphen in a group code (`G-7` reads `g7`)."""
+    folded = _POSSESSIVE_RE.sub("", text.casefold())
+    folded = _GROUP_CODE_HYPHEN_RE.sub("", folded)
+    return tuple(word for word in _NON_WORD_RE.split(folded) if word and word not in _FILLER_WORDS)
+
+
 def _parse_group_survivors(
     resolver: Resolver, text: str, context: ResolutionContext, group_types: frozenset[str]
 ) -> _Listed:
@@ -253,9 +270,13 @@ def _parse_group_survivors(
 
     Resolvekit excludes `geo.continent` and `geo.continental_union` spans. Aliases cover phrases
     such as `EU countries` and `EU member states`. `DAC members` parses as `geo.region` and fails
-    the group-type check."""
+    the group-type check.
+
+    A span covers the phrase only when `_span_words` of both agree, so `developing countries
+    (DAC)` does not resolve to the DAC group through its `DAC` span."""
+    phrase_words = _span_words(text)
     for entity in resolver.parse(text, context=context).entities:
-        if entity.entity_type not in group_types:
+        if entity.entity_type not in group_types or _span_words(entity.surface) != phrase_words:
             continue
         survivors = filter_listed_candidates(resolver, entity.surface, entity.resolution.candidates)
         if survivors and survivors[0][0].entity_type in group_types:
