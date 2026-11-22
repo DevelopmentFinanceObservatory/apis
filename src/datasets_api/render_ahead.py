@@ -117,6 +117,48 @@ def mark_root_read(
         )
 
 
+def mark_recorded_read(
+    lister: VersionLister,
+    *,
+    subject_id: str,
+    recorded: HeadVersion,
+    head_content_version: str,
+    rendering_keys: Sequence[str],
+    enrichment_digest: str | None,
+    now: datetime,
+) -> None:
+    """Record `now` as the last read of the rendering keyed by `rendering_keys` that `recorded`
+    links as made from `head_content_version`, when its file is not served and a stored answer
+    still reads it (`analysis_roots.LiveRootSource`), so render ahead keeps rendering it. The
+    links in hand decide the gate: a link of those keys read within `READ_MARK_INTERVAL`, or
+    none of them, records nothing. A store failure is logged, and the read goes on."""
+    wanted = set(rendering_keys)
+    reads = [
+        link.read_at.get(head_content_version)
+        for link in recorded.links
+        if wanted.intersection(current_rendering_keys(link.rendering, enrichment_digest))
+    ]
+    if not reads or any(read_recently(read, now=now) for read in reads):
+        return
+    try:
+        lister.mark_rendering_read(
+            subject_id,
+            content_version=recorded.content_version,
+            head_content_version=head_content_version,
+            rendering_keys=rendering_keys,
+            read_at=now,
+            unless_read_since=now - READ_MARK_INTERVAL,
+        )
+    except DatasetsStoreUnavailable:
+        logger.warning(
+            "Datasets: recording a read of %r at %r from head %r failed; the read goes on",
+            subject_id,
+            recorded.content_version,
+            head_content_version,
+            exc_info=True,
+        )
+
+
 def read_recently(link_read_at: datetime | None, *, now: datetime) -> bool:
     """Whether a head row whose last recorded read is `link_read_at` records one within
     `READ_MARK_INTERVAL` of `now`, so a read now writes nothing."""
