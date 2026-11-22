@@ -14,11 +14,12 @@ from typing import Any
 import pytest
 
 from dataset_store.snapshot import WORKING_TIER_RETENTION, StoredArtifactLocation
-from datasets_api import analysis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import analysis as analysis_door
 from datasets_api.doors import files
+from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations import renewal
 from datasets_api.operations.renewal import RENEW_MARKER, renew_if_expiring
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import OperationTransientFailure, run_operation
@@ -81,6 +82,16 @@ def _renewals(operations: LiveOperationStore, tasks: FakeTaskClient) -> list[dic
     return identities
 
 
+def _root_renewals(operations: LiveOperationStore, tasks: FakeTaskClient) -> list[dict[str, Any]]:
+    """The renewals a root read queued: those of a dataset's version, not an answer's `ops_`
+    pair."""
+    return [
+        renewal
+        for renewal in _renewals(operations, tasks)
+        if not str(renewal["subject_id"]).startswith("ops_")
+    ]
+
+
 def _location(store: FakeVersionRecordDatasetStore, digest: str) -> tuple[str, datetime, int]:
     with store.transaction() as tx:
         row = tx.fetch_one(
@@ -137,14 +148,16 @@ def test_a_root_read_inside_the_margin_queues_one_renewal_per_file_and_answers_u
 
     assert (second.status_code, third.status_code) == (200, 200)
     assert second.json() == third.json() == first
-    renewals = _renewals(operations, tasks)
-    assert len(renewals) == len(tasks.enqueued) == queued
+    renewals = _root_renewals(operations, tasks)
+    assert len(renewals) == queued
     assert len({renewal[RENEW_MARKER] for renewal in renewals}) == queued
+    # The stored answer's own frame file queues once more, under its `ops_` pair.
+    assert len(tasks.enqueued) == len(_renewals(operations, tasks)) == queued + bool(queued)
 
 
 def test_a_verification_read_queues_no_renewal(monkeypatch: pytest.MonkeyPatch) -> None:
     """A root source that renders nothing (`LiveRootSource(render=False)`) is a verification."""
-    client, store, tree, _, _, _, tasks = _renewing_rig()
+    client, store, tree, _, _, operations, tasks = _renewing_rig()
     _age(store, _INSIDE_THE_MARGIN)
     monkeypatch.setattr(
         analysis_door,
@@ -154,7 +167,7 @@ def test_a_verification_read_queues_no_renewal(monkeypatch: pytest.MonkeyPatch) 
 
     assert _post(client, tree).status_code == 200
 
-    assert tasks.enqueued == []
+    assert _root_renewals(operations, tasks) == []
 
 
 def test_a_margin_of_zero_queues_no_renewal() -> None:
@@ -218,10 +231,29 @@ def test_the_worker_renewal_restarts_the_location_and_its_object() -> None:
     assert len(tasks.enqueued) == queued
 
 
+def test_a_worker_whose_margin_is_smaller_than_the_readers_still_renews() -> None:
+    """The worker renews the generation its read queued whatever its own margin."""
+    client, store, tree, _, deps, operations, tasks = _renewing_rig()
+    _age(store, _INSIDE_THE_MARGIN)
+    assert _post(client, tree).status_code == 200
+    claimed = _claimed_renewal(operations, tasks, final=False)
+    digest = claimed.request_identity[RENEW_MARKER]
+    worker = dataclasses.replace(
+        deps, settings=deps.settings.model_copy(update={"renew_margin_seconds": 60})
+    )
+
+    run_operation(operation=claimed, deps=worker, operation_store=operations)
+
+    assert _location(store, digest)[0] == f"{digest}#r1"
+
+
+@pytest.mark.parametrize("failure", ["store", "permit"])
 @pytest.mark.parametrize("final", [False, True], ids=["retried", "last_attempt"])
 def test_a_store_failure_in_the_worker_renewal_retries_or_fails_retryable(
-    monkeypatch: pytest.MonkeyPatch, final: bool
+    monkeypatch: pytest.MonkeyPatch, final: bool, failure: str
 ) -> None:
+    """A store failure, or no materialise permit in time (`MintBackpressure`), releases the row
+    for a retry before the last attempt and fails it retryable on the last."""
     client, store, tree, _, deps, operations, tasks = _renewing_rig()
     _age(store, _INSIDE_THE_MARGIN)
     assert _post(client, tree).status_code == 200
@@ -230,7 +262,13 @@ def test_a_store_failure_in_the_worker_renewal_retries_or_fails_retryable(
     def down(*args: Any, **kwargs: Any) -> Any:
         raise DatasetsStoreUnavailable("down")
 
-    monkeypatch.setattr(deps.snapshot_reader, "read_artifact_locations", down)
+    def full(*args: Any, **kwargs: Any) -> Any:
+        raise MintBackgroundDeclined()
+
+    if failure == "store":
+        monkeypatch.setattr(deps.snapshot_reader, "read_artifact_locations", down)
+    else:
+        monkeypatch.setattr(renewal, "bounded_materialise_slot", full)
     if final:
         run_operation(
             operation=claimed, deps=deps, operation_store=operations, is_final_attempt=True
@@ -244,28 +282,23 @@ def test_a_store_failure_in_the_worker_renewal_retries_or_fails_retryable(
     assert (left.state, left.retryable) == (("failed", True) if final else ("pending", None))
 
 
-def test_a_stored_answer_hit_queues_the_renewal_of_its_frame_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The stored-answer hit hands its frame file to `renew_if_expiring` through
-    `stored_answer`'s `on_hit`, as the analysis door's stored hit does."""
-    client, store, tree, first, deps, operations, tasks = _renewing_rig()
+def test_a_stored_answer_hit_queues_the_renewal_of_its_frame_file() -> None:
+    """The analysis door's stored-answer hit queues the renewal of the frame file its body
+    names, under the `ops_` pair the body is stored under."""
+    client, store, tree, first, _, operations, tasks = _renewing_rig()
     _age(store, _INSIDE_THE_MARGIN)
-    hits: list[tuple[str, str, str]] = []
+    spec_id, digest = _answer_frame(first)
 
-    def on_hit(spec_id: str, content_version: str, location: StoredArtifactLocation) -> None:
-        hits.append((spec_id, content_version, location.artifact_digest))
-        renew_if_expiring(deps, location, subject_id=spec_id, content_version=content_version)
-
-    monkeypatch.setattr(
-        analysis_door, "stored_answer", functools.partial(analysis.stored_answer, on_hit=on_hit)
-    )
     answer = _post(client, tree)
 
     assert answer.json() == first
-    spec_id, digest = _answer_frame(first)
-    assert hits == [(spec_id, _version_of(store, spec_id), digest)]
-    assert digest in {renewal[RENEW_MARKER] for renewal in _renewals(operations, tasks)}
+    assert {
+        "subject_id": spec_id,
+        "content_version": _version_of(store, spec_id),
+        RENEW_MARKER: digest,
+    }.items() <= next(
+        renewal for renewal in _renewals(operations, tasks) if renewal["subject_id"] == spec_id
+    ).items()
 
 
 def test_a_file_download_inside_the_margin_queues_its_renewal() -> None:

@@ -16,6 +16,7 @@ from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
+from dataset_store.snapshot import WORKING_TIER_RETENTION
 from dfo_platform.config import (
     CallerSettings,
     PublicSiteSettings,
@@ -332,6 +333,18 @@ class DatasetsBuildSettings(FoldCeilingSettings):
                 f"DATASETS_HEAD_MAX_AGE_SECONDS ({self.head_max_age_seconds}) and "
                 f"DATASETS_HEAD_RECHECK_SECONDS ({self.head_recheck_seconds}), got "
                 f"{self.head_serve_stale_max_age_seconds}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_renew_margin_inside_retention(self) -> DatasetsBuildSettings:
+        """Require the renewal margin to be shorter than working-tier retention, so a file is
+        not renewed at every read from the moment it is written."""
+        retention = int(WORKING_TIER_RETENTION.total_seconds())
+        if self.renew_margin_seconds >= retention:
+            raise ValueError(
+                f"DATASETS_RENEW_MARGIN_SECONDS must be < working-tier retention ({retention}), "
+                f"got {self.renew_margin_seconds}"
             )
         return self
 

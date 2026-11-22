@@ -12,7 +12,7 @@ the location and creates its task, so the read renews nothing itself:
 - an analysis root reading a recorded rendering (`analysis_roots.LiveRootSource`), for the
   derived version's stored frame and the file the root reads;
 - a stored analysis answer's hit, for the frame file its body names (`analysis.stored_answer`'s
-  `on_hit`);
+  `on_hit`, `renew_on_hit`), at the analysis door and the presentation's newest-frame check;
 - the files door's servable link (`doors.files.resolve_link`).
 
 The operation is an ordinary row, one per location and generation: its `request_identity` is
@@ -31,17 +31,19 @@ or a failed create is logged and never fails the read.
 
 The worker renews the location (`renew_location`, `operations.worker.run_operation`): under its
 one materialise permit it reads the bytes and writes them through a renewing view of the
-artifact store (`artifact_store.RenewingArtifactStore.renewing`), which uploads them again under
+artifact store (`artifact_store.RenewingArtifactStore.renewing`) shifted just past the end of the
+location's retention, so it renews whatever the worker's own margin or clock, which uploads
+them again under
 the next renewal name (`<digest>#r<n>`), a new object whose lifecycle age starts then, and moves
 the location there with a fresh `stored_at`, so its `held_until` moves 30 days on. A location
-renewed since the row was queued, and bytes already gone, renew nothing, and the row completes.
+whose `stored_at` is no longer the one the read saw (renewed since), and bytes already gone, renew nothing, and the row completes.
 The inventory row is the digest's, so every version linking the bytes keeps them.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
@@ -77,6 +79,10 @@ RENEW_MARKER = "renew_artifact"
 
 _ZERO_ESTIMATE = Estimate(rows=0, requests=0)
 _RECOVERY = timedelta(seconds=ENQUEUE_RECOVERY_SECONDS)
+# How far past a location's end of retention the worker's renewing view judges it, so the write
+# renews it however the worker's clock stands against the reader's. A renewal name a concurrent
+# renewer uploaded within the last retention is still adopted.
+_PAST_RETENTION = timedelta(minutes=1)
 
 
 class RenewalDeps(Protocol):
@@ -166,6 +172,10 @@ def renew_if_expiring(
                 estimate=_ZERO_ESTIMATE,
                 headroom=deps.settings.operation_backlog_max // HEAD_CHECK_HEADROOM_SHARE,
             )
+            # A new row, or a reset under a new submission, is this read's to create a task
+            # for; a row a concurrent read wrote is that read's.
+            if before is not None and before.submission_count == operation.submission_count:
+                return
         elif before.state == "pending" and before.dispatched_at is None:
             claimed = operation_store.claim_dispatch_retry(
                 before.id, submission_count=before.submission_count, retry_after=_RECOVERY
@@ -189,6 +199,16 @@ def renew_if_expiring(
         )
 
 
+def renew_on_hit(deps: RenewalDeps) -> Callable[[str, str, StoredArtifactLocation], None]:
+    """The `on_hit` a stored analysis answer's reader passes `analysis.stored_answer`: it queues
+    the renewal of the answer's frame file under `deps` (`renew_if_expiring`)."""
+
+    def on_hit(spec_id: str, content_version: str, location: StoredArtifactLocation) -> None:
+        renew_if_expiring(deps, location, subject_id=spec_id, content_version=content_version)
+
+    return on_hit
+
+
 def renew_location(
     *,
     subject_id: str,
@@ -198,13 +218,18 @@ def renew_location(
     deps: DefinitionDeps,
 ) -> bool:
     """Renew the working-tier location of `digest` linked under `{subject_id,
-    content_version}` through a renewing view of the artifact store, under one materialise
-    permit, and return whether it renewed. A location renewed since it was queued (a later
-    `stored_at`), one no longer linked, bytes already gone, and a store with no renewing view
-    renew nothing.
+    content_version}` while its `stored_at` is still the `queued_stored_at` its read saw, under
+    one materialise permit, and return whether the renewal uploaded the bytes.
+
+    The bytes are written through a renewing view of the artifact store shifted just past the
+    end of that location's retention, so the write renews it whatever this worker's own margin
+    or clock: it uploads under the next renewal name, or adopts one a concurrent renewer just
+    uploaded (no upload). A location whose `stored_at` has moved (renewed since), one no
+    longer linked, bytes already gone, and a store with no renewing view renew nothing.
 
     Raises:
         DatasetsStoreUnavailable: The location read failed.
+        MintBackpressure: No materialise permit came free in time.
         ArtifactWriteError, ArtifactInventoryError: The write failed.
     """
     store = deps.artifact_store
@@ -218,9 +243,10 @@ def renew_location(
         ),
         None,
     )
-    if location is None or location.stored_at > queued_stored_at:
+    if location is None or location.stored_at != queued_stored_at:
         return False
-    margin = timedelta(seconds=deps.settings.renew_margin_seconds)
+    held_until = location.stored_at + WORKING_TIER_RETENTION
+    within = max(held_until - deps.now(), timedelta(0)) + _PAST_RETENTION
     with bounded_materialise_slot(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
@@ -230,8 +256,8 @@ def renew_location(
             data = deps.artifact_store.get(artifact_digest=digest, tier=Tier.working)
         except (ArtifactNotFoundError, ArtifactIntegrityError):
             return False
-        store.renewing(within=margin).put(data, tier=Tier.working)
-    return True
+        stored = store.renewing(within=within).put(data, tier=Tier.working)
+    return not stored.deduplicated
 
 
 __all__ = [
@@ -240,6 +266,7 @@ __all__ = [
     "expiring",
     "renew_if_expiring",
     "renew_location",
+    "renew_on_hit",
     "renewal_identity",
     "renewal_target",
 ]

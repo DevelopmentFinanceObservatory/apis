@@ -62,6 +62,7 @@ from datasets_api.admission import (
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
+from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
@@ -401,8 +402,9 @@ def _run_renewal(
 ) -> None:
     """Run a renewal operation a read queued (`operations.renewal`): renew the location it
     names (`renewal.renew_location`), then complete the row naming the version that links it,
-    with no family. A store or write failure before the operation's last attempt releases the
-    row and raises `OperationTransientFailure`, so Cloud Tasks delivers it again; on the last
+    with no family. A store or write failure, or a full materialise slot (`MintBackpressure`,
+    `MintBackgroundDeclined` included), before the operation's last attempt releases the row
+    and raises `OperationTransientFailure`, so Cloud Tasks delivers it again; on the last
     attempt, and for any other failure, it fails the row retryable, which a later read within
     the margin queues again."""
     identity = operation.request_identity
@@ -422,7 +424,13 @@ def _run_renewal(
             "Datasets operation %r: renewing %r failed", operation.id, digest, exc_info=True
         )
         transient = isinstance(
-            exc, (DatasetsStoreUnavailable, ArtifactWriteError, ArtifactInventoryError)
+            exc,
+            (
+                DatasetsStoreUnavailable,
+                MintBackpressure,
+                ArtifactWriteError,
+                ArtifactInventoryError,
+            ),
         )
         if transient and not is_final_attempt:
             store.release(operation.id, attempt=operation.attempt_count)
@@ -435,7 +443,10 @@ def _run_renewal(
         )
         return
     logger.info(
-        "Datasets operation %r: %s %r", operation.id, "renewed" if renewed else "left", digest
+        "Datasets operation %r: %s %r",
+        operation.id,
+        "uploaded a renewal of" if renewed else "uploaded nothing for",
+        digest,
     )
     store.complete(
         operation.id,
