@@ -465,17 +465,37 @@ def _live_client(
 
 
 class TestWarmUp:
-    def test_a_live_surface_builds_the_schema_before_it_takes_traffic(
+    def test_a_live_surface_starts_serving_while_the_schema_builds_and_a_request_joins_it(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Startup does not wait for the build, and a request arriving during it joins the
+        build rather than starting its own."""
+        graph = _BlockingReader()
+        client = _live_client(monkeypatch, graph)
+
+        started = time.monotonic()
+        with client:
+            took = time.monotonic() - started
+            wait_until(graph.entered.is_set)
+            entries = _schema_stats(client)["entries"]
+            threading.Timer(0.2, graph.release.set).start()
+            document = client.get(_DOCUMENT)
+
+        assert took < 3.0
+        assert entries == 0
+        assert document.status_code == 200, document.text
+        assert _builds(graph) == 1
+
+    def test_a_live_surface_builds_the_schema_without_a_request(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
         graph = _graph()
 
         with _live_client(monkeypatch, graph) as client:
-            entries = _schema_stats(client)["entries"]
+            wait_until(lambda: _schema_stats(client)["entries"] == 1)
             reads = _reads(graph)
             document = client.get(_DOCUMENT)
 
-        assert entries == 1
         assert document.status_code == 200, document.text
         assert _reads(graph) == reads
 
@@ -483,12 +503,13 @@ class TestWarmUp:
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
         """The UN terms route reads the live reader's UN client, so a mixer listing of `Class`
-        names none of its terms, and the lifespan builds it before the first request."""
+        names none of its terms, and the lifespan starts building it without a request."""
         graph = _graph()
         age = ArcSubject(dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",))
         un = FakeUnGraph({"Class": ((age,),), "Property": ((age,),)})
 
         with _live_client(monkeypatch, graph, un=un) as client:
+            wait_until(lambda: len(un.requests) == 2 and _schema_stats(client)["entries"] == 1)
             mixer_reads = _reads(graph)
             warmed = list(un.requests)
             terms = client.get("/api/graph/schema/terms/un_system")
@@ -513,32 +534,34 @@ class TestWarmUp:
             caplog.at_level("WARNING", logger=schema_door.__name__),
             _live_client(monkeypatch, graph) as client,
         ):
+            wait_until(
+                lambda: any(
+                    record.getMessage() == "Graph schema warm-up failed" and record.exc_info
+                    for record in caplog.records
+                )
+            )
             entries = _schema_stats(client)["entries"]
             document = client.get(_DOCUMENT)
 
         assert graph.failed
         assert entries == 0
-        assert any(record.exc_info for record in caplog.records)
         assert document.status_code == 200, document.text
 
-    def test_a_warm_build_past_its_bound_lets_the_instance_start_and_lands_later(
+    def test_a_warm_build_past_its_bound_lands_later(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(app_module, "SCHEMA_WARM_TIMEOUT_SECONDS", 0.2)
         graph = _BlockingReader()
-        client = _live_client(monkeypatch, graph)
 
-        started = time.monotonic()
-        with client:
-            took = time.monotonic() - started
+        with _live_client(monkeypatch, graph) as client:
+            wait_until(graph.entered.is_set)
+            time.sleep(0.3)
             entries = _schema_stats(client)["entries"]
             graph.release.set()
             wait_until(lambda: _schema_stats(client)["entries"] == 1)
             reads = _reads(graph)
             document = client.get(_DOCUMENT)
 
-        assert graph.entered.is_set()
-        assert took < 3.0
         assert entries == 0
         assert document.status_code == 200, document.text
         assert _reads(graph) == reads
