@@ -37,13 +37,18 @@ from typing import Any, cast
 
 import pytest
 
+from assembler.bind import bind_all
 from assembler.errors import ResourceExhausted
+from assembler.mint import mint_component
+from assembler.mint.card_description import DescribedRevision, with_card_description
 from assembler.pipeline import get_component, render_component, write_component
 from assembler.ports import FrameRef, ResolvedFrame, RevisionRecord
 from assembler.reply import WriteReply
+from assembler.resolve import resolve_selectors
 from assembler.testing import build_resolved_frame, malaria_ethiopia_frame_ref
 from assembler.write_token import COMPONENT_WRITE_TOKEN_PREFIX, mint_write_token, write_token_digest
 from code_index.shared import get_index, get_measure_index
+from description import blocks as description_blocks
 from description.facts import (
     Builds,
     CodeIndexStamp,
@@ -2326,3 +2331,94 @@ def test_a_card_whose_series_name_the_cited_source_and_none_carries_no_descripti
     )
 
     assert "description" not in created.resolved_payload
+
+
+def _partial_from(mark: str) -> list[dict[str, object]]:
+    return [
+        {
+            "provenance": _CRS,
+            "stat_vars": ["dcid:MalariaGrantDisbursements"],
+            "source": _CRS,
+            "status": "partial",
+            "partial_period": mark,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("marked", "window", "stated"),
+    [
+        pytest.param(
+            _partial_from("2022"),
+            {"start": "2020", "end": "2022"},
+            [{"source": _CRS, "period": "2022"}],
+            id="a-card-drawing-the-partial-2022",
+        ),
+        pytest.param(
+            _partial_from("2022"), {"start": "2020", "end": "2021"}, [], id="a-card-over-2020-2021"
+        ),
+        pytest.param(None, {"start": "2020", "end": "2022"}, None, id="a-version-with-no-record"),
+    ],
+)
+def test_a_cards_description_states_the_partial_periods_it_draws(
+    monkeypatch: pytest.MonkeyPatch,
+    release,
+    marked: list[dict[str, object]] | None,
+    window: dict[str, str],
+    stated: list[dict[str, str]] | None,
+) -> None:
+    """The envelope's provenance drops its `freshness` beside a description, so the card
+    description states each source of its version's record that a row the card draws reaches
+    (`provenance.drawn_partial_entries`), whatever its version's record marks beyond it. The
+    pinned description schema gains `freshness.partial_periods` with the kit, and the
+    description states it only then, so this composes without the envelope's validation."""
+    monkeypatch.setattr(description_blocks, "STATES_PARTIAL_PERIODS", True)
+    manifest: dict[str, object] = {"schema_version": 1}
+    if marked is not None:
+        manifest["incomplete_after"] = marked
+    frame = _described(dataclasses.replace(_frame(), manifest=manifest))
+    selectors = [
+        {
+            "bindings": [
+                {"dimension": "stat_var", "values": ["dcid:MalariaGrantDisbursements"]},
+                {"dimension": "recipient", "values": ["country/ETH"]},
+            ]
+        }
+    ]
+    series = resolve_selectors(resolved_frame=frame, selectors=selectors, window=window)
+    bound = bind_all(resolved_frame=frame, series=series, window=window)
+    intent = _intent(frame, "line_chart", window=window)
+    minted = mint_component(
+        member="line_chart",
+        merged_intent=intent,
+        resolved_frame=frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_clock,
+    )
+
+    described = with_card_description(
+        minted=minted,
+        member="line_chart",
+        merged_intent=intent,
+        resolved_frame=frame,
+        series=series,
+        bound_series=bound,
+        described=DescribedRevision(
+            vocabulary_source=_vocabulary_source(_vocabulary()),
+            component_id="cmp_" + "a" * 20,
+            revision=1,
+        ),
+    )
+
+    assert described.description is not None
+    partial_periods = described.description["freshness"]["partial_periods"]
+    if stated is None:
+        assert partial_periods is None
+    else:
+        assert [
+            {"source": entry["source"]["ref"], "period": entry["period"]}
+            for entry in partial_periods
+        ] == stated
+    assert "freshness" not in described.provenance

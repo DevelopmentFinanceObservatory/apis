@@ -8,6 +8,7 @@ members differ on the synthetic summable `testAxis`.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import cast
 
 import httpx
@@ -18,9 +19,11 @@ import datasets_api.serve as serve_module
 import materialise.generation as generation_module
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
+from origin_catalogue import Catalogue
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes, documenting
 
 from ._frame_doubles import _canonical_frame_row, _version_artifact_rows
 from ._graph_doubles import FakeMintGraphReader
@@ -572,3 +575,60 @@ def test_a_sole_contributor_with_no_summable_axis_still_serves_unchanged():
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["coverage"]["rows"] == 1
+
+
+def _marking(serve_catalogue: Callable[[Catalogue], None], mark: str) -> None:
+    """Serve a catalogue documenting `_PROVENANCE` with `mark` partial."""
+    arcs = {**dev_provenance_nodes()["provenance/OECDDAC2A"], "partialObservationDate": (mark,)}
+    serve_catalogue(documenting({_PROVENANCE: arcs}))
+
+
+def _records(version_store: FakeVersionRecordDatasetStore) -> dict[str, dict[str, object]]:
+    with version_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT content_version, incomplete_after, frame_summed FROM datasets.version_record"
+        )
+    return {row["content_version"]: row for row in rows}
+
+
+def _partial(stat_vars: list[str], mark: str) -> list[dict[str, object]]:
+    return [
+        {
+            "provenance": _PROVENANCE,
+            "stat_vars": stat_vars,
+            "source": _PROVENANCE,
+            "status": "partial",
+            "partial_period": mark,
+        }
+    ]
+
+
+def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
+    serve_catalogue: Callable[[Catalogue], None],
+) -> None:
+    """The source marks 2020 partial. The sum of both members names its row by the spec id
+    under the members' provenance, so it is partial from the members' mark."""
+    _marking(serve_catalogue, "2020")
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    collapsed = _mint(
+        client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    recorded = _records(version_store)
+    summed = recorded.pop(collapsed["content_version"])
+    (raw,) = recorded.values()
+    assert summed["frame_summed"]
+    assert raw["incomplete_after"] == _partial([f"dcid:{_MEMBER_A}", f"dcid:{_MEMBER_B}"], "2020")
+    assert summed["incomplete_after"] == _partial([f"dcid:{spec_id}"], "2020")

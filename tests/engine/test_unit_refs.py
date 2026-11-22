@@ -9,7 +9,15 @@ import pytest
 
 from dc_graph import GraphClient
 from search.engine.errors import GraphDeadlineFailure
-from search.engine.unit.refs import admits, expressible, satisfies, unit_currency
+from search.engine.unit.refs import (
+    PRICES_UNREAD,
+    UnitPrices,
+    admits,
+    expressible,
+    satisfies,
+    unit_currency,
+    unit_prices,
+)
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
 from tests.fixtures import FakeGraph
 
@@ -187,6 +195,22 @@ def test_unit_currency_names_no_currency_and_logs_the_unit_when_the_graph_read_f
     assert [record.args[0] for record in caplog.records] == [_GRAPH_ONLY_UNIT]
 
 
+@pytest.mark.parametrize(
+    ("unit", "prices"),
+    [
+        # A unit only the graph types is unknown after a failed read.
+        pytest.param(_GRAPH_ONLY_UNIT, PRICES_UNREAD, id="graph-typed"),
+        # The registry types these with no read.
+        pytest.param("CurrencyUSD", UnitPrices("current", stated=True), id="registry-money"),
+        pytest.param("Percent", None, id="registry-non-currency"),
+    ],
+)
+def test_unit_prices_after_a_failed_graph_read_leaves_only_a_graph_typed_unit_unknown(unit, prices):
+    graph = _graph(raise_on_call=True)
+
+    assert unit_prices(graph, unit, "Nominal", deadline=None) == prices
+
+
 def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
     """A deadline failure is a `GraphInfraError`, yet classification must not read it as "no
     currency": that would serve a EUR unit as `other` after the request budget ran out."""
@@ -200,3 +224,31 @@ def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
         unit_currency(graph, _GRAPH_ONLY_UNIT, deadline=0.0)
     with pytest.raises(GraphDeadlineFailure):
         satisfies(graph, _request("USD", "current"), _GRAPH_ONLY_UNIT, deadline=0.0)
+
+
+@pytest.mark.parametrize(
+    ("unit", "qualifier", "prices"),
+    [
+        # A unit the registry prices states its own basis, whatever the qualifier says.
+        ("undata/UNIT_MEASURE-CR_USD_K", "Nominal", ("constant", True)),
+        ("SDG_CU_USD", None, ("current", True)),
+        ("ChainedUSDollarBaseYr2017", None, ("constant", True)),
+        # Any other currency unit is in the prices its qualifier states, else in current
+        # prices the rule infers.
+        ("USDollar", "Nominal", ("current", True)),
+        ("USDollar", "RealValue", ("constant", True)),
+        ("USDollar", None, ("current", False)),
+        ("USDollar", "Adjusted", ("current", False)),
+        (_GRAPH_ONLY_UNIT, None, ("current", False)),
+        # A PPP unit is money only under a priced qualifier.
+        ("PPPInternationalDollar", "RealValue", ("constant", True)),
+        ("InternationalDollar", None, None),
+        ("Percent", "Nominal", None),
+    ],
+)
+def test_unit_prices_reads_a_unit_as_a_unit_request_matches_it(unit, qualifier, prices):
+    graph = _graph({**_UNITS, _GRAPH_ONLY_UNIT: "XAF"})
+
+    assert unit_prices(graph, unit, qualifier, deadline=None) == (
+        None if prices is None else UnitPrices(*prices)
+    )

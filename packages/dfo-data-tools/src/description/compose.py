@@ -76,6 +76,7 @@ def describe_version(
     vocabulary: Vocabulary,
     *,
     inputs: Sequence[DescriptionRecord] = (),
+    marked: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     """The description of a dataset version (`spec_`) or a computed version (`ops_`).
 
@@ -89,6 +90,8 @@ def describe_version(
         vocabulary: today's words.
         inputs: for a computed version, the records of the versions it was computed from
             that are held; ignored for a dataset version.
+        marked: the version's stored `incomplete_after`, `None` when it stores none, which
+            `freshness.partial_periods` states (`blocks.partial_periods`).
 
     Returns:
         The description as JSON-ready wire data.
@@ -121,7 +124,7 @@ def describe_version(
         "title": title,
         "about": about,
         "sources": sources,
-        "freshness": freshness,
+        "freshness": {**freshness, **blocks.partial_periods(marked, record, words)},
         "steps": steps,
         "caveats": _caveats(record, words, numbered),
         "cite": cite(record, words, title=title, composed=composed, sources=credited),
@@ -141,6 +144,7 @@ def describe_card(
     steps: Sequence[Step] | None = None,
     caveats: Sequence[CaveatFact] = (),
     inputs: Sequence[DescriptionRecord] = (),
+    marked: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     """The description of a card revision drawn from `record`'s version.
 
@@ -163,6 +167,10 @@ def describe_card(
             out, worded as the version's caveats are and served ahead of them.
         inputs: for a computed version, the records of the versions it was computed from
             that are held; ignored for a dataset version.
+        marked: the version's `incomplete_after` entries a row the card draws reaches
+            (`assembler.mint.provenance.drawn_partial_entries`), `None` when the version
+            stores no record, which `freshness.partial_periods` states
+            (`blocks.partial_periods`).
 
     Returns:
         The description as JSON-ready wire data.
@@ -191,7 +199,10 @@ def describe_card(
         "title": title,
         "about": about,
         "sources": drawn_sources.entries,
-        "freshness": blocks.drawn_freshness(selection, words),
+        "freshness": {
+            **blocks.drawn_freshness(selection, words),
+            **blocks.partial_periods(marked, record, words),
+        },
         "steps": served,
         "caveats": _caveats(record, words, numbered, card=caveats, selection=selection),
         "cite": {
@@ -220,6 +231,7 @@ def describe_source_card(
     component_id: str,
     revision: int,
     frame: VersionRef | None = None,
+    marked: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     """The description of a source card revision, composed from its sources' documents.
 
@@ -236,6 +248,7 @@ def describe_source_card(
         revision: the card's revision.
         frame: the frame a live render drew on. Given, the description carries
             `rendering: "live"` and the frame.
+        marked: as `describe_card`'s, over the whole frame, which a source card draws on.
 
     Returns:
         The description as JSON-ready wire data.
@@ -248,7 +261,10 @@ def describe_source_card(
         "title": named,
         "about": {"name": named},
         "sources": blocks.card_sources(record, evidence, words),
-        "freshness": blocks.source_downloads(evidence, words).served(words),
+        "freshness": {
+            **blocks.source_downloads(evidence, words).served(words),
+            **blocks.partial_periods(marked, record, words),
+        },
         "steps": [],
         "caveats": [],
         "cite": {

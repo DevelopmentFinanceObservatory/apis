@@ -1,8 +1,8 @@
-"""A file reads a party's kind over the datasets its version cites, so a frame of the DAC2a
-bilateral composite types the IMF trust funds a `total`, as DAC2A declares them, though the CRS
-declares them a `party`. Its frame-layout file says so and a partitioned rank of its providers
-answers, its long file writes `total` in `<role>_kind`, and a cut of its party totals leaves the
-trust funds out."""
+"""A file reads a party's kind on a composite's rows over the composite's component tables,
+whatever its version cites, so a frame of the DAC2a bilateral composite types the IMF trust
+funds a `total`, as DAC2A declares them, though the CRS declares them a `party`. Its
+frame-layout file says so and a partitioned rank of its providers answers, its long file writes
+`total` in `<role>_kind`, and a cut of its party totals leaves the trust funds out."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from code_index.types import PartyRow, RoleAxis
 from datasets_api.analysis_roots import frame_from_frame_layout
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import render_and_store
-from dfo_analysis_engine.engine.common import PlaceLevelsMixedError
 from dfo_analysis_engine.engine.rank import run_rank
 from materialise.content_version import mint_version
 
@@ -69,9 +68,9 @@ _INDEX = CodeIndex(
 _FRAME_LAYOUT = MintOptions(format="parquet", bundle=False, layout="frame", columns=["party_kind"])
 
 
-def _frame(provenance: str | None) -> Frame:
+def _frame(provenance: str) -> Frame:
     """The DAC2a total ODA each provider gave each recipient in 2022, every row carrying
-    `provenance`, or no `provenance` column for `None`."""
+    `provenance`."""
     return Frame.build(
         role_keys=("financingProvider", "financingRecipient"),
         rows=[
@@ -81,7 +80,7 @@ def _frame(provenance: str | None) -> Frame:
                 "financingRecipient": recipient,
                 "time_period": "2022",
                 "value": 10.0 * (at + 1) + len(recipient),
-                **({} if provenance is None else {"provenance": provenance}),
+                "provenance": provenance,
             }
             for at, provider in enumerate(_PROVIDERS)
             for recipient in _RECIPIENTS
@@ -92,12 +91,11 @@ def _frame(provenance: str | None) -> Frame:
 def _render(frame: Frame, *, cited: list[str], options: MintOptions) -> bytes:
     """The file `frame` renders to under `options` for a version citing `cited`."""
     artifact_store = FakeArtifactStore()
-    provenance = frame.table.column("provenance") if "provenance" in frame.columns else None
     rendered = render_and_store(
         frame_chunks=lambda: iter((frame,)),
         options=options,
         spec={"spec_id": "spec_party_kind_sources"},
-        provenance_refs=[] if provenance is None else sorted(set(provenance.to_pylist())),
+        provenance_refs=sorted(set(frame.table.column("provenance").to_pylist())),
         citations={},
         reproducing_call=None,
         content_version=mint_version(frame),
@@ -168,16 +166,16 @@ def _top_two_per_recipient(frame: Frame) -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(
-    "provenance",
+    "cited",
     [
-        pytest.param(DAC2A_BILATERAL, id="composite-rows"),
-        pytest.param(None, id="no-provenance-column"),
+        pytest.param([DAC2A], id="citing-dac2a"),
+        pytest.param([CRS, DAC2A], id="citing-the-crs-too"),
     ],
 )
-def test_a_dac2a_frame_types_a_party_by_the_datasets_its_version_cites(
-    provenance: str | None,
+def test_a_dac2a_composite_frame_types_a_party_by_the_composite_s_tables(
+    cited: list[str],
 ) -> None:
-    frame = _frame_layout(_frame(provenance), cited=[DAC2A])
+    frame = _frame_layout(_frame(DAC2A_BILATERAL), cited=cited)
 
     assert _kinds(frame) == {
         "country/FRA": "party",
@@ -192,16 +190,6 @@ def test_a_dac2a_frame_types_a_party_by_the_datasets_its_version_cites(
         ("country/KEN", "InternationalMonetaryFund"),
         ("country/KEN", "country/USA"),
     ]
-
-
-def test_a_frame_citing_datasets_that_type_a_party_apart_leaves_it_untyped_and_refuses() -> None:
-    """A composite of the CRS and DAC2A finds the trust funds a party in one and a total in the
-    other, so no one kind holds and a rank of the providers refuses."""
-    frame = _frame_layout(_frame(DAC2A_BILATERAL), cited=[CRS, DAC2A])
-
-    assert _kinds(frame)[_TRUST_FUNDS] == "untyped"
-    with pytest.raises(PlaceLevelsMixedError):
-        _top_two_per_recipient(frame)
 
 
 def test_a_long_file_of_a_dac2a_composite_writes_the_trust_funds_kind_as_total() -> None:

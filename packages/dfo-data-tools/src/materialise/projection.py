@@ -26,12 +26,10 @@ the grammar names.
 Names come from a `names` mapping (cell value to name) read by the caller for each table in one
 lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
 row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the year
-of its `time_period`, its kind read over the datasets the table's version cites on a row whose
-`provenance` is none of them, such as a composite's (`materialise.enrichment.party_datasets`), so
-a whole total reads `whole total` only in the dataset and years its marker holds
-(`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a row with no
-readable value in one, gives `total`. A name or kind cell left empty beside a non-empty entity
-counts as unavailable. `apply` reports those counts per column so the caller can warn. The machine
+of its `time_period`, a composite's rows reading the composite's component tables, so a whole
+total reads `whole total` only in the dataset and years its marker holds (`PartyRow.whole`). A
+table with no `provenance` or `time_period` column, or a row with no readable value in one, gives
+`total`. A name or kind cell left empty beside a non-empty entity counts as unavailable. `apply` reports those counts per column so the caller can warn. The machine
 party cells (`materialise.enrichment.PARTY_FIELDS`) belong to the frame layout; the long layout's
 `<role>_kind` reads all three.
 
@@ -59,13 +57,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 from code_index.types import ANY_AXIS, PartyRow
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import (
-    PARTY_FIELDS,
-    is_party_role,
-    is_whole_total,
-    party_datasets,
-    period_year,
-)
+from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
 from materialise.recipe_bodies import DeflationBasis
 from materialise.reshape import Table, TableLike
@@ -150,30 +142,27 @@ def long_kind_cell(
     parties: Mapping[str, PartyRow],
     period: object,
     provenance: object,
-    sources: Collection[str] = (),
 ) -> str | None:
     """The `<role>_kind` cell of a long-layout row whose `role` cell is `ref`, `time_period` cell
-    `period` and `provenance` cell `provenance`, in a table read from `sources`, the datasets its
-    version cites, in words for a reader of the file.
+    `period` and `provenance` cell `provenance`, in words for a reader of the file.
 
     A total reads `whole total` when it is a whole total for the row's dataset and year
     (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
-    The kind and class are the party's on the role's axis over
-    `party_datasets(provenance, sources)` (`PartyRow.kind_over`, `PartyRow.class_of`): the row's
-    dataset when it is one of `sources`, and every one of `sources` on a row whose `provenance`
-    is none of them, such as a composite's, or that has none. With no `sources` such a row reads
-    every dataset that publishes the party on that axis. `None` for a ref the code index does
-    not list, one that is not text, and a party that takes no one kind for the row, a party whose
-    kind differs between those datasets."""
+    The kind and class are the party's on the role's axis in the row's dataset
+    (`PartyRow.kind_over`, `PartyRow.class_of`), a composite's row reading the composite's
+    component tables. A row with no `provenance` reads the kind of every dataset that publishes
+    the party on that axis. `None` for a ref the code index does not list, one that is not text,
+    and a party that takes no one kind for the row, a party whose kind differs between those
+    datasets."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
     dataset = provenance if isinstance(provenance, str) else None
     axis = role_key_axis(role)
     kind = party.kind_over(
-        ANY_AXIS if axis is None else axis, party_datasets(dataset, sources=sources)
+        ANY_AXIS if axis is None else axis, () if dataset is None else (dataset,)
     )
     if kind is None:
         return None
@@ -274,12 +263,10 @@ def axis_source_column(code_system: str) -> str:
 @dataclass(frozen=True)
 class NodeReads:
     """What a long output's cells read beyond the row: `names` maps a cell value to its name,
-    `parties` a party ref to its code index row, which gives its kind cell, read over `sources`,
-    the datasets the table's version cites (`long_kind_cell`)."""
+    `parties` a party ref to its code index row, which gives its kind cell."""
 
     names: Names
     parties: Mapping[str, PartyRow]
-    sources: Collection[str] = ()
 
 
 @dataclass(frozen=True)
@@ -409,17 +396,11 @@ class LongProjection:
         return tuple(refs)
 
     def apply(
-        self,
-        table: TableLike,
-        *,
-        names: Names,
-        parties: Mapping[str, PartyRow],
-        sources: Collection[str] = (),
+        self, table: TableLike, *, names: Names, parties: Mapping[str, PartyRow]
     ) -> ProjectedTable:
         """`table` in this layout, its name cells read from `names` and its kind cells from
-        `parties`, each for the dataset and year of its row, in a table read from `sources`
-        (`long_kind_cell`). Raises `MaterialisationUsageError` when `table`'s columns differ
-        from the ones the layout was planned for."""
+        `parties`, each for the dataset and year of its row. Raises `MaterialisationUsageError`
+        when `table`'s columns differ from the ones the layout was planned for."""
         if tuple(table.columns) != self.source_columns:
             raise MaterialisationUsageError(
                 f"a long projection planned for columns {self.source_columns!r} was applied to "
@@ -427,7 +408,7 @@ class LongProjection:
             )
         source_rows = table.rows
         cells = self.cells
-        reads = NodeReads(names=names, parties=parties, sources=sources)
+        reads = NodeReads(names=names, parties=parties)
         rows = tuple(tuple(cell(row, reads) for cell in cells) for row in source_rows)
         counts: Counter[str] = Counter()
         for column, is_unavailable in self.unavailable:
@@ -492,16 +473,31 @@ def plan_long_projection(
         at = position[entity]
         period_at = position.get(TIME_PERIOD_COLUMN)
         provenance_at = position.get(PROVENANCE_COLUMN)
+        # A frame repeats each party, year and provenance across rows, so each reading is made
+        # once for the parties it was read from.
+        memo: dict[tuple[str, int | None, str | None], str | None] = {}
+        read_from: list[Mapping[str, PartyRow]] = []
 
         def kind(row: Row, reads: NodeReads) -> str | None:
-            return long_kind_cell(
-                row[at],
-                role=entity,
-                parties=reads.parties,
-                period=None if period_at is None else row[period_at],
-                provenance=None if provenance_at is None else row[provenance_at],
-                sources=reads.sources,
-            )
+            if not read_from or read_from[0] is not reads.parties:
+                memo.clear()
+                read_from[:] = [reads.parties]
+            ref = row[at]
+            if not isinstance(ref, str):
+                return None
+            year = None if period_at is None else period_year(row[period_at])
+            cell = None if provenance_at is None else row[provenance_at]
+            provenance = cell if isinstance(cell, str) else None
+            key = (ref, year, provenance)
+            if key not in memo:
+                memo[key] = long_kind_cell(
+                    ref,
+                    role=entity,
+                    parties=reads.parties,
+                    period=year,
+                    provenance=provenance,
+                )
+            return memo[key]
 
         def missing(row: Row, reads: NodeReads) -> bool:
             cell = row[at]

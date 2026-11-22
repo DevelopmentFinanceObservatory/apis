@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, Protocol
 
 from dfo_frame_grammar import DeflationBasis
 from pydantic import (
@@ -135,6 +135,35 @@ class ResolvedFacet(StrictModel):
             "carried series select, in series order; a series selecting no unit adds none"
         ),
     )
+    prices: list[Literal["current", "constant"]] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "unit axis only, alongside ref or selection: the price bases the served units "
+            "are in, 'current' before 'constant', one per distinct basis over every carried "
+            "series. Under a unit request it is the request's prices. Otherwise each "
+            "series' unit reads as a unit request matches it natively, under its own "
+            "StatVar's measurementQualifier, so one unit under StatVars in both bases lists "
+            "both: a unit the unit registry prices states its own (a chained one constant), "
+            "any other currency unit is in the prices its StatVar's measurementQualifier "
+            "states (Nominal current, RealValue constant), else current prices, and a PPP "
+            "or international-dollar unit is in the prices a priced measurementQualifier "
+            "states. [] when no served unit is money; absent where a carried series names "
+            "no unit, where the graph read of a unit's currency failed, or off the unit axis"
+        ),
+    )
+    stated_prices: list[Literal["current", "constant"]] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "unit axis only, alongside prices: the bases in prices the data states, in the "
+            "same order. A unit the unit registry prices, a priced measurementQualifier or a "
+            "unit request states its basis. A basis in prices and not here is inferred: a "
+            "currency unit with no priced measurementQualifier read as current prices. A "
+            "basis is stated only where every served unit in it states it. Absent where "
+            "prices is"
+        ),
+    )
     request_basis: dict[str, FacetBasis] | None = Field(
         default=None,
         description=(
@@ -163,6 +192,10 @@ class ResolvedFacet(StrictModel):
             raise ValueError("exactly one of ref or selection must be present")
         if self.refs is not None and self.selection is None:
             raise ValueError("refs is only meaningful alongside selection")
+        if (self.prices is None) != (self.stated_prices is None) or not set(
+            self.stated_prices or ()
+        ) <= set(self.prices or ()):
+            raise ValueError("stated_prices is a subset of prices, present exactly when it is")
         return self
 
 
@@ -404,13 +437,26 @@ class RoleAxisFact(StrictModel):
             "how many entities this axis' open scope resolves to, leaving out the "
             "group totals the code index declares beside their members (party_kind "
             "total), as the default download leaves them out; a scope of totals alone "
-            "counts them all. None when the "
+            "counts them all. It includes the residual members residual_count counts, "
+            "whose rows the download's frame keeps, so it is the number of members on "
+            "the frame's column for the axis, and member_count minus residual_count "
+            "counts the countable parties. None when the "
             "count could not be established without a read this response chose not "
             "to make (e.g. a discovered opposite axis whose own role index was "
             "omitted after a cap trip); the fact still publishes in that case, "
             "naming the axis as open with an explicit unknown rather than staying "
             "silent about it"
         )
+    )
+    residual_count: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "how many members of this axis' open scope hold figures no single party does "
+            "(party_kind residual, such as the DAC's 'Africa, unallocated by country'), "
+            "counted in member_count, whose rows the download's frame keeps. Absent where "
+            "the scope holds none, and where member_count is None"
+        ),
     )
     members_available: bool = Field(
         description=(
@@ -429,6 +475,29 @@ class RoleAxisFact(StrictModel):
             "on the axis: true for the CRS's donors. Absent for the destination axis"
         ),
     )
+
+    def counting(self, split: CountedMembers) -> RoleAxisFact:
+        """This fact counting `split`, the members of its axis
+        (`materialise.enrichment.party_split`): its parties and residual members together
+        as `member_count`, and its residual members as `residual_count`, absent where there
+        are none."""
+        return self.model_copy(
+            update={
+                "member_count": split.member_count,
+                "residual_count": split.residual_count or None,
+            }
+        )
+
+
+class CountedMembers(Protocol):
+    """The counts of an open role's members a `RoleAxisFact` states
+    (`materialise.enrichment.PartySplit`)."""
+
+    @property
+    def member_count(self) -> int: ...
+
+    @property
+    def residual_count(self) -> int: ...
 
 
 class DownloadLicence(StrictModel):
@@ -538,6 +607,21 @@ class ConversionCurrency(StrictModel):
     )
     base_year_max: int | None = Field(
         description="the last base year a constant-price request in this currency converts at"
+    )
+
+
+class PriceBasisRoute(StrictModel):
+    """One price basis a part can serve and the route to it (see
+    ResolvedSpec.price_bases)."""
+
+    prices: Literal["current", "constant"] = Field(description="the price basis")
+    via: Literal["served", "alternative", "unit_request"] = Field(
+        description=(
+            "how to reach it: 'served', the Spec as built serves it; 'alternative', "
+            "resubmit the definition of the 'unit' entry of alternative_measures at this "
+            "basis; 'unit_request', post a facets.unit request at this basis, which "
+            "unit_conversion converts"
+        )
     )
 
 
@@ -963,6 +1047,28 @@ class ResolvedSpec(StrictModel):
             "served year, so nothing converts, or no conversion catalogue is loaded, which "
             "the part's unit_conversion_unavailable warning states. Never a member of "
             "BaseIdentity, never hashed."
+        ),
+    )
+    price_bases: list[PriceBasisRoute] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the price bases this part can serve, each with the route to it: 'served', a "
+            "basis the Spec serves as built (the unit facet's prices, which under a bound "
+            "unit request are the request's); 'alternative', the basis of a 'unit' entry "
+            "of alternative_measures, reached by resubmitting that entry's definition; "
+            "'unit_request', a basis a currency of unit_conversion converts at least one "
+            "served year to, reached by posting a facets.unit request at that basis. "
+            "Routes come in that order, 'current' before 'constant' within each, and a "
+            "route to a basis the Spec already serves is left out. A basis reached only "
+            "by unit request shows the years unit_conversion states for it. [] when the "
+            "served units are no money, whatever unit options the part has. A part with no unit option and no conversion "
+            "recipe lists its served basis alone. Absent where a basis is unknown, so the "
+            "list would understate: while no conversion catalogue is loaded "
+            "(unit_conversion_unavailable), on a Spec beside the answer, such as a flagged "
+            "match or a nearest-real suggestion, which states no conversion offer, and "
+            "where the unit facet states no prices. Never a member of BaseIdentity, never "
+            "hashed."
         ),
     )
     scope_choices: PartScope | None = Field(

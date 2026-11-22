@@ -21,7 +21,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import origin_catalogue.service as catalogue_service_module
 from artifact_store import Tier
+from assembler.mint.provenance import _partial_period
+from assembler.ports import FrameRef
+from assembler.testing import build_resolved_frame
 from code_index.composites import (
     DECLARED_COMPOSITES,
     CompositeNotServable,
@@ -29,10 +33,12 @@ from code_index.composites import (
 )
 from code_index.declarations import CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
+from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import serve
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
+from datasets_api.manifest import version_document
 from datasets_api.version_store import LiveHeadStore
 from materialise.reshape import RollupNotSummableError, Table
 from materialise.trace import RecordedFamily, StatedFamily, recorded_family_json
@@ -49,6 +55,11 @@ from tests.code_index.aid_identity import (
 )
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.materialise import test_composite as composite_test
+from tests.origin_catalogue.fake_catalogue import (
+    dev_provenance_nodes,
+    documenting,
+    fake_catalogue_service,
+)
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -783,3 +794,62 @@ def test_a_dac2a_inclusive_sum_serves_the_line_a_cell_holds_where_it_lacks_the_o
         (_UGANDA, "2020"): 40,
         (_UGANDA, "2021"): 40,
     }
+
+
+def test_a_composite_records_only_the_component_its_source_marks_partial():
+    """The imputed table stays partial after the CRS completes, as the pipeline keeps it
+    partial while either input still holds the year in part. The composite's rows carry one
+    provenance, so the variable alone tells a card drawing the bilateral component, complete,
+    from one drawing the imputed component, partial."""
+    nodes = dev_provenance_nodes()
+    crs = {k: v for k, v in nodes[CRS_PROVENANCE].items() if k != "partialObservationDate"}
+    catalogue = documenting({CRS_PROVENANCE: crs, IMPUTED_PROVENANCE: nodes[IMPUTED_PROVENANCE]})
+    members = _members()
+    bilateral = members["bilateral"][0].removeprefix("dcid:")
+    imputed = members["imputed"][0].removeprefix("dcid:")
+    populated = {
+        bilateral: (_CRS_FACET, 100, (2023, 2024, 2025)),
+        imputed: (_IMPUTED_FACET, 7, (2023, 2024, 2025)),
+    }
+    store = FakeVersionRecordDatasetStore()
+    with catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service(catalogue)):
+        _artifacts, client = _composite_client(store, populated=populated)
+        minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    body = minted.json()
+    stored = LiveSnapshotReader(store=store).read_version(
+        body["definition"]["spec_id"], body["content_version"]
+    )
+    assert stored is not None
+    document = version_document(stored)
+    ((entry),) = document["incomplete_after"]
+    assert (entry["provenance"], entry["source"], entry["status"], entry["partial_period"]) == (
+        _STACKED.provenance,
+        IMPUTED_PROVENANCE,
+        "partial",
+        "2025",
+    )
+    assert f"dcid:{imputed}" in entry["stat_vars"]
+    assert f"dcid:{bilateral}" not in entry["stat_vars"]
+
+    def drawn(stat_var: str) -> bool:
+        frame = build_resolved_frame(
+            frame_ref=FrameRef(spec_id="spec_x", content_version="cv_x"),
+            role_keys=("recipient",),
+            rows=[
+                {
+                    "stat_var": f"dcid:{stat_var}",
+                    "recipient": _RECIPIENT,
+                    "time_period": "2025",
+                    "value": 1.0,
+                    "unit": None,
+                    "provenance": _STACKED.provenance,
+                }
+            ],
+            manifest=document,
+        )
+        return _partial_period(resolved_frame=frame, rows=None)
+
+    assert drawn(imputed)
+    assert not drawn(bilateral)

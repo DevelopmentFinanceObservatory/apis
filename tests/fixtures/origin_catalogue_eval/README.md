@@ -2,7 +2,7 @@
 
 A published origin catalogue build from the dev graph and the UN System Data Commons, for serving or scoring without GCP credentials. `tests/origin_catalogue/test_fixture.py` checks that it loads under the services' memory budget.
 
-The recorded build is `20261012T084113Z-21663d22`, format 5, built at 2026-10-12T08:54Z. The job ran locally against the dev graph into an empty directory, so it built its base tables and read every arc and every resolver-index subject afresh in 803 seconds; its UN tables are carried over from the dev build of 2026-10-08 rather than read again from the UN deployment.
+The recorded build is `20261012T084113Z-21663d22`, built at 2026-10-12T08:54Z in format 5 and carried to format 6 by adding an empty `partial_periods` to each `source_documentation.json` entry, with that file's checksum in `manifest.json`. The dev graph's Provenance nodes stated no `partialObservationDate` until 2026-10-29, so the build holds none. The job ran locally against the dev graph into an empty directory, so it built its base tables and read every arc and every resolver-index subject afresh in 803 seconds; its UN tables are carried over from the dev build of 2026-10-08 rather than read again from the UN deployment.
 
 The build ages. Once its `built_at` is more than 14 days old, every answer served from it carries the `origin_catalogue_stale` warning, and admissions drift from the dev graph and the UN deployment as imports change. Re-record it when either matters, and after a change to `origin_catalogue.schema.CATALOGUE_FORMAT_VERSION`.
 
