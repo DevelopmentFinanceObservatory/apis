@@ -4,7 +4,7 @@
 root read with no `columns` is its version's stored frame, and a root read with `columns` is
 the frame-layout file of those columns its version links in the render format and code index
 the root's recorded frame pair names, so a file a later format rendered is never read under an
-earlier pair. A version with no record answers `RootNotStored`, a frame or file the version no
+earlier pair; a root record carrying `artifact_digest` reads the file of those bytes. A version with no record answers `RootNotStored`, a frame or file the version no
 longer holds `RootExpired`, and a frame pair named under no format this build knows
 `RootRenderingUnreadable`.
 A root read from a stored frame1 document past `render.frame1_decode_max_bytes` refuses
@@ -274,10 +274,27 @@ def _recorded_file(
     record whose `enrichment_stamp` is set read a file linked under that digest; one without
     read a file linked under no digest or `NO_PARTY_ROLE` (`versions.link_digest`).
 
+    A record carrying `artifact_digest` names its frame by the digest of the file it read
+    (data-mcp's `frame_ref_for`), a pair no format here reproduces, so it reads the file of its
+    rendering holding those bytes and its pair is not checked.
+
     Raises:
-        RootRenderingUnreadable: The frame's pair is that of neither format.
+        RootRenderingUnreadable: The frame's pair is that of neither format, on a record
+            without `artifact_digest`.
     """
     options = record.get("options") or {}
+    wanted = artifact_rendering(MintOptions.model_validate(options), site=_NO_SITE)
+    if (artifact_digest := record.get("artifact_digest")) is not None:
+        return next(
+            (
+                location
+                for location in servable
+                if location.artifact_digest == artifact_digest
+                and not is_statistics_rendering(location.rendering)
+                and complete_rendering(location.rendering) == wanted
+            ),
+            None,
+        )
     dataset = FrameRef.model_validate(record["dataset"])
     stamp = record.get("enrichment_stamp")
     frame = FrameRef.model_validate(record["frame"])
@@ -300,7 +317,6 @@ def _recorded_file(
             reason="its frame is named under a render format this runner does not read",
         )
     digests = (stamp,) if stamp is not None else (None, NO_PARTY_ROLE)
-    wanted = artifact_rendering(MintOptions.model_validate(options), site=_NO_SITE)
     files = [
         location
         for location in servable
