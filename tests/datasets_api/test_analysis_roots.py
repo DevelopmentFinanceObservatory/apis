@@ -32,6 +32,7 @@ from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
     frame_ref_for,
+    frame_ref_under,
     mint_options,
     record_options,
     summed_count,
@@ -395,6 +396,20 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
         "render_format": RENDER_FORMAT,
     }
     assert typed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
+    before_formats = frame_ref_under(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=("observationAbout_type",),
+        groupby=None,
+        without_party_totals=False,
+        enrichment_stamp="s",
+        render_format=None,
+    )
+    del preimage["render_format"]
+    assert (
+        before_formats.content_version
+        == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
+    )
     salted = {
         "columns": ["party_kind"],
         "content_version": _CV,

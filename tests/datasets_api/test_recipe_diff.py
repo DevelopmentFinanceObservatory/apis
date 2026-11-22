@@ -4,30 +4,47 @@ written."""
 
 from __future__ import annotations
 
+import dataclasses
 import functools
+import hashlib
 import io
 import json
 from datetime import timedelta
 from typing import Any
 
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame
 
+from artifact_store import Tier
 from datasets_api import analysis, recipe_replay
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
+    AnalysisResult,
+    DerivedRoot,
+    FrameUnavailable,
+    RootExpired,
+    RootRenderingUnreadable,
     compute_analysis,
     run_analysis,
 )
+from datasets_api.analysis_roots import frame_from_frame_layout, frame_ref_under
 from datasets_api.doors.publish import publish_built_frame
 from datasets_api.maintenance import main, run_diff_recipes
+from datasets_api.mint_models import MintOptions
+from datasets_api.recipe_replay import StoredRootSource
+from datasets_api.render import STATISTICS_MEDIA_TYPE, artifact_rendering
+from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
+from datasets_api.versions import RENDER_FORMAT, ArtifactRecord
+from materialise.frame_build import build_frame
 
 from ._analysis_doubles import (
     AID,
     AID_V1,
     POPULATION,
     POPULATION_V1,
+    FakeRootSource,
     Stores,
     aid_frame,
     dataset,
@@ -283,3 +300,171 @@ def test_a_recipe_storing_its_roots_in_another_order_is_equal(
     assert lines == []
     assert differs == 0
     assert _counts(capsys)["equal"] == 1
+
+
+_PURPOSE = "stat_var_crsPurpose"
+_LABEL_CELL, _DCID_CELL = "Basic education", "dcid:CRS_11220"
+_PURPOSE_ROOT = {"spec_id": AID, "content_version": AID_V1, "rendering": {"columns": [_PURPOSE]}}
+
+
+def _purpose_file(cell: str) -> bytes:
+    """A frame-layout file of two recipients, Kenya's purpose cell holding `cell`."""
+    rows = [
+        {
+            "stat_var": "dcid:Amount_ODA",
+            "financingRecipient": recipient,
+            _PURPOSE: purpose,
+            "time_period": "2022",
+            "value": value,
+            "unit": "USDollar",
+        }
+        for recipient, purpose, value in (("country/KEN", cell, 10.0), ("country/NGA", "x", 20.0))
+    ]
+    sink = io.BytesIO()
+    pq.write_table(build_frame(role_keys=["financingRecipient", _PURPOSE], rows=rows).table, sink)
+    return sink.getvalue()
+
+
+def _link_purpose_file(stores: Stores, cell: str, *, render_format: str | None) -> None:
+    """Link the file of `cell` to the aid version under the key of `render_format`, first seen
+    one hour after the last file, so a later link is the newer file."""
+    stores.now += timedelta(hours=1)
+    stored = stores.artifact_store.put(_purpose_file(cell), tier=Tier.working)
+    rendering = artifact_rendering(
+        MintOptions.model_validate(
+            {"format": "parquet", "bundle": False, "layout": "frame", "columns": [_PURPOSE]}
+        ),
+        site=SITE,
+    )
+    LiveVersionRecordWriter(store=stores.store, now=lambda: stores.now).record_artifact(
+        subject_id=AID,
+        content_version=AID_V1,
+        artifact=ArtifactRecord(
+            artifact_digest=stored.digest, rendering=rendering, media_type=STATISTICS_MEDIA_TYPE
+        ),
+    )
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_artifact SET rendering_key = %s WHERE artifact_digest = %s",
+            (_link_key(rendering, render_format=render_format), stored.digest),
+        )
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET created_at = %s WHERE artifact_digest = %s",
+            (stores.now, stored.digest),
+        )
+
+
+def _link_key(rendering: dict[str, object], *, render_format: str | None) -> str:
+    """The key `rendering` is linked under today, or for `None` the key a frame-layout file was
+    linked under before its key carried a render format: the SHA-256 of its sorted JSON."""
+    if render_format is None:
+        return hashlib.sha256(json.dumps(rendering, sort_keys=True).encode()).hexdigest()
+    assert render_format == RENDER_FORMAT
+    return rendering_key(rendering)
+
+
+class _FormatNamedSource(FakeRootSource):
+    """`FakeRootSource` naming a root with columns as `analysis_roots.frame_ref_under` names it
+    under `render_format`."""
+
+    def __init__(self, *, render_format: str | None, **held: Any) -> None:
+        super().__init__(**held)
+        self.render_format = render_format
+
+    def resolve(self, root, *, latest, trace_id, path_words=None):
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
+        options = resolved.record["options"]
+        frame = frame_ref_under(
+            spec_id=resolved.dataset.spec_id,
+            content_version=resolved.dataset.content_version,
+            columns=options.get("columns") or (),
+            groupby=None,
+            without_party_totals=False,
+            enrichment_stamp=None,
+            render_format=self.render_format,
+        )
+        record = {**resolved.record, "frame": frame.model_dump()}
+        return dataclasses.replace(resolved, frame=frame, record=record)
+
+
+def _purpose_recipe(stores: Stores, cell: str, *, render_format: str | None) -> AnalysisResult:
+    """Store the recipe of a filter keeping the purpose `cell` over the aid root read with its
+    purpose column, as a run named under `render_format` reading the file of `cell` stores it."""
+    held = _FormatNamedSource(
+        render_format=render_format,
+        frames={(AID, AID_V1): frame_from_frame_layout(_purpose_file(cell))},
+        newest={AID: AID_V1},
+        recipes=stores.recipe_store,
+    )
+    keep = {
+        "verb": "filter",
+        "arguments": {
+            "predicates": [{"kind": "category_match", "column": _PURPOSE, "values": [cell]}]
+        },
+        "inputs": {"data": _PURPOSE_ROOT},
+    }
+    return run_analysis(
+        AnalysisRequest.model_validate({"tree": keep}), source=held, stores=stores.analysis()
+    )
+
+
+@pytest.mark.parametrize(
+    ("cell", "render_format"),
+    [
+        pytest.param(_LABEL_CELL, None, id="label-cells-before-the-format"),
+        pytest.param(_DCID_CELL, RENDER_FORMAT, id="dcid-cells-under-the-format"),
+    ],
+)
+def test_a_root_reads_the_file_of_the_format_its_frame_names_with_both_held(
+    capsys: pytest.CaptureFixture[str], cell: str, render_format: str | None
+) -> None:
+    """With a label-cell file linked before frame-layout keys carried a format and a newer
+    dcid-cell file linked under `RENDER_FORMAT`, each recipe reads the file its frame pair
+    names, so its predicate keeps the row it kept when it was stored."""
+    stores = Stores()
+    _store_root(stores, AID, AID_V1, aid_frame())
+    _link_purpose_file(stores, _LABEL_CELL, render_format=None)
+    _link_purpose_file(stores, _DCID_CELL, render_format=RENDER_FORMAT)
+    stored = _purpose_recipe(stores, cell, render_format=render_format)
+
+    differs, lines = _diff(stores)
+
+    assert stored.evaluation.summary["rows"] == 1
+    assert (differs, lines) == (0, [])
+    assert _counts(capsys)["equal"] == 1
+
+
+@pytest.mark.parametrize(
+    ("render_format", "unreadable"),
+    [
+        pytest.param(None, RootExpired, id="its-format-s-file-gone"),
+        pytest.param("another_format", RootRenderingUnreadable, id="a-format-not-read"),
+    ],
+)
+def test_a_root_whose_format_s_file_is_not_held_is_unreadable(
+    capsys: pytest.CaptureFixture[str],
+    render_format: str | None,
+    unreadable: type[FrameUnavailable],
+) -> None:
+    """A recipe whose frame pair names a format with no file held, or a format this build does
+    not read, is unreadable, though a file of its rendering in `RENDER_FORMAT` is held."""
+    stores = Stores()
+    _store_root(stores, AID, AID_V1, aid_frame())
+    _link_purpose_file(stores, _DCID_CELL, render_format=RENDER_FORMAT)
+    stored = _purpose_recipe(stores, _LABEL_CELL, render_format=render_format).evaluation.ref
+
+    differs, lines = _diff(stores)
+
+    assert differs == 0
+    assert [line["outcome"] for line in lines] == ["roots_unreadable"]
+    assert _counts(capsys)["roots_unreadable"] == 1
+    replay = StoredRootSource(
+        snapshot_reader=stores.snapshot_reader,
+        artifact_store=stores.artifact_store,
+        recipes=stores.recipe_store,
+        now=lambda: stores.now,
+        fold_max_rows=1_000_000,
+    )
+    tree = DerivedRoot(spec_id=stored.spec_id, content_version=stored.content_version)
+    with pytest.raises(unreadable):
+        compute_analysis(AnalysisRequest(tree=tree), source=replay)
