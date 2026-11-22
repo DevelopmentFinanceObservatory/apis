@@ -69,10 +69,14 @@ NO_PARTY_ROLE = "no_party_role"
 holds no party role. It holds no party-kind cell, so its bytes are the same under every code
 index and its key is the same under every digest. No digest, a hex SHA-256, equals it."""
 
-RENDER_FORMAT = "axis_dcid"
+RENDER_FORMAT = "axis_dcid_party_kind"
 """The cells a render writes into a frame-layout file and a derived version's frame for unchanged
-data and options. Under `axis_dcid` each decoded `stat_var_<code_system>` cell holds its code's
-dcid (`datasets_api.decode`), where earlier renders wrote the code's label. It salts the link key
+data and options. Under `axis_dcid_party_kind` each decoded `stat_var_<code_system>` cell holds
+its code's dcid (`datasets_api.decode`), where earlier renders wrote the code's label, and a
+party's kind and class cells read over the datasets the version cites on a row whose
+`provenance` is none of them, such as a composite's (`materialise.enrichment.party_datasets`),
+where earlier renders read every dataset publishing the party and left a party typed
+differently in another dataset empty. It salts the link key
 of a frame-layout file (`version_store.rendering_key`) and joins the stamp a derived version's
 links record (`rendering_stamp`), so a file or version rendered under an earlier format matches
 no request and the next request renders it again. Change it with any change to those cells."""

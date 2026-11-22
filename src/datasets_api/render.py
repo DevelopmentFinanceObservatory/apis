@@ -196,7 +196,12 @@ from materialise.bundle_sources import (
 )
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
+from materialise.enrichment import (
+    PARTY_FIELDS,
+    EnrichmentLookup,
+    party_datasets,
+    pivot_party_cell,
+)
 from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -1128,6 +1133,7 @@ def _reshape_select_pivot_enrich(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
             parties=reads.parties,
+            sources=reads.sources,
         )
     warning_order = (
         *decoded_column_names,
@@ -1856,12 +1862,15 @@ class _RenderReads:
     outright: a cited source's label, a summed family's label. Every other value is read
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
-    one read's wait. A party's fields come from `parties`, the code index's party rows."""
+    one read's wait. A party's fields come from `parties`, the code index's party rows, read
+    over `sources`, the datasets the rendered version cites, on a row whose `provenance` is
+    none of them, such as a composite's (`materialise.enrichment.party_datasets`)."""
 
     enrichment: EnrichmentLookup
     parties: Mapping[str, PartyRow]
     known: Mapping[str, str]
     deadline: float | None
+    sources: tuple[str, ...] = ()
     failed: bool = False
 
     @classmethod
@@ -1874,6 +1883,7 @@ class _RenderReads:
         family: tuple[str, str] | None,
         deadline: float | None,
         code_index: CodeIndex | None,
+        sources: Sequence[str] = (),
     ) -> _RenderReads:
         known = _known_labels(citations, family, code_index=code_index)
         return cls(
@@ -1881,6 +1891,7 @@ class _RenderReads:
             parties=parties,
             known=known,
             deadline=deadline,
+            sources=tuple(dict.fromkeys(sources)),
         )
 
     def lookup(self, nodes: Sequence[str]) -> Mapping[str, Mapping[str, str]]:
@@ -2303,7 +2314,8 @@ def _stream_bare_pivot(
 
     The fold counts rows per enrichment ref, and one `_RenderReads.fields_of` read after it
     gives the whole-table missing-value warnings. A party field counts as a pivot reads it,
-    over the datasets the fold finds the party in (`pivot_party_cell`). Pivot output carries
+    over the datasets the fold finds the party in, each row's read as `reads.sources` gives it
+    (`materialise.enrichment.party_datasets`, `pivot_party_cell`). Pivot output carries
     the index and pivoted values.
 
     `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
@@ -2397,7 +2409,7 @@ def _stream_bare_pivot(
         for entity_column, field in (parsed.enrichments if parsed is not None else ())
         if field in PARTY_FIELDS
     )
-    party_datasets: dict[tuple[str, str], set[str]] = {}
+    served_from: dict[tuple[str, str], set[str]] = {}
 
     def _decoded_selected_chunks() -> Iterator[Table]:
         for chunk in rest_of_frame_chunks:
@@ -2425,14 +2437,18 @@ def _stream_bare_pivot(
             for entity_column in enrichment_entity_columns:
                 entity_pos = decoded.columns.index(entity_column)
                 counts = enrichment_ref_counts[entity_column]
-                gathered = provenance_pos if entity_column in party_columns else None
                 for row in decoded.rows:
                     ref = row[entity_pos]
                     if isinstance(ref, str):
                         counts[ref] = counts.get(ref, 0) + 1
-                        provenance = None if gathered is None else row[gathered]
-                        if isinstance(provenance, str):
-                            party_datasets.setdefault((entity_column, ref), set()).add(provenance)
+                        if entity_column not in party_columns:
+                            continue
+                        provenance = None if provenance_pos is None else row[provenance_pos]
+                        read = party_datasets(
+                            provenance if isinstance(provenance, str) else None,
+                            sources=reads.sources,
+                        )
+                        served_from.setdefault((entity_column, ref), set()).update(read)
                     else:
                         enrichment_non_string_counts[entity_column] += 1
             if select is not None:
@@ -2499,7 +2515,7 @@ def _stream_bare_pivot(
                         ref,
                         role=entity_column,
                         parties=reads.parties,
-                        datasets=party_datasets.get((entity_column, ref), ()),
+                        datasets=served_from.get((entity_column, ref), ()),
                     )
                     if field_name in PARTY_FIELDS
                     else lookup_cell(lookup, ref, field_name)
@@ -3076,6 +3092,7 @@ def render_and_store(
             else None
         ),
         deadline=deadline,
+        sources=cited_refs,
     )
     totals = _TotalRows.for_render(
         options,

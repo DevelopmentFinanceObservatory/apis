@@ -304,22 +304,42 @@ def row_party_cell(
     parties: Mapping[str, PartyRow],
     period: object,
     provenance: object,
+    sources: Collection[str] = (),
 ) -> str | None:
     """The `<role>_<field>` cell of a frame row whose `role` cell is `ref`, `time_period` cell
     `period` and `provenance` cell `provenance` (`None` for a table without that column): the
     `party_cell` on the role's axis (`role_key_axis`) for the year of `period` (`period_year`)
-    and that dataset. `None` for a `ref` that is not text and for a role on no flow axis. A
-    `provenance` that is not text reads as no dataset."""
+    and that dataset. The kind and class read over `party_datasets(provenance, sources)`, so
+    on a row of a frame read from `sources` they are the party's in those datasets. `None`
+    for a `ref` that is not text and for a role on no flow axis. A `provenance` that is not
+    text reads as no dataset."""
     if not isinstance(ref, str) or (axis := role_key_axis(role)) is None:
         return None
-    return party_cell(
+    dataset = provenance if isinstance(provenance, str) else None
+    return _party_cell(
         field,
-        ref,
+        parties.get(ref),
         axis=axis,
-        parties=parties,
+        datasets=party_datasets(dataset, sources=sources),
         year=period_year(period),
-        provenance=provenance if isinstance(provenance, str) else None,
+        provenance=dataset,
     )
+
+
+def party_datasets(provenance: str | None, *, sources: Collection[str]) -> tuple[str, ...]:
+    """The datasets a party's kind and class read over on a row whose `provenance` cell is
+    `provenance`, in a frame read from `sources`, the provenances its version cites
+    (`datasets_api.manifest.source_refs_of`): the row's own dataset when it is one of
+    `sources`, or when `sources` is empty, and every one of `sources` otherwise.
+
+    A composite's rows carry the composite's provenance, which publishes no party, so they
+    read over its component datasets, and a row with no provenance over every dataset the
+    frame was read from. Where those datasets give a party different kinds, `PartyRow.kind_over`
+    finds no one kind and the cell stays unavailable. With no `sources` and no `provenance`
+    the party reads over every dataset that publishes it."""
+    if provenance is not None and (not sources or provenance in sources):
+        return (provenance,)
+    return tuple(sources)
 
 
 _POINT = r"(\d{4})(?:-\d{2}(?:-\d{2})?)?"
