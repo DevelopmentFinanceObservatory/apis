@@ -81,6 +81,7 @@ from urllib.parse import urlencode
 import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_table
+from dfo_frame_grammar.arrow import build_frame_from_arrow
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -194,7 +195,7 @@ from materialise.bundle_sources import (
     source_provenance,
 )
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import mint_version_from_digest
+from materialise.content_version import mint_version_from_digest, stream_frame_sha256
 from materialise.enrichment import (
     PARTY_FIELDS,
     EnrichmentLookup,
@@ -528,7 +529,7 @@ def _stream_first_axis_collapse(
 def _fold_permits() -> threading.BoundedSemaphore:
     """The process's groupby fold permits, `DatasetsBuildSettings.groupby_fold_max_concurrency`
     of them, shared by every render of the process: mint, operation worker and head hit. A
-    collapse holds one from its first fold to its tuple rows (`_reshape_groupby_collapse`),
+    collapse holds one from its first fold to its last sum (`_reshape_groupby_collapse`),
     so a further collapse waits for a permit. Read from the
     environment once, at the first collapse."""
     return threading.BoundedSemaphore(DatasetsBuildSettings.from_env().groupby_fold_max_concurrency)
@@ -771,9 +772,10 @@ def _reshape_groupby_collapse(
         lookup=decode_lookup,
     )
     remaining_columns = population_columns
-    # One fold permit covers the collapse from its first fold to its tuple rows.
+    # One fold permit covers the collapse from its first fold to its last sum.
     with _fold_permit(deadline):
-        # Arrow from a fold over frame slices until the last axis sums, then tuple rows.
+        # Arrow from a fold over frame slices until the last axis sums. A grammar frame is built
+        # from that output (`collapse_frame`), any other output read as tuple rows.
         collapsed: GroupedTable = cast(ReshapeTable, current)
         for axis_index, axis in enumerate(collapse_columns):
             positions = tuple(population_columns.index(c) for c in remaining_columns)
@@ -846,7 +848,8 @@ def _reshape_groupby_collapse(
                     ),
                 )
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
-        current = cast(Table, rows_table(collapsed))
+        if not grammar_frame:
+            current = cast(Table, rows_table(collapsed))
 
     adds = adds_stat_vars(
         contributors, index=code_index, kept=kept, levels=levels or {}, components=components
@@ -875,22 +878,12 @@ def _reshape_groupby_collapse(
             decoded_code_systems=decoded_code_systems, declarations=code_index.declarations
         )
     }
-    # Unwrap `UnitRequest` cells to the shape `build_frame` accepts.
-    rows_as_dicts = [
-        {
-            **{
-                column: unit_cell_for_rebuild(value)
-                for column, value in zip(current.columns, row, strict=True)
-                if column not in left_out
-            },
-            _STAT_VAR_COLUMN: stat_var_ref,
-        }
-        for row in current.rows
-    ]
     role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
-    collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
+    collapsed_frame = collapse_frame(
+        collapsed, left_out=left_out, stat_var_ref=stat_var_ref, role_columns=role_columns
+    )
     current = cast(Table, collapsed_frame)
-    collapsed_frame_sha256 = frame_sha256(collapsed_frame)
+    collapsed_frame_sha256 = stream_frame_sha256((collapsed_frame,))
     collapse_info = GroupbyCollapseRendering(
         frame=collapsed_frame,
         role_columns=role_columns,
@@ -901,6 +894,47 @@ def _reshape_groupby_collapse(
         adds=adds,
     )
     return current, decode_plan, collapse_info
+
+
+def collapse_frame(
+    collapsed: GroupedTable,
+    *,
+    left_out: Collection[str],
+    stat_var_ref: str,
+    role_columns: Sequence[str],
+) -> Frame:
+    """The grammar frame of a collapse's output `collapsed`: every column but `left_out`, with
+    `stat_var_ref` in `stat_var` on every row, keyed by `role_columns`. An Arrow table, which
+    the streamed fold gives when its sums need no row fold, is built column by column
+    (`build_frame_from_arrow`). A table of tuple rows is built row by row (`Frame.build`), with
+    each `UnitRequest` cell unwrapped to the JSON `Frame.build` accepts. Both builders normalise
+    and sort each cell alike, so the frames, their bytes and their hashes are equal
+    (`tests/datasets_api/test_render_collapse_frame_columnar.py`)."""
+    if isinstance(collapsed, pa.Table):
+        table = collapsed.select(
+            [
+                column
+                for column in collapsed.column_names
+                if column not in left_out and column != _STAT_VAR_COLUMN
+            ]
+        ).append_column(
+            _STAT_VAR_COLUMN,
+            pa.repeat(pa.scalar(stat_var_ref, type=pa.string()), collapsed.num_rows),
+        )
+        return build_frame_from_arrow(table, role_keys=role_columns)
+    rows = rows_table(collapsed)
+    rows_as_dicts = [
+        {
+            **{
+                column: unit_cell_for_rebuild(value)
+                for column, value in zip(rows.columns, row, strict=True)
+                if column not in left_out
+            },
+            _STAT_VAR_COLUMN: stat_var_ref,
+        }
+        for row in rows.rows
+    ]
+    return build_frame(role_keys=role_columns, rows=rows_as_dicts)
 
 
 def _reshape_groupby(
@@ -2147,6 +2181,9 @@ class _LongLayout:
     def apply(self, table: Table) -> Table:
         if self.frame:
             return table
+        if isinstance(table, Frame):
+            # `Frame.rows` rebuilds every row on each read, and the projection reads them twice.
+            table = _frame_rows(table.columns, table.table)
         if self.projection is None:
             self.projection = plan_long_projection(
                 table.columns,
