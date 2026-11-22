@@ -830,18 +830,27 @@ def test_a_component_read_failing_on_a_code_fault_fails_the_request(monkeypatch,
 
 
 @pytest.mark.parametrize("door", ["fresh", "resubmit"])
-@pytest.mark.parametrize("fault", ["refused", "no_data", "code_fault"])
-def test_a_lost_continuation_resolve_answers_the_part_degraded_and_uncached(
-    monkeypatch, door, fault
+@pytest.mark.parametrize(
+    ("fault", "degraded"),
+    [
+        pytest.param("lost", True, id="lost"),
+        pytest.param("refused", False, id="refused"),
+        pytest.param("no_data", False, id="no_data"),
+    ],
+)
+def test_a_continuation_resolve_that_states_nothing_still_answers_the_part(
+    monkeypatch, door, fault, degraded
 ):
-    """Asked with no preview, the imputed component's resolve is refused, answers no
-    definite Spec, or raises a fault in the code. The part still answers the composite,
-    states no continuation, and is degraded, so no cache stores it."""
+    """Asked with no preview, the imputed component's resolve is lost to a graph failure,
+    refused, or answers no definite Spec. The part still answers the composite and states no
+    continuation. A lost read is transient, so the answer is degraded and no cache stores
+    it; a refusal or a no-data answer is deterministic, so the answer stays whole and a
+    fresh one is cached."""
     first, components = _components(monkeypatch)
-    if fault == "refused":
+    if fault == "lost":
+        components.failures["imputed"] = GraphInfraError("down")
+    elif fault == "refused":
         components.failures["imputed"] = EngineInputError("refused")
-    elif fault == "code_fault":
-        components.failures["imputed"] = ValueError("a fault")
     else:
         components.statuses["imputed"] = "no_data"
     components.continued.add("imputed")
@@ -852,8 +861,22 @@ def test_a_lost_continuation_resolve_answers_the_part_degraded_and_uncached(
 
     assert _answered(events).spec_id == first.spec_id
     assert "modelled_values" not in {d.code for d in _part(events).departures}
-    assert _done(events).degraded_leg is True
-    assert cache.stats().entries == 0
+    assert _done(events).degraded_leg is degraded
+    if door == "fresh":
+        # The response cache stores fresh answers; a resubmit's parts go to the part memo.
+        assert (cache.stats().entries > 0) is not degraded
+
+
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+def test_a_continuation_resolve_failing_on_a_code_fault_fails_the_request(monkeypatch, door):
+    """Asked with no preview, a fault in the code resolving the imputed component's
+    continuation propagates, as it does on the preview path."""
+    first, components = _components(monkeypatch)
+    components.failures["imputed"] = ValueError("a fault")
+    request = _request(door, first).model_copy(update={"response_options": ResolveOptions()})
+
+    with pytest.raises(ValueError, match="a fault"):
+        offline_resolve(request, **_clients())
 
 
 @pytest.mark.parametrize("door", ["fresh", "resubmit"])

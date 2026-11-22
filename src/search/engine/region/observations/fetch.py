@@ -74,7 +74,7 @@ from materialise.recipes import (
 from materialise.series_conversion import SeriesConversion
 from materialise.window import RequestedWindow, latest_periods
 from origin_catalogue.graph import is_un_dcid
-from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
@@ -624,20 +624,21 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     A collapse ranks the facets two contest over the window
     (`materialise.facet_collapse.facet_rank`).
 
-    A read of one facet asks SDMX for the span's years alone. A read of several asks for the
-    span's first year to the window's end, and ranks each series' facets from their dates in
-    the window (`_window_ranks`), as bulk ranks from coverage
-    (`bulk_role_series._series_ranks`). A window with no end reads to the clock's year, or
-    to a facet's later last date, so a graph snapshot that lags SDMX cannot cut rows a mint
-    of the window reads. SDMX takes a year by its four digits, so a read asks for years only
-    when every facet is annual on positive evidence: a `P1Y` observation period, or dates
-    that read annual (`Facet.reads_annual`). A coverage facet's years are coverage's
-    whatever its cadence (`Facet.dates_coarsened`), so they are no evidence. A read of
-    facets without that evidence, or of several where a facet holding observations carries
-    no complete date list, asks for the whole window and keeps the span afterwards."""
+    A read is bounded only where it provably keeps the rows a read of the whole window
+    keeps in the span; otherwise it asks for the whole window and keeps the span afterwards.
+    SDMX takes a year by its four digits, so every facet must be annual on evidence with no
+    date against it (`_annual`). A read of one facet then asks SDMX for the span's years
+    alone. A read of several asks for the span's first year to the window's end and ranks
+    each series' facets from their dates in the window (`_window_ranks`), as bulk ranks from
+    coverage (`bulk_role_series._series_ranks`), so it needs every facet's last date where
+    the window has no end, and a complete date list of every facet holding observations.
+    A window with no end reads to the clock's year, or to a facet's later last date, so a
+    graph snapshot that lags SDMX cannot cut rows a mint of the window reads. Each series'
+    ranks name every facet the read dispatches (`_Dispatch.group_ids`), so the collapse
+    never ranks a facet of the read by its rows beside others ranked over the window."""
     span = SpanRead(served=plan_window(served))
     group = [facet for s in dispatch.series for facet in s.group]
-    if not group or not all(f.observation_period == "P1Y" or f.reads_annual for f in group):
+    if not group or not all(_annual(f) for f in group):
         return span
     if len(dispatch.group_ids) == 1:
         return replace(span, fetched=span.served)
@@ -647,12 +648,15 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     if years is not None and years.end_year is not None:
         end = years.end_year
     else:
-        ends = (year_of(f.latest_date) for f in group)
+        ends = [year_of(f.latest_date) for f in group]
+        if None in ends:
+            return span
         end = max(current_year(), *(year for year in ends if year is not None))
     open_roles = dispatch.open_roles
+    facets = {f.facet_id: f for f in group}
     ranks: dict[tuple[str, ...], dict[str | None, FacetRank]] = {}
     for s in dispatch.series:
-        held = _window_ranks(s, selected=selected, years=years)
+        held = _window_ranks(s, facets=facets, selected=selected, years=years)
         if held is None:
             return span
         role_dcids = dict(s.role_tuple)
@@ -661,14 +665,38 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     return replace(span, fetched=plan_window(fetched), ranks=ranks)
 
 
+def _annual(facet: Facet) -> bool:
+    """Whether `facet` is annual on evidence with none against it: dates that read annual
+    (`Facet.reads_annual`), or a `P1Y` observation period beside dates that are coverage's
+    years, no evidence whatever its cadence (`Facet.dates_coarsened`), or bare years too few
+    to read annual. A `P1Y` facet dated by month, or merged with one
+    (`Facet.annual_evidence`), is not."""
+    if facet.reads_annual:
+        return True
+    if facet.observation_period != "P1Y":
+        return False
+    if facet.dates_coarsened:
+        return True
+    if facet.annual_evidence is False:
+        return False
+    own = (*facet.dates, facet.earliest_date, facet.latest_date)
+    return all(date is None or (len(date) == 4 and date.isdigit()) for date in own)
+
+
 def _window_ranks(
-    series: PlanSeries, *, selected: frozenset[str], years: PlanYears
+    series: PlanSeries,
+    *,
+    facets: Mapping[str | None, Facet],
+    selected: frozenset[str],
+    years: PlanYears,
 ) -> dict[str | None, FacetRank] | None:
-    """Each facet of `series`' group with its collapse rank over the rows a mint of the
-    member keeps of it at the series in `years`, counted from its dates there: a selected
-    facet its rows, a facet continuing the selection those after the selected facets' last
-    year (`materialise.columnar.continuation_mask`). A coverage facet dates one row a year,
-    as bulk counts coverage (`bulk_role_series._series_ranks`). None when a facet holding
+    """Each facet of the read, `facets` by id, with its collapse rank over the rows a mint
+    of the member keeps of it at `series` in `years`, counted from its dates there: a
+    selected facet its rows, a facet continuing the selection those after the selected
+    facets' last year (`materialise.columnar.continuation_mask`). A facet `series`' group
+    does not hold ranks with no rows, as bulk ranks a facet coverage holds no row of at a
+    tuple (`bulk_role_series._series_keep_mask`). A coverage facet dates one row a year, as
+    bulk counts coverage (`bulk_role_series._series_ranks`). None when a facet holding
     observations carries no complete date list.
 
     The ranks read the graph's dates, and a collapse of the rows reads SDMX's. Where the two
@@ -676,7 +704,7 @@ def _window_ranks(
     can elect another facet than the whole window's rows would. The span read accepts that
     for the rows it leaves unread, as bulk does when it ranks from coverage."""
     window = years if isinstance(years, TimeWindow) else None
-    held: dict[str | None, list[int]] = {}
+    held: dict[str | None, list[int]] = {facet_id: [] for facet_id in facets}
     for facet in series.group:
         if facet.obs_count > 0 and not (facet.dates and facet.dates_complete):
             return None
@@ -690,14 +718,13 @@ def _window_ranks(
         default=None,
     )
     ranks: dict[str | None, FacetRank] = {}
-    for facet in series.group:
-        kept = held[facet.facet_id]
-        if facet.facet_id not in selected and last is not None:
+    for facet_id, kept in held.items():
+        if facet_id not in selected and last is not None:
             kept = [year for year in kept if year > last]
-        ranks[facet.facet_id] = facet_rank(
+        ranks[facet_id] = facet_rank(
             FacetRankStats(
-                facet_id=facet.facet_id,
-                has_period=facet.observation_period is not None,
+                facet_id=facet_id,
+                has_period=facets[facet_id].observation_period is not None,
                 rows=len(kept),
                 span_years=max(kept) - min(kept) if kept else -1,
             )
@@ -960,7 +987,8 @@ def _shared_spans(
     for every period makes the group's reads ask for every period and rank by their rows, as
     a read of the whole window does. Wider years keep a read's decisions: a read of one
     facet keeps its span, and a read of several ranks by its window ranks
-    (`SpanRead.ranks`)."""
+    (`SpanRead.ranks`). A UN member's read, which no bulk group batches, keeps its own
+    span."""
     shared: dict[tuple[frozenset[str], frozenset[str]], RequestedWindow | None] = {}
     for dispatch in dispatches:
         if dispatch.span is None or is_un_dcid(dispatch.stat_var):
@@ -971,8 +999,11 @@ def _shared_spans(
     widened: list[_Dispatch] = []
     for dispatch in dispatches:
         span = dispatch.span
-        group = _bulk_group(dispatch, member_facts) if span is not None else None
-        if span is None or group not in shared or span.fetched == shared[group]:
+        if span is None or is_un_dcid(dispatch.stat_var):
+            widened.append(dispatch)
+            continue
+        group = _bulk_group(dispatch, member_facts)
+        if group not in shared or span.fetched == shared[group]:
             widened.append(dispatch)
             continue
         fetched = shared[group]

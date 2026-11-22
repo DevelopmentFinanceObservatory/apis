@@ -6,12 +6,15 @@ import random
 import unicodedata
 
 import pyarrow as pa
+import pytest
 
 from dc_sdmx import SdmxObservation
 from materialise.facet_collapse import (
+    CollapseCell,
     FacetRankStats,
     collapse_duplicate_identity_facets_table,
     facet_rank,
+    keep_mask,
 )
 
 from . import _row_oracle
@@ -371,11 +374,11 @@ def test_differential_against_the_row_path():
         _assert_table_matches_row_oracle(rows)
 
 
-def test_given_ranks_rank_the_facets_they_name_and_rows_rank_the_rest():
-    """A span read's ranks name the series' facets alone: facet "2", in the read from
-    another series' group, and a row with no facet id rank by their rows. Facet "1",
-    one row here but ten over the window, beats "2" on the 2016 key; "2", two rows,
-    beats the null facet on 2017."""
+def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_its_rows():
+    """The ranks name facet "1" alone, while the table holds facet "2" and a row with no
+    facet id too. Ranks over a window and ranks over rows are on different scales, so every
+    facet ranks by its rows: "2", two rows, beats "1", one row here though ten over the
+    window, on the 2016 key, and the null facet on 2017."""
     rows = (
         _row(facet_id="1", observation_period=None, time_period="2016", value="a"),
         _row(facet_id="2", observation_period=None, time_period="2016", value="b"),
@@ -388,4 +391,26 @@ def test_given_ranks_rank_the_facets_they_name_and_rows_rank_the_rest():
         _table(rows), declared_roles=_ROLES, ranks=ranks
     )
 
-    assert kept["OBS_VALUE"].to_pylist() == ["a", "c"]
+    assert kept["OBS_VALUE"].to_pylist() == ["b", "c"]
+
+
+def test_keep_mask_refuses_ranks_that_lack_a_facet_of_its_cells():
+    """A bulk caller ranks every facet of the cells it holds over the whole table; ranks
+    lacking one would mix scales, so `keep_mask` refuses them."""
+    cells = [
+        CollapseCell(
+            variable="Count_Person",
+            role_values=("country/KEN",),
+            time_period="2016",
+            unit=None,
+            measurement_method=None,
+            provenance="p",
+            observation_period=None,
+            facet_id=facet_id,
+        )
+        for facet_id in ("1", "2")
+    ]
+    ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
+
+    with pytest.raises(ValueError, match="no rank given"):
+        keep_mask(cells, rank_within_series=False, ranks=ranks)

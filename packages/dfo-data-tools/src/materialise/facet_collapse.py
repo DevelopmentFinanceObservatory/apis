@@ -51,9 +51,11 @@ def collapse_duplicate_identity_facets_table(
 
     `rank_within_series` ranks each facet over its rows in each series, one dcid on every
     declared role, and contests keys only within a series: the result of collapsing each
-    series on its own. `ranks` ranks the facets it names in place of their rows, for a table
-    holding only part of the rows they rank over; a facet it lacks (another series' facet, a
-    null `facetId`, one the graph has not listed yet) ranks by its rows."""
+    series on its own. `ranks` ranks the facets in place of their rows, for a table holding
+    only part of the rows they rank over, when it names every facet of `table`. A table
+    holding a facet `ranks` lacks (a null `facetId`, one the graph has not listed yet) ranks
+    every facet by its rows, since a rank over rows and one over a whole window are on
+    different scales."""
     facet_id_column = table[_FACET_ID_COLUMN]
     distinct = pc.count_distinct(facet_id_column, mode="all")
     distinct_facets = distinct.as_py()
@@ -64,6 +66,8 @@ def collapse_duplicate_identity_facets_table(
         raise ValueError("ranks are a whole table's; a within-series rank reads the cells")
     sorted_declared_roles = sorted(declared_roles)
     cells = _cells_from_table(table, sorted_declared_roles)
+    if ranks is not None and set(pc.unique(facet_id_column).to_pylist()) - ranks.keys():
+        ranks = None
     keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series, ranks=ranks)
     if keep is None:
         return table
@@ -86,8 +90,9 @@ def keep_mask(
     `rank_within_series`. A caller holding only part of a member's table, such as Search's
     bulk role read, which reads a subset of pairs, passes each facet's rank over the whole
     table in `ranks`, built from the same `FacetRankStats`, so the winner does not depend on
-    the cells it holds. `ranks` holds a rank for every facet of `cells` and applies only
-    without `rank_within_series`."""
+    the cells it holds. `ranks` must name every facet of `cells`, else `ValueError`: a rank
+    over the whole table and one over the cells held are on different scales. It applies
+    only without `rank_within_series`."""
     if ranks is not None and rank_within_series:
         raise ValueError("ranks are a whole table's; a within-series rank reads the cells")
     keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series, ranks=ranks)
@@ -136,9 +141,9 @@ def _duplicate_facet_keep_mask(
     ranks: Mapping[str | None, FacetRank] | None = None,
 ) -> tuple[bool, ...] | None:
     """Ranks each facet over all its cells, or over its cells in each series under
-    `rank_within_series`, or by `ranks` where it names the facet, then marks rows from the best facet for
-    every contested grain key. Returns `None` for at most one facet. Otherwise returns a
-    parallel boolean keep-mask."""
+    `rank_within_series`, or by `ranks`, which must name every facet, then marks rows from
+    the best facet for every contested grain key. Returns `None` for at most one facet.
+    Otherwise returns a parallel boolean keep-mask."""
 
     def series(cell: CollapseCell) -> tuple[str | None, ...]:
         return cell.role_values if rank_within_series else ()
@@ -150,9 +155,10 @@ def _duplicate_facet_keep_mask(
     if len({facet_id for _series, facet_id in cells_by_group}) <= 1:
         return None
 
-    given = ranks or {}
+    if ranks is not None and (unranked := {fid for _s, fid in cells_by_group} - ranks.keys()):
+        raise ValueError(f"no rank given for facets {sorted(map(str, unranked))!r}")
     rank_by_group = {
-        group: given[group[1]] if group[1] in given else _facet_selection_rank(group_cells)
+        group: ranks[group[1]] if ranks is not None else _facet_selection_rank(group_cells)
         for group, group_cells in cells_by_group.items()
     }
 

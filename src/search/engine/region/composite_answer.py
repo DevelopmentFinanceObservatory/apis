@@ -333,13 +333,13 @@ async def _component_continuation(
 ) -> bool | None:
     """Whether `item`'s component answer, resolved with no preview over the identity and
     years `component_preview` names (`_resubmit`), serves a continuation in those years
-    (`ResolvedSpec.continued`), or None when its resolve was lost.
+    (`ResolvedSpec.continued`), or None when its resolve states none.
 
-    Every lost resolve is noted (`note_degraded_read`, or `note_lost_read` for an error), so
-    the answer is degraded and no cache stores it: one `_resubmit` lost to an upstream read,
-    refused (`EngineInputError`) or answered with no definite Spec, and any error raised
-    building or resolving the component's identity, which is logged. A continuation states
-    one departure, so its resolve never fails the part."""
+    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient: it is noted once
+    (`_resubmit` notes its own, `note_lost_read` any other), so the answer is degraded and no
+    cache stores it. A resolve that refuses the identity (`EngineInputError`) or answers no
+    definite Spec is deterministic, so it states no continuation and leaves the answer
+    cacheable. Any other error is a code fault and propagates, as on the preview path."""
     about = f"composite continuation: component {item.component.role}"
     try:
         document, years = component_preview(item)
@@ -353,13 +353,13 @@ async def _component_continuation(
             years=years,
             observations=False,
         )
-    except Exception as exc:
-        logger.warning("%s raised", about, exc_info=True)
+    except EngineInputError:
+        return None
+    except LOST_READ_ERRORS as exc:
+        logger.warning("%s lost", about, exc_info=True)
         note_lost_read(about, exc)
         return None
     if isinstance(region, _LostRead):
-        if not region.noted:
-            note_degraded_read(about)
         return None
     return region.spec.resolved.continued
 
@@ -367,12 +367,10 @@ async def _component_continuation(
 @dataclass(frozen=True, slots=True)
 class _LostRead:
     """A resubmit preview that read nothing, `timed_out` when the read crossed its deadline,
-    with `cause` saying why, and `noted` when the lost read was already noted
-    (`note_lost_read`)."""
+    with `cause` saying why."""
 
     timed_out: bool
     cause: str
-    noted: bool = False
 
     def warning(self, message: str) -> Warning:
         """The warning stating `message` under `observations_timed_out` for a read that
@@ -438,8 +436,9 @@ async def _resubmit(
     years: frozenset[int] | None,
     observations: bool,
 ) -> RegionResult | _LostRead:
-    """The definite answer a resubmit of `identity` posting `groups` resolves, read with
-    `resolve_spec_resubmit` in a worker thread through `reads.catalogue` under
+    """The definite answer a resubmit of `identity` posting `groups` resolves, built, keyed
+    and read with `resolve_spec_resubmit` in a worker thread (`_resolve_component`) through
+    `reads.catalogue` under
     `reads.options`, embedding its preview where `observations` is set and reading no row
     otherwise, holding a permit of `semaphore` when one is given. Its Spec states the
     continuation its read plan serves in `years` (`EngineOptions.preview_years`) where set.
@@ -456,25 +455,21 @@ async def _resubmit(
     (`is_region_storable` under the request catalogue's refused places), degraded or carrying
     a warning such as `members_absent_from_graph`, notes a degraded read
     (`note_degraded_read`), so no cache stores what it states. Any other error propagates."""
-    payload = ResubmitIdentityPayload(
-        identity=identity,
-        entity_groups=None
-        if groups is None
-        else region_groups(groups, identity, index=get_index()),
-        populations=dict(populations or {}),
-    )
     options = dataclasses.replace(
         reads.options, include_observations=observations, preview_years=years
     )
-    memo = reads.memo if reads.memo is not None and reads.memo.active else None
-    key = memo.key(payload, options) if memo is not None else None
     async with semaphore if semaphore is not None else nullcontext():
         try:
             # The worker thread copies this context, so the resolve reads through the
             # request's catalogue, which only `identity`'s own pin narrows.
             with bound_catalogue(reads.catalogue):
-                region, stored = await asyncio.to_thread(
-                    _resolve_component, payload, reads=reads, options=options, key=key
+                region, stored, key = await asyncio.to_thread(
+                    _resolve_component,
+                    identity,
+                    groups,
+                    populations=populations,
+                    reads=reads,
+                    options=options,
                 )
         except EngineInputError:
             return _LostRead(timed_out=False, cause="refused its identity")
@@ -489,10 +484,10 @@ async def _resubmit(
                 exc_info=True,
             )
             if timed_out:
-                return _LostRead(timed_out=True, cause="read crossed its deadline", noted=True)
-            return _LostRead(timed_out=False, cause="read failed", noted=True)
-    if memo is not None and key is not None and not stored:
-        memo.store(key, region)
+                return _LostRead(timed_out=True, cause="read crossed its deadline")
+            return _LostRead(timed_out=False, cause="read failed")
+    if reads.memo is not None and key is not None and not stored:
+        reads.memo.store(key, region)
     if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):
         note_degraded_read(f"resubmit preview: {about}")
     if region.status != "definite":
@@ -510,17 +505,29 @@ def _missing(item: ServedComponent, lost: _LostRead) -> Warning:
 
 
 def _resolve_component(
-    payload: ResubmitIdentityPayload,
+    identity: BaseIdentity,
+    groups: Mapping[EntityRoleKey, EntityGroup] | None,
     *,
+    populations: Mapping[str, RolePopulation] | None,
     reads: ComponentReads,
     options: EngineOptions,
-    key: str | None,
-) -> tuple[RegionResult, bool]:
-    """The part memo's region for `payload` under `key`, else a fresh resolve of it, and
-    whether the memo held it."""
-    stored = reads.memo.lookup(key) if reads.memo is not None and key is not None else None
+) -> tuple[RegionResult, bool, str | None]:
+    """The resubmit of `identity` posting `groups` (`_resubmit`): the active part memo's
+    region for it, else a fresh resolve, whether the memo held it, and its memo key, None
+    without an active memo. It runs in a worker thread, so building and hashing the payload
+    keeps off the event loop."""
+    payload = ResubmitIdentityPayload(
+        identity=identity,
+        entity_groups=None
+        if groups is None
+        else region_groups(groups, identity, index=get_index()),
+        populations=dict(populations or {}),
+    )
+    memo = reads.memo if reads.memo is not None and reads.memo.active else None
+    key = memo.key(payload, options) if memo is not None else None
+    stored = memo.lookup(key) if memo is not None and key is not None else None
     if stored is not None:
-        return stored, True
+        return stored, True, key
     region = resolve_spec_resubmit(
         inp=payload,
         graph=reads.graph,
@@ -528,7 +535,7 @@ def _resolve_component(
         coverage=reads.coverage,
         options=options,
     )
-    return region, False
+    return region, False, key
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

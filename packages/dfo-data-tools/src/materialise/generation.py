@@ -502,7 +502,8 @@ class SpanRead:
     (`facet_collapse.facet_rank`), keyed by the series' dcids on the read's `series_roles`, or
     `()` for a read leaving no role open: a read fetching part of the window ranks the facets
     two contest by them, since it holds too few of their rows to rank by its own. A series
-    `ranks` lacks ranks its facets by its rows."""
+    `ranks` lacks, or one holding a facet its ranks lack, ranks every facet by its rows
+    (`facet_collapse.collapse_duplicate_identity_facets_table`)."""
 
     served: RequestedWindow
     fetched: RequestedWindow | None = None

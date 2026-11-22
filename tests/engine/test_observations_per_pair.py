@@ -696,18 +696,30 @@ def _facet(case: str, facet_id: str) -> MaterialiseFacet:
 
 
 @pytest.mark.parametrize(
-    ("observation_period", "bounded"),
+    ("observation_period", "dated", "bounded"),
     [
-        pytest.param(None, False, id="coverage-years-alone"),
-        pytest.param("P1Y", True, id="annual-period"),
+        pytest.param(None, "coverage", False, id="coverage-years-alone"),
+        pytest.param("P1Y", "coverage", True, id="annual-period"),
+        # The period says annual and the graph's own dates say monthly.
+        pytest.param("P1Y", "month", False, id="annual-period-dated-by-month"),
     ],
 )
-def test_a_span_read_asks_for_years_on_positive_annual_evidence_alone(observation_period, bounded):
+def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
+    observation_period, dated, bounded
+):
     """A coverage facet's years are coverage's whatever its cadence, so they alone leave
-    the read asking for the whole window; a `P1Y` period lets it ask for the span's years."""
-    facet = replace(
-        _facet("one-facet", "1"), dates_coarsened=True, observation_period=observation_period
-    )
+    the read asking for the whole window; a `P1Y` period lets it ask for the span's years,
+    unless the facet's own dates are months."""
+    facet = replace(_facet("one-facet", "1"), observation_period=observation_period)
+    if dated == "coverage":
+        facet = replace(facet, dates_coarsened=True)
+    else:
+        facet = replace(
+            facet,
+            dates=tuple(f"{date}-06" for date in facet.dates),
+            earliest_date=f"{facet.earliest_date}-06",
+            latest_date=f"{facet.latest_date}-06",
+        )
 
     _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
 
@@ -735,3 +747,47 @@ def test_an_every_date_span_read_fetches_past_a_lagging_graph_to_the_clock_year(
 
     assert periods == [[str(year) for year in range(2011, 2027)]]
     assert bounded == whole
+
+
+def test_an_every_date_span_read_of_a_facet_with_no_known_end_reads_the_whole_window():
+    """Elected under every date, the graph states no last date of the contested second
+    facet, so no year bounds the rows a read of the whole window holds: the span read asks
+    SDMX for every period."""
+    lagging = replace(_facet("contested", "2"), latest_date=None)
+
+    _points_read, periods = _span_preview(
+        "contested", frozenset(range(2011, 2017)), candidates={"2": lagging}, years=None
+    )
+
+    assert periods == [None]
+
+
+def test_a_span_read_ranks_every_facet_it_dispatches_at_each_series():
+    """Kenya's series holds the contested facets "1" and "2", Uganda's only "1". The read of
+    both dispatches both, so Uganda's ranks name "2" too, with no rows, and a row of "2"
+    SDMX returns at Uganda never ranks by its rows beside "1" ranked over the window."""
+    first, second = _facet("contested", "1"), _facet("contested", "2")
+    uga = (("observationAbout", "country/UGA"),)
+    series = (
+        PlanSeries(
+            stat_var="Count_Person",
+            role_tuple=_KEN,
+            candidates=(first, second),
+            group=(first, second),
+        ),
+        PlanSeries(stat_var="Count_Person", role_tuple=uga, candidates=(first,), group=(first,)),
+    )
+    dispatch = region_fetch._Dispatch(
+        stat_var="Count_Person", bound=(), series=series, years=_ELECTED
+    )
+
+    span = region_fetch._span_read(
+        dispatch, served=TimeWindow(start_year=2011, end_year=2024), selected=frozenset({"1"})
+    )
+
+    assert span.fetched is not None
+    assert span.ranks is not None
+    assert {key: set(ranks) for key, ranks in span.ranks.items()} == {
+        ("country/KEN",): {"1", "2"},
+        ("country/UGA",): {"1", "2"},
+    }
