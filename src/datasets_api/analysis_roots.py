@@ -197,6 +197,31 @@ def frame_ref_for(
     are the render format's, so a frame rendered under another format is another frame. The
     other roots read a stored frame, which a format change gives a new `content_version`
     (`render.DerivedVersion`) or leaves as it is."""
+    return frame_ref_under(
+        spec_id=spec_id,
+        content_version=content_version,
+        columns=columns,
+        groupby=groupby,
+        without_party_totals=without_party_totals,
+        enrichment_stamp=enrichment_stamp,
+        render_format=RENDER_FORMAT,
+    )
+
+
+def frame_ref_under(
+    *,
+    spec_id: str,
+    content_version: str,
+    columns: Sequence[str],
+    groupby: Mapping[str, Any] | None,
+    without_party_totals: bool,
+    enrichment_stamp: str | None,
+    render_format: str | None,
+) -> FrameRef:
+    """The pair `frame_ref_for` names a frame by when frame-layout files are written in
+    `render_format`. `None` names it as a root was named before its name carried a render
+    format, with no `render_format` member, so a stored recipe's root names the format of the
+    file it read (`recipe_replay.StoredRootSource`)."""
     if not columns and groupby is None and not without_party_totals:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
@@ -206,8 +231,8 @@ def frame_ref_for(
         preimage["without_party_totals"] = True
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
-    if columns:
-        preimage["render_format"] = RENDER_FORMAT
+    if columns and render_format is not None:
+        preimage["render_format"] = render_format
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
     return FrameRef(spec_id=spec_id, content_version=f"cv_{digest}")
 

@@ -139,9 +139,7 @@ def rendering_key(rendering: Mapping[str, object]) -> str:
     """The key a file of `rendering` is linked under: the SHA-256 of its sorted JSON, with a
     frame-layout file's keyed beside `RENDER_FORMAT` (`holds_frame_cells`), so a file whose
     cells an earlier format wrote matches no request."""
-    if holds_frame_cells(rendering):
-        return _json_key({"rendering": dict(rendering), "render_format": RENDER_FORMAT})
-    return _json_key(dict(rendering))
+    return rendering_key_under(rendering, None, render_format=RENDER_FORMAT)
 
 
 def _json_key(keyed: Mapping[str, object]) -> str:
@@ -159,14 +157,28 @@ def enriched_rendering_key(rendering: Mapping[str, object], enrichment_digest: s
     `rendering_key` does. The digest salts the key only. `rendering` itself, which a caller
     selects an artifact by, never holds it.
     """
+    return rendering_key_under(rendering, enrichment_digest, render_format=RENDER_FORMAT)
+
+
+def rendering_key_under(
+    rendering: Mapping[str, object], enrichment_digest: str | None, *, render_format: str | None
+) -> str:
+    """The key a file of `rendering` rendered under `enrichment_digest` is linked under when
+    frame-layout files are written in `render_format` (`versions.RENDER_FORMAT`), as
+    `enriched_rendering_key` keys it. `None` is the key a frame-layout file had before its key
+    carried a render format: the same SHA-256 with no `render_format` member. Only a
+    frame-layout file's key (`holds_frame_cells`) depends on `render_format`."""
+    salt = render_format is not None and holds_frame_cells(rendering)
     if enrichment_digest is None or not carries_party_kind(rendering):
-        return rendering_key(rendering)
+        if not salt:
+            return _json_key(dict(rendering))
+        return _json_key({"rendering": dict(rendering), "render_format": render_format})
     salted: dict[str, object] = {
         "rendering": dict(rendering),
         "enrichment_digest": enrichment_digest,
     }
-    if holds_frame_cells(rendering):
-        salted["render_format"] = RENDER_FORMAT
+    if salt:
+        salted["render_format"] = render_format
     return _json_key(salted)
 
 
