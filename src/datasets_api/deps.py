@@ -4,10 +4,12 @@
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
 the allowance ledger, the coverage service and rate cache, the source of the code index each request reads, the
-whole-variable breadth reader, one materialise semaphore, and three executors.
+whole-variable breadth reader, one materialise semaphore, and four executors.
 
 The analysis executor runs analysis trees (`datasets_api.doors.analysis`), so a long
-computation queues behind no mint and delays no read. The read executor runs snapshot, description, observations, operations polls, members, pin, register,
+computation queues behind no mint and delays no read. The analysis key executor keys each run
+and reads its stored answer before the run takes an analysis thread, so a stored answer waits
+behind no computation. The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
 and publishes, which parse and write frames of up to 250,000 rows, so a queue of builds cannot
 delay a poll or a download. A
@@ -16,7 +18,7 @@ the work executor only when the head cannot answer it (`datasets_api.doors.defin
 
 A dependency the caller supplies in `DepsOverrides` is used as given and never closed here.
 Every other one is built live from `DatasetsSettings` and closed when the lifespan ends, after
-the three executors drain within one `ShutdownBudget`.
+the four executors drain within one `ShutdownBudget`.
 """
 
 from __future__ import annotations
@@ -124,6 +126,9 @@ class Deps:
     work_executor: DoorExecutor
     # Runs analysis trees (`datasets_api.doors.analysis`), apart from mints and reads.
     analysis_executor: DoorExecutor
+    # Keys analysis runs and reads their stored answers (`datasets_api.doors.analysis`), apart
+    # from the analysis executor, so a stored answer takes no analysis thread.
+    analysis_key_executor: DoorExecutor
 
     @property
     def code_index(self) -> CodeIndex:
@@ -224,6 +229,11 @@ def build_executors(settings: DatasetsBuildSettings) -> tuple[DoorExecutor, Door
 def build_analysis_executor(settings: DatasetsBuildSettings) -> DoorExecutor:
     """The analysis executor, sized by `analysis_max_concurrency`."""
     return build_door_executor(settings.analysis_max_concurrency, "analysis")
+
+
+def build_analysis_key_executor(settings: DatasetsBuildSettings) -> DoorExecutor:
+    """The analysis key executor, sized by `analysis_key_max_concurrency`."""
+    return build_door_executor(settings.analysis_key_max_concurrency, "analysis-key")
 
 
 @asynccontextmanager
@@ -329,13 +339,15 @@ async def open_deps(
 
         read_executor, work_executor = build_executors(settings)
         analysis_executor = build_analysis_executor(settings)
+        analysis_key_executor = build_analysis_key_executor(settings)
+        executors = (analysis_key_executor, analysis_executor, work_executor, read_executor)
         budget = ShutdownBudget()
         code_index_source = _index_source(overrides.code_index)
 
         async def _drain() -> None:
-            for executor in (analysis_executor, work_executor, read_executor):
+            for executor in executors:
                 executor.executor.shutdown(wait=False, cancel_futures=True)
-            for executor in (analysis_executor, work_executor, read_executor):
+            for executor in executors:
                 await asyncio.to_thread(executor.drain, budget)
 
         # Registered last, so the drain runs before any client or the pool closes.
@@ -388,6 +400,7 @@ async def open_deps(
             read_executor=read_executor,
             work_executor=work_executor,
             analysis_executor=analysis_executor,
+            analysis_key_executor=analysis_key_executor,
         )
 
 
@@ -397,6 +410,7 @@ __all__ = [
     "DepsCell",
     "DepsOverrides",
     "build_analysis_executor",
+    "build_analysis_key_executor",
     "build_executors",
     "open_deps",
 ]
