@@ -10,9 +10,10 @@ snapshot."""
 
 from __future__ import annotations
 
-import json
+import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -27,7 +28,11 @@ from resolvekit.core.module_registry import register_module
 
 from dfo_platform.singleton import RefCountedSingleton
 from entity_resolution import pack
-from entity_resolution.group_wordings import GroupWordings, build_group_wordings
+from entity_resolution.group_wordings import (
+    GroupWordings,
+    build_group_wordings,
+    load_query_aliases,
+)
 from entity_resolution.groups import GroupRegistry, build_group_registry
 from entity_resolution.membership import MembershipPolicy, build_policy
 
@@ -45,6 +50,8 @@ _CACHE_DIR_ENV = "RESOLVEKIT_CACHE_DIR"
 _OFFLINE_ENV = "RESOLVEKIT_OFFLINE"
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class _ResolverEnv(BaseSettings):
@@ -167,24 +174,34 @@ def _build(cache_dir: Path | None) -> SharedResolver:
         records_path=records_path, curated_path=curated_path, out_dir=resolved
     )
     alias_index = pack.build_alias_index(records_path=records_path, curated_path=curated_path)
+    curated = load_query_aliases()
     register_module(pack.MODULE_ID, pack_dir)
     resolver = Resolver.lite(
         module_ids=list(MODULE_IDS), routing_mode=RoutingMode.EXPLICIT, cache_size=0
     )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="resolvekit")
-    curated = json.loads(pack.query_aliases_path().read_text(encoding="utf-8"))
+    started = time.monotonic()
     try:
         group_wordings = executor.submit(
             build_group_wordings,
             resolver,
             alias_index,
             shared_memberships().groups,
-            curated=frozenset(curated),
+            curated=curated,
         ).result()
     except BaseException:
         executor.shutdown(wait=True)
         resolver.close()
         raise
+    logger.info(
+        "built group wordings in %.2f s: %d aliases, %d skipped, %d unnamed names",
+        time.monotonic() - started,
+        len(group_wordings.aliases),
+        len(group_wordings.skipped),
+        len(group_wordings.unnamed),
+    )
+    for entity_id, name in group_wordings.unnamed:
+        logger.debug("group wording left out %r of %s", name, entity_id)
     return SharedResolver(
         resolver=resolver,
         executor=executor,

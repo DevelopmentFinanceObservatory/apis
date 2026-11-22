@@ -2,39 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from resolvekit import ResolutionStatus
 
-from entity_resolution import group_wordings
-from entity_resolution.group_wordings import Skipped, build_group_wordings, normalize_key
+from entity_resolution import EntityResolver, Group, group_wordings
+from entity_resolution.group_wordings import (
+    QueryAlias,
+    Skipped,
+    Wording,
+    build_group_wordings,
+    normalize_key,
+)
 
-
-def _name_owner(shared, aliases):
-    """The group each alias's name resolves to alone, read on the resolver thread."""
-    from resolvekit import ResolutionContext
-
-    from entity_resolution.types import ADMITTED_TYPES
-
-    context = ResolutionContext(entity_types=ADMITTED_TYPES)
-    return {
-        name: group_wordings._listed_ids(shared.resolver, shared.alias_index, name, context)[0]
-        for name in set(aliases.values())
-    }
+from .conftest import FakeGraphLookup
 
 
-def test_each_wording_resolves_to_the_group_whose_name_it_holds(shared_resolver):
-    """Every generated text holds the name it maps to, and that name resolves to one of the
-    registry's groups first."""
+def test_each_wording_resolves_to_the_group_it_was_generated_for(shared_resolver):
+    """Resolving every generated text through the resolver gives the group it was built for,
+    whatever other entity shares a word of its name."""
     aliases = shared_resolver.group_wordings.aliases
-    owners = shared_resolver.run(_name_owner, shared_resolver, aliases).result()
-    groups = {group.entity_id for group in shared_resolver.groups}
-
     assert aliases
-    for text, name in aliases.items():
-        assert normalize_key(name) in text, (text, name)
-        assert owners[name] in groups, (text, name, owners[name])
+    resolver = EntityResolver(graph=FakeGraphLookup(nodes={}), shared=shared_resolver)
+    texts = sorted(aliases)
+
+    results = asyncio.run(resolver.resolve(texts))
+
+    wrong = {
+        text: result
+        for text, result in zip(texts, results, strict=True)
+        if not isinstance(result, Group)
+        or result.dcid != shared_resolver.groups.by_entity_id(aliases[text].group).ref
+    }
+    assert not wrong
 
 
 @pytest.mark.parametrize(
@@ -52,7 +55,7 @@ def test_each_wording_resolves_to_the_group_whose_name_it_holds(shared_resolver)
     ],
 )
 def test_a_common_group_wording_is_generated(shared_resolver, text: str, name: str):
-    assert shared_resolver.group_wordings.aliases[normalize_key(text)] == name
+    assert shared_resolver.group_wordings.aliases[normalize_key(text)].name == name
 
 
 def test_curated_aliases_and_listed_names_are_not_generated(shared_resolver):
@@ -67,10 +70,23 @@ def test_curated_aliases_and_listed_names_are_not_generated(shared_resolver):
     assert "african union countries" in wordings.aliases
 
 
+def _registry(*entity_ids: str) -> Any:
+    return cast(Any, [SimpleNamespace(entity_id=entity_id) for entity_id in entity_ids])
+
+
+def _patch(monkeypatch, *, listed, names, wordings=("{} countries", "{} members")):
+    monkeypatch.setattr(group_wordings, "WORDINGS", wordings)
+    monkeypatch.setattr(
+        group_wordings, "_listed_ids", lambda resolver, index, text, context: listed.get(text, [])
+    )
+    monkeypatch.setattr(group_wordings, "_names", lambda resolver, entity_id: names[entity_id])
+
+
 def test_a_text_two_groups_or_another_entity_name_is_left_out(monkeypatch):
     """Group A lists "Shared" and group B "SHARED", so both generate "shared countries";
     "b members" is another entity's name; "a countries" is curated; B's name "Taken" lists
-    another entity first, so no wording holds it."""
+    another entity first, so no wording holds it; "a members" is listed by A alone, so it
+    resolves already and is neither an alias nor recorded."""
     listed = {
         "A": ["groups/A"],
         "Shared": ["groups/A"],
@@ -78,20 +94,19 @@ def test_a_text_two_groups_or_another_entity_name_is_left_out(monkeypatch):
         "SHARED": ["groups/B"],
         "Taken": ["country/X", "groups/B"],
         "b members": ["org/BMembers"],
+        "a members": ["groups/A"],
     }
     names = {"groups/A": ["A", "Shared"], "groups/B": ["B", "SHARED", "Taken"]}
-    monkeypatch.setattr(group_wordings, "WORDINGS", ("{} countries", "{} members"))
-    monkeypatch.setattr(
-        group_wordings, "_listed_ids", lambda resolver, index, text, context: listed.get(text, [])
-    )
-    monkeypatch.setattr(group_wordings, "_names", lambda resolver, entity_id: names[entity_id])
-    registry = [SimpleNamespace(entity_id="groups/A"), SimpleNamespace(entity_id="groups/B")]
+    _patch(monkeypatch, listed=listed, names=names)
 
     result = build_group_wordings(
-        cast(Any, None), cast(Any, None), cast(Any, registry), curated=frozenset({"a countries"})
+        cast(Any, None),
+        cast(Any, None),
+        _registry("groups/A", "groups/B"),
+        curated={"a countries": QueryAlias(name="A")},
     )
 
-    assert result.aliases == {"a members": "A", "b countries": "B"}
+    assert result.aliases == {"b countries": Wording(name="B", group="groups/B", members=False)}
     assert result.unnamed == (("groups/B", "Taken"),)
     assert set(result.skipped) == {
         Skipped(text="a countries", group="groups/A", reason="curated"),
@@ -102,3 +117,57 @@ def test_a_text_two_groups_or_another_entity_name_is_left_out(monkeypatch):
             for group in ("groups/A", "groups/B")
         ),
     }
+
+
+def test_a_name_that_already_holds_a_set_noun_or_qualifier_is_not_worded(monkeypatch):
+    """A name ending in a set noun, a ", Total" suffix or a bracketed qualifier would build
+    "DAC countries countries" and the like, so no wording holds it."""
+    names = ["Africa (DAC)", "DAC countries", "Donors, Total", "Plain"]
+    listed = {name: ["groups/A"] for name in names}
+    _patch(monkeypatch, listed=listed, names={"groups/A": names}, wordings=("{} countries",))
+
+    result = build_group_wordings(
+        cast(Any, None), cast(Any, None), _registry("groups/A"), curated={}
+    )
+
+    assert set(result.aliases) == {"plain countries"}
+    assert result.unnamed == tuple(("groups/A", name) for name in names[:3])
+
+
+def test_a_wording_takes_the_reading_of_the_groups_curated_row(monkeypatch):
+    """ "G countries" is curated as the members of G, so "G member countries" and "G donors"
+    read as members; "H members" is curated for another group's name, so it gives H no reading
+    and "H countries", curated as the group itself, decides."""
+    listed = {
+        "G": ["groups/G"],
+        "Group of G": ["groups/G"],
+        "H": ["groups/H"],
+        "Other": ["groups/X"],
+    }
+    names = {"groups/G": ["G"], "groups/H": ["H"]}
+    curated = {
+        "g countries": QueryAlias(name="Group of G", members=True),
+        "h members": QueryAlias(name="Other", members=True),
+        "h countries": QueryAlias(name="H"),
+    }
+    _patch(monkeypatch, listed=listed, names=names, wordings=("{} member countries", "{} donors"))
+
+    result = build_group_wordings(
+        cast(Any, None), cast(Any, None), _registry("groups/G", "groups/H"), curated=curated
+    )
+
+    assert {text: wording.members for text, wording in result.aliases.items()} == {
+        "g member countries": True,
+        "g donors": True,
+        "h member countries": False,
+        "h donors": False,
+    }
+
+
+def test_a_resolvekit_error_on_a_listed_check_raises(monkeypatch):
+    class _Resolver:
+        def resolve(self, *args, **kwargs):
+            return SimpleNamespace(status=ResolutionStatus.ERROR, candidates=[])
+
+    with pytest.raises(group_wordings.EntityResolutionError):
+        group_wordings._listed_ids(cast(Any, _Resolver()), cast(Any, None), "X", cast(Any, None))

@@ -484,6 +484,32 @@ def test_a_snapshot_behind_a_component_s_rows_leaves_the_mint_its_rows_years():
     assert {item.served for item in served} == {frozenset({2020})}
 
 
+def test_a_snapshot_lacking_a_year_the_whole_table_lacks_drops_and_names_it():
+    """SDMX serves total ODA from France to Kenya in 2020 and 2021, while the coverage
+    snapshot holds the line in 2020 alone and no other donor holds 2021, as when a source
+    publishes before the snapshot rebuilds. Table years come from the snapshot, so the mint
+    serves 2020, the year Search states, and names 2021 among the bilateral line's dropped
+    years."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+
+    minted, served = _dac2a_case(
+        populated,
+        [
+            (_BILATERAL_206, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020]),
+            (_DAC2A_IMPUTED, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020, 2021]),
+        ],
+    )
+
+    assert minted.status_code == 200, minted.text
+    by_role = {entry["role"]: entry for entry in minted.json()["trace"]["components"]}
+    assert by_role["bilateral"]["dropped_years"] == [2021]
+    assert by_role["bilateral"]["periods"] == [[2020, 2020]]
+    assert {item.served for item in served} == {frozenset({2020})}
+
+
 def test_a_snapshot_holding_none_of_a_component_s_years_for_the_keys_serves_its_rows():
     """The coverage snapshot holds France's total ODA to Kenya in 2019 alone, and another
     donor's in 2020 and 2021, so the table covers those years while France's line holds

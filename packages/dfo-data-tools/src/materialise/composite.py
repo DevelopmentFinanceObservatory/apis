@@ -10,9 +10,11 @@ served from. Each component materialises through `pipeline.materialise_group` al
   (`stacked_years`), inside the requested window. Rows of other years are dropped, and each
   component's summary names the years it lost (`dropped_years`). Search states the same
   rule from the coverage snapshot alone (`read_component_years`,
-  `search.scope.composite.served_components`), so a year a source publishes before the
-  snapshot rebuilds can appear in the mint before Search states it, and a snapshot that
-  lags the rows neither drops nor empties a mint. A spliced composite serves each
+  `search.scope.composite.served_components`). Table years come from the snapshot on both
+  sides, so a year no series of the table holds in the snapshot (one a source published
+  before the snapshot rebuilt) is dropped and named in `dropped_years`, while a year the
+  table holds for another key and the rows hold for this one can appear in the mint before
+  Search states it. A spliced composite serves each
   component's rows in its own declared years.
 - Inside those years, each member of a component whose absence reads as zero
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and

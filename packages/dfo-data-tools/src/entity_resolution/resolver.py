@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import re
 import threading
 import time
@@ -53,9 +52,13 @@ from resolvekit.core.model.result import CandidateSummary
 from dc_graph import label_or_self_name
 from dc_graph.errors import GraphDeadlineExceededError
 from dfo_platform.executor import run_in_executor_with_context
-from entity_resolution import pack
 from entity_resolution.gate import filter_listed_candidates
 from entity_resolution.graph import normalize_or_none, resolve_fallback, resolve_sharing
+from entity_resolution.group_wordings import (
+    EntityResolutionError,
+    QueryAlias,
+    load_query_aliases,
+)
 from entity_resolution.group_wordings import normalize_key as _normalize_key
 from entity_resolution.kinds import classify
 from entity_resolution.membership import MembershipPolicy, NotRecorded, UnknownMembership
@@ -109,12 +112,6 @@ _ttu = ttu_from_stamp_key
 _Candidate = tuple[Entity, Matched | None]
 
 
-class EntityResolutionError(Exception):
-    """Internal resolvekit failure for one text in a batch.
-
-    Raised when resolvekit returns `ResolutionStatus.ERROR`."""
-
-
 _LEADING_ARTICLE_RE = re.compile(r"^\s*the\s+", re.IGNORECASE)
 _TRAILING_PUNCTUATION_RE = re.compile(r"[.,;:!?]+$")
 
@@ -129,27 +126,12 @@ def _without_article_and_punctuation(text: str) -> str:
     return stripped.strip()
 
 
-@dataclass(frozen=True, slots=True)
-class _QueryAlias:
-    """The pack name a query text resolves as. `members` is true when the text names the
-    members of the set that name resolves to, each as its own place."""
-
-    name: str
-    members: bool = False
-
-
-def _load_query_aliases() -> dict[str, _QueryAlias]:
-    """Load query aliases keyed by `_normalize_key`.
-
-    Entries correct bundled pack name conflicts such as `Central Africa` and cover group phrases
-    the generated wordings (`group_wordings`) do not, or read differently: `DAC countries`
-    reads as the DAC itself, and `low-income countries (LICs)` names its group by an acronym
-    no record lists. Texts without an alias pass through unchanged."""
-    rows = json.loads(pack.query_aliases_path().read_text(encoding="utf-8"))
-    return {key: _QueryAlias(**row) for key, row in rows.items()}
-
-
-_QUERY_ALIASES: dict[str, _QueryAlias] = _load_query_aliases()
+# Curated query aliases keyed by `_normalize_key`. Entries correct bundled pack name conflicts
+# such as `Central Africa` and cover group phrases the generated wordings (`group_wordings`)
+# do not, or read differently: `DAC countries` reads as the DAC itself, and `low-income
+# countries (LICs)` names its group by an acronym no record lists. Texts without an alias pass
+# through unchanged.
+_QUERY_ALIASES: dict[str, QueryAlias] = load_query_aliases()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,15 +230,15 @@ def _resolve_text_survivors(
     """Apply query aliases, resolve, add alias owners, and gate candidates.
 
     A curated query alias wins over a generated group wording (`shared.group_wordings`), which
-    reads as the group itself, as its bare name does. Return survivors with the text each matched, the candidates the gate
-    saw, and the reading: `members` when the survivors came through an alias that declares its
-    text names members. A query alias is itself the listed text, so its survivors match `text`
+    carries its own reading. Return survivors with the text each matched, the candidates the
+    gate saw, and the reading: `members` when the survivors came through an alias that declares
+    its text names members. A query alias is itself the listed text, so its survivors match `text`
     as an alias."""
     resolver = shared.resolver
     key = _normalize_key(text)
     alias = _QUERY_ALIASES.get(key)
-    if alias is None and (group_name := shared.group_wordings.aliases.get(key)) is not None:
-        alias = _QueryAlias(name=group_name)
+    if alias is None and (wording := shared.group_wordings.aliases.get(key)) is not None:
+        alias = QueryAlias(name=wording.name, members=wording.members)
     query_text = text if alias is None else alias.name
     result = resolver.resolve(query_text, as_result=True, context=context, include_entity=True)
     if result.status == ResolutionStatus.ERROR:
