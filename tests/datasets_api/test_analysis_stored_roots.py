@@ -9,7 +9,7 @@ head names the raw version and the cut is a version of its own recorded from it.
 from __future__ import annotations
 
 import threading
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -20,6 +20,7 @@ import datasets_api.current as current
 import datasets_api.doors.analysis as analysis_door
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations.renewal import RENEW_MARKER
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
@@ -38,6 +39,7 @@ from .test_analysis_cut_sums import (
 from .test_definition_door import _client
 from .test_definition_door_currency import _PAST_INTERVAL, _FakeHeadStore
 from .test_meta_doors import _operation
+from .test_renew_on_read import _INSIDE_THE_MARGIN, _answer_frame, _renewals
 
 _PATH = "/api/datasets/analysis"
 _CUT = {"without_party_totals": True}
@@ -57,6 +59,7 @@ class _Rig:
         self.store = FakeVersionRecordDatasetStore()
         self.heads = _FakeHeadStore()
         self.tasks = FakeTaskClient()
+        self.operations = LiveOperationStore(store=self.store)
         self.client = _client(
             graph=_graph(),
             sdmx_transport=httpx.MockTransport(
@@ -72,7 +75,7 @@ class _Rig:
             head_writer=self.heads,
             recipe_store=LiveRecipeStore(store=self.store),
             version_lister=LiveVersionLister(store=self.store),
-            operation_store=LiveOperationStore(store=self.store),
+            operation_store=self.operations,
             task_client=self.tasks,
         )
         self.spec_id = recompute_identity(_IDENTITY).spec_id
@@ -359,3 +362,90 @@ def test_a_stored_root_refuses_a_head_the_head_get_refuses(
 
     assert response.status_code == status, response.text
     assert response.json()["code"] == code
+
+
+def _age_file(rig: _Rig, digest: str, *, by: timedelta) -> None:
+    """Move the working location of `digest` `by` into the past."""
+    with rig.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s "
+            "WHERE artifact_digest = %s AND tier = 'working'",
+            ((datetime.now(UTC) - by).isoformat(), digest),
+        )
+
+
+def _renewal_threads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The thread each stored-answer hit's renewal ran on (`renew_on_hit`)."""
+    threads: list[str] = []
+    renew_on_hit = analysis_door.renew_on_hit
+
+    def recording(current_deps: Any) -> Any:
+        renew = renew_on_hit(current_deps)
+
+        def on_hit(*args: Any) -> None:
+            threads.append(threading.current_thread().name)
+            renew(*args)
+
+        return on_hit
+
+    monkeypatch.setattr(analysis_door, "renew_on_hit", recording)
+    return threads
+
+
+def test_a_stored_hit_on_the_key_executor_queues_one_renewal_of_its_answers_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The answer's frame file inside the renewal margin: the stored request's hit, answered
+    on the key executor, queues one renewal of it under the answer's `ops_` pair, and answers
+    the pinned request's body."""
+    rig = _Rig(monkeypatch)
+    pinned = rig.pinned(_UNSUMMED)
+    assert pinned.status_code == 200, pinned.text
+    spec_id, digest = _answer_frame(pinned.json())
+    _age_file(rig, digest, by=_INSIDE_THE_MARGIN)
+    threads = _renewal_threads(monkeypatch)
+    queued = len(rig.tasks.enqueued)
+
+    stored = rig.stored(_UNSUMMED)
+
+    assert stored.status_code == 200, stored.text
+    body = stored.json()
+    body.pop("resolved_roots")
+    assert body == pinned.json()
+    assert len(threads) == 1
+    assert threads[0].startswith("datasets-analysis-key")
+    renewals = _renewals(rig.operations, rig.tasks)
+    assert len(rig.tasks.enqueued) == queued + 1
+    assert [(r["subject_id"], r[RENEW_MARKER]) for r in renewals] == [(spec_id, digest)]
+
+
+def test_a_recorded_rendering_whose_file_is_gone_renews_its_served_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cut's Parquet file past retention and its stored frame inside the renewal margin:
+    a stored request reads the cut from records, renders nothing, and queues one renewal of
+    the stored frame a later render of the cut reads."""
+    rig = _Rig(monkeypatch)
+    assert rig.pinned(_UNSUMMED).status_code == 200
+    reader = LiveSnapshotReader(store=rig.store)
+    by_rendering = {
+        tuple(sorted(location.rendering.items())): location.artifact_digest
+        for location in reader.read_artifact_locations(rig.spec_id, rig.cut)
+    }
+    frame = by_rendering[(("format", "frame"),)]
+    (rendered,) = [
+        digest for rendering, digest in by_rendering.items() if ("layout", "frame") in rendering
+    ]
+    _age_file(rig, rendered, by=timedelta(days=3650))
+    _age_file(rig, frame, by=_INSIDE_THE_MARGIN)
+    renders = rig.renders
+
+    stored = rig.stored(_UNSUMMED)
+
+    assert stored.status_code == 200, stored.text
+    assert rig.renders == renders
+    renewals = [
+        (r["subject_id"], r["content_version"], r[RENEW_MARKER])
+        for r in _renewals(rig.operations, rig.tasks)
+    ]
+    assert renewals == [(rig.spec_id, rig.cut, frame)]
