@@ -134,9 +134,9 @@ def selected_contributors(
 ) -> list[str]:
     """Return `contributors` (`dcid:` refs or bare dcids), in their order, that a groupby with
     the selection `codes` and the roll-up `levels` sums: each one whose code-index code on every
-    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed, as the render keeps
-    the summed rows of those codes (`selected_stat_vars`). An axis no contributor carries
-    selects on nothing."""
+    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed (`selected_stat_vars`),
+    as the render sums only the rows of those codes. An axis no contributor carries selects on
+    nothing."""
     refs = list(contributors)
     if not codes:
         return refs

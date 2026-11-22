@@ -547,10 +547,11 @@ def _stream_first_axis_collapse(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
+    selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
     """Decodes each frame slice (`_FrameSlice`, as `_reslice_chunks` cuts it) and folds them
-    into `axis` as Arrow (`_fold_frame_slices`). Collects distinct StatVars for the caller's
-    collision check. `_reshape` checks collisions before raising fold violations, matching
+    into `axis` as Arrow (`_fold_frame_slices`), over the rows of `selection` when it is set.
+    Collects distinct StatVars of every row for the caller's collision check. `_reshape` checks collisions before raising fold violations, matching
     whole-table error order.
 
     The fold holds the whole decoded frame at once, and the outcome's table is Arrow when the
@@ -565,6 +566,7 @@ def _stream_first_axis_collapse(
         missing_declared_as_zero=missing_declared_as_zero,
         expected_population=expected_population,
         decode_plan=decode_plan,
+        selection=selection,
     )
 
 
@@ -700,10 +702,16 @@ def _fold_frame_slices(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
+    selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
     """`_stream_first_axis_collapse` over Arrow frame slices: each slice decoded as
     `apply_reshapes` decodes it, with its warnings, then one fold over their rows in order. Unit
-    columns take the recipe layout, which keeps every cell, so slices of either layout join."""
+    columns take the recipe layout, which keeps every cell, so slices of either layout join.
+
+    With `selection`, a `groupby.codes` selection by axis, each decoded slice keeps only the
+    rows whose `stat_var_<axis>` cell is one of that axis's codes, so the fold and its checks
+    read the selected groups alone. The decode, its warnings and the distinct StatVars read
+    every row, as without a selection."""
     distinct_dcids: set[str] = set()
     warnings: list[MaterialisationWarning] = []
     decoded_slices: list[pa.Table] = []
@@ -716,6 +724,8 @@ def _fold_frame_slices(
             warnings.extend(decode_warnings)
         stat_vars = decoded.column(decoded.column_names.index(_STAT_VAR_COLUMN))
         distinct_dcids.update(cast("list[str]", pc.unique(stat_vars).drop_null().to_pylist()))
+        if selection is not None:
+            decoded = decoded.filter(_selected_mask(decoded, selection))
         decoded_slices.append(decoded)
     outcome = fold_groupby_sum_table(
         pa.concat_tables(decoded_slices),
@@ -760,13 +770,16 @@ def _reshape_groupby_collapse(
     selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
-    selection on axes the frame decodes, every fold still reads every row, so the decode-gap,
-    collision, provenance and fold refusals refuse exactly as the same render without a
-    selection does; only then are the summed rows whose code on a selected axis is unlisted
-    dropped (`_selected_rows`). Each kept axis is a key of every sum, so a summed row holds the
-    rows of the StatVars its kept codes name alone, and the rows left equal a sum of the selected
-    StatVars. The contributors are the selected StatVars with rows, so the collapse counts and
-    adds only what its rows hold.
+    selection on axes the frame decodes, a sum checks the groups it sums. The checks before
+    the folds read every row: provenance disagreement, decode gaps (which refuse a level
+    roll-up's missing ancestor) and StatVar collision, so they refuse as the same render
+    without a selection does. Then only the rows whose `stat_var_<axis>` cell is a selected
+    code reach the folds (`_selected_mask`, `_selected_table_rows`), so a fold precondition
+    (facet homogeneity, missing members, a finite total, the expected population, a unique
+    grain) reads the selected groups alone, and a fault in a group the selection leaves out
+    refuses nothing. Each kept axis is a key of every sum, so a selected group's rows and total
+    are those of the same group without a selection. The contributors are the selected StatVars
+    with rows, so the collapse counts and adds only what its rows hold.
 
     With `grammar_frame`, it restores `stat_var` on every row and builds a frame whose roles are
     `entity_columns` plus the `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
@@ -801,6 +814,8 @@ def _reshape_groupby_collapse(
         )
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
+        if selection is not None:
+            current = _selected_table_rows(current, selection)
     else:
         # `current` is one representative chunk, so the fold gathers contributors across the stream.
         # Decode-gap checks use only `decode_lookup` and run before the fold.
@@ -859,6 +874,7 @@ def _reshape_groupby_collapse(
                     missing_declared_as_zero=missing_declared_as_zero,
                     expected_population=axis_population,
                     decode_plan=decode_plan,
+                    selection=selection,
                 )
                 warnings.extend(decode_warnings)
                 decode_plan = None  # already applied per chunk above
@@ -901,7 +917,6 @@ def _reshape_groupby_collapse(
                 )
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
         if selection is not None:
-            collapsed = _selected_rows(collapsed, selection)
             contributors = {
                 ref
                 for ref in contributors
@@ -958,29 +973,33 @@ def _reshape_groupby_collapse(
     return current, decode_plan, collapse_info
 
 
-def _selected_rows(
-    collapsed: GroupedTable, selection: Mapping[str, frozenset[str]]
-) -> GroupedTable:
-    """The rows of a collapse's output `collapsed` whose `stat_var_<axis>` cell is one of
-    `selection`'s codes on each of its axes, in their order: an Arrow table stays Arrow, any
-    other output is read as tuple rows."""
-    if isinstance(collapsed, pa.Table):
-        mask = None
-        for axis, codes in selection.items():
-            column = collapsed.column(f"{_KEPT_AXIS_PREFIX}{axis}")
-            kept = pc.is_in(column, value_set=pa.array(sorted(codes), column.type))
-            mask = kept if mask is None else pc.and_(mask, kept)
-        return collapsed if mask is None else collapsed.filter(mask)
-    rows = rows_table(collapsed)
+def _selected_mask(table: pa.Table, selection: Mapping[str, frozenset[str]]) -> pa.Array:
+    """Whether each row of the decoded `table` holds one of `selection`'s codes in the
+    `stat_var_<axis>` cell of each of its axes."""
+    mask = pa.array([True] * table.num_rows, pa.bool_())
+    for axis, codes in selection.items():
+        column = table.column(f"{_KEPT_AXIS_PREFIX}{axis}").combine_chunks()
+        kept = pc.is_in(column, value_set=pa.array(sorted(codes), column.type))
+        mask = pc.and_(mask, kept)
+    return mask
+
+
+def _selected_table_rows(table: Table, selection: Mapping[str, frozenset[str]]) -> Table:
+    """The rows of the decoded `table` whose `stat_var_<axis>` cell is one of `selection`'s
+    codes on each of its axes, in their order."""
     positions = {
-        rows.columns.index(f"{_KEPT_AXIS_PREFIX}{axis}"): codes for axis, codes in selection.items()
+        table.columns.index(f"{_KEPT_AXIS_PREFIX}{axis}"): codes
+        for axis, codes in selection.items()
     }
-    return ReshapeTable(
-        columns=rows.columns,
-        rows=tuple(
-            row
-            for row in rows.rows
-            if all(row[position] in codes for position, codes in positions.items())
+    return cast(
+        Table,
+        ReshapeTable(
+            columns=table.columns,
+            rows=tuple(
+                row
+                for row in table.rows
+                if all(row[position] in codes for position, codes in positions.items())
+            ),
         ),
     )
 

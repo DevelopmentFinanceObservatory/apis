@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 import pyarrow as pa
 import pytest
+from dfo_frame_grammar import UnitCodes, unit_codes
 
 from materialise import groupby_columnar, reshape
 from materialise.errors import MaterialisationUsageError
@@ -146,6 +147,20 @@ _CASES = [
         None,
         {},
         id="not-finite",
+    ),
+    # The value and unit columns sit before the grouping column `stat_var_sector`, and
+    # KEN's health total passes its water total, so the value orders KEN's two groups.
+    pytest.param(
+        [
+            _row(s, r, y, 100.0 if s == "dcid:SV_A" else v)
+            for s, r, y, v in (
+                (row["stat_var"], row["recipient"], row["time_period"], row["value"])
+                for row in _plain_rows()
+            )
+        ],
+        None,
+        {},
+        id="value-before-grouping-column",
     ),
     pytest.param(_plain_rows(), _twice, {}, id="repeated-grain"),
     pytest.param(_plain_rows(), _reversed, {}, id="out-of-order"),
@@ -337,3 +352,71 @@ def test_the_row_fold_folds_each_slice_before_building_the_next(monkeypatch):
 
     assert events.count("build") > 1
     assert events.index("fold") < events.index("build", 1)
+
+
+@pytest.mark.parametrize(
+    ("cells", "one_each"),
+    [
+        pytest.param(pa.array([None, None, "a"], pa.string()), True, id="null-repeated"),
+        pytest.param(pa.array(["a", "a", "b"]), True, id="repeated"),
+        pytest.param(pa.array(["a", "b", "b"]), False, id="distinct"),
+        pytest.param(pa.array([None, "a", "a"], pa.string()), False, id="null-and-value"),
+        pytest.param(pa.nulls(3), True, id="null-column"),
+        pytest.param(pa.array([_USD, _USD, None]), True, id="struct-repeated"),
+        pytest.param(pa.array([_USD, None, None]), False, id="struct-null-and-value"),
+        pytest.param(
+            pa.array([_USD, {**_USD, "base_year": 2023}, None]), False, id="struct-distinct"
+        ),
+    ],
+)
+def test_one_cell_per_group_counts_a_null_as_one_value(cells, one_each):
+    """The first two rows share a group; the third is alone. Each column of a table is
+    counted alone and all of them in one pass."""
+    groups = groupby_columnar._codes(pa.table({"g": ["x", "x", "y"]}), ["g"])
+    table = pa.table({"same": pa.array(["s", "s", "t"]), "cells": cells})
+
+    assert groupby_columnar._one_cell_per_group(table, [1], groups) is one_each
+    assert groupby_columnar._one_cell_per_group(table, [0, 1], groups) is one_each
+    assert groupby_columnar._one_cell_per_group(table, [0], groups) is True
+
+
+def _pair_count_check(table: pa.Table, positions: list[int], groups: UnitCodes) -> bool:
+    """The check `_one_cell_per_group` replaced: per column, more distinct (group, cell) pairs
+    than groups means some group holds two cells."""
+    for position in positions:
+        cell_codes = unit_codes(table.column(position)).codes
+        pairs = unit_codes(
+            pa.StructArray.from_arrays([groups.codes, cell_codes], names=["group", "cell"])
+        )
+        if pairs.count > groups.count:
+            return False
+    return True
+
+
+# Rows 0-1 form group x and rows 2-3 group y.
+_CELL_COLUMNS = [
+    pytest.param(pa.array([1, 1, 2, 2], pa.int64()), id="int64-one-each"),
+    pytest.param(pa.array([1, 2, 3, 3], pa.int64()), id="int64-two"),
+    pytest.param(pa.array([None, None, 3, 3], pa.int64()), id="int64-null-pair"),
+    pytest.param(pa.array([-0.0, 0.0, 1.0, 1.0]), id="float64-signed-zeros"),
+    pytest.param(pa.array([float("nan"), float("nan"), 1.0, 1.0]), id="float64-nan-pair"),
+    pytest.param(pa.array([float("nan"), 1.0, None, None]), id="float64-nan-and-value"),
+    pytest.param(pa.array(["a", "a", "b", "b"], pa.large_string()), id="large-string-one-each"),
+    pytest.param(pa.array(["a", None, "b", "b"], pa.large_string()), id="large-string-null"),
+    pytest.param(pa.array(["a", "a", "b", "c"]).dictionary_encode(), id="dictionary-two"),
+    pytest.param(pa.array(["a", "a", "b", "b"]).dictionary_encode(), id="dictionary-one-each"),
+    pytest.param(pa.chunked_array([["a", "a", "b"], ["b"]]), id="chunked-one-each"),
+    pytest.param(pa.chunked_array([["a", "a", "b"], ["c"]]), id="chunked-split-group"),
+    pytest.param(pa.chunked_array([[1.0], [2.0, 3.0, 3.0]]), id="chunked-float-two"),
+]
+
+
+@pytest.mark.parametrize("cells", _CELL_COLUMNS)
+def test_one_cell_per_group_answers_as_the_pair_count_did(cells):
+    groups = groupby_columnar._codes(pa.table({"g": ["x", "x", "y", "y"]}), ["g"])
+    table = pa.table({"cells": cells, "same": ["s", "s", "t", "t"]})
+
+    for positions in ([0], [0, 1]):
+        assert groupby_columnar._one_cell_per_group(table, positions, groups) is _pair_count_check(
+            table, positions, groups
+        )
