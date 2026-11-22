@@ -54,6 +54,14 @@ version that serve read. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
 and will not be retried refuses as the refresh door refuses it (`RefreshRebuildFailed`).
 `newest_spec_version` names the dataset version a Spec root reads.
+
+Under `latest: "stored"` a Spec or dataset root reads the version its dataset's stored head
+names, judged by the rules of the head GET from records alone (`current.stored_head_version`), and
+is then read as a pinned root naming that version is (`LiveRootSource._stored_head`), so both
+key alike. Every root of one dataset reads that one version, and the head's check is submitted
+once. With `defer_renders` nothing renders while the root resolves: a rendering whose file or
+stored frame is not served resolves to the version its records name, its party-kind file named
+by the stamp a render now writes, and renders when the root is located (`_Deferred`).
 """
 
 from __future__ import annotations
@@ -99,15 +107,18 @@ from dataset_store.snapshot import (
 from datasets_api.analysis import (
     STAT_VAR_PREFIX,
     STAT_VAR_WORD,
+    STORED,
     AnalysisPending,
     AnalysisTooLarge,
     DatasetRoot,
+    Latest,
     LocatedRoot,
     ResolvedRoot,
     RootExpired,
     RootNotStored,
     RootRendering,
     SpecRoot,
+    StoredHead,
     recorded_dataset_root,
 )
 from datasets_api.current import (
@@ -117,6 +128,7 @@ from datasets_api.current import (
     head_rendering,
     load_stored,
     render_unstored,
+    stored_head_version,
 )
 from datasets_api.default_enrichment import (
     KIND_COLUMNS,
@@ -149,7 +161,7 @@ from datasets_api.store_errors import (
     stored_frame_row_count,
 )
 from datasets_api.timings import phase
-from datasets_api.versions import RENDER_FORMAT, rendering_stamp
+from datasets_api.versions import RENDER_FORMAT, enrichment_stamp, rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -464,6 +476,39 @@ class _UnstoredFrame:
     file: UnstoredFile
 
 
+@dataclass(frozen=True)
+class _Deferred:
+    """A root resolved from records under `latest: "stored"` whose rendering of the dataset
+    version `root` names is not served: `locate` renders it (`LiveRootSource._stored`) with the
+    record `options`, under `revoked_under`."""
+
+    root: DatasetRoot
+    options: Mapping[str, Any]
+    revoked_under: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Unserved:
+    """A version a minting rendering recorded as made from the dataset version a root names,
+    whose stored frame or file of the rendering is not served (`_recorded_rendering`)."""
+
+    content_version: str
+
+
+class RenderNeeded(Exception):
+    """A root under `latest: "stored"` whose minting rendering no record names, so its version,
+    and the request key, are known only once it renders. A source that defers renders raises
+    it, and the caller resolves the request again on a source that renders
+    (`doors.analysis`)."""
+
+    def __init__(self, *, spec_id: str, content_version: str) -> None:
+        self.spec_id = spec_id
+        self.content_version = content_version
+        super().__init__(
+            f"the rendering of {spec_id} {content_version} the root reads is not recorded"
+        )
+
+
 _Handle = _FrameLayoutFile | _LocatedFrame | _UnstoredFrameLayout | _UnstoredFrame
 """What `read` reads. `resolve` gives a root read from its stored frame no handle, so a root
 `locate` has not located holds none `read` accepts."""
@@ -537,12 +582,15 @@ def _root(
     rows: int,
     source: object,
     base_content_version: str | None = None,
+    stamp: str | None = None,
 ) -> ResolvedRoot:
     """The root read at `{spec_id, content_version}` with `options`, its frame named by
-    `frame_ref_for` and `artifact`'s enrichment stamp, read through `source`, rendered from the
-    dataset version `base_content_version`."""
+    `frame_ref_for` and `artifact`'s enrichment stamp, else `stamp` for a file not yet read
+    (`LiveRootSource._deferred`), read through `source`, rendered from the dataset version
+    `base_content_version`."""
     columns = tuple(options.get("columns") or ())
-    stamp = artifact.enrichment_stamp if artifact is not None else None
+    if artifact is not None:
+        stamp = artifact.enrichment_stamp
     frame = frame_ref_for(
         spec_id=spec_id,
         content_version=content_version,
@@ -583,7 +631,14 @@ class LiveRootSource:
     this source has located hold together: a rendering that would take them past it is refused
     `AnalysisTooLarge` (`analysis_root_rows`) before it is rendered, counted at its version's
     stored frame's rows, which bound the rendering's. A root that resolves and then fails
-    `locate` counts nothing, since nothing of it is read."""
+    `locate` counts nothing, since nothing of it is read.
+
+    `defer_renders` resolves a root under `latest: "stored"` from records alone: a rendering
+    the version links or a version a minting records serves, and one whose file is not served
+    resolves to the version the records name and renders at `locate` (`_Deferred`), so a key
+    and a stored answer read no frame and make no rendering. A minting rendering no record
+    names raises `RenderNeeded`. Without it a stored root renders on `resolve`, as a pinned
+    root does."""
 
     def __init__(
         self,
@@ -592,12 +647,18 @@ class LiveRootSource:
         recipes: RecipeReader,
         render: bool = True,
         max_root_rows: int | None = None,
+        defer_renders: bool = False,
     ) -> None:
         self._deps = deps
         self._recipes = recipes
         self._render = render
         self._max_root_rows = max_root_rows
+        self._defer_renders = defer_renders
         self._located_rows = 0
+        # The stored head each dataset's first root under `latest: "stored"` resolved to, by
+        # its served id, or the refusal or pending answer it met, so every root of a dataset
+        # reads one version and its check is submitted once.
+        self._heads: dict[str, StoredHead | Exception] = {}
         # The version each served definition's first newest root read, by its spec id, with the
         # dataset version the serve read it from, `None` for its record's base (`_first_read`).
         # Written once per spec id, so every root of that dataset in the request reads one
@@ -627,17 +688,19 @@ class LiveRootSource:
         self,
         root: SpecRoot | DatasetRoot,
         *,
-        latest: bool,
+        latest: Latest,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
         codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """The version `root` is read at (`RootSource.resolve`). A stated groupby the code
         index cannot serve refuses first (`check_options_supported`), before any version,
-        stored rendering or answer is looked up by it.
+        stored rendering or answer is looked up by it. Under `latest: "stored"` the root reads
+        its dataset's stored head (`_stored_head`).
 
         Raises:
             QueryOptionsInvalid: As `check_options_supported` refuses `root`'s rendering.
+            RenderNeeded: Under `latest: "stored"` with `defer_renders`, as `_stored` says.
         """
         deps = self._deps
         if root.rendering.groupby is not None:
@@ -654,9 +717,75 @@ class LiveRootSource:
                 content_version=root.content_version,
                 reason="no such version is stored",
             )
+        if latest == STORED:
+            return self._stored_head(root, path_words=path_words, codes=codes, trace_id=trace_id)
         if isinstance(root, SpecRoot) or latest:
             return self._newest(root, path_words=path_words, codes=codes, trace_id=trace_id)
         return self._at_version(root, path_words=path_words, codes=codes, trace_id=trace_id)
+
+    def _stored_head(
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
+    ) -> ResolvedRoot:
+        """`root` read at the version its dataset's stored head names
+        (`current.stored_head_version`), in the rendering it names, as a pinned root naming that
+        version reads it (`_at_version`), so the two resolve to one record and one version. The
+        first root of a dataset reads the head and submits its check, and every later root of
+        it reads that version. A head the rules cannot serve answers pending on its queued
+        rebuild, and a check or rebuild that failed for good refuses as a dataset root whose
+        queued rebuild failed does (`RefreshRebuildFailed`).
+
+        Raises:
+            AnalysisPending: The dataset has no servable head, and its rebuild is queued.
+            RefreshRebuildFailed: The head's check or rebuild failed for good.
+            SnapshotRevoked: The head's version is taken down.
+        """
+        served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
+        head = self._heads.get(served.spec_id)
+        if head is None:
+            head = self._head_of(served, posted=root.spec_id)
+            self._heads[served.spec_id] = head
+        if isinstance(head, Exception):
+            raise head
+        resolved = self._at_version(
+            DatasetRoot(
+                spec_id=served.spec_id,
+                content_version=head.content_version,
+                rendering=root.rendering,
+            ),
+            path_words=path_words,
+            codes=codes,
+            trace_id=trace_id,
+            revoked_under=(root.spec_id,),
+            defer=self._defer_renders,
+        )
+        return replace(resolved, head=head)
+
+    def _head_of(self, served: StoredDefinition, *, posted: str) -> StoredHead | Exception:
+        """The stored head of `served`, read under revocations of `posted`, or the pending
+        answer or refusal it meets in its place."""
+        try:
+            version = stored_head_version(served, deps=self._deps, revoked_under=(posted,))
+        except OperationSubmitted as submitted:
+            operation = submitted.operation
+            if operation.state == "failed":
+                return RefreshRebuildFailed(
+                    operation_id=operation.id,
+                    refusal_code=operation.refusal_code,
+                    refusal=operation.refusal,
+                )
+            return _pending(operation.id)
+        except SnapshotRevoked as revoked:
+            return revoked
+        return StoredHead(
+            spec_id=served.spec_id,
+            content_version=version.content_version,
+            freshness=version.freshness,
+        )
 
     def _at_version(
         self,
@@ -666,10 +795,11 @@ class LiveRootSource:
         trace_id: str | None,
         revoked_under: Sequence[str] = (),
         codes: Mapping[str, Sequence[str]] | None = None,
+        defer: bool = False,
     ) -> ResolvedRoot:
         """The version `root` names, read in the rendering it names, summed as the planner
         implies (`_implied`) from the version's trace. A sum the door refuses reads the
-        version unsummed. `revoked_under` is `load_stored`'s.
+        version unsummed. `revoked_under` is `load_stored`'s, and `defer` is `_stored`'s.
 
         A sum, implied or stated, over a version a party-totals cut minted reads the cut's
         base version with the cut and the sum in one rendering (`_cut_base`), the rendering
@@ -701,8 +831,16 @@ class LiveRootSource:
                 trace_id=trace_id,
                 revoked_under=revoked_under,
                 codes=codes,
+                defer=defer,
             )
-        read = partial(self._stored, root, stored, trace_id=trace_id, revoked_under=revoked_under)
+        read = partial(
+            self._stored,
+            root,
+            stored,
+            trace_id=trace_id,
+            revoked_under=revoked_under,
+            defer=defer,
+        )
         if groupby is None:
             return read(options=options)
         try:
@@ -981,18 +1119,39 @@ class LiveRootSource:
         options: Mapping[str, Any],
         trace_id: str | None,
         revoked_under: Sequence[str] = (),
+        defer: bool = False,
     ) -> ResolvedRoot:
         """The version `root` names, whose manifest is `stored`, read with `options`: its
-        stored frame, or the rendering those options make of it."""
+        stored frame, or the rendering those options make of it. With `defer` nothing renders:
+        a rendering the records serve answers as it does without, and one they do not serve
+        resolves to the version they name and renders at `locate` (`_deferred`).
+
+        Raises:
+            RenderNeeded: With `defer`, a minting rendering no record names.
+        """
         deps = self._deps
         spec_id, content_version = root.spec_id, root.content_version
         manifest = stored
         if options.keys() - _BASE_OPTIONS.keys():
             mint = MintOptions.model_validate(options)
             coverage_snapshot = deps.coverage.snapshot()
-            rendered = self._recorded_rendering(
-                spec_id, content_version, mint, base=lambda: stored, revoked_under=revoked_under
+            recorded = self._recorded_rendering(
+                spec_id,
+                content_version,
+                mint,
+                base=lambda: stored,
+                revoked_under=revoked_under,
+                unserved=defer,
             )
+            if isinstance(recorded, _Unserved):
+                return self._deferred(
+                    root,
+                    stored,
+                    options=options,
+                    content_version=recorded.content_version,
+                    revoked_under=revoked_under,
+                )
+            rendered = recorded
             if rendered is None:
                 rendered = head_rendering(
                     subject_id=spec_id,
@@ -1001,10 +1160,20 @@ class LiveRootSource:
                     options=mint,
                     trace_id=trace_id,
                     coverage_snapshot=coverage_snapshot,
-                    render=self._render,
+                    render=self._render and not defer,
                     revoked_under=revoked_under,
                 )
                 self._mark_read(spec_id, content_version, rendered)
+            if rendered is None and defer:
+                if mint.groupby is not None or mint.without_party_totals:
+                    raise RenderNeeded(spec_id=spec_id, content_version=content_version)
+                return self._deferred(
+                    root,
+                    stored,
+                    options=options,
+                    content_version=content_version,
+                    revoked_under=revoked_under,
+                )
             if rendered is None and not self._render:
                 self._refuse_rendering_past_bound(stored.coverage.rows)
                 unstored = render_unstored(
@@ -1040,6 +1209,51 @@ class LiveRootSource:
             base=content_version if manifest.content_version != content_version else None,
         )
 
+    def _deferred(
+        self,
+        root: DatasetRoot,
+        stored: Manifest,
+        *,
+        options: Mapping[str, Any],
+        content_version: str,
+        revoked_under: Sequence[str],
+    ) -> ResolvedRoot:
+        """The root `root` reads with `options`, the version `content_version` its records
+        name (the version `root` names, or the version a minting recorded from it), resolved
+        from that version's record with no file read and rendered at `locate`. A file of
+        party-kind cells is named by the stamp a render under the serving code index writes
+        (`versions.enrichment_stamp` over the version's roles), the stamp a read of the
+        rendered file names."""
+        spec_id = root.spec_id
+        manifest = (
+            stored
+            if content_version == root.content_version
+            else load_stored(
+                subject_id=spec_id,
+                content_version=content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=revoked_under,
+            )
+        )
+        stamp = enrichment_stamp(
+            options,
+            role_columns=coverage_roles(manifest.coverage),
+            enrichment_digest=self._deps.code_index.enrichment_digest,
+        )
+        resolved = self._resolved(
+            spec_id=spec_id,
+            content_version=content_version,
+            options=options,
+            manifest=manifest,
+            base=root.content_version if content_version != root.content_version else None,
+            stamp=stamp,
+        )
+        return replace(
+            resolved,
+            source=_Deferred(root=root, options=dict(options), revoked_under=tuple(revoked_under)),
+        )
+
     def _recorded_rendering(
         self,
         spec_id: str,
@@ -1048,7 +1262,8 @@ class LiveRootSource:
         *,
         base: Callable[[], Manifest],
         revoked_under: Sequence[str],
-    ) -> Manifest | None:
+        unserved: bool = False,
+    ) -> Manifest | _Unserved | None:
         """The stored version an earlier read made of the dataset version `content_version`
         with the minting options of `options`, a `groupby` sum or a party-totals cut, for an
         analysis root read in that rendering: a pinned dataset root (`_stored`), or a Spec root
@@ -1060,7 +1275,9 @@ class LiveRootSource:
         so, and when the newest one cannot serve: its stored frame file is not servable, it or
         its recorded base is revoked under `revoked_under`, or it links no file of the
         rendering. The caller then renders, and an older recorded version never answers in
-        place of the newest.
+        place of the newest. With `unserved`, a newest version that is recorded and not revoked
+        but whose stored frame or file is not served answers `_Unserved`, its version, for a
+        caller that renders it later (`_deferred`).
 
         `base` reads the dataset version `content_version` with its revocation checked under
         `revoked_under`, so a revoked dataset version answers nothing here even when the
@@ -1110,7 +1327,7 @@ class LiveRootSource:
             except SnapshotRevoked:
                 return None
         if servable_frame_location(stored.servable, now=now) is None:
-            return None
+            return _Unserved(recorded.content_version) if unserved else None
         manifest = servable_snapshot_manifest(
             stored,
             id=spec_id,
@@ -1122,7 +1339,7 @@ class LiveRootSource:
         )
         artifact = _data_artifact(manifest)
         if artifact is None:
-            return None
+            return _Unserved(recorded.content_version) if unserved else None
         last_read = next(
             (
                 link.read_at.get(content_version)
@@ -1187,6 +1404,8 @@ class LiveRootSource:
             manifest = self._recorded_rendering(
                 served.spec_id, content_version, options, base=base, revoked_under=revoked_under
             )
+            # Only a caller that asks for `unserved` gets one.
+            assert not isinstance(manifest, _Unserved)
             if manifest is None:
                 manifest = head_rendering(
                     subject_id=served.spec_id,
@@ -1233,9 +1452,11 @@ class LiveRootSource:
         options: Mapping[str, Any],
         manifest: Manifest,
         base: str | None = None,
+        stamp: str | None = None,
     ) -> ResolvedRoot:
         """The root `manifest`, the version `content_version`, read with `options`. A groupby's
-        version names `base`, the dataset version it was made from, else its record's base."""
+        version names `base`, the dataset version it was made from, else its record's base.
+        `stamp` names a file `manifest` does not list (`_root`)."""
         artifact = _data_artifact(manifest) if options.get("columns") else None
         root = _root(
             spec_id=spec_id,
@@ -1244,6 +1465,7 @@ class LiveRootSource:
             artifact=artifact,
             rows=manifest.coverage.rows,
             source=None if artifact is None else _FrameLayoutFile(artifact),
+            stamp=stamp,
         )
         if "groupby" not in options:
             return root
@@ -1358,7 +1580,39 @@ class LiveRootSource:
         self._located_rows += located.rows or 0
         return located
 
+    def _rendered(self, root: ResolvedRoot, deferred: _Deferred) -> ResolvedRoot:
+        """`root`, resolved from records (`_deferred`), with its rendering made now and read
+        through it, as a pinned root naming the same version renders it.
+
+        Raises:
+            RootExpired: The render names another frame than `root` was keyed on.
+        """
+        named = deferred.root
+        stored = load_stored(
+            subject_id=named.spec_id,
+            content_version=named.content_version,
+            deps=self._deps,
+            include_artifacts=False,
+            revoked_under=deferred.revoked_under,
+        )
+        rendered = self._stored(
+            named,
+            stored,
+            options=deferred.options,
+            trace_id=None,
+            revoked_under=deferred.revoked_under,
+        )
+        if rendered.frame != root.frame:
+            raise RootExpired(
+                spec_id=root.dataset.spec_id,
+                content_version=root.dataset.content_version,
+                reason="its rendering now makes another frame than the one it was read as",
+            )
+        return replace(root, source=rendered.source)
+
     def _located(self, root: ResolvedRoot) -> LocatedRoot:
+        if isinstance(root.source, _Deferred):
+            root = self._rendered(root, root.source)
         if isinstance(root.source, _Handle):
             return LocatedRoot.of(root)
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version

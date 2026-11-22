@@ -127,9 +127,14 @@ from datasets_api.operation_store import (
     OperationBacklogFull,
     OperationStore,
 )
-from datasets_api.operations.head_check import HeadFreshness, submit_head_check
+from datasets_api.operations.head_check import (
+    HeadFreshness,
+    head_check_operation,
+    head_check_state,
+    submit_head_check,
+)
 from datasets_api.operations.render_ahead_queue import queue_render_ahead
-from datasets_api.operations.submit import submit_over_budget
+from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
 from datasets_api.party_totals import PartyTotalsCut
@@ -165,7 +170,7 @@ from datasets_api.serve import (
     serve_definition,
     with_linked_artifacts,
 )
-from datasets_api.store_errors import read_stored_frame
+from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.timings import count, label, phase
 from datasets_api.version_descriptions import collapse_describer
 from datasets_api.versions import (
@@ -1701,6 +1706,80 @@ def serve_stored_head(
     return StoredHeadAnswer(manifest=_labelled(served, trigger=trigger), freshness=freshness)
 
 
+@dataclass(frozen=True)
+class StoredHeadVersion:
+    """The dataset version a stored head names and the freshness the head GET states for it
+    (`stored_head_version`)."""
+
+    content_version: str
+    freshness: HeadFreshness
+
+
+def stored_head_version(
+    stored: StoredDefinition, *, deps: DefinitionDeps, revoked_under: Sequence[str] = ()
+) -> StoredHeadVersion:
+    """The version the stored head of `stored` names, judged by `serve_stored_head`'s rules
+    from the head and version records alone, for an analysis root under `latest: "stored"`. It
+    renders nothing, reads no frame and no graph, and never waits on a rebuild while a head
+    exists. A head confirmed inside the recheck window is `current`. Past the window and inside
+    `head_serve_stale_max_age_seconds` since its materialisation, the head's check is submitted
+    as the GET submits it (`submit_head_check`): `pending` while it runs, `stale` when it could
+    not be submitted. No head, a head keyed on an import the bound release no longer carries,
+    and a head past that ceiling queue the rebuild, the head check operation the worker runs
+    through `serve_current` (`head_check_operation`), in place of a rebuild in the request.
+    `revoked_under` is `load_stored`'s.
+
+    Raises:
+        OperationSubmitted: The rebuild is queued, its row pending or running, or a check or
+            rebuild failed for good, its row `failed`.
+        SnapshotRevoked: The head's version is taken down.
+        OperationBacklogFull, DatasetsStoreUnavailable: A rebuild could not be queued.
+    """
+    with phase("coverage"):
+        coverage_stamp = deps.coverage.snapshot().stamp
+    with phase("head_read"):
+        head = deps.head_store.read_head(stored.spec_id)
+    queue = functools.partial(
+        head_check_operation,
+        subject_id=stored.spec_id,
+        coverage_stamp=coverage_stamp,
+        operation_store=deps.operation_store,
+        task_client=deps.task_client,
+        backlog_max=deps.settings.operation_backlog_max,
+    )
+    now = deps.now()
+    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
+    fresh = head is not None and _head_is_fresh(head, now=now, deps=deps)
+    if (
+        head is None
+        or _import_replaced(head)
+        or (not fresh and now - head.materialised_at >= ceiling)
+    ):
+        raise OperationSubmitted(operation=queue())
+    load_stored(
+        subject_id=stored.spec_id,
+        content_version=head.content_version,
+        deps=deps,
+        include_artifacts=False,
+        revoked_under=revoked_under,
+    )
+    if fresh:
+        return StoredHeadVersion(content_version=head.content_version, freshness="current")
+    try:
+        operation = queue()
+    except (OperationBacklogFull, DatasetsStoreUnavailable):
+        logger.warning(
+            "Datasets head check for %r not submitted; resolving the head as stale",
+            stored.spec_id,
+            exc_info=True,
+        )
+        return StoredHeadVersion(content_version=head.content_version, freshness="stale")
+    state = head_check_state(operation)
+    if state == "failed":
+        raise OperationSubmitted(operation=operation)
+    return StoredHeadVersion(content_version=head.content_version, freshness=state)
+
+
 def serve_current_head(
     stored: StoredDefinition,
     *,
@@ -2084,6 +2163,7 @@ __all__ = [
     "HeadLoader",
     "HeadRead",
     "StoredHeadAnswer",
+    "StoredHeadVersion",
     "StoredRenderPlan",
     "StoredTraceMissingResolvedStatVars",
     "Trigger",
@@ -2099,5 +2179,6 @@ __all__ = [
     "serve_fresh_head",
     "serve_stored_head",
     "stamp_trace",
+    "stored_head_version",
     "without_pointers",
 ]

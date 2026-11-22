@@ -206,6 +206,10 @@ _JSONB_EQUALS = re.compile(r"(\w+(?: -> '\w+')?) = %s::jsonb")
 """A JSONB column, or one key of it, compared with a parameter in a `WHERE` clause."""
 
 
+_JSONB_REMOVE = re.compile(r"(\w+) - '(\w+)' AS \1")
+"""A JSONB column read without one top-level key, SQLite's `json_remove`."""
+
+
 def _to_sqlite(sql: str) -> str:
     sql = sql.replace(_ROLE_COLUMNS_SQL, "role_columns(output_profile) AS role_columns")
     # SQLite runs one writer at a time, so a row lock has nothing to add.
@@ -215,6 +219,7 @@ def _to_sqlite(sql: str) -> str:
     head, where, condition = sql.partition(" WHERE ")
     sql = head + where + _JSONB_EQUALS.sub(r"json(\1) = json(%s)", condition)
     sql = sql.replace("%s::jsonb", "%s")
+    sql = _JSONB_REMOVE.sub(r"json_remove(\1, '$.\2') AS \1", sql)
     return _to_sqlite_paramstyle(sql)
 
 

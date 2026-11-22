@@ -4,8 +4,15 @@
 
 - 200 `AnalysisReady`: the format 2 ref of the stored frame, its frame `cv_` and output digest,
   the top step's `summary` (`dfo_analysis_engine.calls.VerbCall.summary`) and the shape facts
-  it holds, the execution identity, and each period the recipe states relative to the latest;
-- 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building;
+  it holds, the execution identity, and each period the recipe states relative to the latest.
+  A `latest: "stored"` request adds `resolved_roots`, each dataset's stored head version and
+  freshness from the roots it resolved (`analysis.stored_heads`), composed here and never
+  stored. A request stating `include` receives `summary` only when it names it, reading a
+  stored answer without it, and `manifest`, the derived manifest of the answer's pair read now
+  (`doors.derived.derived_manifest`), when it names that. A request naming neither gets the
+  body it always has;
+- 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building, or
+  under `latest: "stored"` has no servable head and its rebuild is queued;
 - 500 `internal_error` when the pair the run computed already holds a different recipe or frame
   (`analysis.AnalysisStoreDiverges`), a fault this service logs with both identities;
 - a problem document otherwise. An engine refusal, `several_members`, `over_ceiling` and a root
@@ -37,8 +44,8 @@ another of each stays free for runs, anchors and mints, else refuses retryable
 `service_unavailable` (503), so verifications never hold the last of either; settings that
 grant `verify` need two of each (`DatasetsBuildSettings`). It takes no thread of the analysis
 key executor. It logs no `datasets.delivery` line, since it serves no frame. A `verify` request
-that also sets `latest`, or names a Spec root, refuses `request_invalid` (400), since neither
-names a version.
+that also sets `latest`, `true` or `"stored"`, or names a Spec root, refuses `request_invalid`
+(400), since neither names a version, and so does one that sets `include`.
 
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
@@ -52,13 +59,17 @@ its deadline, whichever comes first, and refuses retryable `service_unavailable`
 bound, when `_KEY_QUEUE_PER_THREAD` requests per thread already wait, or as soon as a swap
 replaces the graph release it bound (`admission.bound_release_served`), as a request waiting for
 a materialise permit does. Keying resolves the roots at the versions they are read at, so every
-refusal of a root, and the pending body of a root still building, answers from it. A key that
-holds a stored answer whose frame file is still served answers that body there
-(`analysis.stored_answer`), taking no analysis thread and no materialise permit, so stored
-answers keep answering while every analysis thread computes. Any other run then takes a thread
-of the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable
-`service_unavailable` (503) when every thread is busy, and computes the key it was given, keying
-nothing again. A key another request of this process is computing answers the pending body, 202
+refusal of a root, and the pending body of a root still building, answers from it. A
+`latest: "stored"` request keys from records alone, rendering nothing
+(`LiveRootSource(defer_renders=True)`); one whose roots need a rendering no record names to be
+keyed is keyed on its analysis thread instead. A key that holds a stored answer whose frame
+file is still served answers that body there (`analysis.stored_answer`), taking no analysis
+thread and no materialise permit, so stored answers keep answering while every analysis thread
+computes. Any other run then waits for a thread of the analysis executor
+(`DATASETS_ANALYSIS_MAX_CONCURRENCY`) as keying waits for its own, up to `_RUN_WAIT_SECONDS`
+or its deadline with `_RUN_QUEUE_PER_THREAD` runs waiting per thread, refusing retryable
+`service_unavailable` (503) at either bound or on a release swap, and computes the key it was
+given, keying nothing again. A key another request of this process is computing answers the pending body, 202
 with `Retry-After` 5 and no operations, so a retry after a timeout joins the one run and later
 finds its answer stored. A run that holds its key reads the stored answer again before it
 computes, so an answer another request stored after this one keyed answers as stored. The key is
@@ -86,6 +97,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from datasets_api.admission import bound_release_served, bounded_materialise_slot
 from datasets_api.analysis import (
+    STORED,
     AnalysisBounds,
     AnalysisPending,
     AnalysisRequest,
@@ -105,9 +117,10 @@ from datasets_api.analysis import (
     run_anchor,
     run_prepared,
     stored_answer,
+    stored_heads,
     verify_analysis,
 )
-from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.analysis_roots import LiveRootSource, RenderNeeded
 from datasets_api.background_admission import leaving_headroom
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes import CODE_CATALOG
@@ -122,6 +135,7 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
+from datasets_api.doors.derived import DerivedManifest, derived_manifest
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
@@ -179,8 +193,20 @@ class RootVersion(BaseModel):
     )
 
 
+class ResolvedRootBody(BaseModel):
+    """A dataset a `latest: "stored"` request's roots read: the version its stored head
+    names and the freshness the head GET states for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str
+    freshness: Literal["current", "pending", "stale"]
+
+
 class AnalysisReady(BaseModel):
-    """The stored frame of a computed tree."""
+    """The stored frame of a computed tree. A request without `include` and `latest:
+    "stored"` receives the body it always has, `summary` included."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -188,9 +214,12 @@ class AnalysisReady(BaseModel):
     ref: dict[str, JsonValue] = Field(description="the format 2 DatasetRef naming the frame")
     frame_content_version: str = Field(pattern=r"^cv_[0-9a-f]{32}$")
     output_digest: str = Field(pattern=r"^out_[0-9a-f]{32}$")
-    summary: dict[str, JsonValue] = Field(
+    summary: dict[str, JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
         description="the facts of the tree's top step: the verb, its canonical parameters, the "
-        "result's shape and exclusions, and the engine result's own fields"
+        "result's shape and exclusions, and the engine result's own fields. Absent when the "
+        "request states `include` without `summary`",
     )
     rows: int = Field(ge=0)
     role_keys: list[str]
@@ -212,6 +241,20 @@ class AnalysisReady(BaseModel):
         description="each root read summed over its StatVars, with how many it summed; a root "
         "that states no groupby, holds several StatVars and is read under steps that name no "
         "stat_var is summed by the service itself, keeping the summable axes the steps name",
+    )
+    resolved_roots: list[ResolvedRootBody] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description='for a `latest: "stored"` request alone: each dataset its roots read, '
+        "once, in the order the tree first reaches it, with the version its stored head names "
+        "and that head's freshness, stated for this request",
+    )
+    manifest: DerivedManifest | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="for a request whose `include` names `manifest` alone: the derived manifest "
+        "of the ref's member as `GET /api/datasets/derived/{spec_id}/{content_version}` "
+        "answers it now",
     )
 
 
@@ -458,28 +501,77 @@ def _admit_verify(request: Request, settings: DatasetsBuildSettings) -> None:
 @dataclass(frozen=True, kw_only=True)
 class _Keyed:
     """A run keyed on the analysis key executor: the source that resolved its roots, which
-    the run reads them through, and the prepared run, or the stored answer of its key."""
+    the run reads them through, and the prepared run, or the stored answer of its key. A
+    `latest: "stored"` run whose roots cannot be keyed from records (`RenderNeeded`) holds
+    neither, and is prepared on its analysis thread."""
 
-    source: RootSource
-    prepared: PreparedAnalysis
+    body: AnalysisRequest
+    source: RootSource | None
+    prepared: PreparedAnalysis | None
     answer: dict[str, Any] | None
+
+
+def _wants_summary(body: AnalysisRequest) -> bool:
+    """Whether `body`'s 200 carries `summary`: always without `include`, else when named."""
+    return body.include is None or "summary" in body.include
+
+
+def _ready(
+    answer: dict[str, Any], *, body: AnalysisRequest, prepared: PreparedAnalysis, current: Deps
+) -> dict[str, Any]:
+    """The 200 of `body` from the stored or computed `answer`: `summary` only when the request
+    asks for it, `resolved_roots` for a `latest: "stored"` request, composed from the heads its
+    roots resolved to, and the derived manifest of the answer's pair read now when `include`
+    names it. A request naming neither member gets `answer` as stored.
+
+    Raises:
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As the derived manifest route.
+    """
+    ready = dict(answer)
+    if not _wants_summary(body):
+        ready.pop("summary", None)
+    if body.latest == STORED:
+        ready["resolved_roots"] = [
+            {
+                "spec_id": head.spec_id,
+                "content_version": head.content_version,
+                "freshness": head.freshness,
+            }
+            for head in stored_heads(prepared)
+        ]
+    if body.include is not None and "manifest" in body.include:
+        member = ready["ref"]["members"][0]
+        ready["manifest"] = derived_manifest(
+            id=member["spec"]["spec_id"],
+            content_version=member["content_version"],
+            current=current,
+        )
+    return AnalysisReady.model_validate(ready).model_dump(mode="json")
 
 
 def _key_job(
     *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
 ) -> _Keyed:
-    """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key."""
-    source = LiveRootSource(deps=deps, recipes=current.recipe_store)
-    prepared = prepare_analysis(
-        body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
+    """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key. A
+    `latest: "stored"` request resolves its roots from records alone, rendering nothing
+    (`LiveRootSource` `defer_renders`)."""
+    source = LiveRootSource(
+        deps=deps, recipes=current.recipe_store, defer_renders=body.latest == STORED
     )
-    answer = stored_answer(prepared, stores=analysis_stores(current))
+    try:
+        prepared = prepare_analysis(
+            body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
+        )
+    except RenderNeeded:
+        return _Keyed(body=body, source=None, prepared=None, answer=None)
+    answer = stored_answer(prepared, stores=analysis_stores(current), summary=_wants_summary(body))
     return _Keyed(
+        body=body,
         source=source,
         prepared=prepared,
         answer=None
         if answer is None
-        else AnalysisReady.model_validate(answer).model_dump(mode="json"),
+        else _ready(answer, body=body, prepared=prepared, current=current),
     )
 
 
@@ -492,20 +584,27 @@ def _analysis_job(
     running: RunningAnalyses,
 ) -> dict[str, Any]:
     """Compute and store the keyed run, joining a run of its key this process is computing.
-    The answer stored under the key since it was keyed answers in its place."""
+    The answer stored under the key since it was keyed answers in its place. A run keying
+    could not prepare from records is prepared here, rendering what its roots need."""
     stores = analysis_stores(current)
-    with running.claim(keyed.prepared.key):
-        answer = stored_answer(keyed.prepared, stores=stores)
+    body, source, prepared = keyed.body, keyed.source, keyed.prepared
+    if prepared is None or source is None:
+        source = LiveRootSource(deps=deps, recipes=current.recipe_store)
+        prepared = prepare_analysis(
+            body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
+        )
+    with running.claim(prepared.key):
+        answer = stored_answer(prepared, stores=stores, summary=_wants_summary(body))
         if answer is None:
             answer = run_prepared(
-                keyed.prepared,
-                source=keyed.source,
+                prepared,
+                source=source,
                 stores=stores,
                 bounds=analysis_bounds(current),
                 permit=analysis_permit(current, deps),
                 trace_id=trace_id,
             ).body()
-    return AnalysisReady.model_validate(answer).model_dump(mode="json")
+    return _ready(answer, body=body, prepared=prepared, current=current)
 
 
 def _anchor_job(
@@ -537,6 +636,10 @@ _KEY_WAIT_SECONDS = 5.0
 # The requests that may wait for each thread of the analysis key executor. One more refuses 503
 # at once, so the waits polling the executor's semaphore stay few.
 _KEY_QUEUE_PER_THREAD = 4
+# The longest a run with no stored answer waits for an analysis thread, and the runs that may
+# wait for each one, so two readers that miss at once both compute in turn within the bound.
+_RUN_WAIT_SECONDS = 5.0
+_RUN_QUEUE_PER_THREAD = 4
 
 # What a door answers with: the request's `Deps`, its retrieval view and the call's timings in,
 # the answer body out.
@@ -549,9 +652,10 @@ class _AnalysisRoutes:
     def __init__(self, cell: DepsCell, *, running: RunningAnalyses) -> None:
         self._cell = cell
         self._analysis_job = functools.partial(_analysis_job, running=running)
-        # The requests waiting for or holding a thread of the analysis key executor. Read and
-        # written on the event loop alone.
+        # The requests waiting for or holding a thread of the analysis key executor, and of the
+        # analysis executor for a run. Read and written on the event loop alone.
         self._keying = 0
+        self._running = 0
 
     async def _run(
         self,
@@ -635,16 +739,25 @@ class _AnalysisRoutes:
                 self._keying -= 1
             if keyed.answer is not None:
                 return keyed.answer
-            return await _run_retrieval(
-                current.analysis_executor,
-                self._analysis_job,
-                deps=deps,
-                timings=timings,
-                refuse=AnalysisBackpressure,
-                current=current,
-                keyed=keyed,
-                trace_id=trace_id,
-            )
+            executor = current.analysis_executor
+            if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
+                raise AnalysisBackpressure()
+            self._running += 1
+            try:
+                return await _run_retrieval(
+                    executor,
+                    self._analysis_job,
+                    deps=deps,
+                    timings=timings,
+                    refuse=AnalysisBackpressure,
+                    wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
+                    keep_waiting=bound_release_served(),
+                    current=current,
+                    keyed=keyed,
+                    trace_id=trace_id,
+                )
+            finally:
+                self._running -= 1
 
         return answering
 
@@ -753,6 +866,7 @@ __all__ = [
     "AnalysisReady",
     "AnalysisVerified",
     "AnchorAnswer",
+    "ResolvedRootBody",
     "RunningAnalyses",
     "analysis_bounds",
     "analysis_permit",

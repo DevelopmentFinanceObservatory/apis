@@ -48,6 +48,7 @@ _NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset(
         ("/api/datasets/exports/{export_id}", "get"),
         ("/api/datasets/{id}/{content_version}/file", "get"),
         ("/api/datasets/{id}/{content_version}/files/{digest}", "get"),
+        ("/api/datasets/derived/{id}/{content_version}/files/{digest}", "get"),
     }
 )
 

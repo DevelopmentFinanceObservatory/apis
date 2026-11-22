@@ -41,6 +41,7 @@ from spec_registry import LiveSpecRegistry
 from ._analysis_doubles import (
     AID,
     AID_V1,
+    AID_V2,
     POPULATION,
     POPULATION_V1,
     FakeRootSource,
@@ -372,7 +373,9 @@ def test_a_stored_answer_answers_while_every_analysis_thread_and_permit_is_held(
 ) -> None:
     """One analysis thread and one materialise permit, both held by a run reading its roots: a
     stored answer still answers its body, `Server-Timing` names and delivery line as when the
-    threads were free, while a run with no stored answer refuses 503."""
+    threads were free, while a run with no stored answer refuses 503 once its wait for a
+    thread ends, shortened here to a fifth of a second."""
+    monkeypatch.setattr(analysis_door, "_RUN_WAIT_SECONDS", 0.2)
     stores = Stores()
     roots = _ReadBlockingSource(source(stores))
     roots.release.set()
@@ -587,9 +590,13 @@ def test_an_answer_stored_after_a_run_keyed_answers_without_computing(
         reads, versions = roots.reads, stores.version_count()
         looks: list[bool] = []
 
-        def first_look_misses(prepared: Any, *, stores: Any) -> dict[str, Any] | None:
+        def first_look_misses(
+            prepared: Any, *, stores: Any, summary: bool = True
+        ) -> dict[str, Any] | None:
             looks.append(True)
-            return None if len(looks) == 1 else analysis.stored_answer(prepared, stores=stores)
+            if len(looks) == 1:
+                return None
+            return analysis.stored_answer(prepared, stores=stores, summary=summary)
 
         monkeypatch.setattr(analysis_door, "stored_answer", first_look_misses)
         again = client.post(_PATH, json={"tree": _TREE})
@@ -1155,3 +1162,292 @@ def test_verify_of_a_tree_naming_no_version_refuses_400(
 
     assert response.status_code == 400, response.text
     assert response.json()["code"] == "request_invalid"
+
+
+_STORED_TREE = step(
+    "quotient_of", {"spec_id": AID}, {"spec_id": POPULATION}, on={"destination": "place"}
+)
+_PINNED_NEWEST = step(
+    "quotient_of",
+    dataset(AID, AID_V2),
+    dataset(POPULATION, POPULATION_V1),
+    on={"destination": "place"},
+)
+# The members of every 200 to a request without `include` or `latest: "stored"`, in order.
+_LEGACY_MEMBERS = [
+    "status",
+    "ref",
+    "frame_content_version",
+    "output_digest",
+    "summary",
+    "rows",
+    "role_keys",
+    "stat_var_count",
+    "exclusions",
+    "time",
+    "execution_identity",
+    "resolved_periods",
+    "derived_roots",
+    "stat_vars_summed",
+]
+
+
+def test_a_stored_request_answers_the_pinned_requests_frame_with_its_roots_heads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`latest: "stored"` keys over the versions its roots resolved to as a pinned request
+    naming them does, so it answers the frame that request stored, reading no root, and adds
+    each dataset's head version and freshness once."""
+    stores = Stores()
+    roots = source(stores, freshness={POPULATION: "pending"})
+    with _client(stores, roots, monkeypatch) as client:
+        pinned = client.post(_PATH, json={"tree": _PINNED_NEWEST})
+        reads = roots.reads
+        stored = client.post(_PATH, json={"tree": _STORED_TREE, "latest": "stored"})
+
+    assert pinned.status_code == 200, pinned.text
+    assert stored.status_code == 200, stored.text
+    body = stored.json()
+    assert body.pop("resolved_roots") == [
+        {"spec_id": AID, "content_version": AID_V2, "freshness": "current"},
+        {"spec_id": POPULATION, "content_version": POPULATION_V1, "freshness": "pending"},
+    ]
+    assert body == pinned.json()
+    assert roots.reads == reads
+    assert "stored" in {latest for _, _, latest in roots.resolved}
+
+
+def test_a_request_without_include_answers_the_legacy_members_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        computed = client.post(_PATH, json={"tree": _TREE})
+        stored = client.post(_PATH, json={"tree": _TREE})
+
+    assert list(computed.json()) == _LEGACY_MEMBERS
+    assert stored.content == computed.content
+
+
+@pytest.mark.parametrize(
+    ("include", "summary"),
+    [
+        pytest.param(["manifest"], False, id="manifest"),
+        pytest.param(["manifest", "summary"], True, id="manifest-and-summary"),
+    ],
+)
+def test_include_manifest_embeds_the_manifest_the_derived_route_answers(
+    monkeypatch: pytest.MonkeyPatch, include: list[str], summary: bool
+) -> None:
+    """On a computed answer and on a stored one, the embedded manifest is the derived route's
+    body, and `summary` comes only when `include` names it."""
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        computed = client.post(_PATH, json={"tree": _TREE, "include": include})
+        stored = client.post(_PATH, json={"tree": _TREE, "include": include})
+        member = computed.json()["ref"]["members"][0]
+        manifest = client.get(
+            f"/api/datasets/derived/{member['spec']['spec_id']}/{member['content_version']}"
+        )
+
+    assert manifest.status_code == 200, manifest.text
+    for response in (computed, stored):
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["manifest"] == manifest.json()
+        assert ("summary" in body) is summary
+        assert "resolved_roots" not in body
+
+
+@pytest.mark.parametrize("include", [[], ["summary"]], ids=["empty", "summary"])
+def test_include_without_manifest_embeds_none(
+    monkeypatch: pytest.MonkeyPatch, include: list[str]
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        legacy = client.post(_PATH, json={"tree": _TREE}).json()
+        response = client.post(_PATH, json={"tree": _TREE, "include": include})
+
+    assert response.status_code == 200, response.text
+    expected = {**legacy}
+    if "summary" not in include:
+        del expected["summary"]
+    assert response.json() == expected
+
+
+def test_a_lean_stored_hit_reads_the_answer_without_its_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored hit whose request leaves `summary` out asks the store for the body without it,
+    so the store neither sends nor parses it."""
+    stores = Stores()
+    asked: list[bool] = []
+    read_answer = stores.recipe_store.read_answer
+
+    def spying(*, request_key: str, summary: bool = True) -> Any:
+        asked.append(summary)
+        return read_answer(request_key=request_key, summary=summary)
+
+    monkeypatch.setattr(stores.recipe_store, "read_answer", spying)
+    with _client(stores, source(stores), monkeypatch) as client:
+        assert client.post(_PATH, json={"tree": _TREE}).status_code == 200
+        asked.clear()
+        lean = client.post(_PATH, json={"tree": _TREE, "include": []})
+
+    assert lean.status_code == 200, lean.text
+    assert "summary" not in lean.json()
+    assert asked == [False]
+
+
+def test_the_answer_store_reads_a_body_without_its_summary() -> None:
+    stores = Stores()
+    with _client(stores, source(stores), pytest.MonkeyPatch()) as client:
+        body = client.post(_PATH, json={"tree": _TREE}).json()
+    with stores.store.transaction() as tx:
+        row = tx.fetch_one("SELECT request_key FROM datasets.analysis_answer", ())
+    assert row is not None
+    key = str(row["request_key"])
+
+    full = stores.recipe_store.read_answer(request_key=key)
+    lean = stores.recipe_store.read_answer(request_key=key, summary=False)
+
+    assert full is not None and lean is not None
+    assert dict(full.body) == body
+    assert dict(lean.body) == {k: v for k, v in body.items() if k != "summary"}
+
+
+@pytest.mark.parametrize(
+    ("request_body", "pointer"),
+    [
+        pytest.param({"tree": _TREE, "verify": True, "latest": "stored"}, "/latest", id="stored"),
+        pytest.param({"tree": _TREE, "verify": True, "include": []}, "/include", id="include"),
+        pytest.param({"tree": _TREE, "include": ["summary", "summary"]}, "/include", id="twice"),
+    ],
+)
+def test_verify_refuses_latest_stored_and_include_at_their_pointers(
+    monkeypatch: pytest.MonkeyPatch, request_body: dict[str, Any], pointer: str
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        response = client.post(_PATH, json=request_body, headers=_PROBE)
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "request_invalid"
+    assert response.json()["pointer"] == pointer
+
+
+def test_a_stored_request_whose_dataset_has_no_head_answers_202_naming_its_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    roots = source(stores, pending={AID: "op_aid"})
+    with _client(stores, roots, monkeypatch) as client:
+        response = client.post(_PATH, json={"tree": _STORED_TREE, "latest": "stored"})
+
+    assert response.status_code == 202, response.text
+    assert response.json()["operations"] == ["op_aid"]
+
+
+def test_a_run_waits_for_an_analysis_thread_and_answers(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One analysis thread, held by a run reading its roots: a second run with no stored
+    answer waits for it, and computes once it frees."""
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    with (
+        _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client,
+        caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
+    ):
+        answers: list[Any] = []
+        held = _posting(client, _TREE, answers)
+        assert roots.entered.wait(5)
+        waiting = _posting(client, _UNSTORED_TREE, answers)
+        _wait_for_calls(caplog, 2)
+        time.sleep(0.2)
+        roots.release.set()
+        held.join(10)
+        waiting.join(10)
+
+    assert sorted(response.status_code for response, _ in answers) == [200, 200]
+
+
+def test_the_run_wait_refuses_503_past_its_queue_and_at_its_bound(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One analysis thread held and a queue of one: a third run refuses 503 at once, and the
+    queued one refuses 503 when its wait reaches the bound, shortened to one second."""
+    monkeypatch.setattr(analysis_door, "_RUN_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(analysis_door, "_RUN_QUEUE_PER_THREAD", 1)
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    with (
+        _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client,
+        caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
+    ):
+        held_answers: list[Any] = []
+        held = _posting(client, _TREE, held_answers)
+        assert roots.entered.wait(5)
+        queued_answers: list[Any] = []
+        queued = _posting(client, _OTHER_TREE, queued_answers)
+        _wait_for_calls(caplog, 2)
+        time.sleep(0.2)
+        over = client.post(_PATH, json={"tree": _UNSTORED_TREE})
+        over_at = time.monotonic()
+        queued.join(5)
+        roots.release.set()
+        held.join(5)
+
+    ((waited, waited_at),) = queued_answers
+    for refused in (over, waited):
+        assert refused.status_code == 503, refused.text
+        assert refused.json()["code"] == "service_unavailable"
+    assert over_at < waited_at
+    assert held_answers[0][0].status_code == 200
+
+
+def test_a_release_swap_refuses_a_run_waiting_for_an_analysis_thread(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    served = {"now": True}
+    monkeypatch.setattr(analysis_door, "bound_release_served", lambda: lambda: served["now"])
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    with (
+        _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client,
+        caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
+    ):
+        held_answers: list[Any] = []
+        held = _posting(client, _TREE, held_answers)
+        assert roots.entered.wait(5)
+        answers: list[Any] = []
+        waiting = _posting(client, _UNSTORED_TREE, answers)
+        _wait_for_calls(caplog, 2)
+        time.sleep(0.2)
+        swapped_at = time.monotonic()
+        served["now"] = False
+        waiting.join(5)
+        roots.release.set()
+        held.join(5)
+
+    ((refused, refused_at),) = answers
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused_at - swapped_at < 1.0
+    assert held_answers[0][0].status_code == 200
+
+
+def test_the_anchor_route_takes_latest_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    stores = Stores()
+    roots = source(stores)
+    body = {
+        "roots": [{"spec_id": AID}],
+        "populations": [{"spec_id": AID, "bindings": {}}],
+        "latest": "stored",
+    }
+    with _client(stores, roots, monkeypatch) as client:
+        response = client.post(f"{_PATH}/anchor", json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["roots"] == [{"spec_id": AID, "content_version": AID_V2}]
+    assert [latest for _, _, latest in roots.resolved] == ["stored"]
