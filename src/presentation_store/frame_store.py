@@ -699,8 +699,8 @@ def _codes_by_label(
 ) -> dict[str, dict[str, str]]:
     """For each decoded `stat_var_<code_system>` column of `rows`, each code dcid it holds by
     the code's label, for the labels no other code of the code system carries
-    (`ResolvedFrame.codes_by_label`). A frame rendered before the column held dcids held
-    these labels, each naming one code."""
+    (`ResolvedFrame.codes_by_label`). A frame whose cells hold labels holds these, each naming
+    one code."""
     by_label: dict[str, dict[str, str]] = {}
     for position, column in enumerate(columns):
         axis = column.removeprefix(_AXIS_COLUMN_PREFIX)

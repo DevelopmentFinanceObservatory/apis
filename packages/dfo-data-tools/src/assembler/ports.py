@@ -163,8 +163,8 @@ class ResolvedFrame:
     `codes_by_label` holds, for each decoded `stat_var_<code_system>` column of the frame, each
     code dcid the column holds by its code index label, for the labels no other code of that
     code system carries. A stored revision's `select` value naming such a label binds that
-    dcid on a render (`assembler.rolling.StoredSelect`), since frames rendered before the
-    column held dcids held the label. It is empty for a store that reads no code index.
+    dcid on a render (`assembler.rolling.StoredSelect`), for a revision written on a frame
+    whose column held labels. It is empty for a store that reads no code index.
     """
 
     frame_ref: FrameRef

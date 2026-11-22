@@ -1331,8 +1331,8 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
     key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of a
     SHA-256 over the fields' sorted JSON, so two renderings that differ in any field, such as two
     pivots on other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`. The hash covers the
-    fields alone, unlike `rendering_key`, which salts a frame-layout file's key with
-    `versions.RENDER_FORMAT`, so a file's name stays put when its format changes."""
+    fields alone and omits the `versions.RENDER_FORMAT` salt that `rendering_key` adds to a
+    frame-layout file's key, so a file's name holds when its format changes."""
     if _file_kind(rendering) is not None:
         return None
     shaping = {

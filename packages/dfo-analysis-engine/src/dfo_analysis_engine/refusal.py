@@ -1389,9 +1389,9 @@ class Refusal:
         cls, *, column: str, value: str, candidates: Sequence[Mapping[str, str]]
     ) -> Self:
         """A filter value on the breakdown column `column` is a label naming several codes of
-        its axis, `candidates` (`{dcid, label}` each). The engine matches values exactly and
-        never raises this: the caller that resolves a label to its code before the engine
-        reads it does (`datasets_api.analysis.resolved_breakdown_values`)."""
+        its axis, `candidates` (`{dcid, label}` each). The engine matches values exactly, so the
+        caller that resolves a label to its code before the engine reads it raises this
+        (`datasets_api.analysis.resolved_breakdown_values`)."""
         named = "; ".join(f"{one['dcid']} ({one['label']})" for one in candidates)
         return cls(
             code=RefusalCode.BREAKDOWN_LABEL_AMBIGUOUS,

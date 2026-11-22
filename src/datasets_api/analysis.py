@@ -1230,7 +1230,7 @@ def resolved_breakdown_values(step: StepNode, codes: CodeIndex | None) -> StepNo
     `stat_var_<axis>` for a code system of `codes`, as the engine matches it
     (`_engine_values`): a code dcid, a publisher code and a label naming one code of the axis
     all become that code's dcid and, while its label names no other code, that label, so a
-    frame holding dcid cells and an older one holding label cells both match. A value naming
+    frame holding dcid cells and one holding label cells both match. A value naming
     no code of the axis stays as given, and keeps no row the column does not hold. The planner
     resolves values before the request key is taken, so each spelling of one code keys one
     stored answer, and the engine's filter stays exact.
@@ -1444,9 +1444,9 @@ class _Engine:
         """The op-spec of the stored recipe node `node`, each `category_match` predicate on a
         breakdown column of `codes` resolved as a request's is (`_engine_values`) when a value
         it holds is missing from the column in the root frames under `node` while a code it
-        names is held there, as a label stored before the column held dcids is against a frame
-        that holds them. Any other predicate stays as stored, so a recipe whose values still
-        match its frames keeps its ids.
+        names is held there, as a stored label is against a frame whose cells hold dcids. Any
+        other predicate stays as stored, so a recipe whose values match its frames keeps its
+        ids.
 
         Raises:
             AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
@@ -2051,12 +2051,11 @@ def _replayed(
 
     A pair that serves no frame file, has no frame hash to name its frame by
     (`_frame_content_version`), or holds a frame whose output digest differs from the run's
-    (`_stored_output_digest`), as a frame computed from root frames of an earlier render
-    format does (`versions.RENDER_FORMAT`), whose replay key names the same root versions,
-    gives up the key (`RecipeStore.supersede_replay`) and
-    answers `None`, so the run publishes at its own pair, whose recipe then takes the key. The
-    output digest compares the frames, since their bytes differ where a minting step's rows
-    name its own pair.
+    (`_stored_output_digest`), as a frame computed from root frames of another render format
+    does (`versions.RENDER_FORMAT`) under a replay key that names the same root versions, gives
+    up the key (`RecipeStore.supersede_replay`) and answers `None`, so the run publishes at its
+    own pair, whose recipe then takes the key. The output digest compares the frames, since
+    their bytes differ where a minting step's rows name its own pair.
 
     Raises:
         SnapshotRevoked: The replayed pair is taken down.
