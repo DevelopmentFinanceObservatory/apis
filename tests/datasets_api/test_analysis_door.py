@@ -1,6 +1,7 @@
 """The analysis door through the app factory: the ready body and its stored frame, a rerun
 answered from its stored body, a request joining a run of its key, the pending answer, refusals
-with their fix, the anchor route, and a full analysis pool.
+with their fix, the anchor route, a full analysis pool that still serves stored answers, and a
+request waiting for a keying thread.
 
 The door's roots come from a double source (`_analysis_doubles.FakeRootSource`) in place of
 `LiveRootSource`; the frame, its version and its recipe go through the live store SQL."""
@@ -29,6 +30,7 @@ from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.publish import PublishRecordMissing
 from datasets_api.version_store import LiveVersionLister
 from dfo_analysis_engine.frame_ref import FrameRef as EngineFrameRef
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.errors import OverCeilingError
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from spec_registry import LiveSpecRegistry
@@ -237,20 +239,6 @@ def test_the_anchor_route_refuses_roots_past_the_root_row_bound(
     assert problem["fix"]["cap"] == 1
 
 
-class _BlockingSource(FakeRootSource):
-    """Holds every resolve until `release` is set."""
-
-    def __init__(self, base: FakeRootSource) -> None:
-        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
-        self.entered = threading.Event()
-        self.release = threading.Event()
-
-    def resolve(self, root, *, latest, trace_id, path_words=None):
-        self.entered.set()
-        assert self.release.wait(5)
-        return super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
-
-
 class _GatedSource(FakeRootSource):
     """Holds every resolve until `release` is set, counting each that starts."""
 
@@ -335,21 +323,6 @@ def test_a_verification_leaves_the_last_materialise_permit_to_a_run(
     assert ran.status_code == 200, ran.text
 
 
-def test_a_full_analysis_pool_refuses_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    stores = Stores()
-    roots = _BlockingSource(source(stores))
-    with _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client:
-        held = threading.Thread(target=lambda: client.post(_PATH, json={"tree": _TREE}))
-        held.start()
-        assert roots.entered.wait(5)
-        refused = client.post(_PATH, json={"tree": _TREE})
-        roots.release.set()
-        held.join(5)
-
-    assert refused.status_code == 503, refused.text
-    assert refused.json()["code"] == "service_unavailable"
-
-
 class _ReadBlockingSource(FakeRootSource):
     """Holds every frame read until `release` is set."""
 
@@ -362,6 +335,118 @@ class _ReadBlockingSource(FakeRootSource):
         self.entered.set()
         assert self.release.wait(5)
         return super().read(root)
+
+
+_OTHER_TREE = step("aggregate", dataset(AID, AID_V1), aggregation="sum")
+_UNSTORED_TREE = step("aggregate", dataset(POPULATION, POPULATION_V1), aggregation="sum")
+_DELIVERY_LOGGER = "datasets_api.delivery"
+
+
+def _delivery_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """Each `datasets.delivery` line logged so far, without its trace id."""
+    return [
+        {key: value for key, value in fields.items() if key != "trace_id"}
+        for record in caplog.records
+        if record.name == _DELIVERY_LOGGER and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    ]
+
+
+def test_a_stored_answer_answers_while_every_analysis_thread_and_permit_is_held(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One analysis thread and one materialise permit, both held by a run reading its roots: a
+    stored answer still answers its body and delivery line as when it was computed, while a run
+    with no stored answer, and a verification, refuse 503."""
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    roots.release.set()
+    with (
+        _client(
+            stores,
+            roots,
+            monkeypatch,
+            analysis_max_concurrency=1,
+            materialise_max_concurrency=1,
+        ) as client,
+        caplog.at_level(logging.INFO, logger=_DELIVERY_LOGGER),
+    ):
+        computed = client.post(_PATH, json={"tree": _TREE})
+        assert computed.status_code == 200, computed.text
+        computed_lines = _delivery_lines(caplog)
+        roots.release.clear()
+        roots.entered.clear()
+        held = threading.Thread(target=lambda: client.post(_PATH, json={"tree": _OTHER_TREE}))
+        held.start()
+        assert roots.entered.wait(5)
+        caplog.clear()
+        stored = client.post(_PATH, json={"tree": _TREE})
+        stored_lines = _delivery_lines(caplog)
+        refused = client.post(_PATH, json={"tree": _UNSTORED_TREE})
+        roots.release.set()
+        held.join(5)
+
+    assert stored.status_code == 200, stored.text
+    assert stored.content == computed.content
+    assert stored.headers["cache-control"] == "no-store"
+    assert len(computed_lines) == 1
+    assert stored_lines == computed_lines
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+
+
+def test_a_verification_with_every_analysis_thread_held_refuses_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification reads no stored answer, so it still takes an analysis thread first."""
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    roots.release.set()
+    with _client(
+        stores,
+        roots,
+        monkeypatch,
+        analysis_max_concurrency=2,
+        verify_principal=_PROBE_PRINCIPAL,
+    ) as client:
+        pair = _stored_pair(client)
+        roots.release.clear()
+        roots.entered.clear()
+        held = threading.Thread(target=lambda: client.post(_PATH, json={"tree": _OTHER_TREE}))
+        held.start()
+        assert roots.entered.wait(5)
+        refused = client.post(_PATH, json={"tree": pair, "verify": True}, headers=_PROBE)
+        roots.release.set()
+        held.join(5)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+
+
+def test_a_request_waits_for_a_keying_thread_and_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One keying thread, held by a request resolving its roots: a second request waits for it
+    and answers once it frees, refusing nothing."""
+    stores = Stores()
+    roots = _GatedSource(source(stores))
+    with _client(stores, roots, monkeypatch, analysis_key_max_concurrency=1) as client:
+        answers: list[Any] = []
+        held = threading.Thread(
+            target=lambda: answers.append(client.post(_PATH, json={"tree": _TREE}))
+        )
+        held.start()
+        assert roots.started.acquire(timeout=5)
+        waiting = threading.Thread(
+            target=lambda: answers.append(client.post(_PATH, json={"tree": _OTHER_TREE}))
+        )
+        waiting.start()
+        # The second request resolves nothing while the one keying thread is held.
+        assert not roots.started.acquire(timeout=0.2)
+        roots.release.set()
+        held.join(5)
+        waiting.join(5)
+
+    assert sorted(answer.status_code for answer in answers) == [200, 200]
 
 
 def test_a_request_whose_key_is_running_joins_it_with_202_reading_no_root(
