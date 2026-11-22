@@ -41,8 +41,9 @@ to its own region's `reads_deadline` too, so a composite whose walk ran the full
 its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
-`served_entry` and `as_composite` steps of its `timing_by_step`, and a buffered composite
-preview's read under `composite_preview`, beside the steps `resolve_spec_resubmit` books, so
+`served_entry` and `as_composite` steps of its `timing_by_step`, a buffered composite
+preview's read under `composite_preview`, and the component plans a composite read with no
+preview states its continuation from under `composite_continuation`, beside the steps `resolve_spec_resubmit` books, so
 the part's total covers the scope compile and the composite answer.
 
 An identity entry that posts `scope_entries` compiles them over its identity
@@ -53,7 +54,9 @@ or compiled, resolves the identity its option was set on
 the composite (`ResubmitIdentityPayload.composite`), and launches none of that table's
 option or preview probes (`_as_composite`). The composite's preview reads each of its
 components through the part memo (`composite_answer`), in a trailing task where the request
-streams observations and inline where it embeds them. A definite part read as its own
+streams observations and inline where it embeds them. A request reading no preview resolves
+each component's read plan through the memo instead, with no row read, and states the
+continuation those plans serve (`composite_answer.with_composite_continuation`). A definite part read as its own
 identity states the `bilateral_reading_unavailable` warning a fresh answer of it states
 (`_with_withheld_reading`). A posted identity, as a posted candidate, is read as a fresh
 search of it would serve it (`dataset_entries.served_posted_identity`): a flow side it leaves open binds its dataset's
@@ -118,6 +121,7 @@ from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
+    with_composite_continuation,
     with_composite_observations,
 )
 from search.engine.region.place_options import PlaceOptionsPool
@@ -567,7 +571,7 @@ async def handle(
             if params.include_observations and not params.stream_observations:
                 region = await with_composite_observations(region, semaphore=sem)
             elif not params.stream_observations:
-                region = dataclasses.replace(region, observations_relaunch=None)
+                region = await with_composite_continuation(region, semaphore=sem)
         return dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},

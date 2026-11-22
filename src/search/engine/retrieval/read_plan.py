@@ -652,7 +652,11 @@ class PairPlan:
     `omitted` are the rows a conversion leaves out (`omitting`), whose series the plan no
     longer holds. `served_years` is set on a plan `read_in_years` narrowed: `years` is then
     the span of the years it serves, and each read elects within its group under the
-    window the plan elected under (`election_years`).
+    window the plan elected under (`election_years`). `request_filtered` marks a plan a
+    request's own facet filter or conversion period narrowed (`facets.filter_answer`,
+    `convertibility.over_conversion_period`), whose election read inputs its identity does
+    not state; every plan derived from it keeps the mark. A trailing answer's window is its
+    identity's own, so `windowed` alone leaves it unmarked.
     """
 
     members: tuple[str, ...]
@@ -671,6 +675,7 @@ class PairPlan:
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
     elect: Election | None = field(default=None, compare=False, repr=False)
     served_years: ServedYears | None = None
+    request_filtered: bool = field(default=False, compare=False)
 
     @property
     def declared_defaults(self) -> DeclaredDefaults:
@@ -807,7 +812,12 @@ class PairPlan:
             declared=self.declared,
             elect=self.elect,
         )
-        return replace(narrowed, omitted=self.omitted, left_out=self.left_out)
+        return replace(
+            narrowed,
+            omitted=self.omitted,
+            left_out=self.left_out,
+            request_filtered=self.request_filtered,
+        )
 
     def every_date(self) -> PairPlan:
         """This plan's series and probes read over every date: the plan the same answer
@@ -830,7 +840,12 @@ class PairPlan:
             declared=self.declared,
             elect=self.elect,
         )
-        return replace(dated, omitted=self.omitted, left_out=self.left_out)
+        return replace(
+            dated,
+            omitted=self.omitted,
+            left_out=self.left_out,
+            request_filtered=self.request_filtered,
+        )
 
     def leaving_out(self, members: Collection[str]) -> PairPlan:
         """This plan naming `members` as left out by the answer's unit decision
@@ -867,6 +882,8 @@ class BulkPlan:
     `served_years` is set on a plan `read_in_years` narrowed: `years` is then the span of
     the years it serves and `read_years` those years alone, while the collapse ranks and
     the continuation's cut read the window the plan elected under (`election_bounds`).
+    `request_filtered` marks a plan a request's own facet filter or window narrowed, as
+    `PairPlan.request_filtered` does.
     """
 
     members: tuple[str, ...]
@@ -885,6 +902,7 @@ class BulkPlan:
     left_out: frozenset[str] = frozenset()
     elect: Election | None = field(default=None, compare=False, repr=False)
     served_years: ServedYears | None = None
+    request_filtered: bool = field(default=False, compare=False)
 
     @property
     def declared_defaults(self) -> DeclaredDefaults:
@@ -1642,10 +1660,10 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     `read_in_years` narrowed serves a continuation only where it holds a date in a year the
     plan serves (`ServedYears.years`), since its reads keep their points in those years
     alone, so a continuation dated in a year of the span the plan does not serve serves no
-    point. Such a plan compares the two dates by year (`year_of`): a selection's last date
-    read under a range clips to a bare year where its facet lacks complete dates
-    (`facet_dates`), which a full date in that same year would otherwise pass. False for no
-    plan."""
+    point. A selection's last date read under a range clips to a bare year where its facet
+    lacks complete dates (`facet_dates`), and a full date in that same year would pass it as
+    a string, so a bare last date is compared by year (`year_of`), narrowed plan or not.
+    False for no plan."""
     if plan is None:
         return False
     served = plan.served_years
@@ -1679,24 +1697,21 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
                 continue
             for window in windows:
                 dates = facet_dates(f, window)
-                if (
-                    dates is not None
-                    and dates[1] is not None
-                    and _after_last(dates[1], last, by_year=served is not None)
-                ):
+                if dates is not None and dates[1] is not None and _after_last(dates[1], last):
                     return True
     return False
 
 
-def _after_last(date: str, last: str | None, *, by_year: bool) -> bool:
-    """Whether `date` falls after `last`, a selection's last date (`serves_continuation`),
-    compared `by_year` (`year_of`) or as dates. True when the selection holds no date."""
+def _after_last(date: str, last: str | None) -> bool:
+    """Whether `date` falls after `last`, a selection's last date (`serves_continuation`):
+    by year (`year_of`) where `last` is a bare year, else as dates. True when the selection
+    holds no date."""
     if last is None:
         return True
-    if not by_year:
+    if not (len(last) == 4 and last.isdigit()):
         return date > last
-    year, last_year = year_of(date), year_of(last)
-    return year is not None and last_year is not None and year > last_year
+    year = year_of(date)
+    return year is not None and year > int(last)
 
 
 def plan_coverage(plan: ReadPlan) -> ReadingCoverage | None:

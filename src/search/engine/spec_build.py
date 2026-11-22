@@ -1429,8 +1429,14 @@ def build_spec(
             data years, with no observation preview and ``ResolvedSpec.continued``
             false: the table identity's plan reads none of the components a composite
             stacks or splices, and its component reads state their continuation
-            (``SpecObservations.continued``). Every other field is the table identity's.
-            None mints the table identity itself.
+            (``SpecObservations.continued``). A component whose preview resolves the read
+            ``plan`` was elected for, hashed with its window and populations
+            (``CompositeMint.table_components``), is stated from ``plan`` narrowed to the
+            years it previews (``ResolvedSpec.component_continued``), so a request reading
+            no preview resolves it no second time. A ``plan`` the request's own filter or
+            window narrowed (``ReadPlan.request_filtered``) elected over inputs the hash
+            does not hold, so it states none. Every other field is the table
+            identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
@@ -1703,6 +1709,14 @@ def build_spec(
         .stating_data_years(years)
         .stating_continued(
             composite is None and serves_continuation(_previewed(plan, preview_years))
+        )
+        .stating_component_continued(
+            ()
+            if composite is None or plan is None or plan.request_filtered
+            else (
+                (component, years, serves_continuation(_previewed(plan, years)))
+                for component, years in composite.table_components()
+            )
         )
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)

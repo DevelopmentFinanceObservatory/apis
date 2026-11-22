@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any, cast
@@ -59,6 +60,7 @@ from search.models import (
     DefinitePart,
     IdentityBindingSet,
     IdentityBindingValue,
+    IdentityShapeSchema,
     IdentityWindowLatest,
     IdentityWindowRange,
     ObservationPoint,
@@ -80,9 +82,11 @@ from search.models import (
 from search.scope import composite
 from search.scope.composite import ServedComponent, compose_observations
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._assemble_fixtures import _make_spec
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_events, offline_resolve
+from tests.scope import test_basis as basis
 from tests.scope import test_provider as provider
 from tests.scope.test_basis import _graph, _PickingLLM
 
@@ -383,36 +387,229 @@ def test_a_composite_preview_keeps_each_component_s_estimates_for_the_late_depar
         pytest.param({"bilateral"}, "imputed", id="lost-beside-a-continuation"),
     ],
 )
-@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "buffered"])
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+@pytest.mark.parametrize("mode", ["streamed", "buffered", "unread"])
 def test_a_composite_states_modelled_values_exactly_when_a_component_read_continues(
-    monkeypatch, stream, continued, lost
+    monkeypatch, mode, door, continued, lost
 ):
     """No series of either component holds an estimate, and the composite's own Spec states
-    no continuation. The part names modelled values once its preview is read exactly when a
-    component's answer it read serves a continuation in the years it previews, streamed in
-    its late departures and buffered in its own. A lost read states none, and the part
+    no continuation. The part names modelled values exactly when a component's answer it
+    read serves a continuation in the years it previews: streamed in its late departures
+    once its preview is read, buffered in its own, and, where the request reads no preview,
+    in its own. There the bilateral component, whose preview resolves the table the answer
+    read, states the answer's own plan, which serves none, and the imputed one is resolved
+    with no preview in the years it serves. A lost read states none; a lost preview read
     warns of it."""
     first, components = _components(monkeypatch)
     components.continued = continued
     if lost is not None:
         components.failures[lost] = GraphInfraError("down")
+    request = _request(door, first)
 
-    if stream:
-        events = _stream(_fresh())
+    if mode == "streamed":
+        events = _stream(request)
         assert "modelled_values" not in {d.code for d in _part(events).departures}
         late = _done(events).late_departures
         departures = late[0].departures if late else _part(events).departures
         warnings = _done(events).warnings
     else:
-        response = offline_resolve(_fresh(), **_clients())
+        if mode == "unread":
+            request = request.model_copy(update={"response_options": ResolveOptions()})
+        response = offline_resolve(request, **_clients())
         assert isinstance(response, Resolution)
         (part,) = response.parts
         assert isinstance(part, DefinitePart)
         assert part.spec.spec_id == first.spec_id
         departures, warnings = part.departures, part.warnings
 
-    assert ("modelled_values" in {d.code for d in departures}) is bool(continued)
-    assert ("observations_probe_failed" in {w.code for w in warnings}) is (lost is not None)
+    claimed = "imputed" in continued if mode == "unread" else bool(continued)
+    assert ("modelled_values" in {d.code for d in departures}) is claimed
+    # One resolve per component a preview reads, and none of the table the answer read.
+    read = sorted(
+        (_STAT_VARS[_provenance(inp.identity)], options.include_observations, options.preview_years)
+        for inp, options in components.calls
+    )
+    resolved = ["imputed"] if mode == "unread" else sorted(_STAT_VARS.values())
+    assert read == [(name, mode != "unread", frozenset(_WINDOW)) for name in resolved]
+    preview_lost = lost is not None and mode != "unread"
+    assert ("observations_probe_failed" in {w.code for w in warnings}) is preview_lost
+
+
+class _Spliced:
+    """`resolve_spec_resubmit` for the OECD headline's components, named by the measured
+    property each reads: each answers a definite Spec serving a continuation where named in
+    `continued`, or raises where named `lost`, after waiting on `together` where given. Each
+    call records the measured property, whether it embeds a preview and its preview years."""
+
+    def __init__(
+        self,
+        *,
+        continued: set[str] = frozenset(),
+        lost: str | None = None,
+        together: threading.Barrier | None = None,
+    ) -> None:
+        self.continued = continued
+        self.lost = lost
+        self.together = together
+        self.template = _make_spec(
+            sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/USA"
+        )
+        self.calls: list[tuple[str, bool, frozenset[int] | None]] = []
+
+    def __call__(
+        self, *, inp: ResubmitIdentityPayload, options: EngineOptions, **_: object
+    ) -> RegionResult:
+        shape = inp.identity.shape
+        assert isinstance(shape, IdentityShapeSchema)
+        measured = shape.measured_property
+        self.calls.append((measured, options.include_observations, options.preview_years))
+        if self.together is not None:
+            self.together.wait()
+        if measured == self.lost:
+            raise GraphInfraError("down")
+        resolved = self.template.resolved.stating_continued(measured in self.continued)
+        return RegionResult(
+            variable_text="aid",
+            status="definite",
+            specs=(self.template.model_copy(update={"resolved": resolved}),),
+            no_data_reason=None,
+            warnings=(),
+            timing_by_step={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("continued", "lost"),
+    [
+        pytest.param(set(), None, id="none"),
+        pytest.param({"amount"}, None, id="net"),
+        pytest.param({"grantEquivalent"}, None, id="grant-equivalent"),
+        # The grant-equivalent resolve is lost, and the net one serves no continuation.
+        pytest.param(set(), "grantEquivalent", id="lost-beside-none"),
+        # The grant-equivalent resolve is lost, and the net one serves a continuation.
+        pytest.param({"amount"}, "grantEquivalent", id="lost-beside-a-continuation"),
+    ],
+)
+def test_an_unread_spliced_composite_states_modelled_values_from_its_component_plans(
+    monkeypatch, continued, lost
+):
+    """A donor's aid over 2015 to 2020 is the OECD headline, net flows to 2017 spliced with
+    grant equivalents from 2018, and the request reads no preview. The answer read the net
+    identity over the whole window, which the net component shares but over 2015 to 2017
+    alone, so neither component reads the table the answer read: each is resolved once with
+    no preview in the years it serves, and the part names modelled values exactly when one
+    of them serves a continuation there. A lost resolve states none."""
+    basis._cover(monkeypatch, basis._DAC1_MEMBERS)
+    components = _Spliced(continued=continued, lost=lost)
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", components)
+
+    part = basis._resolve_part(_headline(), "aid")
+
+    assert part.spec.resolved.facets["provenance"].ref == basis._HEADLINE
+    assert part.spec.resolved.observations is None
+    assert sorted(components.calls) == [
+        ("amount", False, frozenset(range(2015, 2018))),
+        ("grantEquivalent", False, frozenset(range(2018, 2021))),
+    ]
+    assert ("modelled_values" in {d.code for d in part.departures}) is bool(continued)
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_a_component_the_answer_read_states_its_own_plan_and_is_not_resolved(monkeypatch, held):
+    """The answer's Spec states the continuation its own plan serves for the
+    grant-equivalent component, whose preview resolves the read the answer made. Settling
+    the composite's continuation resolves the net component alone, which serves none, and
+    takes the grant-equivalent's from the Spec."""
+    facts = provider._dac1_facts(provider._DAC1_TOTAL_ODA)
+    identity = provider._dac1_identity(
+        provider._DAC1_TOTAL_ODA, (provider._USA,), window=(2010, 2024), headline=True
+    )
+    reads = _reads(facts.coverage)
+    net, grant_equivalent = composite_served(identity, reads=reads)
+    components = _Spliced()
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", components)
+    resolved = components.template.resolved.stating_component_continued(
+        [
+            (
+                composite.component_spec_id(grant_equivalent),
+                grant_equivalent.preview_years,
+                held,
+            )
+        ]
+    )
+
+    continued = asyncio.run(
+        composite_answer.read_composite_continuation(
+            served=[net, grant_equivalent], resolved=resolved, reads=reads, semaphore=None
+        )
+    )
+
+    assert continued is held
+    assert [measured for measured, _, _ in components.calls] == ["amount"]
+
+
+def test_an_unread_composite_resolves_its_components_together(monkeypatch):
+    """Each of the OECD headline's component resolves waits until the other's has started,
+    so the request answers only when they run together."""
+    basis._cover(monkeypatch, basis._DAC1_MEMBERS)
+    components = _Spliced(together=threading.Barrier(2, timeout=10))
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", components)
+
+    basis._resolve_part(_headline(), "aid")
+
+    assert len(components.calls) == 2
+
+
+def test_an_unread_composite_resolves_each_component_plan_once_and_reads_no_row(monkeypatch):
+    """The OECD headline over 2015 to 2020, asked with no preview, resolves each of its two
+    components once with no preview, and nothing reads SDMX."""
+    basis._cover(monkeypatch, basis._DAC1_MEMBERS)
+    real = composite_answer.resolve_spec_resubmit
+    calls: list[tuple[bool, frozenset[int] | None]] = []
+
+    def counted(**kwargs: Any) -> RegionResult:
+        options = kwargs["options"]
+        calls.append((options.include_observations, options.preview_years))
+        return real(**kwargs)
+
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", counted)
+    sdmx = FakeSdmxClient(observations={}, availability={})
+
+    response = offline_resolve(
+        _headline(),
+        graph=basis._graph("aid", basis._ALL_MEMBERS),
+        llm=_PickingLLM(),
+        sdmx=sdmx,
+    )
+
+    assert isinstance(response, Resolution)
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart)
+    assert part.spec.resolved.facets["provenance"].ref == basis._HEADLINE
+    assert sorted(calls, key=lambda call: min(call[1] or ())) == [
+        (False, frozenset(range(2015, 2018))),
+        (False, frozenset(range(2018, 2021))),
+    ]
+    assert (sdmx.series_calls, sdmx.availability_calls, sdmx.subject_observations_calls) == (
+        [],
+        [],
+        [],
+    )
+
+
+def _headline() -> ResolveRequest:
+    """A donor's aid over 2015 to 2020, which the OECD headline serves, with no preview."""
+    return ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="aid",
+                    entities=[ParsedEntity(text="United States", role_text="from")],
+                    time_text="2015-2020",
+                )
+            ]
+        )
+    )
 
 
 def _coverage(monkeypatch: pytest.MonkeyPatch) -> CoverageSnapshot:
@@ -542,35 +739,45 @@ def test_a_degraded_component_marks_the_buffered_composite_answer_degraded(
 _ABSENT = Warning(code=MEMBERS_ABSENT_FROM_GRAPH, severity="warn", message="absent")
 
 
-@pytest.mark.parametrize("mode", ["streamed", "buffered"])
-@pytest.mark.parametrize("fault", [None, "degraded", "members_absent"])
+@pytest.mark.parametrize("mode", ["streamed", "buffered", "unread"])
+@pytest.mark.parametrize("fault", [None, "degraded", "members_absent", "lost"])
 def test_a_component_the_cache_would_refuse_keeps_the_composite_answer_out_of_it(
     monkeypatch, mode, fault
 ):
     """A component answer the response cache would not store, one standing on a read its
-    resolve swallowed or one warning `members_absent_from_graph`, keeps the composite answer
-    out of the cache too, so a repeat request reads the components again; a whole component
-    lets the answer be stored and replayed. The streamed preview reads its components after
-    the part's resolution has ended. The composite's preview shows only the component's
-    preview warnings."""
+    resolve swallowed or one warning `members_absent_from_graph`, or one whose resolve was
+    lost, keeps the composite answer out of the cache too, so a repeat request reads the
+    components again; a whole component lets the answer be stored and replayed. The streamed
+    preview reads its components after the part's resolution has ended, and a request
+    reading no preview resolves them with none. The composite's preview shows only the
+    component's preview warnings."""
     _, components = _components(monkeypatch)
     if fault == "degraded":
         components.degraded.add("imputed")
     elif fault == "members_absent":
         components.warned["imputed"] = (_ABSENT,)
+    elif fault == "lost":
+        components.failures["imputed"] = GraphInfraError("down")
     cache = ResponseCache()
+    request = _fresh()
+    if mode == "unread":
+        request = request.model_copy(update={"response_options": ResolveOptions()})
 
     def ask() -> list[Event]:
         return offline_events(
-            _fresh(), stream_slot_options=mode == "streamed", response_cache=cache, **_clients()
+            request, stream_slot_options=mode == "streamed", response_cache=cache, **_clients()
         )
 
     events = ask()
     reads = len(components.calls)
     ask()
 
-    shown = _observed(events).observations if mode == "streamed" else None
-    assert _dates(shown or _answered(events).resolved.observations) == _BOTH
+    if mode == "unread":
+        assert _answered(events).resolved.observations is None
+    else:
+        shown = _observed(events).observations if mode == "streamed" else None
+        expected = {"bilateral": _BOTH["bilateral"]} if fault == "lost" else _BOTH
+        assert _dates(shown or _answered(events).resolved.observations) == expected
     assert MEMBERS_ABSENT_FROM_GRAPH not in {w.code for w in _done(events).warnings}
     assert (cache.stats().entries > 0) is (fault is None)
     assert len(components.calls) == (reads if fault is None else 2 * reads)
@@ -626,9 +833,9 @@ def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monke
     scopes: list[frozenset[str] | None] = []
     mint = resubmit.composite_mint
 
-    def recording(identity: BaseIdentity, *, coverage: Any) -> Any:
+    def recording(identity: BaseIdentity, *, coverage: Any, **kwargs: Any) -> Any:
         scopes.append(current_catalogue().scope)
-        return mint(identity, coverage=coverage)
+        return mint(identity, coverage=coverage, **kwargs)
 
     monkeypatch.setattr(resubmit, "composite_mint", recording)
     decide = phase_answer._decide_answer_scope

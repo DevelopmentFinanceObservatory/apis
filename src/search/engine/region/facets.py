@@ -9,7 +9,7 @@ the admitted facets.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
@@ -534,7 +534,7 @@ def filter_answer(
     """
     if not admission or mat.read_plan is None or mat.coverage_form is None:
         return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
-    narrowed = mat.read_plan.narrowed(admission.admits)
+    narrowed = replace(mat.read_plan.narrowed(admission.admits), request_filtered=True)
     if admission.elected_units is not None:
         narrowed = narrowed.leaving_out(
             populated_members(mat.read_plan) - admission.elected_units.keys()

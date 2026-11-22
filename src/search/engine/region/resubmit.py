@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from code_index.shared import get_index
 from materialise.member_conversion import request_conversion_reader
@@ -27,6 +29,9 @@ from search.models import BaseIdentity, ResubmitIdentityPayload
 from search.scope.composite import CompositeMint, served_components
 from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
+
+if TYPE_CHECKING:
+    from code_index.scope_conventions import RolePopulation
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +59,20 @@ def _with_nested_identity_pointer(exc: EngineInputError) -> EngineInputError:
     )
 
 
-def composite_mint(identity: BaseIdentity, *, coverage: CoverageSnapshot) -> CompositeMint:
+def composite_mint(
+    identity: BaseIdentity,
+    *,
+    coverage: CoverageSnapshot,
+    read: BaseIdentity | None = None,
+    read_populations: Mapping[str, RolePopulation] | None = None,
+) -> CompositeMint:
     """What a Spec answering composite `identity` is minted from (`CompositeMint`): its
     components with the years each serves (`served_components`), read with facts of the
-    release's code index and `coverage` alone, and the catalogue bound when it is called,
-    which its provenance facet and download read. A caller builds it before any read narrows
-    the catalogue to a source scope (`resubmit_request.pinned_provenance_scope`)."""
+    release's code index and `coverage` alone, the catalogue bound when it is called,
+    which its provenance facet and download read, and `read`, the identity the answer's
+    rows are read for, with `read_populations`, the roles it binds to a population
+    (`CompositeMint.read`). A caller builds it before any read narrows the catalogue to a
+    source scope (`resubmit_request.pinned_provenance_scope`)."""
     facts = ScopeFacts(index=get_index(), coverage=coverage)
     document = identity.model_dump(mode="json", exclude_none=True)
     return CompositeMint(
@@ -68,6 +81,8 @@ def composite_mint(identity: BaseIdentity, *, coverage: CoverageSnapshot) -> Com
         served=tuple(served_components(document, facts=facts)),
         facts=facts,
         catalogue=current_catalogue(),
+        read=read,
+        read_populations=dict(read_populations or {}),
     )
 
 
@@ -114,7 +129,16 @@ def resolve_spec_resubmit(
     check_not_composite(inp.identity, pointer="/input/identity/facets/provenance")
     _options = options if options is not None else EngineOptions()
     # Built before the identity's provenance pin narrows the catalogue.
-    mint = None if inp.composite is None else composite_mint(inp.composite, coverage=coverage)
+    mint = (
+        None
+        if inp.composite is None
+        else composite_mint(
+            inp.composite,
+            coverage=coverage,
+            read=inp.identity,
+            read_populations=inp.populations,
+        )
+    )
     opened, _ = open_within(inp.identity, inp.populations)
     if opened is not inp.identity:
         inp = inp.model_copy(update={"identity": opened})

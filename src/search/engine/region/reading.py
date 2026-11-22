@@ -572,18 +572,19 @@ def decide_read_scope(
         built = decision.scope
         if not decision.composite or built is None:
             return decision
-        with bound_catalogue(catalogue or current_catalogue()):
-            mint = composite_mint(built.compiled.identity, coverage=coverage)
-        compiled = built.compiled.model_copy(update={"components": mint.components()})
-        minted.append(
-            MintedComposite(
-                mint=mint,
-                read=_read_identity(identity, reading),
-                populations=reading.table.populations
-                if reading is not None and reading.table is not None
-                else {},
-            )
+        read = _read_identity(identity, reading)
+        populations = (
+            reading.table.populations if reading is not None and reading.table is not None else {}
         )
+        with bound_catalogue(catalogue or current_catalogue()):
+            mint = composite_mint(
+                built.compiled.identity,
+                coverage=coverage,
+                read=read,
+                read_populations=populations,
+            )
+        compiled = built.compiled.model_copy(update={"components": mint.components()})
+        minted.append(MintedComposite(mint=mint, read=read, populations=populations))
         return dataclasses.replace(
             decision,
             spec_id=mint.spec_id,

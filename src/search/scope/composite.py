@@ -28,7 +28,7 @@ import json
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import cast
 
@@ -42,6 +42,7 @@ from code_index.composites import (
 )
 from code_index.members import pinned_refs
 from code_index.query import CodeIndex
+from code_index.scope_conventions import RolePopulation
 from code_index.types import CompositeDeclaration
 from materialise.composite import (
     ComponentYears,
@@ -54,7 +55,9 @@ from materialise.composite import (
 )
 from materialise.enrichment import PartySplit, party_split
 from origin_catalogue import Catalogue, bound_catalogue, pinned_reads, scoped_reads
+from search.engine.identity_edit import open_within
 from search.engine.retrieval.bound_values import served_members
+from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     BindingValue,
@@ -398,6 +401,22 @@ def compose_observations(
     return _composite_omission(previewed).stating_continued(continued)
 
 
+def component_spec_id(item: ServedComponent) -> str:
+    """The spec_id of the identity `item`'s preview resolves (`component_preview`), its window
+    included, with each role bound to a population open within its members
+    (`identity_edit.open_within`), as `resubmit.resolve_spec_resubmit` resolves it."""
+    document, _years = component_preview(item)
+    return resolved_spec_id(BaseIdentity.model_validate(document), item.component.populations)
+
+
+def resolved_spec_id(identity: BaseIdentity, populations: Mapping[str, RolePopulation]) -> str:
+    """The spec_id of `identity` posted with `populations`, as `resubmit.resolve_spec_resubmit`
+    resolves it: each role `populations` lists open within its members
+    (`identity_edit.open_within`), which leaves an identity already open as it is."""
+    opened, _within = open_within(identity, populations)
+    return identity_spec_id(opened)
+
+
 def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozenset[int]]:
     """The identity `item`'s preview reads and the years it reads rows in
     (`ServedComponent.preview_years`).
@@ -480,12 +499,38 @@ class CompositeMint:
     served: tuple[ServedComponent, ...]
     facts: ScopeFacts
     catalogue: Catalogue | None = None
+    # The identity the answer's rows were read for, the composite's table identity, posted or
+    # with its population roles already open (`resolved_spec_id` hashes both alike), and the
+    # roles it binds to a population (`ResubmitIdentityPayload.populations`). None where the
+    # minter read no table of its own, as a same-shape merge does.
+    read: BaseIdentity | None = None
+    read_populations: Mapping[str, RolePopulation] = field(default_factory=dict)
 
     @cached_property
     def declaration(self) -> CompositeDeclaration:
         """The composite `identity`'s provenance facet binds."""
         return _declaration(
             self.facts.index, self.identity.model_dump(mode="json", exclude_none=True)
+        )
+
+    def table_components(self) -> tuple[tuple[str, frozenset[int]], ...]:
+        """The spec_id and preview years (`ServedComponent.preview_years`) of each component
+        previewing a year whose preview resolves the read the answer made (`read`): the
+        identity the component's preview resolves hashes to the read's, both with their
+        population roles open (`component_spec_id`, `resolved_spec_id`), window included, and
+        the component reads within the same populations (`read_populations`). Empty where the
+        answer made no read of its own; a component the hash does not settle is none of
+        them."""
+        if self.read is None:
+            return ()
+        populations = dict(self.read_populations)
+        read_id = resolved_spec_id(self.read, populations)
+        return tuple(
+            (read_id, item.preview_years)
+            for item in self.served
+            if item.preview_years
+            and dict(item.component.populations) == populations
+            and component_spec_id(item) == read_id
         )
 
     @cached_property

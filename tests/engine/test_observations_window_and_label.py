@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from materialise import FacetNotAvailableError
 from origin_catalogue import bound_catalogue, current_catalogue
 from search.engine.departures import spec_departure_facts
 from search.engine.region.codes import OBSERVATIONS_NO_POINTS
+from search.engine.region.observations import fetch
+from search.engine.region.observations.fetch import _no_points_in_years
+from search.engine.region.observations.served_years import (
+    no_points_in_served_years,
+    year_count,
+)
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import (
     PlanSeries,
@@ -16,10 +25,18 @@ from search.engine.retrieval.read_plan import (
 )
 from search.engine.spec_build import build_spec
 from search.models import (
+    BaseIdentity,
     TimeWindow,
     omitted_observations,
 )
-from search.scope.composite import CompositeMint, compose_observations, served_components
+from search.scope.composite import (
+    CompositeMint,
+    component_preview,
+    component_spec_id,
+    compose_observations,
+    served_components,
+    table_document,
+)
 from tests.engine._assemble_fixtures import _make_coverage, _make_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
@@ -235,21 +252,26 @@ def test_a_read_in_given_years_shows_and_counts_their_points_alone(
 
 
 @pytest.mark.parametrize(
-    ("window", "years"),
+    ("window", "years", "served"),
     [
         # A plan over 2016 onwards read in 2010 alone holds no year to read.
-        pytest.param(TimeWindow(start_year=2016), frozenset({2010}), id="outside-window"),
+        pytest.param(TimeWindow(start_year=2016), frozenset({2010}), None, id="outside-window"),
         # Every date holds 2022, and no series holds a point in it.
-        pytest.param(None, frozenset({2022}), id="no-series-in-years"),
+        pytest.param(None, frozenset({2022}), frozenset({2022}), id="no-series-in-years"),
         # The plan holds 2022 of the two years alone, and no series holds a point in it.
         pytest.param(
             TimeWindow(start_year=2016),
             frozenset({2010, 2022}),
+            frozenset({2022}),
             id="no-series-in-the-years-the-plan-holds",
         ),
     ],
 )
-def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window, years):
+def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window, years, served):
+    """A preview whose plan's own years hold none of the years asked omits as holding none
+    of them (`fetch._no_points_in_years`). One whose series hold no point in the years its
+    plan serves omits as every read holding none in them does
+    (`served_years.no_points_in_served_years`), counting those years."""
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_old_and_new_obs())
     observations, warn = build_observations_planned(
         ["Count_Person"],
@@ -265,6 +287,10 @@ def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
     assert observations.omitted.dispatched == 0
+    if served is None:
+        assert observations == _no_points_in_years(years)[0]
+    else:
+        assert observations == no_points_in_served_years(served, dispatched=0, empty=0)
 
 
 def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
@@ -275,8 +301,11 @@ def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
     return preview
 
 
-def _continued_preview_and_reader(estimated_years: list[int], years: frozenset[int]):
-    """`_continued_in_years`' preview and the graph double it read the facets from."""
+def _continued_preview_and_reader(
+    estimated_years: list[int], years: frozenset[int], *, empty_beside: bool = False
+):
+    """`_continued_in_years`' preview and the graph double it read the facets from. With
+    `empty_beside`, India is read beside Kenya under a facet whose dates span 2010 to 2020."""
 
     def facet(dates: list[int], value: float, **method: str) -> dict:
         return {
@@ -288,17 +317,25 @@ def _continued_preview_and_reader(estimated_years: list[int], years: frozenset[i
             "observations": [{"date": str(year), "value": value} for year in dates],
         }
 
+    empty = {
+        "earliestDate": "2010",
+        "latestDate": "2020",
+        "obsCount": 11,
+        "provenanceId": "dc/base/Src",
+        "observations": [],
+    }
     materialise_graph, materialise_sdmx = materialise_double_from_obs(
         {
             "Count_Person|country/KEN": [
                 facet([*range(2010, 2017), 2019], 1.0),
                 facet(estimated_years, 2.0, method="Estimated"),
-            ]
+            ],
+            **({"Count_Person|country/IND": [empty]} if empty_beside else {}),
         }
     )
     preview = build_observations_planned(
         ["Count_Person"],
-        {"observationAbout": ["country/KEN"]},
+        {"observationAbout": ["country/KEN", *(["country/IND"] if empty_beside else [])]},
         graph=FakeGraph(),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
@@ -379,12 +416,29 @@ def test_a_plan_read_in_years_states_a_continuation_only_in_a_served_year(years,
     assert bool(modelled) is continued
 
 
-def test_a_spliced_composite_states_no_continuation_from_its_table_plan():
+@pytest.mark.parametrize(
+    ("read", "filtered"),
+    [
+        (None, False),
+        ("table", False),
+        ("grant-equivalent", False),
+        # The same read, its plan narrowed by the request's own facet filter.
+        ("grant-equivalent", True),
+    ],
+)
+def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, filtered):
     """The spliced headline serves net flows to 2017 and grant equivalents from 2018. Its
     table identity's plan, the net reading of the whole window, continues the recorded
     series with estimates in 2020, a year the composite serves through the other component.
     The composite's Spec states no continuation, and with no component read stating one
-    the part names no modelled values."""
+    the part names no modelled values.
+
+    The Spec states the plan's continuation for a component only where the answer's rows
+    were read for the identity that component's preview resolves (`CompositeMint.read`).
+    The table identity is the net component's definition over the whole window, not the
+    net component's own years, so it states none; read for the grant-equivalent component,
+    it states the 2020 estimates in that component's years, unless the request's own facet
+    filter narrowed the plan (`ReadPlan.request_filtered`), an input the hash does not hold."""
     (_observations, _warn), materialise_graph = _continued_preview_and_reader(
         [2020, *range(2022, 2030)], frozenset({2020})
     )
@@ -409,9 +463,21 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan():
     )
     with bound_catalogue(current_catalogue()):
         served = served_components(identity.model_dump(mode="json", exclude_none=True), facts=facts)
-    mint = CompositeMint(identity=identity, spec_id="composite", served=tuple(served), facts=facts)
     net, grant_equivalent = served
     assert max(net.served) == 2017 and 2020 in grant_equivalent.served
+    table = table_document(identity, facts.index)
+    assert table is not None
+    net_document, _years = component_preview(net)
+    assert {**net_document, "requested_window": None} == {**table, "requested_window": None}
+    assert net_document["requested_window"] != table["requested_window"]
+    documents = {"table": table, "grant-equivalent": component_preview(grant_equivalent)[0]}
+    mint = CompositeMint(
+        identity=identity,
+        spec_id="composite",
+        served=tuple(served),
+        facts=facts,
+        read=None if read is None else BaseIdentity.model_validate(documents[read]),
+    )
     spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/KEN")
     minted = build_spec(
         composite=mint,
@@ -422,7 +488,7 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan():
         stat_vars=[],
         entities=[],
         coverage=_make_coverage(),
-        plan=plan,
+        plan=replace(plan, request_filtered=True) if filtered else plan,
     )
     reads = [
         omitted_observations(
@@ -443,18 +509,63 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan():
     assert "modelled_values" not in {
         fact.code for fact in spec_departure_facts(answered, operations=())
     }
+    stated = {
+        item.component.role: minted.resolved.component_continued(
+            component_spec_id(item), item.preview_years
+        )
+        for item in served
+    }
+    assert stated == {
+        net.component.role: None,
+        grant_equivalent.component.role: (
+            True if read == "grant-equivalent" and not filtered else None
+        ),
+    }
 
 
-def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
+@pytest.mark.parametrize(
+    ("empty_beside", "dispatched"),
+    [
+        pytest.param(False, 1, id="cut"),
+        # India's read finds no facet to serve, beside Kenya's the served year cuts.
+        pytest.param(True, 2, id="cut-beside-a-read-finding-no-facet"),
+    ],
+)
+def test_a_series_the_continuation_cuts_from_its_years_is_served_empty(
+    monkeypatch, empty_beside, dispatched
+):
     """The estimates hold 2017 to 2029, so the series holds a point in 2018. A mint of the
     window cuts the estimates up to the recorded 2019, so read in 2018 the series serves
-    nothing, and the preview counts it fetched and empty, with no warning."""
-    observations, warn = _continued_in_years(list(range(2017, 2030)), frozenset({2018}))
+    nothing, and the preview counts it fetched and empty, with no warning, stating that no
+    series holds a point in the year it serves, whether or not another read came back
+    empty for want of a facet (`served_years.no_points_in_served_years`)."""
+    preview_one = fetch._preview_one
+
+    def no_facet_for_india(dispatch, **kwargs):
+        if ("observationAbout", "country/IND") in dispatch.bound:
+            raise FacetNotAvailableError("no facet")
+        return preview_one(dispatch, **kwargs)
+
+    monkeypatch.setattr(fetch, "_preview_one", no_facet_for_india)
+    (observations, warn), _reader = _continued_preview_and_reader(
+        list(range(2017, 2030)), frozenset({2018}), empty_beside=empty_beside
+    )
 
     assert warn is None
-    assert observations.omitted is not None
-    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
-    assert (observations.omitted.dispatched, observations.omitted.empty) == (1, 1)
+    assert observations == no_points_in_served_years(
+        frozenset({2018}),
+        dispatched=dispatched,
+        empty=dispatched,
+        hard_failed=0,
+        facet_rejected=0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("years", "counted"), [({2018}, "1 year"), ({2018, 2020, 2021}, "3 years")]
+)
+def test_served_years_are_counted_with_their_noun(years, counted):
+    assert year_count(frozenset(years)) == counted
 
 
 def _recorded_and_estimated_obs() -> dict:

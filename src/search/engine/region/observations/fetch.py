@@ -1262,7 +1262,7 @@ def _no_pairs_succeeded_omission(
     *,
     facet_filter: Mapping[str, FacetAxisFilter] | None,
     elected_mode: bool,
-    emptied_in: frozenset[int] | None = None,
+    served_years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Classify a round with no successful pair, prioritising hard failures over timeouts.
 
@@ -1271,9 +1271,10 @@ def _no_pairs_succeeded_omission(
     return `OBSERVATIONS_TIMED_OUT`. Active filters or elected conversions with rejected
     pairs return `OBSERVATIONS_NO_MATCHING_SOURCE`, including any conversion cause.
     Remaining empty fetches return `OBSERVATIONS_NO_POINTS` without a warning, stating
-    the series hold no point in `emptied_in`, the years a narrowed plan serves, when set
-    (`served_years.no_points_in_served_years`): cutting the reads to them emptied every
-    empty series (`_in_years`).
+    the series hold no point in `served_years`, the years a narrowed plan serves, when set
+    (`served_years.no_points_in_served_years`): every read of such a plan keeps its points
+    in them alone (`_in_years`), so a series SDMX returned empty and one whose rows the
+    years cut alike hold none there.
     """
     if not requested:
         return (
@@ -1332,10 +1333,10 @@ def _no_pairs_succeeded_omission(
             ),
             Warning(code=OBSERVATIONS_NO_MATCHING_SOURCE, severity="warn", message=message),
         )
-    if emptied_in is not None:
+    if served_years is not None:
         return (
             no_points_in_served_years(
-                emptied_in,
+                served_years,
                 dispatched=requested,
                 empty=outcome.unfiltered_empty_pairs,
                 hard_failed=0,
@@ -1635,19 +1636,12 @@ def _fetch_pair_observations(
     )
 
     if not outcome.pair_results:
-        emptied_in = (
-            plan.served_years.years
-            if plan.served_years is not None
-            and served_empty
-            and served_empty == outcome.unfiltered_empty_pairs
-            else None
-        )
         return _no_pairs_succeeded_omission(
             requested,
             outcome,
             facet_filter=facet_filter,
             elected_mode=elected_mode,
-            emptied_in=emptied_in,
+            served_years=None if plan.served_years is None else plan.served_years.years,
         )
     return _assemble_pair_series(
         outcome,

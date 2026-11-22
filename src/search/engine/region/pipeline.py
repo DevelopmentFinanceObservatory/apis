@@ -49,7 +49,10 @@ from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
-from search.engine.region.composite_answer import with_composite_observations
+from search.engine.region.composite_answer import (
+    with_composite_continuation,
+    with_composite_observations,
+)
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -642,9 +645,11 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
     """`result` with the preview of the composite it answers, which `_with_scope_choices`
     leaves unlaunched. It launches as a trailing task where
     the request streams observations, so the `response` event waits on nothing new, and reads
-    inline where the request embeds them. Any other result returns unchanged.
+    inline where the request embeds them. A request reading no preview states the
+    continuation its components' read plans serve instead
+    (`composite_answer.with_composite_continuation`). Any other result returns unchanged.
 
-    The inline read takes no permit of the request semaphore, since the part's own leg holds
+    The inline reads take no permit of the request semaphore, since the part's own leg holds
     one while it resolves (`fanout`), and a request whose legs held every permit would wait
     on itself."""
     relaunch = result.observations_relaunch
@@ -654,7 +659,7 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
         return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
     if state.include_observations:
         return await with_composite_observations(result, semaphore=None)
-    return dataclasses.replace(result, observations_relaunch=None)
+    return await with_composite_continuation(result, semaphore=None)
 
 
 def merged_scope_choices(

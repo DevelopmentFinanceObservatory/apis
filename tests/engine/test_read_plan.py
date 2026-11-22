@@ -1535,9 +1535,10 @@ def _facet_dated(
 def test_a_pair_plan_read_in_years_states_a_continuation_only_past_the_selection_s_year(
     recorded, continued
 ) -> None:
-    """An `Estimated` facet of the recorded facet's source holds June 2020. Read in 2020
-    alone, the plan states a continuation only when the estimate's year follows the year
-    the recorded facet's last date falls in under the 2010 to 2020 window."""
+    """An `Estimated` facet of the recorded facet's source holds June 2020. Over the 2010 to
+    2020 window, and read in 2020 alone, the plan states a continuation only when the
+    estimate follows the recorded facet's last date under the window, compared by year
+    where that date clipped to a bare year."""
     estimate = replace(
         _facet_dated("fE", ["2020-06"], complete=True), measurement_method="Estimated"
     )
@@ -1557,6 +1558,7 @@ def test_a_pair_plan_read_in_years_states_a_continuation_only_past_the_selection
 
     assert isinstance(narrowed, PairPlan)
     assert [(s.stat_var, s.group_ids) for s in narrowed.served] == [("sv", frozenset({"fR", "fE"}))]
+    assert read_plan.serves_continuation(plan) is continued
     assert read_plan.serves_continuation(narrowed) is continued
 
 
