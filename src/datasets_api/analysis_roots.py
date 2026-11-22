@@ -573,12 +573,11 @@ class LiveRootSource:
         self._render = render
         self._max_root_rows = max_root_rows
         self._located_rows = 0
-        # The version each served definition's first newest root read, by its spec id.
-        self._newest_versions: dict[str, str] = {}
-        # The dataset version each derived version a serve answered was read from, by (spec id,
-        # derived version): a version recorded from one base and made again from another keeps
-        # the first in its record.
-        self._keyed_bases: dict[tuple[str, str], str] = {}
+        # The version each served definition's first newest root read, by its spec id, with the
+        # dataset version the serve read it from, `None` for its record's base (`_first_read`).
+        # Written once per spec id, so every root of that dataset in the request reads one
+        # dataset version.
+        self._newest_versions: dict[str, tuple[str, str | None]] = {}
         # The StatVars with rows in each old-trace dataset version, by (spec id, version).
         self._stat_vars: dict[tuple[str, str], list[str]] = {}
 
@@ -775,18 +774,18 @@ class LiveRootSource:
         serve read. Any other root renders from that version (`_at_version`), so a head that
         moves during the request is not read twice."""
         served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
-        first = self._newest_versions.get(served.spec_id)
-        read = None if first is None else self._base_version(served.spec_id, first)
+        read = self._first_read(served.spec_id)
         newest = self._serve_newest(
             served, root, path_words=path_words, trace_id=trace_id, read=read
         )
         if newest is not None:
             return newest
+        # `_serve_newest` records the first read before it returns `None`.
+        first = self._first_read(served.spec_id)
+        assert first is not None
         version = DatasetRoot(
             spec_id=served.spec_id,
-            content_version=self._base_version(
-                served.spec_id, self._newest_versions[served.spec_id]
-            ),
+            content_version=first,
             rendering=root.rendering,
         )
         return self._at_version(
@@ -805,11 +804,11 @@ class LiveRootSource:
         """A root of `served` read at its newest version, served in the one rendering it
         reads: summed as the planner implies from the stored head's version and trace
         (`_head_version`), so no rendering is made only to read a trace; a revoked head gives
-        no guess and defers to the serve. The first root records the version its serve read
-        (`_newest_versions`). `read` is that version for a later root. `None` when the version
-        served implies another sum than the head did, as when the serve rebuilt the head or
-        there was none, or when a later root's serve read another version than `read`: the
-        root is then read from the version recorded."""
+        no guess and defers to the serve. The first root records the dataset version its serve
+        read (`_newest_versions`), and `read` is that version for a later root. `None` when the
+        version served implies another sum than the head did, as when the serve rebuilt the
+        head or there was none, or when a later root's serve read another dataset version than
+        `read`, even into the same derived version: the root is then read from `read`."""
         # The newest data is read in the rendering the root names, as a fresh root of
         # that rendering reads it, so a version recording two renderings stays readable.
         requested = mint_options(root.rendering)
@@ -817,12 +816,12 @@ class LiveRootSource:
         groupby = (
             None if head is None else self._implied(served.spec_id, *head, path_words=path_words)
         )
-        manifest: Manifest | None = None
+        served_manifest: tuple[Manifest, str | None] | None = None
         sum_refused: dict[str, str] | None = None
         operation_id: str | None = None
         if groupby is not None:
             try:
-                manifest = self._serve(
+                served_manifest = self._serve(
                     served,
                     MintOptions.model_validate({**requested, "groupby": groupby}),
                     posted=root.spec_id,
@@ -837,16 +836,17 @@ class LiveRootSource:
                     raise
                 sum_refused = _rebuild_sum_refused(failed)
                 operation_id = failed.operation_id
-        if manifest is None:
-            manifest = self._serve(
+        if served_manifest is None:
+            served_manifest = self._serve(
                 served,
                 MintOptions.model_validate(requested),
                 posted=root.spec_id,
                 trace_id=trace_id,
             )
+        manifest, base = served_manifest
         if read is None:
-            self._newest_versions[served.spec_id] = manifest.content_version
-        elif self._base_version(served.spec_id, manifest.content_version) != read:
+            self._newest_versions[served.spec_id] = (manifest.content_version, base)
+        elif (base or self._base_version(served.spec_id, manifest.content_version)) != read:
             return None
         if groupby is not None and sum_refused is not None:
             _log_sum_refused(
@@ -860,7 +860,7 @@ class LiveRootSource:
             path_words is not None
             and self._implied(
                 served.spec_id,
-                self._base_version(served.spec_id, manifest.content_version),
+                base or self._base_version(served.spec_id, manifest.content_version),
                 manifest.trace,
                 path_words=path_words,
             )
@@ -874,6 +874,7 @@ class LiveRootSource:
             content_version=manifest.content_version,
             options=options,
             manifest=manifest,
+            base=base,
         )
         return replace(resolved, sum_refused=sum_refused)
 
@@ -902,12 +903,18 @@ class LiveRootSource:
             return None
         return head.content_version, stored.trace
 
+    def _first_read(self, spec_id: str) -> str | None:
+        """The dataset version the first newest root of `spec_id` in this request read
+        (`_newest_versions`), or `None` before one has."""
+        first = self._newest_versions.get(spec_id)
+        if first is None:
+            return None
+        content_version, read = first
+        return read or self._base_version(spec_id, content_version)
+
     def _base_version(self, spec_id: str, content_version: str) -> str:
-        """The dataset version `content_version` renders: its base for a derived version, the
-        dataset version a serve in this request read it from (`_keyed_bases`) before the base
-        its record keeps."""
-        if (keyed := self._keyed_bases.get((spec_id, content_version))) is not None:
-            return keyed
+        """The dataset version `content_version` renders: the base its record keeps for a
+        derived version."""
         version = self._deps.snapshot_reader.read_version(spec_id, content_version)
         if version is None or version.base_content_version is None:
             return content_version
@@ -1061,18 +1068,26 @@ class LiveRootSource:
 
     def _serve(
         self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
-    ) -> Manifest:
+    ) -> tuple[Manifest, str | None]:
         """The served definition's head in the rendering `options` names, honouring revocations
-        under `posted`, the id the root names, as a request naming that id does. The serve
-        judges the head's freshness as the definition door does, and a head it keeps answers
-        a minting rendering from the version recorded for it (`_recorded_rendering`) before
-        rendering one.
+        under `posted`, the id the root names, as a request naming that id does, and the
+        dataset version the manifest was read from. The serve judges the head's freshness as
+        the definition door does, and a head it keeps answers a minting rendering from the
+        version recorded for it (`_recorded_rendering`) before rendering one. The dataset
+        version read is the raw version a rebuild in the serve materialised, else the head the
+        serve answered from, either of which can differ from the base a recorded version's
+        record keeps when two heads make the same version, else `None` for its record's base
+        (`_base_version`), read only when a caller needs it.
 
         Raises:
             AnalysisPending: A rebuild runs past the inline budget.
             RefreshRebuildFailed: The rebuild failed and will not be retried.
         """
         revoked_under = (posted,)
+        # The head each manifest `load_head` answered was read from, by its version, and the
+        # raw version a rebuild materialised.
+        read_from: dict[str, str] = {}
+        materialised: list[str] = []
 
         def load_head(content_version: str, coverage_snapshot: CoverageSnapshot) -> Manifest | None:
             base = partial(
@@ -1094,12 +1109,12 @@ class LiveRootSource:
                 coverage_snapshot=coverage_snapshot,
                 revoked_under=revoked_under,
             )
-            if manifest is not None and manifest.content_version != content_version:
-                self._keyed_bases[(served.spec_id, manifest.content_version)] = content_version
+            if manifest is not None:
+                read_from[manifest.content_version] = content_version
             return manifest
 
         try:
-            return serve_spec(
+            manifest = serve_spec(
                 stored=served,
                 options=options,
                 trigger="get",
@@ -1107,6 +1122,7 @@ class LiveRootSource:
                 trace_id=trace_id,
                 load_head=load_head,
                 revoked_under=revoked_under,
+                on_materialised=materialised.append,
             )
         except OperationSubmitted as submitted:
             operation = submitted.operation
@@ -1117,6 +1133,8 @@ class LiveRootSource:
                     refusal=operation.refusal,
                 ) from None
             raise _pending(operation.id) from None
+        base = materialised[-1] if materialised else read_from.get(manifest.content_version)
+        return manifest, base
 
     def _resolved(
         self,
@@ -1128,8 +1146,7 @@ class LiveRootSource:
         base: str | None = None,
     ) -> ResolvedRoot:
         """The root `manifest`, the version `content_version`, read with `options`. A groupby's
-        version names `base`, the dataset version it was made from, else the one a serve in
-        this request read it from (`_keyed_bases`), else its record's base."""
+        version names `base`, the dataset version it was made from, else its record's base."""
         artifact = _data_artifact(manifest) if options.get("columns") else None
         root = _root(
             spec_id=spec_id,
@@ -1146,7 +1163,6 @@ class LiveRootSource:
         version = self._deps.snapshot_reader.read_version(spec_id, content_version)
         base = (
             base
-            or self._keyed_bases.get((spec_id, content_version))
             or (version.base_content_version if version is not None else None)
             or content_version
         )

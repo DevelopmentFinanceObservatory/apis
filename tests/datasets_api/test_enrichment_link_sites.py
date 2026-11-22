@@ -34,9 +34,6 @@ type Site = tuple[str, str, str]
 """A call as `(path under src, enclosing function, callee)`."""
 
 _EXEMPT: dict[Site, str] = {
-    ("datasets_api/version_store.py", "enriched_rendering_key", "rendering_key"): (
-        "the one function that decides whether a rendering is salted"
-    ),
     ("datasets_api/maintenance.py", "_pinned_frame1_versions", "rendering_key"): (
         "looks up the canonical frame, which has no party-kind cell"
     ),

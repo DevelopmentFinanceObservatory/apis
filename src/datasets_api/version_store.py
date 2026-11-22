@@ -36,7 +36,8 @@ does.
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). A link under a derived version
 records every raw head a write of its version was rendered from
-(`datasets.version_artifact_head`), with the code index the last such write rendered it under.
+(`datasets.version_artifact_head`), with the code index and render format the last such write
+rendered it under (`versions.rendering_stamp`).
 No statement here deletes a link. Every link write and
 every pin reference write takes `lock_version_links` first, so a pin cannot complete for a
 digest a concurrent re-render is unlinking.
