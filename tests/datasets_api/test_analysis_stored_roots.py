@@ -19,6 +19,7 @@ import datasets_api.analysis_roots as analysis_roots
 import datasets_api.current as current
 import datasets_api.doors.analysis as analysis_door
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.renewal import RENEW_MARKER
 from datasets_api.operations.task_client import FakeTaskClient
@@ -261,7 +262,8 @@ def test_a_head_past_the_serve_stale_ceiling_answers_202(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rig = _Rig(monkeypatch)
-    rig.heads.age_head(rig.spec_id, age=timedelta(days=8))
+    ceiling = DatasetsBuildSettings().head_serve_stale_max_age_seconds
+    rig.heads.age_head(rig.spec_id, age=timedelta(seconds=ceiling, days=1))
     response = rig.stored(_UNSUMMED)
 
     assert response.status_code == 202, response.text
