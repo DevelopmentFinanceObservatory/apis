@@ -1,8 +1,11 @@
 """Build a decode plan from a frame and caller-supplied `CodeIndex`.
 
-This pure function resolves code-system values from `StatVarRow.constraint_properties` and
-`CodeRow.label`. `materialise.reshape.decode_columns` applies the plan. The index is already in
-memory, so planning needs no I/O or cache.
+This pure function resolves code-system values from `StatVarRow.constraint_properties`: each
+decoded `stat_var_<code_system>` cell holds the code's dcid (`CodeRow.dcid`), so a relabelled
+code keeps its cell. Labels are read where output names a code: the long layout's
+`<code_system>_label` (`materialise.projection`) and the presentation frame's labels.
+`materialise.reshape.decode_columns` applies the plan. The index is already in memory, so
+planning needs no I/O or cache.
 """
 
 from __future__ import annotations
@@ -49,10 +52,10 @@ def build_decode_plan(
     component by declaration, so its column restates which component a row came from, which
     `stat_var` already names, and a sum over the composite would split on it.
 
-    For each `(ref, code_system)`, `lookup` contains the code label when the index resolves the
-    declared value. A declared absence stores the system's `absent_reading`. Missing StatVars or
-    unresolved declared codes omit the lookup entry, so `decode_columns` emits an empty cell and
-    `enrichment_unavailable` warning instead.
+    For each `(ref, code_system)`, `lookup` contains the code's dcid when the index holds a code row
+    for the declared value. A declared absence stores the system's `absent_reading`. Missing
+    StatVars or unresolved declared codes omit the lookup entry, so `decode_columns` emits an empty
+    cell and `enrichment_unavailable` warning instead.
     """
     refs: set[str] = set(extra_refs)
     if _STAT_VAR_COLUMN in table.columns:
@@ -86,9 +89,8 @@ def build_decode_plan(
             if value_dcid is None:
                 cells[code_system] = index.declarations[code_system].absent_reading
                 continue
-            code_row = index.code_by_dcid(value_dcid)
-            if code_row is not None:
-                cells[code_system] = code_row.label
+            if index.code_by_dcid(value_dcid) is not None:
+                cells[code_system] = value_dcid
         lookup[ref] = cells
 
     requests = tuple((_STAT_VAR_COLUMN, code_system) for code_system in sorted(code_systems))

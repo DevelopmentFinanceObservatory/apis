@@ -69,12 +69,23 @@ NO_PARTY_ROLE = "no_party_role"
 holds no party role. It holds no party-kind cell, so its bytes are the same under every code
 index and its key is the same under every digest. No digest, a hex SHA-256, equals it."""
 
-RENDER_FORMAT = "axis_label"
-"""The cells a render writes into a derived version's frame and files for unchanged data and
-options: under `axis_label` each kept `stat_var_<axis>` cell holds its code's label. It joins
-the stamp a derived version's links record (`rendering_stamp`), so a recorded sum or cut
-rendered under another format matches no request and the next request renders it again.
-Change it with any change to the cells a sum, a cut or a decode writes."""
+RENDER_FORMAT = "axis_dcid_party_kind"
+"""The cells a render writes into a frame-layout file and a derived version's frame for unchanged
+data and options. Under `axis_dcid_party_kind` each decoded `stat_var_<code_system>` cell holds
+its code's dcid (`datasets_api.decode`), and a party's kind and class cells on a declared
+composite's rows read the composite's component tables (`code_index.types.PartyRow.kinds_over`),
+as a party-totals cut does. It salts the link key of a frame-layout file
+(`version_store.rendering_key`) and joins the stamp a derived version's links record
+(`rendering_stamp`), so a file or version rendered under another format matches no request and
+the next request renders it again. It also names an analysis root read from a frame-layout file
+(`analysis_roots.frame_ref_for`), so an analysis over such a root after a change is a new output
+pair. Change it with any change to those cells."""
+
+
+def holds_frame_cells(rendering: Mapping[str, object]) -> bool:
+    """Whether `rendering` is a frame-layout file's (`layout: "frame"`), whose cells are the
+    frame's as reshaped, so its link key carries `RENDER_FORMAT`."""
+    return rendering.get("layout") == "frame"
 
 
 def rendering_stamp(code_index_hash: str) -> str:
@@ -378,9 +389,9 @@ class HeadLink:
     """One file linked under a version: its `rendering`, and every raw head a write named as
     making it (`datasets.version_artifact_head`), empty on a link no write named a head for, as
     on every link under a raw version and every link written before links held heads.
-    `rendered_under` maps each of those heads whose row records it to the stamp of the code
-    index and render format the last write naming that head rendered the file under
-    (`rendering_stamp`)."""
+    `rendered_under` maps each of those heads whose row records it to the stamp
+    (`rendering_stamp`) of the code index and render format the last write naming that head
+    rendered the file under."""
 
     rendering: Mapping[str, object]
     heads: frozenset[str] = frozenset()

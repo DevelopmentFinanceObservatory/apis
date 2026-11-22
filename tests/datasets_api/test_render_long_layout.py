@@ -11,7 +11,6 @@ import io
 import json
 import time
 import zipfile
-from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from itertools import product
 
@@ -23,7 +22,6 @@ from dfo_frame_grammar.grammar import UnitRequest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.declarations import DAC2A, DAC2A_BILATERAL
-from code_index.shared import get_index
 from code_index.types import PartyRow, RoleAxis, StatVarRow, WholeMarker
 from datasets_api import render as render_module
 from datasets_api.manifest_models import CitationSource
@@ -502,7 +500,7 @@ def test_a_groupby_collapse_keeps_its_frame_and_content_version():
 
     assert rendered.collapse is not None
     # The collapse frame and its identity are the grammar's, untouched by the written columns.
-    assert rendered.collapse.content_version == "cv_03c9050c06fd518c9cfb8c7178a06033"
+    assert rendered.collapse.content_version == "cv_a04bd234d34b721cbd8a8f3b2c3db386"
     assert rendered.collapse.frame.columns == (
         "stat_var",
         "financingProvider",
@@ -617,7 +615,7 @@ def test_a_failed_name_read_leaves_name_cells_empty_warns_and_completes(error):
     assert not rendered.labels_complete
 
 
-def test_a_label_two_codes_of_a_system_share_leaves_the_code_empty_and_warns():
+def test_two_codes_of_a_system_sharing_a_label_each_keep_their_code():
     twin = _code("dcid:CRSPurposeCode99999", "crsPurpose", "99999", "Basic health care")
     index = CodeIndex(
         stamp=_STAMP,
@@ -629,21 +627,10 @@ def test_a_label_two_codes_of_a_system_share_leaves_the_code_empty_and_warns():
     rendered, body = _render(MintOptions(format="csv", bundle=False), index=index)
 
     by_stat_var = {record["stat_var"]: record for record in _records(body)}
-    assert by_stat_var["dcid:SV_A"]["crsPurpose"] == ""
+    assert by_stat_var["dcid:SV_A"]["crsPurpose"] == _HEALTH.dcid
     assert by_stat_var["dcid:SV_A"]["crsPurpose_label"] == "Basic health care"
     assert by_stat_var["dcid:SV_C"]["crsPurpose"] == _MALARIA.dcid
-    assert _unavailable(rendered) == [("crsPurpose", 2)]
-
-
-def test_no_fixture_code_system_gives_two_codes_one_label():
-    """An axis code column reads its code back from the decoded label, so a label two codes
-    of one declared system share leaves those rows without a code."""
-    index = get_index()
-    labels = Counter(
-        (row.code_system, row.label) for row in index.codes if row.code_system in index.declarations
-    )
-
-    assert [key for key, count in labels.items() if count > 1] == []
+    assert _unavailable(rendered) == []
 
 
 def test_a_decode_gap_warning_names_the_label_column():
@@ -704,11 +691,11 @@ def test_a_render_stops_reading_names_after_the_first_failed_read(clock, bundle)
 
 
 _FRAME_HEADER = (*_FRAME_COLUMNS, "stat_var_crsPurpose", "stat_var_crsTypeOfFinance")
-_AXIS_LABELS = (
-    ("Basic health care", "Standard grant"),
-    ("Basic health care", "Standard loan"),
-    ("Malaria control", "Standard grant"),
-    ("Malaria control", "not_declared"),
+_AXIS_CELLS = (
+    (_HEALTH.dcid, _GRANT.dcid),
+    (_HEALTH.dcid, _LOAN.dcid),
+    (_MALARIA.dcid, _GRANT.dcid),
+    (_MALARIA.dcid, "not_declared"),
 )
 _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=2023)
 
@@ -720,7 +707,7 @@ _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=20
             {},
             _ROWS,
             _FRAME_HEADER,
-            [(*row, *labels) for row, labels in zip(_ROWS, _AXIS_LABELS, strict=True)],
+            [(*row, *labels) for row, labels in zip(_ROWS, _AXIS_CELLS, strict=True)],
             id="decoded-axes",
         ),
         pytest.param(
@@ -737,7 +724,7 @@ _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=20
                     "dcid:family",
                     "country/USA",
                     "country/KEN",
-                    "Basic health care",
+                    _HEALTH.dcid,
                     "2022",
                     15.0,
                     "USD",
@@ -749,7 +736,7 @@ _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=20
                     "dcid:family",
                     "country/USA",
                     "country/KEN",
-                    "Malaria control",
+                    _MALARIA.dcid,
                     "2022",
                     7.0,
                     "USD",
@@ -771,7 +758,7 @@ _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=20
                     *row[6:],
                     *labels,
                 )
-                for row, labels in zip(_ROWS, _AXIS_LABELS, strict=True)
+                for row, labels in zip(_ROWS, _AXIS_CELLS, strict=True)
             ],
             id="converted-unit",
         ),
@@ -779,7 +766,7 @@ _CONSTANT_2023_USD = UnitRequest(currency="USD", prices="constant", base_year=20
             {"columns": ["financingRecipient_iso3"]},
             _ROWS,
             (*_FRAME_HEADER, "financingRecipient_iso3"),
-            [(*row, *labels, "KEN") for row, labels in zip(_ROWS, _AXIS_LABELS, strict=True)],
+            [(*row, *labels, "KEN") for row, labels in zip(_ROWS, _AXIS_CELLS, strict=True)],
             id="enrichment-column",
         ),
     ],

@@ -364,6 +364,7 @@ def test_search_reads_a_whole_total_as_a_total():
 
 
 _CRS = "provenance/OECDCreditorReportingSystem"
+_DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
 _TRUST_FUNDS = PartyRow(
     dcid="IMFConcessionalTrustFunds",
     kind="party",
@@ -401,6 +402,28 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
         read_party_kinds([entity], parties=parties, datasets=datasets)
         for datasets in ((_DAC2A,), (_CRS,), (_CRS, _DAC2A), ())
     ] == [{entity: "total"}, {entity: "party"}, {}, {}]
+
+
+@pytest.mark.parametrize(
+    ("provenance", "kind"),
+    [
+        pytest.param(_DAC2A_BILATERAL, "total", id="composite-row"),
+        pytest.param(_CRS, "party", id="crs-row"),
+    ],
+)
+def test_a_composite_s_row_reads_a_party_s_kind_over_the_composite_s_tables(provenance, kind):
+    """A row of the DAC2a bilateral composite reads the trust funds' kind over its component
+    tables, where DAC2A declares them a total, and a CRS row reads the CRS's."""
+    cell = row_party_cell(
+        "party_kind",
+        _TRUST_FUNDS.dcid,
+        role="financingProvider",
+        parties={_TRUST_FUNDS.dcid: _TRUST_FUNDS},
+        period="2022",
+        provenance=provenance,
+    )
+
+    assert cell == kind
 
 
 def test_a_party_s_kind_and_count_read_the_role_s_axis():

@@ -1298,6 +1298,87 @@ def test_export_on_a_target_frame_holds_that_frame_s_rows_for_the_rendered_card(
     assert (_TARGET_FRAME_REF, created.component_id) not in frame_store.pins
 
 
+_SECTOR = "stat_var_crsPurpose"
+_SECTOR_CODES = {
+    "Malaria control": "dcid:CRSPurposeCode12262",
+    "Basic health care": "dcid:CRSPurposeCode122",
+}
+
+
+def _sector_frame(frame_ref: FrameRef, *, cells: Mapping[str, str]) -> ResolvedFrame:
+    """`_frame`'s malaria rows once per sector, each sector's `stat_var_crsPurpose` cell as
+    `cells` maps its label, with basic health care's values 500 higher."""
+    base = _frame(frame_ref)
+    columns = base.frame["columns"]
+    rows = [
+        {column: cell for column, cell in zip(columns, row, strict=True) if column != "status"}
+        for row in base.frame["rows"]
+    ]
+    return build_resolved_frame(
+        frame_ref=frame_ref,
+        role_keys=("recipient", _SECTOR),
+        rows=[
+            {
+                **row,
+                _SECTOR: cells[label],
+                "value": row["value"] + (label == "Basic health care") * 500,
+            }
+            for label in _SECTOR_CODES
+            for row in rows
+        ],
+        labels=base.labels,
+        manifest=base.manifest,
+    )
+
+
+def test_export_on_a_target_frame_of_sector_dcids_traces_a_card_selecting_a_sector_label(
+    frame_store, revision_store, release_registry
+):
+    """A card written on a frame whose `stat_var_crsPurpose` cells held labels exports on a
+    frame holding the codes' dcids, each shown point traced to the dcid row its label names
+    (`ResolvedFrame.codes_by_label`)."""
+    stored = _sector_frame(_FRAME_REF, cells={label: label for label in _SECTOR_CODES})
+    frame_store.put(resolved_frame=stored)
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _sector_frame(_TARGET_FRAME_REF, cells=_SECTOR_CODES),
+            codes_by_label={_SECTOR: _SECTOR_CODES},
+        )
+    )
+    created = write_component(
+        intent={
+            **_INTENTS["line_chart"],
+            "select": {**_INTENTS["line_chart"]["select"], _SECTOR: "Malaria control"},
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    stored_rows = _csv_rows(
+        _export(created, frame_store=frame_store, revision_store=revision_store).data
+    )
+
+    exported = export_component_data(
+        component_id=created.component_id,
+        revision=created.revision,
+        format="csv",
+        bundle=False,
+        revision_store=revision_store,
+        frame_store=frame_store,
+        site_url=_SITE_URL,
+        target_frame=_TARGET_FRAME_REF,
+        release_registry=release_registry,
+    )
+    rows = _csv_rows(exported.data)
+
+    assert {row[_SECTOR] for row in stored_rows} == {"Malaria control"}
+    assert {row[_SECTOR] for row in rows} == {_SECTOR_CODES["Malaria control"]}
+    assert [(row["time_period"], row["value"]) for row in rows] == [
+        (row["time_period"], row["value"]) for row in stored_rows
+    ]
+
+
 def test_a_bundle_on_a_target_frame_is_dated_by_that_frame_and_names_no_reproducing_call(
     tmp_path, frame_store, revision_store, release_registry
 ):
