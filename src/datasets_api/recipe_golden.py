@@ -151,6 +151,11 @@ class FixtureRootSource:
     body: Mapping[str, Any]
     _seen: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
+    @property
+    def code_index(self) -> None:
+        """None: a case computes a stored recipe, whose op-specs hold their values resolved."""
+        return None
+
     @classmethod
     def load(cls, case: Path) -> FixtureRootSource:
         return cls(case=case, body=json.loads((case / CASE_FILE).read_text()))

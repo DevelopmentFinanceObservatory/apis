@@ -78,8 +78,11 @@ def test_each_seed_reading_mints_and_serves_its_fixture_points(client, reading):
 
     assert served.status_code == 200, served.text
     assert {
-        tuple(sorted(entity["ref"] for entity in series["entities"])): [
-            (point["date"], point["value"]) for point in series["points"]
-        ]
+        upstream.series_key(
+            series["stat_var"]["ref"], [entity["ref"] for entity in series["entities"]]
+        ): [(point["date"], point["value"]) for point in series["points"]]
         for series in served.json()["series"]
-    } == {tuple(sorted(series.entities.values())): list(series.points) for series in reading.series}
+    } == {
+        upstream.series_key(series.stat_var, list(series.entities.values())): list(series.points)
+        for series in reading.series
+    }

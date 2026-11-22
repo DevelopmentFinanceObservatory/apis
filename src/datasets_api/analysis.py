@@ -23,8 +23,12 @@ and a root whose version holds more than one StatVar is read summed, keeping the
 those words name, unless they name `stat_var` (`analysis_roots.implied_groupby`). The sum is
 the root's `groupby`, so its record, the normal form and the ref state it, and the answer counts
 the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads the
-`stat_var_<axis>` column the sum keeps (`column_for`). A `stat_var_unresolved` names the
-summed read, or the sum the datasets door refused (`_with_summed_read`).
+`stat_var_<axis>` column the sum keeps (`column_for`), whose cells are code dcids. A
+`category_match` value on that column may be a code's dcid, its publisher code or a label naming
+one code of the axis; the planner resolves it before the request is keyed
+(`resolved_breakdown_values`), and a label naming several codes refuses
+`breakdown_label_ambiguous`. A `stat_var_unresolved` names the summed read, or the sum the
+datasets door refused (`_with_summed_read`).
 
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
@@ -138,6 +142,8 @@ from pydantic import (
 )
 
 from artifact_store import ArtifactStore
+from code_index import CodeIndex, CodeRow
+from code_index.query import fold_text
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
     SnapshotNotFound,
@@ -679,6 +685,12 @@ class LocatedRoot(ResolvedRoot):
 class RootSource(Protocol):
     """Where the runner reads its roots from (`analysis_roots.LiveRootSource`)."""
 
+    @property
+    def code_index(self) -> CodeIndex | None:
+        """The code index a filter value on a breakdown column resolves through
+        (`resolved_breakdown_values`), `None` where values stay as the caller gave them."""
+        ...
+
     def resolve(
         self,
         root: SpecRoot | DatasetRoot,
@@ -1025,6 +1037,7 @@ def _plan_node(
     match node:
         case StepNode():
             plan.count()
+            node = resolved_breakdown_values(node, source.code_index)
             words = _path_words(node)
             below = reduced or node.verb is not Verb.FILTER
             filtered = (
@@ -1146,6 +1159,101 @@ def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
             )
         )
     return on_axis[0] if on_axis else word
+
+
+def _axis_of(word: object, codes: CodeIndex) -> str | None:
+    """The code system the column word `word` names, as the axis or as its `stat_var_<axis>`
+    column, else `None`."""
+    if not isinstance(word, str):
+        return None
+    axis = word.removeprefix(STAT_VAR_PREFIX)
+    return axis if axis in codes.declarations else None
+
+
+def _codes_named(value: str, axis: str, codes: CodeIndex) -> tuple[CodeRow, ...]:
+    """The codes of `axis` that `value` names: the code whose dcid it is, else the code whose
+    publisher code it is, else the codes whose label it is under `fold_text`, else those
+    whose synonym it is (`CodeIndex.codes_by_text`)."""
+    if (row := codes.code_by_dcid(value)) is not None and row.code_system == axis:
+        return (row,)
+    if (row := codes.code_by_code(axis, value)) is not None:
+        return (row,)
+    hits = [row for row in codes.codes_by_text(value) if row.code_system == axis]
+    folded = fold_text(value)
+    return tuple([row for row in hits if fold_text(row.label) == folded] or hits)
+
+
+def _label_names_one_code(row: CodeRow, codes: CodeIndex) -> bool:
+    """Whether no other code of `row`'s axis has `row`'s label, so a frame whose cells held
+    labels held this one for `row` alone."""
+    folded = fold_text(row.label)
+    return [
+        hit.dcid
+        for hit in codes.codes_by_text(row.label)
+        if hit.code_system == row.code_system and fold_text(hit.label) == folded
+    ] == [row.dcid]
+
+
+def _engine_values(values: list[Any], *, column: str, axis: str, codes: CodeIndex) -> list[Any]:
+    """`values` of a `category_match` on the breakdown column `column` as the engine matches
+    them: a value naming one code of `axis` as the code's dcid, followed by its label when that
+    label names no other code of the axis, and any other value as given.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    sent: list[Any] = []
+    for value in values:
+        named = _codes_named(value, axis, codes) if isinstance(value, str) else ()
+        if len(named) > 1:
+            raise AnalysisRefused(
+                EngineRefusal.breakdown_label_ambiguous(
+                    column=column,
+                    value=value,
+                    candidates=[{"dcid": row.dcid, "label": row.label} for row in named],
+                )
+            )
+        if not named:
+            spelled = [value]
+        elif _label_names_one_code(row := named[0], codes):
+            spelled = [row.dcid, row.label]
+        else:
+            spelled = [row.dcid]
+        sent.extend(one for one in spelled if one not in sent)
+    return sent
+
+
+def resolved_breakdown_values(step: StepNode, codes: CodeIndex | None) -> StepNode:
+    """`step` with each `category_match` value on a breakdown column, `<axis>` or
+    `stat_var_<axis>` for a code system of `codes`, as the engine matches it
+    (`_engine_values`): a code dcid, a publisher code and a label naming one code of the axis
+    all become that code's dcid and, while its label names no other code, that label, so a
+    frame holding dcid cells and an older one holding label cells both match. A value naming
+    no code of the axis stays as given, and keeps no row the column does not hold. The planner
+    resolves values before the request key is taken, so each spelling of one code keys one
+    stored answer, and the engine's filter stays exact.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    predicates = step.arguments.get("predicates")
+    if codes is None or not isinstance(predicates, list):
+        return step
+    resolved: list[JsonValue] = []
+    for predicate in predicates:
+        if (
+            isinstance(predicate, dict)
+            and predicate.get("kind") == "category_match"
+            and isinstance(values := predicate.get("values"), list)
+            and (axis := _axis_of(column := predicate.get("column"), codes)) is not None
+        ):
+            assert isinstance(column, str)
+            predicate = {
+                **predicate,
+                "values": _engine_values(values, column=column, axis=axis, codes=codes),
+            }
+        resolved.append(predicate)
+    return step.model_copy(update={"arguments": {**step.arguments, "predicates": resolved}})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2067,7 +2175,37 @@ def _evaluated(
             the publish door stores (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
     frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
-    return _evaluated_frames(working, resolved, frames, bounds=bounds, latest=latest)
+    computed = _evaluated_frames(working, resolved, frames, bounds=bounds, latest=latest)
+    if source.code_index is None:
+        return computed
+    summary = _with_unmatched_codes(computed.evaluation.summary, source.code_index)
+    return replace(computed, evaluation=replace(computed.evaluation, summary=summary))
+
+
+def _with_unmatched_codes(summary: Mapping[str, Any], codes: CodeIndex) -> dict[str, Any]:
+    """`summary` with each `unmatched_breakdown_values` entry naming the codes its `labels`
+    hold as `codes`, `[{dcid, label}]` for each held value that is a code dcid of the entry's
+    axis, so a caller sees the label beside each dcid the column holds."""
+    result = summary.get("result")
+    unmatched = result.get("unmatched_breakdown_values") if isinstance(result, Mapping) else None
+    if not unmatched:
+        return dict(summary)
+    named: list[dict[str, Any]] = []
+    for entry in unmatched:
+        axis = str(entry["column"]).removeprefix(STAT_VAR_PREFIX)
+        held = (codes.code_by_dcid(value) for value in entry["labels"])
+        named.append(
+            {
+                **entry,
+                "codes": [
+                    {"dcid": row.dcid, "label": row.label}
+                    for row in held
+                    if row is not None and row.code_system == axis
+                ],
+            }
+        )
+    assert isinstance(result, Mapping)
+    return {**summary, "result": {**result, "unmatched_breakdown_values": named}}
 
 
 def _evaluated_frames(

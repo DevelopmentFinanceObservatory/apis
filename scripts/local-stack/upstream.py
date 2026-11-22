@@ -15,7 +15,7 @@ client's `/v2/node` reads from the same fixture: each node's out-arcs, a labelle
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -45,8 +45,10 @@ class FacetFixture:
 
 @dataclass(frozen=True)
 class Series:
-    """One series of a StatVar: its entity under each role, its facet and its points."""
+    """One series of a StatVar: the StatVar, its entity under each role, its facet and its
+    points."""
 
+    stat_var: str
     entities: Mapping[str, str]
     facet: FacetFixture
     points: tuple[tuple[str, float], ...]
@@ -65,10 +67,16 @@ class Series:
 
 @dataclass(frozen=True)
 class Reading:
+    """A reading: its StatVars and each of their series. A reading of one StatVar names it once
+    as `stat_var` and mints as a `statvar_set` with its `scope`. A reading of several names
+    each series' StatVar and the Spec identity (`identity`) whose members they are, and mints
+    as that Spec."""
+
     name: str
-    stat_var: str
+    stat_vars: tuple[str, ...]
     scope: Mapping[str, object]
     series: tuple[Series, ...]
+    identity: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,25 +113,37 @@ def load_fixture(path: Path = READINGS) -> Fixture:
     readings = tuple(
         Reading(
             name=body["name"],
-            stat_var=body["stat_var"],
+            stat_vars=tuple(body.get("stat_vars") or [body["stat_var"]]),
             scope=body["scope"],
             series=tuple(
                 Series(
+                    stat_var=series.get("stat_var") or body["stat_var"],
                     entities=series["entities"],
                     facet=FacetFixture(**series["facet"]),
                     points=tuple((date, float(value)) for date, value in series["points"]),
                 )
                 for series in body["series"]
             ),
+            identity=body.get("identity"),
         )
         for body in raw["readings"]
     )
-    unknown = {reading.stat_var for reading in readings} - stat_vars.keys()
+    unknown = {
+        dcid
+        for reading in readings
+        for dcid in (*reading.stat_vars, *(series.stat_var for series in reading.series))
+    } - stat_vars.keys()
     if unknown:
         raise ValueError(f"readings name StatVars the fixture does not define: {sorted(unknown)}")
     return Fixture(
         places=raw["places"], labels=raw["labels"], stat_vars=stat_vars, readings=readings
     )
+
+
+def series_key(stat_var: str, refs: Sequence[str]) -> tuple[str, ...]:
+    """A series of an observations answer or of the fixture: its StatVar and its sorted
+    entity refs."""
+    return (stat_var, *sorted(refs))
 
 
 def _anchor(stat_var: StatVar, series: Series) -> str:
@@ -144,9 +164,9 @@ def graph_reader(fixture: Fixture) -> FakeMintGraphReader:
         arcs[place] = {"typeOf": ("Country",), "name": (name,)}
     facets: dict[tuple[str, str], list[Facet]] = {}
     for reading in fixture.readings:
-        stat_var = fixture.stat_vars[reading.stat_var]
         for series in reading.series:
-            key = (reading.stat_var, _anchor(stat_var, series))
+            stat_var = fixture.stat_vars[series.stat_var]
+            key = (series.stat_var, _anchor(stat_var, series))
             held = facets.setdefault(key, [])
             if all(facet.facet_id != series.facet.facet_id for facet in held):
                 held.append(series.graph_facet())
@@ -201,7 +221,7 @@ def _all_series(fixture: Fixture) -> dict[tuple[str, tuple[tuple[str, str], ...]
     held: dict[tuple[str, tuple[tuple[str, str], ...]], Series] = {}
     for reading in fixture.readings:
         for series in reading.series:
-            held[(reading.stat_var, tuple(sorted(series.entities.items())))] = series
+            held[(series.stat_var, tuple(sorted(series.entities.items())))] = series
     return held
 
 

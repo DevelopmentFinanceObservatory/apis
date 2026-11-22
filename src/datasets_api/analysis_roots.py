@@ -548,6 +548,11 @@ class LiveRootSource:
         # The StatVars with rows in each old-trace dataset version, by (spec id, version).
         self._stat_vars: dict[tuple[str, str], list[str]] = {}
 
+    @property
+    def code_index(self) -> CodeIndex:
+        """The request's code index, which breakdown filter values resolve through."""
+        return self._deps.code_index
+
     def _refuse_rendering_past_bound(self, rows: int) -> None:
         """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
         roots located past `max_root_rows`.

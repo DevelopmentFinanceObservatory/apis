@@ -119,6 +119,11 @@ class StoredRootSource:
     fold_max_rows: int
     _records: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
+    @property
+    def code_index(self) -> None:
+        """None: a replay computes a stored recipe, whose op-specs hold their values resolved."""
+        return None
+
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
         record = self.recipes.read_recipe(spec_id=spec_id, content_version=content_version)
         return None if record is None else record.body

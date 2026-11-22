@@ -181,6 +181,7 @@ class RefusalCode(StrEnum):
     ROLLING_ANCHOR_UNRESOLVED = "rolling_anchor_unresolved"
     ROLLING_GRAIN_UNSUPPORTED = "rolling_grain_unsupported"
     ROLLING_POPULATIONS_DIFFER = "rolling_populations_differ"
+    BREAKDOWN_LABEL_AMBIGUOUS = "breakdown_label_ambiguous"
 
 
 _DO_NOT_RETRY = frozenset(
@@ -1381,6 +1382,29 @@ class Refusal:
                 "rolling.population on every rolling op-spec of the recipe and retry."
             ),
             fix={"populations": [list(entry) for entry in populations]},
+        )
+
+    @classmethod
+    def breakdown_label_ambiguous(
+        cls, *, column: str, value: str, candidates: Sequence[Mapping[str, str]]
+    ) -> Self:
+        """A filter value on the breakdown column `column` is a label naming several codes of
+        its axis, `candidates` (`{dcid, label}` each). The engine matches values exactly and
+        never raises this: the caller that resolves a label to its code before the engine
+        reads it does (`datasets_api.analysis.resolved_breakdown_values`)."""
+        named = "; ".join(f"{one['dcid']} ({one['label']})" for one in candidates)
+        return cls(
+            code=RefusalCode.BREAKDOWN_LABEL_AMBIGUOUS,
+            message=(
+                f"{value!r} on {column} names {len(candidates)} codes: {named}. Filter by "
+                "one code's dcid and retry."
+            ),
+            fix={
+                "parameter": "predicates",
+                "column": column,
+                "value": value,
+                "candidates": [dict(one) for one in candidates],
+            },
         )
 
 
