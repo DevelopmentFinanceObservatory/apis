@@ -101,6 +101,7 @@ from search.engine.region.observations.served_years import (
     year_count,
 )
 from search.engine.region.result import FacetAxisFilter
+from search.engine.retrieval.facet_election import ranked_facet
 from search.engine.retrieval.read_plan import (
     Admits,
     BulkPlan,
@@ -510,6 +511,12 @@ def _role_bearing_bulk_dispatch(
     if years is not None:
         narrowed = read_in_years(plan, years)
         assert narrowed is not None  # `_build_observations` read the same years first
+        bounded = all(_annual(ranked_facet(c, window=None)) for c in plan.candidates.values())
+        if not bounded:
+            # SDMX takes a year by its four digits, so a facet not annual on evidence reads
+            # the whole window and the read keeps the served years afterwards.
+            narrowed = replace(narrowed, read_years=plan.read_years)
+        _count_spans(bounded=int(bounded), whole_window=int(not bounded))
         plan = narrowed
     return _bulk_role_series(
         plan,
@@ -1019,21 +1026,28 @@ def _count_span_reads(dispatches: Sequence[_Dispatch]) -> None:
     line states how many asked SDMX for bounded years (`span_reads_bounded`) and how many
     for the whole window (`span_reads_whole_window`), a bulk group's widened reads among
     them (`_shared_spans` counts those as `span_reads_widened`). A read with no span counts
-    nothing. A debug line states the same counts for the read."""
+    nothing. A bulk role read of a narrowed plan counts as one read, bounded when every
+    candidate facet is annual on evidence (`_annual`). A debug line states the same counts
+    for the read."""
     spans = [dispatch.span for dispatch in dispatches if dispatch.span is not None]
     if not spans:
         return
     bounded = sum(span.fetched is not None for span in spans)
+    _count_spans(bounded=bounded, whole_window=len(spans) - bounded)
+
+
+def _count_spans(*, bounded: int, whole_window: int) -> None:
+    """Count `bounded` and `whole_window` span reads on the request's timings."""
     timings.count("span_reads_bounded", bounded)
-    timings.count("span_reads_whole_window", len(spans) - bounded)
+    timings.count("span_reads_whole_window", whole_window)
     logger.debug(
         "span reads: %d bounded, %d whole window",
         bounded,
-        len(spans) - bounded,
+        whole_window,
         extra={
             JSON_FIELDS_ATTR: {
                 "span_reads_bounded": bounded,
-                "span_reads_whole_window": len(spans) - bounded,
+                "span_reads_whole_window": whole_window,
             }
         },
     )

@@ -179,6 +179,20 @@ class _Served(NamedTuple):
     estimated: frozenset[tuple[str, RoleTuple]]
 
 
+def _within_years(served: _Served, years: frozenset[int]) -> _Served:
+    """`served` keeping the points dated in `years`, and the pairs that hold one."""
+    points = {
+        pair: kept
+        for pair, held in served.points.items()
+        if (kept := [p for p in held if year_of(p[0]) in years])
+    }
+    return _Served(
+        points=points,
+        stated={pair: refs for pair, refs in served.stated.items() if pair in points},
+        estimated=served.estimated & points.keys(),
+    )
+
+
 def _served_pairs(
     plan: BulkPlan,
     rows: Mapping[tuple[str, RoleTuple], list[_Point]],
@@ -932,6 +946,10 @@ def _read_and_assemble(
         estimated=estimated_ids,
         fell_back=fell_back,
     )
+    if plan.served_years is not None:
+        # A read of the whole window (`fetch._role_bearing_bulk_dispatch`) masks and collapses every
+        # row of it; the served years are kept once it has.
+        served = _within_years(served, plan.served_years.years)
     converted = None
     if conversion is not None:
         try:

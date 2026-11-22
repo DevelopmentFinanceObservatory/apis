@@ -340,10 +340,11 @@ async def _component_continuation(
     (`ResolvedSpec.continued`), or None when its resolve states none.
 
     A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient. `_resubmit` notes and
-    logs it, so the answer is degraded and no cache stores it. A resolve that refuses the
+    logs it at WARNING, so the answer is degraded and no cache stores it and no INFO line
+    repeats it. A resolve that refuses the
     identity (`EngineInputError`) or answers no definite Spec is deterministic, so it states
     no continuation and leaves the answer cacheable. Each of these is logged at INFO with the
-    component's role, its identity and the cause, so a component whose resolve keeps
+    component's role, its spec_id and the cause, so a component whose resolve keeps
     refusing shows in the logs while its answers lose their modelled-value claims. Any other
     error is a code fault and propagates, as on the preview path."""
     document, years = component_preview(item)
@@ -358,18 +359,19 @@ async def _component_continuation(
         observations=False,
     )
     if isinstance(region, _LostRead):
-        logger.info(
-            "composite continuation: component %s states none: %s",
-            item.component.role,
-            region.cause,
-            extra={
-                JSON_FIELDS_ATTR: {
-                    "component_role": item.component.role,
-                    "component_identity": document,
-                    "continuation_cause": region.cause,
-                }
-            },
-        )
+        if not region.warned:
+            logger.info(
+                "composite continuation: component %s states none: %s",
+                item.component.role,
+                region.cause,
+                extra={
+                    JSON_FIELDS_ATTR: {
+                        "component_role": item.component.role,
+                        "component_spec_id": component_spec_id(item),
+                        "continuation_cause": region.cause,
+                    }
+                },
+            )
         return None
     return region.spec.resolved.continued
 
@@ -377,10 +379,12 @@ async def _component_continuation(
 @dataclass(frozen=True, slots=True)
 class _LostRead:
     """A resubmit preview that read nothing, `timed_out` when the read crossed its deadline,
-    with `cause` saying why."""
+    with `cause` saying why. `warned` is set where `_resubmit` already logged the loss at
+    WARNING."""
 
     timed_out: bool
     cause: str
+    warned: bool = False
 
     def warning(self, message: str) -> Warning:
         """The warning stating `message` under `observations_timed_out` for a read that
@@ -493,8 +497,8 @@ async def _resubmit(
                 exc_info=True,
             )
             if timed_out:
-                return _LostRead(timed_out=True, cause="read crossed its deadline")
-            return _LostRead(timed_out=False, cause="read failed")
+                return _LostRead(timed_out=True, cause="read crossed its deadline", warned=True)
+            return _LostRead(timed_out=False, cause="read failed", warned=True)
     if reads.memo is not None and key is not None and not stored:
         reads.memo.store(key, region)
     if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):

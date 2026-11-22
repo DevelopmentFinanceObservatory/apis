@@ -844,7 +844,8 @@ def test_a_continuation_resolve_that_states_nothing_still_answers_the_part(
 ):
     """Asked with no preview, the imputed component's resolve is lost to a graph failure,
     refused, or answers no definite Spec. The part still answers the composite and states no
-    continuation, and one INFO line names the component's role. A lost read is transient,
+    continuation, and one INFO line names the component's role, except for a lost read, which
+    `_resubmit` already warned. A lost read is transient,
     so the answer is degraded and no cache stores it; a refusal or a no-data answer is
     deterministic, so the answer stays whole and is cached."""
     first, components = _components(monkeypatch)
@@ -873,7 +874,7 @@ def test_a_continuation_resolve_that_states_nothing_still_answers_the_part(
         for record in caplog.records
         if record.levelname == "INFO" and "continuation_cause" in getattr(record, "json_fields", {})
     ]
-    assert stated_none == ["imputed"]
+    assert stated_none == ([] if fault == "lost" else ["imputed"])
     if door == "fresh":
         assert (cache.stats().entries > 0) is not degraded
     else:

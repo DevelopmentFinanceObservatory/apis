@@ -15,6 +15,7 @@ import pytest
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform.timings import PhaseTimings, collecting
 from materialise import GraphReader
 from materialise.facets import FacetSelection, UnitRequest
 from materialise.rate_tables import RateTableCache
@@ -1866,6 +1867,70 @@ def test_a_read_in_served_years_picks_counts_and_shows_their_series_alone(
     assert not observations.truncated
     assert [[p.date for p in series.points] for series in observations.series] == [dates] * 2
     assert observations.total_obs == 2 * len(dates)
+
+
+@pytest.mark.parametrize(
+    ("period", "listed", "bounded"),
+    [
+        pytest.param("P1Y", ["2019", "2020"], True, id="annual"),
+        pytest.param("P1M", [str(year) for year in range(2010, 2021)], False, id="monthly"),
+    ],
+)
+def test_a_read_in_served_years_lists_them_alone_only_for_annual_facets(
+    monkeypatch, period, listed, bounded
+):
+    """A facet the coverage states by month cannot be asked for by the year, so the read
+    lists the plan's whole window and keeps the served years once it has read it. Both
+    reads show the same points and count themselves on the request's timings."""
+    recipients = [f"country/BRM{i}" for i in range(2)]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "F1", _DONOR, r, list(range(2010, 2021))) for r in recipients],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            "F1": FacetMetadata(provenance_id="dc/base/Src", observation_period=period)
+        },
+    )
+    coverage = FakeCoverageService(index).snapshot()
+    entities = _obs_entities(recipients)
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=[str(y) for y in range(2010, 2021)])]
+                for r in recipients
+            }
+        }
+    )
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        observations, _warn = region_fetch._build_observations(
+            bulk_plan(
+                [_SV],
+                entities,
+                coverage=coverage,
+                window=TimeWindow(start_year=2010, end_year=2020),
+            ),
+            [_SV],
+            entities,
+            graph=_GRAPH,
+            materialise_graph=None,
+            materialise_sdmx=None,
+            sdmx=sdmx,
+            coverage=coverage,
+            years=frozenset({2019, 2020}),
+        )
+
+    (call,) = sdmx.series_calls
+    assert call["time_period"] == listed
+    assert [[p.date for p in series.points] for series in observations.series] == [
+        ["2019", "2020"]
+    ] * 2
+    counts = timings.count_snapshot()
+    assert (counts.get("span_reads_bounded", 0), counts.get("span_reads_whole_window", 0)) == (
+        int(bounded),
+        int(not bounded),
+    )
 
 
 def test_a_converted_read_in_served_years_counts_and_converts_their_points_alone(
