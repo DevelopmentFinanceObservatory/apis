@@ -537,6 +537,7 @@ def _record_head_hit_derived(
             deadline=deps.deadline,
             summed=derived.summed,
             adds=derived.adds,
+            groupby=derived.groupby,
         ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):

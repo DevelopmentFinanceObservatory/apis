@@ -37,6 +37,15 @@ def test_sync_budget_requests_env_override(monkeypatch: pytest.MonkeyPatch) -> N
     assert DatasetsBuildSettings().sync_budget_requests == 7
 
 
+def test_inferred_sums_select_codes_only_when_the_environment_turns_it_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revisions that cannot read `groupby.codes` may still serve, so the default is off."""
+    assert DatasetsBuildSettings().analysis_sum_selected_codes is False
+    monkeypatch.setenv("DATASETS_ANALYSIS_SUM_SELECTED_CODES", "true")
+    assert DatasetsBuildSettings().analysis_sum_selected_codes is True
+
+
 def test_sync_budget_rows_non_integer_fails_fast_naming_the_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

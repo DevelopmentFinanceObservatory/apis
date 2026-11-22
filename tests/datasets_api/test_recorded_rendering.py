@@ -63,6 +63,22 @@ def test_each_file_records_its_groupby_and_party_totals_cut():
     ]
 
 
+def test_a_code_selection_is_a_minting_of_its_own_and_an_absent_one_records_as_before():
+    selected = {
+        **_SUMMED,
+        "groupby": {"by": ["recipient"], "op": "sum", "codes": {"recipient": ["B", "A"]}},
+    }
+
+    mintings = recorded_mintings([_SUMMED, selected, {**selected}])
+
+    assert mintings[0] == MintingOptions(groupby=_GROUPBY)
+    assert mintings[1] == mintings[2] != mintings[0]
+    assert hash(mintings[1]) == hash(mintings[2])
+    assert mintings[1].groupby is not None
+    assert mintings[1].groupby.codes == {"recipient": ["A", "B"]}
+    assert _GROUPBY.model_dump(mode="json") == {"by": ["recipient"], "op": "sum", "levels": None}
+
+
 @pytest.mark.parametrize(
     ("trace", "renderings", "sums"),
     [
@@ -158,8 +174,24 @@ def test_a_card_record_keeps_the_link_order_and_adds_only_plain():
             collapsed=True,
             mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
         ),
+        StoredRendering(
+            base_content_version="cv_base",
+            collapsed=True,
+            mintings=(
+                MintingOptions(
+                    groupby=GroupbyOptions(by=["recipient"], op="sum", codes={"recipient": ["A"]})
+                ),
+            ),
+        ),
     ],
-    ids=["plain", "single", "ambiguous-raw", "several-mintings-raw", "ambiguous-derived"],
+    ids=[
+        "plain",
+        "single",
+        "ambiguous-raw",
+        "several-mintings-raw",
+        "ambiguous-derived",
+        "code-selection",
+    ],
 )
 def test_a_card_record_reads_back_as_the_rendering_it_records(rendering: StoredRendering):
     assert StoredRendering.from_record(rendering.to_record()) == rendering

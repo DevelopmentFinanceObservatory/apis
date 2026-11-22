@@ -340,12 +340,14 @@ def analysis_stores(current: Deps) -> AnalysisStores:
 
 
 def analysis_bounds(current: Deps) -> AnalysisBounds:
-    """The tree-size, root-row and join-row bounds the settings give a run."""
+    """The tree-size, root-row and join-row bounds the settings give a run, and whether its
+    inferred sums read the codes their filters keep."""
     settings = current.settings
     return AnalysisBounds(
         max_nodes=settings.analysis_max_nodes,
         max_root_rows=settings.analysis_max_root_rows,
         max_join_rows=settings.analysis_max_join_rows,
+        sum_selected_codes=settings.analysis_sum_selected_codes,
     )
 
 

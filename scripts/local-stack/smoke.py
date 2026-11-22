@@ -33,6 +33,9 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
   two purposes' code dcids;
 - a filter naming purpose 72040 by its label, its publisher code and its dcid computes one
   frame, totalling that purpose's points;
+- that filter under the aggregate reads the sum with the purpose's code as its
+  `groupby.codes` selection, which the derived recipe's root options state, and answers the
+  frame and values of the same tree over a root stating the groupby with no codes;
 - a filter by `GBS`, a text two purposes hold, refuses 422 `breakdown_label_ambiguous` naming
   both;
 - the summed version's artifact locations aged past retention through `psql`, the aggregate
@@ -489,6 +492,45 @@ def check_purpose_filters(client: httpx.Client, crs: Mapping[str, object], readi
     return f"purpose filters: a label, a publisher code and a dcid keep one frame {frames.pop()}"
 
 
+def check_selected_codes(client: httpx.Client, crs: Mapping[str, object]) -> str:
+    """A purpose filter under an aggregate reads the sum it infers with the purpose's code as a
+    `groupby.codes` selection, and answers the frame of the same tree over a root stating that
+    groupby with no codes."""
+    dcid = "CRSPurposeCode72040"
+    groupby = {"by": ["crsPurpose", "time_period"], "op": "sum"}
+    stated = {**_root(crs), "rendering": {"groupby": groupby}}
+    pushed, unpushed = (
+        _post(
+            client,
+            ANALYSIS_ROUTE,
+            {"tree": _aggregate(_purpose_filter(root, dcid), ["destination"])},
+        ).json()
+        for root in (_root(crs), stated)
+    )
+    (member,) = pushed["ref"]["members"]
+    recipe = _get(client, _derived_path(_derived_pair(member))).json()["recipe"]
+    (options,) = [root["options"] for root in recipe["roots"]]
+    if options.get("groupby") != {**groupby, "codes": {"crsPurpose": [dcid]}}:
+        raise SmokeFailure(f"the filtered sum's root options are {options}")
+    (unpushed_member,) = unpushed["ref"]["members"]
+    if "codes" in unpushed_member["roots"][0]["rendering"]["groupby"]:
+        raise SmokeFailure(f"the stated groupby read {unpushed_member['roots']}")
+    answer = ("frame_content_version", "output_digest", "rows")
+    values = [
+        sorted(row["value"] for row in _frame_rows(client, body)) for body in (pushed, unpushed)
+    ]
+    if (
+        [pushed[key] for key in answer] != [unpushed[key] for key in answer]
+        or not values[0]
+        or values[0] != values[1]
+    ):
+        raise SmokeFailure(f"the selected sum answered {pushed}, the unselected {unpushed}")
+    return (
+        f"selected codes: the filter by {dcid} sums with codes {options['groupby']['codes']}, "
+        f"answering the unselected frame {pushed['frame_content_version']}"
+    )
+
+
 def check_ambiguous_label(client: httpx.Client, crs: Mapping[str, object]) -> str:
     """A label two purposes share refuses with both as candidates."""
     tree = _aggregate(_purpose_filter(_root(crs), "GBS"), ["destination"])
@@ -557,6 +599,7 @@ def breakdown_step(client: httpx.Client, crs: Mapping[str, object], reading: Rea
         summed,
         check_dcid_cells(client, crs, reading),
         check_purpose_filters(client, crs, reading),
+        check_selected_codes(client, crs),
         check_ambiguous_label(client, crs),
         check_expired_rerender(client, crs, first),
     ]
