@@ -154,6 +154,17 @@ ROLE_WORDING: Mapping[FlowFamily, RoleWording] = MappingProxyType(
 """Role wording per flow family, the one declaration every role noun in prose reads."""
 
 
+def residual_members_text(axis: RoleAxis, count: int, noun: RoleNoun) -> str:
+    """How prose counts `count` residual members of a role on `axis`, the lines a source
+    publishes for figures no one party holds, worded by side: amounts left unallocated to
+    a recipient or debtor ("10 unallocated amounts", for the DAC's "Africa, unallocated by
+    country"), and providers or creditors the source does not name ("1 unspecified
+    creditor", for IDS's unidentified creditors)."""
+    if axis == "destination":
+        return f"{count} unallocated amount{'' if count == 1 else 's'}"
+    return f"{count} unspecified {noun.singular if count == 1 else noun.plural}"
+
+
 def role_wording(family: FlowFamily | None) -> RoleWording:
     """The role wording for `family`, or `GENERIC_ROLE_WORDING` when it is `None`."""
     return GENERIC_ROLE_WORDING if family is None else ROLE_WORDING[family]

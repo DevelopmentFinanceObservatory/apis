@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from code_index.labels import PRICES_BY_QUALIFIER
 from search.models import (
     METHOD_REF,
     UNIT_REF,
@@ -411,7 +412,12 @@ def _usd_part(
             measurement_qualifier=_ref(qualifier, qualifier),
             facets={
                 "unit": ResolvedFacet(
-                    basis="fallback", ref="CurrencyUSD", label="US Dollar", currency="USD"
+                    basis="fallback",
+                    ref="CurrencyUSD",
+                    label="US Dollar",
+                    currency="USD",
+                    prices=[PRICES_BY_QUALIFIER[qualifier]],
+                    stated_prices=[PRICES_BY_QUALIFIER[qualifier]],
                 ),
                 **method_facets,
             },

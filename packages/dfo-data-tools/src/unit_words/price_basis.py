@@ -11,9 +11,10 @@ Three facts set the price basis, and the first that holds wins:
   them;
 - the price basis the unit registry gives a priced money unit (`UnitClass.prices`):
   `SDG_CU_USD` current, `CR_USD_K` constant, `ChainedUSDollarBaseYr2017` chained 2017;
-- the shape's `measurementQualifier`, listed in `PRICES_BY_QUALIFIER`: `Nominal` is current
-  prices and `RealValue` constant prices. Other qualifiers (`Adjusted`) are no price basis
-  and stay in the measure noun.
+- the price basis the data states for the served unit (Search's unit facet
+  `stated_prices`), which a priced `measurementQualifier` states: `Nominal` current prices,
+  `RealValue` constant prices. A currency unit no fact prices states no basis and reads as
+  its currency noun alone ("US dollars").
 
 A conversion to constant prices also names whose prices deflate the amount
 (`materialise.recipes.deflation_basis`), since two recipes can deflate one currency and
@@ -29,7 +30,7 @@ from typing import Final
 
 from dfo_frame_grammar import DeflationBasis
 
-from code_index.labels import PRICES_BY_QUALIFIER, PricesKind
+from code_index.labels import PricesKind
 from unit_words.unit_class import UnitClass
 
 US_DOLLARS: Final = "US dollars"
@@ -52,7 +53,7 @@ def price_basis(
     *,
     requested: PriceBasis | None,
     unit_class: UnitClass | None,
-    measurement_qualifier: str | None,
+    stated: PricesKind | None,
 ) -> PriceBasis | None:
     """The answer's price basis, or `None` when no fact states one.
 
@@ -60,7 +61,8 @@ def price_basis(
         requested: the prices and base year of the identity's unit request, when the request
             converts the answer.
         unit_class: the class of the served unit (`classify_unit`).
-        measurement_qualifier: the shape's `measurementQualifier` dcid.
+        stated: the price basis the data states for the served unit, None where it
+            states none or the unit's series state different ones.
     """
     if requested is not None:
         return requested
@@ -68,8 +70,7 @@ def price_basis(
         return PriceBasis(
             prices=unit_class.prices, base_year=unit_class.base_year, chained=unit_class.chained
         )
-    prices = PRICES_BY_QUALIFIER.get(measurement_qualifier) if measurement_qualifier else None
-    return PriceBasis(prices=prices, base_year=None) if prices is not None else None
+    return PriceBasis(prices=stated, base_year=None) if stated is not None else None
 
 
 def price_basis_phrase(basis: PriceBasis | None, *, currency_noun: str) -> str:

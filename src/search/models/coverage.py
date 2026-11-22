@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from .base import StrictModel
+from .entity import _is_none
 from .grammar import TimeWindow
 
 # ---------------------------------------------------------------------------
@@ -17,6 +18,16 @@ class BreadthDim(StrictModel):
 
     label: str = Field(description="the dimension, e.g. providers, years, methods, sources")
     count: int = Field(description="e.g. 36, 22, 3")
+    residual_count: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "on an open role's dimension, how many of `count` are residual members "
+            "(party_kind residual), counted as RoleAxisFact.residual_count counts them, so "
+            "count minus residual_count counts the countable parties. Absent on every other "
+            "dimension and where the role holds no residual member"
+        ),
+    )
 
 
 class CoverageExact(StrictModel):

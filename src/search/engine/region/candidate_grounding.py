@@ -113,7 +113,7 @@ from search.engine.spec_build import (
     build_stat_vars,
 )
 from search.engine.unit.conversion import bound_prices, with_unit_conversion
-from search.engine.unit.refs import unit_currency
+from search.engine.unit.refs import unit_currency, unit_prices
 from search.models import (
     Coverage,
     Entity,
@@ -528,6 +528,9 @@ def _ground_one_candidate(
         request_basis=state.unit_request_basis,
         unit_request=state.unit_request,
         currency_of=functools.partial(unit_currency, state.graph, deadline=state.deadline),
+        prices_of=functools.partial(unit_prices, state.graph, deadline=state.deadline),
+        qualifier=cand_shape.meas_qual_dcid,
+        member_facts=cand_mat.member_facts,
     )
 
     # Recompute each candidate's slot status from its resolved member facts. Index-sourced

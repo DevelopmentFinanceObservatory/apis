@@ -276,7 +276,12 @@ def test_a_dropped_price_basis_shows_the_unit_the_byline_states():
                 update={
                     "facets": {
                         "unit": ResolvedFacet(
-                            basis="fallback", ref="USDollar", label="US Dollar", currency="USD"
+                            basis="fallback",
+                            ref="USDollar",
+                            label="US Dollar",
+                            currency="USD",
+                            prices=["current"],
+                            stated_prices=["current"],
                         )
                     }
                 }

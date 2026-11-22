@@ -17,29 +17,26 @@ _CHAINED = classify_unit(unit="ChainedUSDollarBaseYr2017", denominator=None, cur
 
 
 @pytest.mark.parametrize(
-    ("requested", "unit_class", "qualifier", "expected"),
+    ("requested", "unit_class", "stated", "expected"),
     [
-        pytest.param(None, _USD, "Nominal", PriceBasis("current", None), id="nominal-shape"),
-        pytest.param(None, _USD, "RealValue", PriceBasis("constant", None), id="real-shape"),
+        pytest.param(None, _USD, "current", PriceBasis("current", None), id="stated-current"),
+        pytest.param(None, _USD, "constant", PriceBasis("constant", None), id="stated-constant"),
         pytest.param(
             None, _CHAINED, None, PriceBasis("constant", 2017, chained=True), id="chained-unit"
         ),
         pytest.param(
             PriceBasis("constant", 2022),
             _USD,
-            "Nominal",
+            "current",
             PriceBasis("constant", 2022),
-            id="request-converts-nominal",
+            id="request-converts-current",
         ),
-        pytest.param(None, _USD, "Adjusted", None, id="qualifier-not-a-price-basis"),
+        pytest.param(None, _USD, None, None, id="currency-unit-states-none"),
         pytest.param(None, None, None, None, id="nothing-states-one"),
     ],
 )
-def test_price_basis(requested, unit_class, qualifier, expected) -> None:
-    assert (
-        price_basis(requested=requested, unit_class=unit_class, measurement_qualifier=qualifier)
-        == expected
-    )
+def test_price_basis(requested, unit_class, stated, expected) -> None:
+    assert price_basis(requested=requested, unit_class=unit_class, stated=stated) == expected
 
 
 @pytest.mark.parametrize(
