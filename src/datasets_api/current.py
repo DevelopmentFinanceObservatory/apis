@@ -63,8 +63,9 @@ duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response 
 for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or
 `unservable` for a current head that cannot answer the call.
 
-A rebuild whose trigger is not `worker`, which ran on a request thread, queues the render ahead
-from the raw version it materialised for the worker once the head's transaction has committed,
+A rebuild whose trigger is not `worker`, which ran on a request thread and won the head, queues
+the render ahead from the raw version it materialised for the worker once the head's transaction
+has committed,
 when an analysis root read a rendering of the dataset within the render-ahead window
 (`operations.render_ahead_queue`). A worker run renders ahead itself.
 """
@@ -2017,7 +2018,8 @@ def _check_currency(
             return recheck
     if on_materialised is not None:
         on_materialised(served.content_version)
-    if trigger != "worker":
+    if trigger != "worker" and served.head is not None:
+        # Only a store that won the head queues, since a render ahead renders from the head.
         _queue_render_ahead(subject_id, served.content_version, snapshot=snapshot, deps=deps)
     written = served.head
     if written is None:
@@ -2047,7 +2049,7 @@ def _queue_render_ahead(
     since = deps.now() - timedelta(seconds=settings.render_ahead_read_window_seconds)
     try:
         with phase("render_ahead_queue"):
-            if not lister.list_read_renderings(subject_id, read_since=since):
+            if not lister.renderings_read_since(subject_id, read_since=since):
                 return
             queue_render_ahead(
                 subject_id=subject_id,

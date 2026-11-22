@@ -457,6 +457,11 @@ class VersionLister(Protocol):
         any head at or after `read_since`, once with its latest read, latest first."""
         ...
 
+    def renderings_read_since(self, subject_id: str, *, read_since: datetime) -> bool:
+        """Whether an analysis root read a rendering of the subject's links as made from any
+        head at or after `read_since`."""
+        ...
+
     def mark_rendering_read(
         self,
         subject_id: str,

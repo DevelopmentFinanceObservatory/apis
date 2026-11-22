@@ -35,9 +35,12 @@ Two callers run it, neither on a request thread:
   (`operations.worker.run_operation`). A rebuild on a request thread queues a render-ahead
   operation for the worker instead (`operations.render_ahead_queue`), one per dataset and head.
   `DATASETS_RENDER_AHEAD_PER_HEAD` caps each, and the run's work deadline bounds it.
-- `datasets-maintenance render-ahead` renders ahead from the head of every dataset with a read
-  in the window, for a deploy or graph release that changes the code index or
+- `datasets-maintenance render-ahead`, run by hand, renders ahead from the head of every dataset
+  with a read in the window, for a deploy or graph release that changes the code index or
   `versions.RENDER_FORMAT`, capped per head and in total (`DATASETS_RENDER_AHEAD_MAX`).
+
+Each run first reads the dataset's head and renders nothing when the version it was asked to
+render from is no longer the head.
 
 A rendering whose render fails is logged and passed over, and the next run tries it again.
 """
@@ -47,7 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -166,8 +169,10 @@ def read_recently(link_read_at: datetime | None, *, now: datetime) -> bool:
 class RenderedAhead:
     """What one `render_ahead` call did: the renderings read in the window that the head did not
     record (`due`), and of those the ones it `rendered`, the ones that `failed`, and the ones it
-    left for the cap or the deadline (`left`)."""
+    left for the cap or the deadline (`left`). `head_moved` says the version it was asked to
+    render from was not the dataset's head, so it rendered nothing."""
 
+    head_moved: bool = False
     due: int = 0
     rendered: int = 0
     failed: int = 0
@@ -179,15 +184,24 @@ def _canonical(rendering: Mapping[str, object]) -> str:
     return json.dumps(dict(rendering), sort_keys=True, default=str)
 
 
-def _recorded_from(versions: Sequence[HeadVersion], *, head: str, stamp: str) -> set[str]:
+def _recorded_from(
+    versions: Sequence[HeadVersion],
+    own: Iterable[Mapping[str, object]],
+    *,
+    head: str,
+    stamp: str,
+) -> set[str]:
     """The renderings, in `_canonical` form, a link records as made from `head` under `stamp`,
-    and every complete rendering linked under `head` itself."""
-    recorded: set[str] = set()
+    and every complete rendering of `own`, the files linked under `head` itself, where a
+    rendering that minted nothing from it is linked."""
+    recorded = {
+        _canonical(rendering) for rendering in own if not is_incomplete_rendering(rendering)
+    }
     for version in versions:
         for link in version.links:
-            if is_incomplete_rendering(link.rendering):
-                continue
-            if version.content_version == head or link.rendered_under.get(head) == stamp:
+            if not is_incomplete_rendering(link.rendering) and (
+                link.rendered_under.get(head) == stamp
+            ):
                 recorded.add(_canonical(link.rendering))
     return recorded
 
@@ -224,7 +238,8 @@ def render_ahead(
     """Render from `head_content_version` each rendering of `subject_id`'s links an analysis
     root read since `read_since` and no link records as made from that head under the serving
     stamp, latest read first, at most `limit`, starting none once the monotonic `deadline` has
-    passed. See the module docstring.
+    passed. When `head_content_version` is not the dataset's head, as after a concurrent writer
+    advanced it or a later rebuild moved it, it renders nothing. See the module docstring.
 
     Raises:
         DatasetsStoreUnavailable: A store read or write failed, which stops the run.
@@ -232,12 +247,27 @@ def render_ahead(
     lister = deps.version_lister
     if lister is None or limit <= 0:
         return RenderedAhead()
+    head = deps.head_store.read_head(subject_id)
+    if head is None or head.content_version != head_content_version:
+        logger.info(
+            "Datasets render ahead of %r from %r skipped: the head is %r",
+            subject_id,
+            head_content_version,
+            None if head is None else head.content_version,
+        )
+        return RenderedAhead(head_moved=True)
     read = lister.list_read_renderings(subject_id, read_since=read_since)
     if not read:
         return RenderedAhead()
     stamp = rendering_stamp(deps.code_index.stamp.content_hash)
     recorded = _recorded_from(
         lister.list_head_versions(subject_id, head_content_version=head_content_version),
+        (
+            location.rendering
+            for location in deps.snapshot_reader.read_artifact_locations(
+                subject_id, head_content_version
+            )
+        ),
         head=head_content_version,
         stamp=stamp,
     )

@@ -994,6 +994,29 @@ class LiveVersionLister:
             )
         return list(read.values())
 
+    def renderings_read_since(self, subject_id: str, *, read_since: datetime) -> bool:
+        """Whether a head row of the subject records a read at or after `read_since`, read with
+        one `EXISTS`."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        row: Mapping[str, object] | None = None
+        try:
+            with self._store.transaction() as tx:
+                row = tx.fetch_one(
+                    "SELECT EXISTS (SELECT 1 FROM datasets.version_artifact_head "
+                    "WHERE subject_id = %s AND read_at >= %s) AS found",
+                    (subject_id, read_since),
+                )
+        except Exception as exc:
+            failure = (
+                f"checking renderings read of subject_id {subject_id!r} failed: "
+                f"{safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return row is not None and bool(row["found"])
+
     def mark_rendering_read(
         self,
         subject_id: str,

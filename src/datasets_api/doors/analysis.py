@@ -142,6 +142,7 @@ from datasets_api.doors.derived import DerivedManifest, derived_manifest
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
+from datasets_api.operations.renewal import renew_on_hit
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import PhaseTimings, door_call
@@ -567,7 +568,12 @@ def _key_job(
         )
     except RenderNeeded:
         return _Keyed(body=body, source=None, prepared=None, answer=None)
-    answer = stored_answer(prepared, stores=analysis_stores(current), summary=_wants_summary(body))
+    answer = stored_answer(
+        prepared,
+        stores=analysis_stores(current),
+        summary=_wants_summary(body),
+        on_hit=renew_on_hit(current),
+    )
     return _Keyed(
         body=body,
         source=source,
@@ -597,7 +603,12 @@ def _analysis_job(
             body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
         )
     with running.claim(prepared.key):
-        answer = stored_answer(prepared, stores=stores, summary=_wants_summary(body))
+        answer = stored_answer(
+            prepared,
+            stores=stores,
+            summary=_wants_summary(body),
+            on_hit=renew_on_hit(current),
+        )
         if answer is None:
             answer = run_prepared(
                 prepared,

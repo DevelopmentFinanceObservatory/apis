@@ -28,6 +28,7 @@ from datasets_api.doors.refresh import (
     RenderingNotRecorded,
     StoredRendering,
 )
+from datasets_api.operations import renewal
 from datasets_api.recorded_rendering import MintingOptions
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from series_coverage.index import Estimate
@@ -60,6 +61,8 @@ class _Calls:
         self.inline_seconds: list[float] = []
         # Called inside a run, as another check arriving while it computes.
         self.during_run: Any = None
+        # The `on_hit` a stored answer was read with.
+        self.on_hit: Any = None
 
 
 @pytest.fixture
@@ -80,9 +83,12 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> _Calls:
             raise answer
         return SimpleNamespace(key="key_1")
 
-    def stored(prepared: object, **_: object):
+    def stored(prepared: object, *, on_hit: Any = None, **_: object):
         frame = seen.answers.get("stored")
-        return None if frame is None else _answer_body(frame)
+        if frame is None:
+            return None
+        seen.on_hit = on_hit
+        return _answer_body(frame)
 
     def run(prepared: object, **_: object):
         seen.run += 1
@@ -164,6 +170,33 @@ def test_a_derived_frame_whose_key_holds_a_stored_answer_computes_nothing(calls:
 
     assert _newest().newest(_DERIVED, rendering=None) == _DERIVED_NOW
     assert calls.run == 0
+
+
+def test_a_stored_answer_hit_queues_the_renewal_of_its_frame_file(
+    calls: _Calls, monkeypatch: pytest.MonkeyPatch
+):
+    """The hit hands its frame file to `renew_if_expiring` under the surface's deps."""
+    queued: list[tuple[object, object, str, str]] = []
+    monkeypatch.setattr(
+        renewal,
+        "renew_if_expiring",
+        lambda deps, location, *, subject_id, content_version: queued.append(
+            (deps, location, subject_id, content_version)
+        ),
+    )
+    calls.answers["stored"] = _DERIVED_NOW
+    newest = _newest()
+
+    newest.newest(_DERIVED, rendering=None)
+    calls.on_hit(_DERIVED_NOW.spec_id, _DERIVED_NOW.content_version, "location")
+
+    ((deps, location, spec_id, content_version),) = queued
+    assert deps is newest._cell.get()
+    assert (location, spec_id, content_version) == (
+        "location",
+        _DERIVED_NOW.spec_id,
+        _DERIVED_NOW.content_version,
+    )
 
 
 def test_a_check_of_a_key_another_check_computes_joins_it_as_pending(calls: _Calls):
