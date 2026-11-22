@@ -28,6 +28,7 @@ from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.concurrency import continuation_semaphore
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
@@ -651,7 +652,8 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
 
     The inline reads take no permit of the request semaphore, since the part's own leg holds
     one while it resolves (`fanout`), and a request whose legs held every permit would wait
-    on itself."""
+    on itself. The continuation's resolves hold a permit of the request's own bound for them
+    (`concurrency.continuation_semaphore`), which nothing holding one waits on."""
     relaunch = result.observations_relaunch
     if relaunch is None or result.observations_task is not None:
         return result
@@ -659,7 +661,7 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
         return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
     if state.include_observations:
         return await with_composite_observations(result, semaphore=None)
-    return await with_composite_continuation(result, semaphore=None)
+    return await with_composite_continuation(result, semaphore=continuation_semaphore())
 
 
 def merged_scope_choices(

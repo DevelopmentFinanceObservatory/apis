@@ -287,16 +287,12 @@ async def read_composite_continuation(
     The resolves run together, each holding a permit of `semaphore` when one is given, and
     read no row. Cancelling the caller cancels every resolve still running."""
     groups = cast("Mapping[EntityRoleKey, EntityGroup] | None", resolved.entity_groups)
-    stated: list[bool | None] = []
-    resolving: list[ServedComponent] = []
-    for item in served:
-        if not item.preview_years:
-            continue
-        held = resolved.component_continued(component_spec_id(item), item.preview_years)
-        if held is None:
-            resolving.append(item)
-        else:
-            stated.append(held)
+    previewing = [item for item in served if item.preview_years]
+    if resolved.states_component_continued:
+        # Hashing each component's identity is CPU work, kept off the event loop.
+        stated, resolving = await asyncio.to_thread(_held_continuations, previewing, resolved)
+    else:
+        stated, resolving = [], previewing
     tasks = [
         asyncio.create_task(_component_continuation(item, groups, reads=reads, semaphore=semaphore))
         for item in resolving
@@ -311,6 +307,23 @@ async def read_composite_continuation(
     return False if all(one is False for one in stated) else None
 
 
+def _held_continuations(
+    previewing: Sequence[ServedComponent], resolved: ResolvedSpec
+) -> tuple[list[bool | None], list[ServedComponent]]:
+    """The continuation `resolved` states for each of `previewing` whose preview resolves the
+    table the answer read (`ResolvedSpec.component_continued`), and the others, which are
+    resolved."""
+    stated: list[bool | None] = []
+    resolving: list[ServedComponent] = []
+    for item in previewing:
+        held = resolved.component_continued(component_spec_id(item), item.preview_years)
+        if held is None:
+            resolving.append(item)
+        else:
+            stated.append(held)
+    return stated, resolving
+
+
 async def _component_continuation(
     item: ServedComponent,
     groups: Mapping[EntityRoleKey, EntityGroup] | None,
@@ -320,19 +333,33 @@ async def _component_continuation(
 ) -> bool | None:
     """Whether `item`'s component answer, resolved with no preview over the identity and
     years `component_preview` names (`_resubmit`), serves a continuation in those years
-    (`ResolvedSpec.continued`), or None when its resolve was lost."""
-    document, years = component_preview(item)
-    region = await _resubmit(
-        BaseIdentity.model_validate(document),
-        groups,
-        reads=reads,
-        semaphore=semaphore,
-        about=f"component {item.component.role} plan",
-        populations=item.component.populations,
-        years=years,
-        observations=False,
-    )
+    (`ResolvedSpec.continued`), or None when its resolve was lost.
+
+    Every lost resolve is noted (`note_degraded_read`, or `note_lost_read` for an error), so
+    the answer is degraded and no cache stores it: one `_resubmit` lost to an upstream read,
+    refused (`EngineInputError`) or answered with no definite Spec, and any error raised
+    building or resolving the component's identity, which is logged. A continuation states
+    one departure, so its resolve never fails the part."""
+    about = f"composite continuation: component {item.component.role}"
+    try:
+        document, years = component_preview(item)
+        region = await _resubmit(
+            BaseIdentity.model_validate(document),
+            groups,
+            reads=reads,
+            semaphore=semaphore,
+            about=f"component {item.component.role} plan",
+            populations=item.component.populations,
+            years=years,
+            observations=False,
+        )
+    except Exception as exc:
+        logger.warning("%s raised", about, exc_info=True)
+        note_lost_read(about, exc)
+        return None
     if isinstance(region, _LostRead):
+        if not region.noted:
+            note_degraded_read(about)
         return None
     return region.spec.resolved.continued
 
@@ -340,10 +367,12 @@ async def _component_continuation(
 @dataclass(frozen=True, slots=True)
 class _LostRead:
     """A resubmit preview that read nothing, `timed_out` when the read crossed its deadline,
-    with `cause` saying why."""
+    with `cause` saying why, and `noted` when the lost read was already noted
+    (`note_lost_read`)."""
 
     timed_out: bool
     cause: str
+    noted: bool = False
 
     def warning(self, message: str) -> Warning:
         """The warning stating `message` under `observations_timed_out` for a read that
@@ -460,8 +489,8 @@ async def _resubmit(
                 exc_info=True,
             )
             if timed_out:
-                return _LostRead(timed_out=True, cause="read crossed its deadline")
-            return _LostRead(timed_out=False, cause="read failed")
+                return _LostRead(timed_out=True, cause="read crossed its deadline", noted=True)
+            return _LostRead(timed_out=False, cause="read failed", noted=True)
     if memo is not None and key is not None and not stored:
         memo.store(key, region)
     if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):

@@ -513,6 +513,7 @@ class CompositeMint:
             self.facts.index, self.identity.model_dump(mode="json", exclude_none=True)
         )
 
+    @cached_property
     def table_components(self) -> tuple[tuple[str, frozenset[int]], ...]:
         """The spec_id and preview years (`ServedComponent.preview_years`) of each component
         previewing a year whose preview resolves the read the answer made (`read`): the
@@ -520,7 +521,8 @@ class CompositeMint:
         population roles open (`component_spec_id`, `resolved_spec_id`), window included, and
         the component reads within the same populations (`read_populations`). Empty where the
         answer made no read of its own; a component the hash does not settle is none of
-        them."""
+        them. Hashed once per mint, where `spec_build.build_spec` mints it, off the event
+        loop."""
         if self.read is None:
             return ()
         populations = dict(self.read_populations)

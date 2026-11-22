@@ -19,6 +19,7 @@ from search.engine.region.observations.served_years import (
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import (
     PlanSeries,
+    current_year,
     plan_pairs,
     read_in_years,
     serves_continuation,
@@ -417,19 +418,28 @@ def test_a_plan_read_in_years_states_a_continuation_only_in_a_served_year(years,
 
 
 @pytest.mark.parametrize(
-    ("read", "filtered", "rewindowed"),
+    ("read", "filtered", "rewindowed", "end"),
     [
-        (None, False, False),
-        ("table", False, False),
-        ("grant-equivalent", False, False),
+        (None, False, False, "asked"),
+        ("table", False, False, "asked"),
+        ("grant-equivalent", False, False, "asked"),
         # The same read, its plan narrowed by the request's own facet filter.
-        ("grant-equivalent", True, False),
+        ("grant-equivalent", True, False, "asked"),
         # The same read, its plan elected under a window its identity does not request, as
         # a trailing answer's plan is once it settles.
-        ("grant-equivalent", False, True),
+        ("grant-equivalent", False, True, "asked"),
+        # The read asks for no end, which its role read ends at the current year.
+        ("grant-equivalent", False, False, "open"),
+        # The read asks for an end past the coverage horizon, which its role read ends at.
+        ("grant-equivalent", False, False, "past-horizon"),
+        # Either window, its plan elected again elsewhere.
+        ("grant-equivalent", False, True, "open"),
+        ("grant-equivalent", False, True, "past-horizon"),
     ],
 )
-def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, filtered, rewindowed):
+def test_a_spliced_composite_states_no_continuation_from_its_table_plan(
+    read, filtered, rewindowed, end
+):
     """The spliced headline serves net flows to 2017 and grant equivalents from 2018. Its
     table identity's plan, the net reading of the whole window, continues the recorded
     series with estimates in 2020, a year the composite serves through the other component.
@@ -443,8 +453,9 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
     it states the 2020 estimates in that component's years, unless the request's own facet
     filter narrowed the plan (`ReadPlan.request_filtered`), an input the hash does not hold,
     or the plan was elected under years other than the window the read requests. The plan
-    is elected under the read identity's window, or 2010 to 2027 where none is read or the
-    plan was elected again elsewhere."""
+    is elected under the read identity's window as a role read clamps it, an open end to
+    the current year and an end past the coverage horizon to its last year, or 2010 to 2027
+    where none is read or the plan was elected again elsewhere."""
     (_observations, _warn), materialise_graph = _continued_preview_and_reader(
         [2020, *range(2022, 2030)], frozenset({2020})
     )
@@ -458,6 +469,26 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
     with bound_catalogue(current_catalogue()):
         served = served_components(identity.model_dump(mode="json", exclude_none=True), facts=facts)
     net, grant_equivalent = served
+    horizon = facts.coverage.index.horizon
+    if end != "asked":
+        # The composite asked over 2018 with no end, or one past the horizon.
+        asked_end = None if end == "open" else horizon.max_year + 10
+        component = grant_equivalent.component
+        grant_equivalent = replace(
+            grant_equivalent,
+            component=replace(
+                component,
+                identity={
+                    **component.identity,
+                    "requested_window": {
+                        "kind": "range",
+                        "start_year": 2018,
+                        "end_year": asked_end,
+                    },
+                },
+            ),
+        )
+        served = [net, grant_equivalent]
     assert max(net.served) == 2017 and 2020 in grant_equivalent.served
     table = table_document(identity, facts.index)
     assert table is not None
@@ -470,6 +501,9 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
         if read is not None and not rewindowed
         else {"start_year": 2010, "end_year": 2027}
     )
+    if end != "asked" and not rewindowed:
+        clamped = current_year() if end == "open" else horizon.max_year
+        window = {**window, "end_year": clamped}
     plan = plan_pairs(
         [
             PlanSeries(
@@ -500,6 +534,7 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
         entities=[],
         coverage=_make_coverage(),
         plan=replace(plan, request_filtered=True) if filtered else plan,
+        coverage_index=facts.coverage.index,
     )
     reads = [
         omitted_observations(

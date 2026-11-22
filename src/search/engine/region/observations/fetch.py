@@ -72,7 +72,7 @@ from materialise.recipes import (
     cause_from_recipe_error,
 )
 from materialise.series_conversion import SeriesConversion
-from materialise.window import latest_periods
+from materialise.window import RequestedWindow, latest_periods
 from origin_catalogue.graph import is_un_dcid
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -106,6 +106,7 @@ from search.engine.retrieval.read_plan import (
     PlanSeries,
     PlanYears,
     ReadPlan,
+    current_year,
     plan_window,
     read_in_years,
     year_of,
@@ -626,14 +627,17 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     A read of one facet asks SDMX for the span's years alone. A read of several asks for the
     span's first year to the window's end, and ranks each series' facets from their dates in
     the window (`_window_ranks`), as bulk ranks from coverage
-    (`bulk_role_series._series_ranks`). SDMX takes a year by its four digits, so a read
-    asks for years only when every facet reads annual, or is coverage's, whose years bulk
-    reads alike (`Facet.reads_annual`, `Facet.dates_coarsened`). A read of facets that are
-    not, or of several where a facet holding observations carries no complete date list or
-    the window's end is unknown, asks for the whole window and keeps the span afterwards."""
+    (`bulk_role_series._series_ranks`). A window with no end reads to the clock's year, or
+    to a facet's later last date, so a graph snapshot that lags SDMX cannot cut rows a mint
+    of the window reads. SDMX takes a year by its four digits, so a read asks for years only
+    when every facet is annual on positive evidence: a `P1Y` observation period, or dates
+    that read annual (`Facet.reads_annual`). A coverage facet's years are coverage's
+    whatever its cadence (`Facet.dates_coarsened`), so they are no evidence. A read of
+    facets without that evidence, or of several where a facet holding observations carries
+    no complete date list, asks for the whole window and keeps the span afterwards."""
     span = SpanRead(served=plan_window(served))
     group = [facet for s in dispatch.series for facet in s.group]
-    if not group or not all(f.reads_annual or f.dates_coarsened for f in group):
+    if not group or not all(f.observation_period == "P1Y" or f.reads_annual for f in group):
         return span
     if len(dispatch.group_ids) == 1:
         return replace(span, fetched=span.served)
@@ -643,10 +647,8 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     if years is not None and years.end_year is not None:
         end = years.end_year
     else:
-        ends = [year_of(f.latest_date) for f in group]
-        if None in ends:
-            return span
-        end = max(year for year in ends if year is not None)
+        ends = (year_of(f.latest_date) for f in group)
+        end = max(current_year(), *(year for year in ends if year is not None))
     open_roles = dispatch.open_roles
     ranks: dict[tuple[str, ...], dict[str | None, FacetRank]] = {}
     for s in dispatch.series:
@@ -667,7 +669,12 @@ def _window_ranks(
     facet its rows, a facet continuing the selection those after the selected facets' last
     year (`materialise.columnar.continuation_mask`). A coverage facet dates one row a year,
     as bulk counts coverage (`bulk_role_series._series_ranks`). None when a facet holding
-    observations carries no complete date list."""
+    observations carries no complete date list.
+
+    The ranks read the graph's dates, and a collapse of the rows reads SDMX's. Where the two
+    disagree, as when a snapshot lags SDMX or lists dates SDMX no longer holds, these ranks
+    can elect another facet than the whole window's rows would. The span read accepts that
+    for the rows it leaves unread, as bulk does when it ranks from coverage."""
     window = years if isinstance(years, TimeWindow) else None
     held: dict[str | None, list[int]] = {}
     for facet in series.group:
@@ -942,6 +949,58 @@ def _bulk_pair_sdmx(
     # Materialise types its client as the concrete `SdmxClient`. `BulkPairSdmx` serves the
     # one method a preview read streams by and hands every other call to `inner`.
     return cast(MaterialiseSdmxClient, bulk)
+
+
+def _shared_spans(
+    dispatches: Sequence[_Dispatch], *, member_facts: Mapping[str, MemberFacts] | None
+) -> list[_Dispatch]:
+    """`dispatches` with every span read of one bulk group (`PlannedRead.group`) asking SDMX
+    for the union of the group's fetched years, so the group makes one bulk request
+    (`BulkPairSdmx`) where it would make one per distinct year list. A span read that asks
+    for every period makes the group's reads ask for every period and rank by their rows, as
+    a read of the whole window does. Wider years keep a read's decisions: a read of one
+    facet keeps its span, and a read of several ranks by its window ranks
+    (`SpanRead.ranks`)."""
+    shared: dict[tuple[frozenset[str], frozenset[str]], RequestedWindow | None] = {}
+    for dispatch in dispatches:
+        if dispatch.span is None or is_un_dcid(dispatch.stat_var):
+            continue
+        group = _bulk_group(dispatch, member_facts)
+        fetched = dispatch.span.fetched
+        shared[group] = _union(shared[group], fetched) if group in shared else fetched
+    widened: list[_Dispatch] = []
+    for dispatch in dispatches:
+        span = dispatch.span
+        group = _bulk_group(dispatch, member_facts) if span is not None else None
+        if span is None or group not in shared or span.fetched == shared[group]:
+            widened.append(dispatch)
+            continue
+        fetched = shared[group]
+        ranks = span.ranks if fetched is not None else None
+        widened.append(replace(dispatch, span=replace(span, fetched=fetched, ranks=ranks)))
+    return widened
+
+
+def _union(a: RequestedWindow | None, b: RequestedWindow | None) -> RequestedWindow | None:
+    """The closed range holding `a` and `b`, or None, every period, when either is."""
+    if a is None or b is None:
+        return None
+    assert None not in (a.start_year, a.end_year, b.start_year, b.end_year)  # `SpanRead.check`
+    return replace(
+        a,
+        start_year=min(year for year in (a.start_year, b.start_year) if year is not None),
+        end_year=max(year for year in (a.end_year, b.end_year) if year is not None),
+    )
+
+
+def _bulk_group(
+    dispatch: _Dispatch, member_facts: Mapping[str, MemberFacts] | None
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The bulk group `dispatch` reads in (`PlannedRead.group`)."""
+    return (
+        frozenset(_declared_roles(dispatch, member_facts)),
+        frozenset(role for role, _dcid in dispatch.bound),
+    )
 
 
 def _bound_filter(bound: _RoleTuple) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -1340,6 +1399,7 @@ def _run_pair_fetch_pool(
         "observationAbout" not in obs_entities
         and len(dispatches) > settings().obs_preview_concurrency
     ):
+        dispatches = _shared_spans(dispatches, member_facts=member_facts)
         materialise_sdmx = _bulk_pair_sdmx(
             dispatches, inner=materialise_sdmx, member_facts=member_facts, deadline=deadline
         )

@@ -25,6 +25,7 @@ from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.departures import members_left_out
+from search.engine.extract import DateRequest
 from search.engine.named_group import NamedGroup
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
@@ -43,8 +44,11 @@ from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
+    NoYearsToRead,
     data_years,
+    plan_years,
     read_in_years,
+    role_years,
     served_dates,
     served_provenances,
     serves_continuation,
@@ -125,6 +129,7 @@ from search.scope.basis import identity_window
 from search.scope.provider import provider_total_code
 from search.scope.region import policy_members, without_residuals
 from search.scope.sector import sector_concept
+from search.scope_window import WindowTooLong
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -1437,7 +1442,7 @@ def build_spec(
             no preview resolves it no second time. A ``plan`` the request's own filter or
             window narrowed (``ReadPlan.request_filtered``) elected over inputs the hash
             does not hold, and one whose years are not the read identity's requested
-            window, as a trailing answer's settled plan, was elected under another window
+            window as a read clamps it, as a trailing answer's settled plan, was elected under another window
             (``_reads_window_of``), so either states none. Every other field is the table
             identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
@@ -1718,10 +1723,10 @@ def build_spec(
             if composite is None
             or plan is None
             or plan.request_filtered
-            or not _reads_window_of(plan, composite.read)
+            or not _reads_window_of(plan, composite.read, coverage_index)
             else (
                 (component, years, serves_continuation(_previewed(plan, years)))
-                for component, years in composite.table_components()
+                for component, years in composite.table_components
             )
         )
         .stating_members(stat_vars)
@@ -1731,15 +1736,29 @@ def build_spec(
     return with_members_left_out(spec)
 
 
-def _reads_window_of(plan: ReadPlan, read: BaseIdentity | None) -> bool:
-    """Whether `plan` reads the years `read`, the identity the answer's rows were read for,
-    requests. A trailing answer settles on a narrower window after its read and elects its
-    plan again there (`trailing.settle_trailing`), so its plan is not the one a resolve of
-    `read` elects."""
+def _reads_window_of(
+    plan: ReadPlan, read: BaseIdentity | None, coverage_index: CoverageIndex | None
+) -> bool:
+    """Whether `plan` reads the years a resolve of `read`, the identity the answer's rows were
+    read for, reads: its requested range as a read clamps it, an open end to the current year
+    and a role read's bounds to `coverage_index`'s horizon (`read_plan.plan_years`,
+    `read_plan.role_years`). A trailing answer settles on a narrower window after its read
+    and elects its plan again there (`trailing.settle_trailing`), so its plan is not the one
+    a resolve of `read` elects."""
     if read is None:
         return False
     window = identity_window(read)
-    return plan.years == (None if window == "all" else window)
+    if not isinstance(window, TimeWindow):
+        return plan.years == (None if window == "all" else window)
+    request = DateRequest(window=window, latest=False)
+    try:
+        if plan.years == plan_years(request):
+            return True
+        return coverage_index is not None and (
+            plan.years == role_years(request, coverage_index.horizon).years
+        )
+    except (NoYearsToRead, WindowTooLong):
+        return False
 
 
 def _previewed(plan: ReadPlan | None, years: frozenset[int] | None) -> ReadPlan | None:

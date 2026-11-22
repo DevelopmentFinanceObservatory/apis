@@ -1295,6 +1295,12 @@ class ResolvedSpec(StrictModel):
         stated._continued = continued
         return stated
 
+    @property
+    def states_component_continued(self) -> bool:
+        """Whether the answer states its own plan's continuation for some component
+        (`component_continued`)."""
+        return bool(self._component_continued)
+
     def component_continued(self, spec_id: str, years: frozenset[int]) -> bool | None:
         """Whether the composite answer's own read plan serves a continuation in `years`, for
         the component whose preview resolves `spec_id` in them, or None where the answer read

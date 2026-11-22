@@ -537,6 +537,7 @@ def test_rate_cache_omitted_serves_existing_fixture_unchanged():
 # ---------------------------------------------------------------------------
 
 _KEN = (("observationAbout", "country/KEN"),)
+_ELECTED = TimeWindow(start_year=1973, end_year=2024)
 
 
 def _points(years: range | Sequence[int], value: float) -> tuple[tuple[str, float], ...]:
@@ -573,18 +574,19 @@ def _span_preview(
     served: frozenset[int],
     *,
     candidates: dict[str, MaterialiseFacet] | None = None,
+    years: TimeWindow | None = _ELECTED,
 ) -> tuple[list[list[tuple[str, float | None]]], list[list[str] | None]]:
     """Kenya's series points read in `served` and each SDMX request's periods (None for
-    every period), for `case`'s facets under a plan elected under 1973 to 2024.
-    `candidates` replaces the plan's candidate of a facet id, the coverage a read ranks
-    contested facets by, leaving the rows SDMX holds."""
+    every period), for `case`'s facets under a plan elected under `years`, 1973 to 2024
+    unless given. `candidates` replaces the plan's candidate of a facet id, the coverage a
+    read ranks contested facets by, leaving the rows SDMX holds."""
     graph, sdmx, requests = build_materialise_double(
         {("Count_Person", _KEN): _SPAN_FACETS[case]}, honour_periods=True
     )
     held = graph.variable_facets_batch(
         stat_var="Count_Person", entities=["country/KEN"], needs_dates=True
     )["country/KEN"]
-    plan = _plan([(candidates or {}).get(f.facet_id or "", f) for f in held])
+    plan = _plan([(candidates or {}).get(f.facet_id or "", f) for f in held], years=years)
     observations, warn = build_observations_planned(
         ["Count_Person"],
         {"observationAbout": ["country/KEN"]},
@@ -604,11 +606,11 @@ def _span_preview(
     return [[(p.date, p.value) for p in s.points] for s in observations.series], periods
 
 
-def _plan(candidates: Sequence[MaterialiseFacet]) -> PairPlan:
+def _plan(candidates: Sequence[MaterialiseFacet], *, years: TimeWindow | None) -> PairPlan:
     return plan_pairs(
         [PlanSeries(stat_var="Count_Person", role_tuple=_KEN, candidates=tuple(candidates))],
         members=["Count_Person"],
-        years=TimeWindow(start_year=1973, end_year=2024),
+        years=years,
         declared=NO_DECLARED_POLICIES,
     )
 
@@ -691,3 +693,45 @@ def _facet(case: str, facet_id: str) -> MaterialiseFacet:
         if f.facet_id == facet_id
     ]
     return facet
+
+
+@pytest.mark.parametrize(
+    ("observation_period", "bounded"),
+    [
+        pytest.param(None, False, id="coverage-years-alone"),
+        pytest.param("P1Y", True, id="annual-period"),
+    ],
+)
+def test_a_span_read_asks_for_years_on_positive_annual_evidence_alone(observation_period, bounded):
+    """A coverage facet's years are coverage's whatever its cadence, so they alone leave
+    the read asking for the whole window; a `P1Y` period lets it ask for the span's years."""
+    facet = replace(
+        _facet("one-facet", "1"), dates_coarsened=True, observation_period=observation_period
+    )
+
+    _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
+
+    assert periods == ([[str(year) for year in range(2011, 2025)]] if bounded else [None])
+
+
+def test_an_every_date_span_read_fetches_past_a_lagging_graph_to_the_clock_year(monkeypatch):
+    """Elected under every date, the graph lists the contested second facet to 2016 while
+    SDMX holds it to 2024. The span read asks SDMX for the span's first year to the clock's
+    year (the pinned 2026), past the graph's last dates, and serves the points a read of the
+    whole window keeps."""
+    served = frozenset(range(2011, 2017))
+    second = _facet("contested", "2")
+    lagging = replace(
+        second,
+        dates=second.dates[:6],
+        values=second.values[:6],
+        obs_count=6,
+        latest_date="2016",
+    )
+
+    bounded, periods = _span_preview("contested", served, candidates={"2": lagging}, years=None)
+    _whole_window(monkeypatch)
+    whole, _periods = _span_preview("contested", served, candidates={"2": lagging}, years=None)
+
+    assert periods == [[str(year) for year in range(2011, 2027)]]
+    assert bounded == whole

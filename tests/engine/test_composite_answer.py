@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import threading
+import time
 from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any, cast
@@ -53,6 +54,7 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
+from search.engine.unit.conversion import ConversionPeriod
 from search.models import (
     BaseIdentity,
     CoverageExact,
@@ -81,6 +83,7 @@ from search.models import (
 )
 from search.scope import composite
 from search.scope.composite import ServedComponent, compose_observations
+from series_coverage.schema import FacetMetadata
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._assemble_fixtures import _make_spec
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
@@ -125,6 +128,8 @@ class _Components:
         self.failures: dict[str, Exception] = {}
         self.degraded: set[str] = set()
         self.warned: dict[str, tuple[Warning, ...]] = {}
+        # The components answering a status other than definite.
+        self.statuses: dict[str, str] = {}
         self.calls: list[tuple[ResubmitIdentityPayload, EngineOptions]] = []
         self.scopes: list[frozenset[str] | None] = []
         # Each component's held years, `_WINDOW` where unnamed, and the latest points a
@@ -178,7 +183,7 @@ class _Components:
         warned = ((_PARTIAL, _DEFAULTED) if name == "bilateral" else ()) + self.warned.get(name, ())
         return RegionResult(
             variable_text="health aid",
-            status="definite",
+            status=cast(Any, self.statuses.get(name, "definite")),
             specs=(spec,),
             no_data_reason=None,
             warnings=tuple(w.model_copy(update={"spec_id": spec.spec_id}) for w in warned),
@@ -435,6 +440,77 @@ def test_a_composite_states_modelled_values_exactly_when_a_component_read_contin
     assert ("observations_probe_failed" in {w.code for w in warnings}) is preview_lost
 
 
+def _narrowed_to(start: int, end: int) -> Any:
+    """`phase_answer._over_conversion_period` narrowing every answer to `start` to `end`, as a
+    unit request whose conversion tables cover those years alone narrows it
+    (`_narrowed_to_period`)."""
+
+    def over_period(
+        state: Any, mat_result: Any, filtered: Any, admission: Any, *, settled: Any
+    ) -> Any:
+        period = ConversionPeriod(
+            served=(_WINDOW[0], _WINDOW[-1]), years=(start, end), limited_by="exchange_rates"
+        )
+        mat_result, filtered, _shown = phase_answer._narrowed_to_period(
+            state, mat_result, admission, period, requested=None
+        )
+        return mat_result, filtered
+
+    return over_period
+
+
+@pytest.mark.parametrize(
+    ("narrowing", "resolved"),
+    [
+        # A resubmit binding US dollars leaves the table's euro facet out of its plan.
+        pytest.param("unit-filter", ["bilateral", "imputed"], id="facet-filtered"),
+        # The same binding over a table holding US dollars alone leaves nothing out.
+        pytest.param("unit-binding", ["imputed"], id="facet-binding-leaving-nothing-out"),
+        pytest.param("conversion-period", ["bilateral", "imputed"], id="conversion-period"),
+    ],
+)
+def test_an_unread_composite_resolves_the_component_its_narrowed_plan_cannot_state(
+    monkeypatch, narrowing, resolved
+):
+    """Asked with no preview, the bilateral component's preview resolves the table the
+    answer read, so its continuation is stated from the answer's own plan. A plan the
+    request's own facet filter or a conversion's period narrowed elected over inputs the
+    identity's hash does not hold, so the component is resolved; a filter leaving no facet
+    out lends the plan."""
+    rows, extra = provider._coverage_rows(provider._ALL_YEARS)
+    if narrowing == "unit-filter":
+        rows += [
+            (dcid, "crs-eur", provider._USA, provider._KEN, list(provider._BILATERAL_YEARS))
+            for dcid in provider._CRS_MEMBERS
+        ]
+        extra["facet_metadata"]["crs-eur"] = FacetMetadata(provenance_id=provider._CRS, unit="EUR")
+    patch_coverage(monkeypatch, rows, **extra)
+    first = provider._ask(_QUESTION, time="2015-2020")
+    components = _Components(first, estimated=False)
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", components)
+    if narrowing == "conversion-period":
+        monkeypatch.setattr(phase_answer, "_over_conversion_period", _narrowed_to(2016, 2019))
+        request = _fresh()
+    else:
+        document = first.definition.identity.model_dump(mode="json", exclude_none=True)
+        document["facets"]["unit"] = {"state": "value", "ref": "USD"}
+        identity = BaseIdentity.model_validate(document)
+        request = _resubmit(
+            first.model_copy(
+                update={"definition": first.definition.model_copy(update={"identity": identity})}
+            )
+        )
+    request = request.model_copy(update={"response_options": ResolveOptions()})
+
+    response = offline_resolve(request, **_clients())
+
+    assert isinstance(response, Resolution)
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart)
+    assert sorted(_STAT_VARS[_provenance(inp.identity)] for inp, _ in components.calls) == resolved
+    assert not any(options.include_observations for _, options in components.calls)
+
+
 class _Spliced:
     """`resolve_spec_resubmit` for the OECD headline's components, named by the measured
     property each reads: each answers a definite Spec serving a continuation where named in
@@ -558,6 +634,39 @@ def test_an_unread_composite_resolves_its_components_together(monkeypatch):
     basis._resolve_part(_headline(), "aid")
 
     assert len(components.calls) == 2
+
+
+def test_an_unread_composite_s_component_resolves_take_the_request_s_continuation_permits(
+    monkeypatch, search_settings
+):
+    """With one permit per request, the OECD headline's two component resolves run one at a
+    time inside the part leg, which holds the request's one leg permit, and the request
+    answers."""
+    search_settings(max_variables=1, max_variable_concurrency=1)
+    basis._cover(monkeypatch, basis._DAC1_MEMBERS)
+    components = _Spliced()
+    lock = threading.Lock()
+    running = [0]
+    peak = [0]
+
+    def counted(**kwargs: Any) -> RegionResult:
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        try:
+            # Long enough for the other resolve's thread to start if no permit held it.
+            time.sleep(0.05)
+            return components(**kwargs)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", counted)
+
+    basis._resolve_part(_headline(), "aid")
+
+    assert len(components.calls) == 2
+    assert peak[0] == 1
 
 
 def test_an_unread_composite_resolves_each_component_plan_once_and_reads_no_row(monkeypatch):
@@ -718,6 +827,33 @@ def test_a_component_read_failing_on_a_code_fault_fails_the_request(monkeypatch,
 
     with pytest.raises(ValueError, match="a fault"):
         offline_resolve(_request(door, first), **_clients())
+
+
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+@pytest.mark.parametrize("fault", ["refused", "no_data", "code_fault"])
+def test_a_lost_continuation_resolve_answers_the_part_degraded_and_uncached(
+    monkeypatch, door, fault
+):
+    """Asked with no preview, the imputed component's resolve is refused, answers no
+    definite Spec, or raises a fault in the code. The part still answers the composite,
+    states no continuation, and is degraded, so no cache stores it."""
+    first, components = _components(monkeypatch)
+    if fault == "refused":
+        components.failures["imputed"] = EngineInputError("refused")
+    elif fault == "code_fault":
+        components.failures["imputed"] = ValueError("a fault")
+    else:
+        components.statuses["imputed"] = "no_data"
+    components.continued.add("imputed")
+    cache = ResponseCache()
+    request = _request(door, first).model_copy(update={"response_options": ResolveOptions()})
+
+    events = offline_events(request, response_cache=cache, **_clients())
+
+    assert _answered(events).spec_id == first.spec_id
+    assert "modelled_values" not in {d.code for d in _part(events).departures}
+    assert _done(events).degraded_leg is True
+    assert cache.stats().entries == 0
 
 
 @pytest.mark.parametrize("door", ["fresh", "resubmit"])

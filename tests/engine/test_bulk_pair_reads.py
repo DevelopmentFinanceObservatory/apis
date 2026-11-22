@@ -30,7 +30,13 @@ from search.engine.region.codes import OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations.bulk_pair_reads import BulkPairSdmx, PlannedRead
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
-from search.engine.retrieval.read_plan import PairPlan, PlanRoles, PlanSeries, plan_pairs
+from search.engine.retrieval.read_plan import (
+    PairPlan,
+    PlanRoles,
+    PlanSeries,
+    plan_pairs,
+    read_in_years,
+)
 from search.models import IdentityUnitRequest, SpecObservations, TimeWindow, Warning
 from search.models.identity import IdentityCurrencyRole
 from series_coverage.index import CoverageIndex
@@ -173,6 +179,8 @@ _DEFAULT = ObsFacetFixture(facet_id="f-default", provenance_id=_PROVENANCE, unit
 _SECOND_METHOD = ObsFacetFixture(
     facet_id="f-method", provenance_id=_PROVENANCE, unit=_USD, measurement_method="Estimated"
 )
+# A second facet under the default's method, which contests its years.
+_SECOND_RELEASE = ObsFacetFixture(facet_id="f-release", provenance_id=_PROVENANCE, unit=_USD)
 
 
 @dataclass(frozen=True)
@@ -186,6 +194,9 @@ class _Case:
     debtors: tuple[str, ...] = (_KEN,)
     # Whether the first member's second-method rows are held by SDMX alone, outside the plan.
     unplanned_second_facet: bool = False
+    # The years a composite serves, which a component's plan is read in (`read_in_years`).
+    served: frozenset[int] | None = None
+    second: ObsFacetFixture = _SECOND_METHOD
 
 
 def _holdings(case: _Case) -> list[_Holding]:
@@ -205,7 +216,7 @@ def _holdings(case: _Case) -> list[_Holding]:
                             sv,
                             creditor,
                             debtor,
-                            _SECOND_METHOD,
+                            case.second,
                             tuple(range(2016, end + 3)),
                             planned=not (case.unplanned_second_facet and i == 0),
                         )
@@ -275,6 +286,10 @@ def _preview(
     search_settings(obs_preview_concurrency=concurrency)
     holdings = _holdings(case)
     plan = _plan(holdings, case)
+    if case.served is not None:
+        served_plan = read_in_years(plan, case.served)
+        assert served_plan is not None
+        plan = served_plan
     members = list(plan.members)
     mixer = _Mixer(holdings, failing=case.failing)
     server = RateTableServer(_RATE_BODIES, fallback=mixer.handle)
@@ -319,6 +334,21 @@ _CASES = {
         years=TimeWindow(start_year=2015, end_year=2024),
         unplanned_second_facet=True,
     ),
+    # The first member reads one facet and asks SDMX for the span's years, the others two
+    # and ask from the span's first year to the window's end, or under every date to the
+    # clock's year: every read of the group asks for the union.
+    "served_years_mixed_facets": _Case(
+        two_facets=True,
+        years=TimeWindow(start_year=2015, end_year=2024),
+        unplanned_second_facet=True,
+        served=frozenset(range(2018, 2023)),
+    ),
+    "served_years_every_date": _Case(
+        two_facets=True,
+        unplanned_second_facet=True,
+        served=frozenset(range(2016, 2021)),
+        second=_SECOND_RELEASE,
+    ),
     "two_debtors": _Case(debtors=(_KEN, _UGA)),
     "one_failing_member": _Case(failing=frozenset({_FAILING})),
     "unit_request": _Case(unit_request=IdentityUnitRequest(currency="EUR", prices="current")),
@@ -356,7 +386,9 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
         periods = {params.get("c[TIME_PERIOD]") for params in per_series_requests}
         # Members whose reads name the same debtors share a request: `two_debtors` has
         # members reading both debtors and members reading the first alone.
-        assert len(bulk_requests) == len(periods) * (2 if name == "two_debtors" else 1)
+        # A composite component's reads ask for the union of their years, one request.
+        expected = 1 if case.served is not None else len(periods)
+        assert len(bulk_requests) == expected * (2 if name == "two_debtors" else 1)
         assert all(len(params["c[variableMeasured]"].split(",")) > 1 for params in bulk_requests)
 
 

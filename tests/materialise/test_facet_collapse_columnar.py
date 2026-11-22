@@ -8,7 +8,11 @@ import unicodedata
 import pyarrow as pa
 
 from dc_sdmx import SdmxObservation
-from materialise.facet_collapse import collapse_duplicate_identity_facets_table
+from materialise.facet_collapse import (
+    FacetRankStats,
+    collapse_duplicate_identity_facets_table,
+    facet_rank,
+)
 
 from . import _row_oracle
 from ._table_support import table_from_observations
@@ -365,3 +369,23 @@ def test_differential_against_the_row_path():
         rows = tuple(_random_row(rng, facet_ids) for _ in range(rng.randint(4, 20)))
 
         _assert_table_matches_row_oracle(rows)
+
+
+def test_given_ranks_rank_the_facets_they_name_and_rows_rank_the_rest():
+    """A span read's ranks name the series' facets alone: facet "2", in the read from
+    another series' group, and a row with no facet id rank by their rows. Facet "1",
+    one row here but ten over the window, beats "2" on the 2016 key; "2", two rows,
+    beats the null facet on 2017."""
+    rows = (
+        _row(facet_id="1", observation_period=None, time_period="2016", value="a"),
+        _row(facet_id="2", observation_period=None, time_period="2016", value="b"),
+        _row(facet_id="2", observation_period=None, time_period="2017", value="c"),
+        _row(facet_id=None, observation_period=None, time_period="2017", value="d"),
+    )
+    ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
+
+    kept = collapse_duplicate_identity_facets_table(
+        _table(rows), declared_roles=_ROLES, ranks=ranks
+    )
+
+    assert kept["OBS_VALUE"].to_pylist() == ["a", "c"]
