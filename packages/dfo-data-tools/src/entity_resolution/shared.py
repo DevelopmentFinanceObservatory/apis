@@ -200,8 +200,10 @@ def _build(cache_dir: Path | None) -> SharedResolver:
         len(group_wordings.skipped),
         len(group_wordings.unnamed),
     )
-    for entity_id, name in group_wordings.unnamed:
-        logger.debug("group wording left out %r of %s", name, entity_id)
+    for unnamed in group_wordings.unnamed:
+        logger.debug(
+            "group wording left out %r of %s: %s", unnamed.name, unnamed.group, unnamed.reason
+        )
     return SharedResolver(
         resolver=resolver,
         executor=executor,

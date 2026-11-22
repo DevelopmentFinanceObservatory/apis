@@ -693,7 +693,11 @@ def test_a_dac_region_resolves_to_the_group_its_total_is_paired_with(
         ("G7 countries", "G7", "entity"),
         ("the G7 countries", "G7", "entity"),
         ("G20 countries", "G20", "members"),
-        ("OECD countries", "OECD", "entity"),
+        ("OECD countries", "OECD", "members"),
+        ("European Union countries", "European Union", "members"),
+        ("countries in the European Union", "European Union", "members"),
+        ("G20 economies", "G20", "members"),
+        ("Group of Twenty countries", "G20", "members"),
         ("European Union", "European Union", "entity"),
         ("EU countries", "European Union", "members"),
         ("EU member states", "European Union", "members"),
@@ -732,9 +736,9 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 
     A group's listed name resolves whole ("European Union (EU)"). A wording generated from a
     group's own names ("G7 countries", "members of the G7") takes the reading of the group's
-    curated "<name> countries" or members row where one exists ("G20 members" reads as the
-    G20's members, as "G20 countries" does), and otherwise reads as the group itself, as its
-    bare name does. A curated alias row states its own reading.
+    curated rows ("<name> countries", "members" or "member states") where they agree ("G20
+    members" reads as the G20's members, as "G20 countries" does, whichever of its names the
+    text uses), and otherwise reads as the group itself, as its bare name does. A curated alias row states its own reading.
     """
     member_ids = shared_resolver.run(
         _members_of_on_shared_thread, shared_resolver.resolver, group_name
