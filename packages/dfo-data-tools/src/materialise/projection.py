@@ -26,8 +26,8 @@ the grammar names.
 Names come from a `names` mapping (cell value to name) read by the caller for each table in one
 lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
 row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the year
-of its `time_period`, its kind read over the datasets the table's version cites on a row whose
-`provenance` is none of them, such as a composite's (`materialise.enrichment.party_datasets`), so
+of its `time_period`, a composite's rows reading the composite's tables and a row with no
+`provenance` the datasets the table's version cites (`materialise.enrichment.party_datasets`), so
 a whole total reads `whole total` only in the dataset and years its marker holds
 (`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a row with no
 readable value in one, gives `total`. A name or kind cell left empty beside a non-empty entity
@@ -162,11 +162,11 @@ def long_kind_cell(
     on the destination axis reads `country or organisation`, or `private` for a private one.
     The kind and class are the party's on the role's axis over
     `party_datasets(provenance, sources)` (`PartyRow.kind_over`, `PartyRow.class_of`): the row's
-    dataset when it is one of `sources`, and every one of `sources` on a row whose `provenance`
-    is none of them, such as a composite's, or that has none. With no `sources` such a row reads
-    every dataset that publishes the party on that axis. `None` for a ref the code index does
-    not list, one that is not text, and a party that takes no one kind for the row, a party whose
-    kind differs between those datasets."""
+    dataset, a composite's component tables for a composite's row, and every one of `sources` on
+    a row with no `provenance`. With no `sources` such a row reads every dataset that publishes
+    the party on that axis. `None` for a ref the code index does not list, one that is not text,
+    and a party that takes no one kind for the row, a party whose kind differs between those
+    datasets."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
@@ -274,8 +274,9 @@ def axis_source_column(code_system: str) -> str:
 @dataclass(frozen=True)
 class NodeReads:
     """What a long output's cells read beyond the row: `names` maps a cell value to its name,
-    `parties` a party ref to its code index row, which gives its kind cell, read over `sources`,
-    the datasets the table's version cites (`long_kind_cell`)."""
+    `parties` a party ref to its code index row, which gives its kind cell, and `sources` the
+    datasets the table's version cites, which a row with no provenance reads it over
+    (`long_kind_cell`)."""
 
     names: Names
     parties: Mapping[str, PartyRow]

@@ -1,6 +1,7 @@
-"""A file reads a party's kind over the datasets its version cites, so a frame of the DAC2a
-bilateral composite types the IMF trust funds a `total`, as DAC2A declares them, though the CRS
-declares them a `party`. Its frame-layout file says so and a partitioned rank of its providers
+"""A file reads a party's kind on a composite's rows over the composite's tables, and on rows
+with no provenance over the datasets its version cites, so a frame of the DAC2a bilateral
+composite, or of DAC2A rows with no provenance, types the IMF trust funds a `total`, as DAC2A
+declares them, though the CRS declares them a `party`. Its frame-layout file says so and a partitioned rank of its providers
 answers, its long file writes `total` in `<role>_kind`, and a cut of its party totals leaves the
 trust funds out."""
 
@@ -168,16 +169,17 @@ def _top_two_per_recipient(frame: Frame) -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(
-    "provenance",
+    ("provenance", "cited"),
     [
-        pytest.param(DAC2A_BILATERAL, id="composite-rows"),
-        pytest.param(None, id="no-provenance-column"),
+        pytest.param(DAC2A_BILATERAL, [DAC2A], id="composite-rows"),
+        pytest.param(DAC2A_BILATERAL, [CRS, DAC2A], id="composite-rows-citing-the-crs-too"),
+        pytest.param(None, [DAC2A], id="no-provenance-column"),
     ],
 )
 def test_a_dac2a_frame_types_a_party_by_the_datasets_its_version_cites(
-    provenance: str | None,
+    provenance: str | None, cited: list[str]
 ) -> None:
-    frame = _frame_layout(_frame(provenance), cited=[DAC2A])
+    frame = _frame_layout(_frame(provenance), cited=cited)
 
     assert _kinds(frame) == {
         "country/FRA": "party",
@@ -195,9 +197,10 @@ def test_a_dac2a_frame_types_a_party_by_the_datasets_its_version_cites(
 
 
 def test_a_frame_citing_datasets_that_type_a_party_apart_leaves_it_untyped_and_refuses() -> None:
-    """A composite of the CRS and DAC2A finds the trust funds a party in one and a total in the
-    other, so no one kind holds and a rank of the providers refuses."""
-    frame = _frame_layout(_frame(DAC2A_BILATERAL), cited=[CRS, DAC2A])
+    """Rows with no provenance in a version citing the CRS and DAC2A find the trust funds a
+    party in one and a total in the other, so no one kind holds and a rank of the providers
+    refuses."""
+    frame = _frame_layout(_frame(None), cited=[CRS, DAC2A])
 
     assert _kinds(frame)[_TRUST_FUNDS] == "untyped"
     with pytest.raises(PlaceLevelsMixedError):

@@ -1196,9 +1196,8 @@ def _fill_lookup_columns(
     takes one cell, as a pivot reads it (`pivot_party_cell`): its kind and class over the
     `provenance` cells of the table's rows holding it, and `party_whole` for no dataset and
     year. `sources` are the datasets the table was read from: a party's kind and class read
-    over a row's `provenance` where it is one of them, and over all of them on a row whose
-    `provenance` is not, such as a composite's, or that has none (`party_datasets`). Where a
-    table has no `provenance` or `time_period`
+    over a row's `provenance`, a composite's as its component tables, and over all of `sources`
+    on a row with none (`party_datasets`). Where a table has no `provenance` or `time_period`
     column, or a row no readable value in one, the `party_whole` cell of a party with whole markers
     is empty (`materialise.enrichment.whole_cell`). Without `parties` the cell comes from `lookup`
     like every field. Only a cell `lookup_cell` reads as absent counts as missing.
@@ -2059,8 +2058,8 @@ class EnrichmentPlan:
     dataset and year of the row, or one cell per party where the plan pivots
     (`ReshapePlan.pivot`, `pivot_party_cell`), since a pivot's index groups rows;
     `None` reads the cells from `lookup`, as for every other field. `sources` are the
-    datasets the table was read from, which a party's kind reads over on a row whose
-    `provenance` is none of them (`materialise.enrichment.party_datasets`).
+    datasets the table was read from, which a party's kind reads over on a row with no
+    `provenance` (`materialise.enrichment.party_datasets`).
     """
 
     requests: tuple[tuple[str, str], ...]

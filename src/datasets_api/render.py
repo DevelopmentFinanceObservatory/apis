@@ -1869,8 +1869,8 @@ class _RenderReads:
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
     one read's wait. A party's fields come from `parties`, the code index's party rows, read
-    over `sources`, the datasets the rendered version cites, on a row whose `provenance` is
-    none of them, such as a composite's (`materialise.enrichment.party_datasets`)."""
+    over `sources`, the datasets the rendered version cites, on a row with no `provenance`
+    (`materialise.enrichment.party_datasets`)."""
 
     enrichment: EnrichmentLookup
     parties: Mapping[str, PartyRow]
@@ -2068,9 +2068,9 @@ class _LongLayout:
     same render has the same columns.
 
     A party's kind cell is the one the code index declares
-    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, over the
-    datasets the version cites on a row whose `provenance` is none of them, such as a
-    composite's (`_RenderReads.sources`), read with no
+    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, a
+    composite's as its component tables, and over the datasets the version cites on a row with
+    no `provenance` (`_RenderReads.sources`), read with no
     graph call, so the split of totals is the same in every chunk and every render of a
     version, whether or not a graph read succeeds. A whole total (`PartyRow.whole`) reads
     `whole total` in the dataset and years its marker holds and `total` outside them. A party
@@ -3037,8 +3037,8 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from the code index's party rows over `citation_refs` on a row whose provenance is
-    none of them, such as a composite's. A cut that leaves rows out renders from the cut frame,
+    kinds from the code index's party rows, a composite's rows over its component tables and a
+    row with no provenance over `citation_refs`. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. `recorded_cut` is the cut a derived version's trace records
@@ -3370,7 +3370,7 @@ integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`
 writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`. Version 5
 writes a pivot's decoded `stat_var_<code_system>` cells as code dcids, describes that column as a
 code and names its codes in the codes table, and reads a party's kind and class cells over the
-datasets the version cites on a row whose `provenance` is none of them, such as a composite's
+datasets the version cites on a row with no `provenance`
 (`materialise.enrichment.party_datasets`)."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
@@ -3400,8 +3400,8 @@ table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV dr
 XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
 `<role>_kind` in place of `<role>_party_kind`. Version 5 writes a pivot's decoded
 `stat_var_<code_system>` cells as code dcids, and reads a party's `<role>_kind` and pivot party
-cells over the datasets the version cites on a row whose `provenance` is none of them, such as a
-composite's (`materialise.enrichment.party_datasets`). A rendering without `LAYOUT_KEY` predates
+cells over the datasets the version cites on a row with no `provenance`
+(`materialise.enrichment.party_datasets`). A rendering without `LAYOUT_KEY` predates
 version 2."""
 
 FRAME_LAYOUT = "frame"

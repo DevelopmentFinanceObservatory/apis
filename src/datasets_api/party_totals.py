@@ -12,12 +12,12 @@ For each open party role, in column-name order, the rows whose party the code in
 `total` in the row's dataset (`materialise.enrichment.party_kind_of` for the row's `provenance`)
 can be left out, each role reading the rows the roles before it kept. A party can be a total in
 one dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), so the cut keys
-on the party and the dataset together. A row whose `provenance` is none of the datasets the
-version cites, such as a composite's, or that has none reads the kind over every cited dataset
+on the party and the dataset together. A composite's rows read the kind of its component
+tables (`code_index.types.PartyRow.kinds_over`), so a cut of the DAC2a bilateral composite
+leaves out the IMF trust funds that DAC2A declares a total, though the CRS declares them a
+party. A row with no provenance reads the kind over every dataset the version cites
 (`materialise.enrichment.party_datasets`), and over every dataset publishing the party when the
-cut is told of none. Such a row keeps a party whose kind differs between those datasets. So a
-cut of the DAC2a bilateral composite, which cites DAC2A, leaves out the IMF trust funds that
-DAC2A declares a total, though the CRS declares them a party. Parties of kind `party` or `residual`,
+cut is told of none. Such a row keeps a party whose kind differs between those datasets. Parties of kind `party` or `residual`,
 and parties the index declares no kind for, stay. A bound role is left alone whatever its
 parties' kinds.
 
@@ -276,7 +276,7 @@ def cut_party_totals(
 ) -> PartyTotalsCut:
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds from
     the code index's `parties` on each role's axis for each row's dataset, read over `sources`,
-    the datasets the frame's version cites, on a row whose `provenance` is none of them
+    the datasets the frame's version cites, on a row with no `provenance`
     (`materialise.enrichment.party_datasets`). Reads the frame once per role, each pass after
     the cuts of the roles before it, and a role with total rows reads again the chunks before
     its first (`_role_cells`)."""

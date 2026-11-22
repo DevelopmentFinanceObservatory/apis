@@ -72,10 +72,10 @@ index and its key is the same under every digest. No digest, a hex SHA-256, equa
 RENDER_FORMAT = "axis_dcid_party_kind"
 """The cells a render writes into a frame-layout file and a derived version's frame for unchanged
 data and options. Under `axis_dcid_party_kind` each decoded `stat_var_<code_system>` cell holds
-its code's dcid (`datasets_api.decode`), and a party's kind and class cells, on a row whose
-`provenance` is none of the datasets the version cites, such as a composite's, read over those
-cited datasets (`materialise.enrichment.party_datasets`). A party-totals cut reads kinds by the
-same rule, so a composite DAC2a cut drops the trust funds a DAC2A row types as totals. It
+its code's dcid (`datasets_api.decode`), and a party's kind and class cells, on a row with no
+`provenance`, read over the datasets the version cites (`materialise.enrichment.party_datasets`),
+where earlier renders read every dataset publishing the party. A party-totals cut reads kinds
+by the same rule. It
 salts the link key of a frame-layout file (`version_store.rendering_key`) and joins the stamp a
 derived version's links record (`rendering_stamp`), so a file or version rendered under another
 format matches no request and the next request renders it again. It also names an analysis

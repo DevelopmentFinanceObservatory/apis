@@ -408,16 +408,19 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
     ("provenance", "sources", "kind"),
     [
         pytest.param(_DAC2A_BILATERAL, (_DAC2A,), "total", id="composite-row-of-dac2a"),
-        pytest.param(None, (_DAC2A,), "total", id="no-provenance-of-dac2a"),
-        pytest.param(_CRS, (_CRS, _DAC2A), "party", id="row-of-a-cited-dataset"),
-        pytest.param(_DAC2A_BILATERAL, (_CRS, _DAC2A), None, id="composite-of-both"),
+        pytest.param(_DAC2A_BILATERAL, (_CRS, _DAC2A), "total", id="composite-citing-both"),
         pytest.param(_DAC2A_BILATERAL, (), "total", id="composite-citing-nothing"),
+        pytest.param(_CRS, (_CRS, _DAC2A), "party", id="row-of-a-cited-dataset"),
+        pytest.param(None, (_DAC2A,), "total", id="no-provenance-of-dac2a"),
+        pytest.param(None, (_CRS, _DAC2A), None, id="no-provenance-of-both"),
+        pytest.param(None, (), None, id="no-provenance-citing-nothing"),
     ],
 )
 def test_a_row_reads_a_party_s_kind_over_the_datasets_its_frame_cites(provenance, sources, kind):
-    """A row of a dataset the frame cites reads that dataset's kind. A composite's row, whose
-    provenance publishes no party, and a row with none read every cited dataset, and no one
-    kind holds where those datasets type the party apart."""
+    """A row reads its own dataset's kind, and a composite's row its component tables', whatever
+    the frame cites. A row with no provenance reads every cited dataset, or every dataset
+    publishing the party when the frame cites none, and no one kind holds where those datasets
+    type the party apart."""
     cell = row_party_cell(
         "party_kind",
         _TRUST_FUNDS.dcid,

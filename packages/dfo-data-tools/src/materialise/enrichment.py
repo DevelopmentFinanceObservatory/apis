@@ -360,9 +360,9 @@ def row_party_cell(
     `period` and `provenance` cell `provenance` (`None` for a table without that column): the
     `party_cell` on the role's axis (`role_key_axis`) for the year of `period` (`period_year`)
     and that dataset. The kind and class read over `party_datasets(provenance, sources)`, so
-    on a row of a frame read from `sources` they are the party's in those datasets. `None`
-    for a `ref` that is not text and for a role on no flow axis. A `provenance` that is not
-    text reads as no dataset."""
+    on a row with no provenance in a frame read from `sources` they are the party's in those
+    datasets. `None` for a `ref` that is not text and for a role on no flow axis. A
+    `provenance` that is not text reads as no dataset."""
     if not isinstance(ref, str) or (axis := role_key_axis(role)) is None:
         return None
     dataset = provenance if isinstance(provenance, str) else None
@@ -379,15 +379,16 @@ def row_party_cell(
 def party_datasets(provenance: str | None, *, sources: Collection[str]) -> tuple[str, ...]:
     """The datasets a party's kind and class read over on a row whose `provenance` cell is
     `provenance`, in a frame read from `sources`, the provenances its version cites
-    (`datasets_api.manifest.source_refs_of`): the row's own dataset when it is one of
-    `sources`, or when `sources` is empty, and every one of `sources` otherwise.
+    (`datasets_api.manifest.source_refs_of`): the row's own provenance where it has one, and
+    every one of `sources` on a row with none.
 
-    A composite's rows carry the composite's provenance, which publishes no party, so they
-    read over its component datasets, and a row with no provenance over every dataset the
-    frame was read from. Where those datasets give a party different kinds, `PartyRow.kind_over`
-    finds no one kind and the cell stays unavailable. With no `sources` and no `provenance`
-    the party reads over every dataset that publishes it."""
-    if provenance is not None and (not sources or provenance in sources):
+    A declared composite's rows read as its component tables (`PartyRow.kinds_over`), so
+    their kind is the one the composite's tables give, whatever the version cites. A row with
+    no provenance names no dataset, so it reads the datasets its version cites, and where those
+    give a party different kinds `PartyRow.kind_over` finds no one kind and the cell stays
+    unavailable. With no `sources` either, such a row reads every dataset that publishes the
+    party."""
+    if provenance is not None:
         return (provenance,)
     return tuple(sources)
 

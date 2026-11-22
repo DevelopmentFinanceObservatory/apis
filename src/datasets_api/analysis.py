@@ -2440,9 +2440,9 @@ def compute_analysis(
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
 # only a body of this format is answered. Raise it whenever the body changes. Format 4 holds
 # code dcids in `stat_var_<axis>` cells (`datasets_api.decode`). Format 5 reads a party's kind
-# over the datasets each root's version cites (`materialise.enrichment.party_datasets`), so a
-# party typed differently in another dataset keeps its kind, and a verb leaves it out as it
-# leaves out any total.
+# on a root row with no provenance over the datasets the root's version cites
+# (`materialise.enrichment.party_datasets`), so a party typed differently in another dataset
+# keeps its kind, and a verb leaves it out as it leaves out any total.
 ANSWER_FORMAT = "analysis_answer/5"
 
 
