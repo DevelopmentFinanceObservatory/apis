@@ -282,8 +282,10 @@ class ConnectionSettings(BaseConnectionSettings):
 
     `pool_size` defaults to 10. It is smaller than the threads that can
     borrow: one `datasets_api` instance runs a read executor
-    (`DatasetsBuildSettings.read_max_concurrency`, default 8) and a work
-    executor (`work_max_concurrency`, 4), 12 threads, beside the
+    (`DatasetsBuildSettings.read_max_concurrency`, default 8), a work
+    executor (`work_max_concurrency`, 4), an analysis executor
+    (`analysis_max_concurrency`, 2) and an analysis key executor
+    (`analysis_key_max_concurrency`, 4), 18 threads, beside the
     presentation surface's reads. The default holds because a borrow lasts
     one read or one write transaction and a borrower that finds the pool
     empty waits: `ConnectionPool.borrow` waits up to 30 seconds for a

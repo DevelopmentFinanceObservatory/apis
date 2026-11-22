@@ -4,8 +4,8 @@ It serves skills and warnings from the shared index, ordered by skill id so unch
 content keeps the same ETag. A warning naming no served skill, such as one for a skill left
 out of the catalogue, joins the corpus warnings. `Cache-Control`
 uses the seconds until the next refresh attempt, so a cached response expires by then.
-An index awaiting its first build returns `service_unavailable` (503), avoiding a cached
-empty catalogue.
+A request waits for the index's first build (`built_index`), then answers
+`service_unavailable` (503) if it has not finished, avoiding a cached empty catalogue.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from skills_api.deps import (
     CACHE_CONTROL,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
+    built_index,
     index_not_built_problem,
 )
 from skills_api.models import SkillListResponse, skill_summary, split_skill_warnings
@@ -41,9 +42,7 @@ def _build_response(index: SkillsIndex) -> SkillListResponse:
 
 async def list_skills(request: Request, deps: SkillsDepsDep) -> object:
     shared = deps.skills_index
-    index = shared.index
-    if index is None:
-        raise SkillsIndexNotBuilt()
+    index = await built_index(shared)
     return deps.list_cache.respond(
         generation=index,
         key=None,

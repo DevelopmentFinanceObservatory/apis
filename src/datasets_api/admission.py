@@ -106,7 +106,7 @@ def _sliced_wait(
     return False
 
 
-def _bound_release_served() -> Callable[[], bool]:
+def bound_release_served() -> Callable[[], bool]:
     """Whether the service still serves the graph release bound to the request now."""
     release = current_release()
     return lambda: release.served
@@ -226,7 +226,7 @@ def bounded_materialise_slot(
     if materialise_semaphore is None:
         yield
         return
-    served = _bound_release_served()
+    served = bound_release_served()
     headroom = admission_headroom()
     _wait_seconds = float(wait_seconds)
     if deadline is not None:
@@ -306,7 +306,7 @@ class RebuildFlights:
         while a rebuild of the subject runs raises `MintBackgroundDeclined` at once, since that
         rebuild already warms the subject.
         """
-        served = _bound_release_served()
+        served = bound_release_served()
         finished = threading.Event()
         running = self._claim(subject_id, finished)
         waited = running is not None
@@ -670,6 +670,7 @@ __all__ = [
     "UNCOVERED_MEMBER_CAP",
     "MaterialisePermits",
     "RebuildFlights",
+    "bound_release_served",
     "bounded_materialise_slot",
     "refuse_async_over_ceiling",
     "refuse_excel_over_estimate",

@@ -143,6 +143,27 @@ def test_acquire_returns_with_the_first_build_serving():
     asyncio.run(scenario())
 
 
+def test_acquire_without_waiting_returns_during_the_first_build_and_ready_waits_for_it():
+    async def scenario() -> None:
+        graph = _BlockingRosterGraph()
+        shared = await acquire_shared_index(graph=graph, wait_for_first_build=False)
+        try:
+            await asyncio.to_thread(graph.entered.wait)
+            assert (shared.build_attempts, shared.index) == (0, None)
+            # Past its bound, `ready` answers no index while the build runs on.
+            assert await shared.ready(timeout_s=0.05) is None
+
+            asyncio.get_running_loop().call_later(0.05, graph.release_build.set)
+            index = await shared.ready(timeout_s=5.0)
+            assert index is not None
+            assert index is shared.index
+        finally:
+            graph.release_build.set()
+            await release_shared_index(shared)
+
+    asyncio.run(scenario())
+
+
 def test_release_abandons_a_build_genuinely_in_flight(monkeypatch):
     monkeypatch.setattr(shared_module, "SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS", 0.05)
 

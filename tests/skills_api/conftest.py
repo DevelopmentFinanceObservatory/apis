@@ -79,17 +79,21 @@ def index_of(*entries: SkillEntry, issues: tuple[SkillIssue, ...] = ()) -> Skill
 
 
 class NoGraphSharedIndex:
-    """A stand-in for `skills_index.SharedSkillsIndex` exposing exactly the one member a
-    door may read: `.index`. Any other attribute would be a graph read no door makes, so
-    `__getattr__`, which fires only once normal lookup fails, raises.
+    """A stand-in for `skills_index.SharedSkillsIndex` whose first build attempt has
+    finished, exposing exactly the members a door may read: `.index` and `ready`. Any other
+    attribute would be a graph read no door makes, so `__getattr__`, which fires only once
+    normal lookup fails, raises.
     """
 
     def __init__(self, index: SkillsIndex | None) -> None:
         self.index = index
 
+    async def ready(self, *, timeout_s: float) -> SkillsIndex | None:
+        return self.index
+
     def __getattr__(self, name: str) -> object:
         raise AssertionError(
-            f"a door read {name!r} off the shared index holder; it should read only '.index'"
+            f"a door read {name!r} off the shared index holder; it should read only '.index' and 'ready'"
         )
 
 
