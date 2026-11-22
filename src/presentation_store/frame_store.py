@@ -161,7 +161,7 @@ import datetime
 import logging
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -669,18 +669,33 @@ def _capped_refs(
     return capped
 
 
+def _axis_positions(*, columns: Sequence[str], rows: Sequence[Sequence[object]]) -> dict[int, str]:
+    """The position of each decoded `stat_var_<code_system>` column of `rows` that holds a code
+    cell, mapped to its code system. Empty for a frame with no breakdown cell to label, which
+    then reads no code index."""
+    return {
+        position: column.removeprefix(_AXIS_COLUMN_PREFIX)
+        for position, column in enumerate(columns)
+        if column.startswith(_AXIS_COLUMN_PREFIX)
+        and any(isinstance(row[position], str) for row in rows)
+    }
+
+
 def _code_labels(
-    *, columns: Sequence[str], rows: Sequence[Sequence[object]], index: CodeIndex
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    index: Callable[[], CodeIndex],
 ) -> dict[str, str]:
     """The code index's label of each code dcid a decoded `stat_var_<code_system>` column of
     `rows` holds (`datasets_api.decode`), the label the long layout's `<code_system>_label`
-    writes. A breakdown cell is named so with no graph read and outside the label read's caps."""
-    positions = [
-        position
-        for position, column in enumerate(columns)
-        if column.startswith(_AXIS_COLUMN_PREFIX)
-        and column.removeprefix(_AXIS_COLUMN_PREFIX) in index.declarations
-    ]
+    writes. A breakdown cell is named so with no graph read and outside the label read's caps.
+    `index` is called only when some such column holds a code cell."""
+    axes = _axis_positions(columns=columns, rows=rows)
+    if not axes:
+        return {}
+    code_index = index()
+    positions = [position for position, axis in axes.items() if axis in code_index.declarations]
     labels: dict[str, str] = {}
     for row in rows:
         for position in positions:
@@ -688,37 +703,43 @@ def _code_labels(
             if (
                 isinstance(cell, str)
                 and cell not in labels
-                and (code := index.code_by_dcid(cell)) is not None
+                and (code := code_index.code_by_dcid(cell)) is not None
             ):
                 labels[cell] = code.label
     return labels
 
 
 def _codes_by_label(
-    *, columns: Sequence[str], rows: Sequence[Sequence[object]], index: CodeIndex
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    index: Callable[[], CodeIndex],
 ) -> dict[str, dict[str, str]]:
     """For each decoded `stat_var_<code_system>` column of `rows`, each code dcid it holds by
     the code's label, for the labels no other code of the code system carries
     (`ResolvedFrame.codes_by_label`). A frame whose cells hold labels holds these, each naming
-    one code."""
+    one code. `index` is called only when some such column holds a code cell."""
+    axes = _axis_positions(columns=columns, rows=rows)
+    if not axes:
+        return {}
+    code_index = index()
     by_label: dict[str, dict[str, str]] = {}
-    for position, column in enumerate(columns):
-        axis = column.removeprefix(_AXIS_COLUMN_PREFIX)
-        if not column.startswith(_AXIS_COLUMN_PREFIX) or axis not in index.declarations:
+    for position, axis in axes.items():
+        if axis not in code_index.declarations:
             continue
         held: dict[str, str] = {}
         for cell in dict.fromkeys(row[position] for row in rows):
-            if not isinstance(cell, str) or (code := index.code_by_dcid(cell)) is None:
+            if not isinstance(cell, str) or (code := code_index.code_by_dcid(cell)) is None:
                 continue
             carriers = [
                 hit.dcid
-                for hit in index.codes_by_text(code.label)
+                for hit in code_index.codes_by_text(code.label)
                 if hit.code_system == axis and hit.label == code.label
             ]
             if carriers == [cell]:
                 held[code.label] = cell
         if held:
-            by_label[column] = held
+            by_label[columns[position]] = held
     return by_label
 
 
@@ -1142,7 +1163,7 @@ class LiveFrameStore:
                 codes_by_label=_codes_by_label(
                     columns=cast("Sequence[str]", doc["columns"]),
                     rows=cast("Sequence[Sequence[object]]", doc["rows"]),
-                    index=self._code_index,
+                    index=lambda: self._code_index,
                 ),
             )
             citation_due, citation_retry_at, anchor_final = True, None, False
@@ -1394,7 +1415,7 @@ class LiveFrameStore:
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
         columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
         rows = [[one.get(column) for column in columns] for one in coordinates]
-        coded = _code_labels(columns=columns, rows=rows, index=self._code_index)
+        coded = _code_labels(columns=columns, rows=rows, index=lambda: self._code_index)
         refs = {
             ref: bare
             for ref, bare in _capped_refs(columns=columns, rows=rows).items()
@@ -1997,7 +2018,7 @@ class LiveFrameStore:
         if STAT_VAR_COLUMN not in columns:
             return {}, True
         rows = tuple(cast("Sequence[Sequence[object]]", doc["rows"]))
-        coded = _code_labels(columns=columns, rows=rows, index=self._code_index)
+        coded = _code_labels(columns=columns, rows=rows, index=lambda: self._code_index)
         refs = _capped_refs(
             columns=columns,
             rows=rows,
