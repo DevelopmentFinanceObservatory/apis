@@ -43,7 +43,7 @@ from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration
 from dfo_platform.roles import role_key_axis
 from materialise.composite import spans, stacked_years, table_years
-from materialise.enrichment import party_count, party_kind_of
+from materialise.enrichment import PartySplit, party_split
 from origin_catalogue import Catalogue, bound_catalogue
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
@@ -464,27 +464,25 @@ class CompositeMint:
         return _headline(self.served, stated, facts=self.facts)
 
     def parties(self, axis: RoleAxis) -> list[str] | None:
-        """The parties on `axis` of the series every component writes in the years it
+        """The members on `axis` of the series every component writes in the years it
         serves, each read under its own places (`_served_parties`), without the totals
-        `party_count` leaves out (`_parties`). These are the members of the scope `open_axes`
-        states, and `member_count` counts the same parties. None where the snapshot cannot list some
-        serving component's parties (`_lists_parties`)."""
-        held = self._held_parties
-        if held is None:
-            return None
-        return _parties(
-            held[_ROLES[axis]], axis=axis, index=self.facts.index, datasets=self._datasets
-        )
+        `party_split` leaves out: its parties and residual members, as the frame holds
+        them, sorted by ref as a table answer's scope is. These are the members of the scope
+        `open_axes` states. None where the snapshot cannot list some serving component's
+        parties (`_lists_parties`)."""
+        split = self.party_split(axis)
+        return None if split is None else sorted((*split.parties, *split.residuals))
 
-    def member_count(self, axis: RoleAxis) -> int | None:
-        """How many parties `parties(axis)` lists, as `enrichment.party_count` counts them
-        in the components' datasets. It is the count of each `RoleAxisFact` `open_axes` states,
-        which the `role_scope_defaulted` warning states (`role_scope_warnings`). None where
-        they cannot be listed."""
+    def party_split(self, axis: RoleAxis) -> PartySplit | None:
+        """The members `parties(axis)` lists, split into parties and residual members as
+        `enrichment.party_split` splits them in the components' datasets. Its counts are
+        those of each `RoleAxisFact` `open_axes` states, and its party count the one the
+        `role_scope_defaulted` warning states (`role_scope_warnings`). None where they
+        cannot be listed."""
         held = self._held_parties
         if held is None:
             return None
-        return party_count(
+        return party_split(
             held[_ROLES[axis]], axis=axis, parties=self.facts.index.parties, datasets=self._datasets
         )
 
@@ -522,8 +520,8 @@ class CompositeMint:
         if (scope is None and not facts) or self._held_parties is None:
             return scope, facts
         counted = facts and [
-            fact.model_copy(update={"member_count": self.member_count(fact.role)})
-            if fact.member_count is not None
+            fact.counting(split)
+            if fact.member_count is not None and (split := self.party_split(fact.role)) is not None
             else fact
             for fact in facts
         ]
@@ -615,7 +613,7 @@ class CompositeMint:
         from search.engine.region.grounding import role_scope_defaulted_message
 
         counted = {
-            fact.role: fact.member_count
+            fact.role: (fact.member_count, fact.residual_count or 0)
             for fact in reversed(spec.resolved.role_axis_facts or ())
             if fact.member_count is not None
         }
@@ -631,9 +629,11 @@ class CompositeMint:
                 return warning
             role = cast("RoleAxis", axis)
             opposite: EntityRoleKey = "origin" if role == "destination" else "destination"
+            member_count, residual_count = counted[role]
             message = role_scope_defaulted_message(
                 role,
-                member_count=counted[role],
+                member_count=member_count,
+                residual_count=residual_count,
                 bound_dcids=list(dict.fromkeys(self.identity.entities.get(opposite, ()))),
                 label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
             )
@@ -649,22 +649,6 @@ class CompositeMint:
             return
         with bound_catalogue(self.catalogue):
             yield
-
-
-def _parties(
-    dcids: Iterable[str], *, axis: RoleAxis, index: CodeIndex, datasets: Sequence[str]
-) -> list[str]:
-    """`dcids`, members of a role on `axis`, without the totals `party_count` leaves out of
-    its count, in order: those the code index declares a `total` on `axis` in `datasets`
-    (`party_kind_of`), unless every member is one. The scope lists the parties its role axis
-    fact counts."""
-    ordered = sorted(dcids)
-    kept = [
-        dcid
-        for dcid in ordered
-        if party_kind_of(dcid, axis=axis, parties=index.parties, datasets=datasets) != "total"
-    ]
-    return kept or ordered
 
 
 def _lists_parties(item: ServedComponent, coverage: CoverageIndex) -> bool:

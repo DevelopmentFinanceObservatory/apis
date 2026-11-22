@@ -9,14 +9,21 @@ spacing and punctuation live there alone.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, Protocol
 
 from code_index.flow_family import flow_family
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index
-from dfo_platform.roles import FlowFamily, RoleNoun, RoleWording, role_wording
+from dfo_platform.roles import (
+    FlowFamily,
+    RoleNoun,
+    RoleWording,
+    residual_members_text,
+    role_wording,
+)
+from materialise.enrichment import PartySplit, party_split
 from materialise.recipe_bodies import DeflationBasis
 from search.heading.pins import identity_pinned_properties
 from search.models import (
@@ -514,6 +521,7 @@ def heading_from_parts(
         and facts is not None
         and bool(facts.members)
         and not any(value.text for value in (*modifiers, *how)),
+        datasets=_served_datasets(facts, member_dcids),
     )
     subject = (
         None
@@ -529,7 +537,6 @@ def heading_from_parts(
     unit_text, basis = _byline_unit(
         shape,
         facets,
-        constraints,
         unit_request=unit_request,
         deflated_by=deflated_by,
         graph_measure_name=None if noun.stated else noun.text,
@@ -756,33 +763,110 @@ def _open_role_reading(
     scope: ResolvedScope | None,
     coverage: Coverage | None,
     states_all: bool,
+    datasets: Collection[str] = (),
 ) -> tuple[str, list[_NormalizedEntity]] | None:
     """Return the text and entities naming an open role, or None when nothing is known.
 
-    A scope of one member on that axis names that member. Otherwise the count comes from
-    the role's `RoleAxisFact`, then the scope, then a coverage dimension counting it, and
-    reads "{n} {plural}". A count of one with no name says nothing, so it reads nothing.
-    With no count, ``states_all`` reads the role as every entity in it ("all creditors").
+    The scope's members on that axis split as the role axis fact splits them
+    (`enrichment.party_split`, in ``datasets``, the provenances of the served StatVars). A
+    scope of one member names that member, and one whose members leave one party beside
+    its totals and residual members names that party, with its residual members after it
+    ("Ethiopia and 2 unallocated amounts"), where the role's `RoleAxisFact`, when there is
+    one, also counts one party. Otherwise the members are counted by the role's
+    `RoleAxisFact`, else by the scope's split, else by a coverage dimension counting the
+    role, each with its residual members (`BreadthDim.residual_count` on the dimension).
+    The count reads "{n} {plural}", and residual members follow the parties, worded by side
+    (`residual_members_text`): "81 recipients and 10 unallocated amounts", "40 creditors and
+    1 unspecified creditor". A side of residual members alone reads them alone. Otherwise a
+    count of one party with no name says nothing, so it reads nothing. With no count,
+    ``states_all`` reads the role as every entity in it ("all creditors").
     """
     members = list(scope.members) if scope is not None and scope.axis == axis else []
+    split = _scope_split(axis, members, datasets=datasets) if len(members) > 1 else None
+    named: ResolvedEntity | None = None
     if len(members) == 1:
-        member = members[0]
-        entity = _NormalizedEntity(dcid=member.ref, label=member.label, axis=axis)
-        return _entity_name(member.ref, member.label), [entity]
-    counts = [fact.member_count for fact in role_axis_facts if fact.role == axis]
-    if members:
-        counts.append(len(members))
-    if isinstance(coverage, (CoverageExact, CoverageBreadth)):
-        counts.extend(
-            dim.count
-            for dim in coverage.dimensions or ()
-            if _ROLE_COVERAGE_LABELS.get(dim.label) == axis
+        named = members[0]
+    elif (
+        split is not None
+        and split.party_count == 1
+        and _fact_parties(axis, role_axis_facts)
+        in (
+            None,
+            1,
         )
-    count = next((count for count in counts if count is not None), None)
-    if count is not None:
-        return (f"{count} {noun.plural}", []) if count > 1 else None
-    if states_all:
-        return f"all {noun.plural}", []
+    ):
+        named = next(member for member in members if member.ref == split.parties[0])
+    if named is not None:
+        entity = _NormalizedEntity(dcid=named.ref, label=named.label, axis=axis)
+        name = _entity_name(named.ref, named.label)
+        residuals = split.residual_count if split is not None else 0
+        if residuals:
+            name = f"{name} and {residual_members_text(axis, residuals, noun)}"
+        return name, [entity]
+    counted = _open_role_counts(
+        axis, role_axis_facts=role_axis_facts, split=split, coverage=coverage
+    )
+    if counted is None:
+        return (f"all {noun.plural}", []) if states_all else None
+    parties, residuals = counted
+    if not residuals:
+        return (f"{parties} {noun.plural}", []) if parties > 1 else None
+    residual_text = residual_members_text(axis, residuals, noun)
+    if not parties:
+        return residual_text, []
+    return f"{parties} {noun.singular if parties == 1 else noun.plural} and {residual_text}", []
+
+
+def _served_datasets(facts: SentenceFacts | None, member_dcids: Sequence[str]) -> frozenset[str]:
+    """The provenances that publish the served StatVars (`CodeIndex.statvar_provenances`),
+    the datasets the role axis facts are split in (`spec_build._role_axis_facts`): the
+    served members (`SentenceFacts.members`), else the elected `member_dcids`."""
+    members = [member.ref for member in (facts.members if facts is not None else ())]
+    return get_index().statvar_provenances(members or member_dcids)
+
+
+def _scope_split(
+    axis: RoleAxis, members: Sequence[ResolvedEntity], *, datasets: Collection[str]
+) -> PartySplit:
+    """The scope's `members` on `axis`, split as the role axis fact splits them
+    (`enrichment.party_split`), in `datasets`, the provenances the answer serves."""
+    return party_split(
+        [member.ref for member in members],
+        axis=axis,
+        parties=get_index().parties,
+        datasets=datasets,
+    )
+
+
+def _fact_parties(axis: RoleAxis, role_axis_facts: Sequence[RoleAxisFact]) -> int | None:
+    """The parties the role's `RoleAxisFact` on `axis` counts, its members less its
+    residual members, or None with no fact counting them."""
+    for fact in role_axis_facts:
+        if fact.role == axis and fact.member_count is not None:
+            return fact.member_count - (fact.residual_count or 0)
+    return None
+
+
+def _open_role_counts(
+    axis: RoleAxis,
+    *,
+    role_axis_facts: Sequence[RoleAxisFact],
+    split: PartySplit | None,
+    coverage: Coverage | None,
+) -> tuple[int, int] | None:
+    """The parties and residual members of the open role on `axis`, read as
+    `_open_role_reading` describes, or None when nothing counts them."""
+    for fact in role_axis_facts:
+        if fact.role == axis and fact.member_count is not None:
+            residuals = fact.residual_count or 0
+            return fact.member_count - residuals, residuals
+    if split is not None:
+        return split.party_count, split.residual_count
+    if isinstance(coverage, (CoverageExact, CoverageBreadth)):
+        for dim in coverage.dimensions or ():
+            if _ROLE_COVERAGE_LABELS.get(dim.label) == axis:
+                residuals = dim.residual_count or 0
+                return dim.count - residuals, residuals
     return None
 
 
@@ -796,6 +880,7 @@ def _role_phrases(
     scope: ResolvedScope | None,
     coverage: Coverage | None,
     states_all: bool,
+    datasets: Collection[str] = (),
 ) -> dict[RoleAxis, RolePhrase]:
     """Return each flow role's phrase, destination first, with the family's preposition.
 
@@ -825,6 +910,7 @@ def _role_phrases(
                 scope=scope,
                 coverage=coverage,
                 states_all=states_all,
+                datasets=datasets,
             )
         )
         if reading is not None and axis == "destination" and subject:
@@ -920,7 +1006,6 @@ def _flow_family(
 def _byline_unit(
     shape: ShapeLike,
     facets: Mapping[str, ResolvedFacet] | None,
-    constraints: Mapping[str, str],
     *,
     unit_request: IdentityUnitRequest | None,
     deflated_by: DeflationBasis | None,
@@ -937,8 +1022,10 @@ def _byline_unit(
     ("constant 2024 donor currency", `_role_currency_noun`). Other units are stated by
     the heading when they change the magnitude (`_unit_heading_phrase`) or needed by no
     reader. A unit whose series disagree (``per_series``) reads nothing. The price basis
-    is the unit request's, the unit's base year, or the ``measurementQualifier`` of the
-    shape or of every member (`price_basis`). A unit request's constant prices also name
+    is the unit request's, else the one the unit facet says the data states
+    (`ResolvedFacet.stated_prices`), with the base year and chaining of a unit the
+    registry prices (`price_basis`). A currency unit no fact prices reads as its currency
+    alone ("US dollars"). A unit request's constant prices also name
     ``deflated_by``, whose prices deflated the conversion: "constant 2024 Nigerian naira,
     donor prices".
 
@@ -967,7 +1054,8 @@ def _byline_unit(
         noun = _role_currency_noun(unit_request.currency, wording)
     else:
         return "", None
-    qualifier = shape.measurement_qualifier
+    stated_prices = unit.stated_prices if unit is not None else None
+    stated = stated_prices[0] if stated_prices is not None and len(stated_prices) == 1 else None
     basis = price_basis(
         requested=(
             PriceBasis(
@@ -978,10 +1066,8 @@ def _byline_unit(
             if unit_request is not None
             else None
         ),
-        unit_class=unit_class,
-        measurement_qualifier=(
-            qualifier.ref if qualifier is not None else constraints.get(PRICE_BASIS_AXIS)
-        ),
+        unit_class=unit_class if stated is not None else None,
+        stated=stated,
     )
     return price_basis_phrase(basis, currency_noun=noun), basis
 

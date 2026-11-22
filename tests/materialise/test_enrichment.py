@@ -29,7 +29,7 @@ from materialise.enrichment import (
     EnrichmentLookup,
     is_whole_total,
     party_cell,
-    party_count,
+    party_split,
     period_year,
     read_party_kinds,
     row_party_cell,
@@ -421,7 +421,7 @@ def test_a_party_s_kind_and_count_read_the_role_s_axis():
         [("origin", mixed.dcid), ("destination", mixed.dcid)], parties=parties, datasets=()
     ) == {("origin", mixed.dcid): "party", ("destination", mixed.dcid): "total"}
     assert [
-        party_count(members, axis=axis, parties=parties, datasets=())
+        party_split(members, axis=axis, parties=parties, datasets=()).member_count
         for axis in ("origin", "destination")
     ] == [2, 1]
 

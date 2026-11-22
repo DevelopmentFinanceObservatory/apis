@@ -3,6 +3,7 @@ reads, and coverage follows that plan."""
 
 from __future__ import annotations
 
+import functools
 import itertools
 import threading
 from dataclasses import dataclass, field, replace
@@ -30,6 +31,7 @@ from search.engine.region.option_coverage import RoleServedFilter
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
+from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -52,6 +54,7 @@ from search.engine.retrieval.read_plan import (
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_resolve import _elect_role_class, _role_plan
 from search.engine.retrieval.role_scope import discover_role_scope, pair_series
+from search.engine.unit.refs import unit_prices
 from search.models import CoverageBreadth, CoverageExact, TimeWindow
 from search.observations import observation_settings
 from search.scope_window import WindowTooLong
@@ -1262,6 +1265,73 @@ def test_a_plan_serves_the_method_its_member_declares_in_the_graph(
         basis,
         _ONE_WEIGHTING if served == "fWeighting" else _FULL_VALUE,
     )
+
+
+@dataclass(frozen=True)
+class _Qualified(_Constraints):
+    """Member facts whose graph arcs declare `qualifier` as the member's
+    `measurementQualifier`."""
+
+    qualifier: str | None = None
+
+    def read_five_tuple(self) -> FiveTuple:
+        return FiveTuple("FinancialFlow", "amount", "measuredValue", self.qualifier, None)
+
+
+@pytest.mark.parametrize("max_pairs", [1, 1_000], ids=["bulk", "pairs"])
+@pytest.mark.parametrize(
+    ("qualifiers", "prices", "stated"),
+    [
+        # Each StatVar's own qualifier prices its series, so one unit serves both bases.
+        pytest.param(("Nominal", "RealValue"), ["current", "constant"], None, id="both"),
+        pytest.param(("Nominal", "Nominal"), ["current"], None, id="nominal"),
+        # Members no qualifier prices are in current prices the rule infers.
+        pytest.param((None, None), ["current"], [], id="unqualified"),
+    ],
+)
+def test_a_unit_served_under_each_member_s_qualifier_states_each_basis(
+    search_settings,
+    max_pairs: int,
+    qualifiers: tuple[str | None, str | None],
+    prices: list[str],
+    stated: list[str] | None,
+) -> None:
+    """`_FLOW` and `_FLOW_B` serve one US-dollar facet. Their graph arcs, the members of a
+    walked family the code index does not list, declare each one's qualifier, and the unit
+    facet reads each series' basis under its own member's qualifier."""
+    search_settings(obs_preview_max_pairs=max_pairs)
+    members = [_FLOW, _FLOW_B]
+    index = build_coverage_index(
+        [(sv, "fUsd", ABSENT_ENTITY, _AAA, list(range(2015, 2021))) for sv in members],
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+        facet_metadata={"fUsd": FacetMetadata(provenance_id=_ONE_CLIMATE, unit="USDollar")},
+    )
+    plan = _role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _Constraints()),
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    unit = answer_facets(
+        plan,
+        {},
+        bound_axes={},
+        request_basis=None,
+        unit_request=None,
+        currency_of=lambda _ref: "USD",
+        prices_of=functools.partial(unit_prices, FakeGraph(), deadline=None),
+        member_facts={
+            sv: _Qualified(qualifier=qualifier)
+            for sv, qualifier in zip(members, qualifiers, strict=True)
+        },
+    )["unit"]
+
+    assert (unit.prices, unit.stated_prices) == (prices, prices if stated is None else stated)
 
 
 def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(
