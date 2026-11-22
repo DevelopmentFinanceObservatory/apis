@@ -60,8 +60,8 @@ def collapse_duplicate_identity_facets_table(
     only part of the rows they rank over, when it names every facet of `table`. A table
     holding a facet `ranks` lacks (a null `facetId`, one the graph has not listed yet) ranks
     every facet by its rows, since a rank over rows and one over a whole window are on
-    different scales. The fallback counts on the request's timings (`collapse_rank_fallbacks`)
-    and logs at DEBUG with the facets `ranks` lacks."""
+    different scales. The fallback counts on the request's timings (`collapse_rank_fallbacks`) and logs at
+    INFO, rare by design, with the facets `ranks` lacks."""
     facet_id_column = table[_FACET_ID_COLUMN]
     distinct = pc.count_distinct(facet_id_column, mode="all")
     distinct_facets = distinct.as_py()
@@ -77,7 +77,7 @@ def collapse_duplicate_identity_facets_table(
     )
     if ranks is not None and unranked:
         timings.count("collapse_rank_fallbacks")
-        logger.debug(
+        logger.info(
             "facet collapse ranks by rows: %d facets unranked",
             len(unranked),
             extra={

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import unicodedata
 
@@ -17,6 +18,7 @@ from materialise.facet_collapse import (
     facet_rank,
     keep_mask,
 )
+from tests._json_fields import json_fields
 
 from . import _row_oracle
 from ._table_support import table_from_observations
@@ -375,12 +377,12 @@ def test_differential_against_the_row_path():
         _assert_table_matches_row_oracle(rows)
 
 
-def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_its_rows():
+def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_its_rows(caplog):
     """The ranks name facet "1" alone, while the table holds facet "2" and a row with no
     facet id too. Ranks over a window and ranks over rows are on different scales, so every
     facet ranks by its rows: "2", two rows, beats "1", one row here though ten over the
     window, on the 2016 key, and the null facet on 2017. The request's timings count the
-    fallback."""
+    fallback and an INFO line logs it."""
     rows = (
         _row(facet_id="1", observation_period=None, time_period="2016", value="a"),
         _row(facet_id="2", observation_period=None, time_period="2016", value="b"),
@@ -389,6 +391,7 @@ def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_
     )
     ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
 
+    caplog.set_level(logging.INFO, logger="materialise.facet_collapse")
     timings = PhaseTimings()
 
     with collecting(timings):
@@ -398,6 +401,8 @@ def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_
 
     assert kept["OBS_VALUE"].to_pylist() == ["b", "c"]
     assert timings.count_snapshot() == {"collapse_rank_fallbacks": 1}
+    (fields,) = json_fields(caplog, "collapse_rank_fallback")
+    assert fields["unranked_facets"] == ["2", None]
 
 
 def test_keep_mask_refuses_ranks_that_lack_a_facet_of_its_cells():

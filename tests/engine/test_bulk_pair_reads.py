@@ -10,6 +10,7 @@ each role and the facets as a product, and `LATEST` keeps each series' newest ro
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -22,7 +23,6 @@ import pytest
 
 from dc_sdmx import SdmxClient
 from dc_sdmx.results import observation_schema
-from dfo_platform.timings import PhaseTimings, collecting
 from materialise.facets import FacetSelection
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
@@ -41,6 +41,7 @@ from search.engine.retrieval.read_plan import (
 from search.models import IdentityUnitRequest, SpecObservations, TimeWindow, Warning
 from search.models.identity import IdentityCurrencyRole
 from series_coverage.index import CoverageIndex
+from tests._json_fields import json_fields
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._harness import (
     _SDMX_CSV_CONTENT_TYPE,
@@ -363,7 +364,7 @@ _CASES = {
 
 @pytest.mark.parametrize("name", list(_CASES))
 def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
-    name: str, search_settings
+    name: str, search_settings, caplog
 ) -> None:
     """Twelve members, each read with its creditor open and two series, preview alike from
     twelve per-series requests and from bulk rows, under every window, a member holding a
@@ -373,11 +374,8 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
     per_series, per_series_warn, per_series_requests = _preview(
         case, concurrency=100, search_settings=search_settings
     )
-    timings = PhaseTimings()
-    with collecting(timings):
-        bulk, bulk_warn, bulk_requests = _preview(
-            case, concurrency=2, search_settings=search_settings
-        )
+    caplog.set_level(logging.INFO, logger="search.engine.region.observations.fetch")
+    bulk, bulk_warn, bulk_requests = _preview(case, concurrency=2, search_settings=search_settings)
 
     assert per_series.series, per_series
     assert bulk.model_dump() == per_series.model_dump()
@@ -395,9 +393,8 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
         expected = 1 if case.served is not None else len(periods)
         assert len(bulk_requests) == expected * (2 if name == "two_debtors" else 1)
         # The first member's one-facet read is the one the union widens.
-        assert timings.count_snapshot().get("span_reads_widened") == (
-            1 if case.served is not None else None
-        )
+        widened = [f["span_reads_widened"] for f in json_fields(caplog, "span_reads_widened")]
+        assert sum(widened) == (1 if case.served is not None else 0)
         assert all(len(params["c[variableMeasured]"].split(",")) > 1 for params in bulk_requests)
 
 

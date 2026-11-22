@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from unittest.mock import patch
@@ -9,7 +10,6 @@ from unittest.mock import patch
 import pytest
 
 import search.engine.region.observations.fetch as region_fetch
-from dfo_platform.timings import PhaseTimings, collecting
 from materialise import (
     MaterialisationRequest,
     SpanRead,
@@ -27,6 +27,7 @@ from search.models import (
     TimeWindow,
 )
 from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE, observation_settings
+from tests._json_fields import json_fields
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -713,7 +714,7 @@ def _facet(case: str, facet_id: str) -> MaterialiseFacet:
     ],
 )
 def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
-    observation_period, dated, bounded
+    observation_period, dated, bounded, caplog
 ):
     """A coverage facet's years are coverage's whatever its cadence, so they alone leave
     the read asking for the whole window; a `P1Y` period lets it ask for the span's years,
@@ -742,15 +743,14 @@ def test_a_span_read_asks_for_years_on_annual_evidence_with_none_against_it(
             latest_date=f"{facet.latest_date}-06",
         )
 
-    timings = PhaseTimings()
+    caplog.set_level(logging.INFO, logger=region_fetch.logger.name)
 
-    with collecting(timings):
-        _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
+    _points_read, periods = _span_preview("one-facet", _SERVED, candidates={"1": facet})
 
     assert periods == ([[str(year) for year in range(2011, 2025)]] if bounded else [None])
-    # The request's timings count the read on the side it took.
-    counts = timings.count_snapshot()
-    assert (counts["span_reads_bounded"], counts["span_reads_whole_window"]) == (
+    # One INFO line counts the read on the side it took.
+    (fields,) = json_fields(caplog, "span_reads_bounded")
+    assert (fields["span_reads_bounded"], fields["span_reads_whole_window"]) == (
         int(bounded),
         int(not bounded),
     )

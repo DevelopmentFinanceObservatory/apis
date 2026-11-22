@@ -43,7 +43,6 @@ from typing import TYPE_CHECKING, Protocol, Self, cast
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxClientError
-from dfo_platform import timings
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import bounded_deadline
@@ -516,7 +515,7 @@ def _role_bearing_bulk_dispatch(
             # SDMX takes a year by its four digits, so a facet not annual on evidence reads
             # the whole window and the read keeps the served years afterwards.
             narrowed = replace(narrowed, read_years=plan.read_years)
-        _count_spans(bounded=int(bounded), whole_window=int(not bounded))
+        _log_spans(bounded=int(bounded), whole_window=int(not bounded))
         plan = narrowed
     return _bulk_role_series(
         plan,
@@ -1016,38 +1015,37 @@ def _shared_spans(
             continue
         fetched = shared[group]
         ranks = span.ranks if fetched is not None else None
-        timings.count("span_reads_widened")
         widened.append(replace(dispatch, span=replace(span, fetched=fetched, ranks=ranks)))
     return widened
 
 
-def _count_span_reads(dispatches: Sequence[_Dispatch]) -> None:
-    """Count each span read of `dispatches` on the request's timings, so the door's log
-    line states how many asked SDMX for bounded years (`span_reads_bounded`) and how many
-    for the whole window (`span_reads_whole_window`), a bulk group's widened reads among
-    them (`_shared_spans` counts those as `span_reads_widened`). A read with no span counts
-    nothing. A bulk role read of a narrowed plan counts as one read, bounded when every
-    candidate facet is annual on evidence (`_annual`). A debug line states the same counts
-    for the read."""
+def _log_span_reads(dispatches: Sequence[_Dispatch], *, widened: int) -> None:
+    """Log the span reads of `dispatches` (`_log_spans`): how many asked SDMX for bounded
+    years and how many for the whole window, with `widened`, the reads `_shared_spans` made
+    ask for their bulk group's union of years. A read with no span counts nothing. A bulk
+    role read of a narrowed plan counts as one read, bounded when every candidate facet is
+    annual on evidence (`_annual`)."""
     spans = [dispatch.span for dispatch in dispatches if dispatch.span is not None]
     if not spans:
         return
     bounded = sum(span.fetched is not None for span in spans)
-    _count_spans(bounded=bounded, whole_window=len(spans) - bounded)
+    _log_spans(bounded=bounded, whole_window=len(spans) - bounded, widened=widened)
 
 
-def _count_spans(*, bounded: int, whole_window: int) -> None:
-    """Count `bounded` and `whole_window` span reads on the request's timings."""
-    timings.count("span_reads_bounded", bounded)
-    timings.count("span_reads_whole_window", whole_window)
-    logger.debug(
-        "span reads: %d bounded, %d whole window",
+def _log_spans(*, bounded: int, whole_window: int, widened: int = 0) -> None:
+    """Log one INFO line for an observations read pool that read at least one span, with
+    its `span_reads_bounded`, `span_reads_whole_window` and `span_reads_widened` counts as
+    `json_fields`, where an operator counts them in Cloud Logging."""
+    logger.info(
+        "span reads: %d bounded, %d whole window, %d widened",
         bounded,
         whole_window,
+        widened,
         extra={
             JSON_FIELDS_ATTR: {
                 "span_reads_bounded": bounded,
                 "span_reads_whole_window": whole_window,
+                "span_reads_widened": widened,
             }
         },
     )
@@ -1467,15 +1465,18 @@ def _run_pair_fetch_pool(
     dispatches = _dispatches(
         series, obs_entities, years=years, elected=elected, served=served, selections=selections
     )
+    widened = 0
     if (
         "observationAbout" not in obs_entities
         and len(dispatches) > settings().obs_preview_concurrency
     ):
-        dispatches = _shared_spans(dispatches, member_facts=member_facts)
+        shared = _shared_spans(dispatches, member_facts=member_facts)
+        widened = sum(after is not before for before, after in zip(dispatches, shared, strict=True))
+        dispatches = shared
         materialise_sdmx = _bulk_pair_sdmx(
             dispatches, inner=materialise_sdmx, member_facts=member_facts, deadline=deadline
         )
-    _count_span_reads(dispatches)
+    _log_span_reads(dispatches, widened=widened)
     with ThreadPoolExecutor(
         max_workers=max(1, min(settings().obs_preview_concurrency, len(dispatches))),
         thread_name_prefix="obs-preview",

@@ -23,6 +23,9 @@
     "graph_release": {
       "level": "INFO"
     },
+    "materialise.facet_collapse": {
+      "level": "INFO"
+    },
     "search": {
       "level": "INFO"
     },

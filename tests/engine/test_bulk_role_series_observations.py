@@ -6,6 +6,7 @@ windowing, ranking, filtering, failures, and the bound-unit pipeline path.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -15,7 +16,6 @@ import pytest
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
-from dfo_platform.timings import PhaseTimings, collecting
 from materialise import GraphReader
 from materialise.facets import FacetSelection, UnitRequest
 from materialise.rate_tables import RateTableCache
@@ -66,6 +66,7 @@ from search.observations import (
     observation_settings,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests._json_fields import json_fields
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -1877,11 +1878,11 @@ def test_a_read_in_served_years_picks_counts_and_shows_their_series_alone(
     ],
 )
 def test_a_read_in_served_years_lists_them_alone_only_for_annual_facets(
-    monkeypatch, period, listed, bounded
+    monkeypatch, caplog, period, listed, bounded
 ):
     """A facet the coverage states by month cannot be asked for by the year, so the read
     lists the plan's whole window and keeps the served years once it has read it. Both
-    reads show the same points and count themselves on the request's timings."""
+    reads show the same points and log their span counts."""
     recipients = [f"country/BRM{i}" for i in range(2)]
     index = patch_coverage(
         monkeypatch,
@@ -1901,33 +1902,32 @@ def test_a_read_in_served_years_lists_them_alone_only_for_annual_facets(
             }
         }
     )
-    timings = PhaseTimings()
+    caplog.set_level(logging.INFO, logger=region_fetch.logger.name)
 
-    with collecting(timings):
-        observations, _warn = region_fetch._build_observations(
-            bulk_plan(
-                [_SV],
-                entities,
-                coverage=coverage,
-                window=TimeWindow(start_year=2010, end_year=2020),
-            ),
+    observations, _warn = region_fetch._build_observations(
+        bulk_plan(
             [_SV],
             entities,
-            graph=_GRAPH,
-            materialise_graph=None,
-            materialise_sdmx=None,
-            sdmx=sdmx,
             coverage=coverage,
-            years=frozenset({2019, 2020}),
-        )
+            window=TimeWindow(start_year=2010, end_year=2020),
+        ),
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=frozenset({2019, 2020}),
+    )
 
     (call,) = sdmx.series_calls
     assert call["time_period"] == listed
     assert [[p.date for p in series.points] for series in observations.series] == [
         ["2019", "2020"]
     ] * 2
-    counts = timings.count_snapshot()
-    assert (counts.get("span_reads_bounded", 0), counts.get("span_reads_whole_window", 0)) == (
+    (fields,) = json_fields(caplog, "span_reads_bounded")
+    assert (fields["span_reads_bounded"], fields["span_reads_whole_window"]) == (
         int(bounded),
         int(not bounded),
     )
