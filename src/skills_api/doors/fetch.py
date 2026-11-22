@@ -16,6 +16,7 @@ from skills_api.deps import (
     SkillNotFound,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
+    built_index,
     classify_skill_lookup_exception,
 )
 from skills_api.models import SkillBody, skill_body, split_skill_warnings
@@ -37,9 +38,7 @@ async def get_skill(skill_id: str, request: Request, deps: SkillsDepsDep) -> obj
         raise SkillIdTooLong(len(skill_id))
 
     shared = deps.skills_index
-    index = shared.index
-    if index is None:
-        raise SkillsIndexNotBuilt()
+    index = await built_index(shared)
 
     # Only published ids mint cache entries, leaving misses out of the cache.
     return deps.fetch_cache.respond(
