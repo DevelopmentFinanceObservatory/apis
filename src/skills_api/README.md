@@ -123,7 +123,7 @@ Reports status and the capability version token.
 
 Every 200 from the list, skill and resources doors carries a strong `ETag` and `Cache-Control: public, no-cache`. A release swap rebuilds the index at once, so a cache revalidates each response by its ETag. A matching `If-None-Match` answers 304. Each door caches encoded bodies per index generation (`skills_api.doors._response_cache.GenerationBodyCache`), up to 8 MiB per door, and drops them all when the generation changes.
 
-Before the index's first build the three content doors refuse `503 service_unavailable`. A 200 with an empty list would read as an empty catalogue, and a 503 is never cached.
+The index builds after the service starts serving. A request to one of the three content doors that arrives before the first build has finished waits up to 30 seconds for it (`SKILLS_INDEX_REQUEST_WAIT_SECONDS`), then refuses `503 service_unavailable`. A 200 with an empty list would read as an empty catalogue, and a 503 is never cached.
 
 ## Configuration
 
