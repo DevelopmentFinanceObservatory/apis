@@ -52,6 +52,14 @@ def _finance(code: str) -> CodeRow:
     )
 
 
+_MODALITY = CodeRow(
+    dcid="dcid:CRSCooperationModalityCodeA01",
+    code_system="crsCooperationModality",
+    code="A01",
+    label="Modality A01",
+    synonyms=(),
+    parent=None,
+)
 _PURPOSES = (_purpose("120", None), _purpose("122", "120"), _purpose("111", None))
 _FINANCES = (_finance("110"), _finance("421"))
 _STAT_VARS = tuple(
@@ -79,11 +87,16 @@ _INDEX = CodeIndex(
             absent_reading="zero",
             plain_name=plain_name,
         )
-        for code_system, plain_name in (("crsPurpose", "sector"), ("crsTypeOfFinance", "type"))
+        # No StatVar carries `crsCooperationModality`, so no frame decodes it.
+        for code_system, plain_name in (
+            ("crsPurpose", "sector"),
+            ("crsTypeOfFinance", "type"),
+            ("crsCooperationModality", "modality"),
+        )
     ),
     datasets=tuple(dataset for dataset in DATASETS if dataset.provenance == CRS),
     # Purpose 130 is a code no StatVar holds, so a selection can list a code no row carries.
-    codes=(*_PURPOSES, _purpose("130", None), *_FINANCES),
+    codes=(*_PURPOSES, _purpose("130", None), *_FINANCES, _MODALITY),
     statvars=tuple(
         StatVarRow(
             dcid=dcid,
@@ -123,9 +136,10 @@ _UNIT_BY_RECIPIENT: Mapping[str, object] = {
 layout, a composed unit. A provider's rows of `country/FRA` have no unit."""
 
 
-def _frame(recipients: Sequence[str]) -> Frame:
+def _frame(recipients: Sequence[str], *, methods: Mapping[str, str] | None = None) -> Frame:
     """Every StatVar's rows for two providers, `recipients` and two years, with distinct
-    values, a method on one provider's rows and `CRS` provenance."""
+    values, a method on one provider's rows and `CRS` provenance. `methods` gives a StatVar's
+    rows of that provider another method, which a sum adding it to another StatVar refuses."""
     rows: list[dict[str, object]] = []
     for position, (dcid, _purpose_row, _finance_row) in enumerate(_STAT_VARS):
         for provider in ("country/USA", "country/FRA"):
@@ -141,7 +155,9 @@ def _frame(recipients: Sequence[str]) -> Frame:
                             "unit": None
                             if provider == "country/FRA"
                             else _UNIT_BY_RECIPIENT[recipient],
-                            "measurementMethod": "OECD_DAC" if provider == "country/USA" else None,
+                            "measurementMethod": (methods or {}).get(dcid, "OECD_DAC")
+                            if provider == "country/USA"
+                            else None,
                             "provenance": CRS,
                         }
                     )

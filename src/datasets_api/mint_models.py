@@ -43,6 +43,13 @@ MAX_GROUPBY_LEVEL_DEPTH = 99
 # A `groupby.codes` entry: a code dcid, whose characters leave `|` and `,` free to separate
 # the entries of the `groupby.codes` query value, which splits each at its first `:`.
 GROUPBY_CODE_PATTERN = r"^[A-Za-z0-9_./:-]+$"
+# The most codes a `groupby.codes` list holds on one axis. The largest summable code system,
+# `crsPurpose`, holds 289 codes across its levels, so a list naming every code fits with room
+# for that system to grow threefold, and a list past it names codes no system holds.
+MAX_GROUPBY_CODES_PER_AXIS = 1000
+# The longest `groupby.codes` entry. Code dcids run to about 30 characters
+# (`CRSCooperationModalityCodeA01`), so this bounds the work an entry costs well above any.
+MAX_GROUPBY_CODE_LENGTH = 128
 _STAT_VAR_AXIS = "stat_var"
 
 
@@ -301,9 +308,11 @@ class GroupbyOptions(BaseModel):
     be one of the capabilities document's `groupby_level_axes`
     (`datasets_api.render.check_options_supported`).
 
-    `codes` keeps, for each code system it names, only the rows whose decoded
-    code, after any `levels` roll-up, is one of the listed code dcids, and it
-    drops the rest before the first sum, so the sum reads the kept rows alone.
+    `codes` keeps, for each code system it names, only the summed rows whose
+    code, after any `levels` roll-up, is one of the listed code dcids. Each
+    kept axis is a key of the sum, so those rows equal a sum of the selected
+    rows alone. Every fold still reads every row, so a selected sum refuses
+    exactly when the same sum with no selection does.
     Each key must appear in `by`, which must leave out `stat_var`, and must be a
     summable code system (`datasets_api.render.check_options_supported`). The
     lists are held sorted and each code once, so two requests listing the same
@@ -311,7 +320,10 @@ class GroupbyOptions(BaseModel):
     of the dump, so the options, record and frame name equal those of a groupby
     that never states it. Each code must be a dcid of its code system's codes,
     and with `levels` a code at or above that depth
-    (`datasets_api.render.check_options_supported`).
+    (`datasets_api.render.check_options_supported`). A list holds at most
+    `MAX_GROUPBY_CODES_PER_AXIS` codes, each at most `MAX_GROUPBY_CODE_LENGTH`
+    characters, refused as the request is parsed. A key the frame does not
+    decode refuses when it is rendered (`datasets_api.render._decoded_selection`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -335,7 +347,12 @@ class GroupbyOptions(BaseModel):
         dict[
             Annotated[str, Field(min_length=1)],
             Annotated[
-                list[Annotated[str, Field(pattern=GROUPBY_CODE_PATTERN)]], Field(min_length=1)
+                list[
+                    Annotated[
+                        str, Field(pattern=GROUPBY_CODE_PATTERN, max_length=MAX_GROUPBY_CODE_LENGTH)
+                    ]
+                ],
+                Field(min_length=1, max_length=MAX_GROUPBY_CODES_PER_AXIS),
             ],
         ]
         | None

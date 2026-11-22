@@ -9,14 +9,28 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import httpx
 import pytest
 
 from code_index import CodeIndex
+from datasets_api import analysis_roots
+from datasets_api.config import DatasetsBuildSettings
 from dfo_analysis_engine.engine import filter as engine_filter
 
 from ._description_doubles import read_record
-from .test_analysis_summed_roots import _aggregate, _post, _rig, _two_axis_code_index
-from .test_serve_groupby_collapse import _MEMBER_A, _MEMBER_B
+from .test_analysis_summed_roots import _aggregate, _post, _two_axis_code_index
+from .test_analysis_summed_roots import _rig as _rig_unselected
+from .test_serve_groupby_collapse import _CSV_BODY, _MEMBER_A, _MEMBER_B
+
+
+def _rig(*, selects: bool = True, **kwargs: Any):
+    """`test_analysis_summed_roots._rig` whose inferred sums read the codes their filters keep
+    (`analysis_sum_selected_codes`), unless `selects` is false."""
+    settings = DatasetsBuildSettings.from_env().model_copy(
+        update={"analysis_sum_selected_codes": selects}
+    )
+    return _rig_unselected(settings=settings, **kwargs)
+
 
 _TEST_AXIS = {"by": ["testAxis", "time_period"], "op": "sum"}
 _OTHER_AXIS = {"by": ["otherAxis", "time_period"], "op": "sum"}
@@ -329,3 +343,96 @@ def test_a_selected_level_sum_counts_and_names_only_the_stat_vars_it_selects() -
         "variables": [{"ref": _MEMBER_A}, {"ref": _MEMBER_B}],
     }
     assert summed_step(selected.json()) == {"count": 1, "variables": [{"ref": _MEMBER_A}]}
+
+
+def test_with_the_setting_off_an_inferred_sum_selects_no_codes() -> None:
+    client, _, root = _rig(two_axes=True, selects=False)
+    tree = _aggregate(_keep(root, ["TestAxisA"]), group_by=["recipient"])
+
+    response = _post(client, tree)
+    stated = _post(
+        client, _aggregate(_keep(_stated(root, _TEST_AXIS), ["TestAxisA"]), group_by=["recipient"])
+    )
+
+    assert response.status_code == stated.status_code == 200, (response.text, stated.text)
+    assert _groupbys(response.json()) == [_TEST_AXIS]
+    assert _answer(response.json()) == _answer(stated.json())
+
+
+def _years_apart() -> httpx.MockTransport:
+    """Member A (`TestAxisA`) holds 2020 and member B (`TestAxisB`) 2021."""
+    body = _CSV_BODY.replace("OECD_DAC2A,2020,500", "OECD_DAC2A,2021,500")
+    assert body != _CSV_BODY
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("stated_population", "status", "codes"),
+    [
+        # The latest period is counted over both codes' series, so it is 2021, which the
+        # filter's rows lack.
+        pytest.param(True, 422, None, id="stated-population"),
+        # The population binds the filter's code, so the latest period is A's 2020 either way.
+        pytest.param(False, 200, {"testAxis": ["TestAxisA"]}, id="population-from-the-tree"),
+    ],
+)
+def test_a_rolling_step_over_a_stated_population_reads_its_root_with_no_selection(
+    stated_population: bool, status: int, codes: dict | None
+) -> None:
+    """A rolling rank states its period from the latest one of its population. A stated
+    population counts every row of the root, so a selection would move that period: the root
+    reads no selection and answers as over a root stating the groupby."""
+    client, _, root = _rig(two_axes=True, sdmx_transport=_years_apart())
+    latest = {"anchor": "latest", "offset": 0}
+    rolling = (
+        {"population": [{"spec_id": root["spec_id"], "bindings": {}}]} if stated_population else {}
+    )
+
+    def tree(data: dict) -> dict:
+        return {
+            "verb": "rank",
+            "arguments": {
+                "rank_by": ["recipient"],
+                "window_start": latest,
+                "window_end": latest,
+                **({"rolling": rolling} if rolling else {}),
+            },
+            "inputs": {"data": _keep(data, ["TestAxisA"])},
+        }
+
+    response = _post(client, tree(root))
+    stated = _post(client, tree(_stated(root, _TEST_AXIS)))
+
+    assert response.status_code == stated.status_code == status, (response.text, stated.text)
+    if status != 200:
+        assert {key: value for key, value in response.json().items() if key != "trace_id"} == {
+            key: value for key, value in stated.json().items() if key != "trace_id"
+        }
+        return
+    assert _groupbys(response.json()) == [{**_TEST_AXIS, "codes": codes}]
+    assert _answer(response.json()) == _answer(stated.json())
+
+
+def test_a_stated_selection_the_code_index_cannot_serve_refuses_before_any_version_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root stating a code its axis lacks refuses `request_invalid` before the version it
+    names, or any rendering or answer keyed on it, is looked up."""
+    client, _, root = _rig(two_axes=True)
+
+    def unread(*_: object, **__: object) -> None:
+        raise AssertionError("the root's version was looked up")
+
+    monkeypatch.setattr(analysis_roots.LiveRootSource, "_at_version", unread)
+    monkeypatch.setattr(analysis_roots.LiveRootSource, "_newest", unread)
+    selected = _stated(root, {**_TEST_AXIS, "codes": {"testAxis": ["NoSuchCode"]}})
+
+    response = _post(client, _aggregate(selected, group_by=["recipient"]))
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "request_invalid"
+    assert response.json()["pointer"] == "/options/groupby/codes/testAxis"

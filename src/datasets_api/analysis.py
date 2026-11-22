@@ -23,10 +23,12 @@ and a root whose version holds more than one StatVar is read summed, keeping the
 those words name, unless they name `stat_var` (`analysis_roots.implied_groupby`). The sum is
 the root's `groupby`, so its record, the normal form and the ref state it, and the answer counts
 the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads the
-`stat_var_<axis>` column the sum keeps (`column_for`), whose cells are code dcids. The codes
-the `filter` steps between the root and the nearest step above it that is no `filter` keep on a
-kept axis become the sum's `codes` selection (`_kept_codes`, `_Plan.planned`), so the sum reads
-only the StatVars those filters keep, and the filters still run. A
+`stat_var_<axis>` column the sum keeps (`column_for`), whose cells are code dcids. With the
+setting `analysis_sum_selected_codes` (`AnalysisBounds.sum_selected_codes`), the codes the
+`filter` steps between the root and the nearest step above it that is no `filter` keep on a
+kept axis become the sum's `codes` selection (`_kept_codes`, `_Plan.planned`), so the sum keeps
+only the StatVars those filters keep, and the filters still run; a root a rolling step reads
+selects none where a rolling overlay states its population, which counts every row. A
 `category_match` value on that column may be a code's dcid, its publisher code or a label naming
 one code of the axis; the planner resolves it before the request is keyed
 (`resolved_breakdown_values`), and a label naming several codes refuses
@@ -767,9 +769,14 @@ class AnalysisStores:
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisBounds:
+    """A run's bounds, and `sum_selected_codes`, whether a sum the planner infers reads the
+    codes the filters over its root keep (`_Plan.planned`, setting
+    `analysis_sum_selected_codes`)."""
+
     max_nodes: int = DEFAULT_MAX_NODES
     max_root_rows: int = DEFAULT_MAX_ROOT_ROWS
     max_join_rows: int = DEFAULT_MAX_JOIN_ROWS
+    sum_selected_codes: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -896,11 +903,17 @@ class _Plan:
 
     max_nodes: int
     rolling_tree: bool = False
+    # Whether a sum the planner infers reads a selection at all (`AnalysisBounds`).
+    sum_selected_codes: bool = False
     nodes: int = 0
     indices: dict[str, int] = field(default_factory=dict)
     roots: list[PlannedRoot] = field(default_factory=list)
-    # The selection each reach of a request root read with path words carries, by `_root_key`.
-    selections: dict[str, list[_Selection]] = field(default_factory=dict)
+    # The selection each reach of a request root read with path words carries, by `_root_key`,
+    # with whether a rolling step is above it (`_is_rolling_step`).
+    selections: dict[str, list[tuple[_Selection, bool]]] = field(default_factory=dict)
+    # Whether a rolling overlay of the tree states its population rather than taking it from
+    # the tree (`_states_population`).
+    stated_population: bool = False
 
     def count(self) -> None:
         """Count one node.
@@ -920,16 +933,17 @@ class _Plan:
         *,
         path_words: frozenset[str] | None = None,
         selection: _Selection = None,
+        rolled: bool = False,
     ) -> dict[str, Any]:
         """Count `root` and number it, once per distinct root and path words, and keep the
-        `selection` of a reach with path words. A root that states a `groupby` keeps no path
-        words."""
+        `selection` of a reach with path words, and whether a rolling step is above it
+        (`rolled`). A root that states a `groupby` keeps no path words."""
         self.count()
         if root.rendering.groupby is not None:
             path_words = None
         key = _root_key(root)
         if path_words is not None:
-            self.selections.setdefault(key, []).append(selection)
+            self.selections.setdefault(key, []).append((selection, rolled))
             key += f":{sorted(path_words)}"
         if key not in self.indices:
             self.indices[key] = len(self.roots)
@@ -941,10 +955,19 @@ class _Plan:
         of its request root with path words selects the same codes. A request root read by two
         branches that keep different codes, or by one that keeps none, is read with no
         selection, so its reaches resolve as they would with none and still merge into one
-        root (`merged_roots`)."""
+        root (`merged_roots`). Where a rolling overlay states its population, the latest
+        period is counted over every row of each root a rolling step reads, whatever the
+        filters keep, so such a reach selects none; a population taken from the tree binds the
+        filters' own values, so it counts the rows a selection keeps. With
+        `sum_selected_codes` off no root selects."""
+        if not self.sum_selected_codes:
+            return list(self.roots)
         planned: list[PlannedRoot] = []
         for held in self.roots:
-            reaches = self.selections.get(_root_key(held.root), [])
+            reaches = [
+                None if rolled and self.stated_population else selection
+                for selection, rolled in self.selections.get(_root_key(held.root), [])
+            ]
             first = reaches[0] if reaches and held.path_words is not None else None
             if first and all(reach == first for reach in reaches):
                 held = replace(
@@ -1051,6 +1074,29 @@ def _reads_observations(step: StepNode) -> bool:
 _SYMMETRIC = frozenset({Verb.COMPARE, Verb.SUM_OF})
 
 
+def _is_rolling_step(arguments: Mapping[str, Any]) -> bool:
+    """Whether a step with `arguments`, as the caller sent them, states a period relative to the
+    latest one: a `rolling` overlay, or a window bound or predicate value that is a rolling
+    reference (`_lift_rolling`)."""
+    if isinstance(arguments.get(_ROLLING), Mapping):
+        return True
+    if any(_is_rolling_ref(arguments.get(bound)) for bound in _WINDOW_BOUNDS):
+        return True
+    predicates = arguments.get("predicates")
+    return isinstance(predicates, list) and any(
+        isinstance(predicate, Mapping)
+        and (_is_rolling_ref(predicate.get("value")) or _is_rolling_ref(predicate.get(_ROLLING)))
+        for predicate in predicates
+    )
+
+
+def _states_population(parameters: Mapping[str, Any]) -> bool:
+    """Whether `parameters`' rolling overlay states the `population` its latest period is
+    counted over, which the runner otherwise fills from the tree (`_fill_populations`)."""
+    overlay = parameters.get(_ROLLING)
+    return isinstance(overlay, Mapping) and "population" in overlay
+
+
 def _kept_codes(step: StepNode, codes: CodeIndex | None, held: _Selection) -> _Selection:
     """`held`, the codes the filters above `step` keep, narrowed by `step`, a `filter` as the
     caller sent it: each `category_match` on a code system's column, `<axis>` or
@@ -1093,6 +1139,7 @@ def _plan_node(
     reduced: bool = False,
     value_filtered: bool = False,
     selection: _Selection = None,
+    rolled: bool = False,
 ) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
     node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
@@ -1111,11 +1158,15 @@ def _plan_node(
     saved filter's root is. `selection` is the codes the `filter` steps between `node` and
     the nearest step above it that is no `filter` keep (`_kept_codes`): a step that is no
     `filter` starts it afresh for its inputs, so a filter above a step that reduces or
-    reshapes the rows selects nothing below it."""
+    reshapes the rows selects nothing below it. `rolled` is whether a rolling step is above
+    `node` (`_is_rolling_step`), whose latest period may read every row of the roots under it
+    (`_Plan.planned`)."""
     match node:
         case StepNode():
             plan.count()
             sent = node
+            plan.stated_population |= _states_population(sent.arguments)
+            rolled = rolled or _is_rolling_step(sent.arguments)
             node = resolved_breakdown_values(node, source.code_index)
             words = _path_words(node)
             below = reduced or node.verb is not Verb.FILTER
@@ -1136,6 +1187,7 @@ def _plan_node(
                     reduced=below,
                     value_filtered=filtered,
                     selection=kept,
+                    rolled=rolled,
                 )
             }
             if node.inputs.other is not None:
@@ -1150,6 +1202,7 @@ def _plan_node(
                     reduced=below,
                     value_filtered=filtered,
                     selection=kept,
+                    rolled=rolled,
                 )
             return {"step": node, "inputs": inputs}
         case RefRoot():
@@ -1168,6 +1221,7 @@ def _plan_node(
                 reduced=reduced,
                 value_filtered=value_filtered,
                 selection=selection,
+                rolled=rolled,
             )
         case DerivedRoot():
             stored = source.recipe(spec_id=node.spec_id, content_version=node.content_version)
@@ -1181,7 +1235,12 @@ def _plan_node(
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
             summed = reduced and not value_filtered
-            return plan.root(node, path_words=path_words if summed else None, selection=selection)
+            return plan.root(
+                node,
+                path_words=path_words if summed else None,
+                selection=selection,
+                rolled=rolled,
+            )
 
 
 def _expand(
@@ -1202,6 +1261,7 @@ def _expand(
     parameters = copy.deepcopy(op_spec["parameters"])
     if plan.rolling_tree:
         _follow_tree(parameters)
+    plan.stated_population |= _states_population(parameters)
     expanded: dict[str, Any] = {
         "op_spec": {"verb": op_spec["verb"], "parameters": parameters},
         "inputs": {
@@ -2180,7 +2240,11 @@ def plan_roots(
         FrameUnavailable: A derived root's recipe is not stored.
         AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
     """
-    plan = _Plan(max_nodes=bounds.max_nodes, rolling_tree=request.rolling == "tree")
+    plan = _Plan(
+        max_nodes=bounds.max_nodes,
+        rolling_tree=request.rolling == "tree",
+        sum_selected_codes=bounds.sum_selected_codes,
+    )
     top = request.tree
     verb = top.verb if isinstance(top, StepNode) else ""
     tree = _plan_node(top, plan, source=source, verb=verb, side="data", selection={})

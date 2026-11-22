@@ -133,6 +133,7 @@ from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, Oper
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
 from datasets_api.render import (
+    check_options_supported,
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
     refuse_past_fold_ceiling,
@@ -628,7 +629,19 @@ class LiveRootSource:
         path_words: frozenset[str] | None = None,
         codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
+        """The version `root` is read at (`RootSource.resolve`). A stated groupby the code
+        index cannot serve refuses first (`check_options_supported`), before any version,
+        stored rendering or answer is looked up by it.
+
+        Raises:
+            QueryOptionsInvalid: As `check_options_supported` refuses `root`'s rendering.
+        """
         deps = self._deps
+        if root.rendering.groupby is not None:
+            check_options_supported(
+                MintOptions.model_validate(mint_options(root.rendering)),
+                code_index=deps.code_index,
+            )
         if (
             isinstance(root, DatasetRoot)
             and deps.snapshot_reader.read_version(root.spec_id, root.content_version) is None

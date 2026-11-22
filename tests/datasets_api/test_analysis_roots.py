@@ -270,6 +270,7 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
         coverage=SimpleNamespace(snapshot=lambda: None),
         now=lambda: datetime.now(UTC),
         version_lister=None,
+        code_index=None,
     )
     roots = LiveRootSource(
         deps=deps,  # ty: ignore[invalid-argument-type]

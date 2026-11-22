@@ -1,4 +1,5 @@
-"""`groupby.codes` keeps the rows of the selected codes before the first fold. Each render here
+"""`groupby.codes` keeps the summed rows of the selected codes after every fold has read every
+row, so a selected render refuses exactly when the unselected one does. Each render here
 checks that the collapse it gives equals the collapse of the same render without a selection
 then cut to the rows whose kept code is selected, frame for frame and byte for byte: rows,
 values, units, methods and provenance. The frame fixture mixes units and party totals
@@ -13,8 +14,18 @@ from dfo_frame_grammar import Frame, build_frame_from_arrow, canonical_frame_byt
 
 from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
+from datasets_api.query_options import QueryOptionsInvalid
+from materialise.reshape import RollupNotSummableError
 
-from .test_render_collapse_frame_columnar import _ALL, _render
+from .test_render_collapse_frame_columnar import (
+    _ALL,
+    _DEVELOPING,
+    _GHANA,
+    _KENYA,
+    _MODALITY,
+    _frame,
+    _render,
+)
 
 _P111, _P120, _P122 = "dcid:CRSPurposeCode111", "dcid:CRSPurposeCode120", "dcid:CRSPurposeCode122"
 _LOAN = "dcid:CRSTypeOfFinanceCode421"
@@ -116,18 +127,42 @@ def test_a_selection_before_the_sum_equals_the_sum_cut_to_the_selected_codes(
     assert selected.frame_sha256 != _collapse(_options(by, levels=levels, cut=cut)).frame_sha256
 
 
-def test_the_first_fold_reads_only_the_selected_rows(monkeypatch: pytest.MonkeyPatch):
-    folded: list[int] = []
-    fold = render.fold_groupby_sum_table
+@pytest.mark.parametrize(
+    ("methods", "levels", "axis"),
+    [
+        # Purpose 120's loan rows hold another method, which the finance fold adds to its
+        # grant rows.
+        pytest.param({"SV_120_421": "Other"}, None, "stat_var_crsTypeOfFinance", id="later-fold"),
+        # Purpose 122 rolls up to 120, so the first fold adds their loan rows together.
+        pytest.param({"SV_122_421": "Other"}, {"crsPurpose": 0}, "stat_var", id="first-fold"),
+    ],
+)
+@pytest.mark.parametrize("codes", [None, {"crsPurpose": [_P111]}], ids=["unselected", "selected"])
+def test_a_sum_refused_over_unselected_codes_refuses_with_a_selection(
+    methods: dict[str, str],
+    levels: dict[str, int] | None,
+    axis: str,
+    codes: dict[str, list[str]] | None,
+):
+    """Every fold reads every row, so a refusal in a group the selection leaves out refuses
+    the selected render as it does the unselected one."""
+    frame = _frame((_KENYA, _GHANA, _DEVELOPING), methods=methods)
 
-    def counting(table: pa.Table, **kwargs: object):
-        folded.append(table.num_rows)
-        return fold(table, **kwargs)  # type: ignore[arg-type]  # the fold's own keywords
+    with pytest.raises(RollupNotSummableError) as raised:
+        _render(frame, _options(["crsPurpose", "time_period"], codes=codes, levels=levels))
 
-    monkeypatch.setattr(render, "fold_groupby_sum_table", counting)
+    assert (raised.value.axis, raised.value.precondition) == (axis, "facet_homogeneity")
 
-    _collapse(_options(["crsPurpose", "time_period"], codes={"crsPurpose": [_P111]}))
-    _collapse(_options(["crsPurpose", "time_period"]))
 
-    # Two of six StatVars are coded 111, so the fold reads a third of the frame's rows.
-    assert folded[0] * 3 == folded[1] == _ALL.num_rows
+def test_a_selection_on_an_axis_the_frame_does_not_decode_refuses():
+    """No StatVar of the frame carries `crsCooperationModality`, so its rows hold no code to
+    select on: the selection refuses, where it would otherwise keep every row."""
+    options = _options(
+        ["crsCooperationModality", "crsPurpose", "time_period"],
+        codes={"crsCooperationModality": [_MODALITY.dcid]},
+    )
+
+    with pytest.raises(QueryOptionsInvalid) as raised:
+        _render(_ALL, options)
+
+    assert raised.value.pointer == "/options/groupby/codes/crsCooperationModality"

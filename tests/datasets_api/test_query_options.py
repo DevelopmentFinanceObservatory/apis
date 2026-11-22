@@ -119,6 +119,23 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         "/options/groupby/codes/crsPurpose/0",
     ),
     (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.codes=crsPurpose:" + "C" * 129,
+        {"groupby": {"by": ["crsPurpose"], "op": "sum", "codes": {"crsPurpose": ["C" * 129]}}},
+        "/options/groupby/codes/crsPurpose/0",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.codes=crsPurpose:"
+        + "|".join(f"C{n}" for n in range(1001)),
+        {
+            "groupby": {
+                "by": ["crsPurpose"],
+                "op": "sum",
+                "codes": {"crsPurpose": [f"C{n}" for n in range(1001)]},
+            }
+        },
+        "/options/groupby/codes/crsPurpose",
+    ),
+    (
         "groupby.by=time_period&groupby.op=sum&groupby.levels=crsPurpose:0",
         {"groupby": {"by": ["time_period"], "op": "sum", "levels": {"crsPurpose": 0}}},
         "/options/groupby/levels",
@@ -170,7 +187,9 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
 
 
 @pytest.mark.parametrize(
-    "query, body, fault_pointer", GOLDEN_TABLE, ids=[row[0] or "empty" for row in GOLDEN_TABLE]
+    "query, body, fault_pointer",
+    GOLDEN_TABLE,
+    ids=[(row[0] or "empty")[:120] for row in GOLDEN_TABLE],
 )
 def test_query_and_body_agree(
     query: str, body: dict[str, object], fault_pointer: str | None

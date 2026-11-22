@@ -110,8 +110,8 @@ def selected_stat_vars(
     axis. `lookup` is the decode lookup after any `levels` roll-up (`roll_up_levels`), so a
     StatVar is selected by its rolled code. A row's decoded cell is its StatVar's lookup cell,
     so a row is kept exactly when its `stat_var` is in the result; a StatVar with no cell on an
-    axis reads an empty cell, which no code matches. An axis the frame does not decode filters
-    nothing, as an absent `by` axis collapses nothing."""
+    axis reads an empty cell, which no code matches. An axis outside `decoded_code_systems`
+    selects on nothing; a render refuses a selection on one (`render._decoded_selection`)."""
     decoded = frozenset(decoded_code_systems)
     in_frame = {
         axis: frozenset(listed) for axis, listed in (codes or {}).items() if axis in decoded
@@ -134,9 +134,9 @@ def selected_contributors(
 ) -> list[str]:
     """Return `contributors` (`dcid:` refs or bare dcids), in their order, that a groupby with
     the selection `codes` and the roll-up `levels` sums: each one whose code-index code on every
-    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed, as the render
-    selects its rows (`selected_stat_vars`). An axis no contributor carries filters nothing, as
-    an axis the frame does not decode."""
+    `codes` axis, after any `levels` roll-up (`roll_up_levels`), is listed, as the render keeps
+    the summed rows of those codes (`selected_stat_vars`). An axis no contributor carries
+    selects on nothing."""
     refs = list(contributors)
     if not codes:
         return refs

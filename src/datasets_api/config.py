@@ -154,6 +154,14 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     analysis_max_root_rows: int = Field(default=2_000_000, ge=1)
     analysis_max_join_rows: int = Field(default=250_000, ge=1)
 
+    # Whether a sum the planner infers for a root reads the codes the filters over it keep as
+    # its `groupby.codes` selection (`analysis.PlannedRoot.codes`). A release before the one
+    # that reads `groupby.codes` refuses a stored root rendering that states it, so this stays
+    # off until every serving revision reads it, and goes off again before a rollback below
+    # that release. Off, the root reads the sum of every StatVar, as the filter's answer is the
+    # same either way.
+    analysis_sum_selected_codes: bool = False
+
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
     # confirms it by the subjects' arcs. The default, shared with Search's resubmit, covers the deepest measured
