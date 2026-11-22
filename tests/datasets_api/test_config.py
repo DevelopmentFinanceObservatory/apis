@@ -91,14 +91,33 @@ def test_head_recheck_at_or_past_max_age_fails_fast_naming_both_variables(
         DatasetsBuildSettings.from_env()
 
 
-@pytest.mark.parametrize("ceiling", ["86400", "3600"])
-def test_serve_stale_ceiling_at_or_under_max_age_fails_fast_naming_both_variables(
-    monkeypatch: pytest.MonkeyPatch, ceiling: str
+@pytest.mark.parametrize(("margin", "refused"), [("2592000", True), ("2591999", False)])
+def test_a_renew_margin_at_or_past_working_retention_fails_fast_naming_it(
+    monkeypatch: pytest.MonkeyPatch, margin: str, refused: bool
+) -> None:
+    monkeypatch.setenv("DATASETS_RENEW_MARGIN_SECONDS", margin)
+    if refused:
+        with pytest.raises(DatasetsConfigError, match=r"DATASETS_RENEW_MARGIN_SECONDS"):
+            DatasetsBuildSettings.from_env()
+    else:
+        assert DatasetsBuildSettings.from_env().renew_margin_seconds == int(margin)
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "named"),
+    [
+        ("86400", "DATASETS_HEAD_MAX_AGE_SECONDS"),
+        ("3600", "DATASETS_HEAD_MAX_AGE_SECONDS"),
+        ("604800", "DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS"),
+    ],
+)
+def test_serve_stale_ceiling_at_or_under_a_max_age_fails_fast_naming_the_variables(
+    monkeypatch: pytest.MonkeyPatch, ceiling: str, named: str
 ) -> None:
     monkeypatch.setenv("DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS", ceiling)
     with pytest.raises(
         DatasetsConfigError,
-        match=r"DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS.*DATASETS_HEAD_MAX_AGE_SECONDS",
+        match=rf"DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS.*{named}",
     ):
         DatasetsBuildSettings.from_env()
 

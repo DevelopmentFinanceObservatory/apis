@@ -19,10 +19,12 @@ import rfc8785
 from dfo_frame_grammar.grammar import UnitRequest
 
 from artifact_store import LiveArtifactInventory
+from dataset_store.snapshot import SnapshotRevoked
 from datasets_api import analysis_roots
 from datasets_api.analysis import (
     AnalysisPending,
     DatasetRoot,
+    ResolvedRoot,
     RootExpired,
     RootRendering,
     RootRenderingUnreadable,
@@ -38,6 +40,7 @@ from datasets_api.analysis_roots import (
     summed_count,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.current import StoredHeadVersion
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import CoverageModel
@@ -1065,3 +1068,39 @@ def test_a_root_whose_rebuild_was_queued_waits_unless_the_rebuild_failed(
 
     with pytest.raises(refused):
         roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
+
+
+def test_a_stored_head_revoked_under_one_posted_id_refuses_that_id_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two roots of one dataset posted under two ids, the head's version taken down under the
+    first: that root refuses `snapshot_revoked`, and the root posted under the served id still
+    reads the head, judged as `latest: true` judges each id."""
+    alias = "spec_" + "b" * 32
+    monkeypatch.setattr(
+        analysis_roots,
+        "served_spec",
+        lambda **_: SimpleNamespace(spec_id=_SPEC, identity={"entities": {}}),
+    )
+
+    def head(stored: object, *, revoked_under: Sequence[str], **_: object) -> object:
+        if alias in revoked_under:
+            raise SnapshotRevoked(id=alias, content_version=_CV, reason="taken down")
+        return StoredHeadVersion(content_version=_CV, freshness="current")
+
+    monkeypatch.setattr(analysis_roots, "stored_head_version", head)
+    pair = FrameRef(spec_id=_SPEC, content_version=_CV)
+    monkeypatch.setattr(
+        LiveRootSource,
+        "_at_version",
+        lambda self, root, **_: ResolvedRoot(
+            frame=pair, dataset=pair, record={}, rendering=dict(root.rendering)
+        ),
+    )
+    roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
+
+    with pytest.raises(SnapshotRevoked):
+        roots.resolve(SpecRoot(spec_id=alias), latest="stored", trace_id=None)
+    resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest="stored", trace_id=None)
+
+    assert resolved.version() == {"spec_id": _SPEC, "content_version": _CV}

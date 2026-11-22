@@ -4,8 +4,15 @@
 
 - 200 `AnalysisReady`: the format 2 ref of the stored frame, its frame `cv_` and output digest,
   the top step's `summary` (`dfo_analysis_engine.calls.VerbCall.summary`) and the shape facts
-  it holds, the execution identity, and each period the recipe states relative to the latest;
-- 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building;
+  it holds, the execution identity, and each period the recipe states relative to the latest.
+  A `latest: "stored"` request adds `resolved_roots`, each dataset's stored head version and
+  freshness from the roots it resolved (`analysis.stored_heads`), composed here and never
+  stored. A request stating `include` receives `summary` only when it names it, reading a
+  stored answer without it, and `manifest`, the derived manifest of the answer's pair read now
+  (`doors.derived.derived_manifest`), when it names that. A request naming neither gets the
+  body it always has;
+- 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building, or
+  under `latest: "stored"` has no servable head and its rebuild is queued;
 - 500 `internal_error` when the pair the run computed already holds a different recipe or frame
   (`analysis.AnalysisStoreDiverges`), a fault this service logs with both identities;
 - a problem document otherwise. An engine refusal, `several_members`, `over_ceiling` and a root
@@ -32,29 +39,48 @@ taken down. A root whose rendering's file has aged out is rendered in memory fro
 frame. A verification reads no stored answer and writes nothing: no frame, recipe, answer,
 version record or rendering, and it pins nothing. It admits the caller holding the `verify`
 grant (`datasets_api.principals`, `VERIFY_PRINCIPAL`) alone and refuses any other
-`verify_not_permitted` (403). It takes an analysis thread and a materialise permit only while
-another of each stays free for runs, anchors and mints, else refuses retryable
-`service_unavailable` (503), so verifications never hold the last of either; settings that
-grant `verify` need two of each (`DatasetsBuildSettings`). It logs no `datasets.delivery`
-line, since it serves no frame. A `verify` request that also sets `latest`, or names a Spec
-root, refuses `request_invalid` (400), since neither names a version.
+`verify_not_permitted` (403). It takes an analysis thread only while another stays free for
+runs and anchors, waiting for one as a run waits, and a materialise permit only while another
+stays free, else refuses retryable `service_unavailable` (503), so verifications never hold
+the last of either; settings that
+grant `verify` need two of each (`DatasetsBuildSettings`). It takes no thread of the analysis
+key executor. It logs no `datasets.delivery` line, since it serves no frame. A `verify` request
+that also sets `latest`, `true` or `"stored"`, or names a Spec root, refuses `request_invalid`
+(400), since neither names a version, and so does one that sets `include`.
 
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
 service cannot name logs as unresolved, a malformed `x-dfo-caller` of a vouched request
 included. Every Datasets code the routes answer
-goes out at the status the code registry maps on `datasets.analysis`. A run takes a thread of
-the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable
-`service_unavailable` (503) when every thread is busy, and one materialise permit for its frames.
-It answers timeout (504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`, and its thread runs on to
-store the frame.
+goes out at the status the code registry maps on `datasets.analysis`.
 
-A run is keyed (`analysis.prepare_analysis`) before it takes its materialise permit. A key that
-holds a stored answer whose frame file is still served answers that body
-(`analysis.stored_answer`). A key another request of this process is computing answers the
-pending body, 202 with `Retry-After` 5 and no operations, so a retry after a timeout joins the
-one run and later finds its answer stored. The key is released when the run ends, whether it
-succeeds or fails.
+A run is keyed first (`analysis.prepare_analysis`), on a thread of the analysis key executor
+(`DATASETS_ANALYSIS_KEY_MAX_CONCURRENCY`). A request waits for one up to `_KEY_WAIT_SECONDS` or
+its deadline, whichever comes first, and refuses retryable `service_unavailable` (503) at that
+bound, when `_KEY_QUEUE_PER_THREAD` requests per thread already wait, or as soon as a swap
+replaces the graph release it bound (`admission.bound_release_served`), as a request waiting for
+a materialise permit does. Keying resolves the roots at the versions they are read at, so every
+refusal of a root, and the pending body of a root still building, answers from it. A
+`latest: "stored"` request keys from records alone, rendering nothing
+(`LiveRootSource(defer_renders=True)`); one whose roots need a rendering no record names to be
+keyed is keyed on its analysis thread instead. A key that holds a stored answer whose frame
+file is still served answers that body there (`analysis.stored_answer`), taking no analysis
+thread and no materialise permit, so stored answers keep answering while every analysis thread
+computes. Any other run then waits for a thread of the analysis executor
+(`DATASETS_ANALYSIS_MAX_CONCURRENCY`) as keying waits for its own, up to `_RUN_WAIT_SECONDS`
+or its deadline with `_RUN_QUEUE_PER_THREAD` runs waiting per thread, refusing retryable
+`service_unavailable` (503) at either bound or on a release swap, and computes the key it was
+given, keying nothing again. An anchor and a verification wait for a thread under the same
+bounds and queue, and while one waits every waiting run leaves free the threads it needs
+(`_Reservations`), so runs queued for every thread never starve it. A key another request of this process is computing answers the pending body, 202
+with `Retry-After` 5 and no operations, so a retry after a timeout joins the one run and later
+finds its answer stored. A run that holds its key reads the stored answer again before it
+computes, so an answer another request stored after this one keyed answers as stored. The key is
+released when the run ends, whether it succeeds or fails. The run holds one materialise permit
+for its frames. The request answers timeout (504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`,
+counted from admission over keying and computing together. A timeout while the run computes
+leaves its thread running on to store the frame and answer. A timeout while it keys stores
+nothing, since the run never reaches an analysis thread, and a retry keys it again.
 """
 
 from __future__ import annotations
@@ -63,16 +89,18 @@ import functools
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from datasets_api.admission import bounded_materialise_slot
+from datasets_api.admission import bound_release_served, bounded_materialise_slot
 from datasets_api.analysis import (
+    STORED,
     AnalysisBounds,
     AnalysisPending,
     AnalysisRequest,
@@ -81,18 +109,21 @@ from datasets_api.analysis import (
     AnalysisTooLarge,
     AnchorRequest,
     FrameUnavailable,
+    PreparedAnalysis,
     RootExpired,
     RootNotStored,
     RootRecipeMissing,
     RootRenderingUnreadable,
+    RootSource,
     SeveralMembers,
     prepare_analysis,
     run_anchor,
     run_prepared,
     stored_answer,
+    stored_heads,
     verify_analysis,
 )
-from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.analysis_roots import LiveRootSource, RenderNeeded
 from datasets_api.background_admission import leaving_headroom
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes import CODE_CATALOG
@@ -107,12 +138,14 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
+from datasets_api.doors.derived import DerivedManifest, derived_manifest
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
+from datasets_api.operations.renewal import renew_on_hit
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.timings import door_call
+from datasets_api.timings import PhaseTimings, door_call
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode, RetryMode
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
@@ -164,8 +197,20 @@ class RootVersion(BaseModel):
     )
 
 
+class ResolvedRootBody(BaseModel):
+    """A dataset a `latest: "stored"` request's roots read: the version its stored head
+    names and the freshness the head GET states for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    content_version: str
+    freshness: Literal["current", "pending", "stale"]
+
+
 class AnalysisReady(BaseModel):
-    """The stored frame of a computed tree."""
+    """The stored frame of a computed tree. A request without `include` and `latest:
+    "stored"` receives the body it always has, `summary` included."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -173,9 +218,12 @@ class AnalysisReady(BaseModel):
     ref: dict[str, JsonValue] = Field(description="the format 2 DatasetRef naming the frame")
     frame_content_version: str = Field(pattern=r"^cv_[0-9a-f]{32}$")
     output_digest: str = Field(pattern=r"^out_[0-9a-f]{32}$")
-    summary: dict[str, JsonValue] = Field(
+    summary: dict[str, JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
         description="the facts of the tree's top step: the verb, its canonical parameters, the "
-        "result's shape and exclusions, and the engine result's own fields"
+        "result's shape and exclusions, and the engine result's own fields. Absent when the "
+        "request states `include` without `summary`",
     )
     rows: int = Field(ge=0)
     role_keys: list[str]
@@ -197,6 +245,20 @@ class AnalysisReady(BaseModel):
         description="each root read summed over its StatVars, with how many it summed; a root "
         "that states no groupby, holds several StatVars and is read under steps that name no "
         "stat_var is summed by the service itself, keeping the summable axes the steps name",
+    )
+    resolved_roots: list[ResolvedRootBody] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description='for a `latest: "stored"` request alone: each dataset its roots read, '
+        "once, in the order the tree first reaches it, with the version its stored head names "
+        "and that head's freshness, stated for this request",
+    )
+    manifest: DerivedManifest | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="for a request whose `include` names `manifest` alone: the derived manifest "
+        "of the ref's member as `GET /api/datasets/derived/{spec_id}/{content_version}` "
+        "answers it now",
     )
 
 
@@ -440,30 +502,123 @@ def _admit_verify(request: Request, settings: DatasetsBuildSettings) -> None:
     Principals.resolve(settings=settings).require(Grant.verify)(request)
 
 
+@dataclass(frozen=True, kw_only=True)
+class _Keyed:
+    """A run keyed on the analysis key executor: the source that resolved its roots, which
+    the run reads them through, and the prepared run, or the stored answer of its key. A
+    `latest: "stored"` run whose roots cannot be keyed from records (`RenderNeeded`) holds
+    neither, and is prepared on its analysis thread."""
+
+    body: AnalysisRequest
+    source: RootSource | None
+    prepared: PreparedAnalysis | None
+    answer: dict[str, Any] | None
+
+
+def _wants_summary(body: AnalysisRequest) -> bool:
+    """Whether `body`'s 200 carries `summary`: always without `include`, else when named."""
+    return body.include is None or "summary" in body.include
+
+
+def _ready(
+    answer: dict[str, Any], *, body: AnalysisRequest, prepared: PreparedAnalysis, current: Deps
+) -> dict[str, Any]:
+    """The 200 of `body` from the stored or computed `answer`: `summary` only when the request
+    asks for it, `resolved_roots` for a `latest: "stored"` request, composed from the heads its
+    roots resolved to, and the derived manifest of the answer's pair read now when `include`
+    names it. A request naming neither member gets `answer` as stored.
+
+    Raises:
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As the derived manifest route.
+    """
+    ready = dict(answer)
+    if not _wants_summary(body):
+        ready.pop("summary", None)
+    if body.latest == STORED:
+        ready["resolved_roots"] = [
+            {
+                "spec_id": head.spec_id,
+                "content_version": head.content_version,
+                "freshness": head.freshness,
+            }
+            for head in stored_heads(prepared)
+        ]
+    if body.include is not None and "manifest" in body.include:
+        member = ready["ref"]["members"][0]
+        ready["manifest"] = derived_manifest(
+            id=member["spec"]["spec_id"],
+            content_version=member["content_version"],
+            current=current,
+        )
+    return AnalysisReady.model_validate(ready).model_dump(mode="json")
+
+
+def _key_job(
+    *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
+) -> _Keyed:
+    """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key. A
+    `latest: "stored"` request resolves its roots from records alone, rendering nothing
+    (`LiveRootSource` `defer_renders`)."""
+    source = LiveRootSource(
+        deps=deps, recipes=current.recipe_store, defer_renders=body.latest == STORED
+    )
+    try:
+        prepared = prepare_analysis(
+            body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
+        )
+    except RenderNeeded:
+        return _Keyed(body=body, source=None, prepared=None, answer=None)
+    answer = stored_answer(
+        prepared,
+        stores=analysis_stores(current),
+        summary=_wants_summary(body),
+        on_hit=renew_on_hit(current),
+    )
+    return _Keyed(
+        body=body,
+        source=source,
+        prepared=prepared,
+        answer=None
+        if answer is None
+        else _ready(answer, body=body, prepared=prepared, current=current),
+    )
+
+
 def _analysis_job(
     *,
     deps: DefinitionDeps,
     current: Deps,
-    body: AnalysisRequest,
+    keyed: _Keyed,
     trace_id: str | None,
     running: RunningAnalyses,
 ) -> dict[str, Any]:
-    source = LiveRootSource(deps=deps, recipes=current.recipe_store)
+    """Compute and store the keyed run, joining a run of its key this process is computing.
+    The answer stored under the key since it was keyed answers in its place. A run keying
+    could not prepare from records is prepared here, rendering what its roots need."""
     stores = analysis_stores(current)
-    bounds = analysis_bounds(current)
-    prepared = prepare_analysis(body, source=source, bounds=bounds, trace_id=trace_id)
-    answer = stored_answer(prepared, stores=stores)
-    if answer is None:
-        with running.claim(prepared.key):
+    body, source, prepared = keyed.body, keyed.source, keyed.prepared
+    if prepared is None or source is None:
+        source = LiveRootSource(deps=deps, recipes=current.recipe_store)
+        prepared = prepare_analysis(
+            body, source=source, bounds=analysis_bounds(current), trace_id=trace_id
+        )
+    with running.claim(prepared.key):
+        answer = stored_answer(
+            prepared,
+            stores=stores,
+            summary=_wants_summary(body),
+            on_hit=renew_on_hit(current),
+        )
+        if answer is None:
             answer = run_prepared(
                 prepared,
                 source=source,
                 stores=stores,
-                bounds=bounds,
+                bounds=analysis_bounds(current),
                 permit=analysis_permit(current, deps),
                 trace_id=trace_id,
             ).body()
-    return AnalysisReady.model_validate(answer).model_dump(mode="json")
+    return _ready(answer, body=body, prepared=prepared, current=current)
 
 
 def _anchor_job(
@@ -489,6 +644,50 @@ def _anchor_job(
 
 _REFUSED = (AnalysisRefused, SeveralMembers, FrameUnavailable, AnalysisTooLarge)
 
+# The longest a request waits for a thread of the analysis key executor, as the shares door waits
+# for its own. Warm keys take well under a second, so a burst of stored answers queues within it.
+_KEY_WAIT_SECONDS = 5.0
+# The requests that may wait for each thread of the analysis key executor. One more refuses 503
+# at once, so the waits polling the executor's semaphore stay few.
+_KEY_QUEUE_PER_THREAD = 4
+# The longest a run with no stored answer, an anchor or a verification waits for an analysis
+# thread, and the requests that may wait for each one, so two readers that miss at once both
+# compute in turn within the bound.
+_RUN_WAIT_SECONDS = 5.0
+_RUN_QUEUE_PER_THREAD = 4
+
+
+class _Reservations:
+    """The analysis threads each waiting anchor or verification needs free, so a run waiting
+    beside it leaves them free (`_AnalysisRoutes._on_analysis_thread`). Written from the event
+    loop and from the job as it starts on its thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[int, int] = {}
+        self._next = 0
+
+    def add(self, threads: int) -> int:
+        with self._lock:
+            self._next += 1
+            self._held[self._next] = threads
+            return self._next
+
+    def drop(self, token: int) -> None:
+        with self._lock:
+            self._held.pop(token, None)
+
+    def headroom(self) -> int:
+        """The threads a run must leave free after it takes one: the most any waiting anchor
+        or verification needs."""
+        with self._lock:
+            return max(self._held.values(), default=0)
+
+
+# What a door answers with: the request's `Deps`, its retrieval view and the call's timings in,
+# the answer body out.
+type _Answering = Callable[[Deps, DefinitionDeps, PhaseTimings], Awaitable[dict[str, Any]]]
+
 
 class _AnalysisRoutes:
     """The door's two handlers over the surface's dependency cell."""
@@ -496,20 +695,23 @@ class _AnalysisRoutes:
     def __init__(self, cell: DepsCell, *, running: RunningAnalyses) -> None:
         self._cell = cell
         self._analysis_job = functools.partial(_analysis_job, running=running)
+        # The requests waiting for or holding a thread of the analysis key executor, and of the
+        # analysis executor for a run, an anchor or a verification. Read and written on the
+        # event loop alone.
+        self._keying = 0
+        self._running = 0
+        self._reservations = _Reservations()
 
     async def _run(
         self,
-        job: Any,
+        answering: _Answering,
         *,
         name: str,
         request: Request,
-        body: BaseModel,
         record: Callable[[dict[str, Any]], None] | None = None,
-        headroom: int = 0,
     ) -> JSONResponse:
-        """Run `job` as door `name`. A door given `record` delivers: `record` records its
-        answer for the call's `datasets.delivery` line. `headroom` is the analysis threads
-        that must stay free after `job` takes one."""
+        """Answer door `name` with `answering`. A door given `record` delivers: `record`
+        records its answer for the call's `datasets.delivery` line."""
         current = self._cell.get()
         _log_caller(request, current, route=name)
         deps = definition_deps(
@@ -517,17 +719,7 @@ class _AnalysisRoutes:
         )
         with door_call(name, logger=logger, delivers=record is not None) as call:
             try:
-                answer = await _run_retrieval(
-                    current.analysis_executor,
-                    job,
-                    deps=deps,
-                    timings=call.timings,
-                    refuse=AnalysisBackpressure,
-                    headroom=headroom,
-                    current=current,
-                    body=body,
-                    trace_id=get_trace_id(),
-                )
+                answer = await answering(current, deps, call.timings)
             except AnalysisPending as pending:
                 outcome: JSONResponse = _pending(pending)
             except (AnalysisRefused, Refusal) as refused:
@@ -539,6 +731,122 @@ class _AnalysisRoutes:
         outcome.headers["Server-Timing"] = call.server_timing
         return call.delivered(outcome)
 
+    async def _on_analysis_thread(
+        self,
+        job: Callable[..., Any],
+        *,
+        current: Deps,
+        deps: DefinitionDeps,
+        timings: PhaseTimings,
+        headroom: int = 0,
+        reserve: bool = False,
+        **kwargs: object,
+    ) -> Any:
+        """Run `job` on a thread of the analysis executor, waiting for one up to
+        `_RUN_WAIT_SECONDS` or the deadline, with `_RUN_QUEUE_PER_THREAD` requests waiting per
+        thread, and refusing 503 past either bound or once a swap replaces the release the
+        request bound. `headroom` is the threads that must stay free after `job` takes one. A
+        `reserve` job, an anchor or a verification, holds the threads it needs while it waits,
+        and a run waiting beside it leaves them free (`_Reservations`), so runs queued for
+        every thread never starve it.
+
+        Raises:
+            AnalysisBackpressure: As above.
+        """
+        assert deps.deadline is not None
+        executor = current.analysis_executor
+        if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
+            raise AnalysisBackpressure()
+        reservations = self._reservations
+        token = reservations.add(1 + headroom) if reserve else None
+
+        def started(**arguments: object) -> Any:
+            if token is not None:
+                reservations.drop(token)
+            return job(**arguments)
+
+        self._running += 1
+        try:
+            return await _run_retrieval(
+                executor,
+                started,
+                deps=deps,
+                timings=timings,
+                refuse=AnalysisBackpressure,
+                wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
+                headroom=headroom if reserve else reservations.headroom,
+                keep_waiting=bound_release_served(),
+                current=current,
+                **kwargs,
+            )
+        finally:
+            self._running -= 1
+            if token is not None:
+                reservations.drop(token)
+
+    def _on_analysis_executor(self, job: Any, *, body: BaseModel, headroom: int = 0) -> _Answering:
+        """Answer with `job`, an anchor or a verification, on a thread of the analysis
+        executor (`_on_analysis_thread`). `headroom` is the threads that must stay free after
+        `job` takes one."""
+
+        async def answering(
+            current: Deps, deps: DefinitionDeps, timings: PhaseTimings
+        ) -> dict[str, Any]:
+            return await self._on_analysis_thread(
+                job,
+                current=current,
+                deps=deps,
+                timings=timings,
+                headroom=headroom,
+                reserve=True,
+                body=body,
+                trace_id=get_trace_id(),
+            )
+
+        return answering
+
+    def _keyed_run(self, body: AnalysisRequest) -> _Answering:
+        """Key `body` and read its stored answer on the analysis key executor, then compute any
+        other run on the analysis executor. The wait for a keying thread is bounded as the
+        module docstring says."""
+
+        async def answering(
+            current: Deps, deps: DefinitionDeps, timings: PhaseTimings
+        ) -> dict[str, Any]:
+            assert deps.deadline is not None
+            trace_id = get_trace_id()
+            executor = current.analysis_key_executor
+            if self._keying >= executor.pool_size * (1 + _KEY_QUEUE_PER_THREAD):
+                raise AnalysisBackpressure()
+            self._keying += 1
+            try:
+                keyed = await _run_retrieval(
+                    executor,
+                    _key_job,
+                    deps=deps,
+                    timings=timings,
+                    refuse=AnalysisBackpressure,
+                    wait_seconds=min(_KEY_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
+                    keep_waiting=bound_release_served(),
+                    current=current,
+                    body=body,
+                    trace_id=trace_id,
+                )
+            finally:
+                self._keying -= 1
+            if keyed.answer is not None:
+                return keyed.answer
+            return await self._on_analysis_thread(
+                self._analysis_job,
+                current=current,
+                deps=deps,
+                timings=timings,
+                keyed=keyed,
+                trace_id=trace_id,
+            )
+
+        return answering
+
     async def post_analysis(self, body: AnalysisRequest, request: Request) -> JSONResponse:
         """Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
         `pending` while a root builds, or the refusal with its fix. With `verify`, compute it
@@ -546,24 +854,22 @@ class _AnalysisRoutes:
         if body.verify:
             _admit_verify(request, self._cell.get().settings)
             return await self._run(
-                _verify_job,
+                self._on_analysis_executor(_verify_job, body=body, headroom=_VERIFY_HEADROOM),
                 name="analysis_verify",
                 request=request,
-                body=body,
-                headroom=_VERIFY_HEADROOM,
             )
         return await self._run(
-            self._analysis_job,
-            name="analysis",
-            request=request,
-            body=body,
-            record=record_analysis,
+            self._keyed_run(body), name="analysis", request=request, record=record_analysis
         )
 
     async def post_anchor(self, body: AnchorRequest, request: Request) -> JSONResponse:
         """The latest period of the roots over the populations, and the series it leaves
         out. Stores nothing."""
-        return await self._run(_anchor_job, name="analysis_anchor", request=request, body=body)
+        return await self._run(
+            self._on_analysis_executor(_anchor_job, body=body),
+            name="analysis_anchor",
+            request=request,
+        )
 
 
 def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorContribution:
@@ -646,6 +952,7 @@ __all__ = [
     "AnalysisReady",
     "AnalysisVerified",
     "AnchorAnswer",
+    "ResolvedRootBody",
     "RunningAnalyses",
     "analysis_bounds",
     "analysis_permit",

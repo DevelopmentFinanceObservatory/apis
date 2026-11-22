@@ -79,6 +79,7 @@ from datasets_api.doors.refresh import (
 )
 from datasets_api.exports import resolve_endpoint
 from datasets_api.operation_store import OperationBacklogFull
+from datasets_api.operations.renewal import renew_on_hit
 from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.problem import log_problem
@@ -214,7 +215,7 @@ class DatasetsNewestFrames:
         stores = analysis_stores(current)
         bounds = analysis_bounds(current)
         prepared = prepare_analysis(request, source=source, bounds=bounds, trace_id=trace_id)
-        answer = stored_answer(prepared, stores=stores)
+        answer = stored_answer(prepared, stores=stores, on_hit=renew_on_hit(current))
         if answer is not None:
             return answer
         with self._running.claim(prepared.key):

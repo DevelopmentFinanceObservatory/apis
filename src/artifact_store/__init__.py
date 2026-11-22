@@ -25,6 +25,7 @@ from artifact_store.store import (
     CopyBounds,
     ExistsRead,
     LiveArtifactStore,
+    RenewingArtifactStore,
     StoredArtifact,
     Tier,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "ExistsRead",
     "LiveArtifactInventory",
     "LiveArtifactStore",
+    "RenewingArtifactStore",
     "StorageEmulatorRefused",
     "StoredArtifact",
     "Tier",

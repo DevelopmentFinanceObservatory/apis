@@ -19,7 +19,9 @@ it; the released recipe is still read by its pair.
 An analysis answer (`AnswerRecord`) is the 200 body of `POST /api/datasets/analysis`, kept in
 `datasets.analysis_answer` under the run's request key (`datasets_api.analysis.request_key`)
 beside the frame pair it names. `write_answer` replaces the key's row, so a recomputed answer
-stands in for one whose frame file is no longer served.
+stands in for one whose frame file is no longer served. `read_answer` with `summary` false
+reads the body without its `summary`, removed by the query, for a request that does not ask
+for it.
 
 Store errors become `DatasetsStoreUnavailable` after the transaction exits.
 """
@@ -169,8 +171,9 @@ class RecipeStore(RecipeReader, Protocol):
         when the pair no longer holds the key."""
         ...
 
-    def read_answer(self, *, request_key: str) -> AnswerRecord | None:
-        """Return the analysis answer stored under `request_key`, or `None`."""
+    def read_answer(self, *, request_key: str, summary: bool = True) -> AnswerRecord | None:
+        """Return the analysis answer stored under `request_key`, or `None`. With `summary`
+        false the body leaves out its `summary` member, which the store never sends."""
         ...
 
     def write_answer(self, record: AnswerRecord) -> None:
@@ -312,9 +315,13 @@ class LiveRecipeStore:
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
-    def read_answer(self, *, request_key: str) -> AnswerRecord | None:
+    def read_answer(self, *, request_key: str, summary: bool = True) -> AnswerRecord | None:
+        # The top step's summary grows with the frame (an aggregate's `group_summaries` holds
+        # one entry per row, megabytes for a sum by recipient and purpose), so a lean read
+        # drops it in the database and neither sends nor parses it.
+        body = "body" if summary else "body - 'summary' AS body"
         row = self._fetch_one(
-            "SELECT subject_id, content_version, body FROM datasets.analysis_answer "
+            f"SELECT subject_id, content_version, {body} FROM datasets.analysis_answer "
             "WHERE request_key = %s",
             (request_key,),
             reading=f"analysis answer {request_key!r}",
