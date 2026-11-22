@@ -139,6 +139,13 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # `verify_principal` refuse to load with either below 2.
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
+    # Analysis keying threads (`datasets_api.doors.analysis`): a run's roots resolved, its key
+    # taken and its stored answer read, before it takes an analysis thread. A request waits up to
+    # 5 seconds for one, four requests to a thread, so a burst of stored answers queues here and
+    # meets no 503 of a busy analysis executor. A warm key reads a few rows, and a cold one can serve a root's
+    # rebuild inline, so the pool stays small to bound the dataset store connections it borrows.
+    analysis_key_max_concurrency: int = Field(default=4, ge=1)
+
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
     # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
     # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.

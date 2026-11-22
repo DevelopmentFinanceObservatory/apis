@@ -50,6 +50,7 @@ class DoorExecutor:
         timings: PhaseTimings | None = None,
         wait_seconds: float = 0.0,
         headroom: int = 0,
+        keep_waiting: Callable[[], bool] | None = None,
     ) -> T:
         """Run `job` on the executor under the caller's context behind bounded admission.
 
@@ -62,6 +63,10 @@ class DoorExecutor:
         which signals a permanently failed pool, the permit is released, the failure is logged,
         and the error propagates.
 
+        `keep_waiting`, when given, is asked at every poll of the wait, and a false answer ends
+        the wait with `refuse()`, as a caller whose bound graph release was swapped out drops
+        it (`admission.bound_release_served`).
+
         `headroom` is the permits that must stay free after this job takes one
         (`HeadroomSemaphore.acquire_leaving`). A background mint leaves one for other callers.
 
@@ -70,7 +75,7 @@ class DoorExecutor:
         """
         admitted_by = time.monotonic() + wait_seconds
         while not self.semaphore.acquire_leaving(headroom):
-            if time.monotonic() >= admitted_by:
+            if time.monotonic() >= admitted_by or (keep_waiting is not None and not keep_waiting()):
                 raise refuse()
             await asyncio.sleep(_ADMISSION_POLL_SECONDS)
         timed = _TimedJob(job, timings) if timings is not None else None
