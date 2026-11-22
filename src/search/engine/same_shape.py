@@ -1210,6 +1210,7 @@ def _merged_preview_read(group: list[RegionResult], plan: ReadPlan) -> PreviewRe
         member_facts=member_facts or None,
         unit_request=first.unit_request,
         elected=first.elected,
+        years=None,
     )
 
 

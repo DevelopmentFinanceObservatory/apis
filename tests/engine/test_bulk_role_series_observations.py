@@ -1751,6 +1751,121 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
         assert delivered == sorted(fixed, key=recipients.index, reverse=True)
 
 
+def test_a_read_in_served_years_keeps_the_facet_its_own_window_elects(monkeypatch):
+    """F1 holds every recipient from 2010 to 2016 and F2 two of them from 2017 to 2020.
+    Under the plan's own window, 2010 to 2020, F1 leads, as a Datasets mint under that
+    window elects it, while a plan built over the served years 2017 to 2020 alone elects F2.
+    Read in the served years, the plan keeps F1 and lists those years alone."""
+    recipients = [f"country/BRElect{i}" for i in range(5)]
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        [("F1", _DONOR, r, list(range(2010, 2017))) for r in recipients]
+        + [("F2", _DONOR, r, list(range(2017, 2021))) for r in recipients[:2]],
+    )
+    entities = _obs_entities(recipients)
+    own = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2010, end_year=2020)
+    )
+    narrow = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2017, end_year=2020)
+    )
+    assert (own.facet_id, narrow.facet_id) == ("F1", "F2")
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [
+                    _facet(dates=[str(y) for y in range(2010, 2017)], facet_id="F1"),
+                    _facet(dates=[str(y) for y in range(2017, 2021)], facet_id="F2"),
+                ]
+                for r in recipients[:2]
+            }
+        }
+    )
+
+    region_fetch._build_observations(
+        own,
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=frozenset(range(2017, 2021)),
+    )
+
+    (call,) = sdmx.series_calls
+    assert "F1" in call["facet_ids"]
+    assert call["time_period"] == ["2017", "2018", "2019", "2020"]
+
+
+@pytest.mark.parametrize(
+    ("years", "dates"),
+    [
+        pytest.param(frozenset(range(2018, 2021)), ["2019", "2020"], id="contiguous"),
+        # 2019 lies inside the span and outside the years: the read lists 2018 and 2020 alone.
+        pytest.param(frozenset({2018, 2020}), ["2020"], id="gap"),
+    ],
+)
+def test_a_read_in_served_years_picks_counts_and_shows_their_series_alone(
+    monkeypatch, search_settings, years, dates
+):
+    """Three recipients hold data in 2011 alone and two in 2011, 2019 and 2020. Over the
+    plan's own window, 2010 to 2020, a fixed read of two series takes the first two by
+    identity, which hold no point in the served years, and warns that it shows two of five.
+    Read in the served years, it takes the two holding a point there, shows both with no
+    warning and counts their points in those years alone."""
+    search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=2)
+    old = [f"country/BRA{i}" for i in range(3)]
+    new = [f"country/BRZ{i}" for i in range(2)]
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        [("F1", _DONOR, r, [2011]) for r in old]
+        + [("F1", _DONOR, r, [2011, 2019, 2020]) for r in new],
+    )
+    entities = _obs_entities([*old, *new])
+    plan = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2010, end_year=2020)
+    )
+
+    def preview(in_years: frozenset[int] | None):
+        sdmx = FakeSdmxClient(
+            observations={
+                _SV: {
+                    **{_role_tuple(r): [_facet(dates=["2011"])] for r in old},
+                    **{_role_tuple(r): [_facet(dates=["2011", "2019", "2020"])] for r in new},
+                }
+            }
+        )
+        observations, warn = region_fetch._build_observations(
+            plan,
+            [_SV],
+            entities,
+            graph=_GRAPH,
+            materialise_graph=None,
+            materialise_sdmx=None,
+            sdmx=sdmx,
+            coverage=coverage,
+            years=in_years,
+        )
+        (call,) = sdmx.series_calls
+        return observations, warn, call
+
+    _, warn, call = preview(None)
+    assert set(call["entities"]["recipient"]) == set(old[:2])
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_SERIES_TRUNCATED
+
+    observations, warn, call = preview(years)
+
+    assert set(call["entities"]["recipient"]) == set(new)
+    assert call["time_period"] == [str(year) for year in sorted(years)]
+    assert warn is None
+    assert not observations.truncated
+    assert [[p.date for p in series.points] for series in observations.series] == [dates] * 2
+    assert observations.total_obs == 2 * len(dates)
+
+
 def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():
     """A StatVar whose role tuple holds no observation in the read's years takes no place in
     a ranked read, however new its latest date, so every StatVar with data there is read

@@ -1304,6 +1304,43 @@ def _without(
 type ReadPlan = PairPlan | BulkPlan
 
 
+def read_in_years[P: PairPlan | BulkPlan](plan: P, years: frozenset[int]) -> P | None:
+    """`plan` with the facets it elected under its own years kept, read over the closed span
+    of the years of `years` its own years hold: every series, pair, count and limit it
+    states then reads that span. A per-series plan keeps the series whose candidates hold a
+    point in one of those years (`has_points`), and a bulk plan lists those years alone as
+    its SDMX year list (`BulkPlan.read_years`), so a bulk read takes no row of a year inside
+    the span that `years` leaves out. A `latest` plan is returned as it is, since it reads
+    one period per StatVar. None when its own years hold no year of `years`.
+
+    A composite's component preview reads its plan over the years the composite serves
+    (`scope.composite.component_preview`), so it previews the facets a Datasets mint of the
+    component elects under the component's own window."""
+    if plan.years == "latest":
+        return plan
+    own = plan.years
+    kept = sorted(
+        year
+        for year in years
+        if own is None
+        or (
+            (own.start_year is None or own.start_year <= year)
+            and (own.end_year is None or year <= own.end_year)
+        )
+    )
+    if not kept:
+        return None
+    span = TimeWindow(start_year=kept[0], end_year=kept[-1])
+    if isinstance(plan, BulkPlan):
+        return replace(plan, years=span, read_years=tuple(str(year) for year in kept))
+    each = [TimeWindow(start_year=year, end_year=year) for year in kept]
+    return replace(
+        plan,
+        years=span,
+        series=tuple(s for s in plan.series if any(has_points(s.candidates, y) for y in each)),
+    )
+
+
 def served_units(plan: ReadPlan) -> frozenset[str | None]:
     """The native unit of each facet `plan` serves, None for a facet with no unit: the
     group of each served series, whose facets share one unit, or in bulk the facets the

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from search.models import (
     TimeWindow,
 )
@@ -103,6 +105,76 @@ def test_build_observations_window_years_decide_between_facets_that_both_reach_t
     # The dispatched 2018 to 2020 facet contributes both of its points.
     assert [p.date for p in series.points] == ["2018", "2020"]
     assert observations.total_obs == 2
+
+
+def _old_and_new_obs() -> dict:
+    """A 2005 to 2015 facet of eleven points and a 2016 to 2020 facet of five."""
+    return {
+        "Count_Person|country/IND": [
+            {
+                "earliestDate": "2005",
+                "latestDate": "2015",
+                "obsCount": 11,
+                "provenanceId": "dc/base/old",
+                "observations": [{"date": str(year), "value": 1.0} for year in range(2005, 2016)],
+            },
+            {
+                "earliestDate": "2016",
+                "latestDate": "2020",
+                "obsCount": 5,
+                "provenanceId": "dc/base/new",
+                "observations": [{"date": str(year), "value": 2.0} for year in range(2016, 2021)],
+            },
+        ],
+    }
+
+
+def _dates_read(window: TimeWindow | None, years: frozenset[int] | None) -> tuple[list[str], int]:
+    """The dates `_old_and_new_obs` previews under `window`, read in `years`, and its
+    `total_obs`."""
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(_old_and_new_obs())
+    observations, warn = build_observations_planned(
+        ["Count_Person"],
+        {"observationAbout": ["country/IND"]},
+        graph=FakeGraph(),
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        window=window,
+        coverage=empty_coverage_snapshot(),
+        years=years,
+    )
+    assert warn is None
+    (series,) = observations.series
+    return [p.date for p in series.points], observations.total_obs
+
+
+def test_a_read_in_given_years_keeps_the_facet_its_own_window_elects():
+    """Over every date the eleven-point facet leads; over 2015 to 2017 alone the five-point
+    one covers more years and leads. Read in those years, the preview keeps the facet its
+    own window elects and shows its points there."""
+    span = TimeWindow(start_year=2015, end_year=2017)
+    assert _dates_read(span, None) == (["2016", "2017"], 2)
+
+    assert _dates_read(None, frozenset({2015, 2016, 2017})) == (["2015"], 1)
+
+
+@pytest.mark.parametrize(
+    ("years", "max_rows", "dates"),
+    [
+        pytest.param(frozenset({2018, 2019, 2020}), None, ["2018", "2019", "2020"], id="tail"),
+        # The read's row limit takes the latest rows of the years read, not of the window.
+        pytest.param(frozenset({2016, 2017}), 2, ["2016", "2017"], id="row-limit"),
+        # 2017 and 2018 lie inside the span the read takes and outside the years.
+        pytest.param(frozenset({2016, 2019, 2020}), None, ["2016", "2019", "2020"], id="gap"),
+    ],
+)
+def test_a_read_in_given_years_shows_and_counts_their_points_alone(
+    search_settings, years, max_rows, dates
+):
+    if max_rows is not None:
+        search_settings(obs_preview_max_rows=max_rows)
+
+    assert _dates_read(TimeWindow(start_year=2016), years) == (dates, len(dates))
 
 
 def _recorded_and_estimated_obs() -> dict:

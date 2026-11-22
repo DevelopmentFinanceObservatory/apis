@@ -896,7 +896,7 @@ class PartMemoScope:
 
     def key(self, payload: ResubmitIdentityPayload, options: EngineOptions) -> str:
         """The memo key of `payload` resolved under `options`' four enrichment flags and
-        the years its preview keeps (`EngineOptions.preview_years`)."""
+        the years its preview reads rows in (`EngineOptions.preview_years`)."""
         return part_memo_key(
             payload=payload,
             preview_years=options.preview_years,

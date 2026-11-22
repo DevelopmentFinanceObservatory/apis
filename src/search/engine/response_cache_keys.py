@@ -435,8 +435,8 @@ def part_memo_key(
     and one naming the same parties key apart. A payload binding none adds nothing to the
     key. The composite a payload answers as enters whole, so a table answer stored for its
     table identity never serves the composite. `preview_years`, the years a composite's
-    component preview keeps (`EngineOptions.preview_years`), enters sorted where set, so a
-    preview cut to one composite's years never serves another's.
+    component preview reads rows in (`EngineOptions.preview_years`), enters sorted where set,
+    so a preview read in one composite's years never serves another's.
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,

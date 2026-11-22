@@ -101,6 +101,7 @@ from search.engine.retrieval.read_plan import (
     PlanYears,
     ReadPlan,
     plan_window,
+    read_in_years,
 )
 from search.models import (
     IdentityUnitRequest,
@@ -446,6 +447,7 @@ def _role_bearing_bulk_dispatch(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
     member_constraints: Mapping[str, Mapping[str, str]],
     deadline: float | None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Read a role-bearing answer in bulk (`PreviewMode.ROLE_BULK`).
 
@@ -456,7 +458,9 @@ def _role_bearing_bulk_dispatch(
     rather than a partial preview. A unit request converts the read's points or narrows the
     plan to the native units (`_bulk_unit`); a conversion without its inputs returns
     `OBSERVATIONS_CLIENTS_UNAVAILABLE`. A `latest` read serves each member its own latest
-    period (`_bulk_role_series`).
+    period (`_bulk_role_series`). `years`, where set, are the years the read takes rows in
+    (`read_plan.read_in_years`), applied once the unit has narrowed the plan, so the
+    narrowing elects under the plan's own years.
     """
     readable = (
         isinstance(plan, BulkPlan)
@@ -490,6 +494,11 @@ def _role_bearing_bulk_dispatch(
             OBSERVATIONS_CLIENTS_UNAVAILABLE, _CONVERSION_CLIENTS_UNAVAILABLE
         ), None
     plan, conversion = unit
+    if years is not None:
+        in_years = read_in_years(plan, years)
+        if in_years is None:
+            return SpecObservations(series=[], total_obs=0, truncated=False), None
+        plan = in_years
     return _bulk_role_series(
         plan,
         sv_dcids,
@@ -660,6 +669,30 @@ def _at_latest_periods(
         else:
             dropped.append(key)
     return kept, tuple(dropped)
+
+
+def _in_years(
+    reads: Mapping[_SeriesKey, _SeriesRead], years: frozenset[int]
+) -> dict[_SeriesKey, _SeriesRead]:
+    """`reads` with each read's points in `years`, its `total_rows` less the points it lost,
+    and a read left with no point dropped. A read over the span of a composite's served years
+    (`read_plan.read_in_years`) holds points of the years inside that span the composite does
+    not serve, and these leave them out before any limit cuts. A point with no leading year
+    is kept, as `search.models.in_window` keeps it."""
+    kept: dict[_SeriesKey, _SeriesRead] = {}
+    for key, read in reads.items():
+        points = [point for point in read.points if _year_in(point[0], years)]
+        if points:
+            cut = len(read.points) - len(points)
+            kept[key] = replace(read, points=points, total_rows=read.total_rows - cut)
+    return kept
+
+
+def _year_in(date: str, years: frozenset[int]) -> bool:
+    try:
+        return int(date[:4]) in years
+    except ValueError:
+        return True
 
 
 def _every_row_omitted(read: _SeriesRead) -> bool:
@@ -1418,10 +1451,12 @@ def _fetch_pair_observations(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
     coverage: CoverageSnapshot,
     member_constraints: Mapping[str, Mapping[str, str]],
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Fetch each series `plan` serves over the plan's years, one read per member and bound
     role tuple (`_dispatches`), reduce a `latest` read's series to each StatVar's one
-    period (`_at_latest_periods`), then assemble the result. A planned series that reduction
+    period (`_at_latest_periods`), keep only the points in `years` where set (`_in_years`),
+    then assemble the result. A planned series that reduction
     drops is logged and counted among the series the partial-result warning says could not
     be served.
 
@@ -1491,6 +1526,8 @@ def _fetch_pair_observations(
                 len(short_of_latest),
                 sorted(short_of_latest),
             )
+    if years is not None:
+        pair_results = _in_years(pair_results, years)
     outcome = replace(
         pool_result,
         pair_results=pair_results,
@@ -1541,6 +1578,7 @@ def _build_observations(
     unit_request: IdentityUnitRequest | None = None,
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
     coverage: CoverageSnapshot,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Fetch a resolved query's observation preview from its read plan. Every path returns
     `SpecObservations`; omissions carry a reason code, which matches any accompanying
@@ -1569,7 +1607,20 @@ def _build_observations(
     (`_bulk_unit`), which narrow the plan to the elected native units when nothing needs
     converting.
     `coverage` supplies the index role-bearing materialisation reads.
+
+    `years`, where set, are the years the preview reads rows in (`read_plan.read_in_years`):
+    the plan keeps the facets it elected under its own years, and its series, pairs, counts
+    and limits read those years alone. A per-series read keeps only their points
+    (`_in_years`), and a bulk role read applies them once `_bulk_unit` has narrowed the plan
+    under its own years. A plan whose years hold none of them previews no series. None reads
+    the plan's own years.
     """
+    if years is not None and plan is not None:
+        in_years = read_in_years(plan, years)
+        if in_years is None:
+            return SpecObservations(series=[], total_obs=0, truncated=False), None
+        if isinstance(plan, PairPlan):
+            plan = in_years
     if not sv_dcids or not obs_entities:
         return (
             omitted_observations(
@@ -1639,6 +1690,7 @@ def _build_observations(
             elected=elected,
             member_constraints=member_constraints,
             deadline=deadline,
+            years=years,
         )
     if not isinstance(plan, PairPlan):
         # Every resolver that reads facets plans its read; an answer without a plan read none.
@@ -1683,4 +1735,5 @@ def _build_observations(
         elected=elected,
         coverage=coverage,
         member_constraints=member_constraints,
+        years=years,
     )

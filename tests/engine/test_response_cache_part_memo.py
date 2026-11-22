@@ -38,7 +38,6 @@ from search.models import (
     ResubmitIdentityPayload,
     Warning,
 )
-from search.observations import bound_preview_years
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import value_slot
@@ -157,13 +156,13 @@ def test_equal_inputs_built_independently_share_a_key():
     assert _key(_payload()) == _key(_payload())
 
 
-def test_a_resubmit_binds_the_preview_years_its_options_keep(monkeypatch):
-    """`EngineOptions.preview_years` is bound around the promote, so every preview it
-    assembles keeps those years (`observations.previewing_years`)."""
+def test_a_resubmit_passes_the_preview_years_its_options_name_to_the_promote(monkeypatch):
+    """`EngineOptions.preview_years` reaches the promote, whose preview reads rows in those
+    years (`fetch._build_observations`)."""
     bound: list[frozenset[int] | None] = []
 
-    def recording(*_args: object, **_kwargs: object) -> RegionResult:
-        bound.append(bound_preview_years())
+    def recording(*_args: object, preview_years: frozenset[int] | None, **_kwargs: object):
+        bound.append(preview_years)
         raise _Stopped
 
     monkeypatch.setattr(resubmit_module, "_resolve_standard_promote", recording)

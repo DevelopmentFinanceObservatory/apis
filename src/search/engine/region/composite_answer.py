@@ -7,11 +7,11 @@ read resolved previews nothing of the composite. Its preview reads each componen
 (`code_index.composites.component_identities`) with `resolve_spec_resubmit`, which elects
 its members as the mint does and scopes its reads to the provenance it binds, in worker threads
 that run together. Each component read embeds its preview
-(`include_observations`), its points kept in the years the component serves before the
-preview's limits cut (`scope.composite.component_preview`), and reads no slot or place
+(`include_observations`), elects under the component's own window and reads rows in the
+years the component serves (`scope.composite.component_preview`), and reads no slot or place
 options, and on a dataset_resubmit it goes through the part memo under its own key and
-those years. A component serving no year of the composite is not
-read. It reads through the request's catalogue narrowed to
+those years. A component previewing no year of the composite
+(`ServedComponent.preview_years`) is not read. It reads through the request's catalogue narrowed to
 its own pin alone (`ComponentReads.catalogue`), as the mint reads a component
 (`datasets_api.serve`), whatever source scope the part's own reads ran under. The previews are
 composed under the composite's rules (`scope.composite.compose_observations`).
@@ -203,7 +203,8 @@ async def read_composite_preview(
     composed from one read of each component serving a year, each posting `entity_groups`,
     the groups the composite's answer names, as a resubmit of that answer would, and the
     warnings those reads raised under `PREVIEW_WARNING_CODES`, in component order. A
-    component serving no year is not read and raises nothing.
+    component previewing no year (`ServedComponent.preview_years`) is not read and raises
+    nothing.
 
     The reads run together, each holding a permit of `semaphore` when one is given.
     Cancelling the caller cancels every read still running. A component whose read is lost
@@ -214,7 +215,7 @@ async def read_composite_preview(
     error of a read propagates and cancels the others."""
     # A Spec keys its groups by the role keys a resubmit posts them under.
     groups = cast("Mapping[EntityRoleKey, EntityGroup] | None", entity_groups)
-    read = [index for index, item in enumerate(served) if item.served]
+    read = [index for index, item in enumerate(served) if item.preview_years]
     tasks = [
         asyncio.create_task(
             _read_component(served[index], groups, reads=reads, semaphore=semaphore)
@@ -241,7 +242,7 @@ async def _read_component(
     semaphore: asyncio.Semaphore | None,
 ) -> tuple[SpecObservations | None, tuple[Warning, ...]]:
     """The preview `item`'s component answer embeds and its preview warnings
-    (`_resubmit_preview`), read under the identity and kept in the years
+    (`_resubmit_preview`), elected under the identity and read in the years
     `component_preview` names, or None and a warning naming the component's role when its
     read was lost (`_missing`)."""
     document, years = component_preview(item)
@@ -296,8 +297,9 @@ async def _resubmit_preview(
     `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
     Each role `populations` lists, the roles a component binds to a population
     (`ComponentIdentity.populations`), reads as open within it
-    (`ResubmitIdentityPayload.populations`). The preview keeps its points in `years`
-    before its limits cut (`EngineOptions.preview_years`), every point where None.
+    (`ResubmitIdentityPayload.populations`). The preview reads rows in `years`, its members
+    elected under `identity`'s own window (`EngineOptions.preview_years`), and in the
+    years its read plan elected under where None.
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
     by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost

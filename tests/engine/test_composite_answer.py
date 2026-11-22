@@ -639,8 +639,16 @@ def test_a_fresh_composite_answer_launches_none_of_its_table_s_trailing_tasks(mo
     assert isinstance(region.observations_relaunch, CompositeRelaunch)
 
 
-def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
-    """The imputed component serves no year here, and its read would fail: it is not read,
+@pytest.mark.parametrize(
+    "unread",
+    [
+        pytest.param({"served": frozenset()}, id="serves-no-year"),
+        # Under `latest` a component previews the elected year alone, which it does not serve.
+        pytest.param({"elected": 2030}, id="misses-the-elected-year"),
+    ],
+)
+def test_a_component_previewing_no_year_is_not_read_and_warns_nothing(monkeypatch, unread):
+    """The imputed component previews no year here, and its read would fail: it is not read,
     so the preview holds the bilateral series and the bilateral component's warning alone."""
     spec, components = _components(monkeypatch)
     components.failures["imputed"] = GraphInfraError("down")
@@ -648,7 +656,7 @@ def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
     served = [
         item
         if _provenance(BaseIdentity.model_validate(item.component.identity)) != provider._IMPUTED
-        else dataclasses.replace(item, served=frozenset())
+        else dataclasses.replace(item, **unread)
         for item in composite_served(spec.definition.identity, reads=reads)
     ]
 
@@ -729,12 +737,17 @@ def test_a_stacked_composite_under_latest_previews_the_year_it_elects_on_every_l
     assert _dates(observations) == {"bilateral": ["2020"], "imputed": ["2020"]}
 
 
+def _unperiodised(index: int = 0) -> Any:
+    """A stand-in component numbered `index` whose recipe holds every year."""
+    return SimpleNamespace(index=index, recipe=SimpleNamespace(periods=None))
+
+
 def test_a_component_serving_no_year_leaves_the_omission_to_those_that_serve_one():
     """One component serves 2020 and found no point in it; the other serves no year and has
     no read. The composite omits its preview for want of points."""
     serving, idle = (
         ServedComponent(
-            component=cast(Any, None), years=cast(Any, None), served=years, members=None
+            component=_unperiodised(), years=cast(Any, None), served=years, members=None
         )
         for years in (frozenset({2020}), frozenset[int]())
     )
@@ -751,7 +764,7 @@ def test_cancelling_the_composite_task_cancels_every_component_read(monkeypatch)
     spec, _ = _components(monkeypatch)
     served = [
         ServedComponent(
-            component=cast(Any, index),
+            component=_unperiodised(index),
             years=cast(Any, None),
             served=frozenset({2020}),
             members=None,
@@ -763,7 +776,7 @@ def test_cancelling_the_composite_task_cancels_every_component_read(monkeypatch)
     cancelled: list[int] = []
 
     async def read(item: ServedComponent, _groups: object, **_kwargs: object) -> object:
-        index = cast(int, item.component)
+        index = cast(Any, item.component).index
         started.append(index)
         try:
             await asyncio.Event().wait()

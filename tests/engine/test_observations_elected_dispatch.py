@@ -648,6 +648,7 @@ def test_relaunch_closure_forwards_unit_request_and_elected_to_conversion():
                     member_facts=None,
                     unit_request=unit_request,
                     elected=elected,
+                    years=None,
                 ),
                 graph=FakeGraph(),
                 sdmx=None,

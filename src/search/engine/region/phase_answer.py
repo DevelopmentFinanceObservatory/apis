@@ -821,6 +821,7 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
         member_facts=mat_result.member_facts,
         unit_request=state.unit_request,
         elected=state.unit_elected_selections,
+        years=None,
     )
 
     facet_bindings = _answer_facet_bindings(state, mat_result)
