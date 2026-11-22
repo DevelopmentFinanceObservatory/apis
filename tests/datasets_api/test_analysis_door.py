@@ -587,9 +587,11 @@ def test_an_answer_stored_after_a_run_keyed_answers_without_computing(
         reads, versions = roots.reads, stores.version_count()
         looks: list[bool] = []
 
-        def first_look_misses(prepared: Any, *, stores: Any) -> dict[str, Any] | None:
+        def first_look_misses(prepared: Any, **kwargs: Any) -> dict[str, Any] | None:
             looks.append(True)
-            return None if len(looks) == 1 else analysis.stored_answer(prepared, stores=stores)
+            if len(looks) == 1:
+                return None
+            return analysis.stored_answer(prepared, **kwargs)
 
         monkeypatch.setattr(analysis_door, "stored_answer", first_look_misses)
         again = client.post(_PATH, json={"tree": _TREE})
