@@ -710,13 +710,16 @@ def _materialise_components(
     (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
     `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
     it keep: a stacked composite keeps the rows in the years it serves for the frame's places
-    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. A run's
+    in `coverage_index` (`materialise.composite.stacked_years`), each component's read
+    before any run under its own pinned provenances, as its rows are. A run's
     origin findings are read only for a version not on record (`_component_findings`). A
     component no request names, a spliced one whose periods the window does not reach, is
     left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
     years are read from, and `DestinationUnclassifiedError` before any read when a component
     reads a population `coverage_index` holds a destination outside of, or cannot list the
-    recipients of (`code_index.composites.population_check`)."""
+    recipients of (`code_index.composites.population_check`). Composing raises
+    `materialise.errors.CompositeYearsStaleError` where a component's rows hold a year
+    `coverage_index` holds none of its series in for the frame's places."""
     if coverage_index is None:
         raise MaterialisationUsageError(
             "a composite reads its components' years from the coverage snapshot"
@@ -730,11 +733,15 @@ def _materialise_components(
             variables=unavailable.unlisted,
         )
     composite = cast("CompositeDeclaration", code_index.composite(ref))
-    covered = {
-        component.role: read_component_years(code_index, coverage_index, component)
-        for component in components
-    }
-    kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
+    covered = (
+        {
+            component.role: read_component_years(code_index, coverage_index, component)
+            for component in components
+        }
+        if composite.kind == "stacked"
+        else {}
+    )
+    kept = stacked_years(covered.values()) if covered else None
     results: list[ComponentResult] = []
     runs: list[_ComponentRun] = []
     remaining = ceiling
@@ -764,7 +771,7 @@ def _materialise_components(
                 recipe=component.recipe,
                 requests=part,
                 result=result,
-                years=covered[component.role],
+                years=covered.get(component.role),
             )
         )
     with phase("materialise"):

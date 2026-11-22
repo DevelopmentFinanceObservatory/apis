@@ -230,6 +230,28 @@ class MixedGrainError(MaterialisationError):
         super().__init__(detail, detail=detail)
 
 
+class CompositeYearsStaleError(MaterialisationError):
+    """500 `internal_error`. Raised when a stacked composite's component, one that reads a
+    missing row as unknown, returns rows in years the coverage snapshot holds no series of
+    its family in under the frame's places (`materialise.composite.ComponentYears.held`).
+    The composite's years were read from that snapshot, so the snapshot and the rows have
+    drifted apart, and serving the years it states would drop rows with no trace. `role` is
+    the component's role and `years` the years its rows hold that the snapshot lacks,
+    sorted."""
+
+    code = "internal_error"
+    status = 500
+
+    def __init__(self, *, role: str, years: Sequence[int]) -> None:
+        self.role = role
+        self.years = tuple(sorted(years))
+        detail = (
+            f"the {role} component's rows hold {list(self.years)!r}, years the coverage "
+            "snapshot holds none of its series in for these places"
+        )
+        super().__init__(detail, detail=detail)
+
+
 class UpstreamVersionChangedError(MaterialisationError):
     """503 `upstream_version_changed`, retryable. Raised when two generations disagree."""
 

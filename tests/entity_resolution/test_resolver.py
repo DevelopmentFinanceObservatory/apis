@@ -720,6 +720,12 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
         ("G-7 countries", "G7", "entity"),
         ("DAC donor countries", "OECD Development Assistance Committee", "entity"),
         ("G20 creditors", "G20", "entity"),
+        ("low-income countries (LICs)", "Low income", "entity"),
+        ("countries in the G7", "G7", "entity"),
+        ("members of the G7", "G7", "entity"),
+        ("all G20 countries", "G20", "entity"),
+        ("European Union (EU)", "European Union", "entity"),
+        ("OECD DAC donors", "OECD Development Assistance Committee", "entity"),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(
@@ -746,7 +752,10 @@ def test_group_phrase_recovers_the_bare_groups_membership(
     assert result.reading == reading
 
 
-@pytest.mark.parametrize("text", ["developing countries (DAC)", "African countries (G20)"])
+@pytest.mark.parametrize(
+    "text",
+    ["developing countries (DAC)", "African countries (G20)", "G7 countries (excluding Canada)"],
+)
 def test_a_phrase_wider_than_its_group_span_does_not_resolve_to_the_group(
     shared_resolver, text: str
 ):

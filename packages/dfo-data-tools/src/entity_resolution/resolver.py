@@ -245,18 +245,76 @@ def _listed(text: str, survivors: Sequence[tuple[CandidateSummary, MatchedAs]]) 
 _GROUP_CODE_HYPHEN_RE = re.compile(r"(?<=[a-z])-(?=\d)")
 _POSSESSIVE_RE = re.compile(r"['\u2019]s\b")
 _NON_WORD_RE = re.compile(r"[^\w]+")
+_PAREN_RE = re.compile(r"\(([^()]*)\)")
 _FILLER_WORDS = frozenset(
-    {"the", "a", "an", "member", "members", "countries", "states", "nations", "economies"}
-    | {"donor", "donors", "creditor", "creditors", "lender", "lenders", "group"}
+    {"the", "a", "an", "all", "of", "in", "member", "members", "countries", "states"}
+    | {"nations", "economies", "donor", "donors", "creditor", "creditors", "lender", "lenders"}
+    | {"group"}
 )
 
 
-def _span_words(text: str) -> tuple[str, ...]:
-    """The words of `text` that identify a group: casefolded, without articles, possessives,
-    punctuation, member nouns, or the hyphen in a group code (`G-7` reads `g7`)."""
+def _words(text: str) -> tuple[str, ...]:
+    """The words of `text`: casefolded, without possessives or punctuation, and without the
+    hyphen in a group code (`G-7` reads `g7`)."""
     folded = _POSSESSIVE_RE.sub("", text.casefold())
     folded = _GROUP_CODE_HYPHEN_RE.sub("", folded)
-    return tuple(word for word in _NON_WORD_RE.split(folded) if word and word not in _FILLER_WORDS)
+    return tuple(word for word in _NON_WORD_RE.split(folded) if word)
+
+
+def _leftover_words(phrase: str, span: str) -> list[str]:
+    """The words of `phrase` that `span` does not cover, each span word removed once."""
+    leftover = list(_words(phrase))
+    for word in _words(span):
+        if word in leftover:
+            leftover.remove(word)
+    return leftover
+
+
+def _own_words(resolver: Resolver, entity_id: str) -> frozenset[str]:
+    """The words of every name and alias the resolver holds for `entity_id`."""
+    record = resolver.entity(entity_id)
+    if record is None:
+        return frozenset()
+    names = [record.canonical_name, *(name.value for name in record.names)]
+    return frozenset(word for name in names for word in _words(name))
+
+
+def _names_same_group(
+    resolver: Resolver, token: str, context: ResolutionContext, entity_id: str
+) -> bool:
+    """Whether `token` alone resolves to `entity_id`: its top candidate by confidence, since an
+    acronym such as `LICs` is no listed name of its group."""
+    result = resolver.resolve(token, as_result=True, context=context, include_entity=True)
+    if not result.candidates:
+        return False
+    top = max(result.candidates, key=lambda c: c.confidence if c.confidence is not None else 0.0)
+    return top.entity_id == entity_id
+
+
+def _span_covers_phrase(
+    resolver: Resolver,
+    phrase: str,
+    span: str,
+    entity_id: str,
+    context: ResolutionContext,
+) -> bool:
+    """Whether the words `span` leaves of `phrase` add no qualifier.
+
+    Each leftover word must be a filler word, a word of the group's own names, or the one
+    parenthesised token that alone resolves to the same group: `low-income countries (LICs)`
+    and `European Union (EU)` pass, `developing countries (DAC)` and `G7 countries
+    (excluding Canada)` fail."""
+    leftover = _leftover_words(phrase, span)
+    parens = _PAREN_RE.findall(phrase)
+    if (
+        len(parens) == 1
+        and len(token := _words(parens[0])) == 1
+        and token[0] in leftover
+        and _names_same_group(resolver, parens[0].strip(), context, entity_id)
+    ):
+        leftover.remove(token[0])
+    allowed = _FILLER_WORDS | _own_words(resolver, entity_id)
+    return all(word in allowed for word in leftover)
 
 
 def _parse_group_survivors(
@@ -272,14 +330,15 @@ def _parse_group_survivors(
     such as `EU countries` and `EU member states`. `DAC members` parses as `geo.region` and fails
     the group-type check.
 
-    A span covers the phrase only when `_span_words` of both agree, so `developing countries
-    (DAC)` does not resolve to the DAC group through its `DAC` span."""
-    phrase_words = _span_words(text)
+    A span covers the phrase when `_span_covers_phrase` accepts the words it leaves over, so
+    `developing countries (DAC)` does not resolve to the DAC group through its `DAC` span."""
     for entity in resolver.parse(text, context=context).entities:
-        if entity.entity_type not in group_types or _span_words(entity.surface) != phrase_words:
+        if entity.entity_type not in group_types:
             continue
         survivors = filter_listed_candidates(resolver, entity.surface, entity.resolution.candidates)
-        if survivors and survivors[0][0].entity_type in group_types:
+        if not survivors or survivors[0][0].entity_type not in group_types:
+            continue
+        if _span_covers_phrase(resolver, text, entity.surface, survivors[0][0].entity_id, context):
             return _listed(entity.surface, survivors)
     return ()
 

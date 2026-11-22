@@ -84,15 +84,12 @@ from search.models import (
 from search.observations import composite_facet_ref, provenance_refs
 from search.render.labels import join_labels
 from search.scope.tables import ScopeFacts
-from series_coverage.coverage_types import BoundRoles, Role
+from series_coverage.coverage_types import AXIS_COVERAGE_ROLES, BoundRoles, Role
 from series_coverage.coverage_types import Headline as CoverageHeadline
 from series_coverage.index import CoverageIndex, elected_year
 from series_coverage.schema import ABSENT_ENTITY
 
 logger = logging.getLogger(__name__)
-
-_ROLES: Mapping[str, Role] = {"origin": "donor", "destination": "recipient"}
-"""The coverage role each flow role of an identity's entities reads."""
 
 _NO_POINTS: ObservationsOmissionReason = "observations_no_points"
 """The omission of a composite whose components read and found no point in their years."""
@@ -234,7 +231,8 @@ def served_components(
     """Each component of composite `identity` with the years it serves, as the mint composes
     them (`materialise.composite`). A stacked composite's years are those the mint keeps
     (`stacked_years`): every component's table covers them, and every component that reads a
-    missing row as unknown holds a series in them under its places. In them, a component
+    missing row as unknown holds a series in them under some of its places, each read under
+    the provenances its identity pins. In them, a component
     serves the years it holds a series in, and a zero-filling one
     (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
     rows fill the cells it lacks. A spliced component serves the years
@@ -476,7 +474,10 @@ class CompositeMint:
         if held is None:
             return None
         return party_split(
-            held[_ROLES[axis]], axis=axis, parties=self.facts.index.parties, datasets=self._datasets
+            held[AXIS_COVERAGE_ROLES[axis]],
+            axis=axis,
+            parties=self.facts.index.parties,
+            datasets=self._datasets,
         )
 
     @cached_property

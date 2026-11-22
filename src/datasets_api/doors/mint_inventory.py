@@ -49,6 +49,7 @@ from dc_sdmx import (
 from dfo_platform.problem import Refusal
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
+    CompositeYearsStaleError,
     DatasetDisagreementError,
     DefaultFacetUndefinedError,
     DestinationUnclassifiedError,
@@ -114,6 +115,7 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     MembersNotHeldError,
     DatasetDisagreementError,
     DestinationUnclassifiedError,
+    CompositeYearsStaleError,
     FrameError,
     CollectionProbeCeilingExceededError,
     ExcelLimitError,
@@ -207,6 +209,7 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     MembersNotHeldError(stat_vars=("exemplar",)),
     DatasetDisagreementError("exemplar", dataset="provenance/Exemplar", stat_var="dcid:exemplar"),
     DestinationUnclassifiedError(destinations=("Exemplar",), dataset="provenance/Exemplar"),
+    CompositeYearsStaleError(role="bilateral", years=(2020,)),
     FrameError("exemplar", "exemplar"),
     CollectionProbeCeilingExceededError("exemplar"),
     ExcelLimitError("exemplar"),

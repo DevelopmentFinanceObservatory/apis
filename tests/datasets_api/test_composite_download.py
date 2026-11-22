@@ -8,16 +8,18 @@ them."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import httpx
 import pytest
 
+from code_index.composites import component_identities
 from code_index.declarations import COMPOSITES, CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api.config import DatasetsBuildSettings
+from materialise import composite as composite_module
 from search.models import BaseIdentity
-from search.scope.composite import composite_download, served_components
+from search.scope.composite import ServedComponent, composite_download, served_components
 from search.scope.tables import ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -258,37 +260,37 @@ def test_the_snapshot_settles_a_component_s_years_only_while_it_holds_every_memb
 
 
 _OTHER_DONOR = "country/DEU"
+_BILATERAL_206 = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+
+type _SnapshotRow = tuple[str, str, str, str, list[int]]
 
 
-def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_s_keys():
-    """Another donor's imputed line starts in 2018, so the imputed table covers 2018, while
-    France's to Kenya starts in 2020. A composite of France to Kenya serves 2020 and 2021,
-    the years both lines hold for its keys: Search states them, and the mint keeps them and
-    drops total ODA's 2018 and 2019."""
-    bilateral = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
-    populated: _Populated = {
-        bilateral: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
-        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021, 2022)),
-    }
+def _rows_of(populated: _Populated) -> list[_SnapshotRow]:
+    """The snapshot rows of France to Kenya `populated` holds."""
+    return [
+        (dcid, facet, _PROVIDER, _RECIPIENT, list(years))
+        for dcid, (facet, _value, years) in populated.items()
+    ]
+
+
+def _dac2a_case(
+    populated: _Populated, snapshot: Sequence[_SnapshotRow]
+) -> tuple[httpx.Response, list[ServedComponent]]:
+    """France's DAC2a ODA to Kenya including imputed ODA, minted from SDMX rows `populated`
+    holds over a coverage snapshot of `snapshot`, and Search's served components over the
+    same snapshot."""
     coverage = FakeCoverageService(
         build_coverage_index(
-            [
-                *(
-                    (dcid, facet, _PROVIDER, _RECIPIENT, list(years))
-                    for dcid, (facet, _value, years) in populated.items()
-                ),
-                (_DAC2A_IMPUTED, _DAC2A_FACET, _OTHER_DONOR, _RECIPIENT, [2018, 2019]),
-            ],
+            list(snapshot),
             role_names={
                 dcid: RoleNames(donor="financingProvider", recipient="financingRecipient")
-                for dcid in populated
+                for dcid, *_rest in snapshot
             },
             facet_metadata={
-                _DAC2A_FACET: FacetMetadata(
-                    provenance_id=_PROVENANCE[_DAC2A_FACET],
-                    measurement_method="GrantEquivalent",
-                    unit="USD",
+                facet: FacetMetadata(
+                    provenance_id=provenance, measurement_method="GrantEquivalent", unit="USD"
                 )
+                for facet, provenance in _PROVENANCE.items()
             },
         )
     )
@@ -301,9 +303,26 @@ def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_
     )
     identity = _dac2a_oda_identity("Net")
     facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
+    return _mint(client, identity=identity), served_components(identity, facts=facts)
 
-    minted = _mint(client, identity=identity)
-    served = served_components(identity, facts=facts)
+
+def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_s_keys():
+    """Another donor's imputed line starts in 2018, so the imputed table covers 2018, while
+    France's to Kenya starts in 2020. A composite of France to Kenya serves 2020 and 2021,
+    the years both lines hold for its keys: Search states them, and the mint keeps them and
+    drops total ODA's 2018 and 2019."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021, 2022)),
+    }
+
+    minted, served = _dac2a_case(
+        populated,
+        [
+            *_rows_of(populated),
+            (_DAC2A_IMPUTED, _DAC2A_FACET, _OTHER_DONOR, _RECIPIENT, [2018, 2019]),
+        ],
+    )
 
     assert minted.status_code == 200, minted.text
     manifest = minted.json()
@@ -316,3 +335,84 @@ def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_
         "bilateral": frozenset({2020, 2021}),
         "imputed": frozenset({2020, 2021}),
     }
+
+
+def test_a_component_s_held_years_read_only_the_provenance_it_pins():
+    """DAC2a's imputed line from France to Kenya holds 2018 and 2019 only under the CRS's
+    provenance, which the imputed component's DAC2a pin does not read. The composite serves
+    2020 and 2021, the years the line holds under DAC2a, so the mint drops total ODA's 2018
+    and 2019 in place of serving them alone, and Search states the same years."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+
+    minted, served = _dac2a_case(
+        populated,
+        [*_rows_of(populated), (_DAC2A_IMPUTED, _CRS_FACET, _PROVIDER, _RECIPIENT, [2018, 2019])],
+    )
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    by_role = {entry["role"]: entry for entry in manifest["trace"]["components"]}
+    assert by_role["bilateral"]["dropped_years"] == [2018, 2019]
+    assert by_role["bilateral"]["periods"] == [[2020, 2021]]
+    assert {item.component.role: item.served for item in served} == {
+        "bilateral": frozenset({2020, 2021}),
+        "imputed": frozenset({2020, 2021}),
+    }
+
+
+def test_a_snapshot_behind_a_component_s_rows_refuses_the_mint():
+    """SDMX serves total ODA from France to Kenya in 2020 and 2021, while the coverage
+    snapshot holds it in 2020 alone. Serving the snapshot's years would drop 2021's rows with
+    no trace, so the mint refuses as a server fault."""
+    populated: _Populated = {
+        _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
+    }
+
+    minted, _served = _dac2a_case(
+        populated,
+        [
+            (_BILATERAL_206, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020]),
+            (_DAC2A_IMPUTED, _DAC2A_FACET, _PROVIDER, _RECIPIENT, [2020, 2021]),
+        ],
+    )
+
+    assert minted.status_code == 500, minted.text
+    assert minted.json()["code"] == "internal_error"
+
+
+def test_the_mint_reads_held_years_only_for_a_stacked_component_that_reads_gaps_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The CRS composite's imputed line zero-fills, so only the bilateral line's held years
+    are read, and the spliced OECD headline reads no component's years."""
+    read: list[Mapping[str, object]] = []
+    real = composite_module.held_years
+
+    def recording(index, coverage, identity):
+        read.append(identity)
+        return real(index, coverage, identity)
+
+    monkeypatch.setattr(composite_module, "held_years", recording)
+    cases = [
+        (_identity(), _stacked_crs()),
+        (_headline_identity(), _spliced_headline()),
+    ]
+    for identity, populated in cases:
+        client = _client(
+            graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
+            sdmx_transport=httpx.MockTransport(
+                lambda request, populated=populated: _sdmx_response(populated, request)
+            ),
+            coverage=_coverage(populated),
+            artifact_store=FakeArtifactStore(),
+            settings=DatasetsBuildSettings.from_env(),
+        )
+        assert _mint(client, identity=identity).status_code == 200
+
+    components = component_identities(get_index(), _identity())
+    assert components is not None
+    assert read == [c.identity for c in components if c.role == "bilateral"]

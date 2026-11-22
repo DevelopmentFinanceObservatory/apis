@@ -25,11 +25,16 @@ from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
 from materialise import composite as composite_module
-from materialise.composite import ComponentResult, ComponentYears, compose_components
+from materialise.composite import (
+    ComponentResult,
+    ComponentYears,
+    compose_components,
+    stacked_years,
+)
 from materialise.content_version import mint_version_from_chunks
 from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
-from materialise.errors import MaterialisationUsageError
+from materialise.errors import CompositeYearsStaleError, MaterialisationUsageError
 from materialise.finish import _coverage_below_scope_warning
 from materialise.frame_build import build_frame
 from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
@@ -76,13 +81,14 @@ def _component(
     unserved: Sequence[str] = (),
     units: Mapping[str, object] | None = None,
     covered: Sequence[int] | None = None,
+    held: Sequence[int] | None = None,
     imported_data: str | None = None,
 ) -> ComponentResult:
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
     `unserved` the members its facet group election left out and its warning counting them.
     Each row's unit is its recipient's in `units`, USD when `units` is None. Its table covers
-    `covered`, the years of `rows` when None, and it holds the years of `rows` under its
-    places."""
+    `covered`, the years of `rows` when None, and, unless it zero-fills, it holds `held`
+    under its places, the years of `rows` when None."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -181,16 +187,15 @@ def _component(
         ),
     )
     recipe = _recipe(composite, role)
-    held = frozenset(year for _, _, year, _ in rows)
+    row_years = frozenset(year for _, _, year, _ in rows)
     return ComponentResult(
         role=role,
         recipe=recipe,
         requests=requests,
         result=result,
         years=ComponentYears(
-            zero_absent=recipe.zero_absent,
-            table=held if covered is None else frozenset(covered),
-            held=held,
+            table=row_years if covered is None else frozenset(covered),
+            held=(None if recipe.zero_absent else row_years if held is None else frozenset(held)),
         ),
     )
 
@@ -256,6 +261,69 @@ def test_a_leading_missing_year_drops_the_years_one_component_does_not_cover():
     warning = next(w for w in result.warnings if w["code"] == "coverage_below_scope")
     assert warning["requested_years"] == {"start": 2009, "end": 2012}
     assert warning["served_years"] == {"start": 2011, "end": 2012}
+
+
+@pytest.mark.parametrize(
+    ("components", "served"),
+    [
+        pytest.param(
+            [
+                ComponentYears(table=frozenset({2010, 2011, 2012}), held=frozenset({2011, 2012})),
+                ComponentYears(table=frozenset({2010, 2011}), held=None),
+            ],
+            frozenset({2011}),
+            id="zero-filling-bounds-by-its-table",
+        ),
+        pytest.param(
+            [
+                ComponentYears(table=frozenset({2010, 2011}), held=frozenset()),
+                ComponentYears(table=frozenset({2010, 2011}), held=None),
+            ],
+            frozenset(),
+            id="nothing-held-under-the-keys",
+        ),
+    ],
+)
+def test_stacked_years_reads_held_years_only_where_a_missing_row_is_unknown(
+    components: list[ComponentYears], served: frozenset[int]
+):
+    """A zero-filling component's years are its table's, while a component holding no
+    series under the frame's keys leaves the composite no year to serve."""
+    assert stacked_years(components) == served
+
+
+@pytest.mark.parametrize(
+    "held", [pytest.param((2011,), id="one-year"), pytest.param((), id="none")]
+)
+def test_rows_in_a_year_the_snapshot_holds_no_series_in_refuse_the_composite(
+    held: tuple[int, ...],
+):
+    """The bilateral rows hold 2012, a year the coverage snapshot holds no bilateral series
+    in for the frame's places, so the snapshot the composite's years came from is behind the
+    rows, and composing refuses where it would drop them."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", year, 10.0) for year in (2011, 2012)],
+        provenance=_CRS,
+        members=[_B],
+        held=held,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", year, 1.0) for year in (2011, 2012)],
+        provenance=_IMPUTED,
+        members=[_I],
+    )
+
+    with pytest.raises(CompositeYearsStaleError) as refused:
+        _compose([bilateral, imputed])
+
+    assert (refused.value.role, refused.value.years) == (
+        "bilateral",
+        tuple(year for year in (2011, 2012) if year not in held),
+    )
 
 
 def test_an_internal_gap_leaves_the_year_out_of_every_component():
