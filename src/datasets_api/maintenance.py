@@ -301,9 +301,9 @@ nothing. An id that is not a share id gets one `presentation_share_take_down_ref
 line and exits 1 without opening the store. It reads the Presentation store's runtime database
 settings.
 
-`render-ahead` runs by hand after a deploy or a graph release that changes the code index or
-`versions.RENDER_FORMAT`, either of which leaves every recorded groupby sum and party-totals cut
-behind (`render_ahead`). No deploy step runs it. For each dataset whose links an analysis root read
+`render-ahead` runs daily from the maintenance Job's schedule, and by hand after a deploy or a
+graph release that changes the code index or `versions.RENDER_FORMAT`, either of which leaves
+every recorded groupby sum and party-totals cut behind (`render_ahead`). For each dataset whose links an analysis root read
 within `DATASETS_RENDER_AHEAD_READ_WINDOW_SECONDS`, read latest first, it renders from the
 dataset's head the renderings read in that window that the head does not record under the
 serving stamp, at most `DATASETS_RENDER_AHEAD_PER_HEAD` per dataset and
@@ -311,11 +311,11 @@ serving stamp, at most `DATASETS_RENDER_AHEAD_PER_HEAD` per dataset and
 `datasets_render_ahead_run` line with the counts and exits 1 when a render failed or the store
 is unreachable. A second run renders nothing. A dataset whose head moves during the run is
 passed over. It builds the worker's dependencies (`operations.worker_app`), so it runs only
-where the worker's settings are set: `DFO_PUBLIC_SITE_URL`, `DATASETS_GRAPH_BASE_URL`,
-`DATASETS_SDMX_BASE_URL`, `UN_GRAPH_BASE_URL`, the graph generation service, the served graph
-release, `COVERAGE_ARTIFACT_URI` and `ORIGIN_CATALOGUE_URI` beside the buckets and the
-database. The maintenance Job sets the buckets and the database alone and has 2 GiB, against
-the worker's 4 GiB, so it cannot run the task until it carries the rest.
+where the worker's rendering settings are set: `DFO_PUBLIC_SITE_URL` and
+`DFO_SITE_DATASET_LINKS`, which enter every rendition token, `DATASETS_GRAPH_BASE_URL`,
+`DATASETS_SDMX_BASE_URL`, `UN_GRAPH_BASE_URL`, the served graph release and
+`ORIGIN_CATALOGUE_URI`, beside the buckets and the database. The maintenance Job carries them
+and the worker's 4 GiB.
 
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`. `remint-card-descriptions` and
