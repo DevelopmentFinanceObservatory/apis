@@ -33,8 +33,10 @@ places at one level.
 A request root that states no `groupby`, under a step other than `filter`, and whose
 version's frame holds more than one StatVar with data (`description_record.summed_refs`) is
 read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
-`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, so its
-record, the recipe's normal form and the format 2 ref state the sum. When the sum refuses
+`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, and
+`codes`, the code dcids the filters over it keep on each axis `by` keeps, when they keep some
+(`analysis.PlannedRoot`), so its record, the recipe's normal form and the format 2 ref state the
+sum. When the sum refuses
 `rollup_not_summable`, inline or as a queued rebuild that failed with that code, the root is
 read unsummed, records the refusal (`ResolvedRoot.sum_refused`) and logs one
 `datasets_analysis_root_sum_refused` line. A root whose groupby summed StatVars names them
@@ -273,7 +275,11 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
 
 
 def implied_groupby(
-    stat_vars: Sequence[str], *, path_words: frozenset[str], code_index: CodeIndex
+    stat_vars: Sequence[str],
+    *,
+    path_words: frozenset[str],
+    code_index: CodeIndex,
+    codes: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any] | None:
     """The `groupby` a root read with no stated one is read with, from the StatVars with data
     in its version, `stat_vars` as bare dcids (`LiveRootSource._contributing`), and the words
@@ -282,7 +288,12 @@ def implied_groupby(
     decode (`code_index` declarations) that the words name, as the axis or as its
     `stat_var_<axis>` column, sorted as `mint_options` sorts a stated `by`: the groupby a
     caller following the refusal's summed read states. The datasets door sums every other
-    summable axis away, and `stat_var` with them (conformance C120)."""
+    summable axis away, and `stat_var` with them (conformance C120).
+
+    `codes`, the code dcids the filters over the root keep on each axis
+    (`analysis.PlannedRoot`), becomes the groupby's `codes` on each axis `by` keeps, sorted and
+    each once as `GroupbyOptions` holds them, so the sum reads only the StatVars whose rows
+    those filters keep (conformance C120b); a groupby keeping none of their axes has none."""
     if STAT_VAR_WORD in path_words:
         return None
     if len(stat_vars) < 2:
@@ -293,7 +304,11 @@ def implied_groupby(
         if (row := code_index.statvar_by_dcid(dcid)) is not None:
             axes.update(summable.intersection(row.constraint_properties))
     named = {word.removeprefix(STAT_VAR_PREFIX) for word in path_words} & axes
-    return {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
+    groupby: dict[str, Any] = {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
+    selected = {axis: sorted(set(kept)) for axis, kept in (codes or {}).items() if axis in named}
+    if selected:
+        groupby["codes"] = dict(sorted(selected.items()))
+    return groupby
 
 
 def _sum_refused(refused: RollupNotSummableError) -> dict[str, str]:
@@ -605,6 +620,7 @@ class LiveRootSource:
         latest: bool,
         trace_id: str | None,
         path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         deps = self._deps
         if (
@@ -617,8 +633,8 @@ class LiveRootSource:
                 reason="no such version is stored",
             )
         if isinstance(root, SpecRoot) or latest:
-            return self._newest(root, path_words=path_words, trace_id=trace_id)
-        return self._at_version(root, path_words=path_words, trace_id=trace_id)
+            return self._newest(root, path_words=path_words, codes=codes, trace_id=trace_id)
+        return self._at_version(root, path_words=path_words, codes=codes, trace_id=trace_id)
 
     def _at_version(
         self,
@@ -627,6 +643,7 @@ class LiveRootSource:
         path_words: frozenset[str] | None,
         trace_id: str | None,
         revoked_under: Sequence[str] = (),
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """The version `root` names, read in the rendering it names, summed as the planner
         implies (`_implied`) from the version's trace. A sum the door refuses reads the
@@ -648,7 +665,9 @@ class LiveRootSource:
         groupby = (
             None
             if path_words is None
-            else self._implied(spec_id, content_version, stored.trace, path_words=path_words)
+            else self._implied(
+                spec_id, content_version, stored.trace, path_words=path_words, codes=codes
+            )
         )
         if (groupby is not None or "groupby" in options) and (
             base := self._cut_base(spec_id, content_version)
@@ -659,6 +678,7 @@ class LiveRootSource:
                 path_words=path_words,
                 trace_id=trace_id,
                 revoked_under=revoked_under,
+                codes=codes,
             )
         read = partial(self._stored, root, stored, trace_id=trace_id, revoked_under=revoked_under)
         if groupby is None:
@@ -687,16 +707,18 @@ class LiveRootSource:
         trace: Mapping[str, Any],
         *,
         path_words: frozenset[str] | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> dict[str, Any] | None:
         """The groupby the planner implies for a root of the version `content_version`, whose
-        trace is `trace`, read under `path_words` (`implied_groupby`), or `None` for a root it
-        implies none for."""
+        trace is `trace`, read under `path_words` with the selection `codes`
+        (`implied_groupby`), or `None` for a root it implies none for."""
         if path_words is None:
             return None
         return implied_groupby(
             self._contributing(spec_id, content_version, trace),
             path_words=path_words,
             code_index=self._deps.code_index,
+            codes=codes,
         )
 
     def _contributing(
@@ -764,6 +786,7 @@ class LiveRootSource:
         *,
         path_words: frozenset[str] | None,
         trace_id: str | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
         """`root` read at its dataset's newest version, in the rendering it names, summed as
         the planner implies (`_implied`).
@@ -776,7 +799,7 @@ class LiveRootSource:
         served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
         read = self._first_read(served.spec_id)
         newest = self._serve_newest(
-            served, root, path_words=path_words, trace_id=trace_id, read=read
+            served, root, path_words=path_words, codes=codes, trace_id=trace_id, read=read
         )
         if newest is not None:
             return newest
@@ -789,7 +812,11 @@ class LiveRootSource:
             rendering=root.rendering,
         )
         return self._at_version(
-            version, path_words=path_words, trace_id=trace_id, revoked_under=(root.spec_id,)
+            version,
+            path_words=path_words,
+            codes=codes,
+            trace_id=trace_id,
+            revoked_under=(root.spec_id,),
         )
 
     def _serve_newest(
@@ -800,6 +827,7 @@ class LiveRootSource:
         path_words: frozenset[str] | None,
         trace_id: str | None,
         read: str | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot | None:
         """A root of `served` read at its newest version, served in the one rendering it
         reads: summed as the planner implies from the stored head's version and trace
@@ -814,7 +842,9 @@ class LiveRootSource:
         requested = mint_options(root.rendering)
         head = self._head_version(served.spec_id, posted=root.spec_id, path_words=path_words)
         groupby = (
-            None if head is None else self._implied(served.spec_id, *head, path_words=path_words)
+            None
+            if head is None
+            else self._implied(served.spec_id, *head, path_words=path_words, codes=codes)
         )
         served_manifest: tuple[Manifest, str | None] | None = None
         sum_refused: dict[str, str] | None = None
@@ -863,6 +893,7 @@ class LiveRootSource:
                 base or self._base_version(served.spec_id, manifest.content_version),
                 manifest.trace,
                 path_words=path_words,
+                codes=codes,
             )
             != groupby
         ):
