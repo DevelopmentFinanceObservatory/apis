@@ -3237,16 +3237,26 @@ _FRANCE_SHAPED_DESTINATIONS = (
 
 
 @pytest.mark.parametrize(
-    ("source", "recipients", "rows", "series"),
+    ("source", "recipients", "words", "rows", "series"),
     [
-        # Total ODA counts every destination but the two totals.
-        pytest.param(None, 5, 42, 7, id="contributions"),
+        # Total ODA counts every destination but the two totals. The sentence names the
+        # parties apart from the unallocated amounts.
+        pytest.param(
+            None, 5, "to 3 recipients and 2 unallocated amounts", 42, 7, id="contributions"
+        ),
         # The bilateral destinations alone: the two countries and the unallocated line.
-        pytest.param(_DAC2A_BILATERAL, 3, 18, 3, id="bilateral"),
+        pytest.param(
+            _DAC2A_BILATERAL,
+            3,
+            "to 2 recipients and 1 unallocated amount",
+            18,
+            3,
+            id="bilateral",
+        ),
     ],
 )
 def test_a_dac2a_bilateral_answer_counts_the_recipients_its_file_holds(
-    monkeypatch, source: str | None, recipients: int, rows: int, series: int
+    monkeypatch, source: str | None, recipients: int, words: str, rows: int, series: int
 ):
     """An open-destination DAC2a answer read to its bilateral destinations counts, in its
     sentence, its destination fact and its download estimate, the recipients and rows the
@@ -3276,7 +3286,7 @@ def test_a_dac2a_bilateral_answer_counts_the_recipients_its_file_holds(
     assert [(f.role, f.member_count) for f in resolved.role_axis_facts or ()] == [
         ("destination", recipients)
     ]
-    assert f"to {recipients} recipients" in (resolved.rendered_sentence or "")
+    assert words in (resolved.rendered_sentence or "")
     assert resolved.download is not None
     assert (resolved.download.rows, resolved.download.series) == (rows, series)
     # The bilateral reading cites DAC2a as total ODA does, by its declared label.

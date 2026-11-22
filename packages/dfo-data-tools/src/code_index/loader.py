@@ -21,10 +21,12 @@ from code_index.types import (
     CodeRow,
     CodeSystemDeclaration,
     CompositeDeclaration,
+    CompositeRead,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
     ImpliedValue,
+    IndexFormatError,
     IndexStamp,
     MeasureAxis,
     MeasureClassDeclaration,
@@ -44,7 +46,9 @@ from code_index.types import (
     WholeMarker,
     WholeTotalSet,
     YearPeriod,
+    composite_read,
     covered_class,
+    declared_composite_reads,
     invalid_when_named_entry,
     marked_datasets,
 )
@@ -56,8 +60,23 @@ _HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefa
 _LEGACY_PARTY_KEYS = frozenset({"datasets", "axes"})
 
 
-class IndexFormatError(ValueError):
-    """A `CodeIndex` export has a missing required key or a value of the wrong type."""
+class ServedCompositeUndeclared(IndexFormatError):
+    """A composite the index serves that party reads take otherwise: `served` is the
+    `CompositeRead` of the served declaration's components (`composite_read`), and `read` the
+    one `code_index.composites.DECLARED_COMPOSITES` gives its provenance, or `None` where it
+    declares none. A party cell on its rows would read other tables, or a whole marker under
+    another destination binding, than the rows it is served from."""
+
+    def __init__(
+        self, *, provenance: str, served: CompositeRead, read: CompositeRead | None
+    ) -> None:
+        super().__init__(
+            f"composite {provenance!r} is served as {served!r}, but party reads take it as "
+            f"{'itself' if read is None else repr(read)}"
+        )
+        self.provenance = provenance
+        self.served = served
+        self.read = read
 
 
 class ContentHashMismatch(IndexFormatError):
@@ -218,6 +237,7 @@ def _check_composites(
         tables = {recipe.dataset for recipe in composite.components}
         if not tables <= declared:
             continue
+        _check_declared_read(composite)
         if composite.kind == "stacked":
             signatures = {frozenset(role_sets.get(table, set())) for table in sorted(tables)}
             if len(signatures) > 1:
@@ -227,6 +247,17 @@ def _check_composites(
                 )
         served.append(composite)
     return tuple(served)
+
+
+def _check_declared_read(composite: CompositeDeclaration) -> None:
+    """Raise `ServedCompositeUndeclared` for a served composite whose component tables, marker
+    table or bound destination total differ from those a `PartyRow` reads its provenance by
+    (`declared_composite_reads`), or that declares none, so a party cell on its rows reads the
+    tables and destination binding the index serves it from."""
+    served = composite_read(composite)
+    read = declared_composite_reads().get(composite.provenance)
+    if read != served:
+        raise ServedCompositeUndeclared(provenance=composite.provenance, served=served, read=read)
 
 
 def _check_composite_declaration(composite: CompositeDeclaration, declared: set[str]) -> None:

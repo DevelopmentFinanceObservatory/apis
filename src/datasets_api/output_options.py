@@ -113,9 +113,11 @@ def movable_totals_roles(
     document's `long_layout_totals` and the render's split (`render._TotalRows`) both read this
     function, so a render drops rows only on a role the options document names.
 
-    A role bound to several entities qualifies when one of them is a total in one of `datasets` that
-    publishes it on the role's axis (`PartyRow.kinds_over` over `parties`). An open role qualifies
-    when `parties` lists a party that one of `datasets` publishes on its axis and that is a total in
+    A role bound to several entities qualifies when one of them is a total on the role's axis
+    as the kind cell reads it (`PartyRow.kinds_over` over `parties`). A party with one kind is
+    a total wherever some dataset publishes it there, and a party with a kind per dataset only
+    in one of `datasets` that publishes it there, so the split and the kind cell agree. An open
+    role qualifies when `parties` lists a party that one of `datasets` publishes on its axis and that is a total in
     one of them there (`PartyRow.publishes`, `PartyRow.kinds_over`), or any total some dataset
     publishes on its axis when `datasets` is empty, as for a definition whose read selected no
     provenance. The index builds those rows from the coverage that lists each provenance's parties,

@@ -16,16 +16,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import Final, Literal, NamedTuple
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
 import dc_graph
+from code_index.labels import PRICES_BY_QUALIFIER, PricesKind
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
 from unit_words.currency_codes import ISO_4217_CODES
-from unit_words.unit_class import is_known_non_currency
+from unit_words.unit_class import is_known_non_currency, is_purchasing_power
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +35,34 @@ logger = logging.getLogger(__name__)
 def _graph_currency(
     graph: EngineGraphClient, unit_dcid: str, *, deadline: float | None
 ) -> str | None:
-    """The ISO 4217 code `unit_dcid` is denominated in, or None. A unit the registry reads
-    as money names its currency, and any other unit it types, or a PPP unit
-    (`unit_class.is_known_non_currency`), names none, both with no read. The graph's
-    currency units map the rest. An expired `deadline` raises; any other failed read names
-    no currency, logs a warning naming `unit_dcid` and notes the lost read
-    (`degraded_reads.note_degraded_read`)."""
+    """The ISO 4217 code `unit_dcid` is denominated in, or None (`_graph_currency_read`).
+    A failed read names no currency."""
+    currency, _ = _graph_currency_read(graph, unit_dcid, deadline=deadline)
+    return currency
+
+
+def _graph_currency_read(
+    graph: EngineGraphClient, unit_dcid: str, *, deadline: float | None
+) -> tuple[str | None, bool]:
+    """The ISO 4217 code `unit_dcid` is denominated in, or None, and whether the answer is
+    known. A unit the registry reads as money names its currency, and any other unit it
+    types, or a PPP unit (`unit_class.is_known_non_currency`), names none, both with no
+    read. The graph's currency units map the rest. An expired `deadline` raises. Any other
+    failed read names no currency and is not known, logs a warning naming `unit_dcid` and
+    notes the lost read (`degraded_reads.note_degraded_read`)."""
     value = parse_unit(unit_dcid)
     if isinstance(value, Money | UnpricedMoney):
-        return value.currency
+        return value.currency, True
     if is_known_non_currency(unit_dcid):
-        return None
+        return None, True
     try:
-        return graph.currency_units(deadline=deadline).get(unit_dcid)
+        return graph.currency_units(deadline=deadline).get(unit_dcid), True
     except dc_graph.GraphDeadlineExceededError:
         raise
     except GraphInfraError as exc:
         logger.warning("currency units read failed; unit %s names no currency: %s", unit_dcid, exc)
         note_degraded_read("currency units")
-        return None
+        return None, False
 
 
 def unit_currency(
@@ -65,6 +76,49 @@ def unit_currency(
     `deadline`. An expired deadline raises; any other failed read names no currency.
     """
     return _graph_currency(graph, unit_dcid, deadline=deadline)
+
+
+PRICES_UNREAD: Final = "unread"
+"""What `unit_prices` returns for a unit whose currency the graph read failed to say."""
+
+
+class UnitPrices(NamedTuple):
+    """The price basis a series' unit is served in, and whether the data states it
+    (`stated`) or the rule infers it (an unpriced currency read as current prices)."""
+
+    prices: PricesKind
+    stated: bool
+
+
+def unit_prices(
+    graph: EngineGraphClient,
+    unit_dcid: str,
+    qualifier: str | None,
+    *,
+    deadline: float | None,
+) -> UnitPrices | Literal["unread"] | None:
+    """The price basis a series in `unit_dcid` is served in, under the `measurementQualifier`
+    `qualifier` of its StatVar, by the rule `satisfies` reads, with whether the data states
+    it. A unit the registry prices (`Money`) states its own, a chained one constant prices.
+    Any other currency unit (`_graph_currency`) is in the prices a priced qualifier states
+    (`PRICES_BY_QUALIFIER`: `Nominal` current, `RealValue` constant), else in current prices
+    the rule infers. A PPP or international-dollar unit is money in the prices a priced
+    qualifier states. None for a unit that is no money, and for a PPP unit whose qualifier
+    states no prices. `PRICES_UNREAD` where the graph read of the currency units failed,
+    so whether the unit is money is unknown. The graph read honours the absolute monotonic
+    `deadline`, and expiry raises."""
+    value = parse_unit(unit_dcid)
+    if isinstance(value, Money):
+        return UnitPrices(value.prices, stated=True)
+    stated = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
+    currency, known = _graph_currency_read(graph, unit_dcid, deadline=deadline)
+    if not known:
+        return PRICES_UNREAD
+    if currency is not None:
+        return UnitPrices(stated, stated=True) if stated else UnitPrices("current", stated=False)
+    if stated is not None and is_purchasing_power(unit_dcid):
+        return UnitPrices(stated, stated=True)
+    return None
 
 
 def _is_current_no_base_year(request: IdentityUnitRequest) -> bool:

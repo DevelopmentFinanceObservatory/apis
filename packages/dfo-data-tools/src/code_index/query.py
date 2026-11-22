@@ -41,6 +41,7 @@ from code_index.types import (
     StatTypeWordDeclaration,
     StatVarRow,
     WholeTotalSet,
+    declared_composite_reads,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -259,14 +260,26 @@ def _dataset_pins(
     return pins
 
 
+PARTY_READING_VERSION = 2
+"""The version of the rules that read a party's cells from its row (`PartyRow.kinds_over`,
+`PartyRow.marker_over`, `PartyRow.publishes`), hashed into `CodeIndex.enrichment_digest`.
+Bump it when those rules change what a row reads, so every file holding party cells
+re-renders under the new reading although no row changed."""
+
+
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers, dataset kinds)`
-    rows, sorted by dcid, each marker as `(dataset, covers, years)` and each dataset kind as
-    `(dataset, kind)`. Neither row order nor a label, group or dataset-list change moves it.
+    """The hex SHA-256 of `PARTY_READING_VERSION`, each declared composite's component tables
+    and the table and bound destination total it reads markers through
+    (`declared_composite_reads`), sorted by composite, and `parties`'
+    `(dcid, kind, party_class, whole markers, dataset kinds, published)` rows, sorted by dcid,
+    each marker as `(dataset, covers, years)`, each dataset kind as `(dataset, kind)` and each
+    publication as `(dataset, axis)`. Neither row order nor a label or group change moves it.
     The markers are in it, windows included, because a whole total's frame cell depends on the
     row's dataset and on whether its year falls inside the window, and the dataset kinds
-    because a party's kind and class cells depend on the row's dataset. A row without dataset
-    kinds hashes as it did before they existed."""
+    because a party's kind and class cells depend on the row's dataset. The publications are
+    in it because they decide which kind or marker a reader takes and which roles can hold a
+    total (`PartyRow.publishes`), and the composites' tables and bound totals because a
+    composite provenance reads its kinds and markers through them."""
     rows = sorted(
         (
             party.dcid,
@@ -274,10 +287,16 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
             party.party_class,
             [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
             *([list(party.dataset_kinds)] if party.dataset_kinds else []),
+            list(party.published),
         )
         for party in parties
     )
-    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+    composites = sorted(
+        (ref, list(read.tables), read.marker_table, read.bound_total)
+        for ref, read in declared_composite_reads().items()
+    )
+    payload = [PARTY_READING_VERSION, composites, rows]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
 def _check_consistent_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
@@ -564,11 +583,12 @@ class CodeIndex:
         """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
         by the one axis each stands on, sorted by dcid."""
         self.enrichment_digest = _enrichment_digest(self.parties.values())
-        """SHA-256 over the sorted `(dcid, kind, party_class, whole markers)` rows of `parties`,
-        the part of the index the `{role}_party_kind`, `{role}_party_class` and
-        `{role}_party_whole` cells are read from. A file holding such cells is linked under a key salted with it
+        """SHA-256 over `PARTY_READING_VERSION` and the rows of `parties` the
+        `{role}_party_kind`, `{role}_party_class` and `{role}_party_whole` cells are read from
+        (`_enrichment_digest`). A file holding such cells is linked under a key salted with it
         (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
-        kind, class or whole marker leaves every link in place."""
+        kind, class, whole marker, publication or composite table, under an unchanged reading,
+        leaves every link in place."""
         self.whole_total_sets = tuple(whole_total_sets)
         """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
         order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""

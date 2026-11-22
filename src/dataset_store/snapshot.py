@@ -102,6 +102,13 @@ class ManifestFacts:
     packed object `decode_series_conversion_entries` also reads.
     `default_scope_plural` says whether the mint's default place scope held more than one place,
     `None` on a collapse and on a version minted before versions stored it.
+    `incomplete_after` holds how complete the version's rows are, judged per source at its mint
+    (`datasets_api.manifest.incomplete_after`): one `datasets_api.manifest_models.IncompleteAfter`
+    per group of partial or unjudged cells, empty when every cell is complete, and `None` when
+    the mint had no catalogue or the version was recorded before versions stored it.
+    `incomplete_after_built_at` is the `built_at` of the origin catalogue build that judged
+    `incomplete_after`, a collapse's that of its base's, and `None` with it or on a version
+    recorded before versions stored it.
     """
 
     prepared_at: datetime
@@ -115,6 +122,8 @@ class ManifestFacts:
     output_profile: Mapping[str, object] | None = None
     series_conversions: dict[str, object] | list[Mapping[str, object]] | None = None
     default_scope_plural: bool | None = None
+    incomplete_after: Sequence[Mapping[str, object]] | None = None
+    incomplete_after_built_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -128,11 +137,21 @@ class FrameLineage:
     computed from (`datasets_api.lineage_continuations`), each a
     `materialise.continued_series.ContinuedSeries.as_entry`, empty when nothing continues its
     series, and `None` on a version recorded before versions stored them, until the
-    `backfill-descriptions` task fills it."""
+    `backfill-descriptions` task fills it.
+
+    `incomplete_after` holds the entries the publish door derived from the same versions for
+    the frame's rows (`datasets_api.lineage_incomplete`), each a
+    `datasets_api.manifest_models.IncompleteAfter`, every cell listed, the complete ones as
+    `unmarked`. `None` when an input's record is unknown and on a version recorded before
+    versions stored it, which reads as unknown. `incomplete_after_built_at` is the newest
+    `built_at` among the catalogue builds that judged the input records it was derived from,
+    `None` when one of them names none."""
 
     input_content_versions: Sequence[str]
     composed_stat_vars: Sequence[Mapping[str, object]] | None = None
     continuations: Sequence[Mapping[str, object]] | None = None
+    incomplete_after: Sequence[Mapping[str, object]] | None = None
+    incomplete_after_built_at: datetime | None = None
 
 
 type VersionFacts = ManifestFacts | FrameLineage
@@ -154,6 +173,8 @@ VERSION_FACT_COLUMNS = (
     "input_content_versions",
     "composed_stat_vars",
     "continuations",
+    "incomplete_after",
+    "incomplete_after_built_at",
 )
 
 
@@ -170,6 +191,8 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
             _json(list(facts.input_content_versions)),
             _json(None if facts.composed_stat_vars is None else list(facts.composed_stat_vars)),
             _json(None if facts.continuations is None else list(facts.continuations)),
+            _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
+            facts.incomplete_after_built_at,
         )
     return (
         facts.prepared_at,
@@ -186,6 +209,8 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
         None,
         None,
         None,
+        _json(None if facts.incomplete_after is None else list(facts.incomplete_after)),
+        facts.incomplete_after_built_at,
     )
 
 
@@ -208,9 +233,11 @@ class VersionFactsMissing(Exception):
 def _version_facts(
     row: Mapping[str, object], *, subject_id: str, content_version: str
 ) -> VersionFacts:
-    """The facts a `VERSION_FACT_COLUMNS` row holds. `prepared_at` reads in UTC, whatever the
-    session's time zone."""
+    """The facts a `VERSION_FACT_COLUMNS` row holds. `prepared_at` and
+    `incomplete_after_built_at` read in UTC, whatever the session's time zone."""
     prepared_at = cast("datetime | None", row["prepared_at"])
+    stored_built_at = cast("datetime | None", row["incomplete_after_built_at"])
+    built_at = None if stored_built_at is None else stored_built_at.astimezone(UTC)
     if prepared_at is not None:
         series_count = row["series_count"]
         default_scope_plural = row["default_scope_plural"]
@@ -231,6 +258,8 @@ def _version_facts(
             default_scope_plural=(
                 None if default_scope_plural is None else bool(default_scope_plural)
             ),
+            incomplete_after=cast("list[Mapping[str, object]] | None", row["incomplete_after"]),
+            incomplete_after_built_at=built_at,
         )
     input_content_versions = cast("list[str] | None", row["input_content_versions"])
     if input_content_versions is not None:
@@ -238,6 +267,8 @@ def _version_facts(
             input_content_versions=input_content_versions,
             composed_stat_vars=cast("list[Mapping[str, object]] | None", row["composed_stat_vars"]),
             continuations=cast("list[Mapping[str, object]] | None", row["continuations"]),
+            incomplete_after=cast("list[Mapping[str, object]] | None", row["incomplete_after"]),
+            incomplete_after_built_at=built_at,
         )
     raise VersionFactsMissing(subject_id=subject_id, content_version=content_version)
 

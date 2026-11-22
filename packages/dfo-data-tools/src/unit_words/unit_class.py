@@ -61,6 +61,12 @@ def is_known_non_currency(unit: str) -> bool:
     return not isinstance(value, Money | UnpricedMoney | Other) or unit in _PURCHASING_POWER_UNITS
 
 
+def is_purchasing_power(unit: str) -> bool:
+    """Whether `unit` is a PPP or international-dollar unit (`_PURCHASING_POWER_UNITS`): an
+    amount in money no currency names."""
+    return unit in _PURCHASING_POWER_UNITS
+
+
 def is_per_head_denominator(denominator: str | None) -> bool:
     """Whether a `measurementDenominator` dcid makes the measure a per-person rate."""
     return denominator in PER_HEAD_DENOMINATORS

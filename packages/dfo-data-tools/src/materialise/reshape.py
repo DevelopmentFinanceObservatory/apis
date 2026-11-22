@@ -21,7 +21,13 @@ from dfo_platform.codes import CodeCatalogue
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
-from materialise.enrichment import PARTY_FIELDS, is_party_role, pivot_party_cell, row_party_cell
+from materialise.enrichment import (
+    PARTY_FIELDS,
+    is_party_role,
+    period_year,
+    pivot_party_cell,
+    row_party_cell,
+)
 from materialise.errors import MaterialisationError, MaterialisationUsageError
 from materialise.method_status import method_status_classes
 
@@ -1211,29 +1217,43 @@ def _fill_lookup_columns(
         else {}
     )
     missing_counts: dict[tuple[str, str], int] = {}
+    # A table repeats each party, year and provenance across rows, so each party cell is read
+    # once per table.
+    party_cells: dict[tuple[str, str, object, int | None, str | None], str | None] = {}
     new_rows = []
     for row in table.rows:
         extra: list[object] = []
         for entity_column, field_name in requests:
             ref = row[entity_positions[entity_column]]
             value: str | None
-            if parties is not None and field_name in PARTY_FIELDS and not per_row:
-                value = pivot_party_cell(
-                    field_name,
-                    ref,
-                    role=entity_column,
-                    parties=parties,
-                    datasets=pivot_datasets.get((entity_column, ref), ()),
-                )
+            if parties is not None and field_name in PARTY_FIELDS and not isinstance(ref, str):
+                value = None
+            elif parties is not None and field_name in PARTY_FIELDS and not per_row:
+                key = (field_name, entity_column, ref, None, None)
+                if key not in party_cells:
+                    party_cells[key] = pivot_party_cell(
+                        field_name,
+                        ref,
+                        role=entity_column,
+                        parties=parties,
+                        datasets=pivot_datasets.get((entity_column, ref), ()),
+                    )
+                value = party_cells[key]
             elif parties is not None and field_name in PARTY_FIELDS:
-                value = row_party_cell(
-                    field_name,
-                    ref,
-                    role=entity_column,
-                    parties=parties,
-                    period=None if period_at is None else row[period_at],
-                    provenance=None if provenance_at is None else row[provenance_at],
-                )
+                year = None if period_at is None else period_year(row[period_at])
+                cell = None if provenance_at is None else row[provenance_at]
+                provenance = cell if isinstance(cell, str) else None
+                key = (field_name, entity_column, ref, year, provenance)
+                if key not in party_cells:
+                    party_cells[key] = row_party_cell(
+                        field_name,
+                        ref,
+                        role=entity_column,
+                        parties=parties,
+                        period=year,
+                        provenance=provenance,
+                    )
+                value = party_cells[key]
             else:
                 value = lookup_cell(lookup, ref, field_name)
             if value is None:

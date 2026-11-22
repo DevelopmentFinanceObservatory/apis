@@ -7,7 +7,10 @@ reads the column; the writer keeps filling it for any image that decodes version
 Version inserts use `ON CONFLICT DO NOTHING`, so records are immutable and retries are idempotent.
 Two facts a version stored before versions held them are filled once, by a later write of the
 same version: a published frame's `continuations` (`_write_description`), and the year members
-and member nouns of a dataset version's `coverage` (`_fill_year_coverage`).
+and member nouns of a dataset version's `coverage` (`_fill_year_coverage`). A later write of a
+version, dataset or computed, also replaces its `incomplete_after` with the one that write
+judged, unless an older catalogue build judged it than the stored one's
+(`_refresh_incomplete_after`).
 Every version insert goes through `_insert_version`, which also writes the version's description
 record (`datasets.description_record`) in the same transaction when the record carries a
 `VersionDescriber` (`_record_description`), so a failed record insert rolls the version row back.
@@ -307,6 +310,7 @@ def _insert_version(
     created = inserted_row is not None
     if not created:
         _fill_year_coverage(tx, record)
+        _refresh_incomplete_after(tx, record)
     if record.describer is not None:
         _record_description(tx, record, created=created, now=now)
     return created
@@ -348,6 +352,51 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
             json.dumps({**body, "coverage": coverage} if isinstance(body, Mapping) else body),
             *key,
         ),
+    )
+
+
+def _refresh_incomplete_after(tx: Transaction, record: VersionRecord) -> None:
+    """Store the `incomplete_after` `record` holds on its version, already on record, in place
+    of the stored one when they differ: a dataset version's as its later mint judged it
+    (`ManifestFacts.incomplete_after`), a computed version's as its republish derived it from
+    its inputs' records (`FrameLineage.incomplete_after`). A write that could not judge it
+    (`None`) changes nothing. The frame's rows are the same, so only the partial periods its
+    sources mark can differ: a version recorded before versions stored them, or under a release
+    whose partial period has since completed, takes the later judgement.
+
+    A judgement goes with the `built_at` of the catalogue build that made it, a computed
+    version's with the newest build among the input judgements it read
+    (`ManifestFacts.incomplete_after_built_at`, `FrameLineage.incomplete_after_built_at`). A
+    write judged by an older build than the stored judgement's, or by no known build, leaves
+    the stored one standing, so an instance still bound to the previous build during a
+    rollout, or a republish that read an input's older judgement, cannot undo a newer one; a
+    write judged by the same or a later build replaces it. It runs under the version's link
+    lock, as `_fill_year_coverage` does.
+    """
+    facts = record.facts
+    if facts.incomplete_after is None:
+        return
+    built_at = facts.incomplete_after_built_at
+    key = (record.subject_id, record.content_version)
+    lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
+    row = tx.fetch_one(
+        "SELECT incomplete_after, incomplete_after_built_at FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s",
+        key,
+    )
+    if row is None:
+        return
+    stored_built_at = cast("datetime | None", row["incomplete_after_built_at"])
+    if stored_built_at is not None and (built_at is None or built_at < stored_built_at):
+        return
+    judged = [dict(entry) for entry in facts.incomplete_after]
+    if row["incomplete_after"] == judged and stored_built_at == built_at:
+        return
+    tx.execute(
+        "UPDATE datasets.version_record "
+        "SET incomplete_after = %s, incomplete_after_built_at = %s "
+        "WHERE subject_id = %s AND content_version = %s",
+        (json.dumps(judged), built_at, *key),
     )
 
 
