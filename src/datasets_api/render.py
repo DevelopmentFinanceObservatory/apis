@@ -138,7 +138,7 @@ from datasets_api.manifest_models import (
     Manifest,
     PartyTotalsLeftOutModel,
 )
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import (
     CutFrame,
@@ -166,6 +166,7 @@ from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.named import named_capped
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
 from materialise.bundle import (
@@ -306,9 +307,10 @@ class GroupbyCollapseRendering:
     `frame_sha256` is the hash of `frame`. `content_version` is the version `frame` is: minted
     from that hash alone, or the base version's own token when `frame` is the base frame
     (`render_and_store`).
-    `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
-    sums. `adds` says whether the collapse added StatVars together (`groupby.adds_stat_vars`);
-    a re-key that keeps each StatVar in a tuple of its own adds none."""
+    `contributing_member_count` counts distinct StatVars with rows that a `groupby.codes`
+    selection keeps, every one with no selection. Callers use it to warn about sums. `adds` says
+    whether the collapse added those StatVars together (`groupby.adds_stat_vars`); a re-key
+    that keeps each StatVar in a tuple of its own adds none."""
 
     frame: Frame
     role_columns: tuple[str, ...]
@@ -353,7 +355,8 @@ class DerivedVersion:
     `summed` is set when the frame is a collapse, which sums the definition's variables.
     `party_totals_left_out` holds the trace entries of the totals the cut left out
     (`PartyTotalsCut.trace_entries`), empty when none. `adds` says whether a collapse added
-    StatVars together (`GroupbyCollapseRendering.adds`)."""
+    StatVars together (`GroupbyCollapseRendering.adds`). `groupby` is the groupby that summed a
+    collapse, whose `codes` select the StatVars it adds, `None` for a cut alone."""
 
     frame_chunks: Callable[[], Iterator[Frame]]
     role_columns: tuple[str, ...]
@@ -364,6 +367,7 @@ class DerivedVersion:
     summed: bool
     party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
     adds: bool = True
+    groupby: GroupbyOptions | None = None
 
 
 class FrameMode(StrEnum):
@@ -385,19 +389,34 @@ class FrameMode(StrEnum):
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
     """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`), and a
-    `groupby.codes` axis outside its summable code systems (`summable_axes`), with
-    `QueryOptionsInvalid`, before any resolution or read. A `None` index decodes nothing, so it
-    checks nothing. Frame-dependent refusals run in `_reshape`. Groupby, decode, and
-    disabled-enrichment checks need the materialised frame."""
+    `groupby.codes` axis outside its summable code systems (`summable_axes`) or listing a code
+    that matches no row of its axis (`_unselectable_codes`), with `QueryOptionsInvalid`, before
+    any resolution or read. A `None` index decodes nothing, so it checks nothing.
+    Frame-dependent refusals run in `_reshape`. Groupby, decode, and disabled-enrichment checks
+    need the materialised frame."""
     if code_index is None or options.groupby is None:
         return
     summable = summable_axes(code_index.declarations)
-    for code_system in options.groupby.codes or {}:
+    levels = options.groupby.levels or {}
+    for code_system, listed in (options.groupby.codes or {}).items():
+        pointer = f"/options/groupby/codes/{pointer_segment(code_system)}"
         if code_system not in summable:
             raise QueryOptionsInvalid(
-                pointer=f"/options/groupby/codes/{pointer_segment(code_system)}",
+                pointer=pointer,
                 detail=f"groupby.codes names {code_system!r}, which this deployment does not "
                 "declare a summable code system",
+            )
+        depth = levels.get(code_system)
+        if unselectable := _unselectable_codes(
+            listed, code_system=code_system, depth=depth, code_index=code_index
+        ):
+            at_depth = "" if depth is None else f" at or above levels depth {depth}"
+            raise QueryOptionsInvalid(
+                pointer=pointer,
+                detail=f"groupby.codes lists {named_capped(unselectable)} under "
+                f"{code_system!r}, which are no {code_system} code dcids{at_depth} in this "
+                f"deployment's code index, so they select no row; list the dcids the "
+                f"stat_var_{code_system} column holds",
             )
     if options.groupby.levels is None:
         return
@@ -410,6 +429,24 @@ def check_options_supported(options: MintOptions, *, code_index: CodeIndex | Non
                 "declare a summable hierarchical code system disjoint from its children; GET "
                 f"/api/datasets/capabilities lists them as groupby_level_axes: {sorted(allowed)!r}",
             )
+
+
+def _unselectable_codes(
+    listed: Sequence[str], *, code_system: str, depth: int | None, code_index: CodeIndex
+) -> list[str]:
+    """The entries of `listed`, a `groupby.codes` list on `code_system`, that no row of the
+    rendering can hold, so they would select nothing: each that is no dcid of a `code_system`
+    code in `code_index` (a publisher code, a label, a `dcid:`-prefixed dcid), and, with a
+    `levels` `depth`, each code below that depth, which the roll-up rewrites to its ancestor
+    (`groupby.roll_up_levels`). A code shallower than the depth keeps its own dcid, so it
+    stays selectable."""
+    unselectable: list[str] = []
+    for code in listed:
+        row = code_index.code_by_dcid(code)
+        rolled = None if depth is None else code_index.ancestor_at_depth(code, depth)
+        if row is None or row.code_system != code_system or rolled not in (None, code):
+            unselectable.append(code)
+    return unselectable
 
 
 def _column_cap(format: str) -> int:
@@ -680,8 +717,8 @@ def _fold_frame_slices(
 
     With `selected` (`groupby.selected_stat_vars`), each slice keeps only the rows whose
     `stat_var` it holds before it is decoded, so neither the decode nor the fold reads another
-    row. The distinct StatVars are read before that mask, so the collision check and the
-    contributor count see every row, as without a selection."""
+    row. The distinct StatVars are read before that mask, so the collision check sees every
+    row, as without a selection."""
     distinct_dcids: set[str] = set()
     warnings: list[MaterialisationWarning] = []
     decoded_slices: list[pa.Table] = []
@@ -742,8 +779,9 @@ def _reshape_groupby_collapse(
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `selected`, the StatVars a
     `groupby.codes` selection keeps (`groupby.selected_stat_vars`), only their rows reach the
-    first fold; the decode-gap, collision and provenance checks and the contributors still read
-    every row, so they refuse and count as the same render without a selection does.
+    first fold; the decode-gap, collision and provenance checks still read every row, so they
+    refuse as the same render without a selection does, and the contributors are the selected
+    StatVars with rows, so the collapse counts and adds only what it summed.
 
     With `grammar_frame`, it restores `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
     `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
@@ -780,6 +818,7 @@ def _reshape_groupby_collapse(
         contributors = contributing_dcids(current)
         if selected is not None:
             current = _rows_of_stat_vars(current, selected)
+            contributors &= selected
     else:
         # `current` is one representative chunk, so the fold gathers contributors across the stream.
         # Decode-gap checks use only `decode_lookup` and run before the fold.
@@ -859,6 +898,8 @@ def _reshape_groupby_collapse(
                 assert outcome.table is not None
                 collapsed = outcome.table
                 contributors = contributing_dcids(distinct_table)
+                if selected is not None:
+                    contributors &= selected
             elif isinstance(collapsed, pa.Table):
                 collapsed = groupby_sum_table(
                     collapsed,
@@ -3241,7 +3282,11 @@ def render_and_store(
         ):
             collapse = replace(collapse, content_version=content_version)
         derived = _derived_version(
-            collapse, cut=cut, content_version=content_version, entity_columns=entity_columns
+            collapse,
+            cut=cut,
+            content_version=content_version,
+            entity_columns=entity_columns,
+            groupby=options.groupby,
         )
         effective_content_version = (
             derived.content_version if derived is not None else content_version
@@ -3411,10 +3456,11 @@ def _derived_version(
     cut: CutFrame | None,
     content_version: str,
     entity_columns: Sequence[str],
+    groupby: GroupbyOptions | None = None,
 ) -> DerivedVersion | None:
     """The version a render's artifact belongs to when it is not `content_version`, the version
-    of the frame the render read: the collapse when it is a frame of its own, else the cut
-    frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
+    of the frame the render read: the collapse when it is a frame of its own, summed by
+    `groupby`, else the cut frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
     kept) is that frame, so a collapse of the cut frame equal to it is the cut frame."""
     if collapse is not None and collapse.content_version == content_version:
         return None
@@ -3432,6 +3478,7 @@ def _derived_version(
             summed=True,
             party_totals_left_out=left_out,
             adds=collapse.adds,
+            groupby=groupby,
         )
     if cut is None or cut_version is None:
         return None

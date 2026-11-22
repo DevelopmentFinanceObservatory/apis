@@ -480,8 +480,9 @@ def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_
 
 
 def test_a_code_selection_names_its_own_frame_and_leaves_an_unselected_one_s_name_alone() -> None:
-    """A rendering without `groupby.codes` dumps, and so names its frame and record, as before
-    the field existed. One with codes names another frame, the same for any order of them."""
+    """A rendering without `groupby.codes` leaves it out of the dump, so it names its frame and
+    record as a groupby that never states it does. One with codes names another frame, the
+    same for any order of them."""
 
     def pair(codes: dict[str, list[str]] | None) -> FrameRef:
         rendering = RootRendering(

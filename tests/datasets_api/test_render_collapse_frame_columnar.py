@@ -82,7 +82,8 @@ _INDEX = CodeIndex(
         for code_system, plain_name in (("crsPurpose", "sector"), ("crsTypeOfFinance", "type"))
     ),
     datasets=tuple(dataset for dataset in DATASETS if dataset.provenance == CRS),
-    codes=(*_PURPOSES, *_FINANCES),
+    # Purpose 130 is a code no StatVar holds, so a selection can list a code no row carries.
+    codes=(*_PURPOSES, _purpose("130", None), *_FINANCES),
     statvars=tuple(
         StatVarRow(
             dcid=dcid,

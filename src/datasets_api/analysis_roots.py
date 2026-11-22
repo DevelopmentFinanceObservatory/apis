@@ -126,7 +126,7 @@ from datasets_api.description_record import summed_refs
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.doors.snapshot import servable_snapshot_manifest
-from datasets_api.groupby import adds_stat_vars
+from datasets_api.groupby import adds_stat_vars, selected_contributors
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
@@ -293,7 +293,10 @@ def implied_groupby(
     `codes`, the code dcids the filters over the root keep on each axis
     (`analysis.PlannedRoot`), becomes the groupby's `codes` on each axis `by` keeps, sorted and
     each once as `GroupbyOptions` holds them, so the sum reads only the StatVars whose rows
-    those filters keep (conformance C120b); a groupby keeping none of their axes has none."""
+    those filters keep (conformance C120b); a groupby keeping none of their axes has none, and
+    neither has one selecting none of `stat_vars` (`selected_contributors`), whose sum would be
+    empty where the filter over the unselected sum lists the values its column holds
+    (`unmatched_breakdown_values`)."""
     if STAT_VAR_WORD in path_words:
         return None
     if len(stat_vars) < 2:
@@ -306,7 +309,7 @@ def implied_groupby(
     named = {word.removeprefix(STAT_VAR_PREFIX) for word in path_words} & axes
     groupby: dict[str, Any] = {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
     selected = {axis: sorted(set(kept)) for axis, kept in (codes or {}).items() if axis in named}
-    if selected:
+    if selected and selected_contributors(stat_vars, index=code_index, codes=selected):
         groupby["codes"] = dict(sorted(selected.items()))
     return groupby
 
@@ -353,8 +356,9 @@ def summed_count(
 ) -> int:
     """How many StatVars a groupby rendering summed into its version, whose record is
     `version`: the count a stored `stat_vars_summed` warning states (`rendered`), else
-    `contributors`, the StatVars with rows in the dataset version it renders, the ones the
-    renderer sums (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
+    `contributors`, the StatVars with rows in the dataset version it renders that its
+    `groupby.codes` selection keeps, the ones the renderer sums
+    (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
     when the record says the frame summed nothing, as for a version with no base version or a
     derived one whose `frame_summed` is false, and when the groupby `adds` nothing, a re-key
     keeping each StatVar in a tuple of its own (`groupby.adds_stat_vars`). A missing record or
@@ -370,20 +374,22 @@ def summed_count(
 
 def _listed_base(options: Mapping[str, Any], base: str) -> str | None:
     """The dataset version a root read with `options` names as its rendering's base: `base`,
-    the version a groupby sums, for a sum alone, which keeps the dataset's periods and
-    entities. A party-totals cut can leave a period or an entity out, so a rendering that cuts
-    names no base and is matched to no dataset version (conformance C121f)."""
-    if "groupby" not in options or options.get("without_party_totals") is True:
+    the version a groupby sums, for a sum of every StatVar, which keeps the dataset's periods
+    and entities. A party-totals cut, and a sum whose groupby selects `codes`, can each leave a
+    period or an entity out, so a rendering that cuts or selects names no base and is matched
+    to no dataset version (conformance C121f)."""
+    groupby = options.get("groupby")
+    if groupby is None or options.get("without_party_totals") is True or groupby.get("codes"):
         return None
     return base
 
 
-def _with_summed(root: ResolvedRoot, count: int, trace: Mapping[str, Any]) -> ResolvedRoot:
-    """`root` with the `count` StatVars its groupby summed, named as far as `trace` names
+def _with_summed(root: ResolvedRoot, count: int, named: Sequence[str]) -> ResolvedRoot:
+    """`root` with the `count` StatVars its groupby summed, `named` as far as its trace names
     them."""
     if not count:
         return root
-    return replace(root, summed_count=count, stat_vars_summed=tuple(summed_refs(trace)))
+    return replace(root, summed_count=count, stat_vars_summed=tuple(named))
 
 
 def _rendered_count(manifest: Manifest) -> int | None:
@@ -1203,14 +1209,28 @@ class LiveRootSource:
             # A stored warning is a collapse's from before re-keys, so it summed.
             count = summed_count(version, rendered=rendered, contributors=0)
         else:
-            contributors = self._contributing(spec_id, base, manifest.trace)
+            contributors = self._selected(
+                self._contributing(spec_id, base, manifest.trace), options["groupby"]
+            )
             count = summed_count(
                 version,
                 rendered=None,
                 contributors=len(contributors),
                 adds=self._adds(contributors, options["groupby"]),
             )
-        return _with_summed(root, count, manifest.trace)
+        return _with_summed(
+            root, count, self._selected(summed_refs(manifest.trace), options["groupby"])
+        )
+
+    def _selected(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> list[str]:
+        """`contributors` that `groupby` sums: those its `codes` selection keeps after its
+        `levels` roll-up (`selected_contributors`), every one with no selection."""
+        return selected_contributors(
+            contributors,
+            index=self._deps.code_index,
+            codes=groupby.get("codes"),
+            levels=groupby.get("levels"),
+        )
 
     def _adds(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> bool:
         """Whether `groupby` adds `contributors`, bare dcids, together (`adds_stat_vars`), on
@@ -1260,14 +1280,18 @@ class LiveRootSource:
         )
         if "groupby" not in options or unstored.content_version == content_version:
             return root
-        contributors = self._contributing(spec_id, content_version, stored.trace)
+        contributors = self._selected(
+            self._contributing(spec_id, content_version, stored.trace), options["groupby"]
+        )
         count = summed_count(
             None,
             rendered=None,
             contributors=len(contributors),
             adds=self._adds(contributors, options["groupby"]),
         )
-        return _with_summed(root, count, stored.trace)
+        return _with_summed(
+            root, count, self._selected(summed_refs(stored.trace), options["groupby"])
+        )
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root`, with the version's servable stored frame located when `read` reads it, and a

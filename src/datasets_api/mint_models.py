@@ -307,8 +307,11 @@ class GroupbyOptions(BaseModel):
     Each key must appear in `by`, which must leave out `stat_var`, and must be a
     summable code system (`datasets_api.render.check_options_supported`). The
     lists are held sorted and each code once, so two requests listing the same
-    codes are one rendering. Absent, every row is summed, and the options dump
-    as they did before the field existed.
+    codes are one rendering. Absent, every row is summed and `codes` is left out
+    of the dump, so the options, record and frame name equal those of a groupby
+    that never states it. Each code must be a dcid of its code system's codes,
+    and with `levels` a code at or above that depth
+    (`datasets_api.render.check_options_supported`).
     """
 
     model_config = ConfigDict(extra="forbid")

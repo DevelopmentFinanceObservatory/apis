@@ -18,7 +18,8 @@ from .test_render_collapse_frame_columnar import _ALL, _render
 
 _P111, _P120, _P122 = "dcid:CRSPurposeCode111", "dcid:CRSPurposeCode120", "dcid:CRSPurposeCode122"
 _LOAN = "dcid:CRSTypeOfFinanceCode421"
-_ABSENT = "dcid:CRSPurposeCode999"
+# A purpose code of the index that no StatVar holds.
+_ABSENT = "dcid:CRSPurposeCode130"
 
 
 def _options(
@@ -66,7 +67,7 @@ def _cut_to(collapse: render.GroupbyCollapseRendering, codes: dict[str, list[str
         ),
         pytest.param(
             ["crsPurpose", "time_period"],
-            {"crsPurpose": [_P120, _P122]},
+            {"crsPurpose": [_P120]},
             {"crsPurpose": 0},
             False,
             12,
