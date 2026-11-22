@@ -549,7 +549,7 @@ def test_no_unit_request_leaves_existing_fixture_unchanged():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
-        served_window=None,
+        span=None,
     ):
         captured.append(request)
         return stub_preview_result(sv=_BARE_STAT_VAR, entity="country/IND")

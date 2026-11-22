@@ -50,6 +50,7 @@ from materialise.errors import (
     OverCeilingError,
     UpstreamResponseError,
 )
+from materialise.facet_collapse import FacetRank
 from materialise.facets import (
     _SUBJECT_ROLE_ONLY,
     FACET_AXES,
@@ -481,6 +482,64 @@ class _PreviewOutcome:
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversion_records: dict[tuple[str, ...], ConversionRecord] = field(default_factory=dict)
     series_total_rows: dict[tuple[str, ...], int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SpanRead:
+    """How a preview reads the span of years its caller serves inside the request's window,
+    as a mint of the request elects, masks and collapses its rows under the whole window and
+    keeps the span afterwards (`materialise.composite.compose_components`).
+
+    `served`, a closed range, is the span: the preview keeps the rows in it alone once they
+    are masked, collapsed and converted, before it counts, truncates or builds them.
+    `fetched`, a closed range inside the request's window holding `served`, is the years the
+    SDMX read asks for, each by its four digits, the period a yearly facet dates it by; None
+    asks for every period of the window. A series' continuation mask
+    (`columnar.continuation_mask`) reads every selected row at or after the span's first year,
+    so a read whose facets a method may continue fetches to the window's end.
+
+    `ranks` holds each series' facet collapse ranks over the whole window
+    (`facet_collapse.facet_rank`), keyed by the series' dcids on the read's `series_roles`, or
+    `()` for a read leaving no role open: a read fetching part of the window ranks the facets
+    two contest by them, since it holds too few of their rows to rank by its own. A series
+    `ranks` lacks ranks its facets by its rows."""
+
+    served: RequestedWindow
+    fetched: RequestedWindow | None = None
+    ranks: Mapping[tuple[str, ...], Mapping[str | None, FacetRank]] | None = None
+
+    def check(self, window: RequestedWindow) -> None:
+        """Raise `MaterialisationUsageError` unless `served` is a closed range inside
+        `fetched`, and `fetched` a closed range inside `window`, a range or every date."""
+        if window.kind == "latest":
+            raise MaterialisationUsageError("a span read reads a range or every date")
+        if self.fetched is not None:
+            _check_inside(self.fetched, window, name="fetched")
+        _check_inside(self.served, self.fetched or window, name="served")
+
+    @property
+    def fetched_periods(self) -> tuple[str, ...] | None:
+        """The periods the SDMX read asks for: each year of `fetched`, or None for every one."""
+        if self.fetched is None:
+            return None
+        assert self.fetched.start_year is not None and self.fetched.end_year is not None
+        return tuple(
+            str(year) for year in range(self.fetched.start_year, self.fetched.end_year + 1)
+        )
+
+
+def _check_inside(years: RequestedWindow, window: RequestedWindow, *, name: str) -> None:
+    """Raise `MaterialisationUsageError` unless `years` is a closed range inside `window`."""
+    first, last = years.start_year, years.end_year
+    if years.kind != "range" or first is None or last is None:
+        raise MaterialisationUsageError(f"a span read's {name} years are a closed range")
+    if (window.start_year is not None and first < window.start_year) or (
+        window.end_year is not None and last > window.end_year
+    ):
+        raise MaterialisationUsageError(
+            f"a span read's {name} years {first}-{last} lie outside "
+            f"{window.start_year}-{window.end_year}"
+        )
 
 
 @dataclass(frozen=True)
@@ -3128,6 +3187,7 @@ def _prepare_preview_member(
     series_limit: int | None = None,
     allowed_series_keys: frozenset[tuple[str, ...]] | None = None,
     elect: _Election | None = None,
+    span: SpanRead | None = None,
 ) -> _PreparedPreview:
     """Runs the exact facet-selection/dispatch machinery `_generate_member`
     runs for the same `MaterialisationRequest`: `_probe_member`,
@@ -3201,6 +3261,9 @@ def _prepare_preview_member(
     cannot crowd out a short or older one, and
     `_PreviewOutcome.series_total_rows` counts each series' survivors before
     that cut. `ceiling` still sizes the raw-fetch guard.
+
+    `span`, where its `fetched` years are set, asks SDMX for those years alone and keeps
+    the rows in them, while the facets are elected under the request's window (`SpanRead`).
     """
     bare_stat_var = bare_stat_var_ref(request.stat_var)
     probe, _ = _national_currency_probe(
@@ -3266,7 +3329,11 @@ def _prepare_preview_member(
             max_rows=raw_guard,
             deadline=deadline,
         )
-        with stream(time_period=_time_period_for_window(request.window)) as (roles, sdmx_batches):
+        fetched = span.fetched if span is not None else None
+        periods = span.fetched_periods if span is not None else None
+        with stream(
+            time_period=periods if periods is not None else _time_period_for_window(request.window)
+        ) as (roles, sdmx_batches):
             _check_role_divergence(roles, request)
             schema = observation_schema(roles)
             if request.window.kind == "latest":
@@ -3286,7 +3353,8 @@ def _prepare_preview_member(
                     for table in _surviving_tables(
                         sdmx_batches,
                         schema=schema,
-                        window=request.window,
+                        # A UN read returns every period, whatever the read asks for.
+                        window=fetched if fetched is not None else request.window,
                         selections=selections,
                         admission=probe.admission,
                     )
@@ -3391,13 +3459,15 @@ def _finish_preview_member(
     prepared: _PreparedPreview,
     *,
     time_period: str | None = None,
-    served_window: RequestedWindow | None = None,
+    span: SpanRead | None = None,
 ) -> _PreviewOutcome:
     """Apply conversion to a prepared preview's rows at `time_period`, or with none given
-    at the period a mint of the request serves (`columnar.elected_rows`). `served_window`,
-    a range, keeps the converted rows within its years alone, before anything is counted,
-    truncated or built: the rows were elected, masked and collapsed under the request's
-    own window, as a mint of it keeps them."""
+    at the period a mint of the request serves (`columnar.elected_rows`). With `span`, the
+    collapse ranks each series' facets by `SpanRead.ranks` where it holds them, and the
+    converted rows within `SpanRead.served` alone are kept, before anything is counted,
+    truncated or built: the rows were elected and masked under the request's own window,
+    as a mint of it keeps them."""
+    ranks = span.ranks if span is not None and span.ranks is not None else {}
     request = prepared.request
     table = prepared.table
     if time_period is not None:
@@ -3417,6 +3487,7 @@ def _finish_preview_member(
                 rows,
                 declared_roles=request.declared_roles,
                 currencies=prepared.series_currencies.get(key),
+                ranks=ranks.get(key),
             )
             converted.append(series_table)
             if series_record is not None and (rows.num_rows or series_record.omitted_entities):
@@ -3429,14 +3500,15 @@ def _finish_preview_member(
             table,
             declared_roles=request.declared_roles,
             currencies=prepared.currencies,
+            ranks=ranks.get(()),
         )
     conversion_recipe_id = (
         conversion_plan.recipe.recipe_id
         if conversion_plan is not None and conversion_plan.recipe is not None
         else None
     )
-    if served_window is not None:
-        table = table.filter(columnar.range_window_mask(table, window=served_window))
+    if span is not None:
+        table = table.filter(columnar.range_window_mask(table, window=span.served))
 
     applied_window = compute_applied_window(request.window, columnar.served_year_bounds(table))
     coverage = columnar.coverage(

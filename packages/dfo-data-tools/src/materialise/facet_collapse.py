@@ -41,6 +41,7 @@ def collapse_duplicate_identity_facets_table(
     *,
     declared_roles: Sequence[str],
     rank_within_series: bool = False,
+    ranks: Mapping[str | None, FacetRank] | None = None,
 ) -> pa.Table:
     """Ranks each facet over its full row set and keeps the best-ranked facet for every
     contested normalised `Frame.build` grain key. At most one distinct `facetId`, including
@@ -50,16 +51,19 @@ def collapse_duplicate_identity_facets_table(
 
     `rank_within_series` ranks each facet over its rows in each series, one dcid on every
     declared role, and contests keys only within a series: the result of collapsing each
-    series on its own."""
+    series on its own. `ranks`, a rank for every facet of `table` (`keep_mask`), ranks them
+    in place of their rows, for a table holding only part of the rows they rank over."""
     facet_id_column = table[_FACET_ID_COLUMN]
     distinct = pc.count_distinct(facet_id_column, mode="all")
     distinct_facets = distinct.as_py()
     if distinct_facets <= 1:
         return table
 
+    if ranks is not None and rank_within_series:
+        raise ValueError("ranks are a whole table's; a within-series rank reads the cells")
     sorted_declared_roles = sorted(declared_roles)
     cells = _cells_from_table(table, sorted_declared_roles)
-    keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series)
+    keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series, ranks=ranks)
     if keep is None:
         return table
     return table.filter(pa.array(keep, type=pa.bool_()))
@@ -145,6 +149,8 @@ def _duplicate_facet_keep_mask(
     if len({facet_id for _series, facet_id in cells_by_group}) <= 1:
         return None
 
+    if ranks is not None and (unranked := {fid for _s, fid in cells_by_group} - ranks.keys()):
+        raise ValueError(f"no rank given for facets {sorted(map(str, unranked))!r}")
     rank_by_group = {
         group: ranks[group[1]] if ranks is not None else _facet_selection_rank(group_cells)
         for group, group_cells in cells_by_group.items()

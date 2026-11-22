@@ -78,7 +78,7 @@ def test_a_converting_preview_makes_one_read_per_series_whatever_the_combination
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
-        served_window=None,
+        span=None,
     ):
         calls.append(request)
         (entity,) = request.role_bindings["observationAbout"]

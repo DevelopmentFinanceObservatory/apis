@@ -353,7 +353,7 @@ def test_facet_filter_simple_single_ref_predicate_admits_a_satisfying_pair():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
-        served_window=None,
+        span=None,
     ):
         return stub_preview_result(provenance="prov1")
 
@@ -402,7 +402,7 @@ def _record_requests(requests: list) -> object:
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
-        served_window=None,
+        span=None,
     ):
         requests.append((request, precomputed))
         return stub_preview_result(provenance="prov2")

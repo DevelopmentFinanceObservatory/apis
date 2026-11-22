@@ -380,7 +380,12 @@ def _rows(sdmx: SdmxClient | BulkPairSdmx, read: PlannedRead, facet_ids: list[st
         return set(roles), pa.Table.from_batches(list(batches), schema=observation_schema(roles))
 
 
-@pytest.mark.parametrize("period", [None, "LATEST"], ids=["every_date", "latest"])
+@pytest.mark.parametrize(
+    "period",
+    # A component's read in the years it serves asks for those years (`PlannedRead.periods`).
+    [None, "LATEST", ["2018", "2019", "2020"]],
+    ids=["every_date", "latest", "years"],
+)
 @pytest.mark.parametrize("quirk", [None, "extra_role", "no_facet_id"])
 def test_each_read_gets_the_rows_its_own_request_returns(period, quirk) -> None:
     """Each planned read, the first member's dispatching its default facet alone and every
@@ -399,6 +404,7 @@ def test_each_read_gets_the_rows_its_own_request_returns(period, quirk) -> None:
             facet_ids=frozenset({"f-default"} if i == 0 else {"f-default", "f-method"}),
             declared_roles=frozenset(_ROLES),
             latest=period == "LATEST",
+            periods=tuple(period) if isinstance(period, list) else None,
         )
         for i in range(_MEMBERS)
         for debtor in case.debtors

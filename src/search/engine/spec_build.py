@@ -121,6 +121,7 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
+from search.scope.basis import identity_window
 from search.scope.provider import provider_total_code
 from search.scope.region import policy_members, without_residuals
 from search.scope.sector import sector_concept
@@ -1435,7 +1436,9 @@ def build_spec(
             years it previews (``ResolvedSpec.component_continued``), so a request reading
             no preview resolves it no second time. A ``plan`` the request's own filter or
             window narrowed (``ReadPlan.request_filtered``) elected over inputs the hash
-            does not hold, so it states none. Every other field is the table
+            does not hold, and one whose years are not the read identity's requested
+            window, as a trailing answer's settled plan, was elected under another window
+            (``_reads_window_of``), so either states none. Every other field is the table
             identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
@@ -1712,7 +1715,10 @@ def build_spec(
         )
         .stating_component_continued(
             ()
-            if composite is None or plan is None or plan.request_filtered
+            if composite is None
+            or plan is None
+            or plan.request_filtered
+            or not _reads_window_of(plan, composite.read)
             else (
                 (component, years, serves_continuation(_previewed(plan, years)))
                 for component, years in composite.table_components()
@@ -1723,6 +1729,17 @@ def build_spec(
         .stating_built_shape_label(shape.label),
     )
     return with_members_left_out(spec)
+
+
+def _reads_window_of(plan: ReadPlan, read: BaseIdentity | None) -> bool:
+    """Whether `plan` reads the years `read`, the identity the answer's rows were read for,
+    requests. A trailing answer settles on a narrower window after its read and elects its
+    plan again there (`trailing.settle_trailing`), so its plan is not the one a resolve of
+    `read` elects."""
+    if read is None:
+        return False
+    window = identity_window(read)
+    return plan.years == (None if window == "all" else window)
 
 
 def _previewed(plan: ReadPlan | None, years: frozenset[int] | None) -> ReadPlan | None:

@@ -54,12 +54,14 @@ from materialise import (
     MaterialisationRequest,
     PreparedPreview,
     PreviewResult,
+    SpanRead,
     UpstreamResponseError,
     finish_materialise_preview,
     materialise_preview,
     prepare_materialise_preview,
 )
 from materialise.convert import ConversionRecord
+from materialise.facet_collapse import FacetRank, FacetRankStats, facet_rank
 from materialise.facets import FacetSelection, UnitRequest, merge_facets_by_series
 from materialise.method_status import status_of
 from materialise.rate_tables import RateTableCache
@@ -106,12 +108,14 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     plan_window,
     read_in_years,
+    year_of,
 )
 from search.models import (
     IdentityUnitRequest,
     SpecObservations,
     TimeWindow,
     Warning,
+    in_window,
     in_years,
     omitted_observations,
 )
@@ -528,16 +532,16 @@ class _Dispatch:
     each takes the rows carrying its own dcid on that role (`_split_series`). A fully bound
     tuple is one series, read alone. `years` is the window the read elects and takes its
     rows in, and `elected_year` the year the member elected under `latest`, None when it
-    elected none. `served`, set for a plan `read_in_years` narrowed, is the span of the
-    years it serves: the read elects under `years`, the window the plan elected under, and
-    keeps its rows in `served` alone (`materialise_preview`'s `served_window`)."""
+    elected none. `span`, set for a plan `read_in_years` narrowed, reads the span of the
+    years it serves (`_span_read`): the read elects under `years`, the window the plan
+    elected under, and keeps its rows in the span alone (`materialise.SpanRead`)."""
 
     stat_var: str
     bound: _RoleTuple
     series: tuple[PlanSeries, ...]
     years: PlanYears
     elected_year: int | None = None
-    served: TimeWindow | None = None
+    span: SpanRead | None = None
 
     @property
     def group_ids(self) -> frozenset[str]:
@@ -566,10 +570,12 @@ def _dispatches(
     years: PlanYears,
     elected: Mapping[str, int],
     served: TimeWindow | None = None,
+    selections: Mapping[str, frozenset[str]] | None = None,
 ) -> list[_Dispatch]:
     """Group the planned series into reads: one per member and tuple of the roles
-    `obs_entities` names, in series order, each over `years`, keeping its rows in `served`
-    where set (`_Dispatch.served`).
+    `obs_entities` names, in series order, each over `years`, reading the span `served`
+    where set (`_Dispatch.span`, `_span_read`) under each member's selected facet ids
+    (`PairPlan.selections`).
 
     Under `latest` materialise asks SDMX for `LATEST` rows, and for the rows in the year
     the member elected (`elected`, from `PairPlan.elected_years`) when a series ends after
@@ -580,17 +586,116 @@ def _dispatches(
     for s in series:
         bound = tuple((role, dcid) for role, dcid in s.role_tuple if role in bound_roles)
         grouped.setdefault((s.stat_var, bound), []).append(s)
-    return [
+    dispatches = [
         _Dispatch(
             stat_var=sv,
             bound=bound,
             series=tuple(members),
             years=years,
             elected_year=elected.get(sv) if years == "latest" else None,
-            served=served,
         )
         for (sv, bound), members in grouped.items()
     ]
+    if served is None:
+        return dispatches
+    return [
+        replace(
+            dispatch,
+            span=_span_read(
+                dispatch,
+                served=served,
+                selected=(selections or {}).get(dispatch.stat_var, frozenset()),
+            ),
+        )
+        for dispatch in dispatches
+    ]
+
+
+def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[str]) -> SpanRead:
+    """How `dispatch` reads `served`, the span of the years its narrowed plan serves inside
+    `dispatch.years`, the window the plan elected under, reading as few rows outside the span
+    as the read's decisions allow (`materialise.SpanRead`).
+
+    Rows before the span never change one inside it. The member's selected facets
+    (`selected`) keep every row, and a facet continuing them keeps its rows after the last
+    selected one at the series (`materialise.columnar.continuation_mask`), so only the
+    selected rows from the span's first year on decide which continuing rows the span keeps.
+    A collapse ranks the facets two contest over the window
+    (`materialise.facet_collapse.facet_rank`).
+
+    A read of one facet asks SDMX for the span's years alone. A read of several asks for the
+    span's first year to the window's end, and ranks each series' facets from their dates in
+    the window (`_window_ranks`), as bulk ranks from coverage
+    (`bulk_role_series._series_ranks`). SDMX takes a year by its four digits, so a read
+    asks for years only when every facet reads annual, or is coverage's, whose years bulk
+    reads alike (`Facet.reads_annual`, `Facet.dates_coarsened`). A read of facets that are
+    not, or of several where a facet holding observations carries no complete date list or
+    the window's end is unknown, asks for the whole window and keeps the span afterwards."""
+    span = SpanRead(served=plan_window(served))
+    group = [facet for s in dispatch.series for facet in s.group]
+    if not group or not all(f.reads_annual or f.dates_coarsened for f in group):
+        return span
+    if len(dispatch.group_ids) == 1:
+        return replace(span, fetched=span.served)
+    years = dispatch.years
+    assert years != "latest"  # `read_in_years` narrows a range or every-date plan alone
+    assert served.start_year is not None and served.end_year is not None  # `ServedYears.span`
+    if years is not None and years.end_year is not None:
+        end = years.end_year
+    else:
+        ends = [year_of(f.latest_date) for f in group]
+        if None in ends:
+            return span
+        end = max(year for year in ends if year is not None)
+    open_roles = dispatch.open_roles
+    ranks: dict[tuple[str, ...], dict[str | None, FacetRank]] = {}
+    for s in dispatch.series:
+        held = _window_ranks(s, selected=selected, years=years)
+        if held is None:
+            return span
+        role_dcids = dict(s.role_tuple)
+        ranks[tuple(role_dcids[role] for role in open_roles)] = held
+    fetched = TimeWindow(start_year=served.start_year, end_year=max(end, served.end_year))
+    return replace(span, fetched=plan_window(fetched), ranks=ranks)
+
+
+def _window_ranks(
+    series: PlanSeries, *, selected: frozenset[str], years: PlanYears
+) -> dict[str | None, FacetRank] | None:
+    """Each facet of `series`' group with its collapse rank over the rows a mint of the
+    member keeps of it at the series in `years`, counted from its dates there: a selected
+    facet its rows, a facet continuing the selection those after the selected facets' last
+    year (`materialise.columnar.continuation_mask`). A coverage facet dates one row a year,
+    as bulk counts coverage (`bulk_role_series._series_ranks`). None when a facet holding
+    observations carries no complete date list."""
+    window = years if isinstance(years, TimeWindow) else None
+    held: dict[str | None, list[int]] = {}
+    for facet in series.group:
+        if facet.obs_count > 0 and not (facet.dates and facet.dates_complete):
+            return None
+        held[facet.facet_id] = [
+            year
+            for date in facet.dates
+            if in_window(date, window) and (year := year_of(date)) is not None
+        ]
+    last = max(
+        (year for facet_id, kept in held.items() if facet_id in selected for year in kept),
+        default=None,
+    )
+    ranks: dict[str | None, FacetRank] = {}
+    for facet in series.group:
+        kept = held[facet.facet_id]
+        if facet.facet_id not in selected and last is not None:
+            kept = [year for year in kept if year > last]
+        ranks[facet.facet_id] = facet_rank(
+            FacetRankStats(
+                facet_id=facet.facet_id,
+                has_period=facet.observation_period is not None,
+                rows=len(kept),
+                span_years=max(kept) - min(kept) if kept else -1,
+            )
+        )
+    return ranks
 
 
 @dataclass(frozen=True)
@@ -827,6 +932,7 @@ def _bulk_pair_sdmx(
                 declared_roles=frozenset(_declared_roles(dispatch, member_facts)),
                 latest=dispatch.years == "latest",
                 elected_year=dispatch.elected_year,
+                periods=dispatch.span.fetched_periods if dispatch.span is not None else None,
             )
             for dispatch in dispatches
             if not is_un_dcid(dispatch.stat_var)
@@ -930,7 +1036,7 @@ def _preview_one(
             precomputed=merge_facets_by_series(by_series, list(by_series)),
             series_roles=dispatch.open_roles,
             refuse_when_every_row_omitted=False,
-            served_window=plan_window(dispatch.served) if dispatch.served is not None else None,
+            span=dispatch.span,
         )
 
 
@@ -1204,6 +1310,7 @@ def _run_pair_fetch_pool(
     years: PlanYears,
     elected: Mapping[str, int],
     served: TimeWindow | None,
+    selections: Mapping[str, frozenset[str]],
     unit_request: UnitRequest | None,
     materialise_graph: GraphReader,
     deadline: float | None,
@@ -1226,7 +1333,9 @@ def _run_pair_fetch_pool(
     """
     if len(series) > observation_settings().obs_preview_max_pairs:
         return _series_too_large(len(series), sv_dcids, obs_entities)
-    dispatches = _dispatches(series, obs_entities, years=years, elected=elected, served=served)
+    dispatches = _dispatches(
+        series, obs_entities, years=years, elected=elected, served=served, selections=selections
+    )
     if (
         "observationAbout" not in obs_entities
         and len(dispatches) > settings().obs_preview_concurrency
@@ -1538,7 +1647,7 @@ def _fetch_pair_observations(
 
     A narrowed plan's reads elect, mask and collapse under the window it elected under
     (`PairPlan.election_years`) and keep their rows in the span of the years it serves
-    (`_Dispatch.served`), so the row limit and `total_rows` read that span; `_in_years`
+    (`_Dispatch.span`), so the row limit and `total_rows` read that span; `_in_years`
     then leaves out the points of a year inside the span the plan does not serve. A series
     left with no point in the served years counts as fetched and empty, as one whose read
     held no row does.
@@ -1585,6 +1694,7 @@ def _fetch_pair_observations(
         years=plan.election_years,
         elected=plan.elected_years or {},
         served=None if plan.served_years is None else plan.served_years.span,
+        selections=plan.selections,
         unit_request=translated_unit_request,
         materialise_graph=materialise_graph,
         deadline=deadline,

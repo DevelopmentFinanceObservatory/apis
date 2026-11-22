@@ -417,16 +417,19 @@ def test_a_plan_read_in_years_states_a_continuation_only_in_a_served_year(years,
 
 
 @pytest.mark.parametrize(
-    ("read", "filtered"),
+    ("read", "filtered", "rewindowed"),
     [
-        (None, False),
-        ("table", False),
-        ("grant-equivalent", False),
+        (None, False, False),
+        ("table", False, False),
+        ("grant-equivalent", False, False),
         # The same read, its plan narrowed by the request's own facet filter.
-        ("grant-equivalent", True),
+        ("grant-equivalent", True, False),
+        # The same read, its plan elected under a window its identity does not request, as
+        # a trailing answer's plan is once it settles.
+        ("grant-equivalent", False, True),
     ],
 )
-def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, filtered):
+def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, filtered, rewindowed):
     """The spliced headline serves net flows to 2017 and grant equivalents from 2018. Its
     table identity's plan, the net reading of the whole window, continues the recorded
     series with estimates in 2020, a year the composite serves through the other component.
@@ -438,25 +441,16 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
     The table identity is the net component's definition over the whole window, not the
     net component's own years, so it states none; read for the grant-equivalent component,
     it states the 2020 estimates in that component's years, unless the request's own facet
-    filter narrowed the plan (`ReadPlan.request_filtered`), an input the hash does not hold."""
+    filter narrowed the plan (`ReadPlan.request_filtered`), an input the hash does not hold,
+    or the plan was elected under years other than the window the read requests. The plan
+    is elected under the read identity's window, or 2010 to 2027 where none is read or the
+    plan was elected again elsewhere."""
     (_observations, _warn), materialise_graph = _continued_preview_and_reader(
         [2020, *range(2022, 2030)], frozenset({2020})
     )
     candidates = materialise_graph.variable_facets_batch(
         stat_var="Count_Person", entities=["country/KEN"], needs_dates=True
     )["country/KEN"]
-    plan = plan_pairs(
-        [
-            PlanSeries(
-                stat_var="Count_Person",
-                role_tuple=(("observationAbout", "country/KEN"),),
-                candidates=tuple(candidates),
-            )
-        ],
-        members=["Count_Person"],
-        years=TimeWindow(start_year=2010, end_year=2027),
-        declared=NO_DECLARED_POLICIES,
-    )
     facts = provider._dac1_facts(provider._DAC1_TOTAL_ODA)
     identity = provider._dac1_identity(
         provider._DAC1_TOTAL_ODA, (provider._USA,), window=(2010, 2024), headline=True
@@ -471,6 +465,23 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
     assert {**net_document, "requested_window": None} == {**table, "requested_window": None}
     assert net_document["requested_window"] != table["requested_window"]
     documents = {"table": table, "grant-equivalent": component_preview(grant_equivalent)[0]}
+    window = (
+        documents[read]["requested_window"]
+        if read is not None and not rewindowed
+        else {"start_year": 2010, "end_year": 2027}
+    )
+    plan = plan_pairs(
+        [
+            PlanSeries(
+                stat_var="Count_Person",
+                role_tuple=(("observationAbout", "country/KEN"),),
+                candidates=tuple(candidates),
+            )
+        ],
+        members=["Count_Person"],
+        years=TimeWindow(start_year=window["start_year"], end_year=window["end_year"]),
+        declared=NO_DECLARED_POLICIES,
+    )
     mint = CompositeMint(
         identity=identity,
         spec_id="composite",
@@ -518,7 +529,7 @@ def test_a_spliced_composite_states_no_continuation_from_its_table_plan(read, fi
     assert stated == {
         net.component.role: None,
         grant_equivalent.component.role: (
-            True if read == "grant-equivalent" and not filtered else None
+            True if read == "grant-equivalent" and not filtered and not rewindowed else None
         ),
     }
 

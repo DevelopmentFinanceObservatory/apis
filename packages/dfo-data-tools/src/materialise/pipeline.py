@@ -35,6 +35,7 @@ from materialise.finish import (
 )
 from materialise.frame_build import Frame
 from materialise.generation import (
+    SpanRead,
     _finish_preview_member,
     _flatten_bound_entities,
     _generate_group,
@@ -664,7 +665,7 @@ def materialise_preview(
     series_roles: Sequence[str] = (),
     series_limit: int | None = None,
     refuse_when_every_row_omitted: bool = True,
-    served_window: RequestedWindow | None = None,
+    span: SpanRead | None = None,
 ) -> PreviewResult:
     """Generate a write-free, single-member preview through the mint's facet selection and
     dispatch. The preview reads every row a mint reads and reports `truncated` and the full
@@ -700,12 +701,14 @@ def materialise_preview(
     gets the part's empty result with the omissions on its conversion records, and
     decides for the whole request.
 
-    `served_window`, a range inside `request.window`, holds the years the caller serves:
-    the read elects, masks, collapses and converts every row of `request.window`, as a mint
-    of the request does, then keeps the rows in `served_window` alone before it counts,
-    truncates or builds them. A composite's component preview reads so, since a mint of
-    the composite elects each component under its own window and keeps the years the
-    composite serves afterwards (`composite.compose_components`).
+    `span` reads the years a caller serves inside a range or every-date `request.window`
+    (`SpanRead`): the read elects under `request.window`, as a mint of the request does,
+    asks SDMX for `SpanRead.fetched` alone where set, ranks contested facets by
+    `SpanRead.ranks` where given, and keeps the rows in `SpanRead.served` alone before it
+    counts, truncates or builds them. A composite's component preview reads so, since a mint
+    of the composite elects each component under its own window and keeps the years the
+    composite serves afterwards (`composite.compose_components`). A `span` outside
+    `request.window` raises `MaterialisationUsageError`.
     """
     if limit < 1:
         raise MaterialisationUsageError(f"materialise_preview requires limit >= 1, got {limit!r}")
@@ -714,6 +717,8 @@ def materialise_preview(
             f"materialise_preview with series_roles requires series_limit >= 1, "
             f"got {series_limit!r}"
         )
+    if span is not None:
+        span.check(request.window)
 
     def _generate() -> _PreviewOutcome:
         prepared = _prepare_preview_member(
@@ -729,8 +734,9 @@ def materialise_preview(
             precomputed=precomputed,
             series_roles=series_roles,
             series_limit=series_limit,
+            span=span,
         )
-        return _finish_preview_member(prepared, served_window=served_window)
+        return _finish_preview_member(prepared, span=span)
 
     outcome = _generate()
     if refuse_when_every_row_omitted:

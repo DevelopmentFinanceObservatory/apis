@@ -550,6 +550,7 @@ def build_materialise_double(
     *,
     base_url: str = MATERIALISE_BASE_URL,
     declared_roles: Mapping[str, Sequence[str]] | None = None,
+    honour_periods: bool = False,
 ) -> tuple[FakeGraphReader, MaterialiseSdmxClient, list[httpx.Request]]:
     """Pair fixture-backed graph and SDMX clients for real materialise facet selection.
 
@@ -563,7 +564,8 @@ def build_materialise_double(
     Route responses by `variableMeasured` and bound role filters. `facetId` and `TIME_PERIOD`
     do not affect the pair key; open roles have no filter. A request binding only some of a
     pair's roles reads the rest open, as SDMX does: it gets the rows of every pair carrying
-    its bound roles, under one header naming each role.
+    its bound roles, under one header naming each role. With `honour_periods`, a request
+    naming a list of periods gets the rows at those periods alone, as SDMX filters them.
     """
     facets_map: dict[tuple[str, str], list[MaterialiseFacet]] = {}
     csv_by_key: dict[tuple[str, frozenset[tuple[str, str]]], str] = {}
@@ -603,10 +605,21 @@ def build_materialise_double(
         body = csv_by_key.get((stat_var, frozenset(role_tuple)))
         if body is None:
             body = _open_role_body(pairs, stat_var, role_tuple, declared_roles or {})
+        periods = params.get("c[TIME_PERIOD]")
+        if honour_periods and periods is not None and periods != "LATEST":
+            body = _at_periods(body, frozenset(periods.split(",")))
         return httpx.Response(200, text=body, headers={"content-type": _SDMX_CSV_CONTENT_TYPE})
 
     sdmx = MaterialiseSdmxClient(base_url=base_url, transport=httpx.MockTransport(handler))
     return FakeGraphReader(facets=facets_map), sdmx, requests
+
+
+def _at_periods(body: str, periods: frozenset[str]) -> str:
+    """`body`, a CSV response, keeping its header and the rows at `periods`."""
+    header, *rows = body.split("\r\n")
+    at = header.split(",").index("TIME_PERIOD")
+    kept = [row for row in rows if row and row.split(",")[at] in periods]
+    return "\r\n".join([header, *kept, ""])
 
 
 def _open_role_body(

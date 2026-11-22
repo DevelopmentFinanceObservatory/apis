@@ -183,7 +183,7 @@ def test_build_observations_one_failed_series_still_serves_the_others_and_warns(
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
-        served_window=None,
+        span=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         if entity == "country/BAD":
