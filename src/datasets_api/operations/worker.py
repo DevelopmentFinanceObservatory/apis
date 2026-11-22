@@ -33,6 +33,17 @@ keys (`artifact_rendering_keys` under `settings.site`) lists an artifact other t
 bundle as incomplete, after a failed graph label or documentation read, takes the transient
 path. The completed row records the `trace.confirmed_at` the run served, the instant it
 confirmed the subject head, which the poll stamps on the done manifest.
+
+Once the row completes, a run that materialised a raw version renders from it, under the
+worker's one materialise permit and the run's work deadline, the groupby sums and party-totals
+cuts analysis roots read within `DATASETS_RENDER_AHEAD_READ_WINDOW_SECONDS`, at most
+`DATASETS_RENDER_AHEAD_PER_HEAD` of them (`render_ahead.render_ahead`), so the first reader of
+the new version reads them stored. The caller polling the row is not held by them, and a render
+that fails changes nothing the row answers. A render-ahead operation, which a rebuild on a request
+thread queues (`operations.render_ahead_queue`), runs that render ahead from the head it names
+and completes naming that head, with no family; it serves nothing. A renewal operation, which a
+read of a working-tier file near the end of its retention queues (`operations.renewal`), renews
+that file and completes naming the version that links it.
 """
 
 from __future__ import annotations
@@ -40,7 +51,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+from datetime import datetime, timedelta
 
+from artifact_store import ArtifactInventoryError, ArtifactWriteError
 from datasets_api.adapter import family_basis, identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
@@ -49,24 +62,29 @@ from datasets_api.admission import (
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
+from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import Operation, OperationStore
 from datasets_api.operations.lease import LEASE_SECONDS, RUN_DEADLINE_SECONDS
+from datasets_api.operations.render_ahead_queue import render_ahead_head
+from datasets_api.operations.renewal import renew_location, renewal_target
 from datasets_api.operations.submit import (
     member_dcids,
     request_identity_member_dcids,
     request_identity_subject_id,
 )
 from datasets_api.render import artifact_rendering_keys
+from datasets_api.render_ahead import render_ahead
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import collecting, door_call
 from datasets_api.versions import HeadFence, HeadFenceLost
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.problem import log_problem
 from materialise import MaterialisationCancelled, RowProgress
 from materialise.errors import UpstreamVersionChangedError
-from materialise.trace import trace_family
+from materialise.trace import UNKNOWN_FAMILY, trace_family
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -171,12 +189,37 @@ def run_operation(
     if the estimate record, a progress write, or the head advance loses its fencing token. Cancellation stops work
     at the next chunk boundary.
     """
+    if (target := renewal_target(operation.request_identity)) is not None:
+        if deadline is not None:
+            deps = dataclasses.replace(deps, deadline=deadline, work_deadline=deadline)
+        _run_renewal(
+            operation,
+            digest=target[0],
+            queued_stored_at=target[1],
+            deps=deps,
+            store=operation_store,
+            is_final_attempt=is_final_attempt,
+        )
+        return
+    if (head := render_ahead_head(operation.request_identity)) is not None:
+        if deadline is not None:
+            deps = dataclasses.replace(deps, deadline=deadline, work_deadline=deadline)
+        _run_render_ahead(
+            operation,
+            head_content_version=head,
+            deps=deps,
+            store=operation_store,
+            is_final_attempt=is_final_attempt,
+        )
+        return
     deps = dataclasses.replace(
         deps, head_fence=HeadFence(operation_id=operation.id, attempt=operation.attempt_count)
     )
     if deadline is not None:
         deps = dataclasses.replace(deps, deadline=deadline, work_deadline=deadline)
     row_progress = _FencedProgress(operation=operation, operation_store=operation_store)
+    # The raw version a rebuild in the run materialised, which the render ahead renders from.
+    materialised: list[str] = []
     try:
         # Keep request parsing and guard checks inside the failure-classification path.
         subject_id = request_identity_subject_id(operation.request_identity)
@@ -223,6 +266,7 @@ def run_operation(
                     admitted=estimate,
                     coverage_snapshot=coverage_snapshot,
                     progress=row_progress,
+                    on_materialised=materialised.append,
                 )
 
         manifest = _run(deps.coverage.snapshot())
@@ -341,6 +385,158 @@ def run_operation(
             operation.id,
             completed_subject_id,
             manifest.content_version,
+        )
+        return
+    if materialised:
+        _render_ahead(completed_subject_id, head_content_version=materialised[-1], deps=deps)
+
+
+def _run_renewal(
+    operation: Operation,
+    *,
+    digest: str,
+    queued_stored_at: datetime,
+    deps: DefinitionDeps,
+    store: OperationStore,
+    is_final_attempt: bool,
+) -> None:
+    """Run a renewal operation a read queued (`operations.renewal`): renew the location it
+    names (`renewal.renew_location`), then complete the row naming the version that links it,
+    with no family. A store or write failure, or a full materialise slot (`MintBackpressure`,
+    `MintBackgroundDeclined` included), before the operation's last attempt releases the row
+    and raises `OperationTransientFailure`, so Cloud Tasks delivers it again; on the last
+    attempt, and for any other failure, it fails the row retryable, which a later read within
+    the margin queues again."""
+    identity = operation.request_identity
+    subject_id = request_identity_subject_id(identity)
+    content_version = str(identity["content_version"])
+    try:
+        renewed = renew_location(
+            subject_id=subject_id,
+            content_version=content_version,
+            digest=digest,
+            queued_stored_at=queued_stored_at,
+            deps=deps,
+        )
+        basis = family_basis(deps)
+    except Exception as exc:
+        logger.warning(
+            "Datasets operation %r: renewing %r failed", operation.id, digest, exc_info=True
+        )
+        transient = isinstance(
+            exc,
+            (
+                DatasetsStoreUnavailable,
+                MintBackpressure,
+                ArtifactWriteError,
+                ArtifactInventoryError,
+            ),
+        )
+        if transient and not is_final_attempt:
+            store.release(operation.id, attempt=operation.attempt_count)
+            raise OperationTransientFailure() from exc
+        store.fail(
+            operation.id,
+            attempt=operation.attempt_count,
+            refusal_code="internal_error",
+            retryable=True,
+        )
+        return
+    logger.info(
+        "Datasets operation %r: %s %r",
+        operation.id,
+        "uploaded a renewal of" if renewed else "uploaded nothing for",
+        digest,
+    )
+    store.complete(
+        operation.id,
+        attempt=operation.attempt_count,
+        subject_id=subject_id,
+        content_version=content_version,
+        confirmed_at=deps.now(),
+        family=UNKNOWN_FAMILY,
+        basis=basis,
+    )
+
+
+def _run_render_ahead(
+    operation: Operation,
+    *,
+    head_content_version: str,
+    deps: DefinitionDeps,
+    store: OperationStore,
+    is_final_attempt: bool,
+) -> None:
+    """Run a render-ahead operation a request thread queued (`operations.render_ahead_queue`):
+    render ahead from its head under the run's work deadline, then complete the row naming that
+    head, with no family. A head that moved since renders nothing and completes the row.
+
+    A store failure before the operation's last attempt releases the row and raises
+    `OperationTransientFailure`, so Cloud Tasks delivers it again; on the last attempt, and for
+    any other failure, it fails the row retryable, which a later store of the same head resets
+    (`render_ahead_queue.queue_render_ahead`)."""
+    subject_id = request_identity_subject_id(operation.request_identity)
+    settings = deps.settings
+    try:
+        render_ahead(
+            subject_id,
+            head_content_version=head_content_version,
+            deps=deps,
+            read_since=deps.now() - timedelta(seconds=settings.render_ahead_read_window_seconds),
+            limit=settings.render_ahead_per_head,
+            deadline=deps.work_deadline,
+        )
+        basis = family_basis(deps)
+    except Exception as exc:
+        logger.warning(
+            "Datasets operation %r: rendering ahead from %r of %r failed",
+            operation.id,
+            head_content_version,
+            subject_id,
+            exc_info=True,
+        )
+        if isinstance(exc, DatasetsStoreUnavailable) and not is_final_attempt:
+            store.release(operation.id, attempt=operation.attempt_count)
+            raise OperationTransientFailure() from exc
+        store.fail(
+            operation.id,
+            attempt=operation.attempt_count,
+            refusal_code="internal_error",
+            retryable=True,
+        )
+        return
+    store.complete(
+        operation.id,
+        attempt=operation.attempt_count,
+        subject_id=subject_id,
+        content_version=head_content_version,
+        confirmed_at=deps.now(),
+        family=UNKNOWN_FAMILY,
+        basis=basis,
+    )
+
+
+def _render_ahead(subject_id: str, *, head_content_version: str, deps: DefinitionDeps) -> None:
+    """Render from the raw version the run materialised the renderings analysis roots read
+    recently (`render_ahead.render_ahead`), after the operation completed, under the run's work
+    deadline. A failure is logged and changes nothing the operation answers."""
+    settings = deps.settings
+    since = deps.now() - timedelta(seconds=settings.render_ahead_read_window_seconds)
+    try:
+        render_ahead(
+            subject_id,
+            head_content_version=head_content_version,
+            deps=dataclasses.replace(deps, head_fence=None),
+            read_since=since,
+            limit=settings.render_ahead_per_head,
+            deadline=deps.work_deadline,
+        )
+    except Exception:
+        logger.warning(
+            "Datasets worker: rendering ahead from %r of %r failed; the operation stands",
+            head_content_version,
+            subject_id,
+            exc_info=True,
         )
 
 

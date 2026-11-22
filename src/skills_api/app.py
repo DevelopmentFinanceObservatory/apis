@@ -59,7 +59,9 @@ def skills_surface(
     async def lifespan(_app: FastAPI):
         shared_index = skills_index
         if shared_index is None:
-            shared_index = await acquire_shared_index(graph=None)
+            # Startup does not wait for the first build; the doors wait for it
+            # (`skills_api.deps.built_index`).
+            shared_index = await acquire_shared_index(graph=None, wait_for_first_build=False)
 
         SKILLS_DEPS_SLOT.set(
             _app,

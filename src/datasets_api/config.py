@@ -16,6 +16,7 @@ from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
+from dataset_store.snapshot import WORKING_TIER_RETENTION
 from dfo_platform.config import (
     CallerSettings,
     PublicSiteSettings,
@@ -139,6 +140,13 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # `verify_principal` refuse to load with either below 2.
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
+    # Analysis keying threads (`datasets_api.doors.analysis`): a run's roots resolved, its key
+    # taken and its stored answer read, before it takes an analysis thread. A request waits up to
+    # 5 seconds for one, four requests to a thread, so a burst of stored answers queues here and
+    # meets no 503 of a busy analysis executor. A warm key reads a few rows, and a cold one can serve a root's
+    # rebuild inline, so the pool stays small to bound the dataset store connections it borrows.
+    analysis_key_max_concurrency: int = Field(default=4, ge=1)
+
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
     # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
     # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.
@@ -190,8 +198,29 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # Maximum age of a head `GET /api/datasets/{id}` serves at once past the recheck window,
     # counted from its last materialisation, while a head check runs on the worker
     # (`current.serve_stored_head`). An older head takes the checked path in the request.
-    # Always greater than `head_max_age_seconds`, so the worker makes the daily rebuild.
-    head_serve_stale_max_age_seconds: int = Field(default=604_800, ge=1)
+    # Always greater than `head_max_age_seconds` and `head_imported_data_max_age_seconds`, so
+    # the worker makes the rebuild of a head past either limit. The default is twice the
+    # imported-data age, since a head check that only confirms a head leaves `materialised_at`
+    # alone, and an import-keyed head would otherwise pass both limits together.
+    head_serve_stale_max_age_seconds: int = Field(default=1_209_600, ge=1)
+
+    # How long an analysis root's read of a groupby sum or party-totals cut keeps that
+    # rendering in the render ahead of a new head (`datasets_api.render_ahead`): a rendering read
+    # within it is rendered from the new head before a reader asks, and one read earlier is not.
+    render_ahead_read_window_seconds: int = Field(default=1_209_600, ge=1)
+
+    # The most renderings one render ahead makes from one head: the worker's after an operation
+    # that materialised a version, and `datasets-maintenance render-ahead` per dataset, latest
+    # read first. 0 renders nothing ahead.
+    render_ahead_per_head: int = Field(default=16, ge=0)
+
+    # The most renderings one `datasets-maintenance render-ahead` run makes across datasets.
+    render_ahead_max: int = Field(default=200, ge=0)
+
+    # How long before a read working-tier file's retention ends the read queues its renewal
+    # (`datasets_api.operations.renewal`): a read root rendering's frame and file, a stored
+    # analysis answer's frame file, and a file download. 0 renews nothing ahead.
+    renew_margin_seconds: int = Field(default=604_800, ge=0)
 
     # New pinned copies the pin door and the share routes make per UTC day
     # (`datasets_api.retention_admission`), a budget spent as an allowance is
@@ -305,15 +334,33 @@ class DatasetsBuildSettings(FoldCeilingSettings):
 
     @model_validator(mode="after")
     def _check_serve_stale_past_max_age(self) -> DatasetsBuildSettings:
-        """Require the serve-stale ceiling to exceed the maximum head age and the recheck
-        interval."""
-        floor = max(self.head_max_age_seconds, self.head_recheck_seconds)
+        """Require the serve-stale ceiling to exceed the maximum head age, the imported-data
+        maximum age and the recheck interval."""
+        floor = max(
+            self.head_max_age_seconds,
+            self.head_imported_data_max_age_seconds,
+            self.head_recheck_seconds,
+        )
         if self.head_serve_stale_max_age_seconds <= floor:
             raise ValueError(
                 "DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS must be > "
-                f"DATASETS_HEAD_MAX_AGE_SECONDS ({self.head_max_age_seconds}) and "
+                f"DATASETS_HEAD_MAX_AGE_SECONDS ({self.head_max_age_seconds}), "
+                "DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS "
+                f"({self.head_imported_data_max_age_seconds}) and "
                 f"DATASETS_HEAD_RECHECK_SECONDS ({self.head_recheck_seconds}), got "
                 f"{self.head_serve_stale_max_age_seconds}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_renew_margin_inside_retention(self) -> DatasetsBuildSettings:
+        """Require the renewal margin to be shorter than working-tier retention, so a file is
+        not renewed at every read from the moment it is written."""
+        retention = int(WORKING_TIER_RETENTION.total_seconds())
+        if self.renew_margin_seconds >= retention:
+            raise ValueError(
+                f"DATASETS_RENEW_MARGIN_SECONDS must be < working-tier retention ({retention}), "
+                f"got {self.renew_margin_seconds}"
             )
         return self
 

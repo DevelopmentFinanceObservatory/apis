@@ -211,7 +211,8 @@
                 "latest_period": "2024",
                 "series_reaching_it": 2,
                 "estimated_values": null,
-                "provisional_values": null
+                "provisional_values": null,
+                "partial_periods": null
               },
               "steps": [
                 {
@@ -882,7 +883,8 @@
                 "latest_period": "2025",
                 "series_reaching_it": 2,
                 "estimated_values": null,
-                "provisional_values": null
+                "provisional_values": null,
+                "partial_periods": null
               },
               "steps": [
                 {
@@ -1332,7 +1334,8 @@
                 "latest_period": "2025",
                 "series_reaching_it": 3,
                 "estimated_values": null,
-                "provisional_values": null
+                "provisional_values": null,
+                "partial_periods": null
               },
               "steps": [
                 {

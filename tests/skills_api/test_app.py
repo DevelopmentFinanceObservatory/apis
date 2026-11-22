@@ -69,7 +69,7 @@ class TestLifespanSkillsIndexOwnership:
                 # Not yet released while the app is still serving.
                 assert release_calls == []
 
-        assert acquire_calls == [{"graph": None}]
+        assert acquire_calls == [{"graph": None, "wait_for_first_build": False}]
         assert release_calls == [sentinel]
 
     def test_injected_index_is_never_acquired_or_released(self):

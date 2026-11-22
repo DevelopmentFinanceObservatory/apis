@@ -108,6 +108,7 @@ def mint_deps(deps: Deps, *, deadline: float | None) -> MintDeps:
         now=deps.now,
         rebuilds=deps.rebuilds,
         variable_breadth=deps.variable_breadth,
+        version_lister=deps.version_lister,
     )
 
 

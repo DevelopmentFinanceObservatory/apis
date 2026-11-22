@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pyarrow.parquet as pq
@@ -25,8 +25,9 @@ from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.derived import root_reads, roots_citation
-from datasets_api.doors.derived import DerivedManifestRoot
+from datasets_api.doors.derived import DerivedManifestRoot, link_cache_control
 from datasets_api.render import frame_file_location, stored_frame_location
+from datasets_api.retention import WORKING_TIER_RETENTION
 from datasets_api.version_store import LiveVersionLister
 from materialise.formats import canonical_frame_document, read_canonical_frame_table
 from materialise.frame_build import build_frame
@@ -567,3 +568,127 @@ def test_the_citation_names_each_roots_sources_once() -> None:
     assert citation.text == "OECD.\n\nWorld Bank."
     assert [source.ref for source in citation.sources] == [crs["ref"], wdi["ref"]]
     assert json.loads(citation.model_dump_json())["sources"][1]["label"] == "World Bank WDI"
+
+
+def _link(member: dict[str, Any]) -> str:
+    return _path(member, f"/files/{member['artifact']['digest']}")
+
+
+@pytest.fixture
+def _signing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sign as a URL the object name, with no V4 date, so the redirect's life is the shortest a
+    reused signature leaves."""
+    monkeypatch.setattr(
+        "artifact_store.store.sign_get_url",
+        lambda **kwargs: f"https://storage.googleapis.com/b/{kwargs['object_name']}",
+    )
+
+
+def _pin(stores: Stores, member: dict[str, Any]) -> None:
+    """Move every object of the member's version to the pinned tier."""
+    digests = [location.artifact_digest for location in _locations(stores, member)]
+    with stores.store.transaction() as tx:
+        for digest in digests:
+            tx.execute(
+                "UPDATE datasets.artifact_location SET tier = %s, bucket = %s "
+                "WHERE artifact_digest = %s",
+                ("pinned", "pinned-bucket", digest),
+            )
+
+
+def _held_for(stores: Stores, member: dict[str, Any], seconds: int) -> None:
+    """Store the member's objects so that the working-tier hold ends `seconds` from now."""
+    stored_at = stores.now - WORKING_TIER_RETENTION + timedelta(seconds=seconds)
+    digests = [location.artifact_digest for location in _locations(stores, member)]
+    with stores.store.transaction() as tx:
+        for digest in digests:
+            tx.execute(
+                "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest = %s",
+                (stored_at.isoformat(), digest),
+            )
+
+
+@pytest.mark.parametrize(
+    ("hold", "tier", "cache_control"),
+    [
+        # The signed URL lives at least 240 s (its 5 minutes less the 1-minute reuse window),
+        # and a cached redirect keeps 60 s of it.
+        pytest.param(None, "working", "public, max-age=180", id="working-held-long"),
+        pytest.param(100, "working", "public, max-age=100", id="working-held-100s"),
+        pytest.param(30, "working", "no-store", id="working-held-30s"),
+        pytest.param("pinned", "pinned", "public, max-age=180", id="pinned"),
+    ],
+)
+@pytest.mark.usefixtures("_signing")
+def test_the_digest_link_redirects_cacheably_within_the_url_life_and_the_hold(
+    monkeypatch: pytest.MonkeyPatch, hold: int | str | None, tier: str, cache_control: str
+) -> None:
+    stores = Stores()
+    member = _stored(stores)
+    if hold == "pinned":
+        _pin(stores, member)
+    elif isinstance(hold, int):
+        _held_for(stores, member, hold)
+
+    with _client(stores, monkeypatch) as client:
+        response = client.get(_link(member), follow_redirects=False)
+
+    assert response.status_code == 302, response.text
+    assert response.headers["cache-control"] == cache_control
+    assert response.headers["x-dfo-artifact-tier"] == tier
+    assert member["artifact"]["digest"].removeprefix("sha256:") in response.headers["location"]
+
+
+def test_the_digest_link_reads_the_v4_expiry_of_the_signed_url() -> None:
+    now = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+    url = (
+        "https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256"
+        "&X-Goog-Date=20261122T115900Z&X-Goog-Expires=300&X-Goog-Signature=f"
+    )
+
+    assert link_cache_control(url, now=now, held_until=None) == "public, max-age=180"
+    assert link_cache_control(url, now=now + timedelta(seconds=150), held_until=None) == (
+        "no-store"
+    )
+
+
+def test_the_digest_link_refuses_as_the_dataset_link_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    member = _stored(stores)
+    unknown = _path(member, "/files/sha256:" + "f" * 64)
+    absent = f"/api/datasets/derived/ops_{'a' * 32}/ocv_{'b' * 32}/files/sha256:{'f' * 64}"
+    with _client(stores, monkeypatch) as client:
+        not_linked = client.get(unknown, follow_redirects=False)
+        not_found = client.get(absent, follow_redirects=False)
+
+    assert (not_linked.status_code, not_linked.json()["code"]) == (404, "artifact_not_found")
+    assert (not_found.status_code, not_found.json()["code"]) == (404, "snapshot_not_found")
+    assert not_linked.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.usefixtures("_signing")
+def test_the_digest_link_renews_a_file_past_retention_whose_bytes_are_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frame file is past working retention and its object is deleted: the link renders
+    it again from the stored frame, the same digest, and redirects to it."""
+    stores = Stores()
+    member = _stored(stores)
+    digest = member["artifact"]["digest"]
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest = %s",
+            ((stores.now - timedelta(days=60)).isoformat(), digest),
+        )
+    hex_digest = digest.removeprefix("sha256:")
+    for bucket in stores.gcs.buckets.values():
+        for key in [key for key in bucket.objects if hex_digest in str(key)]:
+            del bucket.objects[key]
+
+    with _client(stores, monkeypatch) as client:
+        response = client.get(_link(member), follow_redirects=False)
+
+    assert response.status_code == 302, response.text
+    assert hex_digest in response.headers["location"]
