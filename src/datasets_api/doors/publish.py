@@ -169,6 +169,7 @@ from datasets_api.deps import DepsCell
 from datasets_api.description_record import computed_inputs
 from datasets_api.door_executor import DoorExecutor
 from datasets_api.lineage_continuations import derived_continuations, lineage_inputs
+from datasets_api.lineage_incomplete import derived_incomplete_after
 from datasets_api.principals import Grant, Principal, Principals, PublishNotPermitted
 from datasets_api.publish_models import (
     MAX_ECHO_CHARS,
@@ -640,15 +641,16 @@ def publish_built_frame(
 
     published_frame_sha256 = frame_sha256(frame)
     with phase("lineage"):
-        continuations = derived_continuations(
-            lineage_inputs(
-                steps_inputs=None if steps is None else computed_inputs(steps),
-                lineage=FrameLineage(input_content_versions=input_content_versions),
-            ),
-            reader=snapshot_reader,
+        inputs = lineage_inputs(
+            steps_inputs=None if steps is None else computed_inputs(steps),
+            lineage=FrameLineage(input_content_versions=input_content_versions),
         )
-    requested = frame_lineage(
-        input_content_versions=input_content_versions, continuations=continuations
+        continuations = derived_continuations(inputs, reader=snapshot_reader)
+        incomplete = derived_incomplete_after(inputs, reader=snapshot_reader, frame=frame)
+    requested = replace(
+        frame_lineage(input_content_versions=input_content_versions, continuations=continuations),
+        incomplete_after=None if incomplete is None else incomplete.entries,
+        incomplete_after_built_at=None if incomplete is None else incomplete.built_at,
     )
     version = VersionRecord(
         subject_id=spec_id,

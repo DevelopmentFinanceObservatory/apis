@@ -57,7 +57,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
 
@@ -147,8 +147,23 @@ class RenderedDescription:
 
 
 def read_record(*, id: str, content_version: str, deps: Deps) -> DescriptionRecord:
+    """The record of a servable version (`read_described`)."""
+    return read_described(id=id, content_version=content_version, deps=deps).record
+
+
+@dataclass(frozen=True, slots=True)
+class Described:
+    """A servable version's description record, and the `incomplete_after` its version row
+    stores (`dataset_store.snapshot.ManifestFacts.incomplete_after`), `None` when it stores
+    none."""
+
+    record: DescriptionRecord
+    marked: Sequence[Mapping[str, object]] | None
+
+
+def read_described(*, id: str, content_version: str, deps: Deps) -> Described:
     """The record of a servable version: under a served id for a `spec_` id, or the frame's own
-    for an `ops_` id.
+    for an `ops_` id, with what its version row marks partial, read in the same state read.
 
     Raises:
         DescriptionRequestInvalid: An `ops_` id or its version is malformed.
@@ -184,8 +199,8 @@ def _check_frame_address(id: str, content_version: str) -> None:
 
 def _read_servable_record(
     subject_id: str, content_version: str, *, revoked_under: tuple[str, ...], deps: Deps
-) -> DescriptionRecord:
-    read_servable_version(
+) -> Described:
+    servable = read_servable_version(
         deps.snapshot_reader,
         subject_id=subject_id,
         content_version=content_version,
@@ -195,12 +210,13 @@ def _read_servable_record(
     record = deps.description_store.read_description(id=subject_id, content_version=content_version)
     if record is None:
         raise SnapshotNotFound(id=subject_id, content_version=content_version)
-    return record
+    return Described(record=record, marked=servable.version.facts.incomplete_after)
 
 
 def render_description(*, id: str, content_version: str, deps: Deps) -> RenderedDescription:
     """The version's description in today's words (`read_record` lists the refusals)."""
-    record = read_record(id=id, content_version=content_version, deps=deps)
+    described = read_described(id=id, content_version=content_version, deps=deps)
+    record = described.record
     inputs = _input_records(record, deps=deps)
     vocabulary, degraded = _vocabulary(
         record,
@@ -210,7 +226,8 @@ def render_description(*, id: str, content_version: str, deps: Deps) -> Rendered
         index=deps.code_index,
     )
     return RenderedDescription(
-        body=describe_version(record, vocabulary, inputs=inputs), degraded=degraded
+        body=describe_version(record, vocabulary, inputs=inputs, marked=described.marked),
+        degraded=degraded,
     )
 
 
