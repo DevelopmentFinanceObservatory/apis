@@ -1517,11 +1517,11 @@ class CoverageIndex:
     def years_held(
         self, *, variables: Iterable[str], bound: BoundRoles = _NO_BINDING
     ) -> frozenset[int]:
-        """The years any row of `variables` under `bound` holds: the years `series_by_year`
-        counts a series in over the whole horizon, with no `served` or `excluded`, and the
+        """The years any row of `variables` under `bound` holds, as `series_by_year`
+        counts a series in over the whole horizon, with no `served` or `excluded`, and under the
         source-scope admission every read applies (`_admit_scoped_rows`). With no binding it
         reads the per-pair year masks the index builds once (`_pair_year_masks`), so the cost
-        follows the variables' facets, not their rows; under a binding it reads the series
+        follows the variables' facets, not their rows. Under a binding it reads the series
         `series_years` serves."""
         if bound:
             found = self.series_years(variables=list(variables), bound=bound)

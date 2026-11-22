@@ -3,8 +3,7 @@
 Each group the registry holds gets one alias per name the resolver lists for it (canonical name,
 aliases and abbreviations) and per wording in `WORDINGS`: "G7 countries", "members of the G7",
 "all G-7 countries" and the like. An alias maps its text to the name it was built from, so a
-wording resolves to the group whose name it contains and to nothing else; no other text is read
-for a group's name.
+wording resolves to the group whose name it contains.
 
 A group's wordings share one reading, whichever of its names they use. It comes from the
 curated query aliases "<name> countries", "<name> members" and "<name> member states" that
@@ -18,7 +17,7 @@ Australia, so no wording holds it. A name that already ends in a set noun ("DAC 
 carries a ", Total" suffix or ends in a bracketed qualifier ("Africa (DAC)") is not worded and
 is recorded in `unnamed` with its reason. A generated text is dropped, and recorded in `skipped`,
 when another entity lists it as a name or alias, when two groups generate it, when a curated
-query alias already holds it (`query_aliases.json` stays authoritative), when resolvekit
+query alias already holds it (`query_aliases.json` is authoritative), when resolvekit
 reports an error on it, or when only its own group lists it and the group reads as itself (the
 text resolves as the group already). A text only its own group lists is kept as an alias when
 the group reads as members, so the reading applies.

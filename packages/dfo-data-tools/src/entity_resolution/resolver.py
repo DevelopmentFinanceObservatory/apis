@@ -128,7 +128,7 @@ def _without_article_and_punctuation(text: str) -> str:
 
 # Curated query aliases keyed by `_normalize_key`. Entries correct bundled pack name conflicts
 # such as `Central Africa` and cover group phrases the generated wordings (`group_wordings`)
-# do not, or read differently: `DAC countries` reads as the DAC itself, and `low-income
+# miss or read differently. `DAC countries` reads as the DAC itself, and `low-income
 # countries (LICs)` names its group by an acronym no record lists. Texts without an alias pass
 # through unchanged.
 _QUERY_ALIASES: dict[str, QueryAlias] = load_query_aliases()
@@ -281,8 +281,8 @@ def _resolve_batch_job(
     """Resolve and gate the batch on the shared resolver's single worker.
 
     Retry each miss once with a leading article and trailing punctuation stripped, so "the EU"
-    and "the G7 countries." resolve as "EU" and "G7 countries". A top survivor the group registry holds carries the registry's group; any
-    other text follows ordinary hit assembly."""
+    and "the G7 countries." resolve as "EU" and "G7 countries". A top survivor the group
+    registry holds carries the registry's group; any other text follows ordinary hit assembly."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     outcomes: list[_GateOutcome] = []
     for text in texts:

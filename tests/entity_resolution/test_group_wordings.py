@@ -86,8 +86,8 @@ def _patch(monkeypatch, *, listed, names, wordings=("{} countries", "{} members"
 def test_a_text_two_groups_or_another_entity_name_is_left_out(monkeypatch):
     """Group A lists "Shared" and group B "SHARED", so both generate "shared countries";
     "b members" is another entity's name; "a countries" is curated; B's name "Taken" lists
-    another entity first, so no wording holds it; "a members" is listed by A alone and A reads as itself, so it
-    is recorded as self-listed."""
+    another entity first, so no wording holds it; "a members" is listed by A alone and A reads
+    as itself, so it is recorded as self-listed."""
     listed = {
         "A": ["groups/A"],
         "Shared": ["groups/A"],

@@ -125,7 +125,7 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
     the year a read of it serves (`series_coverage.index.elected_year`). Empty for a family
     the index does not decide, or one whose named dataset does not publish it. An identity
     that pins provenances reads under them, within the caller's source scope
-    (`_pinned_reads`); a composite's component read clears that scope first
+    (`_pinned_reads`). A composite's component read clears that scope first
     (`origin_catalogue.pinned_reads`), as a mint of it reads its rows. Read once per
     identity and source scope for one `facts`."""
     key = json.dumps(identity, sort_keys=True, separators=(",", ":"))
@@ -261,15 +261,13 @@ def served_components(
     (`stacked_years`) over the coverage snapshot: every component's table covers them, and
     every component that reads a missing row as unknown holds a series in them under some of
     its places. The mint reads those held years from its rows, so it can serve a year the
-    snapshot does not hold yet. Every component
-    reads with no source scope but the provenances its identity pins
-    (`origin_catalogue.pinned_reads`), whatever scope the caller reads under, so a part's
-    scope build and its composite answer (`region.composite_answer.composite_served`) read
-    the tables the mint reads. In them, a component
-    serves the years it holds a series in, and a zero-filling one
+    snapshot holds it. Every component reads with no source scope but the provenances its
+    identity pins (`origin_catalogue.pinned_reads`), whatever scope the caller reads under,
+    so a part's scope build and its composite answer
+    (`region.composite_answer.composite_served`) read the tables the mint reads. In them, a
+    component serves the years it holds a series in, and a zero-filling one
     (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
-    rows fill the cells it lacks. A spliced component serves the years
-    it holds. Raises `code_index.composites.CompositeNotServable` as `component_identities`
+    rows fill the cells it lacks. A spliced component serves the years it holds. Raises `code_index.composites.CompositeNotServable` as `component_identities`
     does, and `ValueError` for an identity that binds no composite."""
     components = component_identities(facts.index, identity)
     if components is None:
@@ -891,8 +889,8 @@ def _served_series(
     item: ServedComponent, coverage: CoverageIndex
 ) -> Iterator[tuple[tuple[str, str, str], frozenset[int]]]:
     """Each series of `item`'s members under its identity's places, read under the
-    provenances its identity pins alone (`materialise.composite.component_reads`), with the years of
-    it that `item` serves (`_serves_year`), for a series holding one."""
+    provenances its identity pins alone (`materialise.composite.component_reads`), with the
+    years of it that `item` serves (`_serves_year`), for a series holding one."""
     if item.members is None or not item.served:
         return
     with component_reads(item.component.identity):
@@ -935,8 +933,8 @@ def _headline(
 ) -> Headline | None:
     """The composite's headline: the latest year any component serves, counted over the
     rows of every component serving it, each under its own places and the provenances it
-    pins (`_headline_year`), with
-    the same counts for it and the two years before it among those the composite serves. A
+    pins (`_headline_year`), with the same counts for it and the two years before it among
+    those the composite serves. A
     component reads its own places, so one that binds its destinations to a population
     (`ComponentIdentity.populations`) counts that population alone. The named window is
     `stated`'s, the request's. None when no component serves a year or settles its
@@ -976,7 +974,7 @@ def _pins(identity: Mapping[str, object]) -> frozenset[str] | None:
 
 type _ReadKey = tuple[tuple[tuple[Role, frozenset[str]], ...], frozenset[str] | None]
 """The places a component binds, as sorted items of `bound_roles`, and the provenances it
-pins (`_pins`): the components of one key read their series together."""
+pins (`_pins`). The components of one key read their series together."""
 
 
 def _headline_year(
@@ -984,10 +982,10 @@ def _headline_year(
 ) -> HeadlineYear | None:
     """The counts of `year` over `reads`, the StatVars of the components serving it grouped
     by the places they bind and the provenances they pin (`_ReadKey`), each group read under
-    its pins alone (`origin_catalogue.pinned_reads`): `CoverageIndex.headline` of one group,
-    or across several the summed observations and series of each group's, whose StatVars
-    differ, and the distinct parties on each role across all of their series in the year.
-    None when no row holds `year`."""
+    its pins alone (`origin_catalogue.pinned_reads`). That is `CoverageIndex.headline` of one
+    group, or across several the summed observations and series of each group's, whose
+    StatVars differ, and the distinct parties on each role across all of their series in the
+    year. None when no row holds `year`."""
     found: list[tuple[CoverageHeadline, BoundRoles, frozenset[str] | None, list[str]]] = []
     for (places, pins), members in reads.items():
         variables = sorted(members)

@@ -323,7 +323,7 @@ def _dac2a_coverage(snapshot: Sequence[_SnapshotRow]) -> FakeCoverageService:
 def test_a_stacked_composite_serves_the_years_its_components_hold_for_the_frame_s_keys():
     """Another donor's imputed line starts in 2018, so the imputed table covers 2018, while
     France's to Kenya starts in 2020. A composite of France to Kenya serves 2020 and 2021,
-    the years both lines hold for its keys: Search states them, and the mint keeps them and
+    the years both lines hold for its keys. Search states them, and the mint keeps them and
     drops total ODA's 2018 and 2019."""
     populated: _Populated = {
         _BILATERAL_206: (_DAC2A_FACET, 100, (2018, 2019, 2020, 2021)),

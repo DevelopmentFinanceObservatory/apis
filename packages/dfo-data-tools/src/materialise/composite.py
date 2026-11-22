@@ -254,7 +254,7 @@ def read_component_years(
 def stacked_years(components: Iterable[ComponentYears]) -> frozenset[int]:
     """The years a stacked composite serves: those every component's table covers, in which
     every component that reads a missing row as unknown holds a series under some of the
-    frame's places. The rule reads the frame as a whole, the union over its keys: a year
+    frame's places. The rule reads the frame as a whole, the union over its keys. A year
     one component holds for one key and another holds for another serves, and a cell of it
     one line lacks keeps the other line's row alone. A zero-filling component (`held` None)
     bounds the years by its table alone, since its zero rows fill the places it lacks.

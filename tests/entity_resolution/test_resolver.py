@@ -738,7 +738,8 @@ def test_group_phrase_recovers_the_bare_groups_membership(
     group's own names ("G7 countries", "members of the G7") takes the reading of the group's
     curated rows ("<name> countries", "members" or "member states") where they agree ("G20
     members" reads as the G20's members, as "G20 countries" does, whichever of its names the
-    text uses), and otherwise reads as the group itself, as its bare name does. A curated alias row states its own reading.
+    text uses), and otherwise reads as the group itself, as its bare name does. A curated
+    alias row states its own reading.
     """
     member_ids = shared_resolver.run(
         _members_of_on_shared_thread, shared_resolver.resolver, group_name
@@ -770,7 +771,7 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 def test_a_phrase_wider_than_its_group_span_does_not_resolve_to_the_group(
     shared_resolver, text: str
 ):
-    """A group's name inside a longer phrase does not resolve the phrase: the phrase names a
+    """A group's name inside a longer phrase does not resolve the phrase. The phrase names a
     different set (a part of the group, or two groups' overlap), and no alias holds it."""
     resolver = EntityResolver(graph=FakeGraphLookup(nodes={}), shared=shared_resolver)
 

@@ -995,7 +995,7 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
 def test_the_inclusive_reach_reads_the_bilateral_years_asked_under_the_part_s_scope():
     """A part read under the imputed table's source scope holds no bilateral CRS series, so
     the years its bilateral answer asks for are none, while the composite's components read
-    under their own pins and still cover the years both tables hold."""
+    under their own pins and cover the years both tables hold."""
     rows = [
         *((dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _CRS_MEMBERS),
         *((dcid, "imputed", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _IMPUTED_MEMBERS),
