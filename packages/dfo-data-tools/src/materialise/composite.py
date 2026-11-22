@@ -206,8 +206,8 @@ def held_years(
     """The years some series of the index family component `identity` reads
     (`family_variables`) holds in `coverage` under the places its entities bind
     (`bound_roles`), over the snapshot's whole horizon and under the source scope bound to
-    the caller's context: the years `CoverageIndex.series_by_year` counts a series in for
-    the same binding."""
+    the caller's context. These are the years `CoverageIndex.series_by_year` counts a series
+    in for the same binding."""
     variables = family_variables(index, identity)
     if not variables:
         return frozenset()
@@ -239,7 +239,7 @@ def read_component_years(
     """The years `component` of a stacked composite reads in `coverage` (`ComponentYears`),
     its held years from the snapshot too, under the provenances its identity pins alone
     (`component_reads`), as the mint reads its rows. Search states a composite's years
-    from these; the mint reads held years from its rows (`compose_components`)."""
+    from these, and the mint reads held years from its rows (`compose_components`)."""
     with component_reads(component.identity):
         return ComponentYears(
             table=table_years(index, coverage, component.identity),

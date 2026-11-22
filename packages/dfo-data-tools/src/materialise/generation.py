@@ -490,7 +490,7 @@ class SpanRead:
     as a mint of the request elects, masks and collapses its rows under the whole window and
     keeps the span afterwards (`materialise.composite.compose_components`).
 
-    `served`, a closed range, is the span: the preview keeps the rows in it alone once they
+    `served`, a closed range, is the span. The preview keeps the rows in it alone once they
     are masked, collapsed and converted, before it counts, truncates or builds them.
     `fetched`, a closed range inside the request's window holding `served`, is the years the
     SDMX read asks for, each by its four digits, the period a yearly facet dates it by; None
@@ -500,7 +500,7 @@ class SpanRead:
 
     `ranks` holds each series' facet collapse ranks over the whole window
     (`facet_collapse.facet_rank`), keyed by the series' dcids on the read's `series_roles`, or
-    `()` for a read leaving no role open: a read fetching part of the window ranks the facets
+    `()` for a read leaving no role open. A read fetching part of the window ranks the facets
     two contest by them, since it holds too few of their rows to rank by its own. A series
     `ranks` lacks, or one holding a facet its ranks lack, ranks every facet by its rows
     (`facet_collapse.collapse_duplicate_identity_facets_table`)."""
@@ -3466,7 +3466,7 @@ def _finish_preview_member(
     at the period a mint of the request serves (`columnar.elected_rows`). With `span`, the
     collapse ranks each series' facets by `SpanRead.ranks` where it holds them, and the
     converted rows within `SpanRead.served` alone are kept, before anything is counted,
-    truncated or built: the rows were elected and masked under the request's own window,
+    truncated or built. The rows were elected and masked under the request's own window,
     as a mint of it keeps them."""
     ranks = span.ranks if span is not None and span.ranks is not None else {}
     request = prepared.request

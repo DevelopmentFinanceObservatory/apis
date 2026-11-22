@@ -551,9 +551,9 @@ def filter_answer(
     read no facets, the answer is unchanged.
 
     The narrowed plan is marked `ReadPlan.request_filtered` when the axis predicates
-    (`FacetAdmission.axes`) leave out a candidate the unit elections admit: a twin cluster's
-    currency or a literal unit filter, which elects over inputs the answer's identity does
-    not state. The unit elections (`elected_units`) leave it unmarked: they decide the
+    (`FacetAdmission.axes`) leave out a candidate the unit elections admit. A twin cluster's
+    currency and a literal unit filter do, and each elects over inputs the answer's identity
+    does not state. The unit elections (`elected_units`) leave it unmarked. They decide the
     identity's own unit request (`identity.facets["unit"]`) over the members, years,
     coverage and probes a resolve of the identity reads, so that resolve elects them again.
     """

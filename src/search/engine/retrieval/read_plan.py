@@ -603,9 +603,9 @@ def holds_year(series: PlanSeries, year: int) -> bool:
 
 @dataclass(frozen=True)
 class ServedYears:
-    """How `read_in_years` narrowed a plan: the years its reads serve (`years`), and the
-    years it elected its facets under before (`elected_under`), its own window, which every
-    election of the narrowed plan keeps reading. A Datasets mint of a composite elects each
+    """How `read_in_years` narrowed a plan: the years its reads serve (`years`), and
+    `elected_under`, the years it elected its facets under before narrowing, its own window,
+    which every election of the narrowed plan keeps reading. A Datasets mint of a composite elects each
     component's facets under the component's own window and keeps the years the composite
     serves afterwards (`materialise.composite.compose_components`)."""
 
@@ -655,7 +655,7 @@ class PairPlan:
     window the plan elected under (`election_years`). `request_filtered` marks a plan a
     request's own facet filter or conversion period narrowed (`facets.filter_answer`,
     `convertibility.over_conversion_period`), whose election read inputs its identity does
-    not state; every plan derived from it keeps the mark. A trailing answer's window is its
+    not state. Every plan derived from it keeps the mark. A trailing answer's window is its
     identity's own, so `windowed` alone leaves it unmarked.
     """
 
@@ -1004,9 +1004,9 @@ class BulkPlan:
         return None, None
 
     def election_bounds(self, sv: str) -> YearBounds:
-        """The years an election among `sv`'s facets reads, the collapse's ranks and the
-        continuation's cut: the years the read serves it in (`member_years`), or for a plan
-        `read_in_years` narrowed, the bounds of the window it elected under
+        """The years an election among `sv`'s facets reads, for the collapse's ranks and the
+        continuation's cut. They are the years the read serves it in (`member_years`) or, for
+        a plan `read_in_years` narrowed, the bounds of the window it elected under
         (`election_years`), as a mint of a composite's component ranks over its own
         window."""
         years = self.election_years
@@ -1075,8 +1075,8 @@ class BulkPlan:
     def selected_ends(self, sv: str, bounds: YearBounds | None = None) -> Mapping[RoleTuple, int]:
         """Each role tuple of `sv` with the last year the facets the group's selection serves
         it (`selected_candidates`) hold a point in at it, within `bounds`, by default the
-        years its election reads (`election_bounds`): the year after which a continuation
-        serves the tuple (`materialise.columnar.continuation_mask`)."""
+        years its election reads (`election_bounds`). A continuation serves the tuple only
+        after that year (`materialise.columnar.continuation_mask`)."""
         first, last = self.election_bounds(sv) if bounds is None else bounds
         ends: dict[RoleTuple, int] = {}
         for c in self.selected_candidates(sv):
@@ -1703,8 +1703,8 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
 
 
 def _after_last(date: str, last: str | None) -> bool:
-    """Whether `date` falls after `last`, a selection's last date (`serves_continuation`):
-    by year (`year_of`) where `last` is a bare year, else as dates. True when the selection
+    """Whether `date` falls after `last`, a selection's last date (`serves_continuation`).
+    It compares by year (`year_of`) where `last` is a bare year, else as dates. True when the selection
     holds no date."""
     if last is None:
         return True

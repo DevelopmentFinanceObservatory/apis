@@ -60,8 +60,8 @@ def collapse_duplicate_identity_facets_table(
     only part of the rows they rank over, when it names every facet of `table`. A table
     holding a facet `ranks` lacks (a null `facetId`, one the graph has not listed yet) ranks
     every facet by its rows, since a rank over rows and one over a whole window are on
-    different scales; it counts on the request's timings (`collapse_rank_fallbacks`) and
-    logs at DEBUG with the facets `ranks` lacks."""
+    different scales. The fallback counts on the request's timings (`collapse_rank_fallbacks`)
+    and logs at DEBUG with the facets `ranks` lacks."""
     facet_id_column = table[_FACET_ID_COLUMN]
     distinct = pc.count_distinct(facet_id_column, mode="all")
     distinct_facets = distinct.as_py()
@@ -110,8 +110,8 @@ def keep_mask(
     `rank_within_series`. A caller holding only part of a member's table, such as Search's
     bulk role read, which reads a subset of pairs, passes each facet's rank over the whole
     table in `ranks`, built from the same `FacetRankStats`, so the winner does not depend on
-    the cells it holds. `ranks` must name every facet of `cells`, else `ValueError`: a rank
-    over the whole table and one over the cells held are on different scales. It applies
+    the cells it holds. `ranks` must name every facet of `cells`, else `ValueError`, since a
+    rank over the whole table and one over the cells held are on different scales. It applies
     only without `rank_within_series`."""
     if ranks is not None and rank_within_series:
         raise ValueError("ranks are a whole table's; a within-series rank reads the cells")

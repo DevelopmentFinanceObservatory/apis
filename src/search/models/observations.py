@@ -444,8 +444,8 @@ class SpecObservations(StrictModel):
         return stated
 
     def __eq__(self, other: object) -> bool:
-        """Equal when the wire state is: `continued` is an input to the part's departures,
-        which a cached response carries already written."""
+        """Equal when the wire state is equal, since `continued` is an input to the part's
+        departures, which a cached response carries already written."""
         if not isinstance(other, SpecObservations):
             return NotImplemented
         return self.__dict__ == other.__dict__

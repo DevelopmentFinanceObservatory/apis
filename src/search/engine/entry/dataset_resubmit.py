@@ -56,7 +56,7 @@ the composite (`ResubmitIdentityPayload.composite`), and launches none of that t
 option or preview probes (`_as_composite`). The composite's preview reads each of its
 components through the part memo (`composite_answer`), in a trailing task where the request
 streams observations and inline where it embeds them. A request reading no preview resolves
-each component's read plan through the memo instead, with no row read, and states the
+each component's read plan through the memo with no row read, and states the
 continuation those plans serve (`composite_answer.with_composite_continuation`). A definite part read as its own
 identity states the `bilateral_reading_unavailable` warning a fresh answer of it states
 (`_with_withheld_reading`). A posted identity, as a posted candidate, is read as a fresh

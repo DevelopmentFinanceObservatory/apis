@@ -12,7 +12,7 @@ reads) when those rows all read members, and the group itself, as its bare name 
 all read the group or none exists. A group whose curated rows disagree reads as the group itself
 and is listed in `GroupWordings.conflicts`.
 
-A name is used only when its group is the top candidate past the listed-name gate: "AU" tops on
+A name is used only when its group is the top candidate past the listed-name gate. "AU" tops on
 Australia, so no wording holds it. A name that already ends in a set noun ("DAC countries"),
 carries a ", Total" suffix or ends in a bracketed qualifier ("Africa (DAC)") is not worded and
 is recorded in `unnamed` with its reason. A generated text is dropped, and recorded in `skipped`,

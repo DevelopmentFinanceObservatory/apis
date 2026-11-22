@@ -715,9 +715,8 @@ def _materialise_components(
     under its own pinned provenances, as its rows are, so a run is charged its rows in those
     years. The composite's years are then settled from the rows the runs read
     (`materialise.composite.stacked_years`), and the composed frame's rows checked against
-    `ceiling`. A run's
-    origin findings are read only for a version not on record (`_component_findings`). A
-    component no request names, a spliced one whose periods the window does not reach, is
+    `ceiling`. A run's origin findings are read only for a version not on record
+    (`_component_findings`). A component no request names, a spliced one whose periods the window does not reach, is
     left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
     years are read from, and `DestinationUnclassifiedError` before any read when a component
     reads a population `coverage_index` holds a destination outside of, or cannot list the

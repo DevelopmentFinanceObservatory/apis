@@ -182,7 +182,7 @@ def _donor_years(
 def _pinned_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
     """Binds the caller's catalogue narrowed to the provenances `identity` pins, within its
     source scope (`origin_catalogue.scoped_reads`), as a plain pinned table reads under a
-    part's scope; nothing where it pins none. A composite's component reads run under
+    part's scope. It binds nothing where `identity` pins none. A composite's component reads run under
     `origin_catalogue.pinned_reads(None)` first, so there the pins replace the part's
     scope."""
     return scoped_reads(_pins(identity))
@@ -260,9 +260,9 @@ class ServedComponent:
 
     @property
     def preview_years(self) -> frozenset[int]:
-        """The years the component's preview reads rows in: those it serves, under a
-        `latest` window the year the composite elects (`elected`) alone where it is one of
-        them. Empty when it previews no year, and then it is not read."""
+        """The years the component's preview reads rows in, the years it serves or,
+        under a `latest` window, the year the composite elects (`elected`) alone where it is
+        one of them. Empty when it previews no year, and then it is not read."""
         return self.served if self.elected is None else self.served & {self.elected}
 
 
@@ -273,9 +273,9 @@ def served_components(
     them (`materialise.composite`). A stacked composite's years follow the mint's rule
     (`stacked_years`) over the coverage snapshot: every component's table covers them, and
     every component that reads a missing row as unknown holds a series in them under some of
-    its places. The mint reads those held years from its rows, so it can serve a year the
-    snapshot holds it. Every component reads with no source scope but the provenances its
-    identity pins (`origin_catalogue.pinned_reads`), whatever scope the caller reads under,
+    its places. The mint reads those held years from its rows, so it can serve a year
+    before the snapshot holds it. Every component reads with no source scope but the
+    provenances its identity pins (`origin_catalogue.pinned_reads`), whatever scope the caller reads under,
     so a part's scope build and its composite answer
     (`region.composite_answer.composite_served`) read the tables the mint reads. In them, a
     component serves the years it holds a series in, and a zero-filling one
@@ -284,7 +284,7 @@ def served_components(
     recipe's periods, so under a `latest` window, which its identity passes unclipped
     (`code_index.composites.component_identities`), it serves no year after its period
     ends. Under a `latest` window either kind elects the latest year any component serves
-    (`ServedComponent.elected`); a member holding no data in that year serves nothing.
+    (`ServedComponent.elected`), and a member holding no data in that year serves nothing.
     Raises `code_index.composites.CompositeNotServable` as
     `component_identities` does, and `ValueError` for an identity that binds no
     composite."""
@@ -516,11 +516,11 @@ class CompositeMint:
     @cached_property
     def table_components(self) -> tuple[tuple[str, frozenset[int]], ...]:
         """The spec_id and preview years (`ServedComponent.preview_years`) of each component
-        previewing a year whose preview resolves the read the answer made (`read`): the
+        previewing a year whose preview resolves the read the answer made (`read`). The
         identity the component's preview resolves hashes to the read's, both with their
         population roles open (`component_spec_id`, `resolved_spec_id`), window included, and
         the component reads within the same populations (`read_populations`). Empty where the
-        answer made no read of its own; a component the hash does not settle is none of
+        answer made no read of its own. A component the hash does not settle is none of
         them. Hashed once per mint, where `spec_build.build_spec` mints it, off the event
         loop."""
         if self.read is None:

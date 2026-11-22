@@ -536,7 +536,7 @@ class _Dispatch:
     tuple is one series, read alone. `years` is the window the read elects and takes its
     rows in, and `elected_year` the year the member elected under `latest`, None when it
     elected none. `span`, set for a plan `read_in_years` narrowed, reads the span of the
-    years it serves (`_span_read`): the read elects under `years`, the window the plan
+    years it serves (`_span_read`). The read elects under `years`, the window the plan
     elected under, and keeps its rows in the span alone (`materialise.SpanRead`)."""
 
     stat_var: str
@@ -627,7 +627,7 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     (`materialise.facet_collapse.facet_rank`).
 
     A read is bounded only where it provably keeps the rows a read of the whole window
-    keeps in the span; otherwise it asks for the whole window and keeps the span afterwards.
+    keeps in the span. Otherwise it asks for the whole window and keeps the span afterwards.
     SDMX takes a year by its four digits, so every facet must be annual on evidence with no
     date against it (`_annual`). A read of one facet then asks SDMX for the span's years
     alone. A read of several asks for the span's first year to the window's end and ranks
@@ -637,7 +637,7 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
     A window with no end reads to the clock's year, or to a facet's later last date, so a
     graph snapshot that lags SDMX cannot cut rows a mint of the window reads. Each series'
     ranks name every facet the read dispatches (`_Dispatch.group_ids`), so the collapse
-    never ranks a facet of the read by its rows beside others ranked over the window."""
+    ranks every facet of the read over the window and none by its rows."""
     span = SpanRead(served=plan_window(served))
     group = [facet for s in dispatch.series for facet in s.group]
     if not group or not all(_annual(f) for f in group):
@@ -668,14 +668,14 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
 
 
 def _annual(facet: Facet) -> bool:
-    """Whether `facet` is annual on evidence with none against it. Every date it lists and
-    each bound it knows must be a bare year, whatever else holds, so a month in an
-    incomplete date list inside bare-year bounds counts against it. Then its dates must read
-    annual (`Facet.reads_annual`), or it carries a `P1Y` observation period beside dates
-    that are coverage's years, no evidence whatever its cadence (`Facet.dates_coarsened`),
-    or bare years too few to read annual. A facet merged with one whose dates are not annual
-    (`Facet.annual_evidence` False) is not, even beside coverage's years: a merge of
-    coverage facets alone states no evidence either way (`materialise.facets.merge_facets`)."""
+    """Whether `facet` is annual on evidence with none against it. It is when both hold:
+
+    - every date it lists and each bound it knows is a bare year, so a month in an
+      incomplete date list inside bare-year bounds counts against it;
+    - its dates read annual (`Facet.reads_annual`), or it carries a `P1Y` observation
+      period and no merged facet's dates read otherwise (`Facet.annual_evidence` is not
+      False). Coverage's years (`Facet.dates_coarsened`) and a merge of coverage facets
+      alone (`materialise.facets.merge_facets`) state no evidence either way."""
     own = (*facet.dates, facet.earliest_date, facet.latest_date)
     if not all(date is None or (len(date) == 4 and date.isdigit()) for date in own):
         return False
@@ -701,7 +701,7 @@ def _window_ranks(
     observations carries no complete date list.
 
     The ranks read the graph's dates, and a collapse of the rows reads SDMX's. Where the two
-    disagree, as when a snapshot lags SDMX or lists dates SDMX no longer holds, these ranks
+    disagree, as when a snapshot lags SDMX or lists dates SDMX does not hold, these ranks
     can elect another facet than the whole window's rows would. The span read accepts that
     for the rows it leaves unread, as bulk does when it ranks from coverage."""
     window = years if isinstance(years, TimeWindow) else None
@@ -874,7 +874,7 @@ def _scope_read_in_years(years: frozenset[int]) -> tuple[SpecObservations, Warni
 
 def _no_points_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
     """The omission of a preview whose plan's own years hold none of `years`, the years it
-    reads rows in (`read_plan.read_in_years`): no read is dispatched."""
+    reads rows in (`read_plan.read_in_years`). No read is dispatched."""
     return (
         omitted_observations(
             OBSERVATIONS_NO_POINTS,
@@ -1766,7 +1766,7 @@ def _fetch_pair_observations(
 
     A narrowed plan's reads elect, mask and collapse under the window it elected under
     (`PairPlan.election_years`) and keep their rows in the span of the years it serves
-    (`_Dispatch.span`), so the row limit and `total_rows` read that span; `_in_years`
+    (`_Dispatch.span`), so the row limit and `total_rows` read that span. `_in_years`
     then leaves out the points of a year inside the span the plan does not serve. A series
     left with no point in the served years counts as fetched and empty, as one whose read
     held no row does.

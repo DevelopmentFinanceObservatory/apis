@@ -59,7 +59,7 @@ def pinned_reads(allowed: frozenset[str] | None) -> AbstractContextManager[objec
     scope when `allowed` is `None` (`Catalogue.unscoped`, `Catalogue.scoped`), for the body
     of the `with` block, whatever an outer `scoped_reads` narrowed it to. A read under it
     admits what a Datasets mint pinning `allowed` admits. With `allowed` None and no
-    catalogue bound it binds nothing, as there is no scope to clear; with `allowed` set and
+    catalogue bound it binds nothing, as there is no scope to clear. With `allowed` set and
     none bound it raises `CatalogueNotBound`."""
     if allowed is None and _BOUND.get() is None:
         return nullcontext()

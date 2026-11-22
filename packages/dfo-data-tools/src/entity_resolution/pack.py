@@ -194,7 +194,7 @@ class AliasIndex:
         """Append each row that stores `text` as a name and is missing from `candidates`.
 
         Resolvekit generates no candidate for many stored aliases. Its org exact-name and
-        acronym sources skip `alias` rows, so `OAPEC` misses its organisation: resolvekit
+        acronym sources skip `alias` rows, so `OAPEC` misses its organisation. Resolvekit
         offers only `groups/OPEC`, which the gate rejects. The BYOD build stores each alias
         with its punctuation, which the org query profile strips, so `C&A Foundation` misses
         in every source. Appended owners carry no confidence, so they rank after resolvekit's

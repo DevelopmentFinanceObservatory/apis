@@ -1433,8 +1433,8 @@ def build_spec(
             in place of ``coverage``, headline, open role axes, StatVar counts, when slot,
             download, measure label, published tables and sources, provenance facet and
             data years, with no observation preview and ``ResolvedSpec.continued``
-            false: the table identity's plan reads none of the components a composite
-            stacks or splices, and its component reads state their continuation
+            false, since the table identity's plan reads none of the components a composite
+            stacks or splices and its component reads state their continuation
             (``SpecObservations.continued``). A component whose preview resolves the read
             ``plan`` was elected for, hashed with its window and populations
             (``CompositeMint.table_components``), is stated from ``plan`` narrowed to the

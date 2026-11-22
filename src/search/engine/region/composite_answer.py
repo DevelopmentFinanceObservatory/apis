@@ -284,9 +284,9 @@ async def read_composite_continuation(
     any plan narrowed to its component's years does (`read_plan.serves_continuation`), none
     when every plan serves none, and states nothing (None) when no plan serves one and a
     component's resolve states none, as `compose_observations` settles it from the reads.
-    That resolve was lost, which marks the answer degraded so no cache stores it, or it
-    refused the identity or answered no definite Spec, which states no claim and leaves the
-    answer cacheable (`_component_continuation`).
+    A resolve that was lost marks the answer degraded, so no cache stores it. A resolve that
+    refused the identity or answered no definite Spec states no claim and leaves the answer
+    cacheable (`_component_continuation`).
 
     The resolves run together, each holding a permit of `semaphore` when one is given, and
     read no row. Cancelling the caller cancels every resolve still running."""
@@ -339,7 +339,7 @@ async def _component_continuation(
     years `component_preview` names (`_resubmit`), serves a continuation in those years
     (`ResolvedSpec.continued`), or None when its resolve states none.
 
-    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient: `_resubmit` notes and
+    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient. `_resubmit` notes and
     logs it, so the answer is degraded and no cache stores it. A resolve that refuses the
     identity (`EngineInputError`) or answers no definite Spec is deterministic, so it states
     no continuation and leaves the answer cacheable. Each of these is logged at INFO with the
@@ -448,8 +448,7 @@ async def _resubmit(
 ) -> RegionResult | _LostRead:
     """The definite answer a resubmit of `identity` posting `groups` resolves, built, keyed
     and read with `resolve_spec_resubmit` in a worker thread (`_resolve_component`) through
-    `reads.catalogue` under
-    `reads.options`, embedding its preview where `observations` is set and reading no row
+    `reads.catalogue` under `reads.options`, embedding its preview where `observations` is set and reading no row
     otherwise, holding a permit of `semaphore` when one is given. Its Spec states the
     continuation its read plan serves in `years` (`EngineOptions.preview_years`) where set.
     A part memo hit reads nothing, and a miss stores the answer. Each role `populations`
