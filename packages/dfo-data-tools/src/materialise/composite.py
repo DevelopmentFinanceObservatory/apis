@@ -262,7 +262,10 @@ def stacked_years(components: Iterable[ComponentYears]) -> frozenset[int]:
     Search states the years from the coverage snapshot (`read_component_years`), and the
     mint from the rows it read for the frame's keys (`compose_components`), so a year a
     source publishes before the snapshot rebuilds can appear in the mint before Search
-    states it."""
+    states it.
+
+    A change to this rule bumps `code_index.composites.STACKED_YEARS_RULE`, so stored heads
+    composed under the old one re-mint."""
     return frozenset.intersection(
         *(
             component.table if component.held is None else component.table & component.held

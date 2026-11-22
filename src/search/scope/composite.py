@@ -341,10 +341,10 @@ def compose_observations(
 
     `total_obs`, on each series and in sum, subtracts the points dropped: every point of a
     dropped series, and the visible points cut from a kept one. A truncated series shows only
-    its latest points, so a cut among its hidden earlier points goes uncounted. The cut
-    falls at the tail in practice, where a stacked composite's shared years end before a
-    component's do. A spliced component read for a range holds only its periods' years, so
-    nothing is cut from it. `truncated` is true when a kept component preview was, and
+    its latest points, so a cut among its hidden earlier points goes uncounted. Each
+    component reads over the span of the years it serves (`preview_identity`), so its
+    latest points lie in that span, and a cut falls only at a year inside it the component
+    does not serve. `truncated` is true when a kept component preview was, and
     `order` is the kept previews' when they agree, else None.
 
     With no series left, the preview is omitted: `observations_no_points` when every
@@ -382,6 +382,25 @@ def compose_observations(
     return _composite_omission(
         [read for item, read in zip(served, reads, strict=True) if item.served]
     )
+
+
+def preview_identity(item: ServedComponent) -> dict[str, object]:
+    """`item`'s component identity with its window narrowed to the span of the years it
+    serves and its recipe's periods hold, so the preview limits of its read
+    (`SpecObservations.truncated`) keep the latest points in those years, not the latest of its
+    own window, which `compose_observations` would cut. A `latest` window, or a component
+    serving no year, keeps its window."""
+    identity = dict(item.component.identity)
+    window = cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
+    years = [year for year in item.served if _serves_year(item, year)]
+    if window.get("kind") == "latest" or not years:
+        return identity
+    identity["requested_window"] = {
+        "kind": "range",
+        "start_year": min(years),
+        "end_year": max(years),
+    }
+    return identity
 
 
 def _serves(item: ServedComponent, date: str) -> bool:

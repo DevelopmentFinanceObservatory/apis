@@ -57,6 +57,7 @@ from search.models import (
     DefinitePart,
     IdentityBindingSet,
     IdentityBindingValue,
+    IdentityWindowRange,
     ObservationPoint,
     ObservationSeries,
     ParsedEntity,
@@ -115,6 +116,10 @@ class _Components:
         self.warned: dict[str, tuple[Warning, ...]] = {}
         self.calls: list[tuple[ResubmitIdentityPayload, EngineOptions]] = []
         self.scopes: list[frozenset[str] | None] = []
+        # Each component's held years, `_WINDOW` where unnamed, and the latest points a
+        # preview keeps of the years its window asks for, every point where None.
+        self.held: dict[str, range] = {}
+        self.limit: int | None = None
 
     def __call__(
         self,
@@ -131,13 +136,23 @@ class _Components:
         name = _STAT_VARS[_provenance(inp.identity)]
         if name in self.failures:
             raise self.failures[name]
+        window = inp.identity.requested_window
+        years = [
+            year
+            for year in self.held.get(name, _WINDOW)
+            if not isinstance(window, IdentityWindowRange)
+            or (window.start_year or year) <= year <= (window.end_year or year)
+        ]
+        shown = years if self.limit is None else years[-self.limit :]
         series = ObservationSeries(
             stat_var=SeriesStatVarRef(ref=name),
             entities=[],
-            points=[ObservationPoint(date=str(year), value=1.0) for year in _WINDOW],
-            total_obs=len(_WINDOW),
+            points=[ObservationPoint(date=str(year), value=1.0) for year in shown],
+            total_obs=len(years),
         ).stating_estimates(self.estimated)
-        observations = SpecObservations(series=[series], total_obs=len(_WINDOW), truncated=False)
+        observations = SpecObservations(
+            series=[series], total_obs=len(years), truncated=len(shown) < len(years)
+        )
         spec = self.template.model_copy(
             update={
                 "spec_id": f"component-{name}",
@@ -638,6 +653,28 @@ def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
     assert [_STAT_VARS[_provenance(inp.identity)] for inp, _ in components.calls] == ["bilateral"]
     assert _dates(observations) == {"bilateral": _BOTH["bilateral"]}
     assert [w.code for w in warnings] == [_PARTIAL.code]
+
+
+def test_a_preview_limit_keeps_each_component_s_latest_points_in_the_years_it_serves(
+    monkeypatch,
+):
+    """The bilateral component holds years past the composite's last served year, and each
+    preview keeps its latest two points. Each component reads over the years it serves, so
+    the bilateral line keeps its points in them beside the imputed one."""
+    spec, components = _components(monkeypatch)
+    components.held["bilateral"] = range(2015, 2025)
+    components.limit = 2
+    reads = _reads(_coverage(monkeypatch))
+    served = [
+        dataclasses.replace(item, served=frozenset(range(2015, 2019)))
+        for item in composite_served(spec.definition.identity, reads=reads)
+    ]
+
+    observations, _ = asyncio.run(
+        read_composite_preview(served=served, entity_groups=None, reads=reads, semaphore=None)
+    )
+
+    assert _dates(observations) == {"bilateral": ["2017", "2018"], "imputed": ["2017", "2018"]}
 
 
 def test_a_component_serving_no_year_leaves_the_omission_to_those_that_serve_one():

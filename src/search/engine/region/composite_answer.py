@@ -103,6 +103,7 @@ from search.observations import (
 from search.scope.composite import (
     ServedComponent,
     compose_observations,
+    preview_identity,
     served_components,
 )
 from search.scope.region import region_groups
@@ -237,10 +238,10 @@ async def _read_component(
     reads: ComponentReads,
     semaphore: asyncio.Semaphore | None,
 ) -> tuple[SpecObservations | None, tuple[Warning, ...]]:
-    """The preview `item`'s component answer embeds and its preview warnings
-    (`_resubmit_preview`), or None and a warning naming the component's role when its read
+    """The preview `item`'s component answer embeds, read over the years it serves
+    (`preview_identity`), and its preview warnings (`_resubmit_preview`), or None and a warning naming the component's role when its read
     was lost (`_missing`)."""
-    identity = BaseIdentity.model_validate(dict(item.component.identity))
+    identity = BaseIdentity.model_validate(preview_identity(item))
     read = await _resubmit_preview(
         identity,
         groups,
