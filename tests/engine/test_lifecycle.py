@@ -23,6 +23,7 @@ from search.engine.app import create_app, search_surface
 from search.engine.assemble import build_unsupported_part
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.sdmx import LiveSdmxClient
+from search.engine.config import settings
 from search.engine.core import resolve, resolve_async
 from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.errors import LLMInfraError
@@ -268,6 +269,24 @@ class TestResolveAsyncLifecycle:
 
         assert sdmx_closes == [True]
         assert len(released) == 1
+
+
+def _stand_in_resolution() -> Resolution:
+    """A one-part resolution standing in for `resolve_async`'s, for tests of what runs
+    before it."""
+    echo = make_query_echo("x", extract_skipped=True)
+    diag = make_diagnostics("test-build", [], {}, 0)
+    shape = {"kind": "statvar_schema", "population_type": "sh1"}
+    definition = build_unsupported_definition(shape, [], entities=None, requested_window=None)
+    part = build_unsupported_part(
+        "unit_request_unsupported",
+        "/identity/facets/unit",
+        "not reached: this response is a stand-in for ordering only",
+        definition,
+        variable_text="x",
+        warnings=[],
+    )
+    return Resolution(query_echo=echo, diagnostics=diag, parts=[part])
 
 
 def test_lifespan_leaves_the_search_logger_to_propagate_to_root():
@@ -749,21 +768,7 @@ class TestGenerationRefreshBeforeCacheLookup:
 
         async def _fake_resolve_async(request, **_kwargs):
             order.append("resolve_async")
-            echo = make_query_echo("x", extract_skipped=True)
-            diag = make_diagnostics("test-build", [], {}, 0)
-            shape = {"kind": "statvar_schema", "population_type": "sh1"}
-            definition = build_unsupported_definition(
-                shape, [], entities=None, requested_window=None
-            )
-            part = build_unsupported_part(
-                "unit_request_unsupported",
-                "/identity/facets/unit",
-                "not reached: this response is a stand-in for ordering only",
-                definition,
-                variable_text="x",
-                warnings=[],
-            )
-            return Resolution(query_echo=echo, diagnostics=diag, parts=[part])
+            return _stand_in_resolution()
 
         app = create_app(
             graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX, generation=_SpyGeneration()
@@ -776,6 +781,51 @@ class TestGenerationRefreshBeforeCacheLookup:
 
         assert resp.status_code == 200, resp.text
         assert order == ["refresh_if_stale", "resolve_async"]
+
+    @pytest.mark.parametrize(
+        ("include_skills", "expected"),
+        [(True, ["ready", "resolve_async"]), (False, ["resolve_async"])],
+        ids=["skills", "no-skills"],
+    )
+    def test_resolve_asking_for_skills_waits_for_the_first_index_build(
+        self, monkeypatch, include_skills, expected
+    ):
+        """The lifespan does not wait for the skills index's first build, so a resolve that
+        asks for skills waits for it, within half its soft deadline, before the pipeline."""
+        order: list[str] = []
+        waits: list[float] = []
+
+        class _PendingIndex:
+            index = None
+
+            async def ready(self, *, timeout_s: float) -> None:
+                order.append("ready")
+                waits.append(timeout_s)
+
+        async def _fake_resolve_async(request, **_kwargs):
+            order.append("resolve_async")
+            return _stand_in_resolution()
+
+        app = create_app(
+            graph=FakeGraph(),
+            llm=FakeLLM(),
+            sdmx=EMPTY_SDMX,
+            generation=FakeGeneration(),
+            skills_index=_PendingIndex(),  # ty: ignore[invalid-argument-type]
+        )
+        with TestClient(app, raise_server_exceptions=True) as client:
+            monkeypatch.setattr("search.engine.app.resolve_async", _fake_resolve_async)
+            resp = client.post(
+                "/api/search/resolve",
+                json={
+                    "input": {"kind": "raw_text", "query": "x"},
+                    "response_options": {"include_skills": include_skills},
+                },
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert order == expected
+        assert all(0 < wait <= settings().request_timeout_s / 2 for wait in waits)
 
     def test_options_endpoint_refreshes_before_resolve_options_target_runs(self, monkeypatch):
         order: list[str] = []

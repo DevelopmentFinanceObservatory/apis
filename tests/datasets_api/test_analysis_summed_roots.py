@@ -131,11 +131,14 @@ def _rig(
     two_axes: bool = False,
     sdmx_transport=None,
     settings=None,
+    operation_store=None,
+    task_client=None,
 ):
     """A client over a minted dataset of two StatVars (one with `sole`), each 2020 value of one
     recipient, its version store, and the root naming that version with no enrichment. With
     `two_axes` its StatVars decode a second summable axis (`_two_axis_code_index`, unless
-    `code_index` is given)."""
+    `code_index` is given). `operation_store` builds the client's operation store over the version
+    store, and `task_client` is its task client."""
     store = FakeVersionRecordDatasetStore()
     if two_axes and code_index is None:
         code_index = _two_axis_code_index()
@@ -150,6 +153,8 @@ def _rig(
         recipe_store=LiveRecipeStore(store=store),
         version_lister=LiveVersionLister(store=store),
         settings=settings,
+        operation_store=operation_store(store) if operation_store is not None else None,
+        task_client=task_client,
     )
     if two_axes:
         spec_id, sidecar = _two_axis_spec_id_and_sidecar()

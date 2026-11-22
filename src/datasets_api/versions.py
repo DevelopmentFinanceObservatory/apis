@@ -391,11 +391,23 @@ class HeadLink:
     on every link under a raw version and every link written before links held heads.
     `rendered_under` maps each of those heads whose row records it to the stamp
     (`rendering_stamp`) of the code index and render format the last write naming that head
-    rendered the file under."""
+    rendered the file under, and `read_at` each head whose row records it to the last time an
+    analysis root read the file as the rendering made from that head
+    (`render_ahead.READ_MARK_INTERVAL`)."""
 
     rendering: Mapping[str, object]
     heads: frozenset[str] = frozenset()
     rendered_under: Mapping[str, str] = field(default_factory=dict)
+    read_at: Mapping[str, datetime] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReadRendering:
+    """A rendering an analysis root read as made from some head of its dataset, and the last
+    time it did (`datasets.version_artifact_head.read_at`)."""
+
+    rendering: Mapping[str, object]
+    read_at: datetime
 
 
 @dataclass(frozen=True)
@@ -438,6 +450,31 @@ class VersionLister(Protocol):
         starting after `after`. A version lists once, from its record under the earliest of
         `subject_ids` that records it, and is left out when that record's version or base
         version is revoked under any of them."""
+        ...
+
+    def list_read_renderings(self, subject_id: str, *, read_since: datetime) -> list[ReadRendering]:
+        """Return each rendering of the subject's links that an analysis root read as made from
+        any head at or after `read_since`, once with its latest read, latest first."""
+        ...
+
+    def renderings_read_since(self, subject_id: str, *, read_since: datetime) -> bool:
+        """Whether an analysis root read a rendering of the subject's links as made from any
+        head at or after `read_since`."""
+        ...
+
+    def mark_rendering_read(
+        self,
+        subject_id: str,
+        *,
+        content_version: str,
+        head_content_version: str,
+        rendering_keys: Sequence[str],
+        read_at: datetime,
+        unless_read_since: datetime,
+    ) -> None:
+        """Record `read_at` as the last read of the links under `content_version` keyed by any
+        of `rendering_keys`, as made from `head_content_version`, unless they record a read at
+        or after `unless_read_since`. A link holding no row for that head records nothing."""
         ...
 
 

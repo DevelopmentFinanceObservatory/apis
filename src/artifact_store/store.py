@@ -29,7 +29,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
@@ -294,6 +294,18 @@ class ArtifactStore(Protocol):
         this store's. The caller writes `batch.entries` in its own transaction
         (`inventory.write_entry`); until then the bytes are stored but not inventoried.
         """
+        ...
+
+
+@runtime_checkable
+class RenewingArtifactStore(Protocol):
+    """A store that can renew a working-tier object before its retention ends."""
+
+    def renewing(self, *, within: timedelta) -> ArtifactStore:
+        """A view of this store whose working-tier writes treat bytes as past retention
+        `within` before they are, so `put` of bytes whose location ends retention within that
+        time renews them under the next renewal name with a fresh `stored_at`, and the object
+        that location then names starts its lifecycle age again."""
         ...
 
 
@@ -643,6 +655,18 @@ class LiveArtifactStore:
         inventory rows to `batch`."""
         view = copy.copy(self)
         view._batch = batch
+        return view
+
+    def renewing(self, *, within: timedelta) -> LiveArtifactStore:
+        """A view sharing this store's client, buckets, inventory and URL cache that judges
+        working-tier retention `within` ahead of its clock, so a write of bytes whose location
+        ends retention within `within` uploads them again under the next renewal name
+        (`<digest>#r<n>`), a new object whose lifecycle age starts now, and moves the location
+        there with a fresh `stored_at`. Bytes further from the end of retention deduplicate as
+        on this store. The inventory stamps `stored_at` by its own clock."""
+        view = copy.copy(self)
+        now = self._now
+        view._now = lambda: now() + within
         return view
 
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:

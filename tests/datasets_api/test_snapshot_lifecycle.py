@@ -5,6 +5,7 @@ over the SQLite-backed version store.
 from __future__ import annotations
 
 import contextvars
+import copy
 import logging
 import threading
 from collections.abc import Iterator
@@ -240,11 +241,18 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
     as the GCS store records each destination it writes. A `deferred` view adds those rows to
     its batch, as `LiveArtifactStore.deferred` does, and shares this store's objects and
     counters. A write of bytes whose working location is past retention renews it, as
-    `LiveArtifactStore` does: the location moves to `<digest>#r<n>` with a fresh `stored_at`."""
+    `LiveArtifactStore` does: the location moves to `<digest>#r<n>` with a fresh `stored_at`.
+    A `renewing` view judges retention that far ahead, as `LiveArtifactStore.renewing` does."""
 
     def __init__(self, *, inventory: LiveArtifactInventory) -> None:
         super().__init__()
         self._inventory = inventory
+        self._ahead = timedelta(0)
+
+    def renewing(self, *, within: timedelta) -> _InventoryRecordingArtifactStore:
+        view = copy.copy(self)
+        view._ahead = within
+        return view
 
     def _record(self, stored: StoredArtifact) -> StoredArtifact:
         renewal = self._renewal(stored)
@@ -279,7 +287,7 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
             stored_at = datetime.fromisoformat(stored_at)
         if stored_at.tzinfo is None:  # SQLite's CURRENT_TIMESTAMP is UTC
             stored_at = stored_at.replace(tzinfo=UTC)
-        if not working_tier_expired(stored_at, now=utc_now()):
+        if not working_tier_expired(stored_at, now=utc_now() + self._ahead):
             return None
         return location.renewal + 1
 

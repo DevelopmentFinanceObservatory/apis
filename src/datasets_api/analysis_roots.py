@@ -12,7 +12,11 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   the root's dataset, as it is the `dataset` of data-mcp's mint record.
   Once a read has recorded that version, a later read of the same dataset version with the
   same minting options under the same code index and render format reads it with no render
-  (`LiveRootSource._recorded_rendering`).
+  (`LiveRootSource._recorded_rendering`). Each such read, rendered or recorded, records when
+  the rendering was last read from that dataset version (`render_ahead.mark_root_read`), which
+  chooses what a new head renders before a reader asks (`render_ahead.render_ahead`). A read of
+  a recorded version whose stored frame or read file ends working-tier retention within the
+  renewal margin queues its renewal for the worker (`operations.renewal`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
 - With `columns` the frame is the dataset version's frame-layout file of those columns, decoded
@@ -129,6 +133,7 @@ from datasets_api.doors.snapshot import servable_snapshot_manifest
 from datasets_api.groupby import adds_stat_vars, selected_contributors
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.operations.renewal import renew_if_expiring
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
@@ -140,6 +145,7 @@ from datasets_api.render import (
     resolved_rendering_keys,
     servable_frame_location,
 )
+from datasets_api.render_ahead import mark_root_read, read_recently
 from datasets_api.store_errors import (
     read_stored_frame,
     stored_frame_distinct,
@@ -989,16 +995,19 @@ class LiveRootSource:
             coverage_snapshot = deps.coverage.snapshot()
             rendered = self._recorded_rendering(
                 spec_id, content_version, mint, base=lambda: stored, revoked_under=revoked_under
-            ) or head_rendering(
-                subject_id=spec_id,
-                content_version=content_version,
-                deps=deps,
-                options=mint,
-                trace_id=trace_id,
-                coverage_snapshot=coverage_snapshot,
-                render=self._render,
-                revoked_under=revoked_under,
             )
+            if rendered is None:
+                rendered = head_rendering(
+                    subject_id=spec_id,
+                    content_version=content_version,
+                    deps=deps,
+                    options=mint,
+                    trace_id=trace_id,
+                    coverage_snapshot=coverage_snapshot,
+                    render=self._render,
+                    revoked_under=revoked_under,
+                )
+                self._mark_read(spec_id, content_version, rendered)
             if rendered is None and not self._render:
                 self._refuse_rendering_past_bound(stored.coverage.rows)
                 unstored = render_unstored(
@@ -1103,7 +1112,8 @@ class LiveRootSource:
                 )
             except SnapshotRevoked:
                 return None
-        if servable_frame_location(stored.servable, now=now) is None:
+        frame = servable_frame_location(stored.servable, now=now)
+        if frame is None:
             return None
         manifest = servable_snapshot_manifest(
             stored,
@@ -1114,7 +1124,57 @@ class LiveRootSource:
             rendering_keys=lambda _: keys,
             enrichment_digest=deps.code_index.enrichment_digest,
         )
-        return manifest if _data_artifact(manifest) is not None else None
+        artifact = _data_artifact(manifest)
+        if artifact is None:
+            return None
+        last_read = next(
+            (
+                link.read_at.get(content_version)
+                for link in recorded.links
+                if dict(link.rendering) == dict(artifact.rendering)
+            ),
+            None,
+        )
+        if not read_recently(last_read, now=now):
+            self._mark_read(spec_id, content_version, manifest)
+        self._renew_expiring(
+            spec_id,
+            recorded.content_version,
+            frame,
+            *(loc for loc in stored.servable if dict(loc.rendering) == dict(artifact.rendering)),
+        )
+        return manifest
+
+    def _renew_expiring(
+        self, spec_id: str, content_version: str, *locations: StoredArtifactLocation
+    ) -> None:
+        """Queue the renewal of each of `locations`, linked under `{spec_id, content_version}`,
+        whose working-tier retention ends within the renewal margin
+        (`operations.renewal.renew_if_expiring`). A verification (`render` false) queues
+        nothing."""
+        if not self._render:
+            return
+        for location in locations:
+            renew_if_expiring(
+                self._deps, location, subject_id=spec_id, content_version=content_version
+            )
+
+    def _mark_read(self, spec_id: str, content_version: str, manifest: Manifest | None) -> None:
+        """Record a read of the rendering `manifest` lists as made from the dataset version
+        `content_version`, which a render ahead reads (`render_ahead.mark_root_read`). A
+        rendering that minted no version of its own, and none at all, record nothing, and a
+        verification (`render` false) writes nothing."""
+        lister = self._deps.version_lister
+        if lister is None or manifest is None or not self._render:
+            return
+        mark_root_read(
+            lister,
+            subject_id=spec_id,
+            head_content_version=content_version,
+            manifest=manifest,
+            enrichment_digest=self._deps.code_index.enrichment_digest,
+            now=self._deps.now(),
+        )
 
     def _serve(
         self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
@@ -1150,15 +1210,18 @@ class LiveRootSource:
             )
             manifest = self._recorded_rendering(
                 served.spec_id, content_version, options, base=base, revoked_under=revoked_under
-            ) or head_rendering(
-                subject_id=served.spec_id,
-                content_version=content_version,
-                deps=self._deps,
-                options=options,
-                trace_id=trace_id,
-                coverage_snapshot=coverage_snapshot,
-                revoked_under=revoked_under,
             )
+            if manifest is None:
+                manifest = head_rendering(
+                    subject_id=served.spec_id,
+                    content_version=content_version,
+                    deps=self._deps,
+                    options=options,
+                    trace_id=trace_id,
+                    coverage_snapshot=coverage_snapshot,
+                    revoked_under=revoked_under,
+                )
+                self._mark_read(served.spec_id, content_version, manifest)
             if manifest is not None:
                 read_from[manifest.content_version] = content_version
             return manifest

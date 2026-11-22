@@ -70,6 +70,7 @@ CREATE TABLE datasets.version_artifact_head (
     rendering_key TEXT NOT NULL,
     head_content_version TEXT NOT NULL,
     code_index_stamp TEXT,
+    read_at TEXT,
     PRIMARY KEY (subject_id, content_version, rendering_key, head_content_version)
 );
 CREATE TABLE datasets.version_revocation (
@@ -275,6 +276,7 @@ _TIMESTAMP_COLUMNS = frozenset(
         "updated_at",
         "dispatched_at",
         "submitted_at",
+        "read_at",
     }
 )
 _BOOL_COLUMNS = frozenset({"retryable", "final_delivery", "frame_summed"})
