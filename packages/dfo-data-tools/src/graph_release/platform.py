@@ -14,7 +14,7 @@ object must then have a `Node` row, from Spanner or `Authored`.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
@@ -34,11 +34,22 @@ _OBSERVATION_PROPERTIES: Final[str] = "observationProperties"
 
 class PlatformRefusal(Exception):
     """A snapshot the builder must not release. `code` names the fault with the gate's code for
-    it."""
+    it. A refusal raised for a step's own coded refusal carries that step's code in
+    `detail_code` and its offending rows in `rows`, as `code_index.export.ExportRefused` gives
+    them. Any other refusal leaves `detail_code` `None` and `rows` empty."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        detail_code: str | None = None,
+        rows: Sequence[tuple[str, ...]] = (),
+    ) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
+        self.detail_code = detail_code
+        self.rows = tuple(rows)
 
 
 @dataclass(frozen=True)
