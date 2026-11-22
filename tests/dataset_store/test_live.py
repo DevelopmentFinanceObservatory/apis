@@ -66,12 +66,14 @@ from datasets_api.recipe_store import (
     ReplayKeyHeld,
 )
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
+from datasets_api.render_ahead import heads_read_since
 from datasets_api.retention_admission import CopyClaimUnsettled, PreparingCopy
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import (
     LiveHeadStore,
     LiveVersionLister,
     LiveVersionRecordWriter,
+    enriched_rendering_key,
 )
 from datasets_api.versions import (
     ArtifactRecord,
@@ -938,6 +940,93 @@ def test_list_head_versions_reads_each_link_with_every_head_a_write_named(live_s
             "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND content_version = %s",
             (subject_id, "cv_d1"),
         )
+
+
+def test_a_marked_read_lists_its_rendering_once_and_names_its_dataset_head(live_store):
+    """`mark_rendering_read` records a read on the head rows of the keyed links made from that
+    head, and leaves a row that records a read since `unless_read_since`. `list_read_renderings`
+    lists each rendering read since the bound once, with its latest read, and
+    `render_ahead.heads_read_since` names the dataset's head."""
+    subject_id = f"spec:test-live-read-{uuid4().hex}"
+    groupby = {"format": "parquet", "bundle": False, "groupby": {"by": ["time_period"]}}
+    cut = {**groupby, "without_party_totals": True}
+    started = datetime.now(UTC)
+    for offset, (content_version, base, rendering) in enumerate(
+        (("cv_h1", None, {"format": "frame"}), ("cv_d1", "cv_h1", groupby)),
+    ):
+        digest = f"sha256:test-live-read-{uuid4().hex}"
+        with live_store.transaction() as tx:
+            tx.execute(
+                "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) "
+                "VALUES (%s, %s)",
+                (digest, 7),
+            )
+        LiveVersionRecordWriter(
+            store=live_store, now=lambda offset=offset: started + timedelta(seconds=offset)
+        ).record_version(
+            VersionRecord(
+                subject_id=subject_id,
+                subject_kind="spec",
+                content_version=content_version,
+                schema_version=1,
+                facts=FrameLineage(input_content_versions=[]),
+                artifacts=(
+                    ArtifactRecord(
+                        artifact_digest=digest,
+                        rendering=rendering,
+                        media_type="application/vnd.apache.parquet",
+                    ),
+                    *(
+                        (
+                            ArtifactRecord(
+                                artifact_digest=digest,
+                                rendering=cut,
+                                media_type="application/vnd.apache.parquet",
+                            ),
+                        )
+                        if base
+                        else ()
+                    ),
+                ),
+                base_content_version=base,
+                frame_summed=None if base is None else True,
+            )
+        )
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.subject_head "
+            "(subject_id, content_version, confirmed_at, materialised_at) "
+            "VALUES (%s, %s, now(), now())",
+            (subject_id, "cv_h1"),
+        )
+    lister = LiveVersionLister(store=live_store)
+    read_at = started + timedelta(minutes=5)
+
+    def mark(at: datetime, *, unless: datetime) -> None:
+        lister.mark_rendering_read(
+            subject_id,
+            content_version="cv_d1",
+            head_content_version="cv_h1",
+            rendering_keys=(enriched_rendering_key(groupby, None), "an-unlinked-key"),
+            read_at=at,
+            unless_read_since=unless,
+        )
+
+    assert lister.list_read_renderings(subject_id, read_since=started) == []
+    mark(read_at, unless=read_at - timedelta(hours=1))
+    mark(read_at + timedelta(minutes=1), unless=read_at - timedelta(hours=1))
+    read = lister.list_read_renderings(subject_id, read_since=started)
+    (version,) = lister.list_head_versions(subject_id, head_content_version="cv_h1")
+
+    assert [(entry.rendering, entry.read_at) for entry in read] == [(groupby, read_at)]
+    assert lister.list_read_renderings(subject_id, read_since=read_at + timedelta(seconds=1)) == []
+    assert {
+        json.dumps(link.rendering, sort_keys=True): dict(link.read_at) for link in version.links
+    } == {
+        json.dumps(groupby, sort_keys=True): {"cv_h1": read_at},
+        json.dumps(cut, sort_keys=True): {},
+    }
+    assert (subject_id, "cv_h1") in heads_read_since(live_store, read_since=started)
 
 
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):

@@ -200,6 +200,19 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # Always greater than `head_max_age_seconds`, so the worker makes the daily rebuild.
     head_serve_stale_max_age_seconds: int = Field(default=604_800, ge=1)
 
+    # How long an analysis root's read of a groupby sum or party-totals cut keeps that
+    # rendering in the render ahead of a new head (`datasets_api.render_ahead`): a rendering read
+    # within it is rendered from the new head before a reader asks, and one read earlier is not.
+    render_ahead_read_window_seconds: int = Field(default=1_209_600, ge=1)
+
+    # The most renderings one render ahead makes from one head: the worker's after an operation
+    # that materialised a version, and `datasets-maintenance render-ahead` per dataset, latest
+    # read first. 0 renders nothing ahead.
+    render_ahead_per_head: int = Field(default=16, ge=0)
+
+    # The most renderings one `datasets-maintenance render-ahead` run makes across datasets.
+    render_ahead_max: int = Field(default=200, ge=0)
+
     # New pinned copies the pin door and the share routes make per UTC day
     # (`datasets_api.retention_admission`), a budget spent as an allowance is
     # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy

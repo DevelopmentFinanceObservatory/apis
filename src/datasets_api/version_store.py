@@ -112,6 +112,7 @@ from datasets_api.versions import (
     LateFields,
     ListedVersion,
     MaterialisationRecord,
+    ReadRendering,
     SubjectHead,
     VersionDescriber,
     VersionRecord,
@@ -910,7 +911,7 @@ class LiveVersionLister:
                     )
                     heads = tx.fetch_all(
                         "SELECT content_version, rendering_key, head_content_version, "
-                        "code_index_stamp FROM datasets.version_artifact_head "
+                        "code_index_stamp, read_at FROM datasets.version_artifact_head "
                         f"WHERE subject_id = %s AND content_version IN ({in_listed})",
                         listed,
                     )
@@ -922,22 +923,27 @@ class LiveVersionLister:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        made_from: dict[tuple[str, str], dict[str, str | None]] = {}
+        made_from: dict[tuple[str, str], dict[str, Mapping[str, object]]] = {}
         for head in heads:
             key = (cast(str, head["content_version"]), cast(str, head["rendering_key"]))
-            made_from.setdefault(key, {})[cast(str, head["head_content_version"])] = cast(
-                "str | None", head["code_index_stamp"]
-            )
+            made_from.setdefault(key, {})[cast(str, head["head_content_version"])] = head
         linked: dict[str, list[HeadLink]] = {}
         for link in links:
             content_version = cast(str, link["content_version"])
-            stamps = made_from.get((content_version, cast(str, link["rendering_key"])), {})
+            head_rows = made_from.get((content_version, cast(str, link["rendering_key"])), {})
             linked.setdefault(content_version, []).append(
                 HeadLink(
                     rendering=cast("Mapping[str, object]", link["rendering"]),
-                    heads=frozenset(stamps),
+                    heads=frozenset(head_rows),
                     rendered_under={
-                        head: stamp for head, stamp in stamps.items() if stamp is not None
+                        head: cast(str, row["code_index_stamp"])
+                        for head, row in head_rows.items()
+                        if row["code_index_stamp"] is not None
+                    },
+                    read_at={
+                        head: cast(datetime, row["read_at"])
+                        for head, row in head_rows.items()
+                        if row["read_at"] is not None
                     },
                 )
             )
@@ -949,6 +955,87 @@ class LiveVersionLister:
             )
             for row in rows
         ]
+
+    def list_read_renderings(self, subject_id: str, *, read_since: datetime) -> list[ReadRendering]:
+        """Each rendering of the subject's links an analysis root read as made from any head at
+        or after `read_since`, once with its latest read, latest first, read in one
+        transaction. Equal renderings linked under several versions, made from several heads,
+        are one rendering."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT va.rendering, vah.read_at "
+                    "FROM datasets.version_artifact_head vah "
+                    "JOIN datasets.version_artifact va ON va.subject_id = vah.subject_id "
+                    "AND va.content_version = vah.content_version "
+                    "AND va.rendering_key = vah.rendering_key "
+                    "WHERE vah.subject_id = %s AND vah.read_at >= %s "
+                    # `rendering_key` orders reads recorded at one instant.
+                    "ORDER BY vah.read_at DESC, vah.rendering_key",
+                    (subject_id, read_since),
+                )
+        except Exception as exc:
+            failure = (
+                f"listing renderings read of subject_id {subject_id!r} failed: "
+                f"{safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        read: dict[str, ReadRendering] = {}
+        for row in rows:
+            rendering = cast("Mapping[str, object]", row["rendering"])
+            read.setdefault(
+                _json_key(rendering),
+                ReadRendering(rendering=rendering, read_at=cast(datetime, row["read_at"])),
+            )
+        return list(read.values())
+
+    def mark_rendering_read(
+        self,
+        subject_id: str,
+        *,
+        content_version: str,
+        head_content_version: str,
+        rendering_keys: Sequence[str],
+        read_at: datetime,
+        unless_read_since: datetime,
+    ) -> None:
+        """Set `read_at` on the head rows of the links under `content_version` keyed by any of
+        `rendering_keys` for `head_content_version`, unless a row records a read at or after
+        `unless_read_since`, in one statement."""
+        if not rendering_keys:
+            return
+        failure: str | None = None
+        sqlstate: str | None = None
+        keys = ", ".join("%s" for _ in rendering_keys)
+        try:
+            with self._store.transaction() as tx:
+                tx.execute(
+                    "UPDATE datasets.version_artifact_head SET read_at = %s "
+                    "WHERE subject_id = %s AND content_version = %s "
+                    f"AND head_content_version = %s AND rendering_key IN ({keys}) "
+                    "AND (read_at IS NULL OR read_at < %s)",
+                    (
+                        read_at,
+                        subject_id,
+                        content_version,
+                        head_content_version,
+                        *rendering_keys,
+                        unless_read_since,
+                    ),
+                )
+        except Exception as exc:
+            failure = (
+                f"marking a read of subject_id {subject_id!r} content_version "
+                f"{content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
