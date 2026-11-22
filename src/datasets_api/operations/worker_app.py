@@ -67,7 +67,11 @@ from datasets_api.operations.worker import (
 from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
+from datasets_api.version_store import (
+    LiveHeadStore,
+    LiveVersionLister,
+    LiveVersionRecordWriter,
+)
 from dc_sdmx import DATA_HEDGE_AFTER_SECONDS, SdmxClient
 from dfo_platform.build import build_commit
 from graph_release.context import bound_served_release
@@ -115,6 +119,9 @@ def _live_deps_factory(
     run breaks a single-place facet tie on `variable_breadth`, as a sync mint of the spec does,
     so both elect one facet.
 
+    The version lister reads the renderings analysis roots read, which a run that materialised
+    a version renders ahead (`render_ahead.render_ahead`).
+
     The factory holds no code index, so a run reads the one its bindings give
     (`build_worker_app`), party kinds included.
     It holds the process's `RebuildFlights`, so every run shares one.
@@ -138,6 +145,7 @@ def _live_deps_factory(
         version_writer=LiveVersionRecordWriter(store=store),
         head_store=LiveHeadStore(store=store),
         snapshot_reader=LiveSnapshotReader(store=store),
+        version_lister=LiveVersionLister(store=store),
         materialise_semaphore=materialise_semaphore,
         rebuilds=RebuildFlights(),
         head_recheck_interval=timedelta(seconds=_settings.head_recheck_seconds),

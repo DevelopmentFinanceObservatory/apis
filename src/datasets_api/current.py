@@ -62,6 +62,11 @@ duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response 
 (`dependency_changes`), `schema` for a head with no readable fingerprint, `imported_data`
 for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or
 `unservable` for a current head that cannot answer the call.
+
+A rebuild whose trigger is not `worker`, which ran on a request thread, queues the render ahead
+from the raw version it materialised for the worker once the head's transaction has committed,
+when an analysis root read a rendering of the dataset within the render-ahead window
+(`operations.render_ahead_queue`). A worker run renders ahead itself.
 """
 
 from __future__ import annotations
@@ -123,6 +128,7 @@ from datasets_api.operation_store import (
     OperationStore,
 )
 from datasets_api.operations.head_check import HeadFreshness, submit_head_check
+from datasets_api.operations.render_ahead_queue import queue_render_ahead
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
@@ -1922,6 +1928,8 @@ def _check_currency(
             return recheck
     if on_materialised is not None:
         on_materialised(served.content_version)
+    if trigger != "worker":
+        _queue_render_ahead(subject_id, served.content_version, snapshot=snapshot, deps=deps)
     written = served.head
     if written is None:
         # A concurrent update won the head. Stamp its confirmation.
@@ -1934,6 +1942,39 @@ def _check_currency(
         family=served.family,
         coverage_stamp=snapshot.stamp,
     )
+
+
+def _queue_render_ahead(
+    subject_id: str, content_version: str, *, snapshot: CoverageSnapshot, deps: DefinitionDeps
+) -> None:
+    """Queue the render ahead from `content_version`, which a rebuild on a request thread just
+    stored, for the worker (`operations.render_ahead_queue`), when an analysis root read a
+    rendering of the dataset within the render-ahead window. A failure is logged and fails
+    nothing."""
+    settings = deps.settings
+    lister = deps.version_lister
+    if lister is None or settings.render_ahead_per_head <= 0:
+        return
+    since = deps.now() - timedelta(seconds=settings.render_ahead_read_window_seconds)
+    try:
+        with phase("render_ahead_queue"):
+            if not lister.list_read_renderings(subject_id, read_since=since):
+                return
+            queue_render_ahead(
+                subject_id=subject_id,
+                head_content_version=content_version,
+                coverage_stamp=snapshot.stamp,
+                operation_store=deps.operation_store,
+                task_client=deps.task_client,
+                backlog_max=settings.operation_backlog_max,
+            )
+    except Exception:
+        logger.warning(
+            "Datasets: queueing the render ahead of %r from %r failed",
+            subject_id,
+            content_version,
+            exc_info=True,
+        )
 
 
 def _admitted_ceiling(

@@ -199,6 +199,7 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         for rows in (100, 23):
             progress.add(rows)
@@ -345,6 +346,7 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         captured["coverage_stamp"] = coverage_snapshot.stamp
         captured["coverage_index"] = coverage_snapshot.index
@@ -598,6 +600,7 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         # Stands in for Cloud Tasks retrying onto another instance once
         # Attempt 2 reclaims the row after this lease lapses, before
@@ -677,6 +680,7 @@ def test_a_progress_write_that_loses_the_fence_cancels_the_run_and_writes_nothin
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         nonlocal chunks
         # Cloud Tasks retried onto another instance once this attempt's
@@ -882,6 +886,7 @@ def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         captured["admitted"] = admitted
         captured["recorded"] = operation_store.get(operation.id)
@@ -1042,6 +1047,7 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
         admitted,
         coverage_snapshot,
         progress,
+        on_materialised=None,
     ):
         return completed
 
@@ -1102,6 +1108,7 @@ def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
         probed.update((sv, breadth.resolve()) for sv, breadth in pending.items())
         return SimpleNamespace(
             manifest=_stub_manifest(),
+            content_version=_stub_manifest().content_version,
             head=SimpleNamespace(confirmed_at=datetime.now(UTC)),
             family=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
             latest_years={},
@@ -1121,3 +1128,58 @@ def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "done"
+
+
+@pytest.mark.parametrize("materialised", [["cv_raw"], []], ids=["rebuilt", "head_served"])
+def test_a_run_that_materialised_a_version_renders_ahead_from_it_once_done(materialised):
+    """A run whose serve materialised a raw version renders from it the renderings analysis
+    roots read (`render_ahead.render_ahead`) after the row completes, under the run's work
+    deadline and the per-head cap; a run the head served renders nothing ahead, and a render
+    ahead that raises leaves the completed row as it is."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store, subject_id=_SUBJECT_ID)
+    completed = _stub_manifest()
+    calls: list[dict] = []
+
+    def _serve(stored, *, on_materialised=None, **_kwargs):
+        for version in materialised:
+            assert on_materialised is not None
+            on_materialised(version)
+        return completed
+
+    def _render_ahead(subject_id, **kwargs):
+        row = operation_store.get(operation.id)
+        assert row is not None
+        calls.append(
+            {
+                "subject_id": subject_id,
+                "head": kwargs["head_content_version"],
+                "limit": kwargs["limit"],
+                "deadline": kwargs["deadline"],
+                "state": row.state,
+            }
+        )
+        raise RuntimeError("render failed")
+
+    deps = _deps(_linked(_SUBJECT_ID, "cv_stub", _OPTIONS))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
+        mp.setattr(worker_module, "serve_current", _serve)
+        mp.setattr(worker_module, "render_ahead", _render_ahead)
+        run_operation(
+            operation=operation, deps=deps, operation_store=operation_store, deadline=99.0
+        )
+
+    row = operation_store.get(operation.id)
+    assert row is not None
+    assert row.state == "done"
+    assert calls == [
+        {
+            "subject_id": _SUBJECT_ID,
+            "head": version,
+            "limit": deps.settings.render_ahead_per_head,
+            "deadline": 99.0,
+            "state": "done",
+        }
+        for version in materialised
+    ]
