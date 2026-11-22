@@ -19,6 +19,7 @@ import httpx
 
 from artifact_store import LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import HeadFence, SubjectHead
 from dc_sdmx import SdmxClient
@@ -87,9 +88,10 @@ _MINT_BODY = {
     "options": {"bundle": False},
 }
 
-# Past the 86400 s default maximum age and the 7-day serve-stale ceiling, so a GET rebuilds in
-# the request.
-_PAST_MAX_AGE = timedelta(days=8)
+# Past the default maximum age and serve-stale ceiling, so a GET rebuilds in the request.
+_PAST_MAX_AGE = timedelta(
+    seconds=DatasetsBuildSettings().head_serve_stale_max_age_seconds
+) + timedelta(days=1)
 _PAST_RECHECK_INTERVAL = timedelta(minutes=20)  # past the 900s default recheck interval
 
 

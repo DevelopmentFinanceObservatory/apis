@@ -456,10 +456,12 @@ class _FakeHeadStore:
         )
 
 
-# Past the 7-day serve-stale ceiling, so a GET rebuilds the head in the request, where a younger
-# head would serve at once while the worker checks it. Past the 24 h maximum age, so it rematerialises before
-# snapshot loading. This fixture has no snapshot reader.
-_PAST_INTERVAL = timedelta(days=8)
+# Past the serve-stale ceiling the settings define, so a GET rebuilds the head in the request,
+# where a younger head would serve at once while the worker checks it. Past the maximum age too,
+# so it rematerialises before snapshot loading. This fixture has no snapshot reader.
+_PAST_INTERVAL = timedelta(
+    seconds=DatasetsBuildSettings().head_serve_stale_max_age_seconds
+) + timedelta(days=1)
 
 
 def test_stale_head_rebuild_waits_for_a_materialise_slot_and_times_out_as_503(
