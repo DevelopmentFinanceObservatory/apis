@@ -1307,11 +1307,16 @@ type ReadPlan = PairPlan | BulkPlan
 def read_in_years[P: PairPlan | BulkPlan](plan: P, years: frozenset[int]) -> P | None:
     """`plan` with the facets it elected under its own years kept, read over the closed span
     of the years of `years` its own years hold: every series, pair, count and limit it
-    states then reads that span. A per-series plan keeps the series whose candidates hold a
-    point in one of those years (`has_points`), and a bulk plan lists those years alone as
-    its SDMX year list (`BulkPlan.read_years`), so a bulk read takes no row of a year inside
-    the span that `years` leaves out. A `latest` plan is returned as it is, since it reads
-    one period per StatVar. None when its own years hold no year of `years`.
+    states then reads that span. A per-series plan keeps the series whose group holds a point
+    in one of those years (`has_points`, as `PairPlan.held` tests it), an unservable series
+    whose candidates hold one (`PlanSeries.unservable`), and a series whose candidates the
+    facet filter removed, which the read counts as rejected; a bulk plan lists those years
+    alone as its SDMX year list (`BulkPlan.read_years`), so a bulk read takes no row of a
+    year inside the span that `years` leaves out. A `latest` plan is returned as it is,
+    since it reads one period per StatVar. None when its own years hold no year of `years`.
+    A bulk plan's population and row counts (`BulkPlan.population`,
+    `BulkPlan.observation_count`) follow the span of the years kept, so they are exact when
+    those years are contiguous.
 
     A composite's component preview reads its plan over the years the composite serves
     (`scope.composite.component_preview`), so it previews the facets a Datasets mint of the
@@ -1334,11 +1339,14 @@ def read_in_years[P: PairPlan | BulkPlan](plan: P, years: frozenset[int]) -> P |
     if isinstance(plan, BulkPlan):
         return replace(plan, years=span, read_years=tuple(str(year) for year in kept))
     each = [TimeWindow(start_year=year, end_year=year) for year in kept]
-    return replace(
-        plan,
-        years=span,
-        series=tuple(s for s in plan.series if any(has_points(s.candidates, y) for y in each)),
-    )
+
+    def kept_series(s: PlanSeries) -> bool:
+        if not s.candidates:
+            return True
+        facets = s.candidates if s.unservable else s.group
+        return any(has_points(facets, y) for y in each)
+
+    return replace(plan, years=span, series=tuple(s for s in plan.series if kept_series(s)))
 
 
 def served_units(plan: ReadPlan) -> frozenset[str | None]:

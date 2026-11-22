@@ -112,6 +112,7 @@ def _run_bulk(
     *,
     sdmx: FakeSdmxClient,
     facet_filter=None,
+    years: frozenset[int] | None = None,
 ):
     scope = HarnessScope(
         places=_SCOPE_PLACES, sdmx=sdmx, facets_by_sv_entity={_SV: facets_by_entity}
@@ -125,6 +126,7 @@ def _run_bulk(
         scope=scope,
         facet_filter=facet_filter,
         coverage=empty_coverage_snapshot(),
+        years=years,
     )
 
 
@@ -166,6 +168,33 @@ def test_happy_path_five_countries_one_shared_facet():
     resolved = _resolved_facets([s.facet for s in observations.series], {})
     assert resolved["provenance"].ref == "dc/base/Src"
     assert resolved["provenance"].selection is None  # concrete, not per_series
+
+
+@pytest.mark.parametrize(
+    ("years", "served"),
+    [
+        pytest.param(frozenset({2022, 2023}), 5, id="latest-point-in-years"),
+        pytest.param(frozenset({2021}), 0, id="latest-point-outside-years"),
+    ],
+)
+def test_a_dateless_scope_read_in_given_years_keeps_its_latest_points_in_them(years, served):
+    """A dateless scope plan read in given years keeps its own years, so its one latest
+    point per place is read, and shows each place's point where it lies in those years.
+    Each place's latest point is dated 2023."""
+    facets_by_entity = {
+        c: [Facet(earliest_date="2020", latest_date="2023", obs_count=4, facet_id="F1")]
+        for c in _COUNTRIES
+    }
+    sdmx = FakeSdmxClient(
+        subject_observations={_SV: {c: [_row(c, facet_id="F1")] for c in _COUNTRIES}}
+    )
+
+    observations, _warn = _run_bulk(facets_by_entity, sdmx=sdmx, years=years)
+
+    assert len(observations.series) == served
+    if not served:
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
 
 
 def test_bulk_path_never_calls_materialise_preview(monkeypatch):

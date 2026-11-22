@@ -1866,6 +1866,74 @@ def test_a_read_in_served_years_picks_counts_and_shows_their_series_alone(
     assert observations.total_obs == 2 * len(dates)
 
 
+def _read_in_years(monkeypatch, window, years: frozenset[int]):
+    """The bulk preview of five recipients holding `F1` in 2019 and 2020 under a plan over
+    `window`, read in `years`, and the SDMX double."""
+    recipients = [f"country/BRYear{i}" for i in range(5)]
+    coverage = _patch_role_coverage(
+        monkeypatch, [("F1", _DONOR, r, [2019, 2020]) for r in recipients]
+    )
+    entities = _obs_entities(recipients)
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=["2019", "2020"], facet_id="F1")] for r in recipients
+            }
+        }
+    )
+    observations, _warn = region_fetch._build_observations(
+        bulk_plan([_SV], entities, coverage=coverage, window=window),
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=years,
+    )
+    return observations, sdmx
+
+
+@pytest.mark.parametrize(
+    ("years", "dates"),
+    [
+        pytest.param(frozenset({2020}), ["2020"], id="latest-period-in-years"),
+        pytest.param(frozenset({2019}), [], id="latest-period-outside-years"),
+    ],
+)
+def test_a_latest_bulk_read_in_given_years_shows_its_points_in_them_alone(
+    monkeypatch, years, dates
+):
+    """A `latest` plan reads each member's own period, 2020, whatever the years given, and
+    shows a point only where it lies in them: none in 2019 alone, which omits the preview
+    as holding no point."""
+    observations, _sdmx = _read_in_years(monkeypatch, "latest", years)
+
+    assert [[p.date for p in series.points] for series in observations.series] == [dates] * (
+        5 if dates else 0
+    )
+    assert observations.total_obs == (5 if dates else 0)
+    if not dates:
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+
+
+def test_a_bulk_read_in_years_its_plan_does_not_hold_omits_with_no_points_and_no_read(
+    monkeypatch,
+):
+    """A plan over 2019 to 2020 read in 2015 alone holds no year to read: the preview omits
+    as holding no point, with no SDMX read."""
+    observations, sdmx = _read_in_years(
+        monkeypatch, TimeWindow(start_year=2019, end_year=2020), frozenset({2015})
+    )
+
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert (observations.omitted.dispatched, observations.omitted.empty) == (0, 0)
+    assert sdmx.series_calls == []
+
+
 def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():
     """A StatVar whose role tuple holds no observation in the read's years takes no place in
     a ranked read, however new its latest date, so every StatVar with data there is read

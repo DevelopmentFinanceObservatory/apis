@@ -101,6 +101,15 @@ def in_window(date_str: str, window: TimeWindow | None) -> bool:
     return not (window.end_year is not None and year > window.end_year)
 
 
+def in_years(date_str: str, years: frozenset[int]) -> bool:
+    """Return whether a date's leading year is one of `years`. Include unparseable dates, as
+    `in_window` does."""
+    try:
+        return int(str(date_str)[:4]) in years
+    except (ValueError, TypeError):
+        return True
+
+
 class SlotValue(StrictModel):
     """One taxonomy member or facet value bound to a slot."""
 

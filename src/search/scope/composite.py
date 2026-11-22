@@ -404,9 +404,10 @@ def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozens
 
     The identity is the component's own, so its read elects the facets a Datasets mint of
     the composite elects under the same window, and its window passes every gate a mint's
-    read of it passes. Its read plan then reads rows over the years alone
-    (`read_plan.read_in_years`), so the preview's series, counts and limits see those years
-    and no other. A stacked composite under a `latest` window, which no mint serves,
+    read of it passes. Its read plan then reads rows over the span of the years and keeps
+    the points in them alone (`read_plan.read_in_years`), so the preview's series and points
+    lie in those years. Its counts follow the span of the served years and are exact when
+    the served years are contiguous. A stacked composite under a `latest` window, which no mint serves,
     previews the year it elects (`ServedComponent.elected`): each component reads that
     year alone."""
     identity = dict(item.component.identity)

@@ -108,6 +108,7 @@ from search.models import (
     SpecObservations,
     TimeWindow,
     Warning,
+    in_years,
     omitted_observations,
 )
 from search.observations import (
@@ -389,6 +390,7 @@ def _bulk_scope_dispatch(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
     member_constraints: Mapping[str, Mapping[str, str]],
     deadline: float | None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Dispatch a scope-defaulted standard query through the one-facet bulk branch, serving
     the facet `plan` elected.
@@ -396,7 +398,8 @@ def _bulk_scope_dispatch(
     A range plan returns `OBSERVATIONS_WINDOWED_SCOPE_UNSUPPORTED`. `latest` and dateless
     plans supply one latest point per place. A unit request converts those points or narrows
     the plan to the native units (`_bulk_unit`); a conversion without its inputs returns
-    `OBSERVATIONS_CLIENTS_UNAVAILABLE` before any read.
+    `OBSERVATIONS_CLIENTS_UNAVAILABLE` before any read. `years`, where set, are the years
+    the read keeps points in (`_bulk_scope_series`); the plan reads under its own years.
     """
     if isinstance(plan.years, TimeWindow):
         observations = observations_windowed_scope()
@@ -428,6 +431,7 @@ def _bulk_scope_dispatch(
         facet_filter=facet_filter,
         member_constraints=member_constraints,
         conversion=conversion,
+        years=years,
     )
 
 
@@ -460,7 +464,9 @@ def _role_bearing_bulk_dispatch(
     `OBSERVATIONS_CLIENTS_UNAVAILABLE`. A `latest` read serves each member its own latest
     period (`_bulk_role_series`). `years`, where set, are the years the read takes rows in
     (`read_plan.read_in_years`), applied once the unit has narrowed the plan, so the
-    narrowing elects under the plan's own years.
+    narrowing elects under the plan's own years; the read keeps its points in them, which
+    a `latest` read needs, as its plan is not narrowed. A plan whose years hold none of them
+    returns `OBSERVATIONS_NO_POINTS` with no read.
     """
     readable = (
         isinstance(plan, BulkPlan)
@@ -495,10 +501,10 @@ def _role_bearing_bulk_dispatch(
         ), None
     plan, conversion = unit
     if years is not None:
-        in_years = read_in_years(plan, years)
-        if in_years is None:
-            return SpecObservations(series=[], total_obs=0, truncated=False), None
-        plan = in_years
+        narrowed = read_in_years(plan, years)
+        if narrowed is None:
+            return _no_points_in_years(years)
+        plan = narrowed
     return _bulk_role_series(
         plan,
         sv_dcids,
@@ -508,6 +514,7 @@ def _role_bearing_bulk_dispatch(
         deadline=deadline,
         member_constraints=member_constraints,
         conversion=conversion,
+        years=years,
     )
 
 
@@ -681,18 +688,26 @@ def _in_years(
     is kept, as `search.models.in_window` keeps it."""
     kept: dict[_SeriesKey, _SeriesRead] = {}
     for key, read in reads.items():
-        points = [point for point in read.points if _year_in(point[0], years)]
+        points = [point for point in read.points if in_years(point[0], years)]
         if points:
             cut = len(read.points) - len(points)
             kept[key] = replace(read, points=points, total_rows=read.total_rows - cut)
     return kept
 
 
-def _year_in(date: str, years: frozenset[int]) -> bool:
-    try:
-        return int(date[:4]) in years
-    except ValueError:
-        return True
+def _no_points_in_years(years: frozenset[int]) -> tuple[SpecObservations, None]:
+    """The omission of a preview whose plan's own years hold none of `years`, the years it
+    reads rows in (`read_plan.read_in_years`): no read is dispatched."""
+    return (
+        omitted_observations(
+            OBSERVATIONS_NO_POINTS,
+            f"the observation preview read no rows: the answer's years hold none of the "
+            f"{len(years)} years it previews.",
+            dispatched=0,
+            empty=0,
+        ),
+        None,
+    )
 
 
 def _every_row_omitted(read: _SeriesRead) -> bool:
@@ -1609,18 +1624,18 @@ def _build_observations(
     `coverage` supplies the index role-bearing materialisation reads.
 
     `years`, where set, are the years the preview reads rows in (`read_plan.read_in_years`):
-    the plan keeps the facets it elected under its own years, and its series, pairs, counts
-    and limits read those years alone. A per-series read keeps only their points
-    (`_in_years`), and a bulk role read applies them once `_bulk_unit` has narrowed the plan
-    under its own years. A plan whose years hold none of them previews no series. None reads
-    the plan's own years.
+    the plan keeps the facets it elected under its own years and reads over the span of
+    those years, and every path keeps only the points in them before its limits cut. A
+    per-series read narrows its plan to the span and keeps its points in the years
+    (`_in_years`), a bulk role read narrows its plan once `_bulk_unit` has elected under the
+    plan's own years, and a scope-defaulted read keeps its plan, which reads one latest
+    point per place. The counts follow the span of the served years and are exact when the
+    served years are contiguous: a bulk read's population and unread row counts and its
+    fixed-order pair choice, and a per-series read's `total_rows`, also count rows of the
+    span's other years. A plan whose years hold none of them returns
+    `OBSERVATIONS_NO_POINTS` with no read, after the nothing-to-probe checks.
+    None reads the plan's own years.
     """
-    if years is not None and plan is not None:
-        in_years = read_in_years(plan, years)
-        if in_years is None:
-            return SpecObservations(series=[], total_obs=0, truncated=False), None
-        if isinstance(plan, PairPlan):
-            plan = in_years
     if not sv_dcids or not obs_entities:
         return (
             omitted_observations(
@@ -1654,8 +1669,13 @@ def _build_observations(
             ),
             None,
         )
+    narrowed = plan
+    if years is not None and plan is not None:
+        narrowed = read_in_years(plan, years)
+        if narrowed is None:
+            return _no_points_in_years(years)
     mode = _preview_mode(
-        plan, sv_dcids, role_bearing=role_bearing, scope=scope, bound_pairs=len(pairs)
+        narrowed, sv_dcids, role_bearing=role_bearing, scope=scope, bound_pairs=len(pairs)
     )
     if mode is PreviewMode.SCOPE_BULK:
         assert isinstance(plan, PairPlan) and scope is not None  # `_preview_mode`
@@ -1673,6 +1693,7 @@ def _build_observations(
             elected=elected,
             member_constraints=member_constraints,
             deadline=deadline,
+            years=years,
         )
     if mode is PreviewMode.ROLE_BULK:
         return _role_bearing_bulk_dispatch(
@@ -1692,6 +1713,7 @@ def _build_observations(
             deadline=deadline,
             years=years,
         )
+    plan = narrowed
     if not isinstance(plan, PairPlan):
         # Every resolver that reads facets plans its read; an answer without a plan read none.
         return (

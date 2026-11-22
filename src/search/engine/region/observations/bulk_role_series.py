@@ -88,6 +88,7 @@ from search.models import (
     PreviewOrder,
     SpecObservations,
     Warning,
+    in_years,
     omitted_observations,
 )
 from search.observations import (
@@ -516,9 +517,12 @@ def _assemble_role_bulk_series(
     converted: ConvertedPairs | None = None,
     target_unit_ref: str | None = None,
     estimated: frozenset[tuple[str, RoleTuple]] = frozenset(),
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Build series from the dispatched pairs and return any warning. The pairs in
     `estimated` serve a point of an estimated method (`SeriesRead.holds_estimates`).
+    `years`, where set, keeps each pair's points in those years (`search.models.in_years`),
+    a pair left with none dropped, before anything below counts or cuts them.
 
     `converted` holds each converted pair's conversion: its series states the conversion
     and is in `target_unit_ref`, or states no unit for a conversion into each entity's own
@@ -536,6 +540,12 @@ def _assemble_role_bulk_series(
     both apply. `total_obs` adds the population's unread in-window coverage
     counts to the points read, so no second SDMX read is needed.
     """
+    if years is not None:
+        pair_points = {
+            pair: kept
+            for pair, points in pair_points.items()
+            if (kept := [point for point in points if in_years(point[0], years)])
+        }
     if not pair_points and converted is not None and converted.leaves_out:
         return left_out_omission(converted)
     if not pair_points:
@@ -600,6 +610,7 @@ def _bulk_role_series(
     deadline: float | None = None,
     member_constraints: Mapping[str, Mapping[str, str]] | None = None,
     conversion: BulkConversion | None = None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Serve the facet `plan` elected across its pairs, continued past each pair's last
     point by the facets `plan` names (`BulkPlan.continuing`), in one `role_series` call for every
@@ -621,7 +632,9 @@ def _bulk_role_series(
     period among the `LATEST` rows of every pair returned for it, as a mint falls back.
     Under `fixed`, which reads only some of its pairs, it serves no series, which the
     truncation warning counts as not shown, or `OBSERVATIONS_NO_POINTS` when no series is
-    left. A dateless read takes every year.
+    left. A dateless read takes every year. `years`, where set, keeps the points in those
+    years alone (`_assemble_role_bulk_series`), as a `latest` read takes each member's own
+    period whatever they are.
 
     A plan that dispatches no pair reads nothing and returns `OBSERVATIONS_NO_POINTS`.
     Read failures in `_FETCH_FAILURE_EXCEPTIONS` return `OBSERVATIONS_BULK_FETCH_FAILED`
@@ -677,6 +690,7 @@ def _bulk_role_series(
             deadline=deadline,
             member_constraints=member_constraints,
             conversion=conversion,
+            years=years,
         )
     finally:
         logger.info(
@@ -703,6 +717,7 @@ def _read_and_assemble(
     deadline: float | None,
     member_constraints: Mapping[str, Mapping[str, str]] | None,
     conversion: BulkConversion | None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """`_bulk_role_series`'s read of `fetch_plan`, its conversion and its assembly."""
     latest = plan.years == "latest"
@@ -842,6 +857,7 @@ def _read_and_assemble(
         converted=converted,
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
         estimated=served.estimated,
+        years=years,
     )
 
 

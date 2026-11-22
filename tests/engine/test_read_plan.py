@@ -2271,3 +2271,40 @@ def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_membe
     assert plan.continued_pairs == {sv: expected}
     assert plan.observation_count == 11
     assert plan.max_pair_observations == 11
+
+
+def test_a_plan_read_in_years_keeps_a_series_by_its_group_or_its_filtered_candidates() -> None:
+    """Read in 2016 and 2018, the span 2016 to 2018. "group-gap" elects a group holding 2017
+    alone, a gap year, beside a candidate outside the group holding 2016: it serves no point
+    in those years and leaves the plan, since the span would read it and find nothing.
+    "filtered" lost every candidate to the facet filter and stays, so the read counts it as
+    rejected. "group" holds 2018 in its group, and "unservable" holds 2016 in a candidate
+    with no facet id, which the read counts as failed: both stay."""
+    in_group = _facet("g", range(2017, 2018))
+    unservable = replace(_facet("u", range(2016, 2017)), facet_id=None)
+    series = {
+        "group-gap": ((in_group, _facet("o", range(2016, 2017))), (in_group,)),
+        "filtered": ((), ()),
+        "group": ((_facet("h", range(2018, 2019)),), (_facet("h", range(2018, 2019)),)),
+        "unservable": ((unservable,), ()),
+    }
+    plan = PairPlan(
+        members=tuple(series),
+        years=None,
+        series=tuple(
+            PlanSeries(
+                stat_var=sv,
+                role_tuple=(("observationAbout", "country/ZZZ"),),
+                candidates=candidates,
+                group=group,
+            )
+            for sv, (candidates, group) in series.items()
+        ),
+        declared=NO_DECLARED_POLICIES,
+    )
+
+    narrowed = read_plan.read_in_years(plan, frozenset({2016, 2018}))
+
+    assert narrowed is not None
+    assert narrowed.years == TimeWindow(start_year=2016, end_year=2018)
+    assert [s.stat_var for s in narrowed.series] == ["filtered", "group", "unservable"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.region.codes import OBSERVATIONS_NO_POINTS
 from search.models import (
     TimeWindow,
 )
@@ -175,6 +176,24 @@ def test_a_read_in_given_years_shows_and_counts_their_points_alone(
         search_settings(obs_preview_max_rows=max_rows)
 
     assert _dates_read(TimeWindow(start_year=2016), years) == (dates, len(dates))
+
+
+def test_a_read_in_years_its_window_does_not_hold_omits_with_no_points():
+    """A plan over 2016 onwards read in 2010 alone holds no year to read."""
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(_old_and_new_obs())
+    observations, warn = build_observations_planned(
+        ["Count_Person"],
+        {"observationAbout": ["country/IND"]},
+        graph=FakeGraph(),
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        window=TimeWindow(start_year=2016),
+        coverage=empty_coverage_snapshot(),
+        years=frozenset({2010}),
+    )
+    assert warn is None
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
 
 
 def _recorded_and_estimated_obs() -> dict:
