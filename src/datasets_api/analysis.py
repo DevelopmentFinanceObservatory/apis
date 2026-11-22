@@ -27,8 +27,10 @@ the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads
 setting `analysis_sum_selected_codes` (`AnalysisBounds.sum_selected_codes`), the codes the
 `filter` steps between the root and the nearest step above it that is no `filter` keep on a
 kept axis become the sum's `codes` selection (`_kept_codes`, `_Plan.planned`), so the sum keeps
-only the StatVars those filters keep, and the filters still run; a root a rolling step reads
-selects none where a rolling overlay states its population, which counts every row. A
+only the StatVars those filters keep, and the filters still run. The sum's checks before its
+folds read every row, and its folds check only the selected groups, so a root whose sum with no
+selection refuses on a group the filters leave out answers. A root a rolling step reads selects
+none where a rolling overlay states its population, which counts every row. A
 `category_match` value on that column may be a code's dcid, its publisher code or a label naming
 one code of the axis; the planner resolves it before the request is keyed
 (`resolved_breakdown_values`), and a label naming several codes refuses

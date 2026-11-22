@@ -136,12 +136,19 @@ _UNIT_BY_RECIPIENT: Mapping[str, object] = {
 layout, a composed unit. A provider's rows of `country/FRA` have no unit."""
 
 
-def _frame(recipients: Sequence[str], *, methods: Mapping[str, str] | None = None) -> Frame:
+def _frame(
+    recipients: Sequence[str],
+    *,
+    methods: Mapping[str, str] | None = None,
+    values: Mapping[str, float] | None = None,
+    stat_vars: Sequence[tuple[str, CodeRow, CodeRow]] = _STAT_VARS,
+) -> Frame:
     """Every StatVar's rows for two providers, `recipients` and two years, with distinct
     values, a method on one provider's rows and `CRS` provenance. `methods` gives a StatVar's
-    rows of that provider another method, which a sum adding it to another StatVar refuses."""
+    rows of that provider another method, which a sum adding it to another StatVar refuses.
+    `values` gives a StatVar's rows one value. `stat_vars` are the StatVars with rows."""
     rows: list[dict[str, object]] = []
-    for position, (dcid, _purpose_row, _finance_row) in enumerate(_STAT_VARS):
+    for position, (dcid, _purpose_row, _finance_row) in enumerate(stat_vars):
         for provider in ("country/USA", "country/FRA"):
             for recipient in recipients:
                 for year in ("2021", "2022"):
@@ -151,7 +158,7 @@ def _frame(recipients: Sequence[str], *, methods: Mapping[str, str] | None = Non
                             "financingProvider": provider,
                             "financingRecipient": recipient,
                             "time_period": year,
-                            "value": 1.5 * (position + 1) + len(rows) / 8,
+                            "value": (values or {}).get(dcid, 1.5 * (position + 1) + len(rows) / 8),
                             "unit": None
                             if provider == "country/FRA"
                             else _UNIT_BY_RECIPIENT[recipient],
@@ -190,21 +197,28 @@ def _checked_collapse_frame(monkeypatch: pytest.MonkeyPatch) -> list[pa.Table]:
     return seen
 
 
-def _render(frame: Frame, options: MintOptions) -> tuple[RenderedDefinition, bytes]:
+def _render(
+    frame: Frame,
+    options: MintOptions,
+    *,
+    code_index: CodeIndex = _INDEX,
+    resolved: Sequence[str] = _RESOLVED,
+    provenance_refs: Sequence[str] = (CRS,),
+) -> tuple[RenderedDefinition, bytes]:
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
         frame_chunks=lambda: iter((frame,)),
         options=options,
         spec={"spec_id": "spec_columnar"},
-        provenance_refs=[CRS],
+        provenance_refs=list(provenance_refs),
         citations={},
         reproducing_call=None,
         content_version=mint_version(frame),
         artifact_store=artifact_store,
         entity_columns=_ENTITY_COLUMNS,
         enrichment=EnrichmentLookup(FakeMintGraphReader()),
-        code_index=_INDEX,
-        resolved_stat_var_refs=_RESOLVED,
+        code_index=code_index,
+        resolved_stat_var_refs=tuple(resolved),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
         frame_rows=frame.num_rows,
