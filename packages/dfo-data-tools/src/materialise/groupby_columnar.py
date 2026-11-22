@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from dfo_frame_grammar import (
     UNIT_COLUMN,
     UnitCodes,
@@ -329,16 +330,10 @@ def _sums_plainly(table: pa.Table, plan: _GroupbySumFoldPlan, groups: UnitCodes)
     estimated total, short of the finite-total check: no null value, one value per group in
     each facet and status column, every group key described by the expected population, and
     no null or absent member unless the source reads missing members as zero."""
-    columns = plan.columns
     if table.column(plan.value_column).null_count:
         return False
-    for position in plan.passthrough_positions:
-        cell_codes = unit_codes(table.column(columns[position])).codes
-        pairs = unit_codes(
-            pa.StructArray.from_arrays([groups.codes, cell_codes], names=["group", "cell"])
-        )
-        if pairs.count > groups.count:
-            return False
+    if not _one_cell_per_group(table, plan.passthrough_positions, groups):
+        return False
     axis = table.column(plan.axis)
     if not plan.missing_declared_as_zero and axis.null_count:
         return False
@@ -359,6 +354,31 @@ def _sums_plainly(table: pa.Table, plan: _GroupbySumFoldPlan, groups: UnitCodes)
     if plan.missing_declared_as_zero:
         return True
     return _no_member_absent(table, plan, groups, population_keys, distinct_keys)
+
+
+def _one_cell_per_group(table: pa.Table, positions: Sequence[int], groups: UnitCodes) -> bool:
+    """Whether every group's rows hold one value in each column at `positions`, a null
+    counting as one value, with one grouped count over every column. Cells compare as
+    `unit_codes` codes them; a string column is counted as it is, which tells the same values
+    apart."""
+    if not positions:
+        return True
+    counted = {"group": groups.codes}
+    for index, position in enumerate(positions):
+        cells = table.column(position)
+        counted[str(index)] = (
+            cells.combine_chunks() if pa.types.is_string(cells.type) else unit_codes(cells).codes
+        )
+    every_value = pc.CountOptions(mode="all")
+    aggregations: list[tuple[str, Literal["count_distinct"], pc.CountOptions]] = [
+        (str(index), "count_distinct", every_value) for index in range(len(positions))
+    ]
+    distinct = pa.table(counted).group_by("group", use_threads=False).aggregate(aggregations)
+    return all(
+        cast(int, scalar_kernel("max", distinct.column(f"{index}_count_distinct")).as_py() or 0)
+        <= 1
+        for index in range(len(positions))
+    )
 
 
 def _no_member_absent(

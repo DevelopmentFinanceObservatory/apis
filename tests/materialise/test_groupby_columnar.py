@@ -147,6 +147,20 @@ _CASES = [
         {},
         id="not-finite",
     ),
+    # The value and unit columns sit before the grouping column `stat_var_sector`, and
+    # KEN's health total passes its water total, so the value orders KEN's two groups.
+    pytest.param(
+        [
+            _row(s, r, y, 100.0 if s == "dcid:SV_A" else v)
+            for s, r, y, v in (
+                (row["stat_var"], row["recipient"], row["time_period"], row["value"])
+                for row in _plain_rows()
+            )
+        ],
+        None,
+        {},
+        id="value-before-grouping-column",
+    ),
     pytest.param(_plain_rows(), _twice, {}, id="repeated-grain"),
     pytest.param(_plain_rows(), _reversed, {}, id="out-of-order"),
 ]
@@ -337,3 +351,29 @@ def test_the_row_fold_folds_each_slice_before_building_the_next(monkeypatch):
 
     assert events.count("build") > 1
     assert events.index("fold") < events.index("build", 1)
+
+
+@pytest.mark.parametrize(
+    ("cells", "one_each"),
+    [
+        pytest.param(pa.array([None, None, "a"], pa.string()), True, id="null-repeated"),
+        pytest.param(pa.array(["a", "a", "b"]), True, id="repeated"),
+        pytest.param(pa.array(["a", "b", "b"]), False, id="distinct"),
+        pytest.param(pa.array([None, "a", "a"], pa.string()), False, id="null-and-value"),
+        pytest.param(pa.nulls(3), True, id="null-column"),
+        pytest.param(pa.array([_USD, _USD, None]), True, id="struct-repeated"),
+        pytest.param(pa.array([_USD, None, None]), False, id="struct-null-and-value"),
+        pytest.param(
+            pa.array([_USD, {**_USD, "base_year": 2023}, None]), False, id="struct-distinct"
+        ),
+    ],
+)
+def test_one_cell_per_group_counts_a_null_as_one_value(cells, one_each):
+    """The first two rows share a group; the third is alone. Each column of a table is
+    counted alone and all of them in one pass."""
+    groups = groupby_columnar._codes(pa.table({"g": ["x", "x", "y"]}), ["g"])
+    table = pa.table({"same": pa.array(["s", "s", "t"]), "cells": cells})
+
+    assert groupby_columnar._one_cell_per_group(table, [1], groups) is one_each
+    assert groupby_columnar._one_cell_per_group(table, [0, 1], groups) is one_each
+    assert groupby_columnar._one_cell_per_group(table, [0], groups) is True
