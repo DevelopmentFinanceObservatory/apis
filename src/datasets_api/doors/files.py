@@ -101,6 +101,7 @@ from datasets_api.headers import ARTIFACT_TIER_HEADER, no_store_headers
 from datasets_api.manifest import stored_manifest, stored_manifest_facts
 from datasets_api.manifest_models import CitationModel, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.operations.renewal import renew_if_expiring
 from datasets_api.party_totals import PartyTotalsCut
 from datasets_api.query_options import QueryOptionsInvalid, parse_query_options, pointer_for_key
 from datasets_api.recorded_rendering import (
@@ -272,7 +273,9 @@ def _read(
 
 def resolve_link(*, id: str, content_version: str, digest: str, deps: Deps) -> ResolvedLink | None:
     """The signed URL and tier a servable link redirects to, or `None` when the digest's
-    working location is past retention and must renew first (`renew_and_resolve`).
+    working location is past retention and must renew first (`renew_and_resolve`). A working
+    location whose retention ends within the renewal margin also queues its renewal for the
+    worker (`operations.renewal.renew_if_expiring`), which never fails the link.
 
     Raises `SpecNotFound`, `SnapshotNotFound`, `SnapshotRevoked`, `ArtifactExpired` or
     `ArtifactNotFound` before any signing.
@@ -282,6 +285,9 @@ def resolve_link(*, id: str, content_version: str, digest: str, deps: Deps) -> R
     )
     if location is None:
         return None
+    renew_if_expiring(
+        deps, location, subject_id=stored.version.subject_id, content_version=content_version
+    )
     return _resolved_link(location, stored=stored, artifact_store=deps.artifact_store)
 
 

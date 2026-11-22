@@ -206,6 +206,11 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # The most renderings one `datasets-maintenance render-ahead` run makes across datasets.
     render_ahead_max: int = Field(default=200, ge=0)
 
+    # How long before a read working-tier file's retention ends the read queues its renewal
+    # (`datasets_api.operations.renewal`): a read root rendering's frame and file, a stored
+    # analysis answer's frame file, and a file download. 0 renews nothing ahead.
+    renew_margin_seconds: int = Field(default=604_800, ge=0)
+
     # New pinned copies the pin door and the share routes make per UTC day
     # (`datasets_api.retention_admission`), a budget spent as an allowance is
     # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy

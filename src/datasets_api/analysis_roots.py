@@ -14,7 +14,9 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   same minting options under the same code index and render format reads it with no render
   (`LiveRootSource._recorded_rendering`). Each such read, rendered or recorded, records when
   the rendering was last read from that dataset version (`render_ahead.mark_root_read`), which
-  chooses what a new head renders before a reader asks (`render_ahead.render_ahead`).
+  chooses what a new head renders before a reader asks (`render_ahead.render_ahead`). A read of
+  a recorded version whose stored frame or read file ends working-tier retention within the
+  renewal margin queues its renewal for the worker (`operations.renewal`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
 - With `columns` the frame is the dataset version's frame-layout file of those columns, decoded
@@ -131,6 +133,7 @@ from datasets_api.doors.snapshot import servable_snapshot_manifest
 from datasets_api.groupby import adds_stat_vars, selected_contributors
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.operations.renewal import renew_if_expiring
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
@@ -1109,7 +1112,8 @@ class LiveRootSource:
                 )
             except SnapshotRevoked:
                 return None
-        if servable_frame_location(stored.servable, now=now) is None:
+        frame = servable_frame_location(stored.servable, now=now)
+        if frame is None:
             return None
         manifest = servable_snapshot_manifest(
             stored,
@@ -1133,7 +1137,27 @@ class LiveRootSource:
         )
         if not read_recently(last_read, now=now):
             self._mark_read(spec_id, content_version, manifest)
+        self._renew_expiring(
+            spec_id,
+            recorded.content_version,
+            frame,
+            *(loc for loc in stored.servable if dict(loc.rendering) == dict(artifact.rendering)),
+        )
         return manifest
+
+    def _renew_expiring(
+        self, spec_id: str, content_version: str, *locations: StoredArtifactLocation
+    ) -> None:
+        """Queue the renewal of each of `locations`, linked under `{spec_id, content_version}`,
+        whose working-tier retention ends within the renewal margin
+        (`operations.renewal.renew_if_expiring`). A verification (`render` false) queues
+        nothing."""
+        if not self._render:
+            return
+        for location in locations:
+            renew_if_expiring(
+                self._deps, location, subject_id=spec_id, content_version=content_version
+            )
 
     def _mark_read(self, spec_id: str, content_version: str, manifest: Manifest | None) -> None:
         """Record a read of the rendering `manifest` lists as made from the dataset version
