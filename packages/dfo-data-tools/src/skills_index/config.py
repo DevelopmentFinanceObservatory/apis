@@ -103,13 +103,16 @@ SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS = 2.0
 # offers little benefit.
 SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS = 60.0
 
-# `acquire_shared_index` holds application startup for up to 120 seconds while the first
-# build runs, counted from the index's creation, so Search and Skills acquiring it in turn
-# wait once. Cloud Run throttles CPU outside requests once an instance is ready, and the
-# build reads the in-memory release, so a build left to the background stalls until traffic
-# arrives while the doors answer 503. Past the bound, or after a failed first build, startup
-# completes and the retry backoff continues.
+# An `acquire_shared_index` call that waits for the first build holds its caller for up to
+# 120 seconds, counted from the index's creation, so acquirers waiting in turn wait once.
+# The application's lifespans do not wait, so an instance serves Datasets and Graph reads
+# while the first build runs.
 SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS = 120.0
+
+# A Skills door request that arrives before the first build has finished waits up to 30
+# seconds for it, then answers a retryable 503. The first build took 20-26 s on a production
+# start. A request in flight keeps Cloud Run's CPU allocated, so the build runs while it waits.
+SKILLS_INDEX_REQUEST_WAIT_SECONDS = 30.0
 
 
 def classify_attachment(properties: frozenset[str]) -> AttachmentKind:

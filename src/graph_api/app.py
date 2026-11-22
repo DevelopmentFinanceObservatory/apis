@@ -34,13 +34,13 @@ registered the same way. `GET /schema/usage/base` and `GET /schema/usage/un_syst
 origin catalogue and the bound graph release and keep each body per catalogue build and
 release. `GET /schema/node/{dcid}` keeps each node view it reads from the mixer in a cache
 registered the same way, and each it reads from the UN deployment in one keyed by that
-deployment's generation. A live surface builds the schema document in its lifespan, before
-the instance takes traffic, waiting at most
-`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
-it. A failed build logs, and the first request builds again, unless the build refused under a
+deployment's generation. A live surface starts building the schema document as its lifespan
+completes and serves while it builds, the build waiting at most
+`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). A request that arrives during the build joins it. An
+unfinished build logs, and the first request after it joins it or builds again. A failed build logs, and the first request builds again, unless the build refused under a
 known generation with a truncated term listing or a document with no DFO node: the entry keeps
 that refusal, and every request answers it 500 with no build. Beside it, and under the same
-wait, it builds the UN terms body when the bound catalogue serves the UN origin
+bound, it builds the UN terms body when the bound catalogue serves the UN origin
 (`warm_un_terms`). An injected graph builds on the first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
@@ -54,6 +54,7 @@ call whose count fails goes through. The proxy passes `Authorization` upstream u
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from collections.abc import Iterator
@@ -166,6 +167,14 @@ _CARD_FACTS_CHUNK_SIZE = 500
 _CARD_DETACHED_TIMEOUT_SECONDS = 30.0
 # Each facts driver holds one DCP-read worker at a time, so two leave the rest for requests.
 _CARD_DRIVERS = 2
+
+
+async def _warm(deps: GraphDeps, *, timeout_s: float) -> None:
+    """Build the schema document and the UN terms body together, each waiting at most
+    `timeout_s` (`warm_schema`, `warm_un_terms`)."""
+    await asyncio.gather(
+        warm_schema(deps, timeout_s=timeout_s), warm_un_terms(deps, timeout_s=timeout_s)
+    )
 
 
 def _classify_deps_exception(exc: BaseException) -> ProblemSpec | None:
@@ -585,19 +594,27 @@ def graph_surface(
         GRAPH_DEPS_SLOT.set(_app, deps)
         if shared_resolver is not None:
             NODE_MEMBERSHIP_SLOT.set(_app, shared_resolver.policy)
+        warming: asyncio.Task[None] | None = None
         try:
             if live_reader is not None:
-                # Awaited, because Cloud Run throttles the CPU of an instance with no request
-                # in flight, so a build left to run on its own would stall once traffic starts.
+                # Run beside serving, so the Datasets surface answers without waiting for the
+                # schema. A schema request joins the running build's flight, or answers a
+                # retryable 503 `schema_building` past its deadline. Cloud Run throttles the
+                # CPU of an instance with no request in flight, so with no traffic the build
+                # can run past its own deadline, and the first request then builds again.
                 with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
-                    await asyncio.gather(
-                        warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
-                        warm_un_terms(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                    warming = asyncio.create_task(
+                        _warm(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                        name="graph-schema-warm",
                     )
             yield
         finally:
             NODE_MEMBERSHIP_SLOT.clear(_app)
             GRAPH_DEPS_SLOT.clear(_app)
+            if warming is not None:
+                warming.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await warming
             await _release_owned()
 
     @contextmanager
