@@ -94,6 +94,7 @@ from search.observations import (
     SeriesRead,
     assemble_role_bulk,
     fixed_selection,
+    in_preview_years,
     member_year_order,
     observation_settings,
     role_bulk_order,
@@ -552,16 +553,19 @@ def _assemble_role_bulk_series(
         )
 
     conversions = converted.conversions if converted is not None else {}
-    reads = {
-        pair: SeriesRead(
-            points=sorted(points, key=lambda p: p[0]),
-            total_rows=len(points),
-            facets=dict(stated.get(pair, {})),
-            conversion=conversions.get(pair),
-            holds_estimates=pair in estimated,
-        )
-        for pair, points in pair_points.items()
-    }
+    # The truncation warning counts the series shown among those in the bound years.
+    reads = in_preview_years(
+        {
+            pair: SeriesRead(
+                points=sorted(points, key=lambda p: p[0]),
+                total_rows=len(points),
+                facets=dict(stated.get(pair, {})),
+                conversion=conversions.get(pair),
+                holds_estimates=pair in estimated,
+            )
+            for pair, points in pair_points.items()
+        }
+    )
     observations = assemble_role_bulk(
         reads,
         label_source=graph,

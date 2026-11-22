@@ -24,6 +24,7 @@ from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.spec_id import identity_spec_id
 from search.models import BaseIdentity, ResubmitIdentityPayload
+from search.observations import previewing_years
 from search.scope.composite import CompositeMint, served_components
 from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -101,7 +102,8 @@ def resolve_spec_resubmit(
     raises `request_invalid` (400) in validation. Origin refs require a role-bearing shape.
     `coverage` and `options` carry request-scoped enrichment inputs. `options=None` uses
     the un-enriched baseline. The result is `degraded` when the promote swallowed a read
-    (`degraded_reads`).
+    (`degraded_reads`). Its preview keeps points in `options.preview_years` alone
+    (`observations.previewing_years`), where set.
 
     Where `inp.composite` names the composite `inp.identity` is the table identity of, the
     Spec is minted as that composite (`composite_mint`), under its spec_id, its warnings
@@ -125,6 +127,7 @@ def resolve_spec_resubmit(
             recording_degraded_reads() as lost,
             recording_un_blocked_places() as un_blocked,
             pinned_provenance_scope(inp.identity.facets),
+            previewing_years(_options.preview_years),
         ):
             result = _resolve_standard_promote(
                 inp,

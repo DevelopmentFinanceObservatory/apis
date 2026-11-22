@@ -7,8 +7,10 @@ read resolved previews nothing of the composite. Its preview reads each componen
 (`code_index.composites.component_identities`) with `resolve_spec_resubmit`, which elects
 its members as the mint does and scopes its reads to the provenance it binds, in worker threads
 that run together. Each component read embeds its preview
-(`include_observations`) and reads no slot or place options, and on a dataset_resubmit it goes
-through the part memo under its own key. A component serving no year of the composite is not
+(`include_observations`), its points kept in the years the component serves before the
+preview's limits cut (`scope.composite.component_preview`), and reads no slot or place
+options, and on a dataset_resubmit it goes through the part memo under its own key and
+those years. A component serving no year of the composite is not
 read. It reads through the request's catalogue narrowed to
 its own pin alone (`ComponentReads.catalogue`), as the mint reads a component
 (`datasets_api.serve`), whatever source scope the part's own reads ran under. The previews are
@@ -102,8 +104,8 @@ from search.observations import (
 )
 from search.scope.composite import (
     ServedComponent,
+    component_preview,
     compose_observations,
-    preview_identity,
     served_components,
 )
 from search.scope.region import region_groups
@@ -238,17 +240,19 @@ async def _read_component(
     reads: ComponentReads,
     semaphore: asyncio.Semaphore | None,
 ) -> tuple[SpecObservations | None, tuple[Warning, ...]]:
-    """The preview `item`'s component answer embeds, read over the years it serves
-    (`preview_identity`), and its preview warnings (`_resubmit_preview`), or None and a warning naming the component's role when its read
-    was lost (`_missing`)."""
-    identity = BaseIdentity.model_validate(preview_identity(item))
+    """The preview `item`'s component answer embeds and its preview warnings
+    (`_resubmit_preview`), read under the identity and kept in the years
+    `component_preview` names, or None and a warning naming the component's role when its
+    read was lost (`_missing`)."""
+    document, years = component_preview(item)
     read = await _resubmit_preview(
-        identity,
+        BaseIdentity.model_validate(document),
         groups,
         reads=reads,
         semaphore=semaphore,
         about=f"component {item.component.role}",
         populations=item.component.populations,
+        years=years,
     )
     if isinstance(read, _LostRead):
         return None, (_missing(item, read),)
@@ -284,6 +288,7 @@ async def _resubmit_preview(
     semaphore: asyncio.Semaphore | None,
     about: str,
     populations: Mapping[str, RolePopulation] | None = None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, tuple[Warning, ...]] | _LostRead:
     """The preview a resubmit of `identity` posting `groups` embeds, read with
     `resolve_spec_resubmit` in a worker thread through `reads.catalogue` under `reads.options`,
@@ -291,7 +296,8 @@ async def _resubmit_preview(
     `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
     Each role `populations` lists, the roles a component binds to a population
     (`ComponentIdentity.populations`), reads as open within it
-    (`ResubmitIdentityPayload.populations`).
+    (`ResubmitIdentityPayload.populations`). The preview keeps its points in `years`
+    before its limits cut (`EngineOptions.preview_years`), every point where None.
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
     by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost
@@ -309,7 +315,7 @@ async def _resubmit_preview(
         else region_groups(groups, identity, index=get_index()),
         populations=dict(populations or {}),
     )
-    options = reads.options
+    options = dataclasses.replace(reads.options, preview_years=years)
     memo = reads.memo if reads.memo is not None and reads.memo.active else None
     key = memo.key(payload, options) if memo is not None else None
     async with semaphore if semaphore is not None else nullcontext():

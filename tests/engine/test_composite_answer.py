@@ -13,6 +13,8 @@ from typing import Any, cast
 import pytest
 
 import dc_graph
+from code_index.shared import get_index
+from datasets_api.adapter import composite_components
 from origin_catalogue import current_catalogue, scoped_reads
 from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
@@ -57,6 +59,7 @@ from search.models import (
     DefinitePart,
     IdentityBindingSet,
     IdentityBindingValue,
+    IdentityWindowLatest,
     IdentityWindowRange,
     ObservationPoint,
     ObservationSeries,
@@ -117,7 +120,8 @@ class _Components:
         self.calls: list[tuple[ResubmitIdentityPayload, EngineOptions]] = []
         self.scopes: list[frozenset[str] | None] = []
         # Each component's held years, `_WINDOW` where unnamed, and the latest points a
-        # preview keeps of the years its window asks for, every point where None.
+        # preview keeps of the years its window asks for and its options keep
+        # (`EngineOptions.preview_years`), every point where None.
         self.held: dict[str, range] = {}
         self.limit: int | None = None
 
@@ -143,6 +147,8 @@ class _Components:
             if not isinstance(window, IdentityWindowRange)
             or (window.start_year or year) <= year <= (window.end_year or year)
         ]
+        if options.preview_years is not None:
+            years = [year for year in years if year in options.preview_years]
         shown = years if self.limit is None else years[-self.limit :]
         series = ObservationSeries(
             stat_var=SeriesStatVarRef(ref=name),
@@ -655,18 +661,26 @@ def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
     assert [w.code for w in warnings] == [_PARTIAL.code]
 
 
+@pytest.mark.parametrize(
+    ("served_years", "shown"),
+    [
+        pytest.param(frozenset(range(2015, 2019)), ["2017", "2018"], id="tail-cut"),
+        pytest.param(frozenset({2015, 2016, 2017, 2020}), ["2017", "2020"], id="interior-gap"),
+    ],
+)
 def test_a_preview_limit_keeps_each_component_s_latest_points_in_the_years_it_serves(
-    monkeypatch,
+    monkeypatch, served_years, shown
 ):
     """The bilateral component holds years past the composite's last served year, and each
-    preview keeps its latest two points. Each component reads over the years it serves, so
-    the bilateral line keeps its points in them beside the imputed one."""
+    preview keeps its latest two points. Each component reads under the window a Datasets
+    mint reads it under, and its preview keeps the years it serves before the limit cuts, so
+    each line shows two served points, past an unserved tail or an unserved gap alike."""
     spec, components = _components(monkeypatch)
     components.held["bilateral"] = range(2015, 2025)
     components.limit = 2
     reads = _reads(_coverage(monkeypatch))
     served = [
-        dataclasses.replace(item, served=frozenset(range(2015, 2019)))
+        dataclasses.replace(item, served=served_years)
         for item in composite_served(spec.definition.identity, reads=reads)
     ]
 
@@ -674,7 +688,45 @@ def test_a_preview_limit_keeps_each_component_s_latest_points_in_the_years_it_se
         read_composite_preview(served=served, entity_groups=None, reads=reads, semaphore=None)
     )
 
-    assert _dates(observations) == {"bilateral": ["2017", "2018"], "imputed": ["2017", "2018"]}
+    assert _dates(observations) == {"bilateral": shown, "imputed": shown}
+    minted = composite_components(
+        spec.definition.identity.model_dump(mode="json", exclude_none=True),
+        code_index=get_index(),
+    )
+    assert minted is not None
+    assert sorted(
+        inp.identity.model_dump(mode="json", exclude_none=True)["requested_window"].items()
+        for inp, _ in components.calls
+    ) == sorted(
+        BaseIdentity.model_validate(component.identity)
+        .model_dump(mode="json", exclude_none=True)["requested_window"]
+        .items()
+        for component in minted
+    )
+    assert {o.preview_years for _, o in components.calls} == {served_years}
+
+
+def test_a_stacked_composite_under_latest_previews_the_year_it_elects_on_every_line(
+    monkeypatch,
+):
+    """Under a `latest` window the bilateral component's own latest year (2024) lies past the
+    last year the imputed table covers, and so the composite serves (2020). Each component
+    reads the composite's elected year alone, so both lines show it."""
+    spec, components = _components(monkeypatch)
+    components.held["bilateral"] = range(2015, 2025)
+    rows, extra = provider._coverage_rows(range(2005, 2021))
+    reads = _reads(FakeCoverageService(patch_coverage(monkeypatch, rows, **extra)).snapshot())
+    latest = spec.definition.identity.model_copy(
+        update={"requested_window": IdentityWindowLatest()}
+    )
+    served = composite_served(latest, reads=reads)
+    assert [(max(item.served), item.elected) for item in served] == [(2020, 2020)] * 2
+
+    observations, _ = asyncio.run(
+        read_composite_preview(served=served, entity_groups=None, reads=reads, semaphore=None)
+    )
+
+    assert _dates(observations) == {"bilateral": ["2020"], "imputed": ["2020"]}
 
 
 def test_a_component_serving_no_year_leaves_the_omission_to_those_that_serve_one():

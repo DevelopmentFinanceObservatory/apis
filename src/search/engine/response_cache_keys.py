@@ -417,6 +417,7 @@ def part_memo_key(
     *,
     payload: ResubmitIdentityPayload,
     engine_flags: Mapping[str, bool],
+    preview_years: frozenset[int] | None = None,
     build_commit: str,
     graph_generation: str,
     coverage_stamp: str,
@@ -433,7 +434,9 @@ def part_memo_key(
     commit and the graph generation fix its members, so a role read open within a population
     and one naming the same parties key apart. A payload binding none adds nothing to the
     key. The composite a payload answers as enters whole, so a table answer stored for its
-    table identity never serves the composite.
+    table identity never serves the composite. `preview_years`, the years a composite's
+    component preview keeps (`EngineOptions.preview_years`), enters sorted where set, so a
+    preview cut to one composite's years never serves another's.
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
@@ -458,6 +461,8 @@ def part_memo_key(
         }
     if payload.composite is not None:
         document["composite"] = payload.composite.model_dump(mode="json")
+    if preview_years is not None:
+        document["preview_years"] = sorted(preview_years)
     return _digest("m", document)
 
 

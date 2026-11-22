@@ -19,6 +19,7 @@ from search.observations import (
     assemble_scope_bulk,
     observations_too_large,
     preview_mode,
+    previewing_years,
 )
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
@@ -238,6 +239,32 @@ def test_a_series_carries_its_member_constraints_as_axes_from_the_one_batch(asse
     ]
     assert series.stat_var.label == "years 15 onwards and Female"
     assert len(labels.batches) == 1
+
+
+@pytest.mark.parametrize(
+    ("assemble", "shown"),
+    list(zip(_ASSEMBLERS, [2, 2, 1], strict=True)),
+)
+def test_bound_preview_years_apply_before_the_limits_cut(search_settings, assemble, shown):
+    """Kenya's series holds 2000 to 2005, and the bound years leave out 2003 and 2004. The
+    limit keeps its latest points among the bound years alone, and Ghana's series, whose
+    one point lies outside them, is dropped."""
+    search_settings(obs_inline_max=3, obs_preview_points=2)
+    with previewing_years(frozenset({2000, 2001, 2002, 2005})):
+        observations = assemble(
+            {
+                (_POP, _KEN): _read(0.0, 1.0, 2.0, 3.0, 4.0, 5.0),
+                (_POP, _GHA): SeriesRead(points=[("2004", 9.0)], total_rows=1),
+            },
+            label_source=_Labels(),
+            on_names_unread=_names_read,
+            index=_INDEX,
+            member_constraints={},
+            target_currency_ref=None,
+        )
+    (series,) = observations.series
+    assert [p.date for p in series.points] == ["2000", "2001", "2002", "2005"][-shown:]
+    assert (series.total_obs, observations.total_obs) == (4, 4)
 
 
 def test_a_series_whose_stat_var_declares_no_constraints_has_no_axes() -> None:

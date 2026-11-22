@@ -38,6 +38,7 @@ from search.models import (
     ResubmitIdentityPayload,
     Warning,
 )
+from search.observations import bound_preview_years
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import value_slot
@@ -110,14 +111,16 @@ def _key(
     *,
     flag: str | None = None,
     un_system_enabled: bool = True,
+    preview_years: frozenset[int] | None = None,
     **stamps: str | None,
 ) -> str:
-    """The key of `payload` under the baseline flags and stamps, with `flag` turned on and
-    `stamps` replaced."""
+    """The key of `payload` under the baseline flags and stamps, with `flag` turned on,
+    `preview_years` kept and `stamps` replaced."""
     scope = {**_STAMPS, **stamps}
     return part_memo_key(
         payload=payload if payload is not None else _payload(),
         engine_flags={**_FLAGS, **({flag: True} if flag is not None else {})},
+        preview_years=preview_years,
         build_commit=scope["build_commit"] or "",
         graph_generation=scope["graph_generation"] or "",
         coverage_stamp=scope["coverage_stamp"] or "",
@@ -143,6 +146,7 @@ _GROUPS = {"observationAbout": EntityGroup(ref=None, label="East Africa")}
         ),
         pytest.param(lambda: _key(conversion_catalogue=None), id="no_conversion_catalogue"),
         pytest.param(lambda: _key(un_system_enabled=False), id="un_system_enabled"),
+        pytest.param(lambda: _key(preview_years=frozenset({2020})), id="preview_years"),
     ],
 )
 def test_each_key_input_alone_changes_the_key(perturbed):
@@ -151,6 +155,33 @@ def test_each_key_input_alone_changes_the_key(perturbed):
 
 def test_equal_inputs_built_independently_share_a_key():
     assert _key(_payload()) == _key(_payload())
+
+
+def test_a_resubmit_binds_the_preview_years_its_options_keep(monkeypatch):
+    """`EngineOptions.preview_years` is bound around the promote, so every preview it
+    assembles keeps those years (`observations.previewing_years`)."""
+    bound: list[frozenset[int] | None] = []
+
+    def recording(*_args: object, **_kwargs: object) -> RegionResult:
+        bound.append(bound_preview_years())
+        raise _Stopped
+
+    monkeypatch.setattr(resubmit_module, "_resolve_standard_promote", recording)
+    for years in (frozenset({2019, 2020}), None):
+        with pytest.raises(_Stopped):
+            resolve_spec_resubmit(
+                inp=_payload(),
+                graph=FakeGraph(),
+                sdmx=FakeSdmxClient(),
+                coverage=empty_coverage_snapshot(),
+                options=EngineOptions(preview_years=years),
+            )
+
+    assert bound == [frozenset({2019, 2020}), None]
+
+
+class _Stopped(Exception):
+    """Ends a resubmit at its promote."""
 
 
 @pytest.mark.parametrize(

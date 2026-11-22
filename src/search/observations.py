@@ -15,13 +15,19 @@ A caller decides the preview's shape with `preview_mode`, then builds it from it
 preview. Every assembly reads its labels in one `LabelSource.node_labels_batch` call and lets
 the label source's errors propagate. Its flow entities' party kinds come from the code index
 alone (`materialise.enrichment.read_party_kinds`), with no read.
+
+A caller that previews only some years of what it reads binds them (`previewing_years`), and
+every assembly in its context keeps each series' points in those years before any limit cuts
+(`in_preview_years`).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Protocol
 
@@ -461,6 +467,53 @@ class SeriesRead:
     holds_estimates: bool = False
 
 
+_PREVIEW_YEARS: ContextVar[frozenset[int] | None] = ContextVar("preview_years", default=None)
+
+
+@contextmanager
+def previewing_years(years: frozenset[int] | None) -> Iterator[None]:
+    """Binds `years` as the years every preview assembled in the caller's context keeps
+    points in (`in_preview_years`), for the length of the block. None binds no years, so
+    every point stays. A composite's component read binds the years the composite serves
+    (`search.engine.region.composite_answer`); a worker thread started with the caller's
+    context copy sees them."""
+    token = _PREVIEW_YEARS.set(years)
+    try:
+        yield
+    finally:
+        _PREVIEW_YEARS.reset(token)
+
+
+def bound_preview_years() -> frozenset[int] | None:
+    """The years `previewing_years` bound in the caller's context, None where it bound none."""
+    return _PREVIEW_YEARS.get()
+
+
+def in_preview_years[K](reads: Mapping[K, SeriesRead]) -> dict[K, SeriesRead]:
+    """`reads` with each series' points in the years `previewing_years` bound, a series left
+    with no point dropped, and each kept series' `total_rows` less the points it lost. A
+    point whose date has no leading year is kept, as `search.models.in_window` keeps it.
+    Every read is kept whole where no years are bound. Each assembly applies it before its
+    limits pick series or cut points, so a limit counts points in those years alone."""
+    years = _PREVIEW_YEARS.get()
+    if years is None:
+        return dict(reads)
+    kept: dict[K, SeriesRead] = {}
+    for key, read in reads.items():
+        points = [point for point in read.points if _in_years(point[0], years)]
+        if points:
+            cut = len(read.points) - len(points)
+            kept[key] = replace(read, points=points, total_rows=read.total_rows - cut)
+    return kept
+
+
+def _in_years(date: str, years: frozenset[int]) -> bool:
+    try:
+        return int(date[:4]) in years
+    except ValueError:
+        return True
+
+
 def facet_value_label(axis: str, label: str) -> str:
     """A facet value's display label on `axis`. A measurementMethod label drops one trailing
     full stop, since the graph names some methods as sentences ("World Bank Subnational
@@ -657,10 +710,12 @@ def assemble_per_series(
 
     `total_obs` sums every read's `total_rows`. Above `obs_inline_max` every series keeps
     its last `obs_preview_points` points. `truncated` is set then, or when any read holds
-    fewer points than its `total_rows`.
+    fewer points than its `total_rows`. Each read first keeps its points in the years bound
+    in the caller's context (`in_preview_years`).
 
     Raises whatever `label_source.node_labels_batch` raises.
     """
+    reads = in_preview_years(reads)
     labels = _read_labels(
         reads,
         label_source=label_source,
@@ -760,10 +815,12 @@ def assemble_role_bulk(
     `total_obs` sums every read's `total_rows`, shown or not, plus `unread_obs`, the
     observations of series the caller counted without reading. Above `obs_inline_max` shown
     points, every shown series keeps its last `obs_preview_points` points and `truncated` is
-    set.
+    set. Each read first keeps its points in the years bound in the caller's context
+    (`in_preview_years`), before the series are picked.
 
     Raises whatever `label_source.node_labels_batch` raises.
     """
+    reads = in_preview_years(reads)
     settings = observation_settings()
     shown = {key: reads[key] for key in role_bulk_shown(reads, order=order)}
     labels = _read_labels(
@@ -810,10 +867,12 @@ def assemble_scope_bulk(
     (`ranked_series`). A converted read shows `target_currency_ref` as its unit, or no unit
     for a role currency, as `assemble_per_series` shows it. `total_obs` sums every read's
     `total_rows`, and the preview is `truncated` when `total_obs` exceeds the series shown,
-    each holding one point.
+    each holding one point. Each read first keeps its points in the years bound in the
+    caller's context (`in_preview_years`).
 
     Raises whatever `label_source.node_labels_batch` raises.
     """
+    reads = in_preview_years(reads)
     labels = _read_labels(
         reads,
         label_source=label_source,
