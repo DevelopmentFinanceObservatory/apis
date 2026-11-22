@@ -78,8 +78,9 @@ cited datasets (`materialise.enrichment.party_datasets`). A party-totals cut rea
 same rule, so a composite DAC2a cut drops the trust funds a DAC2A row types as totals. It
 salts the link key of a frame-layout file (`version_store.rendering_key`) and joins the stamp a
 derived version's links record (`rendering_stamp`), so a file or version rendered under another
-format matches no request and the next request renders it again. Change it with any change to
-those cells."""
+format matches no request and the next request renders it again. It also names an analysis
+root read from a frame-layout file (`analysis_roots.frame_ref_for`), so an analysis over such
+a root after a change is a new output pair. Change it with any change to those cells."""
 
 
 def holds_frame_cells(rendering: Mapping[str, object]) -> bool:

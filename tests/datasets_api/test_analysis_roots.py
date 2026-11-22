@@ -43,6 +43,7 @@ from datasets_api.manifest_models import CoverageModel
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from datasets_api.versions import RENDER_FORMAT
 from dfo_analysis_engine.frame_ref import FrameRef
 
 from ._deps_doubles import Unwired, closable_permits
@@ -388,9 +389,18 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     )
 
     assert (plain.spec_id, plain.content_version) == (_SPEC, _CV)
-    preimage = {"columns": ["observationAbout_type"], "content_version": _CV}
+    preimage = {
+        "columns": ["observationAbout_type"],
+        "content_version": _CV,
+        "render_format": RENDER_FORMAT,
+    }
     assert typed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
-    salted = {"columns": ["party_kind"], "content_version": _CV, "enrichment_stamp": "s"}
+    salted = {
+        "columns": ["party_kind"],
+        "content_version": _CV,
+        "enrichment_stamp": "s",
+        "render_format": RENDER_FORMAT,
+    }
     assert kinds.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(salted)).hexdigest()[:32]
     summed = frame_ref_for(
         spec_id=_SPEC,
@@ -407,9 +417,26 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     assert summed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(grouped)).hexdigest()[:32]
 
 
-# data-mcp's `test_frame_materialisation` pins the same pair for the same rendering, so the two
-# producers of a root frame's pair cannot drift apart.
-_SHARED_PAIR = "cv_bb722d06259f357e6961a081f1c1f141"
+@pytest.mark.parametrize(
+    "columns",
+    [("party_kind",), ("stat_var_crsPurpose",), ("observationAbout_type",)],
+    ids=["kinds", "decoded_axis", "graph_field"],
+)
+def test_a_frame_of_columns_rendered_under_another_format_is_another_frame(
+    monkeypatch: pytest.MonkeyPatch, columns: tuple[str, ...]
+) -> None:
+    """A frame read from a frame-layout file is named by the render format its cells were
+    written under, so an analysis over it after a format change is a new output pair. A
+    stored frame, read with no columns, keeps its pair."""
+    named = {"spec_id": _SPEC, "content_version": _CV, "enrichment_stamp": "s"}
+    old, old_plain = frame_ref_for(columns=columns, **named), frame_ref_for(columns=(), **named)
+    monkeypatch.setattr(analysis_roots, "RENDER_FORMAT", "another_format")
+
+    assert frame_ref_for(columns=columns, **named) != old
+    assert frame_ref_for(columns=(), **named) == old_plain
+
+
+_SHARED_PAIR = "cv_e244d79cb074364845d27ee6558b1d65"
 
 
 @pytest.mark.parametrize("by", [["origin", "time_period"], ["time_period", "origin"]])

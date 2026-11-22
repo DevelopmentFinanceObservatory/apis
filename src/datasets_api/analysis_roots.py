@@ -21,7 +21,8 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   of a converted unit.
 
 The frame is named by the pair `frame_ref_for` derives from the columns, the groupby and the
-party-totals cut, as data-mcp names it, so two renderings of one version are two frames.
+party-totals cut, and for a frame-layout file from the render format its cells were written
+under (`versions.RENDER_FORMAT`), so two renderings of one version are two frames.
 
 A root that leaves `columns` to the default is read with the version's default enrichment
 (`default_enrichment`): the root asks the mint for `enrichment: "default"`, which resolves the
@@ -142,7 +143,7 @@ from datasets_api.store_errors import (
     stored_frame_row_count,
 )
 from datasets_api.timings import phase
-from datasets_api.versions import rendering_stamp
+from datasets_api.versions import RENDER_FORMAT, rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -184,12 +185,18 @@ def frame_ref_for(
     `{spec_id, content_version}` is named by: the version's own pair with none of them, else
     `cv_` and 32 hex digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted,
     "content_version"}`, with `groupby` when set, its `by` sorted, `"without_party_totals":
-    true` when the cut is asked for, and the `enrichment_stamp` of its file when the columns
-    ask for kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way.
+    true` when the cut is asked for, the `enrichment_stamp` of its file when the columns ask
+    for kinds, and `"render_format": versions.RENDER_FORMAT` when `columns` is not empty.
+    data-mcp's `frame_materialisation.frame_ref_for` names frames from the columns, the
+    content version and the groupby alone.
 
     The pair names what a recipe replays: a cut that leaves nothing out serves its base
     version, and the frame read with it is still named apart from the frame read without it,
-    since the two replay differently once the data holds party totals."""
+    since the two replay differently once the data holds party totals. A root with `columns`
+    reads its frame-layout file, whose decoded `stat_var_<code_system>` and party-kind cells
+    are the render format's, so a frame rendered under another format is another frame. The
+    other roots read a stored frame, which a format change gives a new `content_version`
+    (`render.DerivedVersion`) or leaves as it is."""
     if not columns and groupby is None and not without_party_totals:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
@@ -199,6 +206,8 @@ def frame_ref_for(
         preimage["without_party_totals"] = True
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
+    if columns:
+        preimage["render_format"] = RENDER_FORMAT
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
     return FrameRef(spec_id=spec_id, content_version=f"cv_{digest}")
 

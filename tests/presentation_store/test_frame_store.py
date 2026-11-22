@@ -1305,9 +1305,25 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
 def test_load_labels_a_breakdown_cell_from_the_code_index_with_no_graph_read(bind_catalogue):
     """A decoded `stat_var_<code_system>` cell holds a code dcid. The load names it by the
     code index's label, keeps it out of the graph label read, and a card's series label reads
-    that name."""
+    that name. A label one code of the code system carries maps to its dcid for stored
+    selects; a label two codes carry, one of them outside the frame, maps to none."""
     frame_ref = malaria_ethiopia_frame_ref()
-    rows = [{**row, "stat_var_crsPurpose": _EDUCATION_ROW.dcid} for row in malaria_ethiopia_rows()]
+    shared = [
+        CodeRow(
+            dcid=f"CRSPurposeCode1222{last}",
+            code_system="crsPurpose",
+            code=f"1222{last}",
+            label="Basic health",
+            synonyms=(),
+            parent=None,
+        )
+        for last in "01"
+    ]
+    rows = [
+        {**row, "stat_var_crsPurpose": code.dcid}
+        for code in (_EDUCATION_ROW, shared[0])
+        for row in malaria_ethiopia_rows()
+    ]
     doc = build_frame_doc(role_keys=("recipient", "stat_var_crsPurpose"), rows=rows)
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
@@ -1325,7 +1341,7 @@ def test_load_labels_a_breakdown_cell_from_the_code_index_with_no_graph_read(bin
     index = CodeIndex(
         stamp=_code_index([]).stamp,
         declarations=(get_index().declarations["crsPurpose"],),
-        codes=(_EDUCATION_ROW,),
+        codes=(_EDUCATION_ROW, *shared),
         statvars=(),
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, code_index=index)
@@ -1334,6 +1350,7 @@ def test_load_labels_a_breakdown_cell_from_the_code_index_with_no_graph_read(bin
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.labels[_EDUCATION_ROW.dcid] == "Education"
+    assert resolved.codes_by_label == {"stat_var_crsPurpose": {"Education": _EDUCATION_ROW.dcid}}
     assert all(_EDUCATION_ROW.dcid not in call for call in graph.node_arcs_many_calls)
     columns = cast("Sequence[str]", resolved.frame["columns"])
     coordinates = {"recipient": "country/ETH", "stat_var_crsPurpose": _EDUCATION_ROW.dcid}

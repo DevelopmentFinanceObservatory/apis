@@ -1927,8 +1927,9 @@ def _store(computed: Computed, stores: AnalysisStores, *, trace_id: str | None) 
     recipe of the same replay key is stored under (`_replayed`), else the evaluated frame
     published at `evaluation.ref`. A frame stored already gains the recipe, which the store
     keeps once. A held frame is reused only when its content matches the evaluated frame's:
-    at `evaluation.ref` its frame `cv_`, since one pair can name frames whose root cells
-    changed format under an unchanged root pair (`versions.RENDER_FORMAT`).
+    at `evaluation.ref` its frame `cv_`. Root frames whose cells a render format rewrites are
+    named apart (`analysis_roots.frame_ref_for`), so a held frame of another `cv_` at the
+    run's own pair is a fault, refused loudly.
 
     Raises:
         AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these,
@@ -2050,8 +2051,9 @@ def _replayed(
 
     A pair that serves no frame file, has no frame hash to name its frame by
     (`_frame_content_version`), or holds a frame whose output digest differs from the run's
-    (`_stored_output_digest`), as a frame whose root cells changed format under unchanged root
-    pairs does (`versions.RENDER_FORMAT`), gives up the key (`RecipeStore.supersede_replay`) and
+    (`_stored_output_digest`), as a frame computed from root frames of an earlier render
+    format does (`versions.RENDER_FORMAT`), whose replay key names the same root versions,
+    gives up the key (`RecipeStore.supersede_replay`) and
     answers `None`, so the run publishes at its own pair, whose recipe then takes the key. The
     output digest compares the frames, since their bytes differ where a minting step's rows
     name its own pair.

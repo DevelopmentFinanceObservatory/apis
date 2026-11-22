@@ -694,6 +694,34 @@ def _code_labels(
     return labels
 
 
+def _codes_by_label(
+    *, columns: Sequence[str], rows: Sequence[Sequence[object]], index: CodeIndex
+) -> dict[str, dict[str, str]]:
+    """For each decoded `stat_var_<code_system>` column of `rows`, each code dcid it holds by
+    the code's label, for the labels no other code of the code system carries
+    (`ResolvedFrame.codes_by_label`). A frame rendered before the column held dcids held
+    these labels, each naming one code."""
+    by_label: dict[str, dict[str, str]] = {}
+    for position, column in enumerate(columns):
+        axis = column.removeprefix(_AXIS_COLUMN_PREFIX)
+        if not column.startswith(_AXIS_COLUMN_PREFIX) or axis not in index.declarations:
+            continue
+        held: dict[str, str] = {}
+        for cell in dict.fromkeys(row[position] for row in rows):
+            if not isinstance(cell, str) or (code := index.code_by_dcid(cell)) is None:
+                continue
+            carriers = [
+                hit.dcid
+                for hit in index.codes_by_text(code.label)
+                if hit.code_system == axis and hit.label == code.label
+            ]
+            if carriers == [cell]:
+                held[code.label] = cell
+        if held:
+            by_label[column] = held
+    return by_label
+
+
 def _composed(
     record: DescriptionRecord | None, *, stored: StoredVersion
 ) -> Sequence[ComposedVariable]:
@@ -1072,6 +1100,11 @@ class LiveFrameStore:
                 graph_generation=graph_generation,
                 catalogue_build=catalogue_build,
                 rendering=rendering,
+                codes_by_label=_codes_by_label(
+                    columns=cast("Sequence[str]", doc["columns"]),
+                    rows=cast("Sequence[Sequence[object]]", doc["rows"]),
+                    index=self._code_index,
+                ),
             )
             citation_due, citation_retry_at, anchor_final = True, None, False
             recheck_at = (

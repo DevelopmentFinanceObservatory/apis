@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import timedelta
 from importlib.resources import files
+from types import SimpleNamespace
+from typing import cast
 
 import jsonschema
 import pyarrow as pa
@@ -18,7 +20,7 @@ from dfo_frame_grammar import Frame
 
 from artifact_store import Tier
 from dataset_store.snapshot import SnapshotRevoked
-from datasets_api import analysis, publish_models
+from datasets_api import analysis, analysis_roots, publish_models
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisPending,
@@ -37,6 +39,7 @@ from datasets_api.analysis import (
     stored_answer,
 )
 from datasets_api.doors.analysis import classify_analysis_exception
+from datasets_api.manifest_models import ArtifactEntryModel
 from datasets_api.output_digest import output_digest
 from datasets_api.recipe_store import ReplayedFrame
 from dfo_analysis_engine import execution_identity
@@ -513,6 +516,57 @@ def test_a_pair_holding_another_frame_than_the_run_computes_is_not_reused(
     )
     (record,) = [r for r in caplog.records if r.name == "datasets_api.analysis"]
     assert f"run_frame_content_version={apart_cvs[-1]}" in record.getMessage()
+
+
+class _NamedRootSource(FakeRootSource):
+    """`FakeRootSource` whose roots are named as `analysis_roots.LiveRootSource` names them
+    (`analysis_roots._root`), each frame-layout file stamped with `_STAMP`."""
+
+    def resolve(self, root, *, latest, trace_id, path_words=None):
+        resolved = super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
+        named = analysis_roots._root(
+            spec_id=resolved.dataset.spec_id,
+            content_version=resolved.dataset.content_version,
+            options=resolved.record["options"],
+            artifact=cast(ArtifactEntryModel, SimpleNamespace(enrichment_stamp=_STAMP)),
+            rows=resolved.rows,
+            source=None,
+        )
+        return dataclasses.replace(resolved, frame=named.frame, record=named.record)
+
+
+_STAMP = "e" * 64
+
+
+def test_a_saved_analysis_over_a_kind_column_root_answers_after_a_render_format_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root read with party-kind columns whose cells a new render format rewrites, at an
+    unchanged dataset version and code index, is a new frame, so the saved analysis over it
+    computes a new output pair and answers it."""
+    stores = Stores()
+    kinds_root = {
+        "spec_id": AID,
+        "content_version": AID_V1,
+        "rendering": {"columns": ["party_kind"]},
+    }
+    tree = step("aggregate", kinds_root, aggregation="sum")
+    first = _run(stores, tree, root_source=_NamedRootSource(**_frames_of(stores)))
+    monkeypatch.setattr(analysis_roots, "RENDER_FORMAT", "another_format")
+    rewritten = _frames_of(stores)
+    rewritten["frames"][(AID, AID_V1)] = aid_frame(scale=2.0)
+
+    again = _run(stores, tree, root_source=_NamedRootSource(**rewritten))
+
+    assert again.created
+    assert again.evaluation.ref != first.evaluation.ref
+    assert again.frame_content_version != first.frame_content_version
+
+
+def _frames_of(stores: Stores) -> dict:
+    """The keyword arguments of `source(stores)`."""
+    held = source(stores)
+    return {"frames": held.frames, "newest": held.newest, "recipes": held.recipes}
 
 
 def test_a_replayed_frame_of_another_output_is_not_reused(monkeypatch: pytest.MonkeyPatch) -> None:

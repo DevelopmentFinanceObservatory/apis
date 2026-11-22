@@ -170,9 +170,9 @@ class DatasetVersionsPage(BaseModel):
         description=(
             "the digest of the party kinds, classes and whole-total markers the answering code "
             "index holds, the one a file rendered now carries "
-            "(`ArtifactEntryModel.enrichment_stamp`). A frame naming a file that asks for a "
-            "party-kind column adds it to its name, so a frame named under another stamp does "
-            "not match"
+            "(`ArtifactEntryModel.enrichment_stamp`). An analysis root frame naming a file "
+            "that asks for a party-kind column adds it to its name beside the render format, "
+            "so a frame named under another stamp or format does not match"
         )
     )
     versions: list[DatasetVersion] = Field(
