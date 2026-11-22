@@ -9,6 +9,7 @@ totals (`test_render_collapse_frame_columnar`)."""
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 from typing import Any
 
 import pyarrow as pa
@@ -16,7 +17,8 @@ import pyarrow.compute as pc
 import pytest
 from dfo_frame_grammar import Frame, build_frame_from_arrow, canonical_frame_bytes
 
-from code_index import CodeIndex
+from code_index import CodeIndex, CodeRow
+from code_index.types import AbsentObservation
 from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.query_options import QueryOptionsInvalid
@@ -34,6 +36,7 @@ from .test_render_collapse_frame_columnar import (
     _INDEX,
     _KENYA,
     _MODALITY,
+    _PURPOSES,
     _RESOLVED,
     _STAT_VARS,
     _frame,
@@ -162,6 +165,104 @@ def test_a_selected_render_folds_only_the_selected_rows(monkeypatch):
     assert 0 < selected < every_row
 
 
+def _in_memory(
+    frame: Frame,
+    options: MintOptions,
+    *,
+    code_index: CodeIndex = _INDEX,
+    resolved: Sequence[str] = _RESOLVED,
+    provenance_refs: Sequence[str] = ("dcid:CRS",),
+) -> render.ReshapeResult:
+    """`frame` reshaped as a table held as rows, with no frame slices to stream."""
+    return render._reshape(
+        frame,
+        options=options,
+        entity_columns=_ENTITY_COLUMNS,
+        reads=render._RenderReads(
+            enrichment=EnrichmentLookup(FakeMintGraphReader()),
+            parties=code_index.parties,
+            known={},
+            deadline=None,
+        ),
+        pivot_max_output_cells=5_000_000,
+        code_index=code_index,
+        resolved_stat_var_refs=tuple(resolved),
+        provenance_refs=list(provenance_refs),
+        subject_id="spec_columnar",
+    )
+
+
+def _index_with(
+    stat_vars: Sequence[tuple[str, CodeRow, CodeRow]] = (),
+    *,
+    codes: Sequence[CodeRow] = (),
+    absent_observation: AbsentObservation | None = None,
+) -> CodeIndex:
+    """`_INDEX` with `stat_vars` and `codes` added, and the CRS dataset's
+    `absent_observation` replaced when given."""
+    return CodeIndex(
+        stamp=_INDEX.stamp,
+        declarations=tuple(_INDEX.declarations.values()),
+        datasets=tuple(
+            dataset
+            if absent_observation is None
+            else dataclasses.replace(dataset, absent_observation=absent_observation)
+            for dataset in _INDEX.datasets.values()
+        ),
+        codes=(*_INDEX.codes, *codes),
+        statvars=(
+            *_INDEX.statvars,
+            *(
+                dataclasses.replace(
+                    _INDEX.statvars[0],
+                    dcid=dcid,
+                    constraint_properties={
+                        "crsPurpose": purpose.dcid,
+                        "crsTypeOfFinance": finance.dcid,
+                    },
+                )
+                for dcid, purpose, finance in stat_vars
+            ),
+        ),
+        parties=tuple(_INDEX.parties.values()),
+    )
+
+
+def _without_rows(frame: Frame, stat_var: str, provider: str) -> Frame:
+    """`frame` without the rows of `stat_var` (a bare dcid) for `provider`."""
+    table = frame.table
+    dropped = pc.and_(
+        pc.equal(table["stat_var"], pa.scalar(f"dcid:{stat_var}")),
+        pc.equal(table["financingProvider"], pa.scalar(provider)),
+    )
+    kept = table.filter(pc.invert(dropped)).drop_columns(["status"])
+    return build_frame_from_arrow(kept, role_keys=_ENTITY_COLUMNS)
+
+
+# A CRS dataset whose absent observations read as unknown, so a group missing a member refuses.
+_UNKNOWN_ABSENCE = _index_with(absent_observation="unknown")
+
+
+def test_a_missing_member_refuses_only_the_render_whose_groups_miss_it():
+    """Purpose 120's loan has no French rows, so the finance fold's French groups of purpose
+    120 miss a member. The render of purpose 111 alone answers with its rows; a render
+    selecting purpose 120 refuses as the render without a selection does."""
+    frame = _without_rows(_ALL, "SV_120_421", "country/FRA")
+    by = ["crsPurpose", "time_period"]
+    codes = {"crsPurpose": [_P111]}
+    refusals = []
+    for listed in (None, {"crsPurpose": [_P120, _P111]}):
+        with pytest.raises(RollupNotSummableError) as raised:
+            _render(frame, _options(by, codes=listed), code_index=_UNKNOWN_ABSENCE)
+        refusals.append((raised.value.code, raised.value.axis, raised.value.precondition))
+    rendered, _body = _render(frame, _options(by, codes=codes), code_index=_UNKNOWN_ABSENCE)
+
+    assert refusals[0] == refusals[1]
+    assert refusals[0][1:] == ("stat_var_crsTypeOfFinance", "missing_members")
+    assert rendered.collapse is not None
+    assert rendered.collapse.frame == _cut_to(_collapse(_options(by)), codes)
+
+
 _BIG = 1.7e308
 # Each fold fault sits in purpose 120's groups. The parameters name the fault, the selection
 # that leaves purpose 120 out, and the axis whose fold the fault refuses.
@@ -232,22 +333,7 @@ def test_a_collapse_of_rows_in_memory_selects_before_its_folds(
     codes = {"crsPurpose": [_P111]}
     options = _options(by, codes=codes, levels=levels)
 
-    in_memory = render._reshape(
-        frame,
-        options=options,
-        entity_columns=_ENTITY_COLUMNS,
-        reads=render._RenderReads(
-            enrichment=EnrichmentLookup(FakeMintGraphReader()),
-            parties=_INDEX.parties,
-            known={},
-            deadline=None,
-        ),
-        pivot_max_output_cells=5_000_000,
-        code_index=_INDEX,
-        resolved_stat_var_refs=_RESOLVED,
-        provenance_refs=["dcid:CRS"],
-        subject_id="spec_columnar",
-    )
+    in_memory = _in_memory(frame, options)
 
     assert in_memory.collapse is not None
     assert in_memory.collapse.frame == _collapse(options).frame
@@ -270,43 +356,30 @@ def test_a_fold_fault_in_a_selected_group_refuses_as_the_unselected_render(
 
 
 # Purpose 140's parent, 150, has no code row, so a roll-up to depth 0 finds no code for it.
-_DANGLING = _purpose("140", "150")
-_DANGLING_STAT_VARS = tuple((f"SV_140_{f.code}", _DANGLING, f) for f in _FINANCES)
-_DANGLING_INDEX = CodeIndex(
-    stamp=_INDEX.stamp,
-    declarations=tuple(_INDEX.declarations.values()),
-    datasets=tuple(_INDEX.datasets.values()),
-    codes=(*_INDEX.codes, _DANGLING),
-    statvars=(
-        *_INDEX.statvars,
-        *(
-            dataclasses.replace(
-                _INDEX.statvars[0],
-                dcid=dcid,
-                constraint_properties={"crsPurpose": purpose.dcid, "crsTypeOfFinance": f.dcid},
-            )
-            for dcid, purpose, f in _DANGLING_STAT_VARS
-        ),
-    ),
-    parties=tuple(_INDEX.parties.values()),
-)
+_DANGLING_STAT_VARS = tuple((f"SV_140_{f.code}", _purpose("140", "150"), f) for f in _FINANCES)
+# A second StatVar of purpose 120 and finance 110, which only `stat_var` tells from SV_120_110.
+_TWIN_STAT_VARS = (("SV_120_110_twin", _PURPOSES[0], _FINANCES[0]),)
+
+
+def _with(stat_vars: Sequence[tuple[str, CodeRow, CodeRow]], **index: Any) -> dict:
+    """The render arguments of `_ALL`'s StatVars and `stat_vars`, all with rows."""
+    return {
+        "frame": _frame((_KENYA, _GHANA, _DEVELOPING), stat_vars=(*_STAT_VARS, *stat_vars)),
+        "code_index": _index_with(stat_vars, **index),
+        "resolved": (*_RESOLVED, *(f"dcid:{dcid}" for dcid, *_ in stat_vars)),
+    }
 
 
 @pytest.mark.parametrize(
     ("render_arguments", "levels", "precondition"),
     [
         pytest.param(
-            {
-                "frame": _frame(
-                    (_KENYA, _GHANA, _DEVELOPING), stat_vars=(*_STAT_VARS, *_DANGLING_STAT_VARS)
-                ),
-                "code_index": _DANGLING_INDEX,
-                "resolved": (*_RESOLVED, *(f"dcid:{dcid}" for dcid, *_ in _DANGLING_STAT_VARS)),
-            },
+            _with(_DANGLING_STAT_VARS, codes=(_DANGLING_STAT_VARS[0][1],)),
             {"crsPurpose": 0},
             "index_gap",
             id="level-roll-up",
         ),
+        pytest.param(_with(_TWIN_STAT_VARS), None, "stat_var_ambiguous", id="collision"),
         pytest.param(
             {"frame": _ALL, "resolved": (*_RESOLVED, "dcid:SV_Unindexed")},
             None,
@@ -324,16 +397,17 @@ _DANGLING_INDEX = CodeIndex(
 def test_a_check_before_the_folds_refuses_a_selected_render(
     render_arguments: dict, levels: dict[str, int] | None, precondition: str
 ):
-    """The checks before the folds read every StatVar, so a fault the selection leaves out
-    still refuses."""
+    """The checks before the folds read every StatVar, streamed or held as rows, so a fault
+    the selection leaves out still refuses."""
     refusals = []
-    for codes in (None, {"crsPurpose": [_P111]}):
-        options = _options(["crsPurpose", "time_period"], codes=codes, levels=levels)
-        with pytest.raises(RollupNotSummableError) as raised:
-            _render(options=options, **render_arguments)
-        refusals.append((raised.value.code, raised.value.axis, raised.value.precondition))
+    for reshape in (_render, _in_memory):
+        for codes in (None, {"crsPurpose": [_P111]}):
+            options = _options(["crsPurpose", "time_period"], codes=codes, levels=levels)
+            with pytest.raises(RollupNotSummableError) as raised:
+                reshape(options=options, **render_arguments)
+            refusals.append((raised.value.code, raised.value.axis, raised.value.precondition))
 
-    assert refusals[0] == refusals[1]
+    assert len(set(refusals)) == 1
     assert refusals[0][2] == precondition
 
 
