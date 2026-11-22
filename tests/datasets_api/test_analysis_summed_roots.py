@@ -20,7 +20,7 @@ from artifact_store.errors import ArtifactNotFoundError
 from code_index import CodeIndex, CodeRow
 from dataset_store import snapshot
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api import analysis, analysis_roots, current, store_errors
+from datasets_api import analysis, analysis_roots, current, store_errors, versions
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -1095,19 +1095,24 @@ def test_two_mintings_of_one_dataset_version_each_read_their_own_recorded_sum(
     assert work["_render_stored_rendering"] == 0
 
 
-def test_a_recorded_sum_is_read_again_only_under_the_code_index_it_was_rendered_under(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("moved", ["code_index", "render_format"])
+def test_a_recorded_sum_is_read_again_only_under_the_stamp_it_was_rendered_under(
+    monkeypatch: pytest.MonkeyPatch, moved: str
 ) -> None:
-    """A sum's levels, cut and summable axes follow the code index, so a recorded sum answers a
-    repeat only under the index it was rendered under: under another index the root renders
-    once, which records the new index, and the next repeat renders nothing."""
+    """A sum's levels, cut and summable axes follow the code index, and its cells the render
+    format, so a recorded sum answers a repeat only under the stamp of both it was rendered
+    under (`versions.rendering_stamp`): under another index or format the root renders once,
+    which records the new stamp, and the next repeat renders nothing."""
     index = _hierarchical_code_index()
     client, _, root = _rig(code_index=index)
     tree = _aggregate(_filter(root), group_by=["recipient"])
     first = _post(client, tree)
     assert first.status_code == 200, first.text
 
-    monkeypatch.setattr(index, "stamp", replace(index.stamp, content_hash="sha256:another"))
+    if moved == "code_index":
+        monkeypatch.setattr(index, "stamp", replace(index.stamp, content_hash="sha256:another"))
+    else:
+        monkeypatch.setattr(versions, "RENDER_FORMAT", "another_format")
     work = _count_work(monkeypatch)
     moved = _post(client, tree)
     renders_under_another_index = work["_render_stored_rendering"]
@@ -1271,6 +1276,23 @@ def _moved_head_of_the_same_sum(
     return client, store, spec_root, recorded["content_version"], new_head
 
 
+def test_a_repeated_request_over_a_moved_head_of_the_same_sum_names_the_new_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored answer is keyed on the dataset version each root was read from, so the same
+    tree over a moved head whose sum is unchanged names the new head as its base, and its
+    repeat reads that answer with no render and no evaluation."""
+    client, _, spec_root, recorded, new_head = _moved_head_of_the_same_sum(monkeypatch)
+
+    work = _count_work(monkeypatch)
+    again = _post(client, _aggregate(spec_root, group_by=["recipient"]))
+
+    assert again.status_code == 200, again.text
+    assert work == Counter()
+    (read,) = again.json()["derived_roots"]
+    assert (read["content_version"], read["base_content_version"]) == (recorded, new_head)
+
+
 def test_a_spec_root_read_from_a_recorded_sum_names_the_head_it_was_read_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1285,6 +1307,56 @@ def test_a_spec_root_read_from_a_recorded_sum_names_the_head_it_was_read_through
     assert standing.json()["frame_content_version"] == recorded
     (read,) = standing.json()["derived_roots"]
     assert read["base_content_version"] == new_head
+
+
+def test_a_head_that_moves_between_two_roots_of_one_derived_version_keeps_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two roots of one Spec that both read one recorded sum, the head moving between their
+    serves to another dataset version of the same sum: the second serve reads the same derived
+    version through the new head, so the second root is read from the version the first serve
+    read, and both name that version as their base."""
+    heads: list[tuple[Any, Any]] = []
+    read_head = _FakeHeadStore.read_head
+
+    def recorded(store: Any, subject_id: str) -> Any:
+        head = read_head(store, subject_id)
+        heads.append((store, head))
+        return head
+
+    monkeypatch.setattr(_FakeHeadStore, "read_head", recorded)
+    client, _, spec_root, _, new_head = _moved_head_of_the_same_sum(monkeypatch)
+    store = heads[-1][0]
+    moved = store._heads[spec_root["spec_id"]]
+    assert moved.content_version == new_head
+    first = next(head for _, head in heads if head is not None and head.content_version != new_head)
+    store._heads[spec_root["spec_id"]] = first
+    serve = analysis_roots.serve_spec
+    serves: list[None] = []
+
+    def moving(**kwargs: Any) -> Any:
+        serves.append(None)
+        if len(serves) == 2:
+            store._heads[spec_root["spec_id"]] = moved
+        return serve(**kwargs)
+
+    monkeypatch.setattr(analysis_roots, "serve_spec", moving)
+    tree = {
+        "verb": "share_of",
+        "arguments": {"on": ["recipient"]},
+        "inputs": {
+            "data": _aggregate(spec_root, group_by=["recipient"]),
+            # Another rendering, so the two roots stay two, of the same derived version.
+            "other": _aggregate({**spec_root, "rendering": {}}, group_by=["recipient"]),
+        },
+    }
+
+    response = _post(client, tree)
+
+    assert response.status_code == 200, response.text
+    assert len(serves) == 2
+    derived = response.json()["derived_roots"]
+    assert {one["base_content_version"] for one in derived} == {first.content_version}
 
 
 def test_a_recorded_sum_is_not_read_through_a_revoked_head(

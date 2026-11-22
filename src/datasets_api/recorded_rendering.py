@@ -144,10 +144,11 @@ def mintings_rendered_under(
     version: HeadVersion, *, head_content_version: str, code_index_stamp: str
 ) -> list[MintingOptions]:
     """The minting options the files linked under `version` record as rendered from
-    `head_content_version` under the code index whose content hash is `code_index_stamp`: each
-    link whose row for that head records that hash (`HeadLink.rendered_under`). A link written
-    before rows recorded a hash, or under another index, records none, so a render from that
-    head under this index may make another version."""
+    `head_content_version` under `code_index_stamp`, the code index and render format
+    (`versions.rendering_stamp`): each link whose row for that head records that stamp
+    (`HeadLink.rendered_under`). A link written before rows recorded a stamp, under another
+    index, or under an earlier render format (`versions.RENDER_FORMAT`) records none, so a
+    render from that head under this index may make another version."""
     return recorded_mintings(
         link.rendering
         for link in version.links

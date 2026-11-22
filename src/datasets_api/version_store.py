@@ -36,7 +36,8 @@ does.
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). A link under a derived version
 records every raw head a write of its version was rendered from
-(`datasets.version_artifact_head`), with the code index the last such write rendered it under.
+(`datasets.version_artifact_head`), with the code index and render format the last such write
+rendered it under (`versions.rendering_stamp`).
 No statement here deletes a link. Every link write and
 every pin reference write takes `lock_version_links` first, so a pin cannot complete for a
 digest a concurrent re-render is unlinking.
@@ -217,8 +218,8 @@ def _insert_artifact(
     a derived version. The link records it beside the heads it holds
     (`datasets.version_artifact_head`), whether the upsert kept the old digest or not, since
     either way a rendering from that head made this version. A link written with none keeps the
-    heads it holds. `code_index_stamp` is the content hash of the code index the file was
-    rendered under, which the head's row records in place of the one an earlier write left; a
+    heads it holds. `code_index_stamp` is the stamp of the code index and render format the
+    file was rendered under (`versions.rendering_stamp`), which the head's row records in place of the one an earlier write left; a
     write with none leaves the row's as it is.
     """
     lock_version_links(tx, subject_id=subject_id, content_version=content_version)

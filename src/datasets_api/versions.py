@@ -69,6 +69,21 @@ NO_PARTY_ROLE = "no_party_role"
 holds no party role. It holds no party-kind cell, so its bytes are the same under every code
 index and its key is the same under every digest. No digest, a hex SHA-256, equals it."""
 
+RENDER_FORMAT = "axis_label"
+"""The cells a render writes into a derived version's frame and files for unchanged data and
+options: under `axis_label` each kept `stat_var_<axis>` cell holds its code's label. It joins
+the stamp a derived version's links record (`rendering_stamp`), so a recorded sum or cut
+rendered under another format matches no request and the next request renders it again.
+Change it with any change to the cells a sum, a cut or a decode writes."""
+
+
+def rendering_stamp(code_index_hash: str) -> str:
+    """The stamp a derived version's links record beside the head they were rendered from
+    (`HeadLink.rendered_under`): `code_index_hash`, the content hash of the code index the render
+    read, then `+` and `RENDER_FORMAT`. A recorded sum is reused only under the stamp the serving
+    build computes (`recorded_rendering.mintings_rendered_under`)."""
+    return f"{code_index_hash}+{RENDER_FORMAT}"
+
 
 def enrichment_stamp(
     rendering: Mapping[str, object], *, role_columns: Iterable[str], enrichment_digest: str | None
@@ -136,8 +151,8 @@ class VersionRecord:
     # Whether a derived version's frame holds its summed rows (`render.DerivedVersion.summed`):
     # set exactly when `base_content_version` is.
     frame_summed: bool | None = None
-    # The content hash of the code index a derived version's files were rendered under
-    # (`CodeIndex.stamp.content_hash`), which each link records beside the head it names
+    # The stamp of the code index and render format a derived version's files were rendered
+    # under (`rendering_stamp`), which each link records beside the head it names
     # (`datasets.version_artifact_head.code_index_stamp`). `None` records none.
     code_index_stamp: str | None = None
     # Builds and settles the version's description record in the transaction that writes the
@@ -363,8 +378,9 @@ class HeadLink:
     """One file linked under a version: its `rendering`, and every raw head a write named as
     making it (`datasets.version_artifact_head`), empty on a link no write named a head for, as
     on every link under a raw version and every link written before links held heads.
-    `rendered_under` maps each of those heads whose row records it to the content hash of the
-    code index the last write naming that head rendered the file under."""
+    `rendered_under` maps each of those heads whose row records it to the stamp of the code
+    index and render format the last write naming that head rendered the file under
+    (`rendering_stamp`)."""
 
     rendering: Mapping[str, object]
     heads: frozenset[str] = frozenset()
