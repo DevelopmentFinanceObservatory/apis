@@ -39,7 +39,9 @@ does.
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). A link under a derived version
 records every raw head a write of its version was rendered from
-(`datasets.version_artifact_head`). No statement here deletes a link. Every link write and
+(`datasets.version_artifact_head`), with the code index and render format the last such write
+rendered it under (`versions.rendering_stamp`).
+No statement here deletes a link. Every link write and
 every pin reference write takes `lock_version_links` first, so a pin cannot complete for a
 digest a concurrent re-render is unlinking.
 
@@ -197,6 +199,7 @@ def _insert_artifact(
     artifact: ArtifactRecord,
     now: datetime,
     head_content_version: str | None = None,
+    code_index_stamp: str | None = None,
 ) -> None:
     """Link `artifact` under its rendering key. An existing link is kept while its digest has
     a servable location, so a version lists the same bytes under one key for as long as they
@@ -218,7 +221,9 @@ def _insert_artifact(
     a derived version. The link records it beside the heads it holds
     (`datasets.version_artifact_head`), whether the upsert kept the old digest or not, since
     either way a rendering from that head made this version. A link written with none keeps the
-    heads it holds.
+    heads it holds. `code_index_stamp` is the stamp of the code index and render format the
+    file was rendered under (`versions.rendering_stamp`), which the head's row records in place of the one an earlier write left; a
+    write with none leaves the row's as it is.
     """
     lock_version_links(tx, subject_id=subject_id, content_version=content_version)
     key = enriched_rendering_key(artifact.rendering, artifact.enrichment_digest)
@@ -247,9 +252,12 @@ def _insert_artifact(
         return
     tx.execute(
         "INSERT INTO datasets.version_artifact_head "
-        "(subject_id, content_version, rendering_key, head_content_version) "
-        "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-        (subject_id, content_version, key, head_content_version),
+        "(subject_id, content_version, rendering_key, head_content_version, code_index_stamp) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (subject_id, content_version, rendering_key, head_content_version) "
+        "DO UPDATE SET code_index_stamp = EXCLUDED.code_index_stamp "
+        "WHERE EXCLUDED.code_index_stamp IS NOT NULL",
+        (subject_id, content_version, key, head_content_version, code_index_stamp),
     )
 
 
@@ -297,6 +305,7 @@ def _insert_version(
             artifact=artifact,
             now=now,
             head_content_version=record.base_content_version,
+            code_index_stamp=record.code_index_stamp,
         )
     created = inserted_row is not None
     if not created:
@@ -871,8 +880,8 @@ class LiveVersionLister:
                         listed,
                     )
                     heads = tx.fetch_all(
-                        "SELECT content_version, rendering_key, head_content_version "
-                        "FROM datasets.version_artifact_head "
+                        "SELECT content_version, rendering_key, head_content_version, "
+                        "code_index_stamp FROM datasets.version_artifact_head "
                         f"WHERE subject_id = %s AND content_version IN ({in_listed})",
                         listed,
                     )
@@ -884,19 +893,23 @@ class LiveVersionLister:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        made_from: dict[tuple[str, str], set[str]] = {}
+        made_from: dict[tuple[str, str], dict[str, str | None]] = {}
         for head in heads:
             key = (cast(str, head["content_version"]), cast(str, head["rendering_key"]))
-            made_from.setdefault(key, set()).add(cast(str, head["head_content_version"]))
+            made_from.setdefault(key, {})[cast(str, head["head_content_version"])] = cast(
+                "str | None", head["code_index_stamp"]
+            )
         linked: dict[str, list[HeadLink]] = {}
         for link in links:
             content_version = cast(str, link["content_version"])
+            stamps = made_from.get((content_version, cast(str, link["rendering_key"])), {})
             linked.setdefault(content_version, []).append(
                 HeadLink(
                     rendering=cast("Mapping[str, object]", link["rendering"]),
-                    heads=frozenset(
-                        made_from.get((content_version, cast(str, link["rendering_key"])), ())
-                    ),
+                    heads=frozenset(stamps),
+                    rendered_under={
+                        head: stamp for head, stamp in stamps.items() if stamp is not None
+                    },
                 )
             )
         return [

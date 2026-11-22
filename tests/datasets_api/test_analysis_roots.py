@@ -266,6 +266,7 @@ def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bou
         ),
         coverage=SimpleNamespace(snapshot=lambda: None),
         now=lambda: datetime.now(UTC),
+        version_lister=None,
     )
     roots = LiveRootSource(
         deps=deps,  # ty: ignore[invalid-argument-type]
@@ -358,6 +359,7 @@ def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
         ),
         coverage=SimpleNamespace(snapshot=lambda: None),
         code_index=_hierarchical_code_index(),
+        version_lister=None,
     )
     roots = LiveRootSource(
         deps=deps,  # ty: ignore[invalid-argument-type]

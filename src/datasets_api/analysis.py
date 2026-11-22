@@ -2230,12 +2230,15 @@ def request_key(
     working: Mapping[str, Any], resolved: Sequence[ResolvedRoot], *, latest: bool
 ) -> str:
     """The key a run's answer is stored under: the sha256 of the canonical JSON of the working
-    tree, each resolved root's record, `latest`, the execution identity and `ANSWER_FORMAT`.
-    Two requests under one key compute one frame and answer one body."""
+    tree, each resolved root's record and the version it reads (`ResolvedRoot.version`, with
+    the base version a sum read), `latest`, the execution identity and `ANSWER_FORMAT`. Two
+    requests under one key compute one frame and answer one body, so a body's `derived_roots`
+    names the base each root was read through."""
     preimage = {
         "answer_format": ANSWER_FORMAT,
         "tree": _keyed_tree(working),
         "roots": [dict(root.record) for root in resolved],
+        "versions": [root.version() for root in resolved],
         "latest": latest,
         "execution_identity": current_execution_identity().canonical_string(),
     }

@@ -69,6 +69,7 @@ CREATE TABLE datasets.version_artifact_head (
     content_version TEXT NOT NULL,
     rendering_key TEXT NOT NULL,
     head_content_version TEXT NOT NULL,
+    code_index_stamp TEXT,
     PRIMARY KEY (subject_id, content_version, rendering_key, head_content_version)
 );
 CREATE TABLE datasets.version_revocation (
