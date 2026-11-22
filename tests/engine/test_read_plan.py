@@ -1384,6 +1384,62 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
     assert [f.facet_id for f in read_plan.facets_served(plan)] == ["fM2"]
 
 
+def test_a_continuation_counted_in_given_years_cuts_after_the_selection_s_last_year_in_them(
+    search_settings,
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_BBB` to 2020 and at `_CCC` in 2020 alone, and
+    `fE`, an estimate of one source and unit reaching 2022, at `_AAA` to 2022 and at `_CCC`
+    in 2019, so over 2015 to 2022 `fE` continues `fM1` at `_AAA` after 2020 alone. Counted
+    in 2018 and 2019, as a
+    member falling back to an earlier year ranks, the continuation keeps `fE`'s rows after
+    `fM1`'s last year in those years: none at `_AAA`, and 2019 at `_CCC`, where `fM1`
+    holds none, as a mint cuts its rows to that year before it masks them."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2021))) for place in (_AAA, _BBB)),
+        (_FLOW, "fM1", ABSENT_ENTITY, _CCC, [2020]),
+        (_FLOW, "fE", ABSENT_ENTITY, _AAA, list(range(2015, 2023))),
+        (_FLOW, "fE", ABSENT_ENTITY, _CCC, [2019]),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fE", "Estimated"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB, _CCC],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
+        years=read_plan.role_years(
+            DateRequest(window=TimeWindow(start_year=2015, end_year=2022), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    assert isinstance(plan, BulkPlan)
+    assert (plan.facet_id, plan.continuing) == ("fM1", ("fE",))
+
+    assert [
+        (facet_id, by_year) for facet_id, _role_tuple, by_year in plan.continued_years(_FLOW)
+    ] == [("fE", ((2021, 1), (2022, 1)))]
+    assert [
+        (facet_id, by_year)
+        for facet_id, _role_tuple, by_year in plan.continued_years(_FLOW, (2018, 2019))
+    ] == [("fE", ((2019, 1),))]
+
+
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     search_settings,
 ) -> None:

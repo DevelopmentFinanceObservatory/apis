@@ -247,6 +247,65 @@ def test_a_read_in_years_no_series_holds_omits_with_no_points_and_no_read(window
     assert observations.omitted.dispatched == 0
 
 
+def _continued_in_years(estimated_years: list[int], years: frozenset[int]):
+    """A read of Kenya in `years` under a 2010 to 2027 window, where a recorded facet holds
+    2010 to 2016 and 2019 and an `Estimated` facet of one source continues it in
+    `estimated_years`: the observations and the warning."""
+
+    def facet(dates: list[int], value: float, **method: str) -> dict:
+        return {
+            "earliestDate": str(dates[0]),
+            "latestDate": str(dates[-1]),
+            "obsCount": len(dates),
+            "provenanceId": "dc/base/Src",
+            **({"measurementMethod": method["method"]} if method else {}),
+            "observations": [{"date": str(year), "value": value} for year in dates],
+        }
+
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(
+        {
+            "Count_Person|country/KEN": [
+                facet([*range(2010, 2017), 2019], 1.0),
+                facet(estimated_years, 2.0, method="Estimated"),
+            ]
+        }
+    )
+    return build_observations_planned(
+        ["Count_Person"],
+        {"observationAbout": ["country/KEN"]},
+        graph=FakeGraph(),
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        window=TimeWindow(start_year=2010, end_year=2027),
+        coverage=empty_coverage_snapshot(),
+        years=years,
+    )
+
+
+def test_a_read_in_years_states_estimates_only_where_a_served_point_is_one():
+    """The estimates continue the recorded series in 2020 and from 2022. Read in 2019 and
+    2021, the span holds the 2020 estimate, which 2021's absence leaves out, so the series
+    serves the recorded 2019 alone and holds no estimate."""
+    observations, warn = _continued_in_years([2020, *range(2022, 2030)], frozenset({2019, 2021}))
+
+    assert warn is None
+    (series,) = observations.series
+    assert [(p.date, p.value) for p in series.points] == [("2019", 1.0)]
+    assert series.holds_estimates is False
+
+
+def test_a_series_the_continuation_cuts_from_its_years_is_served_empty():
+    """The estimates hold 2017 to 2029, so the series holds a point in 2018. A mint of the
+    window cuts the estimates up to the recorded 2019, so read in 2018 the series serves
+    nothing, and the preview counts it fetched and empty, with no warning."""
+    observations, warn = _continued_in_years(list(range(2017, 2030)), frozenset({2018}))
+
+    assert warn is None
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert (observations.omitted.dispatched, observations.omitted.empty) == (1, 1)
+
+
 def _recorded_and_estimated_obs() -> dict:
     """Recorded values to 2024 with no method, and projections from 2024 to 2032 in an
     `Estimated` facet. Each projection is its year plus 0.5, so a point shows which facet

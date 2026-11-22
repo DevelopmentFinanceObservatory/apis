@@ -593,14 +593,21 @@ def _dispatches(
 class _SeriesRead:
     """One planned series' share of a read: its points in date order, the rows it holds
     before the read's row limit or any display truncation, the read's selections and its
-    own conversion record, and whether a row it serves carries an estimated method
-    (`_holds_estimates`)."""
+    own conversion record, and the dates of its rows that carry an estimated method
+    (`_estimated_dates`)."""
 
     points: list[tuple[str, float | None]]
     total_rows: int
     selections: Mapping[str, FacetSelection]
     conversion_record: ConversionRecord | None
-    holds_estimates: bool = False
+    estimated_dates: frozenset[str] = frozenset()
+
+    @property
+    def holds_estimates(self) -> bool:
+        """Whether a point the read keeps is dated where a row carries an estimated method,
+        so a cut of its points (`_at_latest_periods`, `_in_years`) drops the flag with the
+        estimated points it drops."""
+        return any(date in self.estimated_dates for date, _value in self.points)
 
 
 def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey, _SeriesRead]:
@@ -618,7 +625,7 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
                 total_rows=result.total_rows,
                 selections=result.selections,
                 conversion_record=result.conversion_record,
-                holds_estimates=_holds_estimates(result.frame.rows, columns=result.frame.columns),
+                estimated_dates=_estimated_dates(result.frame.rows, columns=result.frame.columns),
             )
         }
     columns = result.frame.columns
@@ -637,21 +644,25 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
             total_rows=result.series_total_rows.get(dcids, 0),
             selections=result.selections,
             conversion_record=result.series_conversion_records.get(dcids),
-            holds_estimates=_holds_estimates(rows, columns=columns),
+            estimated_dates=_estimated_dates(rows, columns=columns),
         )
     return reads
 
 
-def _holds_estimates(rows: Sequence[tuple[object, ...]], *, columns: Sequence[str]) -> bool:
-    """Whether a row of `rows` carries a measurement method the measurement-method
+def _estimated_dates(
+    rows: Sequence[tuple[object, ...]], *, columns: Sequence[str]
+) -> frozenset[str]:
+    """The dates of the rows of `rows` carrying a measurement method the measurement-method
     classification classes estimated under the row's provenance
     (`materialise.method_status.status_of`), as the rows of a continuation
     (`materialise.facets.FacetSelection.continued_by`) do."""
+    date = columns.index("time_period")
     method, provenance = columns.index("measurementMethod"), columns.index("provenance")
-    return any(
-        status_of(cast("str | None", row[method]), cast("str | None", row[provenance]))
-        == "estimated"
+    return frozenset(
+        cast(str, row[date])
         for row in rows
+        if status_of(cast("str | None", row[method]), cast("str | None", row[provenance]))
+        == "estimated"
     )
 
 
@@ -1523,7 +1534,9 @@ def _fetch_pair_observations(
     A narrowed plan's reads elect, mask and collapse under the window it elected under
     (`PairPlan.election_years`) and keep their rows in the span of the years it serves
     (`_Dispatch.served`), so the row limit and `total_rows` read that span; `_in_years`
-    then leaves out the points of a year inside the span the plan does not serve.
+    then leaves out the points of a year inside the span the plan does not serve. A series
+    left with no point in the served years counts as fetched and empty, as one whose read
+    held no row does.
 
     Each `materialise_preview` call reads its series' planned candidates and elects among
     the member's group alone, over `obs_preview_max_rows` rows per series, separate from the
@@ -1592,11 +1605,18 @@ def _fetch_pair_observations(
                 len(short_of_latest),
                 sorted(short_of_latest),
             )
+    served_empty = 0
     if plan.served_years is not None:
-        pair_results = _in_years(pair_results, plan.served_years.years)
+        # A series `read_in_years` keeps can hold no point in the served years once the
+        # reads cut its rows under the window it elected under, as a continuation's mask
+        # cuts estimates the selection's later years supersede. It is served empty.
+        in_years = _in_years(pair_results, plan.served_years.years)
+        served_empty = len(pair_results) - len(in_years)
+        pair_results = in_years
     outcome = replace(
         pool_result,
         pair_results=pair_results,
+        unfiltered_empty_pairs=pool_result.unfiltered_empty_pairs + served_empty,
         facet_rejected_pairs=pool_result.facet_rejected_pairs + filter_rejected,
         hard_failed_pairs=pool_result.hard_failed_pairs + undispatchable,
         short_of_latest_pairs=len(short_of_latest),

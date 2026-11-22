@@ -1054,12 +1054,12 @@ class BulkPlan:
         they read: `continued_pairs` with a continuation, else `elected_pairs`."""
         return self.continued_pairs if self.continuing else self.elected_pairs
 
-    def selected_ends(self, sv: str) -> Mapping[RoleTuple, int]:
+    def selected_ends(self, sv: str, bounds: YearBounds | None = None) -> Mapping[RoleTuple, int]:
         """Each role tuple of `sv` with the last year the facets the group's selection serves
-        it (`selected_candidates`) hold a point in at it, within the years its election reads
-        (`election_bounds`): the year after which a continuation serves the tuple
-        (`materialise.columnar.continuation_mask`)."""
-        first, last = self.election_bounds(sv)
+        it (`selected_candidates`) hold a point in at it, within `bounds`, by default the
+        years its election reads (`election_bounds`): the year after which a continuation
+        serves the tuple (`materialise.columnar.continuation_mask`)."""
+        first, last = self.election_bounds(sv) if bounds is None else bounds
         ends: dict[RoleTuple, int] = {}
         for c in self.selected_candidates(sv):
             for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
@@ -1075,11 +1075,13 @@ class BulkPlan:
         there: those in `years`, by default the member's years (`member_years`), after the
         tuple's last year under the selected facets (`selected_ends`), every one where they
         hold none, as `materialise.columnar.continuation_mask` keeps a continuation's rows.
-        Coverage counts by year, so a year the selected facets hold keeps none of the
-        continuation. A tuple keeping no year is left out."""
+        That last year reads `years` when given, as a mint cuts its rows to the years it
+        ranks over before it masks them, else the years the election reads. Coverage counts
+        by year, so a year the selected facets hold keeps none of the continuation. A tuple
+        keeping no year is left out."""
         first, last = self.member_years(sv) if years is None else years
         lead = self.selected_candidates(sv)
-        ends = self.selected_ends(sv)
+        ends = self.selected_ends(sv, years)
         for c in self.served_candidates(sv)[len(lead) :]:
             for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
                 end = ends.get(role_tuple)
