@@ -4,7 +4,7 @@ A rebuild that runs inline on a request thread stores the new version and advanc
 there, and the request answers with it. Rendering ahead from that version on the same thread
 would hold a request thread and a materialise permit for other roots' renders, so the serve
 queues it instead (`current._check_currency`): after the head's transaction commits, a rebuild
-whose trigger is not `worker`, of a dataset whose links an analysis root read within
+whose trigger is not `worker` and that won the head, of a dataset whose links an analysis root read within
 `DATASETS_RENDER_AHEAD_READ_WINDOW_SECONDS`, records a render-ahead operation and creates its
 task. A worker run renders ahead from the version it materialised itself
 (`operations.worker.run_operation`).
@@ -15,14 +15,16 @@ The operation is an ordinary row, one per `(subject_id, head content_version)`: 
 (`operations.head_check`), so no request can name it and nobody polls it. The worker runs it
 through `render_ahead.render_ahead` and completes it naming that head.
 
-A row already on record for the pair, in any state, queues nothing more: concurrent inline
-rebuilds of one head share one row, and a second store of the same head queues nothing new. A
-`pending` row whose task create was lost is the one exception: a later store of the head claims
-the retry once the row has waited `ENQUEUE_RECOVERY_SECONDS` (`claim_dispatch_retry`) and creates
-it again. A new row leaves half of `DATASETS_OPERATION_BACKLOG_MAX` free, as a head check does,
-and the task create waits at most `HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS`. A full backlog, a store
-error or a failed create is logged and fails nothing; `datasets-maintenance render-ahead`
-renders what was not queued.
+A row already on record for the pair queues nothing more: concurrent inline rebuilds of one head
+share one row, and a second store of the same head queues nothing new. Two rows are retried by a
+later store of the same head: a retryable failed row, which `create_or_get` resets under a new
+submission, and a `pending` row whose task create was lost, whose retry the store claims once the
+row has waited `ENQUEUE_RECOVERY_SECONDS` (`claim_dispatch_retry`). Nothing else retries a lost
+create, since nobody polls the row. A new row leaves half of `DATASETS_OPERATION_BACKLOG_MAX`
+free, as a head check does, and the task create waits at most
+`HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS`. A full backlog, a store error or a failed create is logged
+and fails nothing, and that head is rendered ahead by nothing until a later store of it queues
+again or `datasets-maintenance render-ahead` runs.
 """
 
 from __future__ import annotations
@@ -94,7 +96,8 @@ def queue_render_ahead(
                 request_identity=identity, origin_catalogue_build_id=build_id, options=options
             )
         )
-        if before is None:
+        if before is None or (before.state == "failed" and before.retryable):
+            # A retryable failed row resets under a new submission.
             operation = operation_store.create_or_get(
                 request_identity=identity,
                 options=options,

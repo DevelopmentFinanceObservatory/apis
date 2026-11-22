@@ -1013,12 +1013,14 @@ def test_a_marked_read_lists_its_rendering_once_and_names_its_dataset_head(live_
         )
 
     assert lister.list_read_renderings(subject_id, read_since=started) == []
+    assert not lister.renderings_read_since(subject_id, read_since=started)
     mark(read_at, unless=read_at - timedelta(hours=1))
     mark(read_at + timedelta(minutes=1), unless=read_at - timedelta(hours=1))
     read = lister.list_read_renderings(subject_id, read_since=started)
     (version,) = lister.list_head_versions(subject_id, head_content_version="cv_h1")
 
     assert [(entry.rendering, entry.read_at) for entry in read] == [(groupby, read_at)]
+    assert lister.renderings_read_since(subject_id, read_since=started)
     assert lister.list_read_renderings(subject_id, read_since=read_at + timedelta(seconds=1)) == []
     assert {
         json.dumps(link.rendering, sort_keys=True): dict(link.read_at) for link in version.links

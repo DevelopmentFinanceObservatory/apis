@@ -72,6 +72,7 @@ from datasets_api.operations.submit import (
 )
 from datasets_api.render import artifact_rendering_keys
 from datasets_api.render_ahead import render_ahead
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import collecting, door_call
 from datasets_api.versions import HeadFence, HeadFenceLost
 from dfo_platform.codes import bound_registry_endpoint
@@ -186,7 +187,13 @@ def run_operation(
     if (head := render_ahead_head(operation.request_identity)) is not None:
         if deadline is not None:
             deps = dataclasses.replace(deps, deadline=deadline, work_deadline=deadline)
-        _run_render_ahead(operation, head_content_version=head, deps=deps, store=operation_store)
+        _run_render_ahead(
+            operation,
+            head_content_version=head,
+            deps=deps,
+            store=operation_store,
+            is_final_attempt=is_final_attempt,
+        )
         return
     deps = dataclasses.replace(
         deps, head_fence=HeadFence(operation_id=operation.id, attempt=operation.attempt_count)
@@ -368,12 +375,21 @@ def run_operation(
 
 
 def _run_render_ahead(
-    operation: Operation, *, head_content_version: str, deps: DefinitionDeps, store: OperationStore
+    operation: Operation,
+    *,
+    head_content_version: str,
+    deps: DefinitionDeps,
+    store: OperationStore,
+    is_final_attempt: bool,
 ) -> None:
     """Run a render-ahead operation a request thread queued (`operations.render_ahead_queue`):
     render ahead from its head under the run's work deadline, then complete the row naming that
-    head, with no family. A failure fails the row retryable and logs; a later store of the head
-    queues nothing more, and `datasets-maintenance render-ahead` renders what it left."""
+    head, with no family. A head that moved since renders nothing and completes the row.
+
+    A store failure before the operation's last attempt releases the row and raises
+    `OperationTransientFailure`, so Cloud Tasks delivers it again; on the last attempt, and for
+    any other failure, it fails the row retryable, which a later store of the same head resets
+    (`render_ahead_queue.queue_render_ahead`)."""
     subject_id = request_identity_subject_id(operation.request_identity)
     settings = deps.settings
     try:
@@ -386,7 +402,7 @@ def _run_render_ahead(
             deadline=deps.work_deadline,
         )
         basis = family_basis(deps)
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "Datasets operation %r: rendering ahead from %r of %r failed",
             operation.id,
@@ -394,6 +410,9 @@ def _run_render_ahead(
             subject_id,
             exc_info=True,
         )
+        if isinstance(exc, DatasetsStoreUnavailable) and not is_final_attempt:
+            store.release(operation.id, attempt=operation.attempt_count)
+            raise OperationTransientFailure() from exc
         store.fail(
             operation.id,
             attempt=operation.attempt_count,
