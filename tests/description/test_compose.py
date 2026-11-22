@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from code_index import CodeIndex
+from description import blocks as description_blocks
 from description.compose import change_step, describe_card, describe_version
 from description.facts import (
     CaveatFact,
@@ -502,7 +503,10 @@ def test_source_pipeline_steps_serve_as_the_kit_vector_does() -> None:
 
     assert served["steps"] == vector["steps"]
     assert served["gaps"] == vector["gaps"]
-    assert served["freshness"] == vector["freshness"]
+    # The vector leaves `partial_periods` out, meaning no judgement was recorded, which a
+    # description under a schema holding the member states as null.
+    stated = {"partial_periods": None} if description_blocks.STATES_PARTIAL_PERIODS else {}
+    assert served["freshness"] == {**stated, **vector["freshness"]}
 
 
 def test_importing_the_composer_loads_no_reader_or_extra():
