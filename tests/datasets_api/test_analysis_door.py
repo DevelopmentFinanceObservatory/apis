@@ -13,7 +13,7 @@ import hashlib
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from dfo_frame_grammar import Frame
@@ -447,11 +447,21 @@ def test_a_verification_with_every_analysis_thread_held_refuses_503(
     assert refused.json()["code"] == "service_unavailable"
 
 
-def _posting(client: TestClient, tree: dict[str, Any], answers: list[Any]) -> threading.Thread:
+# Caller shares wider than any stage, for a test whose requests, all of one caller, fill a stage.
+_UNSHARED = {"analysis_key_max_per_caller": 100, "analysis_max_per_caller": 100}
+
+
+def _posting(
+    client: TestClient,
+    tree: dict[str, Any],
+    answers: list[Any],
+    *,
+    headers: dict[str, str] | None = None,
+) -> threading.Thread:
     """A started thread posting `tree`, appending the response and when it came to `answers`."""
 
     def post() -> None:
-        response = client.post(_PATH, json={"tree": tree})
+        response = client.post(_PATH, json={"tree": tree}, headers=headers)
         answers.append((response, time.monotonic()))
 
     thread = threading.Thread(target=post)
@@ -494,7 +504,7 @@ def test_the_keying_wait_refuses_503_past_its_queue_and_at_its_bound(
     stores = Stores()
     roots = _GatedSource(source(stores))
     with (
-        _client(stores, roots, monkeypatch, analysis_key_max_concurrency=1) as client,
+        _client(stores, roots, monkeypatch, analysis_key_max_concurrency=1, **_UNSHARED) as client,
         caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
     ):
         held_answers: list[Any] = []
@@ -1385,7 +1395,7 @@ def test_the_run_wait_refuses_503_past_its_queue_and_at_its_bound(
     stores = Stores()
     roots = _ReadBlockingSource(source(stores))
     with (
-        _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client,
+        _client(stores, roots, monkeypatch, analysis_max_concurrency=1, **_UNSHARED) as client,
         caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
     ):
         held_answers: list[Any] = []
@@ -1487,6 +1497,7 @@ def test_an_anchor_and_a_verification_take_threads_before_queued_runs(
             analysis_max_concurrency=2,
             materialise_max_concurrency=4,
             verify_principal=_PROBE_PRINCIPAL,
+            **_UNSHARED,
         ) as client,
         caplog.at_level(logging.INFO, logger=analysis_door.logger.name),
     ):
@@ -1701,3 +1712,206 @@ def test_a_computed_run_times_its_evaluation_under_a_named_phase(
     assert metrics["evaluate"] >= _STAGE_DELAY_SECONDS * 1000, computed.headers["server-timing"]
     untimed = total - sum(ms for name, ms in metrics.items() if name not in _NESTED_PHASES)
     assert abs(untimed) < _UNTIMED_TOLERANCE_MS, computed.headers["server-timing"]
+
+
+_HMAC_KEY = "caller-share-test-key"
+
+
+def _from(address: str) -> dict[str, str]:
+    """The headers of a direct caller at `address`, named by its address key."""
+    return {"x-forwarded-for": address}
+
+
+def _assert_over_share(response: Any) -> None:
+    """`response` refuses its caller retryable 429 `caller_over_share`, with `Retry-After` and
+    the refusal counted in `Server-Timing`."""
+    assert response.status_code == 429, response.text
+    problem = response.json()
+    assert (problem["code"], problem["retryable"]) == ("caller_over_share", True)
+    assert response.headers["retry-after"] == "2"
+    assert "caller_over_share" in _timing_names(response)
+
+
+def test_a_caller_at_its_keying_share_refuses_429_while_another_caller_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keying share of one, held by caller A resolving its roots: A's next request refuses
+    429, and caller B's request keys beside it and answers."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", _HMAC_KEY)
+    stores = Stores()
+    roots = _GatedSource(source(stores))
+    with _client(stores, roots, monkeypatch, analysis_key_max_per_caller=1) as client:
+        answers: list[Any] = []
+        held = _posting(client, _TREE, answers, headers=_from("198.51.100.1"))
+        assert roots.started.acquire(timeout=5)
+        over = client.post(_PATH, json={"tree": _OTHER_TREE}, headers=_from("198.51.100.1"))
+        other = _posting(client, _OTHER_TREE, answers, headers=_from("198.51.100.2"))
+        other_keyed = roots.started.acquire(timeout=5)
+        roots.release.set()
+        held.join(5)
+        other.join(5)
+
+    _assert_over_share(over)
+    assert other_keyed
+    assert [response.status_code for response, _ in answers] == [200, 200]
+
+
+class _SwitchingSource(FakeRootSource):
+    """Reads frames, refuses each read with a server fault, or holds each read until
+    `release` is set, as `mode` says. `entered` counts the reads held."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.mode: Literal["read", "fail", "hold"] = "read"
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+
+    def read(self, root: LocatedRoot) -> Frame:
+        if self.mode == "fail":
+            raise PublishRecordMissing(
+                spec_id=root.dataset.spec_id, content_version=root.dataset.content_version
+            )
+        if self.mode == "hold":
+            self.entered.release()
+            assert self.release.wait(5)
+        return super().read(root)
+
+
+def test_a_caller_at_its_compute_share_refuses_429_while_another_caller_computes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compute share of one, held by caller A reading its roots on one of two analysis
+    threads: A's next run refuses 429 after keying, and caller B's run reads its roots on the
+    other thread meanwhile."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", _HMAC_KEY)
+    stores = Stores()
+    roots = _SwitchingSource(source(stores))
+    roots.mode = "hold"
+    with _client(stores, roots, monkeypatch, analysis_max_per_caller=1) as client:
+        answers: list[Any] = []
+        held = _posting(client, _TREE, answers, headers=_from("198.51.100.1"))
+        assert roots.entered.acquire(timeout=5)
+        over = client.post(_PATH, json={"tree": _OTHER_TREE}, headers=_from("198.51.100.1"))
+        other = _posting(client, _UNSTORED_TREE, answers, headers=_from("198.51.100.2"))
+        other_reads = roots.entered.acquire(timeout=5)
+        roots.release.set()
+        held.join(5)
+        other.join(5)
+
+    _assert_over_share(over)
+    assert "resolve_roots" in _timing_names(over)
+    assert other_reads
+    assert [response.status_code for response, _ in answers] == [200, 200]
+
+
+def test_a_callers_shares_free_after_answers_refusals_faults_and_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shares of one at both stages: after stored answers, an engine refusal, a server fault, a
+    refusal over the share and a run that times out while it computes, the caller's next run
+    still computes, so no outcome keeps a count. The timeout is a second, so the test waits
+    that long."""
+    stores = Stores()
+    roots = _SwitchingSource(source(stores))
+    with _client(
+        stores,
+        roots,
+        monkeypatch,
+        analysis_key_max_per_caller=1,
+        analysis_max_per_caller=1,
+        analysis_timeout_seconds=1.0,
+        definition_timeout_seconds=1.0,
+    ) as client:
+        answered = [client.post(_PATH, json={"tree": _TREE}).status_code for _ in range(5)]
+        refused = client.post(
+            _PATH,
+            json={"tree": step("aggregate", dataset(AID, AID_V1), aggregation="median_of_means")},
+        )
+        roots.mode = "fail"
+        faulted = client.post(_PATH, json={"tree": _OTHER_TREE})
+        roots.mode = "hold"
+        timing_out: list[Any] = []
+        held = _posting(client, _UNSTORED_TREE, timing_out)
+        assert roots.entered.acquire(timeout=5)
+        over = client.post(_PATH, json={"tree": _OTHER_TREE})
+        held.join(5)
+        roots.release.set()
+        roots.mode = "read"
+        after = client.post(_PATH, json={"tree": _OTHER_TREE})
+
+    assert answered == [200] * 5
+    assert refused.status_code == 422, refused.text
+    assert faulted.status_code == 500, faulted.text
+    _assert_over_share(over)
+    ((timed_out, _),) = timing_out
+    assert timed_out.status_code == 504, timed_out.text
+    assert after.status_code == 200, after.text
+
+
+def test_a_stored_answer_answers_while_its_caller_holds_its_compute_share(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compute share of one, held by the caller's run reading its roots: the caller's stored
+    answer still answers, since a stored answer takes no analysis thread."""
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    roots.release.set()
+    with _client(stores, roots, monkeypatch, analysis_max_per_caller=1) as client:
+        computed = client.post(_PATH, json={"tree": _TREE})
+        roots.release.clear()
+        roots.entered.clear()
+        answers: list[Any] = []
+        held = _posting(client, _OTHER_TREE, answers)
+        assert roots.entered.wait(5)
+        stored = client.post(_PATH, json={"tree": _TREE})
+        roots.release.set()
+        held.join(5)
+
+    assert computed.status_code == 200, computed.text
+    assert stored.status_code == 200, stored.text
+    assert stored.content == computed.content
+
+
+def test_callers_the_service_cannot_name_share_one_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A keying share of one, with no HMAC key: a direct caller at one address holds it, and a
+    direct caller at another and a vouched request with no `x-dfo-caller` both refuse 429."""
+    monkeypatch.delenv("DFO_CALLER_HMAC_KEY", raising=False)
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    stores = Stores()
+    roots = _GatedSource(source(stores))
+    with _client(stores, roots, monkeypatch, analysis_key_max_per_caller=1) as client:
+        answers: list[Any] = []
+        held = _posting(client, _TREE, answers, headers=_from("198.51.100.1"))
+        assert roots.started.acquire(timeout=5)
+        elsewhere = client.post(_PATH, json={"tree": _OTHER_TREE}, headers=_from("198.51.100.2"))
+        vouched = client.post(
+            _PATH,
+            json={"tree": _OTHER_TREE},
+            headers={"x-dfo-caller-principal": "website-secret"},
+        )
+        roots.release.set()
+        held.join(5)
+
+    _assert_over_share(elsewhere)
+    _assert_over_share(vouched)
+    assert answers[0][0].status_code == 200
+
+
+def test_the_default_shares_admit_two_runs_of_one_caller_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At the default settings one caller's two runs, as a browser sends them, key and both
+    read their roots on the two analysis threads at once."""
+    stores = Stores()
+    roots = _SwitchingSource(source(stores))
+    roots.mode = "hold"
+    with _client(stores, roots, monkeypatch) as client:
+        answers: list[Any] = []
+        runs = [_posting(client, tree, answers) for tree in (_TREE, _UNSTORED_TREE)]
+        both_read = roots.entered.acquire(timeout=5) and roots.entered.acquire(timeout=5)
+        roots.release.set()
+        for run in runs:
+            run.join(5)
+
+    assert both_read
+    assert [response.status_code for response, _ in answers] == [200, 200]

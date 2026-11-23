@@ -147,6 +147,18 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # rebuild inline, so the pool stays small to bound the dataset store connections it borrows.
     analysis_key_max_concurrency: int = Field(default=4, ge=1)
 
+    # The requests one caller (`dfo_platform.caller.resolve_caller`) may have waiting for or
+    # holding a keying thread, and an analysis thread, on one instance. A request past its
+    # caller's share refuses retryable 429 `caller_over_share` while other callers are admitted.
+    # Unset, each is half its stage's in-flight bound, at least 1: the keying bound is
+    # `analysis_key_max_concurrency` x 5 (a thread and four waiting), 20 at the defaults, so 10;
+    # the analysis bound is `analysis_max_concurrency` x 5, 10 at the defaults, so 5. Half keeps
+    # room for a second caller at each stage, and the defaults admit a browser's two analysis
+    # requests at a time (the website's `ANALYSIS_CONCURRENCY`) and a build runner's lanes of a
+    # few. Callers the service cannot name share one share.
+    analysis_key_max_per_caller: int | None = Field(default=None, ge=1)
+    analysis_max_per_caller: int | None = Field(default=None, ge=1)
+
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
     # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
     # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.
