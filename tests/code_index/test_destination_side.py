@@ -8,7 +8,12 @@ import pytest
 
 from code_index.declarations import DAC2A
 from code_index.query import CodeIndex
-from code_index.scope_conventions import DestinationSide, destination_side
+from code_index.scope_conventions import (
+    DestinationSide,
+    bilateral_side_total,
+    destination_side,
+    holds_bilateral_destinations_only,
+)
 from code_index.types import IndexStamp, PartyKind, PartyRow
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
@@ -188,3 +193,34 @@ def test_every_dac2a_destination_of_the_recorded_index_is_classified():
         "DACOtherWorldBank",
     ]
     assert sides["DACMekongDeltaProject"] == "bilateral"
+
+
+@pytest.mark.parametrize(
+    ("datasets", "held"),
+    [
+        pytest.param(("provenance/OECDCreditorReportingSystem",), True, id="crs"),
+        pytest.param((DAC2A,), False, id="dac2a-lists-agencies"),
+        pytest.param(("provenance/OECDCreditorReportingSystem", DAC2A), False, id="crs-and-dac2a"),
+        pytest.param(("provenance/Unindexed",), False, id="no-destination-held"),
+        pytest.param((), False, id="no-dataset"),
+    ],
+)
+def test_a_dataset_holds_bilateral_destinations_only_where_each_is_on_that_side(
+    datasets: tuple[str, ...], held: bool
+):
+    """The CRS's destinations are countries, regions and unallocated lines; DAC2a also lists
+    the multilateral agencies, so it fails, alone or beside the CRS. A dataset holding no
+    destination holds none on the bilateral side."""
+    index = load_index(INDEX_FIXTURE)
+
+    assert holds_bilateral_destinations_only(index, datasets=datasets) is held
+
+
+def test_the_developing_countries_total_is_the_one_bilateral_side_total():
+    """`DACDevelopingCountries` totals the bilateral destinations; the total of both sides
+    and a region's total do not."""
+    index = load_index(INDEX_FIXTURE)
+
+    assert [dcid for dcid in index.parties if bilateral_side_total(dcid)] == [
+        "DACDevelopingCountries"
+    ]

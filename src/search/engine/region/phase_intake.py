@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Final, cast
 
 import dc_graph
+from code_index.scope_conventions import bilateral_side_total, holds_bilateral_destinations_only
 from code_index.shared import get_index
 from code_index.types import PartyClass
 from dfo_platform.timings import PhaseTimings, collecting
@@ -597,7 +598,11 @@ def _prune_shapes_by_listing(
     a subset of the ones the population's markers cover (`WholeMarker.covers`). An open side
     lists every party its dataset holds, and a Spec states no class it leaves out, so
     "official donors" asked member by member lists on no CRS shape, where private donors
-    stand beside official ones. A shape whose datasets hold no class the index reads on the
+    stand beside official ones. A total of the bilateral destinations ("developing
+    countries", `scope_conventions.bilateral_side_total`) covers no class: it lists on a shape
+    whose datasets hold bilateral destinations alone
+    (`scope_conventions.holds_bilateral_destinations_only`), as the CRS does, and fails
+    with no class account elsewhere. A shape whose datasets hold no class the index reads on the
     side, such as one no declared dataset publishes, lists no population, since nothing
     shows what its open side would hold.
 
@@ -628,6 +633,9 @@ def _prune_shapes_by_listing(
 
     def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
         datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+        if all(bilateral_side_total(dcid) for dcid in listed[name]):
+            held = holds_bilateral_destinations_only(get_index(), datasets=datasets)
+            return set() if held else None
         classes = side_classes(state.whole_listed[name], datasets=datasets)
         return set(classes) - covered[name] if classes else None
 

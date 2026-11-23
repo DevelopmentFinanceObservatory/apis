@@ -160,17 +160,29 @@ def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentit
     bilateral side in place of the total of both sides (`BilateralSource.rebound` for
     `BilateralSource.spanning`) where a component of `provenance` reads the bilateral
     destinations of the dataset the row declares (`ComponentRecipe.destinations`), whose
-    population holds no row of the total of both sides. `identity` itself otherwise."""
+    population holds no row of the total of both sides.
+
+    A destination naming the total of the bilateral side alone is left out: a component
+    binds that total where the identity names no destination
+    (`code_index.composites.component_identities`), so "aid to developing countries" and
+    aid to no recipient named answer one identity, and one Spec. `identity` itself
+    otherwise."""
     composite = DECLARED_COMPOSITES.get(provenance)
     if composite is None:
         return identity
     bound = {
         recipe.dataset for recipe in composite.components if recipe.destinations == "bilateral"
     }
-    rebound = {row.spanning: row.rebound for row in BILATERAL_SOURCES if row.dataset in bound}
+    sources = [row for row in BILATERAL_SOURCES if row.dataset in bound]
+    rebound = {row.spanning: row.rebound for row in sources}
+    totals = {row.rebound for row in sources}
     entities = dict(identity.entities)
     for key, held in identity.entities.items():
-        if role_key_axis(key) == "destination" and rebound.keys() & set(held):
+        if role_key_axis(key) != "destination":
+            continue
+        if held and set(held) <= totals:
+            del entities[key]
+        elif rebound.keys() & set(held):
             entities[key] = list(dict.fromkeys(rebound.get(dcid, dcid) for dcid in held))
     if entities == identity.entities:
         return identity

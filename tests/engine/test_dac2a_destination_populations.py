@@ -1389,3 +1389,66 @@ def test_a_donor_with_no_total_oda_rows_answers_no_observations(
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "no_observations"
+
+
+_G7 = "GroupOfSeven"
+# The bilateral and imputed lines at the population's total, from France and the G7.
+_AT_DEVELOPING = {
+    **_AT_TOTAL,
+    (_DAC2A_ATTRIBUTED, _FRA, _DEVELOPING): 9,
+    (_DAC2A_MEMBER, _G7, _DEVELOPING): 1000,
+    (_DAC2A_ATTRIBUTED, _G7, _DEVELOPING): 90,
+}
+_INCLUSIVE_WORDS = "official development assistance from the G7 including imputed multilateral"
+
+
+def _developing_answer(donor: str, recipient: str | None, message: str) -> DefinitePart:
+    """The fresh answer for aid from `donor` to `recipient`, or to no recipient named, read
+    over `_AT_DEVELOPING` on a graph holding the G7's node."""
+    entities = [("from", donor), *([("to", recipient)] if recipient else [])]
+    graph = _graph_with_parties()
+    graph._nodes.setdefault(_G7, {"label": "G7", "type": "Grouping"})
+    return _part(
+        offline_resolve(
+            _fresh_request(entities, message=message, open_role=None),
+            graph=graph,
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(_AT_DEVELOPING),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "recipient", ["developing countries", "all developing countries", "Developing Countries, Total"]
+)
+@pytest.mark.parametrize(
+    ("donor", "message", "source"),
+    [
+        pytest.param(
+            "G7",
+            _INCLUSIVE_WORDS,
+            DAC2A_INCLUSIVE,
+            id="g7-inclusive",
+        ),
+        pytest.param(
+            "France", "official development assistance from France", _BILATERAL, id="france"
+        ),
+    ],
+)
+def test_developing_countries_on_a_composite_answer_the_spec_naming_no_recipient(
+    donor: str, message: str, source: str, recipient: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A composite reading DAC2a's bilateral destinations binds their total, "Developing
+    Countries, Total", where its identity names no destination. A part naming that total
+    answers the identity that names none, so "G7 aid including imputed multilateral aid to
+    developing countries" and the same question naming no recipient answer one Spec, as
+    France's bilateral reading does."""
+    _patched_coverage(monkeypatch, _AT_DEVELOPING)
+
+    named = _developing_answer(donor, recipient, f"{message} to {recipient}")
+    unnamed = _developing_answer(donor, None, message)
+
+    identity = named.spec.definition.identity
+    assert "destination" not in identity.entities
+    assert (identity.facets or {}).get("provenance") == IdentityBindingValue(ref=source)
+    assert named.spec.spec_id == unnamed.spec.spec_id

@@ -29,7 +29,11 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from code_index.declarations import CONTAINING_TOTALS
-from code_index.scope_conventions import RolePopulation
+from code_index.scope_conventions import (
+    RolePopulation,
+    bilateral_side_total,
+    holds_bilateral_destinations_only,
+)
 from code_index.shared import get_index
 from code_index.types import (
     POPULATION_CLASS,
@@ -191,7 +195,12 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     reads as every recipient it holds. DAC2b publishes `DACAllRecipients` with no marker, so
     there it binds as a named party and reads as no whole population. The CRS holds private
     donors beside official ones, so "official donors" (`DACOfficialDonors`, `official` alone)
-    never reads as every donor it holds; DAC1 holds official donors alone, so there it does."""
+    never reads as every donor it holds; DAC1 holds official donors alone, so there it does.
+
+    A total of the bilateral destinations (`scope_conventions.bilateral_side_total`,
+    "Developing Countries, Total") carries no marker: it reads so where every destination the
+    datasets hold, totals aside, is on the bilateral side
+    (`scope_conventions.holds_bilateral_destinations_only`), as the CRS's are."""
     index = get_index()
     rows = [index.parties.get(dcid) for dcid in dcids]
     if not datasets or not rows or any(row is None for row in rows):
@@ -200,6 +209,10 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     axis = parties[0].sole_axis()
     if any(row.publishes(axis, datasets) for row in parties):
         return False
+    if any(bilateral_side_total(row.dcid) for row in parties):
+        return all(
+            bilateral_side_total(row.dcid) for row in parties
+        ) and holds_bilateral_destinations_only(index, datasets=datasets)
     covers = {cls for row in parties for marker in row.whole for cls in marker.covers}
     classes = side_classes(axis, datasets=datasets)
     return bool(classes) and set(classes) <= covers
@@ -256,17 +269,23 @@ def named_whole(text: str, resolved: str | None) -> tuple[str, ...] | None:
     """The parties a text of the part names as a whole population, `None` when it names
     none: the members of the whole total set whose phrase it is, else the one party it
     resolved to (`resolved`) when some dataset marks that party as covering the `official`
-    class. "All donors" is a phrase of the official and private donors' set; "official
-    donors" resolves to `DACOfficialDonors`; "private donors" resolves to
+    class or it is a total of the bilateral destinations
+    (`scope_conventions.bilateral_side_total`). "All donors" is a phrase of the official and
+    private donors' set; "official donors" resolves to `DACOfficialDonors`; "developing
+    countries" resolves to `DACDevelopingCountries`; "private donors" resolves to
     `DACPrivateDonors`, which covers private donors alone, and names a party, not a
     population."""
     index = get_index()
     if (whole_set := index.whole_set(text)) is not None:
         return whole_set.members
     party = None if resolved is None else index.parties.get(resolved)
-    if party is None or not any(POPULATION_CLASS in marker.covers for marker in party.whole):
+    if party is None:
         return None
-    return (party.dcid,)
+    if bilateral_side_total(party.dcid) or any(
+        POPULATION_CLASS in marker.covers for marker in party.whole
+    ):
+        return (party.dcid,)
+    return None
 
 
 def named_whole_label(dcids: Collection[str]) -> str | None:

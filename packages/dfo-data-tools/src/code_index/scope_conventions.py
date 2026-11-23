@@ -714,6 +714,40 @@ def _total_side(total: PartyRow) -> DestinationSide:
     return "bilateral"
 
 
+def bilateral_side_total(dcid: str) -> bool:
+    """Whether `dcid` is a published total of the bilateral destinations
+    (`BilateralSource.rebound`, "Developing Countries, Total"): a population a request can
+    name on the destination side. It holds the bilateral side alone, so it carries no whole
+    marker (`code_index.types.WholeMarker`), and a dataset that publishes no row of it reads
+    it as every destination it holds where each is on the bilateral side
+    (`holds_bilateral_destinations_only`)."""
+    return any(row.rebound == dcid for row in BILATERAL_SOURCES)
+
+
+def holds_bilateral_destinations_only(index: CodeIndex, *, datasets: Collection[str]) -> bool:
+    """Whether `datasets` hold some destination, totals aside, and `destination_side` places
+    every one of them, in each dataset that publishes it, on the bilateral side. The CRS
+    holds countries, regions and the DAC's unallocated lines alone; DAC2a also lists the
+    multilateral agencies as recipients."""
+    by_dataset = _destination_sides(index)
+    sides = {side for dataset in datasets for side in by_dataset.get(dataset, ())}
+    return sides == {"bilateral"}
+
+
+@per_index
+def _destination_sides(index: CodeIndex) -> dict[str, frozenset[DestinationSide | None]]:
+    """The sides of the destinations each dataset publishes, totals aside, by dataset, with
+    `None` for a destination `destination_side` cannot place."""
+    sides: dict[str, set[DestinationSide | None]] = {}
+    for row in index.parties.values():
+        for dataset, axis in row.published:
+            if axis != "destination" or row.kind_over("destination", (dataset,)) == "total":
+                continue
+            side = destination_side(row, datasets=(dataset,), index=index)
+            sides.setdefault(dataset, set()).add(side)
+    return {dataset: frozenset(held) for dataset, held in sides.items()}
+
+
 @dataclass(frozen=True)
 class RolePopulation:
     """The destinations a composite component reads where it binds its destinations to one
