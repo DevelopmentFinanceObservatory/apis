@@ -18,7 +18,7 @@ _SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "deploy_
 
 _DEPLOYER = "dfo-apis-deployer@dev-fin-observatory.iam.gserviceaccount.com"
 _MINT_PATH = f"/v1/projects/-/serviceAccounts/{_DEPLOYER}:generateIdToken"
-_WARM_PATHS = ("/api/skills", "/api/graph/schema", "/api/graph/schema/terms/un_system")
+_WARM_PATHS = ("/api/skills", "/api/graph/schema")
 
 # A 503 the script retries: `Retry-After: 0` keeps the retry immediate.
 _BUILDING = (503, {"Retry-After": "0"})
