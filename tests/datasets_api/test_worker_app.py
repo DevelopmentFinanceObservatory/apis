@@ -21,6 +21,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import _resolve_operation
 from datasets_api.operation_store import LiveOperationStore, Operation, OperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier, OidcVerifier
+from datasets_api.operations.task_client import FakeTaskClient, RetryTaskClient
 from datasets_api.operations.worker import (
     RUN_DEADLINE_SECONDS,
     OperationSuperseded,
@@ -49,6 +50,7 @@ _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_URL = "https://worker.example.org"
 _INVOKER = "worker-invoker@example.iam.gserviceaccount.com"
 _SUBJECT_ID = "spec_abc123"
+_RETRY_DELAY_SECONDS = 45
 
 
 def _operation_store() -> LiveOperationStore:
@@ -95,6 +97,7 @@ def _client(
     oidc_verifier: OidcVerifier | None = None,
     max_attempts: int = 5,
     catalogue: CatalogueService | None = None,
+    retry_client: RetryTaskClient | None = None,
 ) -> TestClient:
     app = build_worker_app(
         operation_store=operation_store,
@@ -103,6 +106,8 @@ def _client(
         worker_url=_WORKER_URL,
         worker_invoker_service_account=_INVOKER,
         max_attempts=max_attempts,
+        retry_client=retry_client,
+        retry_delay_seconds=_RETRY_DELAY_SECONDS,
         run_in_thread=run_in_thread,
         catalogue=catalogue,
     )
@@ -539,6 +544,231 @@ class TestRunOutcomes:
 
         assert resp.status_code == 500
         assert operation_store.get(operation_id).state == "running"
+
+
+def _transient_run(
+    *, operation: Operation, deps: object, operation_store: OperationStore, **kwargs: object
+) -> None:
+    """`run_operation`'s transient path: release and raise before the last attempt, fail the
+    row retryable on it."""
+    if kwargs["is_final_attempt"]:
+        operation_store.fail(
+            operation.id,
+            attempt=operation.attempt_count,
+            refusal_code="internal_error",
+            retryable=True,
+        )
+        return
+    operation_store.release(operation.id, attempt=operation.attempt_count)
+    raise OperationTransientFailure()
+
+
+class _FailingRetries:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def enqueue_retry(self, **_: object) -> None:
+        self.calls += 1
+        raise TimeoutError("create_task deadline exceeded")
+
+
+def _deliver(client: TestClient, operation_id: str, *, submission_count: int = 0):
+    """One delivery of a task's first dispatch, as each retry task's is."""
+    return client.post(
+        _run_path(operation_id),
+        json=_task_body(submission_count),
+        headers={"Authorization": "Bearer t", "X-CloudTasks-TaskRetryCount": "0"},
+    )
+
+
+class TestTransientRetry:
+    """A transient failure that released its row schedules the next run as a new task and
+    answers 200, and the row's claim count caps the runs across tasks."""
+
+    def test_a_released_failure_schedules_a_retry_task_and_answers_200(self):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+        client = _client(
+            operation_store=operation_store, run_in_thread=_transient_run, retry_client=retries
+        )
+
+        resp = _deliver(client, operation_id)
+
+        assert (resp.status_code, resp.json()) == (200, {"status": "retrying"})
+        assert retries.retries == [(operation_id, 0, 1, _RETRY_DELAY_SECONDS)]
+        assert operation_store.get(operation_id).state == "pending"
+
+    def test_the_retry_task_claims_the_released_row_and_completes_it(self):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+        outcomes = iter([_transient_run, _complete_run])
+
+        def run(**kwargs) -> None:
+            next(outcomes)(**kwargs)
+
+        client = _client(operation_store=operation_store, run_in_thread=run, retry_client=retries)
+
+        first = _deliver(client, operation_id)
+        retried = _deliver(client, operation_id)
+
+        assert first.json() == {"status": "retrying"}
+        assert (retried.status_code, retried.json()) == (200, {"status": "done"})
+        assert retries.retries == [(operation_id, 0, 1, _RETRY_DELAY_SECONDS)]
+
+    def test_three_transient_failures_across_retry_tasks_fail_the_row_retryable(self):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+        client = _client(
+            operation_store=operation_store,
+            run_in_thread=_transient_run,
+            retry_client=retries,
+            max_attempts=3,
+        )
+
+        answers = [_deliver(client, operation_id).json() for _ in range(3)]
+
+        assert answers == [{"status": "retrying"}, {"status": "retrying"}, {"status": "failed"}]
+        assert [generation for _, _, generation, _ in retries.retries] == [1, 2]
+        stored = operation_store.get(operation_id)
+        assert (stored.state, stored.refusal_code, stored.retryable) == (
+            "failed",
+            "internal_error",
+            True,
+        )
+
+    def test_a_claim_past_the_cap_fails_the_row_without_running(self):
+        """A retry task redelivered by the queue after its run crashed claims a fourth time."""
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        for attempt in (1, 2, 3):
+            operation_store.claim(
+                operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
+            operation_store.release(operation_id, attempt=attempt)
+        ran: list[int] = []
+        client = _client(
+            operation_store=operation_store,
+            run_in_thread=lambda **kw: ran.append(1),
+            retry_client=FakeTaskClient(),
+            max_attempts=3,
+        )
+
+        resp = client.post(
+            _run_path(operation_id),
+            json=_task_body(),
+            headers={"Authorization": "Bearer t", "X-CloudTasks-TaskRetryCount": "1"},
+        )
+
+        assert (resp.status_code, resp.json()) == (200, {"status": "failed"})
+        assert ran == []
+        stored = operation_store.get(operation_id)
+        assert (stored.state, stored.retryable) == ("failed", True)
+
+    def test_a_crashed_run_schedules_nothing_and_leaves_its_lease_to_the_queue(self):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+
+        def run(**_: object) -> None:
+            raise RuntimeError("unexpected bug")
+
+        client = _client(operation_store=operation_store, run_in_thread=run, retry_client=retries)
+
+        resp = _deliver(client, operation_id)
+
+        assert resp.status_code == 500
+        assert retries.retries == []
+        assert operation_store.get(operation_id).state == "running"
+
+    @pytest.mark.parametrize("moved_on", ["done", "resubmitted"])
+    def test_a_retry_for_a_row_that_moved_on_answers_200_without_running(self, moved_on):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+        ran: list[int] = []
+
+        def run(**kwargs) -> None:
+            if not ran:
+                ran.append(1)
+                _transient_run(**kwargs)
+                return
+            ran.append(2)
+
+        client = _client(operation_store=operation_store, run_in_thread=run, retry_client=retries)
+        assert _deliver(client, operation_id).json() == {"status": "retrying"}
+        claimed = operation_store.claim(
+            operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
+        assert claimed is not None
+        if moved_on == "done":
+            _complete_run(operation=claimed, deps=None, operation_store=operation_store)
+        else:
+            operation_store.fail(
+                operation_id,
+                attempt=claimed.attempt_count,
+                refusal_code="internal_error",
+                retryable=True,
+            )
+            _submit(operation_store)
+
+        resp = _deliver(client, operation_id)
+
+        expected = {"done": "done", "resubmitted": "superseded"}[moved_on]
+        assert (resp.status_code, resp.json()) == (200, {"status": expected})
+        assert ran == [1]
+
+    def test_a_failed_retry_create_answers_503_for_the_queue_to_retry(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = _FailingRetries()
+        client = _client(
+            operation_store=operation_store, run_in_thread=_transient_run, retry_client=retries
+        )
+
+        with caplog.at_level(logging.WARNING, logger="datasets_api.operations.worker_app"):
+            resp = _deliver(client, operation_id)
+
+        assert resp.status_code == 503
+        assert retries.calls == 1
+        assert operation_store.get(operation_id).state == "pending"
+        warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warned) == 1
+        assert warned[0].args == (operation_id, _SUBJECT_ID)
+
+    def test_a_failed_catalogue_read_schedules_a_retry_too(self):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        retries = FakeTaskClient()
+        client = _client(
+            operation_store=operation_store,
+            retry_client=retries,
+            catalogue=_catalogue_service(
+                FakeCatalogue(build_id="loaded-build"), OSError("bucket unreachable")
+            ),
+        )
+
+        resp = _deliver(client, operation_id)
+
+        assert (resp.status_code, resp.json()) == (200, {"status": "retrying"})
+        assert retries.retries == [(operation_id, 0, 1, _RETRY_DELAY_SECONDS)]
+
+    def test_the_claim_line_names_the_subject_kind_and_attempt(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        operation_store = _operation_store()
+        operation_id = _submit(operation_store)
+        client = _client(operation_store=operation_store)
+
+        with caplog.at_level(logging.INFO, logger="datasets_api.operations.worker_app"):
+            _deliver(client, operation_id)
+
+        claim_lines = [r.args for r in caplog.records if "claimed operation" in r.msg]
+        assert claim_lines == [(operation_id, _SUBJECT_ID, "definition", 1, 5, 0)]
 
 
 class TestFinalAttempt:

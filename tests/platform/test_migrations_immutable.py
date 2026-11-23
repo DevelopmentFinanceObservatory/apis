@@ -125,6 +125,9 @@ _DATASET_STORE = {
     "0050_version_artifact_head_read_at.sql": (
         "3febac15a8fb771fc270ca40d58c0fddd7256b475481ff37a78aeee3ac61a23d"
     ),
+    "0051_operation_submission_attempts.sql": (
+        "43163ebd602dc0895952684219ab46f5863425a229152810716878c9f7cb206d"
+    ),
 }
 
 _PRESENTATION_STORE = {

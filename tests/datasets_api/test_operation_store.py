@@ -1001,6 +1001,63 @@ def test_release_moves_running_back_to_pending_and_clears_the_claim(
     assert (reclaimed.attempt_count, reclaimed.final_delivery) == (2, False)
 
 
+def test_submission_attempts_count_the_claims_of_one_submission(store: LiveOperationStore) -> None:
+    """A claim adds one, a release keeps the count, and a resubmit's reset starts it again,
+    where `attempt_count` carries on."""
+    op = store.create_or_get(
+        request_identity=_IDENTITY,
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+    assert op.submission_attempts == 0
+
+    assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    released = store.release(op.id, attempt=1)
+    reclaimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    assert store.fail(op.id, attempt=2, refusal_code="internal_error", retryable=True)
+    reset = store.create_or_get(
+        request_identity=_IDENTITY,
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+    claimed_again = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
+
+    assert released is not None and reclaimed is not None and claimed_again is not None
+    assert [
+        (row.submission_attempts, row.attempt_count)
+        for row in (released, reclaimed, reset, claimed_again)
+    ] == [(1, 1), (2, 2), (0, 2), (1, 3)]
+
+
+def test_a_claim_counts_a_row_written_before_submission_attempts_from_zero() -> None:
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+        op = store.create_or_get(
+            request_identity=_IDENTITY,
+            options=_OPTIONS,
+            coverage_stamp=_STAMP,
+            origin_catalogue_build_id=_BUILD,
+            estimate=_ESTIMATE,
+        )
+        with fake.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.operation SET submission_attempts = NULL WHERE id = %s", (op.id,)
+            )
+        legacy = store.get(op.id)
+
+        claimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+
+        assert legacy is not None and legacy.submission_attempts == 0
+        assert claimed is not None and claimed.submission_attempts == 1
+    finally:
+        fake.close()
+
+
 def test_release_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
     op = store.create_or_get(
         request_identity=_IDENTITY,

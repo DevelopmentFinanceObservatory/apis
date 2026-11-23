@@ -42,7 +42,8 @@ CREATE TABLE datasets.operation (
     refusal TEXT,
     final_delivery INTEGER,
     confirmed_at TEXT,
-    family TEXT
+    family TEXT,
+    submission_attempts INTEGER
 );
 """
 

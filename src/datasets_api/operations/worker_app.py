@@ -28,6 +28,23 @@ build. A failed catalogue read is a transient failure of the claimed attempt. Wi
 delivery arrives, whichever release served its submission, and a release swap holds the run's
 permit.
 
+A run's place in the attempt cap (`DATASETS_OPERATION_MAX_ATTEMPTS`) is the larger of two counts:
+Cloud Tasks' retry count header, and the claims the submission has made
+(`Operation.submission_attempts`), which the row keeps across tasks. The run is the last when
+either reaches the cap, and a claim past the cap fails the row retryable without running it.
+
+A transient failure releases the row (`run_operation`, or a failed catalogue read here). The
+route then schedules the operation's next run as a new task `DATASETS_OPERATION_RETRY_DELAY_SECONDS`
+ahead (`RetryTaskClient.enqueue_retry`), named for the failed claim's place in the submission, and
+answers 200 `retrying`, so Cloud Tasks does not also retry the delivery after its 1,680-second
+backoff. The retry task carries the submission's `submission_count`, so it claims like any
+delivery: a row that completed, failed or moved to a new submission meanwhile answers it 200
+without running. When the create fails, or the process has no retry client, the route answers
+503 as before and the queue's own backoff retries the delivery. A run that crashes leaves its
+lease live and answers 500, and the queue's backoff, longer than the lease, retries it. Every
+kind of operation on the queue (mints, exports and head checks, renewals, render-aheads) takes
+the same path, since each one's transient failure is a released row that any delivery can claim.
+
 Tests can inject every dependency. With dependencies omitted, `build_worker_app` resolves live
 services in its lifespan from shared and worker-specific settings.
 """
@@ -56,12 +73,25 @@ from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
 from datasets_api.current import DefinitionDeps
 from datasets_api.generation import enter_shared_generation, register_place_scope_memo
-from datasets_api.operation_store import Clock, LiveOperationStore, OperationStore, utc_now
+from datasets_api.operation_store import (
+    Clock,
+    LiveOperationStore,
+    Operation,
+    OperationStore,
+    utc_now,
+)
 from datasets_api.operations.lease import LEASE_SECONDS, RUN_DEADLINE_SECONDS
 from datasets_api.operations.oidc import LiveOidcVerifier, OidcRejected, OidcVerifier
+from datasets_api.operations.task_client import (
+    LiveTaskClient,
+    RetryTaskClient,
+    build_live_task_client,
+)
 from datasets_api.operations.worker import (
     OperationSuperseded,
     OperationTransientFailure,
+    logged_subject,
+    operation_kind,
     run_operation,
 )
 from datasets_api.profile_breadth import open_profile_breadth
@@ -157,8 +187,9 @@ def _live_deps_factory(
 
 class WorkerSettings(BaseSettings):
     """No-safe-default env this module reads on its own, independent of
-    `DatasetsSettings.from_env()`. `DFO_TASKS_QUEUE`, the one other var in that family, is not
-    part of it: this app never enqueues anything.
+    `DatasetsSettings.from_env()`. `DFO_TASKS_QUEUE` is optional: with it the worker schedules
+    a transient failure's retry as a new task on that queue, and without it the queue's own
+    backoff retries the delivery.
     """
 
     model_config = SettingsConfigDict()
@@ -167,6 +198,7 @@ class WorkerSettings(BaseSettings):
     worker_invoker_service_account: str = Field(
         min_length=1, validation_alias="DFO_WORKER_INVOKER_SERVICE_ACCOUNT"
     )
+    tasks_queue: str | None = Field(default=None, min_length=1, validation_alias="DFO_TASKS_QUEUE")
 
     @classmethod
     def from_env(cls) -> WorkerSettings:
@@ -222,6 +254,8 @@ def build_worker_app(
     worker_url: str | None = None,
     worker_invoker_service_account: str | None = None,
     max_attempts: int | None = None,
+    retry_client: RetryTaskClient | None = None,
+    retry_delay_seconds: int | None = None,
     run_in_thread: Callable[..., None] = run_operation,
     catalogue: CatalogueService | None = None,
     release: ReleaseService | None = None,
@@ -236,13 +270,21 @@ def build_worker_app(
     answers 2xx so Cloud Tasks does not retry completed or failed work. `catalogue` defaults to the
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
     `release` defaults to the process-wide graph release service, so an unset `GRAPH_RELEASE_URI`
-    or an unreadable release fails construction. Injected `deps` serve every run as given. Deps the lifespan builds
+    or an unreadable release fails construction. `retry_client` schedules a transient failure's
+    next run; when omitted, a lifespan that builds live dependencies builds one on
+    `DFO_TASKS_QUEUE` if it is set, and otherwise transient failures answer 503. Injected `deps` serve every run as given. Deps the lifespan builds
     take the code index each run reads under its bindings, since it can change between runs.
     The lifespan reads it once under the served release, so a missing or malformed index fails
     startup, and keeps none.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _max_attempts = max_attempts if max_attempts is not None else _settings.operation_max_attempts
+    _retry_delay_seconds = (
+        retry_delay_seconds
+        if retry_delay_seconds is not None
+        else _settings.operation_retry_delay_seconds
+    )
+    _retry_client: RetryTaskClient | None = retry_client
     _operation_store: OperationStore | None = operation_store
     _deps: DefinitionDeps | None = deps
     _deps_for_index: partial[DefinitionDeps] | None = None
@@ -258,22 +300,26 @@ def build_worker_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         nonlocal _operation_store, _deps, _deps_for_index, _worker_url
-        nonlocal _worker_invoker_service_account
+        nonlocal _worker_invoker_service_account, _retry_client
         async with AsyncExitStack() as stack:
             pool_opened_here = False
             store: LiveDatasetStore | None = None
             graph: OriginGraphClient | None = None
             sdmx: SdmxClient | None = None
+            live_retry_client: LiveTaskClient | None = None
 
             def _close_live() -> None:
                 if graph is not None:
                     graph.close()
                 if sdmx is not None:
                     sdmx.close()
+                if live_retry_client is not None:
+                    live_retry_client.close()
                 if pool_opened_here:
                     close_shared_pool()
 
             try:
+                worker_settings: WorkerSettings | None = None
                 if _worker_url is None or _worker_invoker_service_account is None:
                     worker_settings = WorkerSettings.from_env()
                     if _worker_url is None:
@@ -284,6 +330,21 @@ def build_worker_app(
                         )
 
                 if _deps is None and _deps_for_index is None:
+                    if _retry_client is None:
+                        if worker_settings is None:
+                            worker_settings = WorkerSettings.from_env()
+                        if worker_settings.tasks_queue is None:
+                            logger.warning(
+                                "Datasets worker: DFO_TASKS_QUEUE is unset, so a transient "
+                                "failure waits for the queue's own retry backoff"
+                            )
+                        else:
+                            live_retry_client = build_live_task_client(
+                                queue=worker_settings.tasks_queue,
+                                worker_url=_worker_url,
+                                worker_invoker_service_account=_worker_invoker_service_account,
+                            )
+                            _retry_client = live_retry_client
                     live_settings = DatasetsSettings.from_env()
                     connections = shared_pool()
                     pool_opened_here = True
@@ -363,6 +424,45 @@ def build_worker_app(
             finally:
                 _close_live()
 
+    async def _schedule_retry(
+        operation: Operation,
+        *,
+        subject_id: str | None,
+        detail: str,
+    ) -> JSONResponse:
+        """Schedule the released operation's next run and answer 200 `retrying`, or answer 503
+        so the queue's own backoff retries the delivery when there is no retry client or the
+        create fails."""
+        retry_client = _retry_client
+        if retry_client is None:
+            return JSONResponse({"detail": detail}, status_code=503)
+        try:
+            await asyncio.to_thread(
+                retry_client.enqueue_retry,
+                operation_id=operation.id,
+                submission_count=operation.submission_count,
+                generation=operation.submission_attempts,
+                delay_seconds=_retry_delay_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "Datasets worker: could not schedule the retry of operation %r "
+                "(subject_id=%r); leaving it to the queue's own backoff",
+                operation.id,
+                subject_id,
+                exc_info=True,
+            )
+            return JSONResponse({"detail": detail}, status_code=503)
+        logger.info(
+            "Datasets worker: operation %r (subject_id=%r) released after attempt %d; its "
+            "retry runs in %d s",
+            operation.id,
+            subject_id,
+            operation.submission_attempts,
+            _retry_delay_seconds,
+        )
+        return JSONResponse({"status": "retrying"}, status_code=200)
+
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.post(RUN_ROUTE_PATH)
@@ -388,16 +488,17 @@ def build_worker_app(
                 operation_id,
             )
             return JSONResponse({"detail": "missing or invalid submission_count"}, status_code=400)
-        is_final_attempt = _cloud_tasks_retry_count(request) >= _max_attempts - 1
+        retry_count = _cloud_tasks_retry_count(request)
+        final_delivery = retry_count >= _max_attempts - 1
         # Protects tests that issue concurrent claims through a thread pool.
         with _lock:
-            # The claim records whether a later delivery is due, which decides whether a poll
-            # past the lease fails the row or waits for that delivery.
+            # The claim records whether a later delivery of this task is due, which decides
+            # whether a poll past the lease fails the row or waits for that delivery.
             operation = _operation_store.claim(
                 operation_id,
                 submission_count=submission_count,
                 lease_seconds=LEASE_SECONDS,
-                final_delivery=is_final_attempt,
+                final_delivery=final_delivery,
             )
         if operation is None:
             current = _operation_store.get(operation_id)
@@ -434,6 +535,35 @@ def build_worker_app(
                 {"detail": f"operation {operation_id!r} is claimed by a live attempt"},
                 status_code=409,
             )
+        subject_id = logged_subject(operation)
+        logger.info(
+            "Datasets worker: claimed operation %r (subject_id=%r, kind=%s), attempt %d of %d "
+            "for its submission, Cloud Tasks retry count %d",
+            operation_id,
+            subject_id,
+            operation_kind(operation),
+            operation.submission_attempts,
+            _max_attempts,
+            retry_count,
+        )
+        if operation.submission_attempts > _max_attempts:
+            # A retry task's own redelivery, after a crash, can claim past the cap.
+            logger.warning(
+                "Datasets worker: operation %r (subject_id=%r) has used its %d attempts; "
+                "failing it without running",
+                operation_id,
+                subject_id,
+                _max_attempts,
+            )
+            _operation_store.fail(
+                operation_id,
+                attempt=operation.attempt_count,
+                refusal_code="internal_error",
+                retryable=True,
+            )
+            return JSONResponse({"status": "failed"}, status_code=200)
+        is_final_attempt = final_delivery or operation.submission_attempts >= _max_attempts
+
         # Count the work deadline from the stored claim time, the instant the lease runs from.
         assert operation.claimed_at is not None
         work_ends = operation.claimed_at + timedelta(seconds=RUN_DEADLINE_SECONDS)
@@ -458,7 +588,9 @@ def build_worker_app(
                     )
                     return JSONResponse({"status": "failed"}, status_code=200)
                 _operation_store.release(operation_id, attempt=operation.attempt_count)
-                return JSONResponse({"detail": "origin catalogue unavailable"}, status_code=503)
+                return await _schedule_retry(
+                    operation, subject_id=subject_id, detail="origin catalogue unavailable"
+                )
         try:
             # One catalogue version and one release serve the whole operation. `to_thread`
             # carries the bindings.
@@ -480,7 +612,9 @@ def build_worker_app(
             # Another attempt owns the work. A 2xx stops this delivery.
             return JSONResponse({"status": "superseded"}, status_code=200)
         except OperationTransientFailure:
-            return JSONResponse({"detail": "transient worker failure"}, status_code=503)
+            return await _schedule_retry(
+                operation, subject_id=subject_id, detail="transient worker failure"
+            )
         except Exception:
             logger.exception("Datasets worker: operation %r crashed unexpectedly", operation_id)
             return JSONResponse({"detail": "unexpected worker failure"}, status_code=500)
