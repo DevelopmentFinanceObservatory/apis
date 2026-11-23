@@ -161,6 +161,8 @@ def test_every_path_answering_200_warms_with_the_deployers_id_token(serve, tmp_p
         # The service answers an error.
         ({"/api/graph/schema": [(500, {})]}, 30, "error", "::error::"),
         ({"/api/skills": [(404, {})]}, 30, "error", "::error::"),
+        # A later refusal ends probing but keeps an earlier error.
+        ({"/api/skills": [(500, {})], "/api/graph/schema": [(403, {})]}, 30, "error", "::error::"),
     ],
 )
 def test_outcomes(serve, tmp_path: Path, replies, deadline, status, annotation):

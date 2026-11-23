@@ -89,7 +89,9 @@ A run's `Server-Timing` header and `datasets.timings` line carry phases whose su
 `request_key`; `stored_answer`, the answer read, its frame file check and the renewal of a file
 near the end of its retention; `derived_manifest`, under `include: ["manifest"]`; `body`,
 validating and dumping `AnalysisReady`; and `serialise`, encoding the response. A run that
-computes adds the phases of its frame reads and stores. Phases recorded inside these say where
+computes adds `locate_roots`, reading its root frames; `evaluate`, the engine's evaluation of
+the tree over them (`analysis._evaluated_frames`); `store_frame`, writing the computed frame; and
+`write_answer`, recording the answer under its request key. Phases recorded inside these say where
 their time went, such as `snapshot_state`, `head_read`, `coverage` and `head_check` inside
 `resolve_roots`, and the connection pool's `db_pool_wait`, `db_connect` and `db_ping` inside
 whichever phase borrowed the connection.
