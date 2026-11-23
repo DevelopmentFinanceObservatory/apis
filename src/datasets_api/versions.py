@@ -621,12 +621,13 @@ class HeadReader(Protocol):
         ...
 
     def read_stored_heads(
-        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str | None]
     ) -> dict[str, StoredHeadRead]:
         """For each of `spec_ids` that is registered, the head of its served id, the id
         `served_id` gives for its stored definition, and that head's version state, read in one
-        transaction. A spec missing from the result is unregistered, or quarantined: the spec,
-        a served id bound to it, or its served id. Reads only."""
+        transaction. A spec missing from the result is unregistered, has no served id
+        (`served_id` gives `None`), or is quarantined: the spec, a served id bound to it, or
+        its served id. Reads only."""
         ...
 
 
@@ -672,6 +673,6 @@ class NullHeadWriter:
         return None
 
     def read_stored_heads(
-        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str | None]
     ) -> dict[str, StoredHeadRead]:
         return {}

@@ -761,12 +761,18 @@ def _served_ids(
     definitions: Mapping[str, StoredDefinition],
     spec_ids: Sequence[str],
     *,
-    served_id: Callable[[StoredDefinition], str],
+    served_id: Callable[[StoredDefinition], str | None],
 ) -> dict[str, str]:
-    try:
-        return {spec_id: served_id(definitions[spec_id]) for spec_id in spec_ids}
-    except Exception as exc:
-        raise _ServedIdFailed(exc) from exc
+    """The served id `served_id` gives each of `spec_ids`, leaving out those it gives none."""
+    served: dict[str, str] = {}
+    for spec_id in spec_ids:
+        try:
+            resolved = served_id(definitions[spec_id])
+        except Exception as exc:
+            raise _ServedIdFailed(exc) from exc
+        if resolved is not None:
+            served[spec_id] = resolved
+    return served
 
 
 def _listed_versions(
@@ -1333,7 +1339,7 @@ class LiveHeadStore:
         return _head(subject_id, row)
 
     def read_stored_heads(
-        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str | None]
     ) -> dict[str, StoredHeadRead]:
         asked = list(dict.fromkeys(spec_ids))
         if not asked:
@@ -1355,12 +1361,8 @@ class LiveHeadStore:
         return reads
 
 
-def _placeholders(count: int) -> str:
-    return ", ".join(["%s"] * count)
-
-
 def _stored_heads_in(
-    tx: Transaction, asked: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+    tx: Transaction, asked: Sequence[str], *, served_id: Callable[[StoredDefinition], str | None]
 ) -> dict[str, StoredHeadRead]:
     """`LiveHeadStore.read_stored_heads` inside `tx`, the asked ids distinct: their stored
     definitions and bindings, the quarantine of every id a stored read of them refuses on, the
