@@ -22,7 +22,8 @@ from code_index.query import CodeIndex
 from code_index.tokens import tokenize, word_tokens
 from code_index.types import BroadReading, ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
-from search.engine.function_words import FUNCTION_WORDS, INTERJECTION
+from search.engine.function_words import FUNCTION_WORDS
+from search.engine.negation import negation_start
 from search.engine.qualifier_match import (
     CONNECTIVES,
     QualifierMatch,
@@ -43,44 +44,12 @@ def _label_named_in_text(label: str, text: str) -> bool:
     return re.search(pattern, text, re.IGNORECASE) is not None
 
 
-_NEGATION_WINDOW_WORDS = 3
-_NEGATORS = ("not", "no", "never")
-_EXCLUSION_PHRASES = (
-    "excluding",
-    "exclude",
-    "excludes",
-    "except",
-    "without",
-    "other than",
-    "rather than",
-    "excl",
-)
-
-
 def _label_negated_in_text(label: str, text: str) -> bool:
-    """Treat the first whole-word match as evidence against a value in a negation or exclusion.
-
-    Check negators and exclusion phrases within the preceding three words, plus a
-    fused or spaced ``non`` prefix. A negator closed by a clause or sentence mark
-    (`function_words.INTERJECTION`, "no, ...") negates nothing after it. Later matches
-    require separate calls.
-    """
+    """Whether the first whole-word match of `label` in `text` is negated or excluded
+    (`negation.negation_start`). Later matches require separate calls."""
     pattern = r"\b" + re.escape(label) + r"\b"
     match = re.search(pattern, text, re.IGNORECASE)
-    if match is None:
-        return False
-    prefix = text[: match.start()]
-    if re.search(r"\bnon[\s-]*$", prefix, re.IGNORECASE):
-        return True
-    prefix_words = re.findall(r"[\w']+", INTERJECTION.sub(" ", prefix))
-    window_text = " ".join(prefix_words[-_NEGATION_WINDOW_WORDS:]).lower()
-    for negator in _NEGATORS:
-        if re.search(r"\b" + re.escape(negator) + r"\b", window_text):
-            return True
-    for phrase in _EXCLUSION_PHRASES:
-        if re.search(r"\b" + re.escape(phrase) + r"\b", window_text):
-            return True
-    return False
+    return match is not None and negation_start(text, match.start()) is not None
 
 
 def _label_has_negated_occurrence(label: str, text: str) -> bool:
@@ -93,16 +62,10 @@ def _label_has_negated_occurrence(label: str, text: str) -> bool:
 
 
 def occurrence_negated(text: str, start: int, end: int) -> bool:
-    """Whether the occurrence of a word at `text[start:end]` is negated or excluded: a
-    negator or exclusion phrase among the three words before it, or a fused or spaced
-    ``non`` prefix. Other occurrences of the word in those three words are ignored."""
-    label = text[start:end]
-    pattern = r"\b" + re.escape(label) + r"\b"
-    prefix = text[:start]
-    prefix_words = list(re.finditer(r"[\w']+", prefix))
-    context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
-    context = re.sub(pattern, "", prefix[context_start:], flags=re.IGNORECASE)
-    return _label_negated_in_text(label, f"{context}{label}")
+    """Whether the occurrence of a word at `text[start:end]` is negated or excluded: a cue
+    in its clause among the three words before it, or a fused or spaced ``non`` prefix
+    (`negation.negation_start`). `end` is unread: the cue stands before the word."""
+    return negation_start(text, start) is not None
 
 
 def word_stated(word: str, texts: Sequence[str]) -> bool:

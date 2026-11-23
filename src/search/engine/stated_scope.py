@@ -6,30 +6,30 @@ door's response cache key relies on (`response_cache_keys.layer2_key`).
 Two axes are read:
 
 - Provider scope. "bilateral" states `provider:bilateral`, as does "multilateral" under a
-  negation or exclusion ("excluding multilateral", "not multilateral institutions",
-  `bind_repair.occurrence_negated`). "including multilateral" (also "include(s)", "incl.",
-  "inclusive of", "plus", "with imputed multilateral", and "bilateral plus imputed
-  multilateral") states `provider:inclusive`. A negator closed by a clause or sentence mark
-  ("No, count it including imputed multilateral") answers what came before and negates
-  nothing after it. Where
-  "bilateral plus multilateral" names no imputed share, the part's dataset reads it as its
-  own option summing the two lines (`provider.with_summed_provider`): the inclusive
-  composite on the CRS and DAC2a, total ODA (`provider:contributions`) on DAC1. Words
-  naming a donor's core contributions to the multilaterals, "multilateral ODA" (not
-  "imputed multilateral ODA") or "to multilaterals" ("what share of US ODA goes to
-  multilaterals"), state `provider:multilateral`, DAC1's multilateral ODA. A part whose
-  provider table offers no such option, as on the CRS or DAC2a, drops that entry
-  (`provider.without_unoffered_multilateral`), so it is neither applied nor reported. Any
-  other mention of "multilateral" ("multilateral development banks", "bilateral/multilateral", "aid from
-  multilaterals", "including multilateral lenders") names a kind of provider and leaves the
-  axis unstated, even beside a "bilateral".
+  negation or exclusion ("excluding multilateral", "not multilateral institutions", "don't
+  include imputed multilateral", `bind_repair.occurrence_negated`). "including
+  multilateral" (also "include(s)", "incl.", "inclusive of", "plus", "with imputed
+  multilateral" outside a comparison, and "bilateral plus imputed multilateral") states
+  `provider:inclusive`. Where "bilateral plus multilateral" names no imputed share, the
+  part's dataset reads it as its own option summing the two lines
+  (`provider.with_summed_provider`): the inclusive composite on the CRS and DAC2a, total
+  ODA (`provider:contributions`) on DAC1. Words naming a donor's core contributions to the
+  multilaterals, "multilateral ODA" (not "imputed multilateral ODA") or "to multilaterals"
+  ("what share of US ODA goes to multilaterals"), state `provider:multilateral`, DAC1's
+  multilateral ODA. A part whose provider table offers no such option, as on the CRS or
+  DAC2a, drops that entry (`provider.without_unoffered_multilateral`), so it is neither
+  applied nor reported. Any other mention of "multilateral" ("multilateral development
+  banks", "bilateral/multilateral", "aid from multilaterals", "including multilateral
+  lenders", "compare France's ODA with imputed multilateral ODA") names a kind of provider
+  or a thing compared and leaves the axis unstated, even beside a "bilateral".
 - Measure basis. "net", "gross", "grant equivalent(s)" and "commitments" state their
   basis. The singular "commitment" is a pledge ("has the US kept its commitment") and
   states none. A word that heads another measure ("net worth", "gross national income", "ODA net
   of debt relief") states none.
 
 A negated or excluded occurrence ("not just gross disbursements", "non-bilateral") states
-nothing. An axis whose words state two options ("both gross and net ODA", "commitments and
+nothing. A negation reaches only its own clause (`negation`), so a reply's "No, count it
+including imputed multilateral" and "Not net. Gross ODA" state what follows the mark. An axis whose words state two options ("both gross and net ODA", "commitments and
 gross disbursements") is left unstated, since the text asks for both and neither is the
 scope. "total" ("total health aid", "totalled across donors") states the total intent the
 provider default reads. It is a fact about the request and sits outside the entries.
@@ -53,7 +53,7 @@ from dataclasses import dataclass
 
 from code_index.scope_conventions import MeasureBasis
 from search.engine.bind_repair import occurrence_negated
-from search.engine.function_words import NEGATION_CUE
+from search.engine.negation import clause_start, negation_start
 from search.engine.response_cache_keys import normalise_query
 from search.models import SCOPE_AXES, Entry, ScopeAxis, TextOrigin
 from search.scope.state import ScopeIntake
@@ -129,11 +129,11 @@ _MULTILATERAL = re.compile(r"\bmultilaterals?\b", re.IGNORECASE)
 # with no imputed share named ("bilateral plus multilateral"), which each dataset reads as
 # its own option summing the two (`StatedScope.sums_providers`).
 # "with" states the scope only where it names the imputed share ("with imputed
-# multilateral"); "with multilateral" stays a mention.
+# multilateral"), outside a comparison (`_COMPARISON`); "with multilateral" stays a mention.
 _INCLUSIVE = re.compile(
     r"\b(?P<bilateral>bilateral\s+)?"
     r"(?:(?:including|includes?|incl\b\.?|inclusive\s+of|plus)\s+(?:the\s+)?"
-    r"|with\s+(?:the\s+)?(?=imputed\b))"
+    r"|(?P<with>with)\s+(?:the\s+)?(?=imputed\b))"
     r"(?P<imputed>imputed\s+)?multilaterals?\b" + _heads(_PROVIDER_HEADS),
     re.IGNORECASE,
 )
@@ -144,8 +144,10 @@ _MULTILATERAL_ROW = re.compile(
     r"|\bto\s+(?:the\s+)?multilaterals\b" + _heads(_PROVIDER_HEADS),
     re.IGNORECASE,
 )
+# Words before a "with" in its clause that make it join two things compared ("compare
+# France's ODA with imputed multilateral ODA"), so it states no scope.
+_COMPARISON = re.compile(r"\b(?:compar\w*|versus|vs|against)\b", re.IGNORECASE)
 _TOTAL = re.compile(r"\btotal(?:s|led|ed|ling|ing)?\b", re.IGNORECASE)
-_CUE_REACH_WORDS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +217,7 @@ def _provider_stated(text: str) -> list[_Stated] | None:
     """The provider options `text` states, or None when a mention of "multilateral" names a
     kind of provider, which leaves the axis unstated. A mention inside words naming DAC1's
     multilateral ODA (`_MULTILATERAL_ROW`) states it, read from those words."""
-    inclusive = list(_INCLUSIVE.finditer(text))
+    inclusive = _inclusive_phrases(text)
     found = [
         _Stated(provider_option_id("bilateral"), _cue_start(text, m.start()), m.end())
         if occurrence_negated(text, m.start(), m.end())
@@ -251,6 +253,17 @@ def _provider_stated(text: str) -> list[_Stated] | None:
     return found
 
 
+def _inclusive_phrases(text: str) -> list[re.Match[str]]:
+    """The phrases of `text` stating the inclusive scope (`_INCLUSIVE`), less a "with" that
+    joins two things compared (`_COMPARISON`)."""
+    return [
+        m
+        for m in _INCLUSIVE.finditer(text)
+        if m.group("with") is None
+        or not _COMPARISON.search(text, clause_start(text, m.start()), m.start("with"))
+    ]
+
+
 def without_scope_phrases(text: str, intake: ScopeIntake | None) -> str:
     """`text` less each phrase that states the provider entry the part's `intake` read from
     its words: the inclusive scope ("including imputed multilateral", "bilateral plus imputed
@@ -281,7 +294,7 @@ def scope_phrase_spans(text: str, intake: ScopeIntake | None) -> list[tuple[int,
     """The character ranges of `text` that `without_scope_phrases` removes, in order."""
     stated = _stated_provider(intake)
     spans: list[tuple[int, int]] = []
-    for m in _INCLUSIVE.finditer(text):
+    for m in _inclusive_phrases(text):
         negated = occurrence_negated(text, m.start(), m.end())
         if provider_option_id("bilateral" if negated else "inclusive") == stated:
             spans.append((_cue_start(text, m.start()) if negated else m.start(), m.end()))
@@ -304,12 +317,10 @@ def _stated_provider(intake: ScopeIntake | None) -> str | None:
 
 
 def _cue_start(text: str, start: int) -> int:
-    """Where the negation or exclusion before `text[start:]` begins, within its reach;
-    `start` itself when there is none, or for a fused "non"."""
-    words = list(re.finditer(r"[\w']+", text[:start]))
-    window_start = words[-_CUE_REACH_WORDS].start() if len(words) >= _CUE_REACH_WORDS else 0
-    cues = list(NEGATION_CUE.finditer(text, window_start, start))
-    return cues[-1].start() if cues else start
+    """Where the negation or exclusion reaching `text[start:]` begins
+    (`negation.negation_start`); `start` itself when there is none."""
+    cue = negation_start(text, start)
+    return start if cue is None else cue
 
 
 def part_scope_intakes(

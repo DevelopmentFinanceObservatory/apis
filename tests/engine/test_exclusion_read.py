@@ -330,6 +330,18 @@ def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
             [("excluding France", ";"), ("not Uganda", ";")],
             id="a-reply-no-and-a-second-cue",
         ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief and won't count humanitarian aid",
+            ("debt relief", "humanitarian aid"),
+            [("excluding debt relief", ";"), ("won't count humanitarian aid", ";")],
+            id="a-contracted-cue",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief and no - all humanitarian aid",
+            ("debt relief", "humanitarian aid"),
+            [("excluding debt relief and no - all humanitarian aid", ";")],
+            id="a-cue-its-clause-closes-is-no-cue",
+        ),
     ],
 )
 def test_items_under_one_cue_share_a_stretch(query, left_out, stretches):

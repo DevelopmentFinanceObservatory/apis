@@ -42,7 +42,8 @@ from code_index.tokens import (
 )
 from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
 from dfo_platform.lru_memo import LruMemo
-from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
+from search.engine.function_words import FUNCTION_WORDS
+from search.engine.negation import negated_stretches
 from search.engine.role_text import ROLE_PREPOSITIONS
 
 MatchSource = Literal["code", "label", "synonym"]
@@ -827,12 +828,16 @@ def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[st
     multilateral". "climate finance" names none.
 
     `text` is one stretch, a part's variable or a stretch no reader claims
-    (`source_spans.unclaimed_stretches`), and a name after a negation cue in it
-    (`function_words.NEGATION_CUE`) names nothing: "climate finance commitments excluding
-    attributed amounts" names `Commitment` alone."""
-    cue = NEGATION_CUE.search(text)
-    read = text if cue is None else text[: cue.start()]
-    words = [fold_word(token.text) for token in word_tokens(read)]
+    (`source_spans.unclaimed_stretches`), and a name a negation cue reaches in its clause
+    (`negation.negated_stretches`) names nothing: "climate finance commitments excluding
+    attributed amounts" names `Commitment` alone, and "Not attributed. Climate finance
+    commitments" names `Commitment` too."""
+    pieces, kept = [], 0
+    for start, end in negated_stretches(text):
+        pieces.append(text[kept:start])
+        kept = end
+    pieces.append(text[kept:])
+    words = [fold_word(token.text) for token in word_tokens(" ".join(pieces))]
     named: set[str] = set()
     for value in measure_index.values:
         if value.same_reading_as is not None or not value.matchable:

@@ -622,7 +622,19 @@ def test_measure_value_plural_reaches_its_singular_registered_label():
             "No. Attributed climate finance", {"attributedAmount"}, id="a-reply-no-then-a-name"
         ),
         pytest.param("not attributed climate finance", set(), id="a-name-after-not"),
-        pytest.param("climate finance, never attributed", set(), id="a-name-after-never"),
+        pytest.param(
+            "climate finance commitments, never attributed",
+            {"Commitment"},
+            id="a-name-after-never",
+        ),
+        pytest.param(
+            "Not attributed. Climate finance commitments",
+            {"Commitment"},
+            id="a-negation-ends-at-its-sentence",
+        ),
+        pytest.param(
+            "don't count attributed climate finance", set(), id="a-name-after-a-contraction"
+        ),
         pytest.param("private finance mobilised", {"amountMobilised"}, id="a-graph-name"),
         pytest.param("finance mobilised by guarantees", {"amountMobilised"}, id="a-declared-word"),
         pytest.param("climate finance commitments", {"Commitment"}, id="no-attribution"),

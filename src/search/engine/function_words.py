@@ -5,12 +5,10 @@ dropped qualifier, and the qualifier coverage rule (`phase_rank_bind._coverage_r
 reads `FUNCTION_WORDS`, `AMOUNT_WORDS`, `DATA_WORDS` and `FLOW_VERBS` as words no
 reader needs to cover, `RATIO_WORDS` on a shape that divides by a denominator,
 `COUNT_WORDS` on a shape that measures a count, and `PERSON_WORDS` on one that counts
-persons. `NEGATION_CUE` finds the words that negate or exclude what follows them.
+persons.
 """
 
 from __future__ import annotations
-
-import re
 
 # Words that only join a measure's words ("rate of extreme poverty"). The flow cues
 # "to", "from" and "by" stay out, so restoring a variable's order carries no cue into
@@ -88,22 +86,3 @@ COUNT_WORDS = frozenset({"number", "numbers"})
 # Only a count of persons states them. On a count of households, "people in urban
 # households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})
-
-# A negator closed by a clause or sentence mark answers what came before ("No, count it
-# including imputed multilateral", "No. Show gross ODA"), so it negates nothing after the
-# mark. `INTERJECTION` finds such a negator, and `NEGATION_CUE` and
-# `bind_repair._label_negated_in_text` pass over it.
-_NEGATOR = r"(?:not|no|never)\b"
-_CLAUSE_CLOSE = r"\s*[,.;:!?]"
-INTERJECTION = re.compile(rf"\b{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
-
-# The words that negate or exclude what follows: an exclusion read starts each stretch it
-# leaves out at one (`exclusion_read._pieces`), a scope phrase's origin starts at the one
-# before it (`stated_scope._cue_start`), and a measure value's name after one in its stretch
-# names nothing (`qualifier_match.measure_values_named`). An interjection (`INTERJECTION`)
-# is no cue.
-NEGATION_CUE = re.compile(
-    rf"\b(?:{_NEGATOR}(?!{_CLAUSE_CLOSE})|non|excluding|exclude|excludes|except|without|"
-    r"other\s+than|rather\s+than|excl)\b",
-    re.IGNORECASE,
-)

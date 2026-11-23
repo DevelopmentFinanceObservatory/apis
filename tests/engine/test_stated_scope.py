@@ -244,6 +244,52 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ("no multilateral aid to Kenya", [(_BILATERAL, "no multilateral")], False),
         ("aid with no multilateral share", [(_BILATERAL, "no multilateral")], False),
         ("no, not multilateral", [(_BILATERAL, "not multilateral")], False),
+        # A contracted negator negates as "not" does.
+        (
+            "don't include imputed multilateral aid",
+            [(_BILATERAL, "don't include imputed multilateral")],
+            False,
+        ),
+        (
+            "it doesn\u2019t include imputed multilateral aid",
+            [(_BILATERAL, "doesn\u2019t include imputed multilateral")],
+            False,
+        ),
+        # A "with" joining two things compared states no scope.
+        ("compare France's ODA with imputed multilateral ODA", [], False),
+        ("France's ODA versus ODA with imputed multilateral", [], False),
+        # A negation reaches only its own clause.
+        ("Not net. Gross ODA", [(_GROSS, "Gross")], False),
+        ("ODA to Kenya, not net, gross", [(_GROSS, "gross")], False),
+        ("aid excluding France. Gross ODA to Kenya", [(_GROSS, "Gross")], False),
+        (
+            "no - count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "no \u2014 count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "no \u2013 count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "no (count it including imputed multilateral aid)",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        # An exclusion cue's list is one clause, and an abbreviation's full stop ends none.
+        (
+            "aid excluding France, multilateral",
+            [(_BILATERAL, "excluding France, multilateral")],
+            False,
+        ),
+        ("aid excl. multilateral", [(_BILATERAL, "excl. multilateral")], False),
+        ("not U.S. bilateral aid", [], False),
     ],
 )
 def test_read_stated_scope(text, stated, total):
@@ -268,6 +314,7 @@ def test_read_stated_scope(text, stated, total):
         ("aid from France not including multilateral", "aid from France"),
         ("including imputed multilateral", ""),
         ("no, count it including imputed multilateral aid", "no, count it aid"),
+        ("don't include imputed multilateral aid", "aid"),
         # Scope words that also name measures and parties stay, and a text without a scope
         # phrase stays as it is.
         ("net bilateral  ODA", "net bilateral  ODA"),

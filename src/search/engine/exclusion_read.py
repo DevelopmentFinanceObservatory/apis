@@ -37,7 +37,7 @@ from search.engine.clients.llm import (
 )
 from search.engine.extract import _extract_version
 from search.engine.extraction_store import extraction_key
-from search.engine.function_words import NEGATION_CUE
+from search.engine.negation import negation_cues
 from search.engine.qualifier_match import label_runs
 from search.engine.response_cache_keys import normalise_query
 from search.engine.stated_scope import part_scope_intakes, scope_phrase_spans
@@ -302,7 +302,7 @@ def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str])
     """The stretches of `phrase`: one per negation cue, the items under one cue sharing it.
     An item opens a stretch when it starts the phrase, which starts at the read's cue, when
     the words it has before the first word it leaves out (`left_words`) hold a negation cue
-    (`function_words.NEGATION_CUE`), its own cue, or when an applied scope phrase stands
+    (`negation.negation_cues`), its own cue, or when an applied scope phrase stands
     before it (`_items`), which no stretch covers. Other words before it, as in "and all
     humanitarian aid", are no cue, and the item shares the stretch before.
 
@@ -317,7 +317,7 @@ def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str])
         first = next(
             (word for word in item.words if word.text.casefold() in left_words), item.words[0]
         )
-        return bool(NEGATION_CUE.search(phrase, item.words[0].start, first.start))
+        return bool(negation_cues(phrase, item.words[0].start, first.start))
 
     groups: list[list[_Item]] = []
     for item in _items(phrase, intake):
