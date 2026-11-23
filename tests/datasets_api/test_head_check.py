@@ -7,9 +7,12 @@ on a clock the test moves.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
-from typing import override
+from typing import Any, override
 
 import pytest
 
@@ -33,9 +36,11 @@ from datasets_api.operations.task_client import (
     TaskClient,
 )
 from datasets_api.operations.task_create_pool import (
+    TASK_CREATE_DRAIN_RESERVE_SECONDS,
     InlineTaskCreates,
     TaskCreatePool,
     TaskCreates,
+    offering_creates,
 )
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -111,16 +116,17 @@ class _HeldCreates:
     not reached them yet."""
 
     def __init__(self) -> None:
-        self.held: list[Callable[[], object]] = []
+        self.held: list[tuple[Callable[[], Any], Future[Any]]] = []
 
-    def offer(self, create: Callable[[], object]) -> bool:
-        self.held.append(create)
-        return True
+    def offer[T](self, create: Callable[[], T]) -> Future[T]:
+        future: Future[T] = Future()
+        self.held.append((create, future))
+        return future
 
     def run(self) -> None:
         held, self.held = self.held, []
-        for create in held:
-            create()
+        for create, future in held:
+            future.set_result(create())
 
 
 def _check(
@@ -129,15 +135,19 @@ def _check(
     *,
     backlog_max: int = _BACKLOG_MAX,
     task_creates: TaskCreates | None = None,
+    joined: bool = True,
 ) -> HeadCheckState:
-    return submit_head_check(
-        subject_id=_SPEC,
-        coverage_stamp="cov_stamp_1",
-        operation_store=operation_store,
-        task_client=task_client,
-        backlog_max=backlog_max,
-        task_creates=task_creates if task_creates is not None else InlineTaskCreates(),
-    )
+    """`submit_head_check` as a door that joins its creates calls it, or with no such door
+    when not `joined`."""
+    with offering_creates() if joined else nullcontext():
+        return submit_head_check(
+            subject_id=_SPEC,
+            coverage_stamp="cov_stamp_1",
+            operation_store=operation_store,
+            task_client=task_client,
+            backlog_max=backlog_max,
+            task_creates=task_creates if task_creates is not None else InlineTaskCreates(),
+        )
 
 
 def _store(*, backlog_max: int = _BACKLOG_MAX, clock: _Clock | None = None) -> LiveOperationStore:
@@ -200,25 +210,38 @@ def test_a_check_done_runs_again_under_a_new_submission() -> None:
     assert task_client.enqueued == [(operation_id, 0), (operation_id, 1)]
 
 
-def test_reads_against_a_failing_task_queue_retry_the_create_once_per_recovery_interval() -> None:
-    """The read that wrote the row hands off the first create, under the short timeout, and
-    answers `pending`. Every other read inside the recovery interval answers `stale` with no
-    create, and past it one read claims the retry."""
+@pytest.mark.parametrize(
+    ("task_creates", "joined"),
+    [
+        pytest.param(InlineTaskCreates, True, id="inline"),
+        # With no door to join the create, the pool is bypassed and the read creates the task.
+        pytest.param(TaskCreatePool, False, id="no_join_point"),
+    ],
+)
+def test_reads_against_a_failing_task_queue_retry_the_create_once_per_recovery_interval(
+    task_creates: Callable[[], TaskCreates], joined: bool
+) -> None:
+    """The read that wrote the row makes the first create in the request, under the short
+    timeout, and answers `stale` once it fails. Every other read inside the recovery interval
+    answers `stale` with no create, and past it one read claims the retry."""
     clock = _Clock()
     operation_store = _store(clock=clock)
     raising = _RaisingTaskClient()
+    creates = task_creates()
 
-    first = [_check(operation_store, raising) for _ in range(10)]
+    def check() -> HeadCheckState:
+        return _check(operation_store, raising, task_creates=creates, joined=joined)
+
+    first = [check() for _ in range(10)]
     clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS - 1)
-    inside = [_check(operation_store, raising) for _ in range(10)]
+    inside = [check() for _ in range(10)]
     assert raising.timeouts == [HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS]
     clock.t += timedelta(seconds=2)
-    past = [_check(operation_store, raising) for _ in range(10)]
+    past = [check() for _ in range(10)]
 
-    # Each read that handed off a create answers before it fails.
-    assert first == ["pending"] + ["stale"] * 9
+    assert first == ["stale"] * 10
     assert inside == ["stale"] * 10
-    assert past == ["pending"] + ["stale"] * 9
+    assert past == ["stale"] * 10
     assert raising.timeouts == [HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS] * 2
     # The claim restarts the interval, so the next retry waits a full one again.
     clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS - 1)
@@ -418,3 +441,27 @@ def test_shutdown_drops_queued_creates_and_frees_their_places() -> None:
 
     assert ran == ["running"]
     assert pool.wait_idle(0)
+
+
+def test_shutdown_waits_its_reserve_for_a_running_create_when_the_budget_is_spent() -> None:
+    """The executors' drains spent the shared budget, and the pool still waits for its running
+    create, so the task client and the store close after it."""
+    pool = TaskCreatePool(workers=1, capacity=1)
+    started = threading.Event()
+    ran: list[str] = []
+
+    def running() -> None:
+        started.set()
+        time.sleep(0.2)
+        ran.append("running")
+
+    assert pool.offer(running)
+    assert started.wait(5)
+    spent = ShutdownBudget(total_seconds=0)
+    assert spent.remaining() == 0
+
+    pool.shutdown(spent)
+
+    assert ran == ["running"]
+    assert pool.wait_idle(0)
+    assert TASK_CREATE_DRAIN_RESERVE_SECONDS > 0.2

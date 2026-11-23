@@ -9,6 +9,7 @@ head names the raw version and the cut is a version of its own recorded from it.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -297,6 +298,37 @@ def test_a_stale_head_resolves_pending_and_submits_one_check(
     assert len(set(reads)) == len(reads)
     assert rig.task_creates.wait_idle(5)
     assert len(rig.tasks.enqueued) == 1
+
+
+def test_a_stale_heads_check_is_created_before_the_answer_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check keying submits for a stale head is created on the pool beside the rest of the
+    run, and the answer leaves only once that create has finished, timed as `head_check_join`."""
+    rig = _Rig(monkeypatch)
+    rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    entered, gate = threading.Event(), threading.Event()
+    enqueue = rig.tasks.enqueue
+
+    def gated(**kwargs: Any) -> None:
+        entered.set()
+        assert gate.wait(5)
+        enqueue(**kwargs)
+
+    monkeypatch.setattr(rig.tasks, "enqueue", gated)
+
+    def release_once_waiting() -> None:
+        assert entered.wait(5)
+        time.sleep(0.2)
+        gate.set()
+
+    threading.Thread(target=release_once_waiting, daemon=True).start()
+    response = rig.stored(_UNSUMMED)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["resolved_roots"][0]["freshness"] == "pending"
+    assert len(rig.tasks.enqueued) == 1
+    assert "head_check_join;dur=" in response.headers["server-timing"]
 
 
 def test_a_dataset_with_no_head_answers_202_naming_its_queued_rebuild(

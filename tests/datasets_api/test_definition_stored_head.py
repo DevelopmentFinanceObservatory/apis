@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -86,11 +87,13 @@ class _SwitchableTaskClient(FakeTaskClient):
 
 
 class _GatedTaskClient(FakeTaskClient):
-    """Records its tasks once `gate` is set, holding every create until then."""
+    """Records its tasks once `gate` is set, holding every create until then. `entered` is set
+    when a create starts waiting."""
 
     def __init__(self) -> None:
         super().__init__()
         self.gate = threading.Event()
+        self.entered = threading.Event()
 
     def enqueue(
         self,
@@ -99,6 +102,7 @@ class _GatedTaskClient(FakeTaskClient):
         submission_count: int,
         timeout: float = ENQUEUE_TIMEOUT_SECONDS,
     ) -> None:
+        self.entered.set()
         assert self.gate.wait(5)
         super().enqueue(
             operation_id=operation_id, submission_count=submission_count, timeout=timeout
@@ -276,9 +280,36 @@ def test_a_get_whose_check_cannot_be_recorded_serves_the_head_stale():
     assert rig.task_client.enqueued == []
 
 
-def test_a_get_answers_before_its_checks_task_is_created():
-    """The GET records the check and answers `pending` while the task create is still held on
-    the pool, and the create completes afterwards, once."""
+def test_a_get_answers_after_its_checks_task_is_created():
+    """The create runs on the pool beside the read, and the GET request's response leaves only once it
+    has finished, so the create never runs after the request has released the instance's CPU.
+    The wait is timed as `head_check_join`."""
+    task_client = _GatedTaskClient()
+    rig = _Rig(task_client=task_client)
+    rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
+
+    def release_once_waiting() -> None:
+        # Well inside the one-second join, and after the read has built its answer.
+        assert task_client.entered.wait(5)
+        time.sleep(0.2)
+        task_client.gate.set()
+
+    threading.Thread(target=release_once_waiting, daemon=True).start()
+    resp = rig.client.get(f"/api/datasets/{rig.spec_id}?bundle=false")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-dfo-freshness"] == "pending"
+    ((operation_id, submission),) = task_client.enqueued
+    assert "head_check_join;dur=" in resp.headers["server-timing"]
+    rig.settle()
+    check = rig.operation_store.get(operation_id)
+    assert check is not None
+    assert (check.state, check.dispatched_at is not None, submission) == ("pending", True, 0)
+
+
+def test_a_get_whose_create_outlasts_the_join_answers_and_leaves_it_to_recover():
+    """A create still held when its one-second deadline passes ends the join: the GET answers
+    `pending`, and the create completes afterwards, once. Takes the join's one second."""
     task_client = _GatedTaskClient()
     rig = _Rig(task_client=task_client)
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
@@ -287,6 +318,7 @@ def test_a_get_answers_before_its_checks_task_is_created():
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["x-dfo-freshness"] == "pending"
+    assert "head_check_join;dur=" in resp.headers["server-timing"]
     assert task_client.enqueued == []
     task_client.gate.set()
     rig.settle()

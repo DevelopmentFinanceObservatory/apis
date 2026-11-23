@@ -288,8 +288,8 @@ class DefinitionDeps:
     operation_store: OperationStore = field(default_factory=NullOperationStore)
     task_client: TaskClient = field(default_factory=NullTaskClient)
     # Takes the task create of a head check a stored read past the recheck window recorded
-    # (`head_check.request_head_check`). The surface's pool creates it off the request path;
-    # the default creates it in the caller's thread.
+    # (`head_check.request_head_check`). The surface's pool creates it beside the read, which
+    # its door joins; the default creates it in the caller's thread.
     task_creates: TaskCreates = field(default_factory=InlineTaskCreates)
     # Supplies sync/async budgets, semaphore wait time, and pivot cell cap. Door construction
     # injects it. The default serves direct `DefinitionDeps` callers.
@@ -1670,12 +1670,13 @@ def serve_stored_head(
     recheck window answers `current`. Past the window, a head whose import is not replaced and
     whose `materialised_at` is younger than `head_serve_stale_max_age_seconds` answers too, past
     `head_max_age` included, and its check runs on the worker as an operation
-    (`submit_head_check`): `pending` while it is pending or running or its task create is
-    handed to `deps.task_creates`, `stale` when it could not be submitted. The read records the
-    check's row and waits on no task create. No head, a replaced import, a head past that ceiling, a missing rendering, an
-    uncounted year coverage (`_serve_head`), or a check that failed for good hand the call to
-    the work executor, as `serve_fresh_head` does, so the refusal that ended the check reaches
-    the caller. It reads no graph, renders nothing, and materialises nothing.
+    (`submit_head_check`): `pending` while it is pending or running or its task create is handed
+    to `deps.task_creates`, `stale` when it could not be submitted. The read records the check's
+    row, and the door joins the create before its response leaves. No head, a replaced import, a
+    head past that ceiling, a missing rendering, an uncounted year coverage (`_serve_head`), or
+    a check that failed for good hand the call to the work executor, as `serve_fresh_head` does,
+    so the refusal that ended the check reaches the caller. It reads no graph, renders nothing,
+    and materialises nothing.
     """
     with phase("coverage"):
         coverage_snapshot = deps.coverage.snapshot()
