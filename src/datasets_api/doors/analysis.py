@@ -103,13 +103,14 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from dataset_store.snapshot import SharedVersionReads
 from datasets_api.admission import bound_release_served, bounded_materialise_slot
 from datasets_api.analysis import (
     STORED,
@@ -150,7 +151,7 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
-from datasets_api.doors.derived import DerivedManifest, derived_manifest
+from datasets_api.doors.derived import DerivedManifest, derived_manifest_model
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
@@ -558,7 +559,8 @@ def _ready(
     if body.include is not None and "manifest" in body.include:
         member = ready["ref"]["members"][0]
         with phase("derived_manifest"):
-            ready["manifest"] = derived_manifest(
+            # The validated model, which `AnalysisReady` takes as it stands and dumps once.
+            ready["manifest"] = derived_manifest_model(
                 id=member["spec"]["spec_id"],
                 content_version=member["content_version"],
                 current=current,
@@ -572,7 +574,30 @@ def _key_job(
 ) -> _Keyed:
     """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key. A
     `latest: "stored"` request resolves its roots from records alone, rendering nothing
-    (`LiveRootSource` `defer_renders`)."""
+    (`LiveRootSource` `defer_renders`), so it writes no version record, link or revocation
+    while it keys, and its reads share each version's record, state and locations
+    (`SharedVersionReads`): the roots' resolution, the stored answer's file check and the
+    derived manifest of a hit read each once. The sharing ends with this job. The source it
+    hands a run that misses, and that run's own reads on its analysis thread, read the stores
+    as they stand then, so a version revoked or renewed since keying is judged anew."""
+    if body.latest != STORED:
+        return _keyed(deps=deps, current=current, body=body, trace_id=trace_id)
+    reads = SharedVersionReads(current.snapshot_reader)
+    try:
+        return _keyed(
+            deps=replace(deps, snapshot_reader=reads),
+            current=replace(current, snapshot_reader=reads),
+            body=body,
+            trace_id=trace_id,
+        )
+    finally:
+        reads.close()
+
+
+def _keyed(
+    *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
+) -> _Keyed:
+    """`_key_job` over the stores `deps` and `current` read."""
     source = LiveRootSource(
         deps=deps, recipes=current.recipe_store, defer_renders=body.latest == STORED
     )

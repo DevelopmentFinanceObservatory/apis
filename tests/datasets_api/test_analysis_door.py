@@ -1649,7 +1649,7 @@ def test_a_stored_hit_times_every_stage_under_a_named_phase(
     base = source(stores)
     roots = _SlowResolveSource(frames=base.frames, newest=base.newest, recipes=base.recipes)
     read_answer = stores.recipe_store.read_answer
-    real_derived_manifest = analysis_door.derived_manifest
+    real_derived_manifest = analysis_door.derived_manifest_model
 
     def slow_read_answer(**kwargs: Any) -> Any:
         time.sleep(roots.delay)
@@ -1660,7 +1660,7 @@ def test_a_stored_hit_times_every_stage_under_a_named_phase(
         return real_derived_manifest(**kwargs)
 
     monkeypatch.setattr(stores.recipe_store, "read_answer", slow_read_answer)
-    monkeypatch.setattr(analysis_door, "derived_manifest", slow_derived_manifest)
+    monkeypatch.setattr(analysis_door, "derived_manifest_model", slow_derived_manifest)
     with _client(stores, roots, monkeypatch) as client:
         pinned = client.post(_PATH, json={"tree": _PINNED_NEWEST})
         roots.delay = _STAGE_DELAY_SECONDS
