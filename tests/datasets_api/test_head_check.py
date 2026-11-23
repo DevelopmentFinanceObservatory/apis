@@ -1,13 +1,18 @@
 """Tests `submit_head_check`, the freshness check a GET past the recheck window submits as an
-ordinary operation, and the `x-dfo-freshness` it answers. The operation store is the real
-`LiveOperationStore` over SQLite, on a clock the test moves.
+ordinary operation, and the `x-dfo-freshness` it answers, and the `TaskCreatePool` that creates
+its task off the request path. The operation store is the real `LiveOperationStore` over SQLite,
+on a clock the test moves.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import threading
+import time
+from collections.abc import Callable, Mapping
+from concurrent.futures import Future
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
-from typing import override
+from typing import Any, override
 
 import pytest
 
@@ -30,6 +35,14 @@ from datasets_api.operations.task_client import (
     FakeTaskClient,
     TaskClient,
 )
+from datasets_api.operations.task_create_pool import (
+    TASK_CREATE_DRAIN_RESERVE_SECONDS,
+    InlineTaskCreates,
+    TaskCreatePool,
+    TaskCreates,
+    offering_creates,
+)
+from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from materialise.trace import UNKNOWN_FAMILY
 from series_coverage.index import Estimate
@@ -98,19 +111,43 @@ class _LostMarkOperationStore(LiveOperationStore):
         return super().mark_dispatched(id, submission_count=submission_count)
 
 
+class _HeldCreates:
+    """Accepts every create and runs none until `run` is called, as a pool whose threads have
+    not reached them yet."""
+
+    def __init__(self) -> None:
+        self.held: list[tuple[Callable[[], Any], Future[Any]]] = []
+
+    def offer[T](self, create: Callable[[], T]) -> Future[T]:
+        future: Future[T] = Future()
+        self.held.append((create, future))
+        return future
+
+    def run(self) -> None:
+        held, self.held = self.held, []
+        for create, future in held:
+            future.set_result(create())
+
+
 def _check(
     operation_store: OperationStore,
     task_client: TaskClient,
     *,
     backlog_max: int = _BACKLOG_MAX,
+    task_creates: TaskCreates | None = None,
+    joined: bool = True,
 ) -> HeadCheckState:
-    return submit_head_check(
-        subject_id=_SPEC,
-        coverage_stamp="cov_stamp_1",
-        operation_store=operation_store,
-        task_client=task_client,
-        backlog_max=backlog_max,
-    )
+    """`submit_head_check` as a door that joins its creates calls it, or with no such door
+    when not `joined`."""
+    with offering_creates() if joined else nullcontext():
+        return submit_head_check(
+            subject_id=_SPEC,
+            coverage_stamp="cov_stamp_1",
+            operation_store=operation_store,
+            task_client=task_client,
+            backlog_max=backlog_max,
+            task_creates=task_creates if task_creates is not None else InlineTaskCreates(),
+        )
 
 
 def _store(*, backlog_max: int = _BACKLOG_MAX, clock: _Clock | None = None) -> LiveOperationStore:
@@ -173,22 +210,38 @@ def test_a_check_done_runs_again_under_a_new_submission() -> None:
     assert task_client.enqueued == [(operation_id, 0), (operation_id, 1)]
 
 
-def test_reads_against_a_failing_task_queue_retry_the_create_once_per_recovery_interval() -> None:
-    """The read that wrote the row makes the first create, under the short timeout. Every other
-    read inside the recovery interval answers `stale` with no create, and past it one read
-    claims the retry."""
+@pytest.mark.parametrize(
+    ("task_creates", "joined"),
+    [
+        pytest.param(InlineTaskCreates, True, id="inline"),
+        # With no door to join the create, the pool is bypassed and the read creates the task.
+        pytest.param(TaskCreatePool, False, id="no_join_point"),
+    ],
+)
+def test_reads_against_a_failing_task_queue_retry_the_create_once_per_recovery_interval(
+    task_creates: Callable[[], TaskCreates], joined: bool
+) -> None:
+    """The read that wrote the row makes the first create in the request, under the short
+    timeout, and answers `stale` once it fails. Every other read inside the recovery interval
+    answers `stale` with no create, and past it one read claims the retry."""
     clock = _Clock()
     operation_store = _store(clock=clock)
     raising = _RaisingTaskClient()
+    creates = task_creates()
 
-    first = [_check(operation_store, raising) for _ in range(10)]
+    def check() -> HeadCheckState:
+        return _check(operation_store, raising, task_creates=creates, joined=joined)
+
+    first = [check() for _ in range(10)]
     clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS - 1)
-    inside = [_check(operation_store, raising) for _ in range(10)]
+    inside = [check() for _ in range(10)]
     assert raising.timeouts == [HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS]
     clock.t += timedelta(seconds=2)
-    past = [_check(operation_store, raising) for _ in range(10)]
+    past = [check() for _ in range(10)]
 
-    assert set(first + inside + past) == {"stale"}
+    assert first == ["stale"] * 10
+    assert inside == ["stale"] * 10
+    assert past == ["stale"] * 10
     assert raising.timeouts == [HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS] * 2
     # The claim restarts the interval, so the next retry waits a full one again.
     clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS - 1)
@@ -253,3 +306,162 @@ def test_a_programming_error_in_the_check_fails_the_read() -> None:
     """Only the store's and the queue's own errors answer `stale`; anything else surfaces."""
     with pytest.raises(TypeError):
         _check(_BrokenOperationStore(), FakeTaskClient())
+
+
+def test_a_read_answers_pending_before_its_checks_task_is_created() -> None:
+    """The read records the row and hands the create off: it answers `pending` with no call to
+    the task client, and the create runs once afterwards."""
+    operation_store = _store()
+    task_client = FakeTaskClient()
+    creates = _HeldCreates()
+
+    assert _check(operation_store, task_client, task_creates=creates) == "pending"
+    assert task_client.enqueued == []
+    assert len(creates.held) == 1
+
+    creates.run()
+
+    ((operation_id, submission),) = task_client.enqueued
+    assert submission == 0
+    assert task_client.timeouts == [HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS]
+    stored = operation_store.get(operation_id)
+    assert stored is not None and stored.dispatched_at is not None
+
+
+def test_reads_racing_the_create_hand_off_one() -> None:
+    """A second read while the first read's create is still queued joins the row and offers
+    nothing, so the check is submitted once. It states `stale`, as a read during an inline
+    create did."""
+    operation_store = _store()
+    task_client = FakeTaskClient()
+    creates = _HeldCreates()
+
+    answers = [
+        _check(operation_store, task_client, task_creates=creates),
+        _check(operation_store, task_client, task_creates=creates),
+    ]
+    creates.run()
+
+    assert answers == ["pending", "stale"]
+    assert len(task_client.enqueued) == 1
+    assert _check(operation_store, task_client, task_creates=creates) == "pending"
+    assert creates.held == []
+
+
+def test_a_failed_create_leaves_the_check_due_for_a_later_read() -> None:
+    """The handed-off create fails after the read answered. The row stays undispatched, so a
+    read past the recovery interval offers the create again and it is submitted."""
+    clock = _Clock()
+    operation_store = _store(clock=clock)
+    creates = _HeldCreates()
+    raising = _RaisingTaskClient()
+    assert _check(operation_store, raising, task_creates=creates) == "pending"
+    creates.run()
+    assert len(raising.timeouts) == 1
+
+    task_client = FakeTaskClient()
+    assert _check(operation_store, task_client, task_creates=creates) == "stale"
+    assert creates.held == []
+    clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
+    assert _check(operation_store, task_client, task_creates=creates) == "pending"
+    creates.run()
+
+    ((operation_id, submission),) = task_client.enqueued
+    assert submission == 0
+    stored = operation_store.get(operation_id)
+    assert stored is not None and stored.dispatched_at is not None
+
+
+def test_a_full_pool_skips_the_create_and_a_later_read_submits_it() -> None:
+    """With the pool's one place taken, the read records the row, offers the create, is refused
+    and answers `stale` with no call to the task client. A read past the recovery interval,
+    with the pool free, submits it."""
+    clock = _Clock()
+    operation_store = _store(clock=clock)
+    task_client = FakeTaskClient()
+    pool = TaskCreatePool(workers=1, capacity=1)
+    release = threading.Event()
+    assert pool.offer(lambda: release.wait(5))
+
+    assert _check(operation_store, task_client, task_creates=pool) == "stale"
+    release.set()
+    assert pool.wait_idle(5)
+    assert task_client.enqueued == []
+
+    clock.t += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
+    assert _check(operation_store, task_client, task_creates=pool) == "pending"
+    assert pool.wait_idle(5)
+    assert len(task_client.enqueued) == 1
+
+
+def test_the_pool_holds_at_most_its_capacity_and_frees_a_place_per_create() -> None:
+    """Creates queued or running count against the capacity, a create that raises frees its
+    place, and a shut-down pool refuses."""
+    pool = TaskCreatePool(workers=1, capacity=2)
+    release = threading.Event()
+    ran: list[str] = []
+
+    def failing() -> None:
+        release.wait(5)
+        ran.append("failing")
+        raise RuntimeError("create failed")
+
+    assert pool.offer(failing)
+    assert pool.offer(lambda: ran.append("queued"))
+    assert not pool.offer(lambda: ran.append("refused"))
+    release.set()
+    assert pool.wait_idle(5)
+    assert ran == ["failing", "queued"]
+
+    assert pool.offer(lambda: ran.append("after"))
+    assert pool.wait_idle(5)
+    pool.shutdown(ShutdownBudget(total_seconds=1))
+    assert not pool.offer(lambda: ran.append("after shutdown"))
+    assert ran == ["failing", "queued", "after"]
+
+
+def test_shutdown_drops_queued_creates_and_frees_their_places() -> None:
+    """A create still queued at shutdown never runs, so its row waits for the recovery, and the
+    drain does not wait on it."""
+    pool = TaskCreatePool(workers=1, capacity=2)
+    started, release = threading.Event(), threading.Event()
+    ran: list[str] = []
+
+    def running() -> None:
+        started.set()
+        release.wait(5)
+        ran.append("running")
+
+    assert pool.offer(running)
+    assert pool.offer(lambda: ran.append("queued"))
+    assert started.wait(5)
+
+    threading.Timer(0.05, release.set).start()
+    pool.shutdown(ShutdownBudget(total_seconds=5))
+
+    assert ran == ["running"]
+    assert pool.wait_idle(0)
+
+
+def test_shutdown_waits_its_reserve_for_a_running_create_when_the_budget_is_spent() -> None:
+    """The executors' drains spent the shared budget, and the pool still waits for its running
+    create, so the task client and the store close after it."""
+    pool = TaskCreatePool(workers=1, capacity=1)
+    started = threading.Event()
+    ran: list[str] = []
+
+    def running() -> None:
+        started.set()
+        time.sleep(0.2)
+        ran.append("running")
+
+    assert pool.offer(running)
+    assert started.wait(5)
+    spent = ShutdownBudget(total_seconds=0)
+    assert spent.remaining() == 0
+
+    pool.shutdown(spent)
+
+    assert ran == ["running"]
+    assert pool.wait_idle(0)
+    assert TASK_CREATE_DRAIN_RESERVE_SECONDS > 0.2

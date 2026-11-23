@@ -123,7 +123,7 @@ def test_fixture_route_count_per_surface():
     assert counts == {
         "search": 6,
         "graph": 14,
-        "datasets": 65,
+        "datasets": 66,
         "presentation": 21,
         "skills": 4,
     }

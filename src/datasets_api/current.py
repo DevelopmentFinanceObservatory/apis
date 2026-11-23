@@ -80,7 +80,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import cast
+from typing import TypeGuard, cast
 
 from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
@@ -135,12 +135,13 @@ from datasets_api.operation_store import (
 from datasets_api.operations.head_check import (
     HeadFreshness,
     head_check_operation,
-    head_check_state,
+    request_head_check,
     submit_head_check,
 )
 from datasets_api.operations.render_ahead_queue import queue_render_ahead
 from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
+from datasets_api.operations.task_create_pool import InlineTaskCreates, TaskCreates
 from datasets_api.output_options import derive_output_options
 from datasets_api.party_totals import PartyTotalsCut
 from datasets_api.query_options import encode_query_options
@@ -286,6 +287,10 @@ class DefinitionDeps:
     # Records over-budget operations. The task client dispatches them.
     operation_store: OperationStore = field(default_factory=NullOperationStore)
     task_client: TaskClient = field(default_factory=NullTaskClient)
+    # Takes the task create of a head check a stored read past the recheck window recorded
+    # (`head_check.request_head_check`). The surface's pool creates it beside the read, which
+    # its door joins; the default creates it in the caller's thread.
+    task_creates: TaskCreates = field(default_factory=InlineTaskCreates)
     # Supplies sync/async budgets, semaphore wait time, and pivot cell cap. Door construction
     # injects it. The default serves direct `DefinitionDeps` callers.
     settings: DatasetsBuildSettings = field(default_factory=DatasetsBuildSettings.from_env)
@@ -1397,6 +1402,30 @@ def _head_is_fresh(head: SubjectHead, *, now: datetime, deps: DefinitionDeps) ->
     return now - head.confirmed_at < deps.head_recheck_interval and not _import_replaced(head)
 
 
+def stored_head_servable(
+    head: SubjectHead | None,
+    *,
+    now: datetime,
+    recheck_interval: timedelta,
+    serve_stale_max_age: timedelta,
+) -> TypeGuard[SubjectHead]:
+    """Whether a stored read serves from `head` at `now` by its head rule alone, before its
+    version's revocation is read: a head keyed on no import, or on the one the bound release
+    carries, confirmed inside `recheck_interval` or materialised less than
+    `serve_stale_max_age` (`head_serve_stale_max_age_seconds`) ago. No head, a replaced import
+    and a head past that ceiling do not serve.
+
+    `serve_stored_head`, `stored_head_version` and the stored-head check
+    (`stored_heads.dataset_heads`) judge a head by this one rule, so the check answers the
+    version a `latest: "stored"` read serves."""
+    if head is None or _import_replaced(head):
+        return False
+    return (
+        now - head.confirmed_at < recheck_interval
+        or now - head.materialised_at < serve_stale_max_age
+    )
+
+
 # The rebuild reasons that name no fingerprint member (`serve_current`).
 _NO_HEAD = "no_head"
 _MAX_AGE = "max_age"
@@ -1665,23 +1694,27 @@ def serve_stored_head(
     recheck window answers `current`. Past the window, a head whose import is not replaced and
     whose `materialised_at` is younger than `head_serve_stale_max_age_seconds` answers too, past
     `head_max_age` included, and its check runs on the worker as an operation
-    (`submit_head_check`): `pending` while it is pending or running, `stale` when it could not
-    be submitted. No head, a replaced import, a head past that ceiling, a missing rendering, an
-    uncounted year coverage (`_serve_head`), or a check that failed for good hand the call to
-    the work executor, as `serve_fresh_head` does, so the refusal that ended the check reaches
-    the caller. It reads no graph, renders nothing, and materialises nothing.
+    (`submit_head_check`): `pending` while it is pending or running or its task create is handed
+    to `deps.task_creates`, `stale` when it could not be submitted. The read records the check's
+    row, and the door joins the create before its response leaves. No head, a replaced import, a
+    head past that ceiling, a missing rendering, an uncounted year coverage (`_serve_head`), or
+    a check that failed for good hand the call to the work executor, as `serve_fresh_head` does,
+    so the refusal that ended the check reaches the caller. It reads no graph, renders nothing,
+    and materialises nothing.
     """
     with phase("coverage"):
         coverage_snapshot = deps.coverage.snapshot()
     with phase("head_read"):
         head = deps.head_store.read_head(stored.spec_id)
-    if head is None or _import_replaced(head):
-        return HeadRead(stored=stored, head=head)
     now = deps.now()
-    fresh = _head_is_fresh(head, now=now, deps=deps)
-    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
-    if not fresh and now - head.materialised_at >= ceiling:
+    if not stored_head_servable(
+        head,
+        now=now,
+        recheck_interval=deps.head_recheck_interval,
+        serve_stale_max_age=timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds),
+    ):
         return HeadRead(stored=stored, head=head)
+    fresh = _head_is_fresh(head, now=now, deps=deps)
     served = _serve_head(
         head,
         subject_id=stored.spec_id,
@@ -1703,6 +1736,7 @@ def serve_stored_head(
             operation_store=deps.operation_store,
             task_client=deps.task_client,
             backlog_max=deps.settings.operation_backlog_max,
+            task_creates=deps.task_creates,
         )
         if check == "failed":
             return HeadRead(stored=stored, head=head)
@@ -1728,8 +1762,9 @@ def stored_head_version(
     renders nothing, reads no frame and no graph, and never waits on a rebuild while a head
     exists. A head confirmed inside the recheck window is `current`. Past the window and inside
     `head_serve_stale_max_age_seconds` since its materialisation, the head's check is submitted
-    as the GET submits it (`submit_head_check`): `pending` while it runs, `stale` when it could
-    not be submitted. No head, a head keyed on an import the bound release no longer carries,
+    as the GET submits it (`request_head_check`), its task create handed to
+    `deps.task_creates`: `pending` while it runs, `stale` when it could not be submitted. No
+    head, a head keyed on an import the bound release no longer carries,
     and a head past that ceiling queue the rebuild, the head check operation the worker runs
     through `serve_current` (`head_check_operation`), in place of a rebuild in the request.
     `revoked_under` is `load_stored`'s.
@@ -1763,14 +1798,14 @@ def stored_head_version(
         backlog_max=deps.settings.operation_backlog_max,
     )
     now = deps.now()
-    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
-    fresh = head is not None and _head_is_fresh(head, now=now, deps=deps)
-    if (
-        head is None
-        or _import_replaced(head)
-        or (not fresh and now - head.materialised_at >= ceiling)
+    if not stored_head_servable(
+        head,
+        now=now,
+        recheck_interval=deps.head_recheck_interval,
+        serve_stale_max_age=timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds),
     ):
         raise OperationSubmitted(operation=queue())
+    fresh = _head_is_fresh(head, now=now, deps=deps)
     # The version's existence and revocation, as `load_stored` checks them, with no manifest,
     # which no caller here reads.
     with phase("snapshot_state"):
@@ -1785,7 +1820,14 @@ def stored_head_version(
     if fresh:
         return StoredHeadVersion(content_version=head.content_version, freshness="current")
     try:
-        operation = queue()
+        state, operation = request_head_check(
+            subject_id=stored.spec_id,
+            coverage_stamp=coverage_stamp,
+            operation_store=deps.operation_store,
+            task_client=deps.task_client,
+            backlog_max=deps.settings.operation_backlog_max,
+            task_creates=deps.task_creates,
+        )
     except (OperationBacklogFull, DatasetsStoreUnavailable):
         logger.warning(
             "Datasets head check for %r not submitted; resolving the head as stale",
@@ -1793,7 +1835,6 @@ def stored_head_version(
             exc_info=True,
         )
         return StoredHeadVersion(content_version=head.content_version, freshness="stale")
-    state = head_check_state(operation)
     if state == "failed":
         raise OperationSubmitted(operation=operation)
     return StoredHeadVersion(content_version=head.content_version, freshness=state)
@@ -2199,6 +2240,7 @@ __all__ = [
     "serve_fresh_head",
     "serve_stored_head",
     "stamp_trace",
+    "stored_head_servable",
     "stored_head_version",
     "without_pointers",
 ]

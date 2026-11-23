@@ -94,6 +94,7 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/{id}/versions",
         "/api/datasets/exports",
         "/api/datasets/exports/{export_id}",
+        "/api/datasets/heads",
     }
 
 

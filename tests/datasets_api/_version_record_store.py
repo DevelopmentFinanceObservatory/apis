@@ -21,7 +21,8 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
 # The schema covers version records, artifacts and their heads, revocations, references, caller allowances,
-# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, subject heads,
+# and the registry's definitions, bindings and quarantine that `LiveHeadStore.read_stored_heads` reads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -176,6 +177,29 @@ CREATE TABLE datasets.materialisation (
     selection TEXT NOT NULL,
     conversion TEXT,
     trace_id TEXT
+);
+CREATE TABLE datasets.spec_registry (
+    spec_id TEXT PRIMARY KEY,
+    identity_version TEXT NOT NULL,
+    identity_bytes BLOB NOT NULL,
+    identity_digest TEXT NOT NULL
+);
+CREATE TABLE datasets.spec_definition (
+    spec_id TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    definition TEXT NOT NULL,
+    PRIMARY KEY (spec_id, schema_version)
+);
+CREATE TABLE datasets.spec_alias (
+    posted_spec_id TEXT NOT NULL,
+    served_spec_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY (posted_spec_id, served_spec_id)
+);
+CREATE TABLE datasets.identity_quarantine (
+    id INTEGER PRIMARY KEY,
+    id_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL
 );
 CREATE TABLE datasets.subject_head (
     subject_id TEXT PRIMARY KEY,

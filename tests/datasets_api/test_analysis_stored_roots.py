@@ -9,6 +9,7 @@ head names the raw version and the cut is a version of its own recorded from it.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.renewal import RENEW_MARKER
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_create_pool import TaskCreatePool
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from dfo_platform.timings import count
@@ -84,6 +86,9 @@ class _Rig:
             _count_transactions(monkeypatch, definitions)
         self.heads = _FakeHeadStore()
         self.tasks = FakeTaskClient()
+        # The pool the lifespan would build, held so a test waits for the head checks' task
+        # creates a stored read hands off.
+        self.task_creates = TaskCreatePool()
         self.operations = LiveOperationStore(store=self.store)
         self.client = _client(
             graph=_graph(),
@@ -103,6 +108,7 @@ class _Rig:
             version_lister=LiveVersionLister(store=self.store),
             operation_store=self.operations,
             task_client=self.tasks,
+            task_creates=self.task_creates,
         )
         self.spec_id = recompute_identity(_IDENTITY).spec_id
         sidecar = {"schema_version": 1, "spec_id": self.spec_id, "identity": _IDENTITY}
@@ -290,7 +296,39 @@ def test_a_stale_head_resolves_pending_and_submits_one_check(
     ]
     assert reads
     assert len(set(reads)) == len(reads)
+    assert rig.task_creates.wait_idle(5)
     assert len(rig.tasks.enqueued) == 1
+
+
+def test_a_stale_heads_check_is_created_before_the_answer_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check keying submits for a stale head is created on the pool beside the rest of the
+    run, and the answer leaves only once that create has finished, timed as `head_check_join`."""
+    rig = _Rig(monkeypatch)
+    rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    entered, gate = threading.Event(), threading.Event()
+    enqueue = rig.tasks.enqueue
+
+    def gated(**kwargs: Any) -> None:
+        entered.set()
+        assert gate.wait(5)
+        enqueue(**kwargs)
+
+    monkeypatch.setattr(rig.tasks, "enqueue", gated)
+
+    def release_once_waiting() -> None:
+        assert entered.wait(5)
+        time.sleep(0.2)
+        gate.set()
+
+    threading.Thread(target=release_once_waiting, daemon=True).start()
+    response = rig.stored(_UNSUMMED)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["resolved_roots"][0]["freshness"] == "pending"
+    assert len(rig.tasks.enqueued) == 1
+    assert "head_check_join;dur=" in response.headers["server-timing"]
 
 
 def test_a_dataset_with_no_head_answers_202_naming_its_queued_rebuild(
@@ -390,8 +428,11 @@ def _fail_head_check(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
     monkeypatch.setattr(
         current,
-        "head_check_operation",
-        lambda **_: _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        "request_head_check",
+        lambda **_: (
+            "failed",
+            _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        ),
     )
 
 

@@ -17,13 +17,15 @@ the recipe door's
 `PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, `POST /api/datasets/analysis` and its
 `/anchor` route, the derived door's `GET /api/datasets/derived/{ops_id}/{content_version}` and its
-`/file`, `GET /api/datasets/{spec_id}/versions`, and the exports door's
-`POST /api/datasets/exports` and `GET /api/datasets/exports/{export_id}`.
+`/file`, `GET /api/datasets/{spec_id}/versions`, the stored-head check
+`GET /api/datasets/heads`, and the exports door's `POST /api/datasets/exports` and
+`GET /api/datasets/exports/{export_id}`.
 Registration stores definitions for later materialisation. The mint route handles four input
 kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
 The versions door mounts before the snapshot door, whose
 `GET /api/datasets/{spec_id}/{content_version}` would otherwise read `versions` as a content
-version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
+version. The heads door mounts before the definition door, and the grammar refusal of a
+malformed id reserves `heads`, so `GET /api/datasets/heads` never reads `heads` as an id. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
 Callers reach the API through the website's proxy, which answers `429` once an IP passes its
@@ -60,6 +62,7 @@ from datasets_api.doors.derived import build_derived_door, build_derived_files_d
 from datasets_api.doors.description import build_description_door
 from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door, classify_files_exception
+from datasets_api.doors.heads import build_heads_door
 from datasets_api.doors.meta import build_meta_door, classify_meta_exception
 from datasets_api.doors.mint import build_mint_door
 from datasets_api.doors.mint_errors import classify_mint_exception
@@ -83,6 +86,7 @@ from datasets_api.doors.versions import build_versions_door
 from datasets_api.export_store import ExportStore
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
+from datasets_api.operations.task_create_pool import TaskCreates
 from datasets_api.recipe_store import RecipeStore
 from datasets_api.routing import build_id_grammar_refusal_router
 from datasets_api.store_errors import classify_store_exception
@@ -141,6 +145,7 @@ def datasets_doors(
         build_meta_door(deps=deps, settings=settings),
         build_register_door(deps=deps),
         build_mint_door(deps=deps),
+        build_heads_door(deps=deps),
         build_definition_door(deps=deps),
         build_refresh_door(deps=deps, settings=settings),
         build_analysis_door(
@@ -185,6 +190,7 @@ def datasets_surface(
     sdmx: SdmxClient | None = None,
     artifact_store: ArtifactStore | None = None,
     task_client: TaskClient | None = None,
+    task_creates: TaskCreates | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
     coverage: ServedCoverage | None = None,
@@ -202,7 +208,8 @@ def datasets_surface(
     executors and the materialise semaphore. Each dependency keyword replaces the live one the
     lifespan would build (`datasets_api.deps.open_deps`); the caller owns what it passes. A
     store left out is built over one `dataset_store` pool borrow shared by every omitted store.
-    `head_writer` is the head store. `now` is the clock every door reads.
+    `head_writer` is the head store. `task_creates` defaults to a `TaskCreatePool` the lifespan
+    builds and drains. `now` is the clock every door reads.
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
     which can change between requests. The index is read here, under the served release as a
@@ -274,6 +281,7 @@ def datasets_surface(
         sdmx=sdmx,
         artifact_store=artifact_store,
         task_client=task_client,
+        task_creates=task_creates,
         now=now,
     )
 
