@@ -1195,6 +1195,16 @@ def _with_revised(
             True,
             id="second-facet-ends-before-the-window",
         ),
+        # The second reported facet holds 2030 alone, past the window, which a mint cuts
+        # before it masks, so the estimates continue the reported series from 2025.
+        pytest.param(
+            {"country/KEN": {"2030": 1.0}, "country/ZWE": {"2030": 1.0}},
+            None,
+            (),
+            2025,
+            True,
+            id="second-facet-holds-a-year-past-the-window",
+        ),
     ],
 )
 @pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])

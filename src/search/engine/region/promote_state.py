@@ -99,6 +99,9 @@ class _PromoteState:
     # The composite the Spec is minted as (`ResubmitIdentityPayload.composite`), None when it
     # answers its own identity.
     composite: CompositeMint | None = None
+    # The years the preview reads rows in (`fetch._build_observations`), None for the years
+    # its read plan elected under. A composite's component read sets the years it serves.
+    preview_years: frozenset[int] | None = None
 
     # --- (b) evolving state ----------------------------------------------------
     # Initial display text; the shape phase assigns the verified slug.

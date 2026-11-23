@@ -1309,9 +1309,16 @@ def _nearest_real(monkeypatch: pytest.MonkeyPatch) -> Callable[[FakeSdmxClient],
             )
             for scenario, source in (
                 ("H1", _BILATERAL),
-                ("H2", DAC2A_INCLUSIVE),
                 ("H6", _BILATERAL),
             )
+        ),
+        # A default request resolves the imputed component once, with no preview.
+        pytest.param(
+            _answered(_SCENARIOS["H2"]),
+            None,
+            DAC2A_INCLUSIVE,
+            [("answer", True), ("resubmit", True)],
+            id="H2",
         ),
         pytest.param(
             _answered(lambda: _trailing("H1")),

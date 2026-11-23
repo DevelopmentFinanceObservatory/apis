@@ -319,3 +319,60 @@ def test_a_set_filter_serves_the_best_admitted_facet_as_coverage_dates_it() -> N
     )
     assert isinstance(filtered.coverage, CoverageExact)
     assert filtered.coverage.observation_count == 5
+
+
+_ADMIT_ALL = {"measurementMethod": FacetAxisFilter(predicate=lambda f: True)}
+
+
+@pytest.mark.parametrize(
+    ("axes", "units", "marked"),
+    [
+        pytest.param(_METHOD_SET, None, True, id="axes-leave-out-f1"),
+        pytest.param(_ADMIT_ALL, None, False, id="axes-leave-out-nothing"),
+        pytest.param(None, {"U2"}, False, id="units-leave-out-f1"),
+        # The units leave out f1, which the axes would also leave out.
+        pytest.param(_METHOD_SET, {"U2"}, False, id="axes-leave-out-only-what-units-did"),
+        pytest.param(_METHOD_SET, {"U1", "U2"}, True, id="axes-leave-out-a-unit-admitted-f1"),
+    ],
+)
+def test_a_plan_is_request_filtered_only_where_the_axes_leave_a_facet_out(
+    axes, units, marked
+) -> None:
+    """`f1` (method M1, unit U1) and `f2` (M2, U2) serve the pair. The narrowed plan is marked
+    `request_filtered` exactly when the axis predicates leave out a facet the unit elections
+    admit: the elections decide the identity's own unit request, which a resolve of the
+    identity elects again."""
+    obs = {
+        key: [{**facet, "unit": f"U{facet['facetId'][-1]}"} for facet in facets]
+        for key, facets in _SET_OBS.items()
+    }
+    facets = FakeGraph(obs=obs).observation_facets(stat_var="Count_Person", entity="country/KEN")
+    assert [facet.unit for facet in facets] == ["U1", "U2"]
+    plan = plan_standard(
+        {("Count_Person", "country/KEN"): facets},
+        members=["Count_Person"],
+        years=None,
+        declared=NO_DECLARED_POLICIES,
+    )
+    form = CoverageForm(variables=True)
+    mat = Materialised(
+        sv_dcids=["Count_Person"],
+        has_data=True,
+        coverage=answer_coverage(plan, form),
+        coverage_form=form,
+        facets_by_sv={"Count_Person": facets},
+        read_plan=plan,
+    )
+
+    filtered = filter_answer(
+        mat,
+        FacetAdmission(
+            axes=axes,
+            elected_units=None if units is None else {"Count_Person": frozenset(units)},
+        ),
+        date_request=None,
+        coverage_index=empty_coverage_snapshot().index,
+    )
+
+    assert filtered.plan is not None
+    assert filtered.plan.request_filtered is marked

@@ -12,6 +12,7 @@ import pytest
 
 from entity_resolution import acquire_shared, release_shared
 from entity_resolution import resolver as entity_resolver
+from entity_resolution.group_wordings import QueryAlias
 from entity_resolution.membership import NotRecorded
 from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.models import (
@@ -436,7 +437,7 @@ def test_an_option_posted_back_keeps_the_reading_of_each_set(
     monkeypatch.setitem(
         entity_resolver._QUERY_ALIASES,
         "african nations",
-        entity_resolver._QueryAlias(name="Africa", members=True),
+        QueryAlias(name="Africa", members=True),
     )
     assert subject_reading(WHO, AFRICA) == [AFRICA]
     picked = ParsedEntity(text="Congo", dcid=_CONGOS[0])

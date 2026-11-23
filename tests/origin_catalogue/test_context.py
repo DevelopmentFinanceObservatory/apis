@@ -21,6 +21,7 @@ from origin_catalogue import (
     current_catalogue,
     note_un_blocked_places,
     note_un_unserved,
+    pinned_reads,
     recording_un_blocked_places,
     unbind_catalogue,
 )
@@ -50,6 +51,19 @@ def test_suite_binds_a_fake_catalogue_that_admits_everything() -> None:
 def test_unbound_context_raises() -> None:
     with pytest.raises(CatalogueNotBound):
         contextvars.Context().run(current_catalogue)
+
+
+def _pinned_none_binds_nothing() -> None:
+    with pinned_reads(None), pytest.raises(CatalogueNotBound):
+        current_catalogue()
+
+
+def test_pinned_reads_of_no_pins_binds_nothing_with_no_catalogue_bound() -> None:
+    """Clearing the source scope of no catalogue is a no-op, while pinning provenances with
+    none bound refuses."""
+    contextvars.Context().run(_pinned_none_binds_nothing)
+    with pytest.raises(CatalogueNotBound):
+        contextvars.Context().run(pinned_reads, frozenset({_WDI}))
 
 
 def test_bound_catalogue_nests_and_restores() -> None:

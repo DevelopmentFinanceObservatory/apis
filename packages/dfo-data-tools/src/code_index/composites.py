@@ -52,6 +52,14 @@ DECLARED_COMPOSITES: Mapping[str, CompositeDeclaration] = {
 }
 """Every declared composite by its provenance."""
 
+STACKED_YEARS_RULE = 2
+"""The version of the rule a stacked composite's served years follow
+(`materialise.composite.stacked_years` and the held years `compose_components` reads from its
+rows). `composite_digest` digests it for a stacked composite, so a head composed under another
+version fails its fingerprint check and re-mints. A change to which years or rows a stacked
+composite serves for unchanged inputs bumps it, since an import-keyed head otherwise serves the
+old rows until `DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS`."""
+
 
 def components_sum(composite: CompositeDeclaration) -> bool:
     """Whether a Datasets groupby whose `by` keeps no `stat_var` adds the members of
@@ -76,6 +84,7 @@ def composite_digest(composite: CompositeDeclaration, *, index: CodeIndex) -> st
     - its declaration, every field of it and of each component's recipe
       (`ComponentRecipe`), with `destinations` left out of a recipe where it is None, so a
       composite whose components bind no destinations digests as its other fields alone;
+    - for a stacked composite, the served-years rule version (`STACKED_YEARS_RULE`);
     - where any component sets a basis, the basis measures and ODA flow codes
       `measure_basis.edit_basis` reads;
     - where any component binds its destinations, for each distinct (dataset, side) bound,
@@ -89,6 +98,8 @@ def composite_digest(composite: CompositeDeclaration, *, index: CodeIndex) -> st
         if component["destinations"] is None:
             del component["destinations"]
     payload: dict[str, object] = {"composite": declaration}
+    if composite.kind == "stacked":
+        payload["stacked_years_rule"] = STACKED_YEARS_RULE
     if any(component.basis is not None for component in composite.components):
         payload["basis_measures"] = [dataclasses.asdict(row) for row in BASIS_MEASURES]
         payload["oda_flow"] = [ODA_FLOW_SYSTEM, ODA_FLOW]

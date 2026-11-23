@@ -47,7 +47,7 @@ from materialise.convert import (
     split_record,
 )
 from materialise.errors import MaterialisationUsageError
-from materialise.facet_collapse import collapse_duplicate_identity_facets_table
+from materialise.facet_collapse import FacetRank, collapse_duplicate_identity_facets_table
 from materialise.facets import FacetSelection, UnitRequest, nominal_currency
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTable, RateTableCache, load_table
@@ -498,11 +498,13 @@ def apply_member_conversion(
     *,
     declared_roles: Sequence[str],
     currencies: EntityCurrencies | None = None,
+    ranks: Mapping[str | None, FacetRank] | None = None,
 ) -> tuple[pa.Table, ConversionRecord | None]:
     """Collapse duplicate identity facets before conversion; the collapse expects
-    `unit` as a string. Return the frame-ready table and a conversion record,
-    or `None` for no plan or native satisfaction. Row order stays unchanged, and a
-    planned result has struct-typed `unit`, even when empty. Every row stays.
+    `unit` as a string, and ranks facets by `ranks` where given, else by their rows
+    (`collapse_duplicate_identity_facets_table`). Return the frame-ready table and a
+    conversion record, or `None` for no plan or native satisfaction. Row order stays
+    unchanged, and a planned result has struct-typed `unit`, even when empty. Every row stays.
 
     A role-shaped target converts rows `omit_unmapped_rows` already kept, into the
     `currencies` it returned, and its record names their unmapped entities in
@@ -515,6 +517,7 @@ def apply_member_conversion(
         declared_roles=declared_roles,
         currencies=currencies,
         rank_within_series=False,
+        ranks=ranks,
     )
     return converted, record
 
@@ -554,6 +557,7 @@ def _apply(
     declared_roles: Sequence[str],
     currencies: EntityCurrencies | None,
     rank_within_series: bool,
+    ranks: Mapping[str | None, FacetRank] | None = None,
 ) -> tuple[pa.Table, ConversionRecord | None, RowMarkers | None]:
     """`apply_member_conversion` with the conversion's row markers, or `None` beside a
     `None` record."""
@@ -564,7 +568,7 @@ def _apply(
             f"with plan.declared_roles {plan.declared_roles!r}"
         )
     collapsed = collapse_duplicate_identity_facets_table(
-        table, declared_roles=declared_roles, rank_within_series=rank_within_series
+        table, declared_roles=declared_roles, rank_within_series=rank_within_series, ranks=ranks
     )
     if plan is None:
         return collapsed, None, None

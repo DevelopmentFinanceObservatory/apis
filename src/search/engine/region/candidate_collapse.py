@@ -582,6 +582,7 @@ async def _assemble_definite(
         member_facts=_survivor.mat.member_facts,
         unit_request=state.unit_request,
         elected=_entry.elected,
+        years=None,
     )
     _reader = PreviewReader(
         read=_preview,

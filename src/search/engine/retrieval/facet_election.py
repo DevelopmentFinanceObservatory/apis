@@ -425,7 +425,7 @@ def _pair_union(candidates: Sequence[RoleBulkCandidate], *, window: RequestedWin
     return sum(len(held) for held in by_sv.values())
 
 
-def _ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None) -> Facet:
+def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None) -> Facet:
     """`candidate` as the facet `rank_pool` ranks (`rank_role_candidates`)."""
     spans = [candidate.lifetime[sv] for sv in candidate.by_sv if sv in candidate.lifetime]
     if spans:
@@ -464,11 +464,11 @@ def role_continuation(
     methods rank by the role pairs each facet covers. A facet continues only at `best`'s
     cadence (`materialise.facets.cadences_by_member`), read from the coverage's stated
     `observationPeriod`. Empty where nothing continues `best`."""
-    facets = [_ranked_facet(c, window=window) for c in candidates.values()]
+    facets = [ranked_facet(c, window=window) for c in candidates.values()]
     (cadence_of,) = cadences_by_member([facets])
     cadence = cadence_of.get(best.facet_id)
     continuing = continuation(
-        [_ranked_facet(best, window=window)],
+        [ranked_facet(best, window=window)],
         facets,
         window=window,
         serves=lambda facet_id: at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of),
@@ -547,7 +547,7 @@ def _member_facets(
     `stat_vars` order."""
     return [
         [
-            _ranked_facet(_for_member(candidate, sv), window=window)
+            ranked_facet(_for_member(candidate, sv), window=window)
             for candidate in candidates.values()
             if sv in candidate.by_sv
         ]

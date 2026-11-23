@@ -197,6 +197,7 @@ def test_buffered_all_pairs_failure_stamps_facet_metadata_and_omits():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         raise UpstreamResponseError("role divergence")
 

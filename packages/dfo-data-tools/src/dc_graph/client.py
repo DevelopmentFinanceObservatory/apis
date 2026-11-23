@@ -228,8 +228,10 @@ class Facet:
     read judges its own dates (`_reads_annual`). Merging facets of one id
     (`_merge_facets_by_id`, `materialise.facets.merge_facets`) stores the AND of the merged
     facets' evidence in `annual_evidence`, never a judgement of the widened bounds, so one
-    place dated by month keeps the merged facet from reading as annual. `annual_evidence` is
-    `None` on a facet no merge built.
+    place dated by month keeps the merged facet from reading as annual. A coverage facet
+    states no evidence, so a merge reads the other facets' alone. `annual_evidence` is
+    `None` on a facet no merge built, and on a merge of coverage facets alone
+    (`materialise.facets.merge_facets`).
 
     `first_series_end` is the latest date of the series that ends first among those the facet
     holds: a merge across places or StatVars (`materialise.facets.merge_facets`) keeps the

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
+from origin_catalogue.context import current_source_scope
 from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
@@ -131,14 +132,21 @@ class ScopeFacts:
     _scans: dict[tuple[int, tuple[str, ...]], tuple[IndexFamily, FamilyValues]] = field(
         default_factory=dict, init=False, compare=False, repr=False
     )
-    _years: dict[str, object] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _years: dict[tuple[tuple[str, ...] | None, str], object] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
 
     def remembered[T](self, key: str, read: Callable[[], T]) -> T:
         """`read()`, read once per build for `key`, a canonical document of what it reads
-        (`composite.component_years` keys the years an identity's family holds on it)."""
-        if key not in self._years:
-            self._years[key] = read()
-        return cast(T, self._years[key])
+        (`composite.component_years` keys the years an identity's family holds on it), and
+        the source scope bound to the caller's context
+        (`origin_catalogue.current_source_scope`), which admits the coverage rows it reads.
+        So a read under a part's source scope and one under none keep apart."""
+        scope = current_source_scope()
+        scoped = (None if scope is None else tuple(sorted(scope)), key)
+        if scoped not in self._years:
+            self._years[scoped] = read()
+        return cast(T, self._years[scoped])
 
     def family_values(self, family: IndexFamily, properties: tuple[str, ...]) -> FamilyValues:
         """What `family`'s rows hold on `properties` (`FamilyValues`), read in one scan of
