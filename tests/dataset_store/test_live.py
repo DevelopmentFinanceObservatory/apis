@@ -97,6 +97,11 @@ from spec_registry import (
     recompute_identity,
 )
 from statvar_members import MemberFamily
+from tests.code_index.aid_identity import (
+    AID_TYPE,
+    IMPUTED_PROVENANCE,
+    imputed_education_aid_identity,
+)
 from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
     SERVER_DSN,
     cluster_lock,
@@ -113,7 +118,6 @@ from tests.datasets_api._legacy_conversion_trace import (
 )
 from tests.datasets_api._snapshot_doubles import FakeSpecReader
 from tests.datasets_api._version_record_store import TEST_BASIS, materialisation_record
-from tests.datasets_api.test_mint_canonical_identity import _identity as _aid_identity
 from tests.spec_registry.conftest import minimal_identity, shape_for
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1333,6 +1337,17 @@ def _stored_head(
         expected_materialisation_id=None,
     )
     assert written is not None
+
+
+def _aid_identity(*, pins_bound: bool) -> dict:
+    """The imputed education aid identity, with `crsTypeOfFlow` and the aid
+    type bound when `pins_bound` and unbound otherwise."""
+    identity = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    if not pins_bound:
+        for slot in identity["slots"]:
+            if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
+                slot["binding"] = {"state": "unbound"}
+    return identity
 
 
 def _half_bound_aid_identity() -> dict:
