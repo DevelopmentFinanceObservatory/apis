@@ -317,6 +317,12 @@ def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
             [("excluding debt relief and all humanitarian aid", ";")],
             id="a-word-that-is-no-cue",
         ),
+        pytest.param(
+            "no, show aid to Kenya excluding France",
+            ("France",),
+            [("excluding France", ";")],
+            id="a-reply-no-before-the-cue",
+        ),
     ],
 )
 def test_items_under_one_cue_share_a_stretch(query, left_out, stretches):
