@@ -2,7 +2,7 @@
 # Calls the apis service's warm paths once the new revision serves, so the
 # builds that run beside serving finish before readers arrive. The Search and
 # Skills surfaces build the skills index, and the Graph surface builds the
-# schema document and the UN terms body, after the lifespan returns. Cloud Run
+# schema document, after the lifespan returns. Cloud Run
 # throttles the CPU of an instance with no request in flight, so a revision
 # nobody calls stalls those builds until the first readers arrive and pay for
 # them. Each warm path's handler waits on one of those builds:
@@ -11,8 +11,6 @@
 #                                      (`skills_api.deps.built_index`, up to
 #                                      30 s, then 503)
 #   /api/graph/schema                  the schema document (up to 10 s, then
-#                                      503 `schema_building`)
-#   /api/graph/schema/terms/un_system  the UN terms body (up to 10 s, then
 #                                      503 `schema_building`)
 #
 # A request keeps its instance's CPU allocated, so the builds run while the
@@ -66,7 +64,7 @@ set -euo pipefail
 deadline_seconds="${WARM_DEADLINE_SECONDS:-600}"
 iam_base="${IAM_CREDENTIALS_BASE:-https://iamcredentials.googleapis.com}"
 
-paths=(/api/skills /api/graph/schema /api/graph/schema/terms/un_system)
+paths=(/api/skills /api/graph/schema)
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
