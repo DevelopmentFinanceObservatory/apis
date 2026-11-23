@@ -81,6 +81,18 @@ for its frames. The request answers timeout (504) after `DATASETS_ANALYSIS_TIMEO
 counted from admission over keying and computing together. A timeout while the run computes
 leaves its thread running on to store the frame and answer. A timeout while it keys stores
 nothing, since the run never reaches an analysis thread, and a retry keys it again.
+
+A run's `Server-Timing` header and `datasets.timings` line carry phases whose sum covers
+`total`: `queue`, from the request's wait for an executor thread to the job's start, and
+`handoff`, from the job's end back to the event loop, summed over the keying and analysis hops;
+`resolve_roots`, planning the tree and resolving its roots (`analysis.prepare_analysis`);
+`request_key`; `stored_answer`, the answer read, its frame file check and the renewal of a file
+near the end of its retention; `derived_manifest`, under `include: ["manifest"]`; `body`,
+validating and dumping `AnalysisReady`; and `serialise`, encoding the response. A run that
+computes adds the phases of its frame reads and stores. Phases recorded inside these say where
+their time went, such as `snapshot_state`, `head_read`, `coverage` and `head_check` inside
+`resolve_roots`, and the connection pool's `db_pool_wait`, `db_connect` and `db_ping` inside
+whichever phase borrowed the connection.
 """
 
 from __future__ import annotations
@@ -145,7 +157,7 @@ from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.operations.renewal import renew_on_hit
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.timings import PhaseTimings, door_call
+from datasets_api.timings import PhaseTimings, door_call, phase
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode, RetryMode
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
@@ -545,12 +557,14 @@ def _ready(
         ]
     if body.include is not None and "manifest" in body.include:
         member = ready["ref"]["members"][0]
-        ready["manifest"] = derived_manifest(
-            id=member["spec"]["spec_id"],
-            content_version=member["content_version"],
-            current=current,
-        )
-    return AnalysisReady.model_validate(ready).model_dump(mode="json")
+        with phase("derived_manifest"):
+            ready["manifest"] = derived_manifest(
+                id=member["spec"]["spec_id"],
+                content_version=member["content_version"],
+                current=current,
+            )
+    with phase("body"):
+        return AnalysisReady.model_validate(ready).model_dump(mode="json")
 
 
 def _key_job(
@@ -727,7 +741,9 @@ class _AnalysisRoutes:
             else:
                 if record is not None:
                     record(answer)
+                started = time.perf_counter()
                 outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
+                call.timings.record("serialise", (time.perf_counter() - started) * 1000)
         outcome.headers["Server-Timing"] = call.server_timing
         return call.delivered(outcome)
 
@@ -776,6 +792,7 @@ class _AnalysisRoutes:
                 wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
                 headroom=headroom if reserve else reservations.headroom,
                 keep_waiting=bound_release_served(),
+                timed_hop=True,
                 current=current,
                 **kwargs,
             )
@@ -828,6 +845,7 @@ class _AnalysisRoutes:
                     refuse=AnalysisBackpressure,
                     wait_seconds=min(_KEY_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
                     keep_waiting=bound_release_served(),
+                    timed_hop=True,
                     current=current,
                     body=body,
                     trace_id=trace_id,

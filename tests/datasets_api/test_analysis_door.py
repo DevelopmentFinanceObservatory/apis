@@ -1593,3 +1593,85 @@ def test_a_stored_request_reads_a_derived_roots_recipe_roots_and_anchor_roots_at
         {"spec_id": POPULATION, "content_version": POPULATION_V1, "freshness": "current"},
     ]
     assert body["ref"]["members"][0]["roots"] == at_heads.json()["ref"]["members"][0]["roots"]
+
+
+# The phases that partition a stored hit's `total`, and those recorded inside one of them.
+_STORED_HIT_PHASES = {
+    "queue",
+    "resolve_roots",
+    "request_key",
+    "stored_answer",
+    "derived_manifest",
+    "body",
+    "handoff",
+    "serialise",
+}
+_NESTED_PHASES = {
+    "snapshot_state",
+    "head_read",
+    "coverage",
+    "head_check",
+    "db_pool_wait",
+    "db_connect",
+    "db_ping",
+}
+_STAGE_DELAY_SECONDS = 0.05
+_UNTIMED_TOLERANCE_MS = 25.0
+
+
+def _phase_ms(response: Any) -> dict[str, float]:
+    """The `name;dur=ms` metrics of `response`'s `Server-Timing` header, `total` included."""
+    metrics: dict[str, float] = {}
+    for part in response.headers["server-timing"].split(", "):
+        name, _, ms = part.partition(";dur=")
+        if ms:
+            metrics[name] = float(ms)
+    return metrics
+
+
+class _SlowResolveSource(FakeRootSource):
+    """Sleeps `delay` seconds before each root it resolves, once `delay` is set."""
+
+    delay = 0.0
+
+    def resolve(self, root, *, latest, trace_id, path_words=None):
+        time.sleep(self.delay)
+        return super().resolve(root, latest=latest, trace_id=trace_id, path_words=path_words)
+
+
+def test_a_stored_hit_times_every_stage_under_a_named_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `latest: "stored"` hit with its manifest names each stage of its path, and its phases
+    sum to `total`: root resolution, the answer read and the manifest read each sleep 50 ms, so
+    any of them outside every phase leaves at least 50 ms of `total` unaccounted for."""
+    stores = Stores()
+    base = source(stores)
+    roots = _SlowResolveSource(frames=base.frames, newest=base.newest, recipes=base.recipes)
+    read_answer = stores.recipe_store.read_answer
+    real_derived_manifest = analysis_door.derived_manifest
+
+    def slow_read_answer(**kwargs: Any) -> Any:
+        time.sleep(roots.delay)
+        return read_answer(**kwargs)
+
+    def slow_derived_manifest(**kwargs: Any) -> Any:
+        time.sleep(roots.delay)
+        return real_derived_manifest(**kwargs)
+
+    monkeypatch.setattr(stores.recipe_store, "read_answer", slow_read_answer)
+    monkeypatch.setattr(analysis_door, "derived_manifest", slow_derived_manifest)
+    with _client(stores, roots, monkeypatch) as client:
+        pinned = client.post(_PATH, json={"tree": _PINNED_NEWEST})
+        roots.delay = _STAGE_DELAY_SECONDS
+        stored = client.post(
+            _PATH, json={"tree": _STORED_TREE, "latest": "stored", "include": ["manifest"]}
+        )
+
+    assert pinned.status_code == 200, pinned.text
+    assert stored.status_code == 200, stored.text
+    metrics = _phase_ms(stored)
+    total = metrics.pop("total")
+    assert set(metrics) - _NESTED_PHASES == _STORED_HIT_PHASES, stored.headers["server-timing"]
+    untimed = total - sum(ms for name, ms in metrics.items() if name not in _NESTED_PHASES)
+    assert abs(untimed) < _UNTIMED_TOLERANCE_MS, stored.headers["server-timing"]
