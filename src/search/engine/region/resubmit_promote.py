@@ -66,9 +66,12 @@ def _resolve_standard_promote(
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
     composite: CompositeMint | None = None,
+    preview_years: frozenset[int] | None = None,
 ) -> RegionResult:
     """Resolve a resubmit from the identity alone, its Spec minted as `composite` where one
-    is given (`spec_build.build_spec`).
+    is given (`spec_build.build_spec`), its preview reading rows in `preview_years` where set
+    (`fetch._build_observations`) and every phase before it electing under the identity's
+    own window.
 
     The identity's members are elected as the Datasets mint elects them
     (`promote_reread._elected_members`): the release's code index for a named measure family or
@@ -104,6 +107,7 @@ def _resolve_standard_promote(
         place_options_pool=place_options_pool,
         coverage=coverage,
         composite=composite,
+        preview_years=preview_years,
         role_class_walks=(
             RoleClassWalks(
                 materialise_graph,

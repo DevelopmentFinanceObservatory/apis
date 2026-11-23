@@ -50,6 +50,7 @@ def test_build_observations_preview_series_stay_in_pair_order_under_inverted_com
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         if entity == entities[0]:
@@ -103,6 +104,7 @@ def test_build_observations_preview_concurrency_is_bounded_and_saturated(search_
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         nonlocal in_flight, max_in_flight
         entity = next(iter(request.role_bindings["observationAbout"]))
@@ -162,6 +164,7 @@ def test_build_observations_total_preview_concurrency_is_process_wide_bounded(
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         nonlocal in_flight, max_in_flight
         entity = next(iter(request.role_bindings["observationAbout"]))
@@ -233,6 +236,7 @@ def test_build_observations_single_call_fanout_not_serialized_by_total_gate(sear
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         nonlocal in_flight, max_in_flight
         entity = next(iter(request.role_bindings["observationAbout"]))
@@ -358,6 +362,7 @@ def test_build_observations_materialisation_usage_error_from_pooled_worker_propa
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         if entity == "country/BBB":
@@ -396,6 +401,7 @@ def test_build_observations_output_byte_identical_at_concurrency_one_and_eight(s
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         return stub_preview_result(sv="Count_Person", entity=entity)

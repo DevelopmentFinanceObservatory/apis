@@ -112,6 +112,7 @@ def _run_bulk(
     *,
     sdmx: FakeSdmxClient,
     facet_filter=None,
+    years: frozenset[int] | None = None,
 ):
     scope = HarnessScope(
         places=_SCOPE_PLACES, sdmx=sdmx, facets_by_sv_entity={_SV: facets_by_entity}
@@ -125,6 +126,7 @@ def _run_bulk(
         scope=scope,
         facet_filter=facet_filter,
         coverage=empty_coverage_snapshot(),
+        years=years,
     )
 
 
@@ -166,6 +168,27 @@ def test_happy_path_five_countries_one_shared_facet():
     resolved = _resolved_facets([s.facet for s in observations.series], {})
     assert resolved["provenance"].ref == "dc/base/Src"
     assert resolved["provenance"].selection is None  # concrete, not per_series
+
+
+def test_a_scope_read_asked_for_served_years_refuses_without_a_read():
+    """A scope-defaulted read serves one latest point per place, which served years cannot
+    narrow, and no composite component reads one: asked for served years, it refuses as a
+    failed probe, with a warning, and reads nothing."""
+    facets_by_entity = {
+        c: [Facet(earliest_date="2020", latest_date="2023", obs_count=4, facet_id="F1")]
+        for c in _COUNTRIES
+    }
+    sdmx = FakeSdmxClient(
+        subject_observations={_SV: {c: [_row(c, facet_id="F1")] for c in _COUNTRIES}}
+    )
+
+    observations, warn = _run_bulk(facets_by_entity, sdmx=sdmx, years=frozenset({2023}))
+
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_PROBE_FAILED
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_PROBE_FAILED
+    assert sdmx.subject_observations_calls == []
 
 
 def test_bulk_path_never_calls_materialise_preview(monkeypatch):

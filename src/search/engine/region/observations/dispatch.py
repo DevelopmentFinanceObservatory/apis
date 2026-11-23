@@ -90,6 +90,7 @@ def _observations_events(
     coverage: CoverageSnapshot,
     plan: ReadPlan | None = None,
     variable_labels: Mapping[str, str],
+    years: frozenset[int] | None = None,
 ) -> _ObsProbeResult:
     """Build one trailing event. `_build_observations` encodes empty previews in its payload.
 
@@ -118,6 +119,7 @@ def _observations_events(
             unit_request=unit_request,
             elected=elected,
             coverage=coverage,
+            years=years,
         )
     # Empty previews carry an omission reason in the payload. The event fires.
     event = ObservationsEvent(spec_id=spec_id, observations=observations)
@@ -154,6 +156,7 @@ def _launch_observations_task(
     coverage: CoverageSnapshot,
     plan: ReadPlan | None = None,
     variable_labels: Mapping[str, str],
+    years: frozenset[int] | None = None,
 ) -> asyncio.Task[_ObsProbeResult]:
     """Schedule `_observations_events` in a worker thread and return its owned task."""
     return create_owned_task(
@@ -176,6 +179,7 @@ def _launch_observations_task(
             coverage=coverage,
             plan=plan,
             variable_labels=variable_labels,
+            years=years,
         )
     )
 
@@ -189,8 +193,9 @@ class PreviewRead:
     (`obs_entities`), the read plan, the facet filter, the places a scope-defaulted bulk read
     names (`bulk_places`, None for any other read), the members' facts, which give each
     series its declared roles and `axes` (`fetch._build_observations`), the posted
-    request-form unit and the elected unit selections. Every field is required, so a path
-    that builds one cannot leave an input out. A fresh answer builds it once
+    request-form unit, the elected unit selections and the years the preview reads rows in
+    (`years`, None for the plan's own; `fetch._build_observations`). Every field is
+    required, so a path that builds one cannot leave an input out. A fresh answer builds it once
     (`phase_answer._start_assemble_definite`), a resubmit once (`promote_finalize`), and the
     part memo stores it with the region (`RegionResult.preview_read`). `PreviewReader`
     binds it to one request's clients."""
@@ -203,6 +208,7 @@ class PreviewRead:
     member_facts: Mapping[str, MemberFacts] | None
     unit_request: IdentityUnitRequest | None
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None
+    years: frozenset[int] | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -240,6 +246,7 @@ class PreviewReader:
             unit_request=read.unit_request,
             elected=read.elected,
             coverage=self.coverage,
+            years=read.years,
         )
 
     def launch(
@@ -267,6 +274,7 @@ class PreviewReader:
             coverage=self.coverage,
             plan=read.plan,
             variable_labels=variable_labels,
+            years=read.years,
         )
 
     def relaunch(

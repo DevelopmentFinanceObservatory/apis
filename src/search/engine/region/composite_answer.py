@@ -7,16 +7,23 @@ read resolved previews nothing of the composite. Its preview reads each componen
 (`code_index.composites.component_identities`) with `resolve_spec_resubmit`, which elects
 its members as the mint does and scopes its reads to the provenance it binds, in worker threads
 that run together. Each component read embeds its preview
-(`include_observations`) and reads no slot or place options, and on a dataset_resubmit it goes
-through the part memo under its own key. A component serving no year of the composite is not
-read. It reads through the request's catalogue narrowed to
+(`include_observations`), elects under the component's own window and reads rows in the
+years the component serves (`scope.composite.component_preview`), and reads no slot or place
+options, and on a dataset_resubmit it goes through the part memo under its own key and
+those years. A component previewing no year of the composite
+(`ServedComponent.preview_years`) is not read. It reads through the request's catalogue narrowed to
 its own pin alone (`ComponentReads.catalogue`), as the mint reads a component
 (`datasets_api.serve`), whatever source scope the part's own reads ran under. The previews are
 composed under the composite's rules (`scope.composite.compose_observations`).
 
 A streamed request reads the preview in a trailing task (`CompositeRelaunch`),
 launched once the answer is minted, so it adds nothing before the `response` event. A
-buffered request reads it inline (`with_composite_observations`).
+buffered request reads it inline (`with_composite_observations`). The composite's continuation
+(`modelled_values`) is then the reads' (`SpecObservations.continued`). A request reading no
+preview states the continuation the components' read plans serve in the years each serves
+(`with_composite_continuation`): a component that reads the table the answer read takes the
+answer's own plan, and each other resolves its plan with no row read, as its preview's
+resolve elects it.
 
 A same-shape merged answer previews the read of its merged identity
 (`same_shape._with_merged_preview`). A merge of composite answers is minted as the
@@ -40,6 +47,7 @@ from typing import TYPE_CHECKING, cast
 import dc_graph
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import Catalogue, bound_catalogue, recording_un_blocked_places
@@ -89,6 +97,7 @@ from search.models import (
     BaseIdentity,
     EntityGroup,
     EntityRoleKey,
+    ResolvedSpec,
     ResubmitIdentityPayload,
     Spec,
     SpecObservations,
@@ -102,6 +111,8 @@ from search.observations import (
 )
 from search.scope.composite import (
     ServedComponent,
+    component_preview,
+    component_spec_id,
     compose_observations,
     served_components,
 )
@@ -200,7 +211,8 @@ async def read_composite_preview(
     composed from one read of each component serving a year, each posting `entity_groups`,
     the groups the composite's answer names, as a resubmit of that answer would, and the
     warnings those reads raised under `PREVIEW_WARNING_CODES`, in component order. A
-    component serving no year is not read and raises nothing.
+    component previewing no year (`ServedComponent.preview_years`) is not read and raises
+    nothing.
 
     The reads run together, each holding a permit of `semaphore` when one is given.
     Cancelling the caller cancels every read still running. A component whose read is lost
@@ -211,7 +223,7 @@ async def read_composite_preview(
     error of a read propagates and cancels the others."""
     # A Spec keys its groups by the role keys a resubmit posts them under.
     groups = cast("Mapping[EntityRoleKey, EntityGroup] | None", entity_groups)
-    read = [index for index, item in enumerate(served) if item.served]
+    read = [index for index, item in enumerate(served) if item.preview_years]
     tasks = [
         asyncio.create_task(
             _read_component(served[index], groups, reads=reads, semaphore=semaphore)
@@ -238,29 +250,141 @@ async def _read_component(
     semaphore: asyncio.Semaphore | None,
 ) -> tuple[SpecObservations | None, tuple[Warning, ...]]:
     """The preview `item`'s component answer embeds and its preview warnings
-    (`_resubmit_preview`), or None and a warning naming the component's role when its read
-    was lost (`_missing`)."""
-    identity = BaseIdentity.model_validate(dict(item.component.identity))
+    (`_resubmit_preview`), elected under the identity and read in the years
+    `component_preview` names, or None and a warning naming the component's role when its
+    read was lost (`_missing`)."""
+    document, years = component_preview(item)
     read = await _resubmit_preview(
-        identity,
+        BaseIdentity.model_validate(document),
         groups,
         reads=reads,
         semaphore=semaphore,
         about=f"component {item.component.role}",
         populations=item.component.populations,
+        years=years,
     )
     if isinstance(read, _LostRead):
         return None, (_missing(item, read),)
     return read
 
 
+async def read_composite_continuation(
+    *,
+    served: Sequence[ServedComponent],
+    resolved: ResolvedSpec,
+    reads: ComponentReads,
+    semaphore: asyncio.Semaphore | None,
+) -> bool | None:
+    """Whether the composite whose components are `served` and whose answer states
+    `resolved` serves a continuation in the years they serve, settled with no preview read.
+    A component previewing a year (`ServedComponent.preview_years`) whose preview resolves
+    the table the answer read states the continuation the answer's own plan serves in those
+    years (`ResolvedSpec.component_continued`). Each other one resolves its read plan as its
+    preview's resolve elects it (`_component_continuation`). The composite serves one when
+    any plan narrowed to its component's years does (`read_plan.serves_continuation`), none
+    when every plan serves none, and states nothing (None) when no plan serves one and a
+    component's resolve states none, as `compose_observations` settles it from the reads.
+    A resolve that was lost marks the answer degraded, so no cache stores it. A resolve that
+    refused the identity or answered no definite Spec states no claim and leaves the answer
+    cacheable (`_component_continuation`).
+
+    The resolves run together, each holding a permit of `semaphore` when one is given, and
+    read no row. Cancelling the caller cancels every resolve still running."""
+    groups = cast("Mapping[EntityRoleKey, EntityGroup] | None", resolved.entity_groups)
+    previewing = [item for item in served if item.preview_years]
+    if resolved.states_component_continued:
+        # Hashing each component's identity is CPU work, kept off the event loop.
+        stated, resolving = await asyncio.to_thread(_held_continuations, previewing, resolved)
+    else:
+        stated, resolving = [], previewing
+    tasks = [
+        asyncio.create_task(_component_continuation(item, groups, reads=reads, semaphore=semaphore))
+        for item in resolving
+    ]
+    try:
+        stated.extend(await asyncio.gather(*tasks))
+    finally:
+        for task in tasks:
+            task.cancel()
+    if any(stated):
+        return True
+    return False if all(one is False for one in stated) else None
+
+
+def _held_continuations(
+    previewing: Sequence[ServedComponent], resolved: ResolvedSpec
+) -> tuple[list[bool | None], list[ServedComponent]]:
+    """The continuation `resolved` states for each of `previewing` whose preview resolves the
+    table the answer read (`ResolvedSpec.component_continued`), and the others, which are
+    resolved."""
+    stated: list[bool | None] = []
+    resolving: list[ServedComponent] = []
+    for item in previewing:
+        held = resolved.component_continued(component_spec_id(item), item.preview_years)
+        if held is None:
+            resolving.append(item)
+        else:
+            stated.append(held)
+    return stated, resolving
+
+
+async def _component_continuation(
+    item: ServedComponent,
+    groups: Mapping[EntityRoleKey, EntityGroup] | None,
+    *,
+    reads: ComponentReads,
+    semaphore: asyncio.Semaphore | None,
+) -> bool | None:
+    """Whether `item`'s component answer, resolved with no preview over the identity and
+    years `component_preview` names (`_resubmit`), serves a continuation in those years
+    (`ResolvedSpec.continued`), or None when its resolve states none.
+
+    A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient. `_resubmit` notes and
+    logs it at WARNING, so the answer is degraded and no cache stores it and no INFO line
+    repeats it. A resolve that refuses the
+    identity (`EngineInputError`) or answers no definite Spec is deterministic, so it states
+    no continuation and leaves the answer cacheable. Each of these is logged at INFO with the
+    component's role, its spec_id and the cause, so a component whose resolve keeps
+    refusing shows in the logs while its answers lose their modelled-value claims. Any other
+    error is a code fault and propagates, as on the preview path."""
+    document, years = component_preview(item)
+    region = await _resubmit(
+        BaseIdentity.model_validate(document),
+        groups,
+        reads=reads,
+        semaphore=semaphore,
+        about=f"component {item.component.role} plan",
+        populations=item.component.populations,
+        years=years,
+        observations=False,
+    )
+    if isinstance(region, _LostRead):
+        if not region.warned:
+            logger.info(
+                "composite continuation: component %s states none: %s",
+                item.component.role,
+                region.cause,
+                extra={
+                    JSON_FIELDS_ATTR: {
+                        "component_role": item.component.role,
+                        "component_spec_id": component_spec_id(item),
+                        "continuation_cause": region.cause,
+                    }
+                },
+            )
+        return None
+    return region.spec.resolved.continued
+
+
 @dataclass(frozen=True, slots=True)
 class _LostRead:
     """A resubmit preview that read nothing, `timed_out` when the read crossed its deadline,
-    with `cause` saying why."""
+    with `cause` saying why. `warned` is set where `_resubmit` already logged the loss at
+    WARNING."""
 
     timed_out: bool
     cause: str
+    warned: bool = False
 
     def warning(self, message: str) -> Warning:
         """The warning stating `message` under `observations_timed_out` for a read that
@@ -283,41 +407,82 @@ async def _resubmit_preview(
     semaphore: asyncio.Semaphore | None,
     about: str,
     populations: Mapping[str, RolePopulation] | None = None,
+    years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, tuple[Warning, ...]] | _LostRead:
-    """The preview a resubmit of `identity` posting `groups` embeds, read with
-    `resolve_spec_resubmit` in a worker thread through `reads.catalogue` under `reads.options`,
-    holding a permit of `semaphore` when one is given, and the answer's warnings under
-    `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
-    Each role `populations` lists, the roles a component binds to a population
-    (`ComponentIdentity.populations`), reads as open within it
-    (`ResubmitIdentityPayload.populations`).
+    """The preview a resubmit of `identity` posting `groups` embeds (`_resubmit`) and the
+    answer's warnings under `PREVIEW_WARNING_CODES`. The preview reads rows in `years`, its
+    members elected under `identity`'s own window (`EngineOptions.preview_years`), and in
+    the years its read plan elected under where None. A preview read in `years`, a
+    composite component's, states whether the answer serves a continuation in them
+    (`SpecObservations.continued`), which the composite's own Spec cannot state. An answer
+    that embeds no preview is lost `observations_probe_failed`."""
+    region = await _resubmit(
+        identity,
+        groups,
+        reads=reads,
+        semaphore=semaphore,
+        about=about,
+        populations=populations,
+        years=years,
+        observations=True,
+    )
+    if isinstance(region, _LostRead):
+        return region
+    observations = region.spec.resolved.observations
+    if observations is None:
+        return _LostRead(timed_out=False, cause="embedded no preview")
+    if years is not None:
+        # The answer's Spec states the continuation its plan serves in `years` alone
+        # (`spec_build.build_spec`'s `preview_years`), which the composite answer states.
+        observations = observations.stating_continued(region.spec.resolved.continued)
+    raised = tuple(warning for warning in region.warnings if warning.code in PREVIEW_WARNING_CODES)
+    return observations, raised
+
+
+async def _resubmit(
+    identity: BaseIdentity,
+    groups: Mapping[EntityRoleKey, EntityGroup] | None,
+    *,
+    reads: ComponentReads,
+    semaphore: asyncio.Semaphore | None,
+    about: str,
+    populations: Mapping[str, RolePopulation] | None,
+    years: frozenset[int] | None,
+    observations: bool,
+) -> RegionResult | _LostRead:
+    """The definite answer a resubmit of `identity` posting `groups` resolves, built, keyed
+    and read with `resolve_spec_resubmit` in a worker thread (`_resolve_component`) through
+    `reads.catalogue` under `reads.options`, embedding its preview where `observations` is set and reading no row
+    otherwise, holding a permit of `semaphore` when one is given. Its Spec states the
+    continuation its read plan serves in `years` (`EngineOptions.preview_years`) where set.
+    A part memo hit reads nothing, and a miss stores the answer. Each role `populations`
+    lists, the roles a component binds to a population (`ComponentIdentity.populations`),
+    reads as open within it (`ResubmitIdentityPayload.populations`).
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
-    by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost
-    `observations_timed_out` when it crossed the deadline (`TimeoutError`,
-    `GraphDeadlineExceededError`), else `observations_probe_failed`. A resolve that refuses
-    `identity` (`EngineInputError`) or answers no definite Spec with a preview is lost
+    by its enclosing budget is noted as cut and leaves the request unstorable), logged under
+    `about`, and is lost `observations_timed_out` when it crossed the deadline
+    (`TimeoutError`, `GraphDeadlineExceededError`), else `observations_probe_failed`. A
+    resolve that refuses `identity` (`EngineInputError`) or answers no definite Spec is lost
     `observations_probe_failed`. An answer the response cache would not store
     (`is_region_storable` under the request catalogue's refused places), degraded or carrying
     a warning such as `members_absent_from_graph`, notes a degraded read
-    (`note_degraded_read`), so no cache stores what it previews. Any other error propagates."""
-    payload = ResubmitIdentityPayload(
-        identity=identity,
-        entity_groups=None
-        if groups is None
-        else region_groups(groups, identity, index=get_index()),
-        populations=dict(populations or {}),
+    (`note_degraded_read`), so no cache stores what it states. Any other error propagates."""
+    options = dataclasses.replace(
+        reads.options, include_observations=observations, preview_years=years
     )
-    options = reads.options
-    memo = reads.memo if reads.memo is not None and reads.memo.active else None
-    key = memo.key(payload, options) if memo is not None else None
     async with semaphore if semaphore is not None else nullcontext():
         try:
             # The worker thread copies this context, so the resolve reads through the
             # request's catalogue, which only `identity`'s own pin narrows.
             with bound_catalogue(reads.catalogue):
-                region, stored = await asyncio.to_thread(
-                    _resolve_component, payload, reads=reads, options=options, key=key
+                region, stored, key = await asyncio.to_thread(
+                    _resolve_component,
+                    identity,
+                    groups,
+                    populations=populations,
+                    reads=reads,
+                    options=options,
                 )
         except EngineInputError:
             return _LostRead(timed_out=False, cause="refused its identity")
@@ -332,19 +497,15 @@ async def _resubmit_preview(
                 exc_info=True,
             )
             if timed_out:
-                return _LostRead(timed_out=True, cause="read crossed its deadline")
-            return _LostRead(timed_out=False, cause="read failed")
-    if memo is not None and key is not None and not stored:
-        memo.store(key, region)
+                return _LostRead(timed_out=True, cause="read crossed its deadline", warned=True)
+            return _LostRead(timed_out=False, cause="read failed", warned=True)
+    if reads.memo is not None and key is not None and not stored:
+        reads.memo.store(key, region)
     if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):
         note_degraded_read(f"resubmit preview: {about}")
     if region.status != "definite":
         return _LostRead(timed_out=False, cause=f"answered {region.status}")
-    observations = region.spec.resolved.observations
-    if observations is None:
-        return _LostRead(timed_out=False, cause="embedded no preview")
-    raised = tuple(warning for warning in region.warnings if warning.code in PREVIEW_WARNING_CODES)
-    return observations, raised
+    return region
 
 
 def _missing(item: ServedComponent, lost: _LostRead) -> Warning:
@@ -357,17 +518,29 @@ def _missing(item: ServedComponent, lost: _LostRead) -> Warning:
 
 
 def _resolve_component(
-    payload: ResubmitIdentityPayload,
+    identity: BaseIdentity,
+    groups: Mapping[EntityRoleKey, EntityGroup] | None,
     *,
+    populations: Mapping[str, RolePopulation] | None,
     reads: ComponentReads,
     options: EngineOptions,
-    key: str | None,
-) -> tuple[RegionResult, bool]:
-    """The part memo's region for `payload` under `key`, else a fresh resolve of it, and
-    whether the memo held it."""
-    stored = reads.memo.lookup(key) if reads.memo is not None and key is not None else None
+) -> tuple[RegionResult, bool, str | None]:
+    """The resubmit of `identity` posting `groups` (`_resubmit`): the active part memo's
+    region for it, else a fresh resolve, whether the memo held it, and its memo key, None
+    without an active memo. It runs in a worker thread, so building and hashing the payload
+    keeps off the event loop."""
+    payload = ResubmitIdentityPayload(
+        identity=identity,
+        entity_groups=None
+        if groups is None
+        else region_groups(groups, identity, index=get_index()),
+        populations=dict(populations or {}),
+    )
+    memo = reads.memo if reads.memo is not None and reads.memo.active else None
+    key = memo.key(payload, options) if memo is not None else None
+    stored = memo.lookup(key) if memo is not None and key is not None else None
     if stored is not None:
-        return stored, True
+        return stored, True, key
     region = resolve_spec_resubmit(
         inp=payload,
         graph=reads.graph,
@@ -375,7 +548,7 @@ def _resolve_component(
         coverage=reads.coverage,
         options=options,
     )
-    return region, False
+    return region, False, key
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -412,6 +585,18 @@ class CompositeRelaunch:
             entity_groups=self.spec.resolved.entity_groups,
             reads=self.reads,
             semaphore=semaphore,
+        )
+
+    async def continuation(self, *, semaphore: asyncio.Semaphore | None) -> bool | None:
+        """Whether the composite serves a continuation, settled from its components' read
+        plans with no preview read (`read_composite_continuation`)."""
+        served = self.served
+        if served is None:
+            served = await asyncio.to_thread(
+                composite_served, self.spec.definition.identity, reads=self.reads
+            )
+        return await read_composite_continuation(
+            served=served, resolved=self.spec.resolved, reads=self.reads, semaphore=semaphore
         )
 
 
@@ -562,6 +747,33 @@ async def with_composite_observations(
         degraded=region.degraded or lost.degraded,
         observations_relaunch=None,
         timing_by_step={**region.timing_by_step, "composite_preview": now_ms() - started},
+    )
+
+
+async def with_composite_continuation(
+    region: RegionResult, *, semaphore: asyncio.Semaphore | None
+) -> RegionResult:
+    """`region`, a composite answer whose request reads no preview, stating whether it serves
+    a continuation (`ResolvedSpec.continued`) as its components' read plans settle it
+    (`CompositeRelaunch.continuation`): the answer's own plan for a component whose preview
+    resolves the read the answer made, a resolve with no preview for each other one. Its
+    relaunch closure is dropped. A composite whose
+    plans settle nothing states none. A resolve that was lost or swallowed a read
+    (`note_degraded_read`) marks it `degraded`, so no cache stores it. The resolves are timed
+    as the `composite_continuation` step."""
+    started = now_ms()
+    relaunch = region.observations_relaunch
+    assert isinstance(relaunch, CompositeRelaunch)
+    with recording_degraded_reads() as lost:
+        continued = await relaunch.continuation(semaphore=semaphore)
+    spec = region.spec
+    spec = spec.model_copy(update={"resolved": spec.resolved.stating_continued(continued is True)})
+    return dataclasses.replace(
+        region,
+        specs=(spec, *region.specs[1:]),
+        degraded=region.degraded or lost.degraded,
+        observations_relaunch=None,
+        timing_by_step={**region.timing_by_step, "composite_continuation": now_ms() - started},
     )
 
 

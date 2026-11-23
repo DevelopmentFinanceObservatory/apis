@@ -279,6 +279,7 @@ def test_build_observations_role_errors_degrade_fail_open_never_no_data(
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         raise exc
 
@@ -320,6 +321,7 @@ def test_build_observations_standard_pairs_never_build_a_role_tuple():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         captured.append(request)
         return stub_preview_result(sv="Count_Person", entity="country/IND")
@@ -360,6 +362,7 @@ def test_build_observations_forwards_deadline_to_materialise_preview():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         captured_deadlines.append(deadline)
         return stub_preview_result(sv="Count_Person", entity="country/IND")
