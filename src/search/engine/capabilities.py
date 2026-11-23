@@ -19,6 +19,7 @@ from search.engine.config import (
     SEARCH_MAX_PARTS,
     SEARCH_MAX_ROLE_TEXT_CHARS,
     SEARCH_MAX_SOURCE_TEXT_CHARS,
+    SEARCH_MAX_STATED_SCOPE_TEXTS,
     SEARCH_MAX_TIME_TEXT_CHARS,
     SEARCH_MAX_UNIT_TEXT_CHARS,
     SEARCH_MAX_VARIABLE_TEXT_CHARS,
@@ -120,6 +121,15 @@ class CapabilityCaps(BaseModel):
     max_source_text_chars: int = Field(
         description="parsed part source_text character ceiling; over this refuses request_invalid"
     )
+    max_stated_scope_texts: int = Field(
+        description="texts one stated-scope request may hold; over this refuses request_invalid"
+    )
+    max_stated_scope_text_chars: int = Field(
+        description=(
+            "character ceiling of each stated-scope text, the raw_text query ceiling; over "
+            "this refuses request_invalid"
+        )
+    )
     region_max_members: int = Field(
         description=(
             "ceiling on the alt-shape population region resolution pre-warms observation "
@@ -170,7 +180,7 @@ class CapabilityDoor(BaseModel):
 
     model_config = ConfigDict(title="SearchCapabilityDoor")
 
-    name: str = Field(description="raw_text, parsed, dataset_resubmit, or options")
+    name: str = Field(description="raw_text, parsed, dataset_resubmit, options, or stated_scope")
     live: bool = Field(description="whether this deployment serves this door")
 
 
@@ -249,6 +259,7 @@ def build_capabilities(index: CodeIndex | None = None) -> Capabilities:
     ]
     # The options door is mounted and served in this deployment.
     doors.append(CapabilityDoor(name="options", live=True))
+    doors.append(CapabilityDoor(name="stated_scope", live=True))
 
     return Capabilities(
         capability_version=settings().capability_version,
@@ -285,6 +296,8 @@ def build_capabilities(index: CodeIndex | None = None) -> Capabilities:
             max_time_text_chars=SEARCH_MAX_TIME_TEXT_CHARS,
             max_unit_text_chars=SEARCH_MAX_UNIT_TEXT_CHARS,
             max_source_text_chars=SEARCH_MAX_SOURCE_TEXT_CHARS,
+            max_stated_scope_texts=SEARCH_MAX_STATED_SCOPE_TEXTS,
+            max_stated_scope_text_chars=settings().max_query_chars,
             region_max_members=settings().region_max_members,
             scope_min_year=scope_window_settings().scope_min_year,
             scope_max_window_years=scope_window_settings().scope_max_window_years,

@@ -42,6 +42,7 @@ from typing import Annotated, NamedTuple, TypedDict
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import ValidationError
 
 import graph_generation.config as generation_config
 import search.engine.clients.llm as _llm_mod
@@ -134,6 +135,7 @@ from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import compute_options
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import prepare_index_views
 from search.engine.schema import schema_payload
@@ -608,14 +610,32 @@ async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
 
 
-async def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
+def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
     """The scope each posted text states, in order: the entries the raw-text door would read
     from it, whether it asks for a total, and every provider option it names
     (`stated_scope.read_stated_scope`). A client confirms which provider options a text
-    states, as a user message or as a requirement's measure."""
+    states, as a user message or as a requirement's measure. Each text is read normalised, as
+    a part's scope is (`part_scope_intakes`), and origin offsets index the normalised text.
+    A plain `def`, so the regex reads run in FastAPI's threadpool, off the event loop."""
+    limit = settings().max_query_chars
+    for i, text in enumerate(body.texts):
+        if len(text) > limit:
+            raise EngineInputError(
+                f"A text exceeds this deployment's {limit}-character limit.",
+                code="request_invalid",
+                pointer=f"/texts/{i}",
+            )
     readings = []
-    for text in body.texts:
-        stated = read_stated_scope(text)
+    for i, text in enumerate(body.texts):
+        try:
+            stated = read_stated_scope(normalise_query(text))
+        except ValidationError as error:
+            # A scope phrase longer than an origin can quote (one unbroken word beside a cue).
+            raise EngineInputError(
+                "A text names a scope phrase too long to quote.",
+                code="request_invalid",
+                pointer=f"/texts/{i}",
+            ) from error
         readings.append(
             StatedScopeReading(
                 entries=[
@@ -625,6 +645,7 @@ async def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
                 ],
                 total=stated.total,
                 mentions=list(stated.mentions),
+                sums_providers=stated.sums_providers,
             )
         )
     return StatedScopeResponse(readings=readings)
