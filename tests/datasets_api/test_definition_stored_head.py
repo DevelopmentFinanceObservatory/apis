@@ -331,7 +331,8 @@ def test_a_get_whose_create_outlasts_the_join_answers_and_leaves_it_to_recover()
 def test_stale_reads_against_a_failing_task_queue_all_answer_and_create_once():
     """Inside the recovery interval only the read that wrote the check hands off its task
     create, so a Cloud Tasks outage costs one short create per spec, and every read still
-    answers. The first read answers before its create fails, and the rest find the row
+    answers. The first read answers `pending` when it looks at its handed-off create before the
+    create fails, and `stale` when the failed create has already settled; the rest find the row
     undispatched."""
     task_client = _RaisingTaskClient()
     rig = _Rig(task_client=task_client)
@@ -340,7 +341,9 @@ def test_stale_reads_against_a_failing_task_queue_all_answer_and_create_once():
     answers = [rig.get() for _ in range(5)]
 
     assert [resp.status_code for resp in answers] == [200] * 5
-    assert [resp.headers["x-dfo-freshness"] for resp in answers] == ["pending"] + ["stale"] * 4
+    first, *rest = (resp.headers["x-dfo-freshness"] for resp in answers)
+    assert first in {"pending", "stale"}
+    assert rest == ["stale"] * 4
     rig.settle()
     assert task_client.calls == 1
 
@@ -441,7 +444,8 @@ def test_the_etag_moves_with_the_freshness_while_the_body_stays():
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
     task_client.failing = True
     # The first read hands off the create, which fails, so the next read finds it undispatched.
-    assert rig.get(**_IDENTITY).headers["x-dfo-freshness"] == "pending"
+    # The first answers `pending` or, when the failed create settles before it looks, `stale`.
+    assert rig.get(**_IDENTITY).headers["x-dfo-freshness"] in {"pending", "stale"}
     stale = rig.get(**_IDENTITY)
     assert stale.headers["x-dfo-freshness"] == "stale"
     task_client.failing = False
