@@ -5,13 +5,15 @@ the head's check to the worker (`current.serve_stored_head`). Its 200 and 304 ca
 `no-cache`.
 
 The door, the materialiser and the operation store are real. The graph, SDMX and head store are
-the currency tests' doubles, and the task queue records its tasks.
+the currency tests' doubles, and the task queue records its tasks. The rig's task create pool is
+the one the lifespan would build, held so a test waits for its creates (`_Rig.settle`).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -20,6 +22,7 @@ from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
 from datasets_api.operations.head_check import HEAD_CHECK_OPTIONS
 from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, FakeTaskClient
+from datasets_api.operations.task_create_pool import TaskCreatePool
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from graph_release.context import current_release
 
@@ -82,6 +85,26 @@ class _SwitchableTaskClient(FakeTaskClient):
         )
 
 
+class _GatedTaskClient(FakeTaskClient):
+    """Records its tasks once `gate` is set, holding every create until then."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = threading.Event()
+
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        assert self.gate.wait(5)
+        super().enqueue(
+            operation_id=operation_id, submission_count=submission_count, timeout=timeout
+        )
+
+
 class _Rig:
     """A minted spec behind the GET, with its head store, SDMX count and operation queue."""
 
@@ -97,6 +120,7 @@ class _Rig:
             else LiveOperationStore(store=FakeOperationDatasetStore())
         )
         self.task_client = task_client if task_client is not None else FakeTaskClient()
+        self.task_creates = TaskCreatePool()
         self.client = _client(
             graph=self.graph,
             sdmx_transport=transport,
@@ -104,13 +128,20 @@ class _Rig:
             coverage=_CoverageFromFacets(facets),
             operation_store=self.operation_store,
             task_client=self.task_client,
+            task_creates=self.task_creates,
         )
         self.spec_id = _mint_one_spec(self.client)
         self.content_version = self.head_store.head_for(self.spec_id).content_version
 
     def get(self, query: str = "?bundle=false", **headers: str):
-        """A GET of the rendering the mint stored, unless `query` names another."""
+        """A GET of the rendering the mint stored, unless `query` names another, once the
+        task creates earlier reads handed off have run."""
+        self.settle()
         return self.client.get(f"/api/datasets/{self.spec_id}{query}", headers=headers)
+
+    def settle(self) -> None:
+        """Wait until every task create a read handed off has run."""
+        assert self.task_creates.wait_idle(5)
 
 
 @pytest.mark.parametrize(
@@ -141,6 +172,7 @@ def test_a_get_past_the_window_serves_the_head_at_once_and_submits_its_check(
     assert (dict(rig.graph.calls), rig.sdmx_calls.n) == (graph_calls, sdmx_calls)
     assert rig.head_store.confirm_head_calls == confirms
     assert rig.head_store.advance_head_calls == advances
+    rig.settle()
     ((operation_id, submission),) = rig.task_client.enqueued
     check = rig.operation_store.get(operation_id)
     assert check is not None
@@ -206,6 +238,7 @@ def test_an_import_keyed_head_past_its_maximum_age_serves_at_once_and_is_checked
     assert resp.json()["trace"]["served_from"] == "head"
     assert resp.headers["x-dfo-freshness"] == "pending"
     assert (rig.sdmx_calls.n, rig.head_store.advance_head_calls) == (sdmx_calls, advances)
+    rig.settle()
     assert len(rig.task_client.enqueued) == 1
 
 
@@ -224,24 +257,12 @@ def test_a_get_past_the_window_for_a_rendering_the_head_lacks_checks_in_the_requ
     assert rig.task_client.enqueued == []
 
 
-@pytest.mark.parametrize(
-    "rig",
-    [
-        # Half of the default backlog of 20 is the check's headroom, so a backlog of 10 refuses
-        # every check.
-        pytest.param(
-            lambda: _Rig(
-                operation_store=LiveOperationStore(
-                    store=FakeOperationDatasetStore(), backlog_max=10
-                )
-            ),
-            id="backlog_full",
-        ),
-        pytest.param(lambda: _Rig(task_client=_RaisingTaskClient()), id="enqueue_error"),
-    ],
-)
-def test_a_get_whose_check_cannot_be_submitted_serves_the_head_stale(rig):
-    rig = rig()
+def test_a_get_whose_check_cannot_be_recorded_serves_the_head_stale():
+    """Half of the default backlog of 20 is the check's headroom, so a backlog of 10 refuses
+    every check."""
+    rig = _Rig(
+        operation_store=LiveOperationStore(store=FakeOperationDatasetStore(), backlog_max=10)
+    )
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
 
     resp = rig.get()
@@ -251,11 +272,35 @@ def test_a_get_whose_check_cannot_be_submitted_serves_the_head_stale(rig):
     assert resp.json()["content_version"] == rig.content_version
     assert resp.headers["x-dfo-freshness"] == "stale"
     assert resp.headers["cache-control"] == "no-cache"
+    rig.settle()
+    assert rig.task_client.enqueued == []
+
+
+def test_a_get_answers_before_its_checks_task_is_created():
+    """The GET records the check and answers `pending` while the task create is still held on
+    the pool, and the create completes afterwards, once."""
+    task_client = _GatedTaskClient()
+    rig = _Rig(task_client=task_client)
+    rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
+
+    resp = rig.client.get(f"/api/datasets/{rig.spec_id}?bundle=false")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-dfo-freshness"] == "pending"
+    assert task_client.enqueued == []
+    task_client.gate.set()
+    rig.settle()
+    ((operation_id, submission),) = task_client.enqueued
+    check = rig.operation_store.get(operation_id)
+    assert check is not None
+    assert (check.state, check.dispatched_at is not None, submission) == ("pending", True, 0)
 
 
 def test_stale_reads_against_a_failing_task_queue_all_answer_and_create_once():
-    """Inside the recovery interval only the read that wrote the check creates its task, so a
-    Cloud Tasks outage costs one short create per spec, and every read still answers."""
+    """Inside the recovery interval only the read that wrote the check hands off its task
+    create, so a Cloud Tasks outage costs one short create per spec, and every read still
+    answers. The first read answers before its create fails, and the rest find the row
+    undispatched."""
     task_client = _RaisingTaskClient()
     rig = _Rig(task_client=task_client)
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
@@ -263,7 +308,8 @@ def test_stale_reads_against_a_failing_task_queue_all_answer_and_create_once():
     answers = [rig.get() for _ in range(5)]
 
     assert [resp.status_code for resp in answers] == [200] * 5
-    assert {resp.headers["x-dfo-freshness"] for resp in answers} == {"stale"}
+    assert [resp.headers["x-dfo-freshness"] for resp in answers] == ["pending"] + ["stale"] * 4
+    rig.settle()
     assert task_client.calls == 1
 
 
@@ -282,6 +328,7 @@ def test_readers_of_every_rendering_share_one_check():
         assert resp.status_code == 200, resp.text
         assert resp.json()["trace"]["served_from"] == "head"
         assert resp.headers["x-dfo-freshness"] == "pending"
+    rig.settle()
     ((operation_id, _),) = rig.task_client.enqueued
     check = rig.operation_store.get(operation_id)
     assert check is not None
@@ -294,6 +341,7 @@ def test_a_get_whose_check_failed_for_good_judges_the_head_in_the_request():
     rig = _Rig()
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
     assert rig.get().headers["x-dfo-freshness"] == "pending"
+    rig.settle()
     ((operation_id, submission),) = rig.task_client.enqueued
     rig.operation_store.claim(
         operation_id, submission_count=submission, lease_seconds=60, final_delivery=False
@@ -360,6 +408,8 @@ def test_the_etag_moves_with_the_freshness_while_the_body_stays():
     )
     rig.head_store.age_head(rig.spec_id, age=_PAST_INTERVAL)
     task_client.failing = True
+    # The first read hands off the create, which fails, so the next read finds it undispatched.
+    assert rig.get(**_IDENTITY).headers["x-dfo-freshness"] == "pending"
     stale = rig.get(**_IDENTITY)
     assert stale.headers["x-dfo-freshness"] == "stale"
     task_client.failing = False

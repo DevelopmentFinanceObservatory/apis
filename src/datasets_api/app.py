@@ -83,6 +83,7 @@ from datasets_api.doors.versions import build_versions_door
 from datasets_api.export_store import ExportStore
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
+from datasets_api.operations.task_create_pool import TaskCreates
 from datasets_api.recipe_store import RecipeStore
 from datasets_api.routing import build_id_grammar_refusal_router
 from datasets_api.store_errors import classify_store_exception
@@ -185,6 +186,7 @@ def datasets_surface(
     sdmx: SdmxClient | None = None,
     artifact_store: ArtifactStore | None = None,
     task_client: TaskClient | None = None,
+    task_creates: TaskCreates | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
     coverage: ServedCoverage | None = None,
@@ -202,7 +204,8 @@ def datasets_surface(
     executors and the materialise semaphore. Each dependency keyword replaces the live one the
     lifespan would build (`datasets_api.deps.open_deps`); the caller owns what it passes. A
     store left out is built over one `dataset_store` pool borrow shared by every omitted store.
-    `head_writer` is the head store. `now` is the clock every door reads.
+    `head_writer` is the head store. `task_creates` defaults to a `TaskCreatePool` the lifespan
+    builds and drains. `now` is the clock every door reads.
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
     which can change between requests. The index is read here, under the served release as a
@@ -274,6 +277,7 @@ def datasets_surface(
         sdmx=sdmx,
         artifact_store=artifact_store,
         task_client=task_client,
+        task_creates=task_creates,
         now=now,
     )
 

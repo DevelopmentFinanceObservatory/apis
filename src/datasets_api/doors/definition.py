@@ -581,6 +581,7 @@ def definition_deps(deps: Deps, *, deadline: float | None) -> DefinitionDeps:
         deadline=deadline,
         operation_store=deps.operation_store,
         task_client=deps.task_client,
+        task_creates=deps.task_creates,
         settings=settings,
         rebuilds=deps.rebuilds,
         version_lister=deps.version_lister,

@@ -25,6 +25,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.renewal import RENEW_MARKER
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_create_pool import TaskCreatePool
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from dfo_platform.timings import count
@@ -84,6 +85,9 @@ class _Rig:
             _count_transactions(monkeypatch, definitions)
         self.heads = _FakeHeadStore()
         self.tasks = FakeTaskClient()
+        # The pool the lifespan would build, held so a test waits for the head checks' task
+        # creates a stored read hands off.
+        self.task_creates = TaskCreatePool()
         self.operations = LiveOperationStore(store=self.store)
         self.client = _client(
             graph=_graph(),
@@ -103,6 +107,7 @@ class _Rig:
             version_lister=LiveVersionLister(store=self.store),
             operation_store=self.operations,
             task_client=self.tasks,
+            task_creates=self.task_creates,
         )
         self.spec_id = recompute_identity(_IDENTITY).spec_id
         sidecar = {"schema_version": 1, "spec_id": self.spec_id, "identity": _IDENTITY}
@@ -290,6 +295,7 @@ def test_a_stale_head_resolves_pending_and_submits_one_check(
     ]
     assert reads
     assert len(set(reads)) == len(reads)
+    assert rig.task_creates.wait_idle(5)
     assert len(rig.tasks.enqueued) == 1
 
 
@@ -390,8 +396,11 @@ def _fail_head_check(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
     monkeypatch.setattr(
         current,
-        "head_check_operation",
-        lambda **_: _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        "request_head_check",
+        lambda **_: (
+            "failed",
+            _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        ),
     )
 
 
