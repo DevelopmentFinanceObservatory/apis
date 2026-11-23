@@ -18,7 +18,9 @@ the work executor only when the head cannot answer it (`datasets_api.doors.defin
 
 A dependency the caller supplies in `DepsOverrides` is used as given and never closed here.
 Every other one is built live from `DatasetsSettings` and closed when the lifespan ends, after
-the four executors and then the task create pool drain within one `ShutdownBudget`.
+the four executors and then the task create pool drain within one `ShutdownBudget`. The pool
+waits at least `TASK_CREATE_DRAIN_RESERVE_SECONDS` for its running creates, even when the
+executors spent the budget, so the task client and the store close under no create.
 """
 
 from __future__ import annotations
@@ -360,7 +362,8 @@ async def open_deps(
                 executor.executor.shutdown(wait=False, cancel_futures=True)
             for executor in executors:
                 await asyncio.to_thread(executor.drain, budget)
-            # After the doors, which offer it creates, and before the task client closes.
+            # After the doors, which offer it creates, and before the task client closes, with
+            # its reserved slice when the executors spent the budget.
             if task_create_pool is not None:
                 await asyncio.to_thread(task_create_pool.shutdown, budget)
 
