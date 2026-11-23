@@ -730,21 +730,32 @@ def test_a_part_naming_only_its_code_answers_on_its_statvars_without_a_model_cal
     assert (usage.get("jev_input_tokens", 0), usage.get("jev_output_tokens", 0)) == (0, 0)
 
 
+def _code_part(variable_text: str, source_code: str) -> ParsedPart:
+    return ParsedPart(
+        variable_text=variable_text, entities=[ParsedEntity(text="Kenya")], source_code=source_code
+    )
+
+
 @pytest.mark.parametrize(
-    ("variable_text", "source_code", "phrase"),
+    ("part", "llm", "phrase"),
     [
-        (f"debt service {_DEGG}", _DEGG, "debt service"),
-        (_USDL, _USDL, "PPG debt stock in US dollars, share"),
+        (_code_part(f"debt service {_DEGG}", _DEGG), None, "debt service"),
+        (_code_part(_USDL, _USDL), None, "PPG debt stock in US dollars, share"),
+        (
+            RawTextInput(query=f"{_DEGG} for Kenya, provisional estimates"),
+            _ExtractLLM(_DEGG, "Kenya"),
+            "GG debt service",
+        ),
     ],
-    ids=["words-beside-the-code", "two-shape-code"],
+    ids=["words-beside-the-code", "two-shape-code", "raw-text-unclaimed-words"],
 )
-def test_a_code_part_the_model_has_a_choice_on_still_asks_jev(
-    variable_text, source_code, phrase, monkeypatch
-):
-    """Words beside the code, or a code whose StatVars derive two shapes (DT.CUR.USDL.ZS
-    divides its aggregate and by-creditor members by different stocks), leave the bind a
-    choice, so the part asks Jev. A part whose variable text is only the code shows Jev its
-    aggregate StatVar's graph name in place of the code (`phase_rank_bind._bind_variable`)."""
+def test_a_code_part_the_model_has_a_choice_on_still_asks_jev(part, llm, phrase, monkeypatch):
+    """Words beside the code, a code whose StatVars derive two shapes (DT.CUR.USDL.ZS
+    divides its aggregate and by-creditor members by different stocks), or a raw-text query
+    with words no extraction reader claims (`ResolveState.unclaimed`), which Jev reads in
+    the query, leave the bind a choice, so the part asks Jev. A part whose variable text is
+    only the code shows Jev its aggregate StatVar's graph name in place of the code
+    (`phase_rank_bind._bind_variable`)."""
     # Jev reads no stated quantity, so no form refuses a shape before the bind, and
     # measures and elects the first shape.
     ask = FakeAsk(
@@ -754,13 +765,10 @@ def test_a_code_part_the_model_has_a_choice_on_still_asks_jev(
             "electq": {"type": "choice", "probabilities": {"Shape 0": 0.9, "Shape 1": 0.1}},
         }
     )
-    part = ParsedPart(
-        variable_text=variable_text, entities=[ParsedEntity(text="Kenya")], source_code=source_code
-    )
-
     _respond(
         part,
         monkeypatch,
+        llm,
         binder=FallbackBinder(primary=JevBinder(ask=ask), fallback=GeminiBinder()),
     )
 
@@ -798,6 +806,36 @@ def test_a_code_pinned_bind_answers_as_jev_electing_its_one_shape(monkeypatch):
     assert (fast.binder, jev.binder) == ("code", "jev")
     assert fast.output == jev.output
     assert (fast.policy_pool, fast.policy_choice) == (jev.policy_pool, jev.policy_choice)
+
+
+@pytest.mark.parametrize(
+    ("after_policies", "status", "prompts"),
+    [(False, "definite", 1), (True, "no_data", 0)],
+    ids=["before-the-policies", "after-the-policies"],
+)
+def test_a_code_pinned_bind_that_raises_falls_back_to_the_binder(
+    after_policies, status, prompts, monkeypatch
+):
+    """A code-pinned bind that raises before the house policies run hands the request to
+    the part's binder, as `FallbackBinder` hands a raising Jev call to its fallback. One
+    that raises after they ran breaks the house-policy contract, and the part refuses as a
+    code part whose variable does not resolve does (`source_code_not_held`)."""
+
+    def raising(request: BindRequest) -> BindResult:
+        if after_policies:
+            code_pinned_bind(request)
+        raise KeyError("slot")
+
+    monkeypatch.setattr(phase_rank_bind, "code_pinned_bind", raising)
+    llm = _BindLLM()
+    part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
+
+    answer = _answer(part, monkeypatch, llm, binder=GeminiBinder())
+
+    assert answer.status == status, answer
+    if status == "no_data":
+        assert answer.no_data.reason == "source_code_not_held"
+    assert len(llm.prompts) == prompts
 
 
 def _code_pinned_request(monkeypatch: pytest.MonkeyPatch) -> BindRequest:

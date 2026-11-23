@@ -4830,8 +4830,10 @@ def _only_code(state: ResolveState) -> SeriesCodeMembers | None:
 def _pins_on_code(state: ResolveState, admissible: Sequence[ShapeDraft]) -> bool:
     """Whether the part is code-pinned (`ResolveState.code_pinned`): its variable text writes
     only its series code (`_only_code`), `admissible`, the shapes the measure and role
-    rules admit before the quantity read, is one shape, and the part drops no qualifier
-    phrase (`BindRequest.dropped_qualifier_phrases`), which Jev reads in the bind.
+    rules admit before the quantity read, is one shape, the part drops no qualifier
+    phrase (`BindRequest.dropped_qualifier_phrases`), which Jev reads in the bind, and the
+    raw-text query leaves no stretch unclaimed (`ResolveState.unclaimed`), since Jev reads
+    the whole query there (`BindRequest.query_text`) and may decline on those words.
 
     Jev's bind reads the stated form only to choose among menu shapes
     (`jev_assemble._pool`, `jev_assemble._alternates`). The bind of a code-pinned part that
@@ -4841,6 +4843,7 @@ def _pins_on_code(state: ResolveState, admissible: Sequence[ShapeDraft]) -> bool
         len(admissible) == 1
         and _only_code(state) is not None
         and not state.dropped_qualifier_phrases
+        and not state.unclaimed
     )
 
 
@@ -5162,10 +5165,26 @@ def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
     ]
 
 
-async def _bind_on_code(request: BindRequest) -> tuple[BindResult, None]:
+async def _bind_on_code(
+    state: ResolveState, request: BindRequest, *, policies: _HousePolicyStep
+) -> tuple[BindResult, dict | None]:
     """`request` bound on its series code alone (`code_pinned.code_pinned_bind`), with no
-    model call and so no usage."""
-    return code_pinned_bind(request), None
+    model call and so no usage. An assembler that raises before the house policies run
+    (`policies`) is logged at ERROR and the part's binder answers `request`
+    (`ResolveState.binder`), as `FallbackBinder.bind` answers a raising Jev call from its
+    fallback. One that raises after they ran breaks the house-policy contract
+    (`PolicyContractError`)."""
+    try:
+        return code_pinned_bind(request), None
+    except Exception as exc:
+        if policies.calls:
+            raise PolicyContractError(
+                "the code-pinned bind raised after the house policies ran"
+            ) from exc
+        logger.error(
+            "code-pinned bind raised for %r; asking the binder", state.variable, exc_info=exc
+        )
+    return await state.binder.bind(request, llm=state.llm)
 
 
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
@@ -5223,8 +5242,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     menu, binds without a model call when the request leaves the model nothing to decide
     (`code_pinned.binds_on_code`). The one menu shape is elected, the house policies run
     once, and the drafts are those Jev's assembler gives an answer electing it
-    (`code_pinned.code_pinned_bind`). Such a part asks the model nothing. A code-pinned part whose
-    request fails that test calls the model without a quantity read (`_pins_on_code`).
+    (`code_pinned.code_pinned_bind`). Such a part asks the model nothing, unless that bind
+    raises before the house policies run and the part's binder answers (`_bind_on_code`).
+    A code-pinned part whose request fails that test calls the model without a quantity
+    read (`_pins_on_code`).
     """
     menu = state.capped_shapes
     state.basis_seat = None
@@ -5289,7 +5310,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     _bind_usage: dict | None = None
     code = state.source_code
     bind_call = (
-        _bind_on_code(request)
+        _bind_on_code(state, request, policies=policies)
         if state.code_pinned
         and code is not None
         and not state.basis_siblings

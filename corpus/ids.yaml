@@ -746,12 +746,16 @@
   query: 'parsed: DT.CUR.USDL.ZS for Kenya'
   door: parsed
   parsed: [{variable_text: DT.CUR.USDL.ZS, entities: [{text: Kenya}], source_code: DT.CUR.USDL.ZS}]
-  why: The code's two members divide by different PPG stocks, so the bind model elects between two shapes, and its answer varies from run to run between candidates and either member.
+  why: The code's two members divide by different PPG stocks; with no creditor role open, the share of the aggregate stock answers.
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
+  known_failure: {issue: 398, checks: [disposition, measure]}
   expect:
     definite:
-      measure: {family: ids.currency_composition}
-    candidates: {}
+      measure:
+        family: ids.currency_composition
+        bound: {currencyOfDenomination: CurrencyUSD}
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_AsAFractionOf_Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
 
 - id: dq-ids-071
   query: 'parsed: DT.DOD.DECT.GN.ZS for Kenya'

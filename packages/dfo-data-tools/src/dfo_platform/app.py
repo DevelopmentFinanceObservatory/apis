@@ -573,8 +573,10 @@ whole response)."""
 
 _in_flight = 0
 """Requests in this process that `_trace_id_dispatch` has taken and whose response body
-has not finished sending (`_count_in_flight`). The event loop runs every update, so the
-count needs no lock."""
+has not finished sending (`_count_in_flight`). The event loop runs every update except a
+release by the `weakref.finalize` of a body dropped before its first chunk, which runs in
+whichever thread collects the body. The count takes no lock, since a lost update there
+needs a GIL switch inside one integer update."""
 
 
 def _count_in_flight() -> Callable[[], None]:
