@@ -9,7 +9,7 @@
   freshness from the roots it resolved (`analysis.stored_heads`), composed here and never
   stored. A request stating `include` receives `summary` only when it names it, reading a
   stored answer without it, and `manifest`, the derived manifest of the answer's pair read now
-  (`doors.derived.derived_manifest`), when it names that. A request naming neither gets the
+  (`doors.derived.derived_manifest_model`), when it names that. A request naming neither gets the
   body it always has;
 - 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building, or
   under `latest: "stored"` has no servable head and its rebuild is queued;
@@ -93,6 +93,10 @@ computes adds the phases of its frame reads and stores. Phases recorded inside t
 their time went, such as `snapshot_state`, `head_read`, `coverage` and `head_check` inside
 `resolve_roots`, and the connection pool's `db_pool_wait`, `db_connect` and `db_ping` inside
 whichever phase borrowed the connection.
+
+A `latest: "stored"` request keys through `dataset_store.snapshot.SharedVersionReads`, so the
+roots' resolution, the stored answer's file check and a hit's derived manifest read each
+version once for each set of revoking ids.
 """
 
 from __future__ import annotations
@@ -574,10 +578,11 @@ def _key_job(
 ) -> _Keyed:
     """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key. A
     `latest: "stored"` request resolves its roots from records alone, rendering nothing
-    (`LiveRootSource` `defer_renders`), so it writes no version record, link or revocation
-    while it keys, and its reads share each version's record, state and locations
-    (`SharedVersionReads`): the roots' resolution, the stored answer's file check and the
-    derived manifest of a hit read each once. The sharing ends with this job. The source it
+    (`LiveRootSource` `defer_renders`), so keying writes nothing a version state holds (it
+    writes a head read mark and may queue renewals and head checks), and its reads share each
+    version's record, state and locations (`SharedVersionReads`): the roots' resolution, the
+    stored answer's file check and the derived manifest of a hit read each once for each set
+    of revoking ids. The sharing ends with this job. The source it
     hands a run that misses, and that run's own reads on its analysis thread, read the stores
     as they stand then, so a version revoked or renewed since keying is judged anew."""
     if body.latest != STORED:

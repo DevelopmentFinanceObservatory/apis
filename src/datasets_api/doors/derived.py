@@ -37,7 +37,7 @@ file and the digest link bind `datasets.files`, whose writer refusals the file a
 (`excel_limit`, `parquet_size_bound`). All three admit every caller. The manifest and the
 link read and sign on the read executor, and a file renders on the work executor under a
 materialise permit. `POST /api/datasets/analysis` with `include: ["manifest"]` embeds the
-manifest this door answers (`derived_manifest`).
+manifest this door answers (`derived_manifest_model`).
 """
 
 from __future__ import annotations
