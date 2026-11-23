@@ -971,6 +971,16 @@ def _net_identity(
     [
         pytest.param("Nominal", None, None, "net disbursements, current USD", id="qualifier"),
         pytest.param("Nominal", None, "GNI", "net disbursements", id="ratio"),
+        pytest.param(
+            "Nominal", None, "Count_Person", "net disbursements, current USD", id="per-head"
+        ),
+        pytest.param(
+            "Nominal",
+            {"currency": "USD", "prices": "current"},
+            "GNI",
+            "net disbursements",
+            id="ratio-with-unit-request",
+        ),
         pytest.param(None, None, None, "net disbursements", id="no-price-basis"),
         pytest.param(
             "Nominal",

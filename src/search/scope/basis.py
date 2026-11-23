@@ -54,6 +54,7 @@ from search.models import (
     IdentityBindingValue,
     IdentityCurrencyRole,
     IdentityFacetValueRequest,
+    IdentityShapeDenominatorRef,
     IdentityShapeSchema,
     IdentityWindowRange,
     Option,
@@ -68,6 +69,7 @@ from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import measure_basis_option_id
 from unit_words.price_basis import deflation_phrase
+from unit_words.unit_class import is_per_head_denominator
 
 BASIS_RULE = "measure_basis_convention"
 """The declared rule the measure-basis axis applies."""
@@ -628,15 +630,22 @@ def basis_label(
     row: BasisMeasure, identity: BaseIdentity, *, deflated_by: DeflationBasis | None = None
 ) -> str:
     """The reader's name of `row`'s basis on `identity` (`OPTION_LABELS`): its words and the
-    identity's prices and currency, "gross disbursements, current USD". A unit request
+    identity's prices and currency, "gross disbursements, current USD". A shape that is a
+    quotient over something other than a head count (a `measurement_denominator` that is not
+    per head, `unit_class.is_per_head_denominator`) has no currency or price basis of its
+    own, whatever qualifier its numerator's family carries, so its label is the words alone,
+    and a unit request does not change that. A denominator the graph names but never
+    resolves (`unresolved`) reads as such a quotient, since nothing shows it per head. A
+    per-head quotient is money per person and keeps its currency and prices. A unit request
     (`identity.facets["unit"]`) states both, so a part converted to constant prices reads
     "net disbursements, constant 2024 USD, donor prices", naming whose prices deflate it
     (`deflated_by`, `deflation_phrase`), and one converted to a role's currency "net
     disbursements, current donor currency". Without one, the prices are the shape's price
     basis (`PRICES_BY_QUALIFIER`) in the conventions' currency (`CONVENTION_CURRENCY`), and
-    the words stand alone when the shape states no price basis or is a quotient (it has a
-    `measurement_denominator`): a ratio has no currency or price basis of its own, whatever
-    qualifier its numerator's family carries."""
+    the words stand alone when the shape states no price basis."""
+    shape = identity.shape
+    if isinstance(shape, IdentityShapeSchema) and _is_unpriced_quotient(shape):
+        return OPTION_LABELS.measure_basis_unpriced.format(words=row.words)
     unit = (identity.facets or {}).get("unit")
     if isinstance(unit, IdentityFacetValueRequest):
         request = unit.request
@@ -652,14 +661,24 @@ def basis_label(
         if request.prices == "constant" and deflated_by is not None:
             return f"{label}, {deflation_phrase(deflated_by)}"
         return label
-    shape = identity.shape
     qualifier = shape.measurement_qualifier if isinstance(shape, IdentityShapeSchema) else None
-    is_ratio = isinstance(shape, IdentityShapeSchema) and shape.measurement_denominator is not None
     qualified = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
-    if qualified is None or is_ratio:
+    if qualified is None:
         return OPTION_LABELS.measure_basis_unpriced.format(words=row.words)
     return OPTION_LABELS.measure_basis.format(
         words=row.words, prices=qualified, currency=CONVENTION_CURRENCY
+    )
+
+
+def _is_unpriced_quotient(shape: IdentityShapeSchema) -> bool:
+    """Whether `shape` divides by something other than a head count: a resolved denominator
+    that is not per head, or one the graph leaves unresolved."""
+    denominator = shape.measurement_denominator
+    if denominator is None:
+        return False
+    return not (
+        isinstance(denominator, IdentityShapeDenominatorRef)
+        and is_per_head_denominator(denominator.ref)
     )
 
 
