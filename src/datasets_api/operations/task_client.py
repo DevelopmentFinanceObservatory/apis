@@ -8,7 +8,7 @@ enqueue timeout is a third of `datasets_api.operations.dispatch.ENQUEUE_RECOVERY
 caller on a read path passes a shorter one (`datasets_api.operations.head_check`).
 
 The worker re-enqueues an operation whose run failed transiently (`RetryTaskClient`), scheduled
-`DATASETS_OPERATION_RETRY_DELAY_SECONDS` ahead, under the name `{operation_id}-{submission_count}`
+the delay the worker route picks ahead (`datasets_api.operations.worker_app`), under the name `{operation_id}-{submission_count}`
 plus `-retry{generation}`, where the generation is the failed claim's place in the submission
 (`Operation.submission_attempts`). Each generation names a new task, so a retry never collides
 with the submission's own task or an earlier retry, and a repeated create of the same retry is

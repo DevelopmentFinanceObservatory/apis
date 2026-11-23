@@ -282,10 +282,15 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # runs of one submission across the queue's own retries and the worker's retry tasks.
     operation_max_attempts: int = Field(default=3, ge=1)
 
-    # How long after a transient failure that released its row the worker schedules the
-    # operation's next run, as a new task (`operations.worker_app`). A crashed run releases
-    # nothing and waits for the queue's own backoff instead.
+    # How long after a submission's first run failed transiently and released its row the
+    # worker schedules the operation's next run, as a new task (`operations.worker_app`). A
+    # crashed run releases nothing and waits for the queue's own backoff instead.
     operation_retry_delay_seconds: int = Field(default=60, ge=1)
+
+    # The same delay after any later run of the submission fails, so its runs span an outage of
+    # several minutes. It stays below the queue's 1,680-second backoff, so the retry task runs
+    # before the queue would have redelivered.
+    operation_retry_later_delay_seconds: int = Field(default=900, ge=1)
 
     # Maximum live pending/running rows. `create_or_get` refuses a new operation at the limit.
     operation_backlog_max: int = Field(default=20, ge=1)

@@ -23,8 +23,10 @@ transient path (`WorkDeadlinePassed`). The claim's lease, `LEASE_SECONDS`, outla
 deadline by the time the final writes need, and a head advance after the deadline and inside the
 lease is safe because the fence refuses it once another attempt claims the row. Deterministic
 failures are terminal. Transient failures release the row to `pending`, so the next delivery,
-the retry task the worker route schedules or else Cloud Tasks' own retry, can claim it at once. The final attempt records a retryable failure instead, so an identical
-resubmit can reset the row. Errors from parsing the stored request or `raw_fetch_guard` take the
+the retry task the worker route schedules or else Cloud Tasks' own retry, can claim it at once.
+A release that finds the row moved on ends the run as `OperationSuperseded`, so no retry is
+scheduled. The final attempt records a retryable failure instead, so an identical resubmit can
+reset the row. Errors from parsing the stored request or `raw_fetch_guard` take the
 same failure path.
 
 A row completes only when a snapshot read of its version narrowed to the request's rendering
@@ -52,6 +54,7 @@ import dataclasses
 import logging
 import threading
 from datetime import datetime, timedelta
+from typing import NoReturn
 
 from artifact_store import ArtifactInventoryError, ArtifactWriteError
 from datasets_api.adapter import family_basis, identity_composite
@@ -381,8 +384,7 @@ def run_operation(
             logged_subject_id,
             exc,
         )
-        operation_store.release(operation.id, attempt=operation.attempt_count)
-        raise OperationTransientFailure() from exc
+        _release_for_retry(operation, store=operation_store, exc=exc)
 
     completed = operation_store.complete(
         operation.id,
@@ -455,8 +457,7 @@ def _run_renewal(
             ),
         )
         if transient and not is_final_attempt:
-            store.release(operation.id, attempt=operation.attempt_count)
-            raise OperationTransientFailure() from exc
+            _release_for_retry(operation, store=store, exc=exc)
         store.fail(
             operation.id,
             attempt=operation.attempt_count,
@@ -518,8 +519,7 @@ def _run_render_ahead(
             exc_info=True,
         )
         if isinstance(exc, DatasetsStoreUnavailable) and not is_final_attempt:
-            store.release(operation.id, attempt=operation.attempt_count)
-            raise OperationTransientFailure() from exc
+            _release_for_retry(operation, store=store, exc=exc)
         store.fail(
             operation.id,
             attempt=operation.attempt_count,
@@ -560,6 +560,14 @@ def _render_ahead(subject_id: str, *, head_content_version: str, deps: Definitio
             subject_id,
             exc_info=True,
         )
+
+
+def _release_for_retry(operation: Operation, *, store: OperationStore, exc: Exception) -> NoReturn:
+    """Release the row for its next delivery and raise `OperationTransientFailure`, or raise
+    `OperationSuperseded` when the release finds the row moved on, so no retry is due."""
+    if store.release(operation.id, attempt=operation.attempt_count) is None:
+        raise OperationSuperseded(str(exc)) from exc
+    raise OperationTransientFailure() from exc
 
 
 def operation_kind(operation: Operation) -> str:

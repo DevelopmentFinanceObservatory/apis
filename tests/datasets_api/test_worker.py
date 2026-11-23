@@ -255,6 +255,33 @@ def test_non_final_transient_failure_releases_the_lease_and_raises(
     assert [r.args[:2] for r in caplog.records] == [(operation.id, _SUBJECT_ID)]
 
 
+def test_a_transient_failure_on_a_row_that_moved_on_raises_superseded():
+    """A release that finds the row no longer this attempt's leaves no retry due."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+
+    def _fail_then_raise(*, spec_id, deps):
+        operation_store.fail(
+            operation.id,
+            attempt=operation.attempt_count,
+            refusal_code="internal_error",
+            retryable=True,
+        )
+        raise ConnectionError("upstream SDMX call failed")
+
+    with pytest.MonkeyPatch.context() as mp, pytest.raises(OperationSuperseded):
+        mp.setattr(worker_module, "_resolve_spec_requests", _fail_then_raise)
+        run_operation(
+            operation=operation,
+            deps=_deps(),
+            operation_store=operation_store,
+            is_final_attempt=False,
+        )
+
+    stored = operation_store.get(operation.id)
+    assert stored is not None and stored.state == "failed"
+
+
 def test_an_identity_naming_no_subject_logs_none_and_still_releases(
     caplog: pytest.LogCaptureFixture,
 ):
