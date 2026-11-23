@@ -15,6 +15,7 @@ from search.catalogue.artifact import (
     FORMAT_ROOT,
     CatalogueArtifactError,
     CataloguePointer,
+    build_key,
     load_build,
     load_published,
 )
@@ -60,3 +61,20 @@ def test_the_published_build_loads(tmp_path: Path):
     uri = tmp_path.as_uri()
     published = publish_catalogue(uri)
     assert load_published(uri) == published
+
+
+def test_a_build_without_provenances_does_not_load(tmp_path: Path):
+    uri = tmp_path.as_uri()
+    published = publish_catalogue(uri)
+    path = tmp_path / FORMAT_ROOT / "versions" / published.catalogue_version / BUILD_FILE
+    build = json.loads(path.read_text())
+    del build["provenances"]
+    path.write_text(json.dumps(build))
+    with pytest.raises(CatalogueArtifactError):
+        load_published(uri)
+
+
+def test_the_un_origin_flag_alone_changes_the_build_key():
+    inputs = sample_catalogue().inputs
+    flipped = inputs.model_copy(update={"un_system_enabled": not inputs.un_system_enabled})
+    assert build_key(flipped) != build_key(inputs)

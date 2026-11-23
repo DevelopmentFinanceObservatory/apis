@@ -19,6 +19,7 @@ import httpx
 
 from artifact_store import LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import HeadFence, SubjectHead
 from dc_sdmx import SdmxClient
@@ -87,7 +88,10 @@ _MINT_BODY = {
     "options": {"bundle": False},
 }
 
-_PAST_MAX_AGE = timedelta(hours=25)  # past the 86400s default maximum age
+# Past the default maximum age and serve-stale ceiling, so a GET rebuilds in the request.
+_PAST_MAX_AGE = timedelta(
+    seconds=DatasetsBuildSettings().head_serve_stale_max_age_seconds
+) + timedelta(days=1)
 _PAST_RECHECK_INTERVAL = timedelta(minutes=20)  # past the 900s default recheck interval
 
 
@@ -520,7 +524,8 @@ def test_a_pinned_definition_materialises_and_refreshes_inside_its_provenance_sc
     head_store.age_head(spec_id, age=_PAST_RECHECK_INTERVAL)
     refresh_scopes.clear()
 
-    got = client.get(f"/api/datasets/{spec_id}?bundle=false")
+    # `/options` checks the head in the request, as the worker does for a GET.
+    got = client.get(f"/api/datasets/{spec_id}/options")
 
     assert got.status_code == 200, got.text
     assert got.json()["trace"]["served_from"] == "head"

@@ -35,6 +35,7 @@ from datasets_api.analysis import (
     AnalysisRequest,
     DatasetRoot,
     DerivedRoot,
+    Latest,
     LocatedRoot,
     ResolvedRoot,
     RootRendering,
@@ -151,6 +152,12 @@ class FixtureRootSource:
     body: Mapping[str, Any]
     _seen: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
+    @property
+    def code_index(self) -> None:
+        """None: a case computes a stored recipe's op-specs as stored, so a filter value
+        on a breakdown column matches only the cells its root frames hold as written."""
+        return None
+
     @classmethod
     def load(cls, case: Path) -> FixtureRootSource:
         return cls(case=case, body=json.loads((case / CASE_FILE).read_text()))
@@ -173,8 +180,16 @@ class FixtureRootSource:
         return root
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: Latest,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
+        """`root` as its stored recipe's record names it. A recipe's roots carry no path words
+        (`analysis.PlannedRoot`), so `path_words` and `codes` stay `None`."""
         held = next(held for seen, held in self._seen if seen == root)
         record = {key: value for key, value in held.items() if key != "file"}
         return ResolvedRoot(

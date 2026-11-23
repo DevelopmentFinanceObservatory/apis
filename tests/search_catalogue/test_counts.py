@@ -9,12 +9,20 @@ from dataclasses import replace
 import pytest
 
 from code_index.types import PartyRow
-from origin_catalogue.catalogue import BaseVariable
+from origin_catalogue.catalogue import BaseVariable, UnTables
 from search.catalogue.artifact import AidCounts, PlaceCounts, YearRange
 from search.catalogue.counts import catalogue_counts
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
-from tests.origin_catalogue.support import EUROSTAT_GDP, GDP, SCAN_PLACES, WDI
+from tests.origin_catalogue.support import (
+    CRS,
+    EUROSTAT_GDP,
+    GDP,
+    SCAN_PLACES,
+    UN_WHO,
+    WDI,
+    sample_un_mirror,
+)
 from tests.search_catalogue.support import origin_snapshot
 from tests.series_coverage.support import (
     FACET_ACTUALS,
@@ -33,18 +41,26 @@ AID_TABLE = "provenance/AidTable"
 @pytest.fixture
 def counted(tmp_path):
     return catalogue_counts(
-        catalogue=origin_snapshot(tmp_path / "origin"),
+        catalogue=replace(
+            origin_snapshot(tmp_path / "origin"), un=UnTables(mirror=sample_un_mirror())
+        ),
         coverage=build_test_index(),
         datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
         parties={},
     )
 
 
+def test_provenance_ids_group_by_origin(counted):
+    # CRS is the DFO provenance; WDI, Eurostat (base) and WHO (UN) go with Data Commons.
+    assert counted.provenances.dfo == [CRS]
+    assert counted.provenances.data_commons == sorted([WDI, EUROSTAT_GDP, UN_WHO])
+
+
 def test_global_counts(counted):
     counts = counted.counts
-    # Two base and two DFO variables sharing Count_Person, and four coverage
-    # variables.
-    assert counts.indicators == 7
+    # Two base and two DFO variables sharing Count_Person, four coverage
+    # variables and two UN variables.
+    assert counts.indicators == 9
     # The World Bank's provenance counts as its parent Dataset.
     assert counts.datasets == 4
     # CRS's OECD source, the World Bank, Eurostat and WHO on the UN.
@@ -53,6 +69,72 @@ def test_global_counts(counted):
     assert counts.countries == 6
     # UNICEF is a donor too: the aid block does not filter to countries.
     assert counts.aid == AidCounts(donors=3, recipients=3, years=YearRange(first=1975, last=2023))
+
+
+def test_counts_split_by_origin(counted):
+    split = counted.counts.by_origin
+    # CRS is the one DFO provenance. WDI under its Dataset, Eurostat and WHO on
+    # the UN are the Data Commons rows.
+    assert (split.dfo.datasets, split.dfo.publishers) == (1, 1)
+    assert (split.data_commons.datasets, split.data_commons.publishers) == (3, 3)
+    # The fixture has no source shared across the groups, so datasets and publishers sum to the
+    # global figure.
+    assert split.dfo.datasets + split.data_commons.datasets == counted.counts.datasets
+    assert split.dfo.publishers + split.data_commons.publishers == counted.counts.publishers
+    # Two DFO and four coverage variables (all on CRS) against two base and two UN ones.
+    # Count_Person is both a base and a DFO variable, so it counts in each group.
+    assert (split.dfo.indicators, split.data_commons.indicators) == (6, 4)
+    assert split.dfo.indicators + split.data_commons.indicators == counted.counts.indicators + 1
+
+
+def test_a_coverage_variable_under_a_base_provenance_counts_as_data_commons(tmp_path):
+    counted = catalogue_counts(
+        catalogue=replace(origin_snapshot(tmp_path), un=UnTables(mirror=sample_un_mirror())),
+        coverage=build_test_index(provenance=WDI),
+        datasets=set(),
+        parties={},
+    )
+    split = counted.counts.by_origin
+    # The DFO group keeps its two DFO variables. The four coverage variables join the two
+    # base and two UN ones.
+    assert (split.dfo.indicators, split.data_commons.indicators) == (2, 8)
+    assert counted.counts.indicators == 9
+
+
+def test_without_the_un_system_origin_the_un_variables_and_publisher_drop_out(tmp_path):
+    enabled = replace(origin_snapshot(tmp_path), un=UnTables(mirror=sample_un_mirror()))
+    disabled = replace(enabled, un_system_enabled=False)
+    kwargs = {"coverage": build_test_index(), "datasets": set(), "parties": {}}
+    on = catalogue_counts(catalogue=enabled, **kwargs).counts
+    off = catalogue_counts(catalogue=disabled, **kwargs).counts
+    assert off.indicators == on.indicators - 2
+    assert off.by_origin.data_commons.indicators == on.by_origin.data_commons.indicators - 2
+    # WHO is the UN's publisher.
+    assert off.publishers == on.publishers - 1
+    assert off.by_origin.data_commons.publishers == on.by_origin.data_commons.publishers - 1
+    # A provenance the catalogue does not admit is in neither group.
+    off_provenances = catalogue_counts(catalogue=disabled, **kwargs).provenances
+    assert UN_WHO not in off_provenances.dfo + off_provenances.data_commons
+    assert off_provenances.data_commons == sorted([WDI, EUROSTAT_GDP])
+
+
+def test_a_publisher_with_a_dfo_and_a_base_provenance_counts_in_both_groups(tmp_path):
+    snapshot = origin_snapshot(tmp_path)
+    provenances = {
+        **snapshot.tables.provenances,
+        WDI: replace(
+            snapshot.tables.provenances[WDI], source=snapshot.tables.provenances[CRS].source
+        ),
+    }
+    counted = catalogue_counts(
+        catalogue=replace(snapshot, tables=replace(snapshot.tables, provenances=provenances)),
+        coverage=build_test_index(),
+        datasets=set(),
+        parties={},
+    )
+    split = counted.counts.by_origin
+    assert (split.dfo.publishers, split.data_commons.publishers) == (1, 3)
+    assert counted.counts.publishers == 3
 
 
 def test_places_are_the_counted_countries(counted):
@@ -187,13 +269,13 @@ def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
     coverage = CoverageIndex(
         table,
         {V1: roles, V5: roles},
-        {FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE)},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=WDI)},
         horizon=horizon,
     )
     counted = catalogue_counts(
         catalogue=replace(snapshot, tables=tables),
         coverage=coverage,
-        datasets={AID_TABLE},
+        datasets={WDI},
         parties={},
     )
     # Three base and DFO variables, and V1.
@@ -316,3 +398,49 @@ def test_the_trust_funds_count_as_a_donor_only_in_the_rows_where_they_total_no_o
     assert counted.counts.aid.donors == 1
     assert counted.places["country/GHA"].aid.donors == 1
     assert counted.places["country/KEN"].aid.donors == 0
+
+
+def test_the_trust_funds_count_as_a_donor_in_a_table_the_index_does_not_list_them_in(tmp_path):
+    """A coverage build newer than the index holds the trust funds in a table the index does
+    not list them in. Their kind there is unknown, so they count as a donor, as a party the
+    index does not list does, and borrow no total from the table that lists them."""
+    new_table = "provenance/NewTable"
+    new_facet = "facet-new"
+    table, horizon = coverage_table([(V1, new_facet, "IMFTrustFunds", "country/GHA", [2019])])
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {new_facet: FacetMetadata(provenance_id=new_table)},
+        horizon=horizon,
+    )
+    trust_funds = PartyRow(
+        dcid="IMFTrustFunds",
+        kind="party",
+        published=((AID_TABLE, "origin"), (AID_TABLE, "destination")),
+        dataset_kinds=((AID_TABLE, "total"),),
+    )
+
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={new_table},
+        parties={"IMFTrustFunds": trust_funds},
+    )
+
+    assert counted.counts.aid.donors == 1
+
+
+def test_a_facet_without_a_provenance_adds_to_neither_origin_group(tmp_path):
+    table, horizon = coverage_table([(V1, FACET_ACTUALS, "country/FRA", "country/ETH", [2018])])
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=None)},
+        horizon=horizon,
+    )
+    snapshot = origin_snapshot(tmp_path)
+    counted = catalogue_counts(catalogue=snapshot, coverage=coverage, datasets=set(), parties={})
+    tables = snapshot.tables
+    split = counted.counts.by_origin
+    assert split.dfo.indicators == len(tables.dfo_variables)
+    assert split.data_commons.indicators == len(tables.base_variables)

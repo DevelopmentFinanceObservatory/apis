@@ -1410,7 +1410,13 @@
    "unit": {
     "basis": "fallback",
     "ref": "CurrencyUSD",
-    "label": "US Dollar"
+    "label": "US Dollar",
+    "prices": [
+     "current"
+    ],
+    "stated_prices": [
+     "current"
+    ]
    }
   },
   "slot_options": [],

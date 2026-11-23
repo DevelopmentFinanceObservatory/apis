@@ -6,6 +6,10 @@ The fixture has three StatVars. `SV_A` and `SV_B` sum to 15 under health. Malari
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
@@ -167,6 +171,7 @@ def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_co
     table = reshaped.table
 
     assert reshaped.collapse is not None
+    assert reshaped.collapse.adds
     assert reshaped.collapse.frame.columns == (
         "stat_var",
         "financingProvider",
@@ -185,11 +190,13 @@ def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_co
     value_pos = table.columns.index("value")
     assert {row[stat_var_pos] for row in table.rows} == {f"dcid:{_SUBJECT_ID}"}
     by_purpose = {row[purpose_pos]: row[value_pos] for row in table.rows}
-    assert by_purpose == {"Basic health care": 15.0, "Malaria control": 7.0}
+    assert by_purpose == {_PURPOSE_HEALTH.dcid: 15.0, _PURPOSE_MALARIA.dcid: 7.0}
     assert len(table.rows) == 2
 
 
-def test_naming_every_declared_summable_axis_collapses_nothing():
+def test_naming_every_declared_summable_axis_keys_the_frame_by_them():
+    """With every axis kept, the sum adds nothing, as each (purpose, finance type) holds one
+    StatVar, and still reads one `stat_var` keyed by both axes."""
     options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose", "crsTypeOfFinance"], op="sum"))
 
     reshaped = _reshape(
@@ -200,16 +207,20 @@ def test_naming_every_declared_summable_axis_collapses_nothing():
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
         pivot_max_output_cells=5_000_000,
     )
     table = reshaped.table
 
-    assert reshaped.warnings == ()
-    # `stat_var` rides along unchanged -- the identity reading, matching
-    # a caller who already sees every axis on the frame.
-    assert "stat_var" in table.columns
-    assert len(table.rows) == 3
+    assert reshaped.collapse is not None
+    assert reshaped.collapse.contributing_member_count == 3
+    assert not reshaped.collapse.adds
+    stat_var_pos = table.columns.index("stat_var")
+    purpose_pos = table.columns.index("stat_var_crsPurpose")
+    finance_pos = table.columns.index("stat_var_crsTypeOfFinance")
     value_pos = table.columns.index("value")
+    assert {row[stat_var_pos] for row in table.rows} == {f"dcid:{_SUBJECT_ID}"}
+    assert len({(row[purpose_pos], row[finance_pos]) for row in table.rows}) == 3
     assert sorted(row[value_pos] for row in table.rows) == [5.0, 7.0, 10.0]
 
 
@@ -263,7 +274,7 @@ def test_a_frame_carrying_decoded_columns_collapses_without_double_counting():
     total = sum(row[value_pos] for row in table.rows)
     assert total == 22.0  # 10 + 5 + 7, conserved across the collapse
     by_purpose = {row[purpose_pos]: row[value_pos] for row in table.rows}
-    assert by_purpose["Basic health care"] == 15.0
+    assert by_purpose[_PURPOSE_HEALTH.dcid] == 15.0
 
 
 def test_distinct_measures_sharing_every_decoded_axis_value_refuse_before_merging():
@@ -333,7 +344,7 @@ def test_a_by_entry_naming_an_axis_this_frame_never_declares_is_a_no_op():
     purpose_pos = table.columns.index("stat_var_crsPurpose")
     value_pos = table.columns.index("value")
     by_purpose = {row[purpose_pos]: row[value_pos] for row in table.rows}
-    assert by_purpose == {"Basic health care": 15.0, "Malaria control": 7.0}
+    assert by_purpose == {_PURPOSE_HEALTH.dcid: 15.0, _PURPOSE_MALARIA.dcid: 7.0}
 
 
 def test_a_by_entry_this_deployment_never_declares_at_all_refuses():
@@ -356,3 +367,94 @@ def test_a_by_entry_this_deployment_never_declares_at_all_refuses():
         assert exc.precondition == "not_declared_summable"
     else:
         raise AssertionError("expected RollupNotSummableError")
+
+
+_PARENT_ONE = CodeRow(
+    dcid="dcid:CRSPurposeCode1",
+    code_system="crsPurpose",
+    code="1",
+    label="Health",
+    synonyms=(),
+    parent=None,
+)
+_PARENT_TWO = CodeRow(
+    dcid="dcid:CRSPurposeCode2",
+    code_system="crsPurpose",
+    code="2",
+    label="Health",
+    synonyms=(),
+    parent=None,
+)
+
+
+@pytest.mark.parametrize(
+    ("codes", "by", "levels", "expected"),
+    [
+        pytest.param(
+            (
+                _PURPOSE_HEALTH,
+                replace(_PURPOSE_MALARIA, label=_PURPOSE_HEALTH.label),
+            ),
+            ["crsPurpose"],
+            None,
+            {_PURPOSE_HEALTH.dcid: 15.0, _PURPOSE_MALARIA.dcid: 7.0},
+            id="two-kept-codes",
+        ),
+        pytest.param(
+            (
+                _PARENT_ONE,
+                _PARENT_TWO,
+                replace(_PURPOSE_HEALTH, parent=_PARENT_ONE.dcid),
+                replace(_PURPOSE_MALARIA, parent=_PARENT_TWO.dcid),
+            ),
+            ["crsPurpose"],
+            {"crsPurpose": 0},
+            {_PARENT_ONE.dcid: 15.0, _PARENT_TWO.dcid: 7.0},
+            id="two-rolled-up-ancestors",
+        ),
+        pytest.param(
+            (
+                _PARENT_ONE,
+                _PARENT_TWO,
+                replace(_PURPOSE_HEALTH, parent=_PARENT_ONE.dcid),
+                replace(_PURPOSE_MALARIA, parent=_PARENT_TWO.dcid),
+            ),
+            ["crsPurpose", "stat_var"],
+            {"crsPurpose": 0},
+            {_PARENT_ONE.dcid: 15.0, _PARENT_TWO.dcid: 7.0},
+            id="two-rolled-up-ancestors-stat-var-in-by",
+        ),
+    ],
+)
+def test_codes_sharing_a_label_sum_into_one_row_each(
+    codes: tuple[CodeRow, ...],
+    by: list[str],
+    levels: dict[str, int] | None,
+    expected: dict[str, float],
+) -> None:
+    """A kept axis groups on its code dcid cell, so two codes under one label, or two
+    ancestors a roll-up reaches that share one, each keep a row of their own."""
+    index = CodeIndex(
+        stamp=_STAMP,
+        declarations=_DECLARATIONS,
+        codes=(*codes, _FINANCE_GRANT, _FINANCE_LOAN),
+        statvars=_INDEX.statvars,
+    )
+    options = MintOptions(groupby=GroupbyOptions(by=by, op="sum", levels=levels))
+
+    table = _reshape(
+        _TABLE,
+        options=options,
+        entity_columns=_ENTITY_COLUMNS,
+        reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
+        code_index=index,
+        resolved_stat_var_refs=(),
+        provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
+        pivot_max_output_cells=5_000_000,
+    ).table
+
+    purpose_pos = table.columns.index("stat_var_crsPurpose")
+    value_pos = table.columns.index("value")
+    assert {row[purpose_pos]: row[value_pos] for row in table.rows} == expected
+    assert len(table.rows) == len(expected)

@@ -49,6 +49,12 @@ with no finding and the widest `rows_checked`. One row yields at most 79 finding
 taken whatever its size.
 
 Every row gets existence and kind checks. A row with no measured property gets `value_missing`.
+A population type must be typed `Class`, or be a UN System series: a UN-origin id the request's
+catalogue holds as the `populationType` of its UN variables (`Catalogue.un_series_members`) or
+names as a series the registry excludes (`Catalogue.un_excluded_series_name`). Every UN System
+StatVar names such a series as its population type, a node typed by its agency's series class
+(`undata/eclac/SERIES-INSUF_PENSION`, typed `undata/eclac/SERIES`) and no `Class`. Any other
+population type gets `not_a_class`, a UN code-list member such as `undata/AGE-Y65T79` included.
 A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each
 name a resolved node, by `code_index.constraint_values.constraint_value_fault`, the test the
 code index export refuses a release on for a constraint value. Range and domain rules apply
@@ -109,6 +115,7 @@ from graph_api.schema_models import (
     SchemaDocument,
     SchemaFinding,
 )
+from origin_catalogue import Catalogue
 from origin_catalogue.graph import is_un_dcid
 
 _CLASS: Final[str] = "Class"
@@ -330,6 +337,7 @@ def check_rows(
     lookup: SchemaLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
+    catalogue: Catalogue,
     un_served: bool,
     generation: str | None,
     deadline: float,
@@ -345,6 +353,8 @@ def check_rows(
         reader: the graph reads for nodes the document does not hold, called only when
             `reads` names an id.
         code_index: the code index whose StatVar rows the rows' dcids are compared with.
+        catalogue: the request's origin catalogue, whose UN tables name the UN System series
+            a population type may be.
         un_served: whether the deployment serves the UN origin, as `plan_reads` was told.
         generation: the generation the response carries, which counts toward its size.
         deadline: the absolute monotonic deadline passed to every read.
@@ -367,7 +377,7 @@ def check_rows(
     findings: list[SchemaFinding] = []
     size = _envelope_bytes(generation)
     for index, row in enumerate(rows):
-        found = _check_row(index, row, nodes, unread)
+        found = _check_row(index, row, nodes, unread, catalogue)
         if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
             found.extend(_differences(index, row, served))
         found_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in found)
@@ -401,6 +411,15 @@ def _read_value(prop: str, value: ConstraintValue, unread: _Unread) -> str | Non
     if prop in nodes and not _is_property(nodes[prop]):
         return None
     return value
+
+
+def _is_un_series(dcid: str, catalogue: Catalogue) -> bool:
+    """Whether `dcid` is a UN System series, which UN variables name as their population type:
+    one the catalogue's UN tables hold members of, or one the registry excludes."""
+    return is_un_dcid(dcid) and (
+        bool(catalogue.un_series_members(dcid))
+        or catalogue.un_excluded_series_name(dcid) is not None
+    )
 
 
 def _is_property(node: _Node | None) -> bool:
@@ -482,6 +501,7 @@ def _check_row(
     row: SchemaCheckRow,
     nodes: _Nodes,
     unread: _Unread,
+    catalogue: Catalogue,
 ) -> list[SchemaFinding]:
     findings: list[SchemaFinding] = []
     lookup = unread.lookup
@@ -505,7 +525,7 @@ def _check_row(
             find("population_type", row.population_type, fault)
         elif (held := nodes.get(row.population_type)) is None:
             find("population_type", row.population_type, "node_not_held")
-        elif _CLASS not in held.types:
+        elif _CLASS not in held.types and not _is_un_series(row.population_type, catalogue):
             find("population_type", row.population_type, "not_a_class")
         elif row.population_type in lookup.nodes:
             reached, complete = lookup.ancestry(row.population_type)

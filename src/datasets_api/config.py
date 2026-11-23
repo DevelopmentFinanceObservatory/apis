@@ -16,6 +16,7 @@ from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
+from dataset_store.snapshot import WORKING_TIER_RETENTION
 from dfo_platform.config import (
     CallerSettings,
     PublicSiteSettings,
@@ -134,8 +135,17 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
     # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
     # frames, computes and stores under one materialise permit, so at most
-    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    # `materialise_max_concurrency` runs hold frames at once across every frame path. A
+    # verification leaves one thread and one materialise permit free, so settings that set
+    # `verify_principal` refuse to load with either below 2.
     analysis_max_concurrency: int = Field(default=2, ge=1)
+
+    # Analysis keying threads (`datasets_api.doors.analysis`): a run's roots resolved, its key
+    # taken and its stored answer read, before it takes an analysis thread. A request waits up to
+    # 5 seconds for one, four requests to a thread, so a burst of stored answers queues here and
+    # meets no 503 of a busy analysis executor. A warm key reads a few rows, and a cold one can serve a root's
+    # rebuild inline, so the pool stays small to bound the dataset store connections it borrows.
+    analysis_key_max_concurrency: int = Field(default=4, ge=1)
 
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
     # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
@@ -151,6 +161,14 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # the two bound every frame a run holds.
     analysis_max_root_rows: int = Field(default=2_000_000, ge=1)
     analysis_max_join_rows: int = Field(default=250_000, ge=1)
+
+    # Whether a sum the planner infers for a root reads the codes the filters over it keep as
+    # its `groupby.codes` selection (`analysis.PlannedRoot.codes`). A release before the one
+    # that reads `groupby.codes` refuses a stored root rendering that states it, so this stays
+    # off until every serving revision reads it, and goes off again before a rollback below
+    # that release. Off, the root reads the sum of every StatVar, as the filter's answer is the
+    # same either way.
+    analysis_sum_selected_codes: bool = False
 
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
@@ -176,6 +194,33 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     # carries another. Bounds a Spanner edit that lands no import and a catalogue change no
     # import carries.
     head_imported_data_max_age_seconds: int = Field(default=604_800, ge=1)
+
+    # Maximum age of a head `GET /api/datasets/{id}` serves at once past the recheck window,
+    # counted from its last materialisation, while a head check runs on the worker
+    # (`current.serve_stored_head`). An older head takes the checked path in the request.
+    # Always greater than `head_max_age_seconds` and `head_imported_data_max_age_seconds`, so
+    # the worker makes the rebuild of a head past either limit. The default is twice the
+    # imported-data age, since a head check that only confirms a head leaves `materialised_at`
+    # alone, and an import-keyed head would otherwise pass both limits together.
+    head_serve_stale_max_age_seconds: int = Field(default=1_209_600, ge=1)
+
+    # How long an analysis root's read of a groupby sum or party-totals cut keeps that
+    # rendering in the render ahead of a new head (`datasets_api.render_ahead`): a rendering read
+    # within it is rendered from the new head before a reader asks, and one read earlier is not.
+    render_ahead_read_window_seconds: int = Field(default=1_209_600, ge=1)
+
+    # The most renderings one render ahead makes from one head: the worker's after an operation
+    # that materialised a version, and `datasets-maintenance render-ahead` per dataset, latest
+    # read first. 0 renders nothing ahead.
+    render_ahead_per_head: int = Field(default=16, ge=0)
+
+    # The most renderings one `datasets-maintenance render-ahead` run makes across datasets.
+    render_ahead_max: int = Field(default=200, ge=0)
+
+    # How long before a read working-tier file's retention ends the read queues its renewal
+    # (`datasets_api.operations.renewal`): a read root rendering's frame and file, a stored
+    # analysis answer's frame file, and a file download. 0 renews nothing ahead.
+    renew_margin_seconds: int = Field(default=604_800, ge=0)
 
     # New pinned copies the pin door and the share routes make per UTC day
     # (`datasets_api.retention_admission`), a budget spent as an allowance is
@@ -227,6 +272,11 @@ class DatasetsBuildSettings(FoldCeilingSettings):
         default="", validation_alias="presentation_share_import_principal"
     )
 
+    # Sole principal of verification: an analysis request with `verify` set and the
+    # Presentation share sample. Read from `VERIFY_PRINCIPAL`. Empty denies all. It opens no
+    # other route.
+    verify_principal: str = Field(default="", validation_alias="verify_principal")
+
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
     operation_max_attempts: int = Field(default=3, ge=1)
@@ -262,6 +312,55 @@ class DatasetsBuildSettings(FoldCeilingSettings):
             raise ValueError(
                 "DATASETS_HEAD_RECHECK_SECONDS must be < DATASETS_HEAD_MAX_AGE_SECONDS "
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_verify_leaves_capacity(self) -> DatasetsBuildSettings:
+        """Require two analysis threads and two materialise permits when `verify` is granted,
+        since a verification leaves one of each free and could never run with one."""
+        if not self.verify_principal:
+            return self
+        for name, value in (
+            ("DATASETS_ANALYSIS_MAX_CONCURRENCY", self.analysis_max_concurrency),
+            ("DATASETS_MATERIALISE_MAX_CONCURRENCY", self.materialise_max_concurrency),
+        ):
+            if value < 2:
+                raise ValueError(
+                    f"{name} must be >= 2 when VERIFY_PRINCIPAL is set, since a verification "
+                    f"leaves one free, got {value}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_serve_stale_past_max_age(self) -> DatasetsBuildSettings:
+        """Require the serve-stale ceiling to exceed the maximum head age, the imported-data
+        maximum age and the recheck interval."""
+        floor = max(
+            self.head_max_age_seconds,
+            self.head_imported_data_max_age_seconds,
+            self.head_recheck_seconds,
+        )
+        if self.head_serve_stale_max_age_seconds <= floor:
+            raise ValueError(
+                "DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS must be > "
+                f"DATASETS_HEAD_MAX_AGE_SECONDS ({self.head_max_age_seconds}), "
+                "DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS "
+                f"({self.head_imported_data_max_age_seconds}) and "
+                f"DATASETS_HEAD_RECHECK_SECONDS ({self.head_recheck_seconds}), got "
+                f"{self.head_serve_stale_max_age_seconds}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_renew_margin_inside_retention(self) -> DatasetsBuildSettings:
+        """Require the renewal margin to be shorter than working-tier retention, so a file is
+        not renewed at every read from the moment it is written."""
+        retention = int(WORKING_TIER_RETENTION.total_seconds())
+        if self.renew_margin_seconds >= retention:
+            raise ValueError(
+                f"DATASETS_RENEW_MARGIN_SECONDS must be < working-tier retention ({retention}), "
+                f"got {self.renew_margin_seconds}"
             )
         return self
 

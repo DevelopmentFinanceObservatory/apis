@@ -464,6 +464,15 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)
+    # The skills index builds after the service starts serving. A request asking for skills
+    # before its first build finishes waits for it, for at most half the soft deadline so the
+    # pipeline keeps the rest; past that the answer carries `skills_index_unavailable`.
+    if (
+        body.response_options is not None
+        and body.response_options.include_skills
+        and deps.skills_index is not None
+    ):
+        await deps.skills_index.ready(timeout_s=(budget.soft - time.monotonic()) / 2)
     record = ResolveRecord()
     caller = request.headers.get("user-agent")
 
@@ -933,6 +942,9 @@ async def _open_search_deps(
             graph=graph,  # ty: ignore[invalid-argument-type]
             catalogue=catalogue.snapshot,
             release=release,
+            # The first build runs beside serving, so the Datasets and Graph surfaces answer
+            # without waiting for it. A resolve that asks for skills waits for it (`resolve`).
+            wait_for_first_build=False,
         )
         # Stop the index refresh task before closing the graph it reads.
         owned.push_async_callback(_release_skills_index, skills_index)

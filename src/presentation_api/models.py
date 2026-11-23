@@ -41,6 +41,8 @@ __all__ = [
     "ShareImportResponse",
     "ShareReadResponse",
     "ShareRetentionModel",
+    "ShareSampleModel",
+    "ShareSampleResponse",
     "ShareServedModel",
     "ShareSlotCardResponse",
     "ShareSlotDataResponse",
@@ -389,6 +391,30 @@ class ShareImportResponse(BaseModel):
     id: str = Field(description="the share's id, 8 letters and digits, as the path names it")
     imported: bool = Field(
         description="true when this call stored the share, false when an earlier import had"
+    )
+
+
+class ShareSampleModel(BaseModel):
+    """One share a sample drew."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: str = Field(description="the share's id, 8 letters and digits")
+    kind: Literal["card", "canvas", "search", "conversation"] = Field(
+        description="what the share publishes"
+    )
+    mode: Literal["live", "snapshot"] = Field(description="the share's mode")
+    created_at: str = Field(description="when the share was made, as an ISO 8601 timestamp")
+    slots: int = Field(description="how many slots of the share's latest revision show a card")
+
+
+class ShareSampleResponse(BaseModel):
+    """`GET /api/presentation/share-sample`'s 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shares: list[ShareSampleModel] = Field(
+        description="up to limit shares drawn at random from those not taken down, in no order"
     )
 
 

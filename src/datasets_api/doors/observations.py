@@ -69,6 +69,7 @@ from datasets_api.codes_snapshot import (
     ObservationsUnavailable,
     SpecNotFound,
 )
+from datasets_api.delivery import record_rows_served, record_version
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.snapshot import (
@@ -417,6 +418,7 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
         )
     facts = stored_manifest_facts(stored.version)
     manifest = stored_manifest(stored.version)
+    record_version(stored.version)
 
     locations = stored.servable
     if not servable_listable_locations(
@@ -551,7 +553,7 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
     )
     async def get_observations(id: str, content_version: str) -> JSONResponse:
         current = deps.get()
-        with door_call("observations", logger=logger) as call:
+        with door_call("observations", logger=logger, delivers=True) as call:
             observations = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
@@ -563,9 +565,12 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
                 ),
                 refuse=ObservationsBackpressure,
             )
-        return JSONResponse(
-            observations_body(observations),
-            headers=no_store_headers(server_timing=call.server_timing),
+            record_rows_served(sum(len(series.points) for series in observations.series))
+        return call.delivered(
+            JSONResponse(
+                observations_body(observations),
+                headers=no_store_headers(server_timing=call.server_timing),
+            )
         )
 
     return DoorContribution(

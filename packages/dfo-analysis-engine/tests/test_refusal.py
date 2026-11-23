@@ -180,3 +180,4 @@ def test_a_composite_refusal_names_its_components(
             {"role": "bilateral", "stat_vars": 1},
             {"role": "imputed", "stat_vars": 2},
         ]
+        assert refusal.fix["get_data"] == {"stat_vars": "sum"}

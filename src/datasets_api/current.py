@@ -46,7 +46,11 @@ without its artifacts, and a rebuild records the version, its canonical frame an
 advances the head, rendering nothing. A head hit whose requested rendering is not linked
 renders it from the stored frame (`render.servable_frame_location`) under a materialise slot.
 `serve_fresh_head` answers from a current head alone and never renders, so it runs on the read
-executor and hands every other call to the work executor.
+executor and hands every other call to the work executor. `serve_stored_head`, which the GET uses,
+also answers from a head past the recheck window, up to `head_serve_stale_max_age_seconds` since
+its last materialisation, and submits the head's check to the worker as an operation
+(`operations.head_check`), whose run is `serve_current`. A check that failed for good hands
+the GET to the work executor.
 
 Each serve sets the `trigger` and `served_from` labels of the call's `datasets.timings` line, the
 `rebuild_reason` label of a rebuild, and starts the counts the clients, the store, the signer and
@@ -58,22 +62,36 @@ duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response 
 (`dependency_changes`), `schema` for a head with no readable fingerprint, `imported_data`
 for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or
 `unservable` for a current head that cannot answer the call.
+
+A rebuild whose trigger is not `worker`, which ran on a request thread and won the head, queues
+the render ahead from the raw version it materialised for the worker once the head's transaction
+has committed,
+when an analysis root read a rendering of the dataset within the render-ahead window
+(`operations.render_ahead_queue`). A worker run renders ahead itself.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
+import io
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import cast
 
-from artifact_store import ArtifactStore, Tier
+from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import (
+    ManifestFacts,
+    SnapshotReader,
+    StoredArtifactLocation,
+    StoredVersion,
+)
 from datasets_api.adapter import definition_read_scope, family_basis, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
@@ -95,6 +113,7 @@ from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
 from datasets_api.manifest import (
     collapsed_head_manifest,
+    collapsed_incomplete_after,
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
@@ -109,7 +128,14 @@ from datasets_api.operation_store import (
     OperationBacklogFull,
     OperationStore,
 )
-from datasets_api.operations.submit import submit_over_budget
+from datasets_api.operations.head_check import (
+    HeadFreshness,
+    head_check_operation,
+    head_check_state,
+    submit_head_check,
+)
+from datasets_api.operations.render_ahead_queue import queue_render_ahead
+from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
 from datasets_api.party_totals import PartyTotalsCut
@@ -118,6 +144,7 @@ from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     DerivedVersion,
     FrameMode,
+    RenderedDefinition,
     entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
@@ -144,7 +171,7 @@ from datasets_api.serve import (
     serve_definition,
     with_linked_artifacts,
 )
-from datasets_api.store_errors import read_stored_frame
+from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.timings import count, label, phase
 from datasets_api.version_descriptions import collapse_describer
 from datasets_api.versions import (
@@ -158,6 +185,7 @@ from datasets_api.versions import (
     VersionLister,
     VersionRecordWriter,
     link_digest,
+    rendering_stamp,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
@@ -444,7 +472,9 @@ def _record_head_hit_derived(
     (`persisted_response`): its stored body with the artifacts linked for it, so its stored
     warnings stand. An incomplete render gives way to a complete artifact a concurrent call
     linked under the derived version (`with_linked_artifacts`). The base record precedes
-    the render, so every writer dates and cites the derived version as the base does. The
+    the render, so every writer dates and cites the derived version as the base does, and the
+    derived version's `incomplete_after` derives from the base version's stored one
+    (`collapsed_incomplete_after`) and takes its build's `built_at`. The
     derived version's description record derives from the base version's in the transaction
     that records it (`version_descriptions.collapse_describer`).
     """
@@ -489,6 +519,8 @@ def _record_head_hit_derived(
         ),
         extra_warnings=reshape_models,
     )
+    with phase("snapshot_state"):
+        base = deps.snapshot_reader.read_version(subject_id, base_content_version)
     created = record_collapsed_head_version(
         manifest=derived_manifest,
         subject_id=subject_id,
@@ -497,6 +529,15 @@ def _record_head_hit_derived(
         output_profile=output_profile,
         frame_sha256=derived.frame_sha256,
         frame_summed=derived.summed,
+        code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
+        incomplete_after=collapsed_incomplete_after(
+            None if base is None else base.facts.incomplete_after, derived_statistics.figures
+        ),
+        incomplete_after_built_at=(
+            base.facts.incomplete_after_built_at
+            if base is not None and isinstance(base.facts, ManifestFacts)
+            else None
+        ),
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
@@ -507,6 +548,8 @@ def _record_head_hit_derived(
             enrichment=deps.enrichment,
             deadline=deps.deadline,
             summed=derived.summed,
+            adds=derived.adds,
+            groupby=derived.groupby,
         ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):
@@ -717,48 +760,23 @@ def _stored_xlsx_splits_totals(
     )
 
 
-def _render_frame(
+def _rendered_from_frame(
     *,
     subject_id: str,
     content_version: str,
     options: MintOptions,
     manifest: Manifest,
     deps: DefinitionDeps,
-    trace_id: str | None,
     coverage_index: CoverageIndex,
     frame: StoredFrame,
     plan: StoredRenderPlan,
-    recorded_cut: PartyTotalsCut | None = None,
-) -> Manifest | None:
-    """Render a missing request format from the stored frame `frame` on a head hit. The caller
-    holds a materialise permit from before it read `frame` to after this returns.
-
-    Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
-    fresh rendering. The full population keeps `groupby` completeness checks consistent,
-    including zero-row members. `plan` is what `plan_stored_render` read from the stored
-    version: a pivot reads its stored output profile, a groupby compares its collapse with the
-    recorded frame hash, and its frame mode says how the render reads `frame`. `recorded_cut`
-    is the party-totals cut a derived version rendered from this base frame replays
-    (`render.render_and_store`).
-
-    Return the derived version's manifest when groupby or a party-totals cut changes the frame
-    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
-    other than `RAW`) renders under the version itself. A render of it that gives another
-    version records nothing and returns `None`, so the caller falls back to the base frame.
-    That happens when the code index changed since the mint, and recording it would let a
-    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
-    unchanged is the base version, whatever frame grammar minted its token
-    (`render_and_store`). Record its artifact, and every other one, under the base version
-    and add it to the manifest. A party-totals cut
-    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
-    shared classifier.
-
-    A bundle cites the stored citation with its empty fields filled by a live read
-    (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
-    (`incomplete_artifact`). The response lists the artifact linked under the request's
-    rendering key when a concurrent call linked one first (`with_linked_artifacts`).
-    """
-    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    artifact_store: ArtifactStore,
+    recorded_cut: PartyTotalsCut | None,
+) -> tuple[RenderedDefinition, bool]:
+    """The rendering `options` names, rendered from the stored frame `frame` of the version
+    `manifest` and written to `artifact_store`, and whether its bundle documentation is
+    complete. `_render_frame` describes the render."""
+    # The callers read no frame of a version its own frame does not serve.
     assert plan.frame_mode is not None
     table = frame.frame
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
@@ -804,7 +822,7 @@ def _render_frame(
         content_version=content_version,
         prepared_at=manifest.prepared_at,
         site=deps.settings.site,
-        artifact_store=deps.artifact_store,
+        artifact_store=artifact_store,
         entity_columns=entity_columns,
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
@@ -823,6 +841,64 @@ def _render_frame(
             else None
         ),
         frame_mode=plan.frame_mode,
+        recorded_cut=recorded_cut,
+    )
+    return rendered, documentation_complete
+
+
+def _render_frame(
+    *,
+    subject_id: str,
+    content_version: str,
+    options: MintOptions,
+    manifest: Manifest,
+    deps: DefinitionDeps,
+    trace_id: str | None,
+    coverage_index: CoverageIndex,
+    frame: StoredFrame,
+    plan: StoredRenderPlan,
+    recorded_cut: PartyTotalsCut | None = None,
+) -> Manifest | None:
+    """Render a missing request format from the stored frame `frame` on a head hit. The caller
+    holds a materialise permit from before it read `frame` to after this returns.
+
+    Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
+    fresh rendering. The full population keeps `groupby` completeness checks consistent,
+    including zero-row members. `plan` is what `plan_stored_render` read from the stored
+    version: a pivot reads its stored output profile, a groupby compares its collapse with the
+    recorded frame hash, and its frame mode says how the render reads `frame`. `recorded_cut`
+    is the party-totals cut a derived version rendered from this base frame replays
+    (`render.render_and_store`).
+
+    Return the derived version's manifest when groupby or a party-totals cut changes the frame
+    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
+    other than `RAW`) renders under the version itself. A render of it that gives another
+    version records nothing and returns `None`, so the caller falls back to the base frame.
+    That happens when the code index changed since the mint, and recording it would let a
+    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
+    unchanged is the base version, whatever frame grammar minted its token
+    (`render_and_store`). Record its artifact, and every other one, under the base version
+    and add it to the manifest. A party-totals cut
+    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
+    shared classifier.
+
+    A bundle cites the stored citation with its empty fields filled by a live read
+    (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
+    (`incomplete_artifact`). The response lists the artifact linked under the request's
+    rendering key when a concurrent call linked one first (`with_linked_artifacts`).
+    """
+    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    assert plan.frame_mode is not None
+    rendered, documentation_complete = _rendered_from_frame(
+        subject_id=subject_id,
+        content_version=content_version,
+        options=options,
+        manifest=manifest,
+        deps=deps,
+        coverage_index=coverage_index,
+        frame=frame,
+        plan=plan,
+        artifact_store=deps.artifact_store,
         recorded_cut=recorded_cut,
     )
     artifact, reshape_warnings, derived = (
@@ -846,7 +922,9 @@ def _render_frame(
             artifact,
             subject_id=subject_id,
             content_version=rendered_content_version,
-            refs=provenance_refs,
+            refs=provenance_refs_of(
+                cast("list[dict[str, object]]", manifest.trace.get("facets", []))
+            ),
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
@@ -1037,6 +1115,169 @@ def _render_stored_rendering(
             plan=decided,
             recorded_cut=recorded_cut,
         )
+
+
+class _MemorySink(io.BytesIO):
+    """An `ArtifactSink` that keeps its bytes (`_HeldInMemory`)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stored: StoredArtifact | None = None
+
+    def result(self) -> StoredArtifact:
+        if self.stored is None:
+            raise RuntimeError("result() is read once the open_put block commits")
+        return self.stored
+
+
+class _HeldInMemory:
+    """The write half of an `ArtifactStore` that keeps each object in `objects` by digest, so
+    a render written through it stores nothing (`render_unstored`). `render.render_and_store`
+    and `render.render_and_store_canonical_frame` write through `open_put` alone."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    @contextmanager
+    def open_put(self, *, tier: Tier) -> Iterator[ArtifactSink]:
+        sink = _MemorySink()
+        yield sink
+        data = sink.getvalue()
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        self.objects[digest] = data
+        sink.stored = StoredArtifact(
+            digest=digest,
+            tier=tier,
+            bucket="",
+            object_name=digest,
+            size_bytes=len(data),
+            deduplicated=False,
+        )
+
+
+@dataclass(frozen=True)
+class UnstoredFile:
+    """A stored frame `render_unstored` made in memory: its media type, digest and bytes."""
+
+    media_type: str
+    digest: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class UnstoredRendering:
+    """A rendering `render_unstored` made in memory. `content_version` is the version it
+    answers: the derived one (`render.DerivedVersion`) when a groupby collapse or a
+    party-totals cut changes the frame, else the version read. `artifact` is the rendering's
+    entry and `data` its bytes. `rows` counts the rows of the version it answers. `frame` is
+    the derived version's canonical frame, `None` when the rendering answers the version
+    read."""
+
+    content_version: str
+    artifact: ArtifactEntryModel
+    data: bytes
+    rows: int
+    frame: UnstoredFile | None
+
+
+def render_unstored(
+    *,
+    subject_id: str,
+    content_version: str,
+    options: MintOptions,
+    manifest: Manifest,
+    deps: DefinitionDeps,
+    coverage_snapshot: CoverageSnapshot,
+) -> UnstoredRendering | None:
+    """The rendering `options` names of the stored version `manifest`, rendered in memory from
+    its servable stored frame as `_render_stored_rendering` renders it. It stores and records
+    nothing: no artifact, link or derived version. Its reads move no object between tiers
+    (`ArtifactStore.get`).
+
+    Returns `None` when the version has no servable stored frame, the frame's bytes are gone or
+    corrupt, the version's own frame does not serve the rendering, or a derived version's own
+    frame renders another version (`_render_frame` falls back to the base frame then). It
+    refuses what `plan_stored_render` decides and a frame1 document past the decode bound
+    before its permit, and takes one materialise permit for the frame read and the render.
+
+    Raises:
+        As `_render_stored_rendering`.
+    """
+    options = resolve_enrichment(options, coverage=manifest.coverage)
+    locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
+    location = servable_frame_location(locations, now=deps.now())
+    if location is None:
+        return None
+    plan = plan_stored_render(
+        manifest,
+        options=options,
+        subject_id=subject_id,
+        content_version=content_version,
+        read_version=functools.partial(
+            deps.snapshot_reader.read_version, subject_id, content_version
+        ),
+        read_locations=lambda: locations,
+        deps=deps,
+    )
+    if plan.frame_mode is None:
+        return None
+    refuse_located_frame_past_decode_bound(location, options=options, plan=plan, deps=deps)
+
+    def read() -> bytes | None:
+        try:
+            return deps.artifact_store.get(
+                artifact_digest=location.artifact_digest, tier=Tier(location.tier)
+            )
+        except (ArtifactNotFoundError, ArtifactIntegrityError):
+            return None
+
+    held = _HeldInMemory()
+    # The render writes through `open_put` alone, which `_HeldInMemory` keeps in memory.
+    memory = cast("ArtifactStore", held)
+    with bounded_materialise_slot(
+        deps.materialise_semaphore,
+        wait_seconds=deps.settings.materialise_wait_seconds,
+        deadline=deps.deadline,
+    ):
+        stored_frame = read_located_frame(location, read=read)
+        if stored_frame is None:
+            return None
+        rendered, _ = _rendered_from_frame(
+            subject_id=subject_id,
+            content_version=content_version,
+            options=options,
+            manifest=manifest,
+            deps=deps,
+            coverage_index=coverage_snapshot.index,
+            frame=stored_frame,
+            plan=plan,
+            artifact_store=memory,
+            recorded_cut=None,
+        )
+        derived = rendered.derived
+        if derived is None:
+            frame = None
+        elif plan.frame_mode is not FrameMode.RAW:
+            return None
+        else:
+            record = render_and_store_canonical_frame(
+                frame_chunks=derived.frame_chunks(),
+                subject_id=subject_id,
+                content_version=derived.content_version,
+                artifact_store=memory,
+            )
+            frame = UnstoredFile(
+                media_type=record.media_type,
+                digest=record.artifact_digest,
+                data=held.objects[record.artifact_digest],
+            )
+    return UnstoredRendering(
+        content_version=content_version if derived is None else derived.content_version,
+        artifact=rendered.artifact,
+        data=held.objects[rendered.artifact.artifact_digest],
+        rows=manifest.coverage.rows if derived is None else derived.rows,
+        frame=frame,
+    )
 
 
 def head_rendering(
@@ -1395,6 +1636,161 @@ def serve_fresh_head(
     return _labelled(served, trigger=trigger)
 
 
+@dataclass(frozen=True)
+class StoredHeadAnswer:
+    """A stored head's answer to `GET /api/datasets/{id}` and the `x-dfo-freshness` it states
+    (`serve_stored_head`)."""
+
+    manifest: Manifest
+    freshness: HeadFreshness
+
+
+def serve_stored_head(
+    stored: StoredDefinition,
+    *,
+    deps: DefinitionDeps,
+    options: MintOptions,
+    trigger: Trigger,
+    trace_id: str | None,
+    revoked_under: Sequence[str] = (),
+) -> StoredHeadAnswer | HeadRead:
+    """The head's answer when it holds the requested rendering and can serve without a check,
+    with its freshness, or the head it read. `revoked_under` is `load_stored`'s.
+
+    `serve_fresh_head` with a stale branch, for the GET alone. A head confirmed inside the
+    recheck window answers `current`. Past the window, a head whose import is not replaced and
+    whose `materialised_at` is younger than `head_serve_stale_max_age_seconds` answers too, past
+    `head_max_age` included, and its check runs on the worker as an operation
+    (`submit_head_check`): `pending` while it is pending or running, `stale` when it could not
+    be submitted. No head, a replaced import, a head past that ceiling, a missing rendering, an
+    uncounted year coverage (`_serve_head`), or a check that failed for good hand the call to
+    the work executor, as `serve_fresh_head` does, so the refusal that ended the check reaches
+    the caller. It reads no graph, renders nothing, and materialises nothing.
+    """
+    with phase("coverage"):
+        coverage_snapshot = deps.coverage.snapshot()
+    with phase("head_read"):
+        head = deps.head_store.read_head(stored.spec_id)
+    if head is None or _import_replaced(head):
+        return HeadRead(stored=stored, head=head)
+    now = deps.now()
+    fresh = _head_is_fresh(head, now=now, deps=deps)
+    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
+    if not fresh and now - head.materialised_at >= ceiling:
+        return HeadRead(stored=stored, head=head)
+    served = _serve_head(
+        head,
+        subject_id=stored.spec_id,
+        deps=deps,
+        coverage_snapshot=coverage_snapshot,
+        options=options,
+        trace_id=trace_id,
+        load_head=None,
+        render=False,
+        revoked_under=revoked_under,
+    )
+    if isinstance(served, str):
+        return HeadRead(stored=stored, head=head)
+    freshness: HeadFreshness = "current"
+    if not fresh:
+        check = submit_head_check(
+            subject_id=stored.spec_id,
+            coverage_stamp=coverage_snapshot.stamp,
+            operation_store=deps.operation_store,
+            task_client=deps.task_client,
+            backlog_max=deps.settings.operation_backlog_max,
+        )
+        if check == "failed":
+            return HeadRead(stored=stored, head=head)
+        freshness = check
+    label("freshness", freshness)
+    return StoredHeadAnswer(manifest=_labelled(served, trigger=trigger), freshness=freshness)
+
+
+@dataclass(frozen=True)
+class StoredHeadVersion:
+    """The dataset version a stored head names and the freshness the head GET states for it
+    (`stored_head_version`)."""
+
+    content_version: str
+    freshness: HeadFreshness
+
+
+def stored_head_version(
+    stored: StoredDefinition, *, deps: DefinitionDeps, revoked_under: Sequence[str] = ()
+) -> StoredHeadVersion:
+    """The version the stored head of `stored` names, judged by `serve_stored_head`'s rules
+    from the head and version records alone, for an analysis root under `latest: "stored"`. It
+    renders nothing, reads no frame and no graph, and never waits on a rebuild while a head
+    exists. A head confirmed inside the recheck window is `current`. Past the window and inside
+    `head_serve_stale_max_age_seconds` since its materialisation, the head's check is submitted
+    as the GET submits it (`submit_head_check`): `pending` while it runs, `stale` when it could
+    not be submitted. No head, a head keyed on an import the bound release no longer carries,
+    and a head past that ceiling queue the rebuild, the head check operation the worker runs
+    through `serve_current` (`head_check_operation`), in place of a rebuild in the request.
+    `revoked_under` is `load_stored`'s.
+
+    One difference from the GET is deliberate: a head whose version is a frame of one year
+    whose year coverage was never counted serves as it stands, where the GET rebuilds it once
+    (`_serve_head`'s `_YEAR_COVERAGE`). That rebuild counts the coverage on the version it
+    makes, the same version, so the version a root reads and its key do not change.
+
+    A head keyed on the bound release's import whose `head_imported_data_max_age_seconds`
+    is at or past the ceiling answers 202 on every request once past the ceiling, since its
+    check rebuilds it only past that max age. Only settings with that ceiling at or below the
+    imported max age reach it.
+
+    Raises:
+        OperationSubmitted: The rebuild is queued, its row pending or running, or a check or
+            rebuild failed for good, its row `failed`.
+        SnapshotRevoked: The head's version is taken down.
+        OperationBacklogFull, DatasetsStoreUnavailable: A rebuild could not be queued.
+    """
+    with phase("coverage"):
+        coverage_stamp = deps.coverage.snapshot().stamp
+    with phase("head_read"):
+        head = deps.head_store.read_head(stored.spec_id)
+    queue = functools.partial(
+        head_check_operation,
+        subject_id=stored.spec_id,
+        coverage_stamp=coverage_stamp,
+        operation_store=deps.operation_store,
+        task_client=deps.task_client,
+        backlog_max=deps.settings.operation_backlog_max,
+    )
+    now = deps.now()
+    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
+    fresh = head is not None and _head_is_fresh(head, now=now, deps=deps)
+    if (
+        head is None
+        or _import_replaced(head)
+        or (not fresh and now - head.materialised_at >= ceiling)
+    ):
+        raise OperationSubmitted(operation=queue())
+    load_stored(
+        subject_id=stored.spec_id,
+        content_version=head.content_version,
+        deps=deps,
+        include_artifacts=False,
+        revoked_under=revoked_under,
+    )
+    if fresh:
+        return StoredHeadVersion(content_version=head.content_version, freshness="current")
+    try:
+        operation = queue()
+    except (OperationBacklogFull, DatasetsStoreUnavailable):
+        logger.warning(
+            "Datasets head check for %r not submitted; resolving the head as stale",
+            stored.spec_id,
+            exc_info=True,
+        )
+        return StoredHeadVersion(content_version=head.content_version, freshness="stale")
+    state = head_check_state(operation)
+    if state == "failed":
+        raise OperationSubmitted(operation=operation)
+    return StoredHeadVersion(content_version=head.content_version, freshness=state)
+
+
 def serve_current_head(
     stored: StoredDefinition,
     *,
@@ -1458,6 +1854,7 @@ def serve_current(
     head_read: HeadRead | None = None,
     strip_pointer: bool = False,
     revoked_under: Sequence[str] = (),
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest:
     """Serve the current version of the served definition `stored`, materialising and advancing
     the head when the head cannot answer. A head answers under `load_stored`'s
@@ -1495,7 +1892,9 @@ def serve_current(
     head it read, and stamps the confirmation of the head its run wrote. `progress` receives the
     materialiser's row progress. `strip_pointer` marks the refusals a rebuild's admission and
     materialisation raise (`without_pointers`) for a retrieval route, whose request has no body;
-    refusals from a head hit keep their pointers.
+    refusals from a head hit keep their pointers. `on_materialised` receives the raw version a
+    rebuild of this call materialised (`ServedDefinition.content_version`), the one its answer
+    is or was derived from, whichever writer won the head.
 
     Returns a manifest stamped by `stamp_trace`.
     """
@@ -1514,6 +1913,7 @@ def serve_current(
             head_read=head_read,
             strip_pointer=strip_pointer,
             revoked_under=revoked_under,
+            on_materialised=on_materialised,
         )
         manifest = check(
             coverage_snapshot if coverage_snapshot is not None else deps.coverage.snapshot()
@@ -1538,6 +1938,7 @@ def _check_currency(
     head_read: HeadRead | None,
     strip_pointer: bool,
     revoked_under: Sequence[str],
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest | None:
     """One pass of `serve_current` on the coverage snapshot `snapshot`. `None` means another
     caller rebuilt the subject while this one waited, so the head is read again."""
@@ -1615,6 +2016,11 @@ def _check_currency(
             if isinstance(recheck, str):
                 raise
             return recheck
+    if on_materialised is not None:
+        on_materialised(served.content_version)
+    if trigger != "worker" and served.head is not None:
+        # Only a store that won the head queues, since a render ahead renders from the head.
+        _queue_render_ahead(subject_id, served.content_version, snapshot=snapshot, deps=deps)
     written = served.head
     if written is None:
         # A concurrent update won the head. Stamp its confirmation.
@@ -1627,6 +2033,39 @@ def _check_currency(
         family=served.family,
         coverage_stamp=snapshot.stamp,
     )
+
+
+def _queue_render_ahead(
+    subject_id: str, content_version: str, *, snapshot: CoverageSnapshot, deps: DefinitionDeps
+) -> None:
+    """Queue the render ahead from `content_version`, which a rebuild on a request thread just
+    stored, for the worker (`operations.render_ahead_queue`), when an analysis root read a
+    rendering of the dataset within the render-ahead window. A failure is logged and fails
+    nothing."""
+    settings = deps.settings
+    lister = deps.version_lister
+    if lister is None or settings.render_ahead_per_head <= 0:
+        return
+    since = deps.now() - timedelta(seconds=settings.render_ahead_read_window_seconds)
+    try:
+        with phase("render_ahead_queue"):
+            if not lister.renderings_read_since(subject_id, read_since=since):
+                return
+            queue_render_ahead(
+                subject_id=subject_id,
+                head_content_version=content_version,
+                coverage_stamp=snapshot.stamp,
+                operation_store=deps.operation_store,
+                task_client=deps.task_client,
+                backlog_max=settings.operation_backlog_max,
+            )
+    except Exception:
+        logger.warning(
+            "Datasets: queueing the render ahead of %r from %r failed",
+            subject_id,
+            content_version,
+            exc_info=True,
+        )
 
 
 def _admitted_ceiling(
@@ -1735,16 +2174,23 @@ __all__ = [
     "DefinitionDeps",
     "HeadLoader",
     "HeadRead",
+    "StoredHeadAnswer",
+    "StoredHeadVersion",
     "StoredRenderPlan",
     "StoredTraceMissingResolvedStatVars",
     "Trigger",
+    "UnstoredFile",
+    "UnstoredRendering",
     "head_rendering",
     "load_stored",
     "plan_stored_render",
+    "render_unstored",
     "serve_current",
     "serve_current_head",
     "serve_deps",
     "serve_fresh_head",
+    "serve_stored_head",
     "stamp_trace",
+    "stored_head_version",
     "without_pointers",
 ]

@@ -113,6 +113,18 @@ _DATASET_STORE = {
     "0044_export.sql": ("9678288ce977ce82d4accb1778bf65e383faa1b72d23c1b53469fc59ee2c3e79"),
     "0045_copy_claim.sql": ("2c490124414409610278f2d05081f768af1f78898b0b625c8f528f82fe57e736"),
     "0046_head_family.sql": "a0cf451cf35cb6890e8e934585a8568d8400f781e983662a0f2c336b40159840",
+    "0047_version_artifact_head.sql": (
+        "233a4198dca56d1ce4e1afee2b0ee0184a9476847bef8e6bd564cd93969a657e"
+    ),
+    "0048_version_record_incomplete_after.sql": (
+        "b9890106780f877323f33692e4ce86c66c94a82c2794b1e2e7b0763ff000367c"
+    ),
+    "0049_version_artifact_head_code_index.sql": (
+        "cb82b1e2196065c42ee473da4b9c2252d9b7ed746f8451cdcfa51c0002b6726c"
+    ),
+    "0050_version_artifact_head_read_at.sql": (
+        "3febac15a8fb771fc270ca40d58c0fddd7256b475481ff37a78aeee3ac61a23d"
+    ),
 }
 
 _PRESENTATION_STORE = {

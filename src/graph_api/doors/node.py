@@ -148,6 +148,7 @@ _ALLOWLIST: tuple[str, ...] = (
     "nextDataRefreshDate",
     "earliestObservationDate",
     "latestObservationDate",
+    "partialObservationDate",
     "isPartOf",
     "provenanceCategory",
     "containedInPlace",
@@ -508,7 +509,7 @@ class _NodeBuilder:
         unit_class = classify_unit(
             unit=dcid, denominator=None, currency_units={dcid: iso} if iso else {}
         )
-        basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=None)
+        basis = price_basis(requested=None, unit_class=unit_class, stated=None)
         return UnitBlock(
             unit_class=unit_class.kind,
             currency=unit_class.currency,
@@ -551,6 +552,7 @@ class _NodeBuilder:
             next_data_refresh_date=first_value(arcs, "nextDataRefreshDate"),
             earliest_observation_date=first_value(arcs, "earliestObservationDate"),
             latest_observation_date=first_value(arcs, "latestObservationDate"),
+            partial_observation_date=first_value(arcs, "partialObservationDate"),
             freshness=Freshness(
                 release_frequency=release_frequency,
                 release_frequency_label=cadence_label(release_frequency),

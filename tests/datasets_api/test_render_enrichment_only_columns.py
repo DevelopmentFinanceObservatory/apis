@@ -151,7 +151,7 @@ def test_an_enrichment_only_list_keeps_the_decoded_column_a_streamed_pivot_names
         **_COMMON,
     )
 
-    assert whole.table.columns == ("observationAbout", "Basic health care")
+    assert whole.table.columns == ("observationAbout", "dcid:CRSPurposeCode122")
     for chunk_size in (2, 1):
         assert _streamed(["observationAbout_type"], chunk_size=chunk_size).table == whole.table
 

@@ -1,14 +1,16 @@
-"""`CodeIndex.enrichment_digest` moves with a party's kind, dataset kinds, class or whole markers
-and with nothing else, so an export that changes none of them re-renders no party-kind file."""
+"""`CodeIndex.enrichment_digest` moves with a party's kind, dataset kinds, class, whole markers or
+publications, with the declared composites' tables and with the party reading version, and with
+nothing else, so an export that changes none of them re-renders no party-kind file."""
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
-from code_index import CodeIndex, parse_index
+from code_index import CodeIndex, parse_index, query
 
 from .conftest import FIXTURE_PATH
 
@@ -58,14 +60,11 @@ def _replaced(row: int, **changes: Any) -> list[dict[str, Any]]:
     return [{**party, **changes} if at == row else party for at, party in enumerate(_ROWS)]
 
 
-def test_the_digest_ignores_row_order_and_everything_outside_kind_class_and_whole_markers():
+def test_the_digest_ignores_row_order_labels_groups_and_the_stamp():
     baseline = _index(_ROWS).enrichment_digest
 
     assert _index(list(reversed(_ROWS))).enrichment_digest == baseline
     assert _index(_replaced(0, label="Gates Foundation")).enrichment_digest == baseline
-    assert _index(
-        _replaced(0, published=_donor_in(_DAC2A, "provenance/OECD_DAC2B"))
-    ).enrichment_digest == (baseline)
     assert _index(_replaced(2, totals="Africa")).enrichment_digest == baseline
     restamped = json.loads(FIXTURE_PATH.read_text())["stamp"] | {"content_hash": "another-export"}
     assert _index(_ROWS, stamp=restamped).enrichment_digest == baseline
@@ -101,6 +100,8 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
             published=_donor_in(_DAC2A, _DAC2B),
             dataset_kinds=[{"dataset": _DAC2A, "kind": "total"}],
         ),
+        _replaced(1, published=_donor_in(_DAC2A, _DAC2B, "provenance/OECD_DAC1")),
+        _replaced(0, published=_donor_in(_DAC2A, _DAC2B)),
     ],
     ids=[
         "kind",
@@ -113,9 +114,43 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
         "markers_dropped",
         "party_dropped",
         "dataset_kind",
+        "marked_total_published",
+        "party_published",
     ],
 )
-def test_the_digest_moves_when_a_kind_a_class_a_marker_or_a_window_changes(
+def test_the_digest_moves_when_a_kind_a_class_a_marker_a_window_or_a_publication_changes(
     changed: list[dict[str, Any]],
 ):
     assert _index(changed).enrichment_digest != _index(_ROWS).enrichment_digest
+
+
+def test_the_digest_moves_when_the_party_reading_version_moves(monkeypatch: pytest.MonkeyPatch):
+    """A change to how a row is read re-renders every party file though no row changed."""
+    baseline = _index(_ROWS).enrichment_digest
+    monkeypatch.setattr(query, "PARTY_READING_VERSION", query.PARTY_READING_VERSION + 1)
+
+    assert _index(_ROWS).enrichment_digest != baseline
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        pytest.param({"tables": (_DAC2A, _DAC2B)}, id="tables"),
+        pytest.param({"marker_table": None}, id="marker-table"),
+        pytest.param({"bound_total": "DACAfrica"}, id="bound-total"),
+    ],
+)
+def test_the_digest_moves_when_a_composites_reading_moves(
+    monkeypatch: pytest.MonkeyPatch, changed: dict[str, Any]
+):
+    """A composite provenance reads kinds and markers through its tables, the one table it
+    reads markers from and the total its destination binding keeps, so a party cell on its
+    rows moves with them."""
+    baseline = _index(_ROWS).enrichment_digest
+    reads = dict(query.declared_composite_reads())
+    ref, read = next((ref, read) for ref, read in reads.items() if read.marker_table)
+    monkeypatch.setattr(
+        query, "declared_composite_reads", lambda: {**reads, ref: replace(read, **changed)}
+    )
+
+    assert _index(_ROWS).enrichment_digest != baseline

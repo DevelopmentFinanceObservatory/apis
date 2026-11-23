@@ -31,12 +31,34 @@ has a key of `user:` and 32 lowercase hex digits, a digest of the account's id t
 computes for a request made with an API key, so its allowances count per account and not per
 address. This service never derives an account key, only accepts the website's. A request whose
 `x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from the website, which names its
-client in `x-dfo-caller`, as `ip:<digest>` or `user:<digest>`. A request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
-is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
+client in `x-dfo-caller`, as `ip:<digest>` or `user:<digest>`. A request that carries
+`x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL` is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
 from the right, the entry the proxies in front of this service appended. `request.client` goes
 unused, because `ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
+A vouched `x-dfo-caller` of the form `conversation:<32 hex digits>`, which the Studio harness sends,
+names a `Caller` of `kind="conversation"` keyed on that value, so each conversation holds its own
+allowances and the vouched path never reads the request's address.
+
+`delivery_identity` names the consumer of a request for its delivery log line
+(`datasets_api.delivery`), and never raises. `dfo_platform.app` resolves it once per request and
+binds it for `current_delivery_identity`. A vouched request's caller is its `x-dfo-caller` (`ip:`
+or `conversation:`), or none when that header is missing, repeated or malformed, since the
+request's own address is the upstream's. An unvouched request's caller is its own address key,
+else none. The surface is the `x-dfo-surface` header beside a valid principal, checked against
+`DeliverySurface`, except that a `conversation:` caller is always `studio`. A request no
+principal vouches for is `direct`, whatever it claims. The client is the `<name>/<version>`
+product token of `X-DFO-Client`. The user agent is a vouched request's `x-dfo-user-agent`, the
+end client's User-Agent an upstream forwards, else the request's own User-Agent, and none for a
+`conversation:` caller. The MCP client is an `ip:` caller's vouched `x-dfo-mcp-client`, the name
+the end client gave in its MCP `initialize` request (`Anthropic/ClaudeAI`, `openai-mcp`,
+`claude-code`), which data-mcp and analysis-mcp forward for public callers. It is kept when the
+stripped single value fully matches `_MCP_CLIENT_NAME`, is `invalid` when the header is present
+but does not match, and is none when the header is absent or blank, on an unvouched request and
+for any caller that is not an `ip:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16
+lowercase hex digits) the Studio harness sends for the turn that caused the request, kept only on
+a vouched `conversation:` caller's request when the single value fully matches, else none.
 """
 
 from __future__ import annotations
@@ -49,7 +71,9 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -187,36 +211,43 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
 
 
 CALLER_HEADER = "x-dfo-caller"
-"""The caller the website resolved for a request it forwards, as `ip:<32 hex digits>` or, for a
-request made with an API key, `user:<32 hex digits>`."""
+"""The caller an upstream names for a request it forwards: the address key the website resolved,
+as `ip:<32 hex digits>`, the account the website resolved for a request made with an API key, as
+`user:<32 hex digits>`, or the Studio harness's conversation, as `conversation:<32 hex digits>`."""
 CALLER_PRINCIPAL_HEADER = "x-dfo-caller-principal"
 """The secret that vouches for `CALLER_HEADER`, `DFO_CALLER_PRINCIPAL`."""
 FORWARDED_FOR_HEADER = "x-forwarded-for"
 
 ADDRESS_KEY_PREFIX = "ip:"
 """The prefix of every `kind="address"` caller key. Reference rows keyed by a caller start with
-it or with `USER_KEY_PREFIX`, which tells them from the `secret-sha256:` labels of principals."""
-
+it, which tells them from the `secret-sha256:` labels of principals."""
 USER_KEY_PREFIX = "user:"
-"""The prefix of every `kind="account"` caller key. Reference rows keyed by a caller start with
-it or with `ADDRESS_KEY_PREFIX`, which tells them from the `secret-sha256:` labels of principals."""
+"""The prefix of every `kind="account"` caller key, which the website names for a request made
+with an API key. Reference rows keyed by an account start with it."""
+CONVERSATION_KEY_PREFIX = "conversation:"
+"""The prefix of the caller the Studio harness names for one conversation."""
 
 _DIGEST_LENGTH = 32
 _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 _USER_KEY = re.compile(rf"{USER_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+_CONVERSATION_KEY = re.compile(rf"{CONVERSATION_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+TURN_HEADER = "x-dfo-turn"
+"""The Studio turn that caused a request, as `tr_<16 hex digits>`."""
+_TURN_ID = re.compile(r"tr_[0-9a-f]{16}")
 
 
 @dataclass(frozen=True, slots=True)
 class Caller:
     """Who an allowance counts against. `kind="address"` keys a client by its network address,
-    and `kind="account"` keys an account the website named for a request made with an API key."""
+    `kind="account"` keys an account the website named for a request made with an API key, and
+    `kind="conversation"` keys a Studio conversation by the vouched `conversation:` value."""
 
-    kind: Literal["address", "account"]
+    kind: Literal["address", "account", "conversation"]
     key: str
 
 
 class CallerHeaderInvalid(Refusal):
-    """The website vouched for a request with `CALLER_PRINCIPAL_HEADER` but sent no single
+    """An upstream vouched for a request with `CALLER_PRINCIPAL_HEADER` but sent no single
     well-formed `CALLER_HEADER`. Counting it by address would put every client of the site on
     one allowance, so it answers 400."""
 
@@ -225,8 +256,8 @@ class CallerHeaderInvalid(Refusal):
     def __init__(self) -> None:
         super().__init__(
             f"the request carries a valid {CALLER_PRINCIPAL_HEADER} but no single "
-            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits> or "
-            "user:<32 lowercase hex digits>"
+            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits>, "
+            "user:<32 lowercase hex digits> or conversation:<32 lowercase hex digits>"
         )
 
 
@@ -311,13 +342,24 @@ def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
         if not _vouched(request, settings):
             raise _principal_mismatch(settings)
         named = _single(request, CALLER_HEADER)
-        if named is not None:
-            if _ADDRESS_KEY.fullmatch(named):
-                return Caller(kind="address", key=named)
-            if _USER_KEY.fullmatch(named):
-                return Caller(kind="account", key=named)
+        if named is not None and _ADDRESS_KEY.fullmatch(named):
+            return Caller(kind="address", key=named)
+        if named is not None and _USER_KEY.fullmatch(named):
+            return Caller(kind="account", key=named)
+        if named is not None and _CONVERSATION_KEY.fullmatch(named):
+            return Caller(kind="conversation", key=named)
         raise CallerHeaderInvalid()
+    return Caller(kind="address", key=_own_address_key(request, settings))
 
+
+def _own_address_key(request: Request, settings: CallerSettings) -> str:
+    """The address key of the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places from the
+    right.
+
+    Raises:
+        CallerUnresolved: `DFO_CALLER_HMAC_KEY` is unset, or that entry is missing or not an IP
+            address.
+    """
     hmac_key = settings.caller_hmac_key.get_secret_value()
     if not hmac_key:
         raise CallerUnresolved("DFO_CALLER_HMAC_KEY is unset")
@@ -330,10 +372,202 @@ def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
     position = len(entries) - 1 - settings.trusted_proxy_hops
     address = entries[position] if position >= 0 else ""
     try:
-        return Caller(kind="address", key=address_key(address, hmac_key=hmac_key))
+        return address_key(address, hmac_key=hmac_key)
     except ValueError:
         raise CallerUnresolved(
             f"X-Forwarded-For holds {len(entries)} entries, and the one "
             f"DFO_TRUSTED_PROXY_HOPS={settings.trusted_proxy_hops} places from the right is "
             "missing or not an IP address"
         ) from None
+
+
+SURFACE_HEADER = "x-dfo-surface"
+"""The surface an upstream names for a request it vouches for, one of `DeliverySurface`."""
+USER_AGENT_HEADER = "x-dfo-user-agent"
+"""The end client's User-Agent an upstream forwards for a request it vouches for."""
+MCP_CLIENT_HEADER = "x-dfo-mcp-client"
+"""The MCP `initialize` client name an upstream forwards for a request it vouches for."""
+_MCP_CLIENT_NAME = re.compile(r"[ !#-\[\]-~]{1,128}")
+"""The MCP client names a delivery line keeps: 1 to 128 printable ASCII characters, with no
+quote or backslash. The same rule as dfo-ai's `common.caller.MCP_CLIENT_NAME`."""
+MCP_CLIENT_INVALID = "invalid"
+"""What a delivery line names for an `x-dfo-mcp-client` that fails `_MCP_CLIENT_NAME`."""
+MINT_ADMISSION_HEADER = "X-DFO-Mint-Admission"
+"""`background` on a mint that warms data no caller waits on yet (`datasets_api.background_admission`)."""
+MINT_ADMISSION_BACKGROUND = "background"
+
+
+class DeliverySurface(StrEnum):
+    """Where a delivered request came from. `direct` is a request no principal vouches for, and
+    `unknown` a vouched one that names no valid surface."""
+
+    website = "website"
+    api = "api"
+    studio = "studio"
+    mcp = "mcp"
+    direct = "direct"
+    unknown = "unknown"
+
+
+_NAMEABLE_SURFACES = frozenset(
+    {DeliverySurface.website, DeliverySurface.api, DeliverySurface.studio, DeliverySurface.mcp}
+)
+"""The surfaces an upstream may name in `SURFACE_HEADER`."""
+
+type CallerSource = Literal["vouched", "address", "none"]
+type Admission = Literal["foreground", "background"]
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryIdentity:
+    """Who a request delivers data to, as its delivery log line names them.
+
+    `caller` is the vouched `x-dfo-caller` (`caller_source="vouched"`), else, on an unvouched
+    request, this service's own address key for it (`"address"`), else `None` (`"none"`).
+    `upstream` is the unverified `email` claim of the request's ID token. `client` is the
+    `<name>/<version>` product token of the `X-DFO-Client` value, `None` when the header is
+    absent or has another shape. `user_agent` is the end client's User-Agent, cleaned and
+    clipped (see the module docstring). `admission` is `background` for a request sent with
+    `X-DFO-Mint-Admission: background`, else `foreground`. `turn_id` is the `x-dfo-turn` value
+    of a vouched `conversation:` caller's request when it fully matches `tr_<16 hex digits>`,
+    else `None`. `mcp_client` is an `ip:` caller's vouched `x-dfo-mcp-client`, the end client's
+    MCP `initialize` name, when the stripped single value fully matches `_MCP_CLIENT_NAME`;
+    `MCP_CLIENT_INVALID` when the header is present and empty of a usable value (it fails the
+    pattern or repeats); `None` when the header is absent or blank, or the caller is not an
+    `ip:` caller.
+    """
+
+    caller: str | None
+    caller_source: CallerSource
+    upstream: str | None
+    surface: DeliverySurface
+    client: str | None
+    user_agent: str | None
+    admission: Admission
+    turn_id: str | None
+    mcp_client: str | None
+
+
+UNRESOLVED_IDENTITY = DeliveryIdentity(
+    caller=None,
+    caller_source="none",
+    upstream=None,
+    surface=DeliverySurface.unknown,
+    client=None,
+    user_agent=None,
+    admission="foreground",
+    turn_id=None,
+    mcp_client=None,
+)
+"""The identity of a delivery made outside a request `dfo_platform.app` resolved."""
+
+
+def _named_surface(request: Request) -> DeliverySurface:
+    named = (_single(request, SURFACE_HEADER) or "").strip().lower()
+    return DeliverySurface(named) if named in _NAMEABLE_SURFACES else DeliverySurface.unknown
+
+
+def _client_token(request: Request) -> str | None:
+    """The `<name>/<version>` product token of `X-DFO-Client`, its runtime comment dropped."""
+    match = _CLIENT_FORMAT.fullmatch(_clean(request.headers.get(CLIENT_HEADER, "")))
+    return f"{match['name']}/{match['version']}" if match else None
+
+
+def _mcp_client_of(request: Request) -> str | None:
+    """The `x-dfo-mcp-client` name of a vouched `ip:` caller's request: the stripped value
+    when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
+    `MCP_CLIENT_INVALID`."""
+    values = request.headers.getlist(MCP_CLIENT_HEADER)
+    if not values:
+        return None
+    name = values[0].strip() if len(values) == 1 else None
+    if name == "":
+        return None
+    return name if name is not None and _MCP_CLIENT_NAME.fullmatch(name) else MCP_CLIENT_INVALID
+
+
+def _caller_of(
+    request: Request, settings: CallerSettings, *, vouched: bool
+) -> tuple[str | None, CallerSource]:
+    """The caller and its source for `delivery_identity`. A vouched request's own address is
+    the upstream's, so one without a valid `x-dfo-caller` names no caller."""
+    if vouched:
+        named = _single(request, CALLER_HEADER)
+        if named is not None and (
+            _ADDRESS_KEY.fullmatch(named) or _CONVERSATION_KEY.fullmatch(named)
+        ):
+            return named, "vouched"
+        return None, "none"
+    try:
+        return _own_address_key(request, settings), "address"
+    except CallerUnresolved:
+        return None, "none"
+
+
+def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIdentity:
+    """Name the consumer of `request` for its delivery line. See the module docstring.
+
+    It never raises. A principal `resolve_caller` refuses and logs reads here, unlogged, as no
+    principal. The request is `direct` and named by address.
+    """
+    try:
+        admission: Admission = (
+            "background"
+            if request.headers.get(MINT_ADMISSION_HEADER, "").strip().lower()
+            == MINT_ADMISSION_BACKGROUND
+            else "foreground"
+        )
+        vouched = _vouched(request, settings)
+        caller, source = _caller_of(request, settings, vouched=vouched)
+        conversation = caller is not None and caller.startswith(CONVERSATION_KEY_PREFIX)
+        if not vouched:
+            surface = DeliverySurface.direct
+        elif conversation:
+            surface = DeliverySurface.studio
+        else:
+            surface = _named_surface(request)
+        turn = _single(request, TURN_HEADER)
+        # `conversation` is true only for a vouched caller, so it carries the vouch.
+        turn_id = turn if conversation and turn and _TURN_ID.fullmatch(turn) else None
+        forwarded = _clean(request.headers.get(USER_AGENT_HEADER, "")) if vouched else ""
+        own = _clean(request.headers.get("user-agent", ""))
+        mcp_client = (
+            _mcp_client_of(request)
+            if vouched and caller is not None and _ADDRESS_KEY.fullmatch(caller)
+            else None
+        )
+        return DeliveryIdentity(
+            caller=caller,
+            caller_source=source,
+            upstream=caller_identity_from_headers(request.headers).email,
+            surface=surface,
+            client=_client_token(request),
+            user_agent=None if conversation else (forwarded or own or None),
+            admission=admission,
+            turn_id=turn_id,
+            mcp_client=mcp_client,
+        )
+    except Exception as exc:
+        # A log line's identity must not fail the request it describes.
+        _caller_log.warning("delivery identity unresolved: %s", type(exc).__name__)
+        return UNRESOLVED_IDENTITY
+
+
+_delivery_identity: ContextVar[DeliveryIdentity] = ContextVar(
+    "dfo_delivery_identity", default=UNRESOLVED_IDENTITY
+)
+
+
+def set_delivery_identity(identity: DeliveryIdentity) -> Token[DeliveryIdentity]:
+    """Bind `identity` for the current request. Reset it with `reset_delivery_identity`."""
+    return _delivery_identity.set(identity)
+
+
+def reset_delivery_identity(token: Token[DeliveryIdentity]) -> None:
+    _delivery_identity.reset(token)
+
+
+def current_delivery_identity() -> DeliveryIdentity:
+    """The identity `dfo_platform.app` bound for the request in flight, else
+    `UNRESOLVED_IDENTITY`."""
+    return _delivery_identity.get()

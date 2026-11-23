@@ -17,6 +17,26 @@ columns the dataset's roles take (`default_enrichment`), which the verbs need to
 totals out of a sum or rank. The rendering is part of the root's identity: its mint options
 are the root record's `options`, which the recipe's normal form names.
 
+A Spec, dataset or ref root that states no `groupby`, under a step other than `filter`, is
+planned with the column words the steps over it name on its side (`PlannedRoot`, `_path_words`),
+and a root whose version holds more than one StatVar is read summed, keeping the summable axes
+those words name, unless they name `stat_var` (`analysis_roots.implied_groupby`). The sum is
+the root's `groupby`, so its record, the normal form and the ref state it, and the answer counts
+the StatVars it summed (`stat_vars_summed`). A word naming a summable axis reads the
+`stat_var_<axis>` column the sum keeps (`column_for`), whose cells are code dcids. With the
+setting `analysis_sum_selected_codes` (`AnalysisBounds.sum_selected_codes`), the codes the
+`filter` steps between the root and the nearest step above it that is no `filter` keep on a
+kept axis become the sum's `codes` selection (`_kept_codes`, `_Plan.planned`), so the sum keeps
+only the StatVars those filters keep, and the filters still run. The sum's checks before its
+folds read every row, and its folds check only the selected groups, so a root whose sum with no
+selection refuses on a group the filters leave out answers. A root a rolling step reads selects
+none where a rolling overlay states its population, which counts every row. A
+`category_match` value on that column may be a code's dcid, its publisher code or a label naming
+one code of the axis; the planner resolves it before the request is keyed
+(`resolved_breakdown_values`), and a label naming several codes refuses
+`breakdown_label_ambiguous`. A `stat_var_unresolved` names the summed read, or the sum the
+datasets door refused (`_with_summed_read`).
+
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
 `sum_of` and `join`, `frame_ref` and `denominator_frame_ref` for `share_of` and `quotient_of`, and
@@ -54,9 +74,16 @@ runner fills one population list from the whole tree and every period from its o
 period, and the inputs are computed again under that period. A request whose whole `tree` is a
 derived root computes that recipe again under its own ids, which is how a client reads a derived
 frame on its datasets' newest versions.
-With `latest` false every root is read at the version it names. With `latest` true a Spec or dataset root is read at its dataset's current version of the same rendering, and
-each rolling literal follows the latest period of that data. Both read their roots through one
-`RootSource`.
+With `latest` false every root is read at the version it names. With `latest` true a Spec or
+dataset root is read at its dataset's current version of the same rendering, and each rolling
+literal follows the latest period of that data. With `latest` `"stored"` (`STORED`) every Spec
+and dataset root, a derived root's recipe roots and `anchor_roots` included, is read at the
+version its dataset's stored head names, as the rules of the head GET judge the head
+(`analysis_roots.LiveRootSource`), with the head it resolved to on the root
+(`ResolvedRoot.head`, `stored_heads`). The run is then keyed and computed as a `latest` false
+request naming those versions, so the two share one stored answer and one frame, and a
+rolling literal must be the latest period, as a pinned request's must. All three read their
+roots through one `RootSource`.
 
 A run (`run_analysis`) resolves every root first, so a root still building answers
 `AnalysisPending` with every rebuild it waits on submitted. It then holds one materialise permit
@@ -70,13 +97,18 @@ roots therefore stores nothing new and answers the same ref. The ref's `artifact
 the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it was read as. The
 recipe carries `left_out`, every series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
 (`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
+`verify_analysis` computes a `verify` request's tree at the versions its roots name, past any
+stored answer, compares its frame with the frame stored under the tree's pair by `cv_` and by
+output digest, and stores nothing. It names every root it cannot read at its version in its
+answer, and records an engine refusal or a cap the computation meets as its outcome.
 
 A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
 request key (`request_key`) taken, a hash of the working tree as sent, each resolved root's
-record, `latest`, the engine's execution identity and the answer format (`ANSWER_FORMAT`). The
-run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
-frame is stored, so a later request with the same key answers the stored body
-(`stored_answer`) while the frame file it names is still served, reading no frame. A taken-down
+record and version (with the base version a sum read), `latest`, the engine's execution
+identity and the answer format (`ANSWER_FORMAT`). The run (`run_prepared`) stores its 200
+body under that key (`RecipeStore.write_answer`) once its frame is stored, so a later request
+with the same key answers the stored body (`stored_answer`) while the frame file it names is
+still served, reading no frame. A taken-down
 output pair refuses `snapshot_revoked` on both paths, a stored answer and a run that would reuse
 the stored frame, as a derived read of the pair does.
 
@@ -98,14 +130,19 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Annotated, Any, Literal, Protocol, Self
 
 import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.content_version import mint_content_version
-from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
+from dfo_frame_grammar.grammar import (
+    FACET_IDENTITY_COLUMNS,
+    STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
+    VALUE_COLUMN,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -115,13 +152,23 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
 
 from artifact_store import ArtifactStore
+from code_index import CodeIndex, CodeRow
+from code_index.query import fold_text
 from dataset_store.clock import Clock
-from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, read_servable_version
+from dataset_store.snapshot import (
+    SnapshotNotFound,
+    SnapshotReader,
+    SnapshotRevoked,
+    StoredArtifactLocation,
+    read_servable_version,
+)
+from datasets_api.description_record import MAX_SUMMED_NAMED
 from datasets_api.doors.publish import (
     PUBLISH_MAX_ROWS,
     publish_built_frame,
@@ -176,6 +223,7 @@ from dfo_analysis_engine.recipe import (
 )
 from dfo_analysis_engine.refusal import AnalysisRefused
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
+from dfo_analysis_engine.refusal import RefusalCode as EngineRefusalCode
 from dfo_analysis_engine.rolling import (
     PairingKeysUnstatedError,
     PopulationEmptyError,
@@ -187,11 +235,15 @@ from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Refusal
 from dfo_platform.roles import role_key_axis
 from materialise import EnrichmentLookup
+from materialise.errors import OverCeilingError
 
 logger = logging.getLogger(__name__)
 
 PLACE_ROLE_WORD = "place"
 PLACE_COLUMN = "observationAbout"
+STAT_VAR_WORD = "stat_var"
+# A groupby keeps a summable axis as `stat_var_<axis>` (conformance C115).
+STAT_VAR_PREFIX = "stat_var_"
 
 # The frame slots of each verb that `data` and `other` fill, in that order.
 _SLOTS: Mapping[str, tuple[str, str | None]] = {
@@ -395,22 +447,56 @@ class StepNode(BaseModel):
 StepInputs.model_rebuild()
 
 
+# How a request reads its roots: `False` at the versions they name, `True` at their datasets'
+# current versions, rebuilt as the definition GET rebuilds a stale head, and `"stored"` at the
+# versions their datasets' stored heads name, read from records alone (`STORED`).
+type Latest = bool | Literal["stored"]
+
+STORED: Literal["stored"] = "stored"
+"""The `latest` that resolves each root to its dataset's stored head (see the module
+docstring)."""
+
+# The optional members of a 200 a request names in `include`.
+type Included = Literal["manifest", "summary"]
+
+
 class AnalysisRequest(BaseModel):
-    """`POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
-    datasets' newest versions. A `tree` that is a derived root alone computes that frame's
-    stored recipe again, so `latest` reads it on its datasets' newest versions under the
-    recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
-    rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
-    are computed again under one latest period. Left out, each keeps its stored populations and
-    periods."""
+    """`POST /api/datasets/analysis`: the tree to compute, and how its roots pick their
+    versions (`latest`). A `tree` that is a derived root alone computes that frame's stored
+    recipe again, so `latest` reads it on its datasets' newest versions under the recipe's own
+    ids. `rolling` `"tree"` takes the populations and the latest period of every rolling
+    overlay a derived root's recipe holds from the whole tree, so derived rolling inputs are
+    computed again under one latest period. Left out, each keeps its stored populations and
+    periods. `include` names the optional members of the 200 (`doors.analysis.AnalysisReady`).
+    `verify` computes the tree again at the versions it names, past any stored answer, and
+    stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses `latest`,
+    `include` and a Spec root, which reads its dataset's newest version."""
 
     model_config = ConfigDict(extra="forbid")
 
+    verify: bool = Field(
+        default=False,
+        description="compute the tree again at the versions it names and compare its frame "
+        "with the one stored under its pair, storing nothing; first-party callers only",
+    )
     tree: Annotated[
         Annotated[StepNode, Tag("step")] | Annotated[DerivedRoot, Tag("derived")],
         Discriminator(_node_kind),
     ]
-    latest: bool = False
+    latest: Latest = Field(
+        default=False,
+        description="false reads each root at the version it names; true at its dataset's "
+        'current version, rebuilt when its head is stale; "stored" at the version its '
+        "dataset's stored head names, from records alone, answering 202 pending with the "
+        "queued rebuild when the dataset has no servable head",
+    )
+    include: list[Included] | None = Field(
+        default=None,
+        description="the optional members of the 200: `manifest`, the derived manifest of the "
+        "answer's pair, and `summary`, which a request that states `include` receives only "
+        "when it names it",
+        json_schema_extra={"uniqueItems": True},
+    )
     rolling: Literal["tree"] | None = None
     anchor_roots: (
         list[
@@ -421,6 +507,48 @@ class AnalysisRequest(BaseModel):
         ]
         | None
     ) = Field(default=None, min_length=1, max_length=DEFAULT_MAX_NODES)
+
+    @field_validator("latest")
+    @classmethod
+    def _verify_names_no_latest(cls, latest: Latest, info: ValidationInfo) -> Latest:
+        if latest is not False and info.data.get("verify") is True:
+            raise ValueError("verify reads the versions the tree names: send latest=false")
+        return latest
+
+    @field_validator("include")
+    @classmethod
+    def _include_each_once(
+        cls, include: list[Included] | None, info: ValidationInfo
+    ) -> list[Included] | None:
+        if include is None:
+            return None
+        if info.data.get("verify") is True:
+            raise ValueError("verify answers no ready body: send no include")
+        if len(set(include)) != len(include):
+            raise ValueError("include names each member once")
+        return include
+
+    @model_validator(mode="after")
+    def _verify_reads_pinned_versions(self) -> Self:
+        if not self.verify:
+            return self
+        if _holds_spec_root(self.tree) or any(
+            isinstance(root, SpecRoot) for root in self.anchor_roots or ()
+        ):
+            raise ValueError(
+                "verify reads the versions the tree names, and a Spec root names none: name "
+                "each dataset root by its spec_id and content_version"
+            )
+        return self
+
+
+def _holds_spec_root(node: object) -> bool:
+    """Whether the request node `node` reaches a Spec root."""
+    if isinstance(node, SpecRoot):
+        return True
+    if isinstance(node, StepNode):
+        return _holds_spec_root(node.inputs.data) or _holds_spec_root(node.inputs.other)
+    return False
 
 
 # --- Refusals and outcomes -----------------------------------------------------------------------
@@ -568,6 +696,18 @@ class AnalysisPending(Exception):
 
 
 @dataclass(frozen=True, kw_only=True)
+class StoredHead:
+    """The stored head a root resolved to under `latest: "stored"`: its dataset's served
+    `spec_id`, the head's dataset version, and the `freshness` the head GET states for it
+    (`current`, `pending` while its check runs, `stale` when the check could not be
+    submitted)."""
+
+    spec_id: str
+    content_version: str
+    freshness: Literal["current", "pending", "stale"]
+
+
+@dataclass(frozen=True, kw_only=True)
 class ResolvedRoot:
     """A root at the version it is read at.
 
@@ -575,7 +715,10 @@ class ResolvedRoot:
     else the pair `analysis_roots.frame_ref_for` derives from its rendering. `record` is the mint
     record a recipe's `roots` holds for it (`dataset`, `options`, and the rest).
     `rendering` is the ref format 2 root's rendering. `rows` is the frame's row count as its
-    version records it, `None` where the reader has none. `source` is the reader's own handle."""
+    version records it, `None` where the reader has none. `source` is the reader's own handle.
+    `summed_count` is how many StatVars a groupby summed into the frame, 0 where it sums none,
+    and `stat_vars_summed` names them as bare dcids as far as its version's trace does. `sum_refused` is the `{axis, precondition}` of the `rollup_not_summable`
+    a sum the planner implied met, the root then read unsummed (`RootSource.resolve`)."""
 
     frame: FrameRef
     dataset: FrameRef
@@ -583,6 +726,26 @@ class ResolvedRoot:
     rendering: Mapping[str, Any]
     rows: int | None = None
     source: object = field(default=None, compare=False)
+    stat_vars_summed: tuple[str, ...] = ()
+    summed_count: int = 0
+    base_content_version: str | None = None
+    # Whether the steps over the root named `stat_var`, which left it unsummed (`_resolve`).
+    stat_var_named: bool = False
+    # The stored head the root resolved to under `latest: "stored"`, else `None`. Not part of
+    # the root's identity, so it never reaches a key.
+    head: StoredHead | None = field(default=None, compare=False)
+
+    def version(self) -> dict[str, str]:
+        """`{spec_id, content_version}`, the version the root reads, with
+        `base_content_version`, the dataset version a StatVar sum read, when that is another
+        version; a rendering that cuts party totals names none (conformance C121f)."""
+        read = {"spec_id": self.dataset.spec_id, "content_version": self.dataset.content_version}
+        base = self.base_content_version
+        if base is None or base == self.dataset.content_version:
+            return read
+        return {**read, "base_content_version": base}
+
+    sum_refused: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -599,13 +762,32 @@ class LocatedRoot(ResolvedRoot):
 class RootSource(Protocol):
     """Where the runner reads its roots from (`analysis_roots.LiveRootSource`)."""
 
+    @property
+    def code_index(self) -> CodeIndex | None:
+        """The code index a filter value on a breakdown column resolves through
+        (`resolved_breakdown_values`), `None` where values stay as the caller gave them."""
+        ...
+
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: Latest,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
-        """The version `root` is read at.
+        """The version `root` is read at, as `latest` picks it (`Latest`); under `"stored"` the
+        root names the head it resolved to (`ResolvedRoot.head`). `path_words`, set on a request root that states no
+        `groupby`, are the words the steps over it name (`PlannedRoot`): a version whose
+        frame holds more than one StatVar is read summed, keeping the summable axes those
+        words name, unless they name `stat_var`. `codes`, set only beside `path_words`, are
+        the code dcids the filters over the root keep on each axis, which that sum selects on
+        each axis it keeps (`groupby.codes`).
 
         Raises:
-            AnalysisPending: The root's dataset is still building.
+            AnalysisPending: The root's dataset is still building, or under `"stored"` has no
+                servable head and its rebuild is queued.
             FrameUnavailable: The version is not held.
         """
         ...
@@ -660,9 +842,14 @@ class AnalysisStores:
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisBounds:
+    """A run's bounds, and `sum_selected_codes`, whether a sum the planner infers reads the
+    codes the filters over its root keep (`_Plan.planned`, setting
+    `analysis_sum_selected_codes`)."""
+
     max_nodes: int = DEFAULT_MAX_NODES
     max_root_rows: int = DEFAULT_MAX_ROOT_ROWS
     max_join_rows: int = DEFAULT_MAX_JOIN_ROWS
+    sum_selected_codes: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -725,6 +912,20 @@ class AnalysisResult:
             "time": summary["time"],
             "execution_identity": summary["execution_identity"],
             "resolved_periods": list(self.resolved_periods),
+            "derived_roots": _unique(
+                version
+                for version in (root.version() for root in self.roots)
+                if "base_content_version" in version
+            ),
+            "stat_vars_summed": _unique(
+                {
+                    "spec_id": root.dataset.spec_id,
+                    "content_version": root.dataset.content_version,
+                    "count": root.summed_count,
+                }
+                for root in self.roots
+                if root.summed_count
+            ),
         }
 
 
@@ -744,17 +945,48 @@ def _sentence(evaluation: Evaluation) -> str:
 # --- The plan ------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, kw_only=True)
+class PlannedRoot:
+    """A root of the working tree. `path_words` are the column words the steps over it name on
+    its side, set only on a root the request states with no `groupby` under a step other than
+    `filter` (`_path_words`, `_plan_node`), so a stored recipe's roots, a stated groupby and a
+    root under filters alone are read as stated. `codes`, set only beside `path_words`, maps a
+    code system to the code dcids the `filter` steps between the root and the nearest step
+    above it that is no `filter` keep on its `stat_var_<axis>` column (`_Plan.planned`), the
+    `groupby.codes` selection an implied sum keeping that axis reads with
+    (`analysis_roots.implied_groupby`)."""
+
+    root: SpecRoot | DatasetRoot
+    path_words: frozenset[str] | None = None
+    codes: Mapping[str, tuple[str, ...]] | None = None
+
+
+# The code dcids the `filter` steps over a root keep on each code system's `stat_var_<axis>`
+# column (`_kept_codes`), or `None` where a value names no code of its axis or two filters on
+# one axis keep no code in common, so the root is read with no selection.
+type _Selection = Mapping[str, frozenset[str]] | None
+
+
 @dataclass(kw_only=True)
 class _Plan:
     """The tree with every root numbered by its first reach, derived roots expanded. Nodes are
     counted as the walk reaches them, so a tree past `max_nodes` refuses at the first node over
-    it, before the rest is expanded or any further recipe is read."""
+    it, before the rest is expanded or any further recipe is read. A root reached under two
+    sets of path words is two roots until they resolve alike (`merged_roots`)."""
 
     max_nodes: int
     rolling_tree: bool = False
+    # Whether a sum the planner infers reads a selection at all (`AnalysisBounds`).
+    sum_selected_codes: bool = False
     nodes: int = 0
     indices: dict[str, int] = field(default_factory=dict)
-    roots: list[SpecRoot | DatasetRoot] = field(default_factory=list)
+    roots: list[PlannedRoot] = field(default_factory=list)
+    # The selection each reach of a request root read with path words carries, by `_root_key`,
+    # with whether a rolling step is above it (`_is_rolling_step`).
+    selections: dict[str, list[tuple[_Selection, bool]]] = field(default_factory=dict)
+    # Whether a rolling overlay of the tree states its population rather than taking it from
+    # the tree (`_states_population`).
+    stated_population: bool = False
 
     def count(self) -> None:
         """Count one node.
@@ -768,14 +1000,59 @@ class _Plan:
                 ceiling_kind="analysis_nodes", count=self.nodes, cap=self.max_nodes
             )
 
-    def root(self, root: SpecRoot | DatasetRoot) -> dict[str, Any]:
-        """Count `root` and number it, once per distinct root."""
+    def root(
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None = None,
+        selection: _Selection = None,
+        rolled: bool = False,
+    ) -> dict[str, Any]:
+        """Count `root` and number it, once per distinct root and path words, and keep the
+        `selection` of a reach with path words, and whether a rolling step is above it
+        (`rolled`). A root that states a `groupby` keeps no path words."""
         self.count()
-        key = f"{type(root).__name__}:{root.model_dump_json()}"
+        if root.rendering.groupby is not None:
+            path_words = None
+        key = _root_key(root)
+        if path_words is not None:
+            self.selections.setdefault(key, []).append((selection, rolled))
+            key += f":{sorted(path_words)}"
         if key not in self.indices:
             self.indices[key] = len(self.roots)
-            self.roots.append(root)
+            self.roots.append(PlannedRoot(root=root, path_words=path_words))
         return {"root": self.indices[key]}
+
+    def planned(self) -> list[PlannedRoot]:
+        """The roots, each with path words given the codes its reaches select when every reach
+        of its request root with path words selects the same codes. A request root read by two
+        branches that keep different codes, or by one that keeps none, is read with no
+        selection, so its reaches resolve as they would with none and still merge into one
+        root (`merged_roots`). Where a rolling overlay states its population, the latest
+        period is counted over every row of each root a rolling step reads, whatever the
+        filters keep, so such a reach selects none; a population taken from the tree binds the
+        filters' own values, so it counts the rows a selection keeps. With
+        `sum_selected_codes` off no root selects."""
+        if not self.sum_selected_codes:
+            return list(self.roots)
+        planned: list[PlannedRoot] = []
+        for held in self.roots:
+            reaches = [
+                None if rolled and self.stated_population else selection
+                for selection, rolled in self.selections.get(_root_key(held.root), [])
+            ]
+            first = reaches[0] if reaches and held.path_words is not None else None
+            if first and all(reach == first for reach in reaches):
+                held = replace(
+                    held, codes={axis: tuple(sorted(codes)) for axis, codes in first.items()}
+                )
+            planned.append(held)
+        return planned
+
+
+def _root_key(root: SpecRoot | DatasetRoot) -> str:
+    """The key that tells request roots apart: their kind and JSON form."""
+    return f"{type(root).__name__}:{root.model_dump_json()}"
 
 
 def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
@@ -791,21 +1068,214 @@ def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
     )
 
 
-def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: str) -> Any:
+# The arguments that list columns of a verb's primary slot.
+_COLUMN_LISTS = ("group_by", "entity_by", "rank_by", "partition_by", "numerator_by", "join_keys")
+
+
+def _words(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return {word for word in value if isinstance(word, str)}
+    return set()
+
+
+def _path_words(step: StepNode) -> dict[str, set[str]]:
+    """The column words `step` names on each input, `data` and `other`, slot by slot as
+    `_translated` names its columns: each of `_COLUMN_LISTS` and each predicate's column on the
+    verb's primary slot, an entity binding's keys on its slot, a pairing's keys on one side
+    and its values on the other, and a join's `join_keys` on its other side too when it states
+    no `right_keys`."""
+    data_slot, other_slot = _SLOTS[step.verb]
+    paired = step.inputs.other is not None
+    side_of = {data_slot: "data", other_slot: "other"} if paired else {}
+
+    def side(slot: str | None) -> str:
+        return side_of.get(slot or data_slot, "data")
+
+    words: dict[str, set[str]] = {"data": set(), "other": set()}
+    arguments = step.arguments
+    for name in _COLUMN_LISTS:
+        words[side(_PRIMARY_SLOT)] |= _words(arguments.get(name))
+    for name, slot in (
+        ("left_entity", _PRIMARY_SLOT),
+        ("right_entity", "right_frame_ref"),
+        ("numerator_entity", _PRIMARY_SLOT),
+        ("denominator_entity", "denominator_frame_ref"),
+    ):
+        if isinstance(binding := arguments.get(name), dict):
+            words[side(slot)] |= set(binding)
+    for name, left in (
+        ("on", data_slot),
+        ("denominator_by", _PRIMARY_SLOT),
+        ("right_keys", _PRIMARY_SLOT),
+    ):
+        pairs = arguments.get(name)
+        if isinstance(pairs, list):
+            words[side(left)] |= _words(pairs)
+            words[side(other_slot)] |= _words(pairs)
+        elif isinstance(pairs, dict):
+            words[side(left)] |= set(pairs)
+            words[side(other_slot)] |= _words(list(pairs.values()))
+    predicates = arguments.get("predicates")
+    for predicate in predicates if isinstance(predicates, list) else ():
+        if isinstance(predicate, dict):
+            words[side(_PRIMARY_SLOT)] |= _words(predicate.get("column"))
+    if step.verb is Verb.JOIN and not arguments.get("right_keys"):
+        # With no `right_keys`, each `join_keys` column keys both sides under its own name.
+        words[side(other_slot)] |= _words(arguments.get("join_keys"))
+    return words
+
+
+# The columns a filter predicate on which keeps other rows of a frame's StatVars than of their
+# sum: the value, its status, and the facets a sum across StatVars does not keep row by row.
+_OBSERVATION_COLUMNS = frozenset({VALUE_COLUMN, STATUS_COLUMN, *FACET_IDENTITY_COLUMNS})
+
+
+def _reads_observations(step: StepNode) -> bool:
+    """Whether `step`, a `filter`, holds a predicate on one of `_OBSERVATION_COLUMNS`. A
+    predicate on a role, a kept `stat_var_<axis>` column, `time_period` or `unit` keeps the
+    same rows before a sum as after it."""
+    predicates = step.arguments.get("predicates")
+    return any(
+        isinstance(predicate, dict) and predicate.get("column") in _OBSERVATION_COLUMNS
+        for predicate in (predicates if isinstance(predicates, list) else ())
+    )
+
+
+# The verbs whose two sides hold one grain, so the words of the steps over them name both.
+_SYMMETRIC = frozenset({Verb.COMPARE, Verb.SUM_OF})
+
+
+def _is_rolling_step(arguments: Mapping[str, Any]) -> bool:
+    """Whether a step with `arguments`, as the caller sent them, states a period relative to the
+    latest one: a `rolling` overlay, or a window bound or predicate value that is a rolling
+    reference (`_lift_rolling`)."""
+    if isinstance(arguments.get(_ROLLING), Mapping):
+        return True
+    if any(_is_rolling_ref(arguments.get(bound)) for bound in _WINDOW_BOUNDS):
+        return True
+    predicates = arguments.get("predicates")
+    return isinstance(predicates, list) and any(
+        isinstance(predicate, Mapping)
+        and (_is_rolling_ref(predicate.get("value")) or _is_rolling_ref(predicate.get(_ROLLING)))
+        for predicate in predicates
+    )
+
+
+def _states_population(parameters: Mapping[str, Any]) -> bool:
+    """Whether `parameters`' rolling overlay states the `population` its latest period is
+    counted over, which the runner otherwise fills from the tree (`_fill_populations`)."""
+    overlay = parameters.get(_ROLLING)
+    return isinstance(overlay, Mapping) and "population" in overlay
+
+
+def _kept_codes(step: StepNode, codes: CodeIndex | None, held: _Selection) -> _Selection:
+    """`held`, the codes the filters above `step` keep, narrowed by `step`, a `filter` as the
+    caller sent it: each `category_match` on a code system's column, `<axis>` or
+    `stat_var_<axis>`, keeps the codes its values name (`_codes_named`), and the codes two
+    predicates or filters keep on one axis intersect. `None` when `held` is, when a value
+    names no code of its axis, so the filter still lists every value the column holds
+    (`unmatched_breakdown_values`), or when an axis keeps no code."""
+    predicates = step.arguments.get("predicates")
+    if held is None or codes is None or not isinstance(predicates, list):
+        return held
+    kept = dict(held)
+    for predicate in predicates:
+        if not (
+            isinstance(predicate, dict)
+            and predicate.get("kind") == "category_match"
+            and isinstance(values := predicate.get("values"), list)
+            and (axis := _axis_of(predicate.get("column"), codes)) is not None
+        ):
+            continue
+        named: set[str] = set()
+        for value in values:
+            rows = _codes_named(value, axis, codes) if isinstance(value, str) else ()
+            if len(rows) != 1:
+                return None
+            named.add(rows[0].dcid)
+        kept[axis] = kept[axis] & named if axis in kept else frozenset(named)
+        if not kept[axis]:
+            return None
+    return kept
+
+
+def _plan_node(
+    node: Node,
+    plan: _Plan,
+    *,
+    source: RootSource,
+    verb: str,
+    side: str,
+    path_words: frozenset[str] = frozenset(),
+    reduced: bool = False,
+    value_filtered: bool = False,
+    selection: _Selection = None,
+    rolled: bool = False,
+) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
     node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
-    the nodes it stands for."""
+    the nodes it stands for.
+
+    `path_words` are the words the steps above `node` name on its side. A step adds its own
+    (`_path_words`): its `data` input inherits the words above it, and its `other` input
+    inherits them under `compare` and `sum_of` only, whose sides hold one grain. Under
+    `share_of`, `quotient_of` and `join` the other side is keyed by its own words.
+    `reduced` is whether a step above `node` is a verb other than `filter`, which reads one
+    StatVar. A root under `filter` steps alone selects rows and keeps every StatVar's, so it is
+    planned with no path words and read as stated. `value_filtered` is whether a `filter`
+    between `node` and the nearest step above it that is no `filter` holds a predicate that
+    does not commute with a sum (`_reads_observations`): a threshold on `value` keeps other
+    rows of the StatVars than of their sum, so a root under one is read as stated too, as a
+    saved filter's root is. `selection` is the codes the `filter` steps between `node` and
+    the nearest step above it that is no `filter` keep (`_kept_codes`): a step that is no
+    `filter` starts it afresh for its inputs, so a filter above a step that reduces or
+    reshapes the rows selects nothing below it. `rolled` is whether a rolling step is above
+    `node` (`_is_rolling_step`), whose latest period may read every row of the roots under it
+    (`_Plan.planned`)."""
     match node:
         case StepNode():
             plan.count()
+            sent = node
+            plan.stated_population |= _states_population(sent.arguments)
+            rolled = rolled or _is_rolling_step(sent.arguments)
+            node = resolved_breakdown_values(node, source.code_index)
+            words = _path_words(node)
+            below = reduced or node.verb is not Verb.FILTER
+            filtered = (
+                value_filtered or _reads_observations(node) if node.verb is Verb.FILTER else False
+            )
+            kept = (
+                _kept_codes(sent, source.code_index, selection) if node.verb is Verb.FILTER else {}
+            )
             inputs = {
                 "data": _plan_node(
-                    node.inputs.data, plan, source=source, verb=node.verb, side="data"
+                    node.inputs.data,
+                    plan,
+                    source=source,
+                    verb=node.verb,
+                    side="data",
+                    path_words=path_words | words["data"],
+                    reduced=below,
+                    value_filtered=filtered,
+                    selection=kept,
+                    rolled=rolled,
                 )
             }
             if node.inputs.other is not None:
+                inherited = path_words if node.verb in _SYMMETRIC else frozenset()
                 inputs["other"] = _plan_node(
-                    node.inputs.other, plan, source=source, verb=node.verb, side="other"
+                    node.inputs.other,
+                    plan,
+                    source=source,
+                    verb=node.verb,
+                    side="other",
+                    path_words=inherited | words["other"],
+                    reduced=below,
+                    value_filtered=filtered,
+                    selection=kept,
+                    rolled=rolled,
                 )
             return {"step": node, "inputs": inputs}
         case RefRoot():
@@ -820,6 +1290,11 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
                 source=source,
                 verb=verb,
                 side=side,
+                path_words=path_words,
+                reduced=reduced,
+                value_filtered=value_filtered,
+                selection=selection,
+                rolled=rolled,
             )
         case DerivedRoot():
             stored = source.recipe(spec_id=node.spec_id, content_version=node.content_version)
@@ -832,7 +1307,13 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
             records = stored["roots"]
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
-            return plan.root(node)
+            summed = reduced and not value_filtered
+            return plan.root(
+                node,
+                path_words=path_words if summed else None,
+                selection=selection,
+                rolled=rolled,
+            )
 
 
 def _expand(
@@ -844,7 +1325,8 @@ def _expand(
 ) -> dict[str, Any]:
     """A stored recipe's `tree` as working nodes, its roots read again (`dataset_root`). Under
     `plan.rolling_tree` each rolling overlay follows the larger tree (`_follow_tree`) and the
-    stored `anchor_roots` are dropped, so the period is taken over that tree."""
+    stored `anchor_roots` are dropped, so the period is taken over that tree. Filter values
+    stay as stored, and are matched to the frames read once they are read (`_Engine.matched`)."""
     if "root" in tree:
         return plan.root(source.dataset_root(records[tree["root"]]))
     plan.count()
@@ -852,6 +1334,7 @@ def _expand(
     parameters = copy.deepcopy(op_spec["parameters"])
     if plan.rolling_tree:
         _follow_tree(parameters)
+    plan.stated_population |= _states_population(parameters)
     expanded: dict[str, Any] = {
         "op_spec": {"verb": op_spec["verb"], "parameters": parameters},
         "inputs": {
@@ -874,6 +1357,7 @@ def role_columns(frame: Frame) -> tuple[str, ...]:
 
 def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
     """The column of `columns` that `word` names: itself when a column is so named, else
+    `stat_var_<word>` when a groupby kept the summable axis `word` as that column, else
     `observationAbout` for `place`, else the one column on the flow axis `origin` or
     `destination` names. Any other word passes through for the engine to judge.
 
@@ -882,6 +1366,8 @@ def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
     """
     if word in columns:
         return word
+    if (kept := f"{STAT_VAR_PREFIX}{word}") in columns:
+        return kept
     if word == PLACE_ROLE_WORD:
         return PLACE_COLUMN
     on_axis = [column for column in columns if role_key_axis(column) == word]
@@ -892,6 +1378,101 @@ def column_for(word: str, columns: Sequence[str], *, parameter: str) -> str:
             )
         )
     return on_axis[0] if on_axis else word
+
+
+def _axis_of(word: object, codes: CodeIndex) -> str | None:
+    """The code system the column word `word` names, as the axis or as its `stat_var_<axis>`
+    column, else `None`."""
+    if not isinstance(word, str):
+        return None
+    axis = word.removeprefix(STAT_VAR_PREFIX)
+    return axis if axis in codes.declarations else None
+
+
+def _codes_named(value: str, axis: str, codes: CodeIndex) -> tuple[CodeRow, ...]:
+    """The codes of `axis` that `value` names: the code whose dcid it is, else the code whose
+    publisher code it is, else the codes whose label it is under `fold_text`, else those
+    whose synonym it is (`CodeIndex.codes_by_text`)."""
+    if (row := codes.code_by_dcid(value)) is not None and row.code_system == axis:
+        return (row,)
+    if (row := codes.code_by_code(axis, value)) is not None:
+        return (row,)
+    hits = [row for row in codes.codes_by_text(value) if row.code_system == axis]
+    folded = fold_text(value)
+    return tuple([row for row in hits if fold_text(row.label) == folded] or hits)
+
+
+def _label_names_one_code(row: CodeRow, codes: CodeIndex) -> bool:
+    """Whether no other code of `row`'s axis has `row`'s label, so a frame whose cells held
+    labels held this one for `row` alone."""
+    folded = fold_text(row.label)
+    return [
+        hit.dcid
+        for hit in codes.codes_by_text(row.label)
+        if hit.code_system == row.code_system and fold_text(hit.label) == folded
+    ] == [row.dcid]
+
+
+def _engine_values(values: list[Any], *, column: str, axis: str, codes: CodeIndex) -> list[Any]:
+    """`values` of a `category_match` on the breakdown column `column` as the engine matches
+    them: a value naming one code of `axis` as the code's dcid, followed by its label when that
+    label names no other code of the axis, and any other value as given.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    sent: list[Any] = []
+    for value in values:
+        named = _codes_named(value, axis, codes) if isinstance(value, str) else ()
+        if len(named) > 1:
+            raise AnalysisRefused(
+                EngineRefusal.breakdown_label_ambiguous(
+                    column=column,
+                    value=value,
+                    candidates=[{"dcid": row.dcid, "label": row.label} for row in named],
+                )
+            )
+        if not named:
+            spelled = [value]
+        elif _label_names_one_code(row := named[0], codes):
+            spelled = [row.dcid, row.label]
+        else:
+            spelled = [row.dcid]
+        sent.extend(one for one in spelled if one not in sent)
+    return sent
+
+
+def resolved_breakdown_values(step: StepNode, codes: CodeIndex | None) -> StepNode:
+    """`step` with each `category_match` value on a breakdown column, `<axis>` or
+    `stat_var_<axis>` for a code system of `codes`, as the engine matches it
+    (`_engine_values`): a code dcid, a publisher code and a label naming one code of the axis
+    all become that code's dcid and, while its label names no other code, that label, so a
+    frame holding dcid cells and one holding label cells both match. A value naming
+    no code of the axis stays as given, and keeps no row the column does not hold. The planner
+    resolves values before the request key is taken, so each spelling of one code keys one
+    stored answer, and the engine's filter stays exact.
+
+    Raises:
+        AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+    """
+    predicates = step.arguments.get("predicates")
+    if codes is None or not isinstance(predicates, list):
+        return step
+    resolved: list[JsonValue] = []
+    for predicate in predicates:
+        if (
+            isinstance(predicate, dict)
+            and predicate.get("kind") == "category_match"
+            and isinstance(values := predicate.get("values"), list)
+            and (axis := _axis_of(column := predicate.get("column"), codes)) is not None
+        ):
+            assert isinstance(column, str)
+            predicate = {
+                **predicate,
+                "values": _engine_values(values, column=column, axis=axis, codes=codes),
+            }
+        resolved.append(predicate)
+    return step.model_copy(update={"arguments": {**step.arguments, "predicates": resolved}})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -933,7 +1514,7 @@ def _translated(verb: Verb, arguments: Mapping[str, Any], sides: _Sides) -> dict
     data_slot, other_slot = _SLOTS[verb]
     other = other_slot or data_slot
     out = copy.deepcopy(dict(arguments))
-    for name in ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys"):
+    for name in _COLUMN_LISTS:
         if name in out:
             out[name] = sides.names(_PRIMARY_SLOT, out[name], parameter=name)
     for name, slot in (
@@ -1056,10 +1637,12 @@ def _follow_tree(parameters: dict[str, Any]) -> None:
 
 @dataclass(kw_only=True)
 class _Engine:
-    """The working tree turned to the engine's tree over the read root frames."""
+    """The working tree turned to the engine's tree over the read root frames. `codes` is the
+    code index a stored op-spec's filter values resolve through (`matched`)."""
 
     frames: Sequence[Frame]
     resolved: Sequence[ResolvedRoot]
+    codes: CodeIndex | None = None
     lifted: bool = False
 
     def columns(self, node: Mapping[str, Any]) -> Sequence[str]:
@@ -1074,6 +1657,56 @@ class _Engine:
                 node = inputs[_PRIMARY_SLOT]
         return role_columns(self.frames[node["root"]])
 
+    def matched(self, node: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The op-spec of the stored recipe node `node`, each `category_match` predicate on a
+        breakdown column of `codes` resolved as a request's is (`_engine_values`) when a value
+        it holds is missing from the column in the root frames under `node` while a code it
+        names is held there, as a stored label is against a frame whose cells hold dcids. Any
+        other predicate stays as stored, so a recipe whose values match its frames keeps its
+        ids.
+
+        Raises:
+            AnalysisRefused: `breakdown_label_ambiguous`, for a label naming several codes.
+        """
+        op_spec = node["op_spec"]
+        predicates = op_spec["parameters"].get("predicates")
+        codes = self.codes
+        if codes is None or not isinstance(predicates, list):
+            return op_spec
+        resolved: list[Any] = []
+        for predicate in predicates:
+            if (
+                isinstance(predicate, dict)
+                and predicate.get("kind") == "category_match"
+                and isinstance(values := predicate.get("values"), list)
+                and (axis := _axis_of(column := predicate.get("column"), codes)) is not None
+            ):
+                assert isinstance(column, str)
+                held = self.held(node, column)
+                if any(
+                    row.dcid in held
+                    for value in values
+                    if isinstance(value, str) and value not in held
+                    for row in _codes_named(value, axis, codes)
+                ):
+                    predicate = {
+                        **predicate,
+                        "values": _engine_values(values, column=column, axis=axis, codes=codes),
+                    }
+            resolved.append(predicate)
+        if resolved == predicates:
+            return op_spec
+        return {**op_spec, "parameters": {**op_spec["parameters"], "predicates": resolved}}
+
+    def held(self, node: Mapping[str, Any], column: str) -> set[object]:
+        """The values of `column` in the root frames under `node` that hold it."""
+        held: set[object] = set()
+        for index in _roots_under(node):
+            frame = self.frames[index]
+            if column in frame.columns:
+                held.update(frame.table.column(column).unique().to_pylist())
+        return held
+
     def tree(self, node: Mapping[str, Any]) -> dict[str, Any]:
         if "root" in node:
             return {"root": node["root"]}
@@ -1085,7 +1718,7 @@ class _Engine:
                 literal is None for literal, _ in rolling_literals(node["op_spec"]["parameters"])
             )
             return {
-                "op_spec": node["op_spec"],
+                "op_spec": self.matched(node),
                 "inputs": {slot: self.tree(child) for slot, child in node["inputs"].items()},
                 **anchors,
             }
@@ -1110,6 +1743,15 @@ class _Engine:
             "inputs": {slot: self.tree(child) for slot, child in slots.items()},
             **anchors,
         }
+
+
+def _roots_under(node: Mapping[str, Any]) -> Iterator[int]:
+    """The root indices of the working tree `node`, its anchor roots included."""
+    if "root" in node:
+        yield node["root"]
+        return
+    for child in (*node["inputs"].values(), *node.get(_ANCHOR_ROOTS, ())):
+        yield from _roots_under(child)
 
 
 def _renumbered(tree: dict[str, Any], count: int) -> tuple[dict[str, Any], list[int]]:
@@ -1360,17 +2002,20 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
     def walk(node: Mapping[str, Any]) -> str:
         if "root" in node:
             root = roots[node["root"]]
-            return emit(
-                node["frame"],
-                {
-                    "op": "retrieve",
-                    "input": {
-                        "id": root.dataset.spec_id,
-                        "content_version": root.dataset.content_version,
-                    },
-                    "options": dict(root.record.get("options") or {}),
+            retrieve: dict[str, Any] = {
+                "op": "retrieve",
+                "input": {
+                    "id": root.dataset.spec_id,
+                    "content_version": root.dataset.content_version,
                 },
-            )
+                "options": dict(root.record.get("options") or {}),
+            }
+            if root.summed_count:
+                retrieve["summed"] = {
+                    "count": root.summed_count,
+                    "variables": [{"ref": ref} for ref in root.stat_vars_summed[:MAX_SUMMED_NAMED]],
+                }
+            return emit(node["frame"], retrieve)
         built = next(calls).step
         # Every step was built: a `None` step returned above.
         assert built is not None
@@ -1418,11 +2063,12 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
 
 @dataclass(frozen=True)
 class _HeldFile:
-    """A recorded pair's servable frame file's digest, and the frame hash its version records
-    (`StoredVersion.frame_sha256`)."""
+    """A recorded pair's servable frame file's digest, the frame hash its version records
+    (`StoredVersion.frame_sha256`), and the file's location."""
 
     artifact_digest: str
     recorded_frame_sha256: str | None
+    location: StoredArtifactLocation
 
 
 def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
@@ -1447,6 +2093,7 @@ def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
     return _HeldFile(
         artifact_digest=location.artifact_digest,
         recorded_frame_sha256=stored.version.frame_sha256,
+        location=location,
     )
 
 
@@ -1470,18 +2117,6 @@ def _frame_content_version(stores: AnalysisStores, ref: FrameRef, held: _HeldFil
     return None if recorded is None else mint_content_version(frame_sha256=recorded)
 
 
-def _stored_file_digest(
-    stores: AnalysisStores, *, spec_id: str, content_version: str
-) -> str | None:
-    """The digest of `_held_file` of a recorded pair, or `None`.
-
-    Raises:
-        SnapshotRevoked: The pair is taken down.
-    """
-    held = _held_file(stores, FrameRef(spec_id=spec_id, content_version=content_version))
-    return None if held is None else held.artifact_digest
-
-
 @dataclass(frozen=True)
 class _StoredFrame:
     """The frame a run answers: its pair, its frame file's digest, its frame-grammar `cv_`, and
@@ -1493,31 +2128,45 @@ class _StoredFrame:
     created: bool
 
 
-def _store(
-    evaluation: Evaluation,
-    roots: Sequence[ResolvedRoot],
-    stores: AnalysisStores,
-    *,
-    trace_id: str | None,
-) -> _StoredFrame:
-    """Store the evaluated frame and its recipe, and return the frame a ref names: the frame
-    at `evaluation.ref` when its file is servable, else the servable frame a recipe of the same
-    replay key is stored under (`_replayed`), else the evaluated frame published at
-    `evaluation.ref`. A frame stored already gains the recipe, which the store keeps once.
+def _store(computed: Computed, stores: AnalysisStores, *, trace_id: str | None) -> _StoredFrame:
+    """Store the evaluated frame of `computed` and its recipe, and return the frame a ref
+    names: the frame at `evaluation.ref` when its file is servable, else the servable frame a
+    recipe of the same replay key is stored under (`_replayed`), else the evaluated frame
+    published at `evaluation.ref`. A frame stored already gains the recipe, which the store
+    keeps once. A held frame is reused only when its content matches the evaluated frame's:
+    at `evaluation.ref` its frame `cv_`. Root frames whose cells a render format rewrites are
+    named apart (`analysis_roots.frame_ref_for`), so a held frame of another `cv_` at the
+    run's own pair is a fault, refused loudly.
 
     Raises:
-        AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
+        AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these,
+            or a servable frame whose `cv_` differs from the evaluated frame's.
         SnapshotRevoked: The pair answered is taken down.
         StoredFrameUnreadable: A pair recording no frame hash holds a copy of its stored frame
             that does not decode, read to name it (`_frame_content_version`,
             `publish_built_frame`), and no other copy reads (`render.linked_stored_frame`).
     """
+    evaluation, roots = computed.evaluation, computed.roots
     recipe = _recipe(evaluation, roots)
     ref = evaluation.ref
     frame_content_version = str(evaluation.summary["frame_content_version"])
     held = _held_file(stores, ref)
+    if (
+        held is not None
+        and (stored_cv := _frame_content_version(stores, ref, held)) != frame_content_version
+    ):
+        logger.error(
+            "an analysis run computes another frame than the one stored under its pair "
+            "spec_id=%s content_version=%s stored_frame_content_version=%s "
+            "run_frame_content_version=%s",
+            ref.spec_id,
+            ref.content_version,
+            stored_cv,
+            frame_content_version,
+        )
+        raise AnalysisStoreDiverges(spec_id=ref.spec_id, content_version=ref.content_version)
     artifact_digest = None if held is None else held.artifact_digest
-    if held is None and (replayed := _replayed(ref, recipe, stores)) is not None:
+    if held is None and (replayed := _replayed(computed, recipe, stores)) is not None:
         ref, artifact_digest, frame_content_version = replayed
     try:
         if artifact_digest is not None:
@@ -1599,18 +2248,21 @@ def _log_divergence(
 
 
 def _replayed(
-    computed: FrameRef, recipe: Recipe, stores: AnalysisStores
+    computed: Computed, recipe: Recipe, stores: AnalysisStores
 ) -> tuple[FrameRef, str, str] | None:
     """The pair a recipe of `recipe`'s replay key is stored under, its servable frame file's
-    digest and its frame's `cv_`, for a run whose own pair `computed` holds no frame file. The replay key names the computation over
-    its root versions, and the pair also hashes the root frames' pairs, which differ for one
-    computation when a stored run named a root's pair under an earlier derivation of
-    `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
+    digest and its frame's `cv_`, for a run whose own pair holds no frame file. The replay key
+    names the computation over its root versions, and the pair also hashes the root frames'
+    pairs, which differ for one computation when a stored run named a root's pair under an
+    earlier derivation of `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
 
-    A pair that serves no frame file, or has no frame hash to name its frame by
-    (`_frame_content_version`), gives up the key (`RecipeStore.supersede_replay`) and answers
-    `None`, so the run publishes at `computed`, whose recipe then takes the key. Its new bytes can
-    differ from the stored frame's, since a minting step's rows name its own pair.
+    A pair that serves no frame file, has no frame hash to name its frame by
+    (`_frame_content_version`), or holds a frame whose output digest differs from the run's
+    (`_stored_output_digest`), as a frame computed from root frames of another render format
+    does (`versions.RENDER_FORMAT`) under a replay key that names the same root versions, gives
+    up the key (`RecipeStore.supersede_replay`) and answers `None`, so the run publishes at its
+    own pair, whose recipe then takes the key. The output digest compares the frames, since
+    their bytes differ where a minting step's rows name its own pair.
 
     Raises:
         SnapshotRevoked: The replayed pair is taken down.
@@ -1619,10 +2271,14 @@ def _replayed(
     if replayed is None:
         return None
     ref = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
-    if ref == computed:
+    if ref == computed.evaluation.ref:
         return None
     held = _held_file(stores, ref)
-    if held is not None and (frame_content_version := _frame_content_version(stores, ref, held)):
+    if (
+        held is not None
+        and (frame_content_version := _frame_content_version(stores, ref, held))
+        and _stored_output_digest(stores, ref, computed) == computed.output_digest
+    ):
         return ref, held.artifact_digest, frame_content_version
     stores.recipe_store.supersede_replay(
         replay_key=recipe.replay_key, spec_id=ref.spec_id, content_version=ref.content_version
@@ -1638,28 +2294,33 @@ _DEFAULT_BOUNDS = AnalysisBounds()
 
 def plan_roots(
     request: AnalysisRequest, *, source: RootSource, bounds: AnalysisBounds
-) -> tuple[dict[str, Any], list[SpecRoot | DatasetRoot]]:
-    """The working tree of `request` and its roots, derived roots expanded.
+) -> tuple[dict[str, Any], list[PlannedRoot]]:
+    """The working tree of `request` and its roots, derived roots expanded, each request root
+    that states no `groupby` with the words the steps over it name (`PlannedRoot`).
 
     Raises:
         SeveralMembers: A ref input holds several members.
         FrameUnavailable: A derived root's recipe is not stored.
         AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
     """
-    plan = _Plan(max_nodes=bounds.max_nodes, rolling_tree=request.rolling == "tree")
+    plan = _Plan(
+        max_nodes=bounds.max_nodes,
+        rolling_tree=request.rolling == "tree",
+        sum_selected_codes=bounds.sum_selected_codes,
+    )
     top = request.tree
     verb = top.verb if isinstance(top, StepNode) else ""
-    tree = _plan_node(top, plan, source=source, verb=verb, side="data")
+    tree = _plan_node(top, plan, source=source, verb=verb, side="data", selection={})
     if request.anchor_roots is not None:
         tree[_ANCHOR_ROOTS] = [plan.root(root) for root in request.anchor_roots]
-    return tree, plan.roots
+    return tree, plan.planned()
 
 
 def resolve_roots(
-    roots: Sequence[SpecRoot | DatasetRoot],
+    roots: Sequence[PlannedRoot],
     *,
     source: RootSource,
-    latest: bool,
+    latest: Latest,
     trace_id: str | None,
 ) -> list[ResolvedRoot]:
     """Every root at the version it is read at. Every root is resolved before any pending one
@@ -1670,17 +2331,90 @@ def resolve_roots(
     """
     resolved: list[ResolvedRoot] = []
     pending: list[AnalysisPending] = []
-    for root in roots:
+    for planned in roots:
         try:
-            resolved.append(source.resolve(root, latest=latest, trace_id=trace_id))
+            resolved.append(_resolve(planned, source=source, latest=latest, trace_id=trace_id))
         except AnalysisPending as waiting:
             pending.append(waiting)
     if pending:
         raise AnalysisPending(
-            operations=[operation for waiting in pending for operation in waiting.operations],
+            # Roots of one dataset wait on one rebuild, named once.
+            operations=list(
+                dict.fromkeys(operation for waiting in pending for operation in waiting.operations)
+            ),
             retry_after_s=max(waiting.retry_after_s for waiting in pending),
         )
     return resolved
+
+
+def _resolve(
+    planned: PlannedRoot, *, source: RootSource, latest: Latest, trace_id: str | None
+) -> ResolvedRoot:
+    """`planned` resolved, its path words passed only when it has them, and marked when they
+    name `stat_var`."""
+    if planned.path_words is None:
+        return source.resolve(planned.root, latest=latest, trace_id=trace_id)
+    if planned.codes is None:
+        resolved = source.resolve(
+            planned.root, latest=latest, trace_id=trace_id, path_words=planned.path_words
+        )
+    else:
+        resolved = source.resolve(
+            planned.root,
+            latest=latest,
+            trace_id=trace_id,
+            path_words=planned.path_words,
+            codes=planned.codes,
+        )
+    if STAT_VAR_WORD in planned.path_words:
+        return replace(resolved, stat_var_named=True)
+    return resolved
+
+
+def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
+    """The working node `node` with each root renumbered by `index`."""
+    if not isinstance(node, Mapping):
+        return node
+    if "root" in node:
+        return {**node, "root": index[node["root"]]}
+    renumbered = dict(node)
+    renumbered["inputs"] = {
+        slot: _with_roots(child, index) for slot, child in node["inputs"].items()
+    }
+    if _ANCHOR_ROOTS in node:
+        renumbered[_ANCHOR_ROOTS] = [_with_roots(child, index) for child in node[_ANCHOR_ROOTS]]
+    return renumbered
+
+
+def merged_roots[R: ResolvedRoot](
+    working: dict[str, Any], resolved: Sequence[R], planned: Sequence[PlannedRoot]
+) -> tuple[dict[str, Any], list[R]]:
+    """`working` and `resolved`, planned as `planned`, with the roots planned from one request
+    root that resolved to one record made one root. A root reached under two sets of path
+    words is planned twice (`_Plan.root`), and reads one frame when the words imply the same
+    rendering, as they do for a root of one StatVar, so the recipe, its ids and the rows read
+    are those of a tree naming the root once. Two request roots that resolve alike stay two.
+    A merged root keeps the first `sum_refused` among those it merges, and names `stat_var`
+    when any of them did (`ResolvedRoot.stat_var_named`)."""
+    index: dict[int, int] = {}
+    kept: list[R] = []
+    first: dict[tuple[str, bytes], int] = {}
+    for at, (root, plan) in enumerate(zip(resolved, planned, strict=True)):
+        key = (_root_key(plan.root), rfc8785.dumps(dict(root.record)))
+        if key not in first:
+            first[key] = len(kept)
+            kept.append(root)
+        else:
+            held = kept[first[key]]
+            kept[first[key]] = replace(
+                held,
+                sum_refused=held.sum_refused or root.sum_refused,
+                stat_var_named=held.stat_var_named or root.stat_var_named,
+            )
+        index[at] = first[key]
+    if len(kept) == len(resolved):
+        return working, list(resolved)
+    return _with_roots(working, index), kept
 
 
 def locate_roots(
@@ -1748,7 +2482,59 @@ def _evaluated(
             the publish door stores (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
     frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
-    engine = _Engine(frames=frames, resolved=resolved)
+    computed = _evaluated_frames(
+        working, resolved, frames, bounds=bounds, latest=latest, codes=source.code_index
+    )
+    if source.code_index is None:
+        return computed
+    summary = _with_unmatched_codes(computed.evaluation.summary, source.code_index)
+    return replace(computed, evaluation=replace(computed.evaluation, summary=summary))
+
+
+def _with_unmatched_codes(summary: Mapping[str, Any], codes: CodeIndex) -> dict[str, Any]:
+    """`summary` with each `unmatched_breakdown_values` entry naming the codes its `labels`
+    hold as `codes`, `[{dcid, label}]` for each held value that is a code dcid of the entry's
+    axis, so a caller sees the label beside each dcid the column holds."""
+    result = summary.get("result")
+    unmatched = result.get("unmatched_breakdown_values") if isinstance(result, Mapping) else None
+    if not unmatched:
+        return dict(summary)
+    named: list[dict[str, Any]] = []
+    for entry in unmatched:
+        axis = str(entry["column"]).removeprefix(STAT_VAR_PREFIX)
+        held = (codes.code_by_dcid(value) for value in entry["labels"])
+        named.append(
+            {
+                **entry,
+                "codes": [
+                    {"dcid": row.dcid, "label": row.label}
+                    for row in held
+                    if row is not None and row.code_system == axis
+                ],
+            }
+        )
+    assert isinstance(result, Mapping)
+    return {**summary, "result": {**result, "unmatched_breakdown_values": named}}
+
+
+def _evaluated_frames(
+    working: dict[str, Any],
+    resolved: Sequence[LocatedRoot],
+    frames: Sequence[Frame],
+    *,
+    bounds: AnalysisBounds,
+    latest: bool,
+    codes: CodeIndex | None,
+) -> Computed:
+    """Evaluate the working tree over `frames`, the frames of `resolved` in its order, a
+    stored op-spec's filter values on a breakdown column matched to them through `codes`
+    (`_Engine.matched`).
+
+    Raises:
+        AnalysisTooLarge: The frame passes the rows the publish door stores
+            (`PUBLISH_MAX_ROWS`), refused before it is digested.
+    """
+    engine = _Engine(frames=frames, resolved=resolved, codes=codes)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
     frames = [frames[index] for index in order]
@@ -1762,9 +2548,19 @@ def _evaluated(
         # A lifted reference sets a rolling overlay, so the tree has a latest period.
         assert anchor is not None
         _fill_literals(tree, anchor.period)
-    evaluation = evaluate(
-        tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
-    )
+    try:
+        evaluation = evaluate(
+            tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
+        )
+    except AnalysisRefused as refused:
+        reads = (
+            ordered
+            if refused.roots is None
+            else [ordered[index] for index in refused.roots if index < len(ordered)]
+        )
+        if (named := _with_summed_read(refused.refusal, reads)) is None:
+            raise
+        raise AnalysisRefused(named, roots=refused.roots) from refused
     rows = evaluation.frame.num_rows
     if rows > PUBLISH_MAX_ROWS:
         raise AnalysisTooLarge(
@@ -1777,6 +2573,68 @@ def _evaluated(
         roots=tuple(ordered),
         root_variables=root_variables,
         output_digest=output_digest(evaluation.frame, names),
+    )
+
+
+SUMMED_READ: Mapping[str, Any] = {"by": ["time_period"], "op": "sum"}
+"""The root rendering groupby that sums a reading's StatVars when it is read, keeping its roles
+and periods. A summable axis named in `by` beside `time_period` stays apart as
+`stat_var_<axis>`."""
+
+_SUMMED_READ_ADVICE = (
+    " Read the root summed: name no 'stat_var' in the steps over it, so DFO sums its"
+    ' StatVars when it is read, or give it the rendering groupby {"by": ["time_period"],'
+    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
+)
+# The advice for a root left unsummed by anything but its steps naming `stat_var`: a filter on
+# observations below it, a stored recipe's root, or a stated groupby.
+_STATED_SUMMED_READ_ADVICE = (
+    ' Read the root summed: give it the rendering groupby {"by": ["time_period"],'
+    ' "op": "sum"}, adding a summable axis such as crsPurpose to by to keep it apart.'
+)
+
+
+def _with_summed_read(
+    refusal: EngineRefusal, roots: Sequence[ResolvedRoot]
+) -> EngineRefusal | None:
+    """`refusal`, a `stat_var_unresolved` over several StatVars of `roots`, the roots the
+    refused step reads, with the read that answers it, else `None`. A refusal over no
+    StatVars, as for a window that holds no row, names none: a summed read would not answer it.
+
+    When a sum the planner implied for one of `roots` was refused by the datasets door, the
+    refusal names each such sum in its message and its `fix` as `groupby_refused`
+    (`{spec_id, content_version, axis, precondition}`), and offers no summed read, which would
+    refuse again. Otherwise it names the summed read in its message and `fix["groupby"]`
+    (`SUMMED_READ`)."""
+    if refusal.code is not EngineRefusalCode.STAT_VAR_UNRESOLVED:
+        return None
+    if len(refusal.fix.get("distinct_stat_vars") or ()) < 2:
+        return None
+    sums = [
+        {
+            "spec_id": root.dataset.spec_id,
+            "content_version": root.dataset.content_version,
+            **root.sum_refused,
+        }
+        for root in roots
+        if root.sum_refused is not None
+    ]
+    if sums:
+        preconditions = ", ".join(f"{one['axis']}: {one['precondition']}" for one in sums)
+        message = (
+            f"{refusal.message} DFO could not read it summed: the sum refused "
+            f"rollup_not_summable ({preconditions})."
+        )
+        return replace(refusal, message=message, fix={**refusal.fix, "groupby_refused": sums})
+    return replace(
+        refusal,
+        message=refusal.message
+        + (
+            _SUMMED_READ_ADVICE
+            if any(root.stat_var_named for root in roots)
+            else _STATED_SUMMED_READ_ADVICE
+        ),
+        fix={**refusal.fix, "groupby": copy.deepcopy(dict(SUMMED_READ))},
     )
 
 
@@ -1796,14 +2654,21 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    working, resolved = merged_roots(working, resolved, roots)
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
-        return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
+        return _evaluated(
+            working, located, source=source, bounds=bounds, latest=request.latest is True
+        )
 
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
-# only a body of this format is answered. Raise it whenever the body changes.
-ANSWER_FORMAT = "analysis_answer/1"
+# only a body of this format is answered. Raise it whenever the body changes. Format 4 holds
+# code dcids in `stat_var_<axis>` cells (`datasets_api.decode`). Format 5 reads a party's kind
+# on a declared composite's root rows over the composite's component tables
+# (`code_index.types.PartyRow.kinds_over`), so a verb leaves out a party those tables declare a
+# total, as it leaves out any total.
+ANSWER_FORMAT = "analysis_answer/5"
 
 
 def _keyed_tree(node: object) -> object:
@@ -1821,12 +2686,17 @@ def request_key(
     working: Mapping[str, Any], resolved: Sequence[ResolvedRoot], *, latest: bool
 ) -> str:
     """The key a run's answer is stored under: the sha256 of the canonical JSON of the working
-    tree, each resolved root's record, `latest`, the execution identity and `ANSWER_FORMAT`.
-    Two requests under one key compute one frame and answer one body."""
+    tree, each resolved root's record and the version it reads (`ResolvedRoot.version`, with
+    the base version a sum read), `latest`, the execution identity and `ANSWER_FORMAT`. Two
+    requests under one key compute one frame and answer one body, so a body's `derived_roots`
+    names the base each root was read through. A `latest: "stored"` request is keyed with
+    `latest` false, over the versions its roots resolved to, so it shares its key with a pinned
+    request naming them (`prepare_analysis`)."""
     preimage = {
         "answer_format": ANSWER_FORMAT,
         "tree": _keyed_tree(working),
         "roots": [dict(root.record) for root in resolved],
+        "versions": [root.version() for root in resolved],
         "latest": latest,
         "execution_identity": current_execution_identity().canonical_string(),
     }
@@ -1836,7 +2706,9 @@ def request_key(
 @dataclass(frozen=True, kw_only=True)
 class PreparedAnalysis:
     """A request planned and resolved, no frame read: its working tree, its roots at the
-    versions they are read at, and its request key."""
+    versions they are read at, and its request key. `latest` is the engine's policy, true only
+    for a `latest: true` request: a `"stored"` request runs as the pinned request naming the
+    versions it resolved to does."""
 
     working: dict[str, Any]
     resolved: tuple[ResolvedRoot, ...]
@@ -1859,30 +2731,54 @@ def prepare_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    working, resolved = merged_roots(working, resolved, roots)
+    latest = request.latest is True
     return PreparedAnalysis(
         working=working,
         resolved=tuple(resolved),
-        latest=request.latest,
-        key=request_key(working, resolved, latest=request.latest),
+        latest=latest,
+        key=request_key(working, resolved, latest=latest),
     )
 
 
-def stored_answer(prepared: PreparedAnalysis, *, stores: AnalysisStores) -> dict[str, Any] | None:
+def stored_heads(prepared: PreparedAnalysis) -> list[StoredHead]:
+    """The stored head of each dataset `prepared`'s roots resolved to under `latest:
+    "stored"`, once per dataset, in the order its roots first reach it; empty for any other
+    request."""
+    heads: dict[str, StoredHead] = {}
+    for root in prepared.resolved:
+        if root.head is not None:
+            heads.setdefault(root.head.spec_id, root.head)
+    return list(heads.values())
+
+
+def stored_answer(
+    prepared: PreparedAnalysis,
+    *,
+    stores: AnalysisStores,
+    summary: bool = True,
+    on_hit: Callable[[str, str, StoredArtifactLocation], None] | None = None,
+) -> dict[str, Any] | None:
     """The body stored under `prepared`'s key while its frame file is still served at the
-    digest the body's ref names, else `None`.
+    digest the body's ref names, else `None`. With `summary` false the body is read without
+    its `summary` (`RecipeStore.read_answer`). A hit calls `on_hit` with the pair the body
+    names and its frame file's location, which the door hands to the renewal of a file near
+    the end of its working-tier retention (`operations.renewal.renew_if_expiring`).
 
     Raises:
         SnapshotRevoked: The pair the body names is taken down.
     """
-    stored = stores.recipe_store.read_answer(request_key=prepared.key)
+    stored = stores.recipe_store.read_answer(request_key=prepared.key, summary=summary)
     if stored is None:
         return None
-    served = _stored_file_digest(
-        stores, spec_id=stored.spec_id, content_version=stored.content_version
+    held = _held_file(
+        stores, FrameRef(spec_id=stored.spec_id, content_version=stored.content_version)
     )
     body: dict[str, Any] = dict(stored.body)
-    if served is None or served != body["ref"]["members"][0]["artifact"]["digest"]:
+    if held is None or held.artifact_digest != body["ref"]["members"][0]["artifact"]["digest"]:
         return None
+    if on_hit is not None:
+        on_hit(stored.spec_id, stored.content_version, held.location)
     return body
 
 
@@ -1911,7 +2807,7 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        stored = _store(computed.evaluation, computed.roots, stores, trace_id=trace_id)
+        stored = _store(computed, stores, trace_id=trace_id)
         evaluation = replace(
             computed.evaluation,
             ref=stored.ref,
@@ -1967,6 +2863,370 @@ def run_analysis(
     )
 
 
+# --- Verification --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class UnavailableRoot:
+    """A root a verification cannot read at the version it names: the Datasets code a run
+    refuses it with (`artifact_expired` once its stored frame or file has aged out,
+    `snapshot_revoked` once its version is taken down), and why."""
+
+    spec_id: str
+    content_version: str
+    code: str
+    reason: str
+
+    @classmethod
+    def of(cls, refused: FrameUnavailable | SnapshotRevoked) -> UnavailableRoot:
+        if isinstance(refused, SnapshotRevoked):
+            return cls(
+                spec_id=refused.id,
+                content_version=refused.content_version,
+                code=refused.code,
+                reason=str(refused),
+            )
+        return cls(
+            spec_id=refused.spec_id,
+            content_version=refused.content_version,
+            code=refused.code,
+            reason=refused.reason,
+        )
+
+
+type VerifyOutcome = Literal["same", "different", "not_stored", "roots_unavailable"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class Verification:
+    """What `verify_analysis` found. `frame` and `frame_content_version` are the pair the
+    computation named and its frame's `cv_`, `None` when a root could not be read or the
+    computation was refused. `stored` and `stored_frame_content_version` are the pair compared
+    with and the `cv_` of the frame stored under it, `None` when no frame file is served there;
+    `stored_execution_identity` is the execution identity its recipe records.
+    `stored_output_digest` is the stored frame's output digest, read when the two `cv_`s
+    differ, else `None`. `execution_identity` is the engine's that computed `frame`.
+    `refusal_code` and `refusal_reason` are the refusal the computation met, the engine's code
+    or `over_ceiling` with its ceiling kind, else `None`. See `verify_analysis` for the
+    outcome."""
+
+    outcome: VerifyOutcome
+    frame: FrameRef | None
+    frame_content_version: str | None
+    output_digest: str | None
+    stored: FrameRef | None
+    stored_frame_content_version: str | None
+    stored_output_digest: str | None
+    stored_execution_identity: str | None
+    execution_identity: dict[str, str]
+    refusal_code: str | None
+    refusal_reason: str | None
+    unavailable_roots: tuple[UnavailableRoot, ...]
+
+    def body(self) -> dict[str, Any]:
+        """The 200 body of `POST /api/datasets/analysis` with `verify` set
+        (`doors.analysis.AnalysisVerified`)."""
+        return {
+            "status": "verified",
+            "outcome": self.outcome,
+            "frame": None if self.frame is None else pair(self.frame),
+            "frame_content_version": self.frame_content_version,
+            "output_digest": self.output_digest,
+            "stored": None if self.stored is None else pair(self.stored),
+            "stored_frame_content_version": self.stored_frame_content_version,
+            "stored_output_digest": self.stored_output_digest,
+            "stored_execution_identity": self.stored_execution_identity,
+            "execution_identity": self.execution_identity,
+            "refusal_code": self.refusal_code,
+            "refusal_reason": self.refusal_reason,
+            "unavailable_roots": [asdict(root) for root in self.unavailable_roots],
+        }
+
+
+class _Unavailable:
+    """Every root a verification cannot read, each named once, in the order met."""
+
+    def __init__(self) -> None:
+        self._roots: dict[tuple[str, str], UnavailableRoot] = {}
+
+    def add(self, refused: FrameUnavailable | SnapshotRevoked) -> None:
+        root = UnavailableRoot.of(refused)
+        self._roots.setdefault((root.spec_id, root.content_version), root)
+
+    def __bool__(self) -> bool:
+        return bool(self._roots)
+
+    def roots(self) -> tuple[UnavailableRoot, ...]:
+        return tuple(self._roots.values())
+
+
+def _readable_roots(
+    roots: Sequence[PlannedRoot],
+    *,
+    source: RootSource,
+    trace_id: str | None,
+    unavailable: _Unavailable,
+) -> list[LocatedRoot]:
+    """Each root resolved at the version it names and located. A root that refuses either
+    step, or whose version is taken down, is added to `unavailable` and the rest are still
+    resolved.
+
+    Raises:
+        AnalysisTooLarge: The roots resolved pass the root-row bound the source renders in
+            memory under (`analysis_roots.LiveRootSource` with `render` false).
+    """
+    located: list[LocatedRoot] = []
+    for root in roots:
+        try:
+            located.append(
+                source.locate(_resolve(root, source=source, latest=False, trace_id=trace_id))
+            )
+        except (FrameUnavailable, SnapshotRevoked) as refused:
+            unavailable.add(refused)
+    return located
+
+
+def _read_every_root(
+    located: Sequence[LocatedRoot], *, source: RootSource, cap: int, unavailable: _Unavailable
+) -> list[Frame]:
+    """The frames of `located`, read in turn, as `_read_roots` reads them. A root whose frame
+    is gone is added to `unavailable` and the rest are still read, so each is named. Once
+    `unavailable` names a root, from this read or from resolving, no frame is kept, since
+    nothing is computed: each frame read is dropped before the next read.
+
+    Raises:
+        AnalysisTooLarge: The roots read hold more than `cap` rows.
+    """
+    frames: list[Frame] = []
+    read = 0
+    for root in located:
+        try:
+            frame = source.read(root)
+        except FrameUnavailable as refused:
+            unavailable.add(refused)
+            frames.clear()
+            continue
+        read += frame.num_rows
+        if read > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=read, cap=cap)
+        if not unavailable:
+            frames.append(frame)
+        del frame
+    return frames
+
+
+def _matched_root_variables(
+    records: Sequence[Mapping[str, Any]], computed: Computed
+) -> dict[int, frozenset[str]] | None:
+    """The `stat_var` values of each root of a stored recipe, by its index in the stored tree,
+    taken from the root the computation read under the same record, or `None` when a record
+    has no such root. Records are matched without their `frame` pair, which a stored run may
+    have named under an earlier derivation of `analysis_roots.frame_ref_for`."""
+
+    def unnamed(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in record.items() if key != "frame"}
+
+    read = [unnamed(root.record) for root in computed.roots]
+    variables: dict[int, frozenset[str]] = {}
+    for index, record in enumerate(records):
+        at = next((at for at, held in enumerate(read) if held == unnamed(record)), None)
+        if at is None:
+            return None
+        variables[index] = computed.root_variables[at]
+    return variables
+
+
+def _stored_output_digest(stores: AnalysisStores, ref: FrameRef, computed: Computed) -> str | None:
+    """The output digest of the frame stored under the pair `ref`, its minted variables named
+    by its stored recipe's tree over the variables of the roots `computed` read
+    (`output_digest.minted_variable_names`), or `None` when the pair holds no recipe, a recipe
+    root matches no root read, or no copy of its frame is held. Reads only.
+
+    Raises:
+        StoredFrameUnreadable: A copy of the stored frame does not decode and no other reads.
+    """
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    if recipe is None:
+        return None
+    body: Mapping[str, Any] = recipe.body
+    variables = _matched_root_variables(body["roots"], computed)
+    if variables is None:
+        return None
+    frame = linked_stored_frame(
+        stores.snapshot_reader.read_artifact_locations(ref.spec_id, ref.content_version),
+        artifact_store=stores.artifact_store,
+        now=stores.now(),
+    )
+    if frame is None:
+        return None
+    return output_digest(frame, minted_variable_names(body["tree"], variables))
+
+
+def _stored_frame(stores: AnalysisStores, ref: FrameRef) -> tuple[str | None, str | None]:
+    """The `cv_` of the frame whose file the pair `ref` serves, and the execution identity its
+    recipe records, each `None` when it has none. Reads only.
+
+    Raises:
+        SnapshotRevoked: The pair is taken down.
+    """
+    held = _held_file(stores, ref)
+    frame_content_version = None if held is None else _frame_content_version(stores, ref, held)
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    identity = None if recipe is None else recipe.body.get("execution_identity")
+    return frame_content_version, identity if isinstance(identity, str) else None
+
+
+def _refusal_of(
+    refused: AnalysisRefused | AnalysisTooLarge | OverCeilingError,
+) -> tuple[str, str]:
+    """The code and reason a verification records for a refused computation."""
+    if isinstance(refused, AnalysisTooLarge | OverCeilingError):
+        return refused.code, f"{refused.ceiling_kind}: {refused}"
+    return refused.refusal.code.value, refused.refusal.message
+
+
+def verify_analysis(
+    request: AnalysisRequest,
+    *,
+    source: RootSource,
+    stores: AnalysisStores,
+    bounds: AnalysisBounds = _DEFAULT_BOUNDS,
+    permit: Callable[[], AbstractContextManager[object]] = nullcontext,
+    trace_id: str | None = None,
+) -> Verification:
+    """Compute `request`'s tree again at the versions its roots name, past any stored answer,
+    and compare it with the frame stored under the pair compared with: the tree's own pair when
+    the tree is a derived root, else the pair the computation names, or failing a frame there
+    the pair a recipe of its replay key is stored under. Writes nothing: no frame, recipe,
+    answer, version record or rendering (`analysis_roots.LiveRootSource` with `render` false).
+
+    The outcome is:
+
+    - `same`: the frame `cv_`s match, or the output digests do. A stored run that named a root
+      under an earlier derivation of `analysis_roots.frame_ref_for` wrote its minting steps'
+      rows under other `ops_` ids, so its bytes differ from a reproducing computation's while
+      its output digest, which names those variables by what was computed, matches.
+    - `different`: neither matches, or the computation is refused (the engine's refusal, or
+      `over_ceiling` for roots, a frame1 document or an output past their caps) while a frame
+      is stored under the pair compared with. The refusal is recorded in `refusal_code` and `refusal_reason`.
+    - `roots_unavailable`: a root cannot be read at its version, its stored frame or file
+      aged out or its version taken down, and nothing is computed. Every root is still
+      resolved and read, the frames read dropped, so every such root is named in
+      `unavailable_roots`, until the roots pass `bounds.max_root_rows`. Then `refusal_code` is
+      `over_ceiling` and the roots past the bound are neither read nor named.
+    - `not_stored`: no frame file is served at the pair compared with.
+
+    Raises:
+        SeveralMembers: As its docstring says.
+        AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
+        FrameUnavailable: A derived root holds no stored recipe, or names a rendering this
+            runner does not read.
+        SnapshotRevoked: The pair compared with is taken down.
+    """
+    identity = asdict(current_execution_identity())
+    named = (
+        FrameRef(spec_id=request.tree.spec_id, content_version=request.tree.content_version)
+        if isinstance(request.tree, DerivedRoot)
+        else None
+    )
+    unavailable = _Unavailable()
+    computed: Computed | None = None
+    refusal: tuple[str, str] | None = None
+    try:
+        # Planning resolves filter values, so a label naming several codes refuses here
+        # (`breakdown_label_ambiguous`).
+        working, roots = plan_roots(request, source=source, bounds=bounds)
+    except AnalysisRefused as refused:
+        refusal = _refusal_of(refused)
+    else:
+        try:
+            located = _readable_roots(
+                roots, source=source, trace_id=trace_id, unavailable=unavailable
+            )
+            if not unavailable:
+                working, located = merged_roots(working, located, roots)
+            recorded = sum(root.rows or 0 for root in located)
+            if recorded > bounds.max_root_rows:
+                raise AnalysisTooLarge(
+                    ceiling_kind="analysis_root_rows", count=recorded, cap=bounds.max_root_rows
+                )
+            with permit():
+                frames = _read_every_root(
+                    located, source=source, cap=bounds.max_root_rows, unavailable=unavailable
+                )
+                if not unavailable:
+                    computed = _evaluated_frames(
+                        working,
+                        located,
+                        frames,
+                        bounds=bounds,
+                        latest=False,
+                        codes=source.code_index,
+                    )
+        except (AnalysisRefused, AnalysisTooLarge, OverCeilingError) as refused:
+            refusal = _refusal_of(refused)
+    if computed is None:
+        stored_cv, stored_identity = (None, None) if named is None else _stored_frame(stores, named)
+        if unavailable:
+            outcome: VerifyOutcome = "roots_unavailable"
+        else:
+            outcome = "not_stored" if stored_cv is None else "different"
+        return Verification(
+            outcome=outcome,
+            frame=None,
+            frame_content_version=None,
+            output_digest=None,
+            stored=named,
+            stored_frame_content_version=stored_cv,
+            stored_output_digest=None,
+            stored_execution_identity=stored_identity,
+            execution_identity=identity,
+            refusal_code=None if refusal is None else refusal[0],
+            refusal_reason=None if refusal is None else refusal[1],
+            unavailable_roots=unavailable.roots(),
+        )
+    evaluation = computed.evaluation
+    compared = named if named is not None else evaluation.ref
+    stored_cv, stored_identity = _stored_frame(stores, compared)
+    if named is None and stored_cv is None:
+        replayed = stores.recipe_store.read_replay(
+            replay_key=_recipe_hashes(evaluation, computed.roots)["replay_key"]
+        )
+        if replayed is not None:
+            compared = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
+            stored_cv, stored_identity = _stored_frame(stores, compared)
+    frame_content_version = str(evaluation.summary["frame_content_version"])
+    stored_digest = (
+        _stored_output_digest(stores, compared, computed)
+        if stored_cv is not None and stored_cv != frame_content_version
+        else None
+    )
+    if stored_cv is None:
+        outcome = "not_stored"
+    elif stored_cv == frame_content_version or stored_digest == computed.output_digest:
+        outcome = "same"
+    else:
+        outcome = "different"
+    return Verification(
+        outcome=outcome,
+        frame=evaluation.ref,
+        frame_content_version=frame_content_version,
+        output_digest=computed.output_digest,
+        stored=compared,
+        stored_frame_content_version=stored_cv,
+        stored_output_digest=stored_digest,
+        stored_execution_identity=stored_identity,
+        execution_identity=dict(evaluation.summary["execution_identity"]),
+        refusal_code=None,
+        refusal_reason=None,
+        unavailable_roots=(),
+    )
+
+
 # --- The anchor ----------------------------------------------------------------------------------
 
 
@@ -1983,7 +3243,10 @@ class AnchorRequest(BaseModel):
         ]
     ] = Field(min_length=1, max_length=DEFAULT_MAX_NODES)
     populations: list[dict[str, JsonValue]] = Field(min_length=1)
-    latest: bool = False
+    latest: Latest = Field(
+        default=False,
+        description='as the analysis request\'s: false, true or "stored"',
+    )
 
 
 def run_anchor(
@@ -2007,7 +3270,12 @@ def run_anchor(
         populations = _POPULATIONS.validate_python(canonical_populations(request.populations))
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail=f"populations: {exc}")) from exc
-    resolved = resolve_roots(request.roots, source=source, latest=request.latest, trace_id=trace_id)
+    resolved = resolve_roots(
+        [PlannedRoot(root=root) for root in request.roots],
+        source=source,
+        latest=request.latest,
+        trace_id=trace_id,
+    )
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         frames = _read_roots(located, source=source, cap=bounds.max_root_rows)
@@ -2024,6 +3292,7 @@ def run_anchor(
 __all__ = [
     "ANSWER_FORMAT",
     "ROOT_MINT_OPTIONS",
+    "STORED",
     "AnalysisBounds",
     "AnalysisPending",
     "AnalysisRequest",
@@ -2036,7 +3305,9 @@ __all__ = [
     "DatasetRoot",
     "DerivedRoot",
     "FrameUnavailable",
+    "Latest",
     "LocatedRoot",
+    "PlannedRoot",
     "PreparedAnalysis",
     "RefRoot",
     "ResolvedRoot",
@@ -2049,10 +3320,14 @@ __all__ = [
     "SeveralMembers",
     "SpecRoot",
     "StepNode",
+    "StoredHead",
+    "UnavailableRoot",
+    "Verification",
     "column_for",
     "compute_analysis",
     "described_steps",
     "left_out_of",
+    "merged_roots",
     "plan_roots",
     "prepare_analysis",
     "recorded_dataset_root",
@@ -2064,4 +3339,6 @@ __all__ = [
     "run_anchor",
     "run_prepared",
     "stored_answer",
+    "stored_heads",
+    "verify_analysis",
 ]

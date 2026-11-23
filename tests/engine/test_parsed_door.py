@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -13,11 +15,22 @@ import search.engine.schema as schema_module
 from code_index.declarations import DATASETS
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
+from entity_resolution import EntityResolver, NotFound
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
-from search.engine.config import SEARCH_MAX_PARTS
+from search.engine.config import (
+    SEARCH_MAX_CODE_PARTS,
+    SEARCH_MAX_PART_ENTITIES,
+    SEARCH_MAX_PARTS,
+    settings,
+)
+from search.engine.entity_checks import check_entity_count
+from search.engine.entry import dataset_entries
+from search.engine.entry import parsed as parsed_entry
+from search.engine.errors import EngineInputError
 from search.engine.unit.base_year import TABLE_PROVENANCES
+from search.models import ParsedEntity, ParsedPart
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import PINNED_DATE, materialise_double_from_obs
 from tests.engine._refusal_detail import assert_names_plainly
@@ -218,28 +231,46 @@ class TestBufferedAndSSETransports:
         assert buffered_shapes == sse_shapes
 
 
+def _code_parts(count: int) -> list[dict]:
+    return [{"variable_text": "debt service", "source_code": f"DT.CODE.{i}"} for i in range(count)]
+
+
 class TestCapRefusalsEndToEnd:
     @pytest.mark.parametrize(
-        "parts",
+        ("parts", "pointer"),
         [
             pytest.param(
                 [{"variable_text": ""}],
+                "/input/parts/0/variable_text",
                 id="empty-variable-text",
             ),
             pytest.param(
                 [{"variable_text": "fertility rate"}] * (SEARCH_MAX_PARTS + 1),
+                "/input/parts",
                 id="oversized-parts",
+            ),
+            pytest.param(
+                [*_code_parts(SEARCH_MAX_PARTS), {"variable_text": "fertility rate"}],
+                "/input/parts",
+                id="one-free-text-part-past-the-free-text-cap",
+            ),
+            pytest.param(
+                _code_parts(SEARCH_MAX_CODE_PARTS + 1),
+                "/input/parts",
+                id="oversized-code-parts",
             ),
         ],
     )
-    def test_invalid_parsed_request_refuses_request_invalid(self, parts: list[dict]) -> None:
+    def test_invalid_parsed_request_refuses_request_invalid(
+        self, parts: list[dict], pointer: str
+    ) -> None:
         client = make_client()
         resp = client.post(
             "/api/search/resolve",
             json={"input": {"kind": "parsed", "parts": parts}},
         )
         assert resp.status_code == 400
-        assert resp.json()["code"] == "request_invalid"
+        assert (resp.json()["code"], resp.json()["pointer"]) == ("request_invalid", pointer)
 
     @pytest.mark.parametrize(
         ("part", "pointer"),
@@ -574,6 +605,242 @@ class TestMultiPartRateTableFailuresRefuseTheRequest:
         assert resp.json()["code"] == code
 
 
+def _places(names: list[str], *, pinned: int = 0) -> list[dict]:
+    """Entity rows for `names`, the first `pinned` of them posted with a dcid."""
+    return [
+        {"text": name, "dcid": f"country/{name}"} if i < pinned else {"text": name}
+        for i, name in enumerate(names)
+    ]
+
+
+def _chunks(names: list[str], *, coded: bool) -> list[dict]:
+    """Parts of at most `SEARCH_MAX_PART_ENTITIES` rows over `names`, each naming a code
+    when `coded`."""
+    return [
+        {
+            "variable_text": "debt service",
+            "entities": [
+                {"text": name} for name in names[start : start + SEARCH_MAX_PART_ENTITIES]
+            ],
+            **({"source_code": f"DT.CODE.{start}"} if coded else {}),
+        }
+        for start in range(0, len(names), SEARCH_MAX_PART_ENTITIES)
+    ]
+
+
+_COUNTRIES = [f"Country{i:02d}" for i in range(54)]
+
+
+def _past_the_entity_cap() -> list[dict]:
+    """Seven code parts, within the part cap, naming 98 distinct entities: 96 names to
+    resolve and two pinned dcids to confirm."""
+    return [
+        *_chunks([f"Place{i}" for i in range(96)], coded=True),
+        {
+            "variable_text": "debt service",
+            "source_code": "DT.CODE.PINNED",
+            "entities": _places(["Pinned0", "Pinned1"], pinned=2),
+        },
+    ]
+
+
+class TestEntityCap:
+    """A request names at most `max_entities` distinct entities across its parts: the dcids
+    `confirm_part_pins` reads and the names `per_part_pre_resolved` resolves."""
+
+    @pytest.mark.parametrize(
+        ("parts", "refused"),
+        [
+            pytest.param(
+                _chunks(
+                    [f"Place{i}" for i in range(SEARCH_MAX_PARTS * SEARCH_MAX_PART_ENTITIES)],
+                    coded=False,
+                ),
+                False,
+                id="six-free-text-parts-of-sixteen",
+            ),
+            pytest.param(
+                [
+                    {
+                        "variable_text": "debt service",
+                        "source_code": f"DT.CODE.{i}",
+                        "entities": [
+                            {"text": _COUNTRIES[(i * 7 + k) % len(_COUNTRIES)]}
+                            for k in range(SEARCH_MAX_PART_ENTITIES)
+                        ],
+                    }
+                    for i in range(SEARCH_MAX_CODE_PARTS)
+                ],
+                False,
+                id="code-parts-over-the-same-54-countries",
+            ),
+            pytest.param(
+                [
+                    *_chunks([f"Place{i}" for i in range(95)], coded=True),
+                    *[
+                        {
+                            "variable_text": "debt",
+                            "source_code": f"DT.X.{i}",
+                            "entities": _places(["Pinned"], pinned=1),
+                        }
+                        for i in range(3)
+                    ],
+                ],
+                False,
+                id="one-dcid-pinned-in-three-parts-counts-once",
+            ),
+            pytest.param(
+                [
+                    *_chunks([f"Place{i}" for i in range(96)], coded=True),
+                    {
+                        "variable_text": "debt",
+                        "source_code": "DT.X",
+                        "entities": _places(["Pinned"], pinned=1),
+                    },
+                ],
+                True,
+                id="a-pinned-dcid-counts-beside-the-names",
+            ),
+            pytest.param(
+                _chunks([f"Place{i}" for i in range(97)], coded=True), True, id="ninety-seven"
+            ),
+        ],
+    )
+    def test_the_cap_counts_pinned_dcids_and_names(self, parts, refused):
+        parsed = [ParsedPart.model_validate(part) for part in parts]
+        if not refused:
+            check_entity_count(parsed, pointer="/input/parts")
+            return
+        with pytest.raises(EngineInputError) as excinfo:
+            check_entity_count(parsed, pointer="/input/parts")
+        assert (excinfo.value.code, excinfo.value.pointer) == ("request_invalid", "/input/parts")
+
+    @pytest.mark.parametrize(
+        ("body", "pointer"),
+        [
+            pytest.param(
+                {"kind": "parsed", "parts": _past_the_entity_cap()},
+                "/input/parts",
+                id="parsed",
+            ),
+            pytest.param(
+                {
+                    "kind": "dataset_resubmit",
+                    "entries": [
+                        {"entry_kind": "parsed", "part": part} for part in _past_the_entity_cap()
+                    ],
+                },
+                "/input/entries",
+                id="dataset-resubmit",
+            ),
+        ],
+    )
+    def test_a_request_past_the_cap_refuses_before_any_read(self, body, pointer, monkeypatch):
+        reads: list[str] = []
+
+        async def confirm(parts, **_):
+            reads.append("confirm_part_pins")
+            return [{} for _ in parts]
+
+        async def resolve(self, names, *args, **kwargs):
+            reads.append("resolve")
+            return [NotFound() for _ in names]
+
+        monkeypatch.setattr(parsed_entry, "confirm_part_pins", confirm)
+        monkeypatch.setattr(dataset_entries, "confirm_part_pins", confirm)
+        monkeypatch.setattr(EntityResolver, "resolve", resolve)
+
+        resp = make_client().post("/api/search/resolve", json={"input": body})
+
+        assert resp.status_code == 400
+        assert (resp.json()["code"], resp.json()["pointer"]) == ("request_invalid", pointer)
+        assert reads == []
+
+    def test_per_part_pre_resolved_runs_at_most_the_leg_limit_of_batches_at_once(self):
+        """Each surface an identity is posted under is its own resolver batch, and no more
+        than `max_variable_concurrency` of them run at once."""
+        parts = [
+            ParsedPart(
+                variable_text="debt service",
+                source_code=f"DT.CODE.{i}",
+                entities=[ParsedEntity(text=f"Kenya {i}", name="Kenya")],
+            )
+            for i in range(SEARCH_MAX_CODE_PARTS)
+        ]
+        running = peak = calls = 0
+
+        class _Resolver:
+            async def resolve(self, names):
+                nonlocal running, peak, calls
+                running += 1
+                calls += 1
+                peak = max(peak, running)
+                await asyncio.sleep(0)
+                running -= 1
+                return [NotFound() for _ in names]
+
+        asyncio.run(
+            parsed_entry.per_part_pre_resolved(
+                parts,
+                [{} for _ in parts],
+                surfaces=[{"Kenya": f"Kenya {i}"} for i in range(len(parts))],
+                resolver=_Resolver(),
+                deadline=time.monotonic() + 30,
+            )
+        )
+
+        assert calls == len(parts)
+        assert peak == settings().max_variable_concurrency
+
+    def test_per_part_pre_resolved_stops_every_batch_once_one_fails(self):
+        """A failing resolver batch cancels the batches in flight, and no queued batch
+        starts after the failure reaches the caller."""
+        parts = [
+            ParsedPart(
+                variable_text="debt service",
+                source_code=f"DT.CODE.{i}",
+                entities=[ParsedEntity(text=f"Kenya {i}", name="Kenya")],
+            )
+            for i in range(SEARCH_MAX_CODE_PARTS)
+        ]
+        starts = cancelled = 0
+
+        class _Resolver:
+            async def resolve(self, names):
+                nonlocal starts, cancelled
+                starts += 1
+                if starts == 1:
+                    await asyncio.sleep(0)
+                    raise RuntimeError("resolver down")
+                try:
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    cancelled += 1
+                    raise
+                return [NotFound() for _ in names]
+
+        async def run() -> tuple[int, int]:
+            with pytest.raises(RuntimeError, match="resolver down"):
+                await parsed_entry.per_part_pre_resolved(
+                    parts,
+                    [{} for _ in parts],
+                    surfaces=[{"Kenya": f"Kenya {i}"} for i in range(len(parts))],
+                    resolver=_Resolver(),
+                    deadline=time.monotonic() + 30,
+                )
+            starts_at_failure = starts
+            for _ in range(20):
+                await asyncio.sleep(0)
+            return starts_at_failure, starts
+
+        starts_at_failure, starts_after = asyncio.run(run())
+
+        assert starts_at_failure < len(parts)
+        assert starts_after == starts_at_failure
+        assert cancelled == starts_at_failure - 1
+
+
 class TestCapabilitiesPublishLiveDoorAndCaps:
     def test_capabilities_publish_parsed_live_and_the_new_caps(self):
         client = make_client()
@@ -581,6 +848,7 @@ class TestCapabilitiesPublishLiveDoorAndCaps:
         doors = {d["name"]: d["live"] for d in body["doors"]}
         assert doors["parsed"] is True
         assert "max_parts" in body["caps"]
+        assert "max_code_parts" in body["caps"]
         assert "max_variable_text_chars" in body["caps"]
 
 

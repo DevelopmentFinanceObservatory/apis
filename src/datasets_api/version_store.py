@@ -7,7 +7,10 @@ reads the column; the writer keeps filling it for any image that decodes version
 Version inserts use `ON CONFLICT DO NOTHING`, so records are immutable and retries are idempotent.
 Two facts a version stored before versions held them are filled once, by a later write of the
 same version: a published frame's `continuations` (`_write_description`), and the year members
-and member nouns of a dataset version's `coverage` (`_fill_year_coverage`).
+and member nouns of a dataset version's `coverage` (`_fill_year_coverage`). A later write of a
+version, dataset or computed, also replaces its `incomplete_after` with the one that write
+judged, unless an older catalogue build judged it than the stored one's
+(`_refresh_incomplete_after`).
 Every version insert goes through `_insert_version`, which also writes the version's description
 record (`datasets.description_record`) in the same transaction when the record carries a
 `VersionDescriber` (`_record_description`), so a failed record insert rolls the version row back.
@@ -24,17 +27,23 @@ rows its artifacts owe (`artifact_store.inventory.write_entry`), the record
 and its links, the rendered links and collapsed version when the stored record
 holds the body they were rendered from, and the served version read back.
 `LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
-each with the renderings of the files linked under it. The second statement selects and orders
+each with the renderings of the files linked under it. Its second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
-list is the one a read of that version's locations gives. `list_servable_versions` reads one
-page of the versions recorded under a set of subject ids in the same order, reading each from
-the record the snapshot door's read chooses and leaving out the versions that record shows
-revoked under any of them, as that read does.
+list is the one a read of that version's locations gives. `list_head_versions` reads the
+versions one raw head made or is the recorded base of, each with every link and the heads it
+records, servable or not. `list_servable_versions` reads one page of the versions recorded under
+a set of subject ids in the same order, reading each from the record the snapshot door's read
+chooses and leaving out the versions that record shows revoked under any of them, as that read
+does.
 
 An artifact link keeps its digest while that digest is servable, and a new rendering under
-the same key replaces it once it is not (`_insert_artifact`). Every link write and every pin
-reference write takes `lock_version_links` first, so a pin cannot complete for a digest a
-concurrent re-render is unlinking.
+the same key replaces it once it is not (`_insert_artifact`). A link under a derived version
+records every raw head a write of its version was rendered from
+(`datasets.version_artifact_head`), with the code index and render format the last such write
+rendered it under (`versions.rendering_stamp`).
+No statement here deletes a link. Every link write and
+every pin reference write takes `lock_version_links` first, so a pin cannot complete for a
+digest a concurrent re-render is unlinking.
 
 `now` defaults to UTC and can be injected to control `recorded_at`.
 `rendering_key` hashes sorted JSON options, giving equivalent mappings the
@@ -92,14 +101,18 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
     COLLAPSED_FACT_FIELDS,
     NO_PARTY_ROLE,
+    RENDER_FORMAT,
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
     DescriptionDiverges,
     HeadFence,
     HeadFenceLost,
+    HeadLink,
+    HeadVersion,
     LateFields,
     ListedVersion,
     MaterialisationRecord,
+    ReadRendering,
     SubjectHead,
     VersionDescriber,
     VersionRecord,
@@ -107,6 +120,7 @@ from datasets_api.versions import (
     VersionWrite,
     WrittenVersion,
     carries_party_kind,
+    holds_frame_cells,
     holds_party_role,
     log_description_build_failure,
 )
@@ -127,7 +141,14 @@ def utc_now() -> datetime:
 
 
 def rendering_key(rendering: Mapping[str, object]) -> str:
-    canonical = json.dumps(dict(rendering), sort_keys=True, default=str)
+    """The key a file of `rendering` is linked under: the SHA-256 of its sorted JSON, with a
+    frame-layout file's keyed beside `RENDER_FORMAT` (`holds_frame_cells`), so a file whose
+    cells an earlier format wrote matches no request."""
+    return rendering_key_under(rendering, None, render_format=RENDER_FORMAT)
+
+
+def _json_key(keyed: Mapping[str, object]) -> str:
+    canonical = json.dumps(dict(keyed), sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -141,9 +162,29 @@ def enriched_rendering_key(rendering: Mapping[str, object], enrichment_digest: s
     `rendering_key` does. The digest salts the key only. `rendering` itself, which a caller
     selects an artifact by, never holds it.
     """
+    return rendering_key_under(rendering, enrichment_digest, render_format=RENDER_FORMAT)
+
+
+def rendering_key_under(
+    rendering: Mapping[str, object], enrichment_digest: str | None, *, render_format: str | None
+) -> str:
+    """The key a file of `rendering` rendered under `enrichment_digest` is linked under when
+    frame-layout files are written in `render_format` (`versions.RENDER_FORMAT`), as
+    `enriched_rendering_key` keys it. `None` is the key a frame-layout file had before its key
+    carried a render format: the same SHA-256 with no `render_format` member. Only a
+    frame-layout file's key (`holds_frame_cells`) depends on `render_format`."""
+    salt = render_format is not None and holds_frame_cells(rendering)
     if enrichment_digest is None or not carries_party_kind(rendering):
-        return rendering_key(rendering)
-    return rendering_key({"rendering": dict(rendering), "enrichment_digest": enrichment_digest})
+        if not salt:
+            return _json_key(dict(rendering))
+        return _json_key({"rendering": dict(rendering), "render_format": render_format})
+    salted: dict[str, object] = {
+        "rendering": dict(rendering),
+        "enrichment_digest": enrichment_digest,
+    }
+    if salt:
+        salted["render_format"] = render_format
+    return _json_key(salted)
 
 
 def current_rendering_keys(
@@ -187,6 +228,8 @@ def _insert_artifact(
     content_version: str,
     artifact: ArtifactRecord,
     now: datetime,
+    head_content_version: str | None = None,
+    code_index_stamp: str | None = None,
 ) -> None:
     """Link `artifact` under its rendering key. An existing link is kept while its digest has
     a servable location, so a version lists the same bytes under one key for as long as they
@@ -203,8 +246,17 @@ def _insert_artifact(
     and then writing its reference under the same lock, after checking the digest is still
     linked. The `WHERE` therefore reads either the pinned location of a pin that completed, or
     a link no pin has completed for yet, whose pin then refuses.
+
+    `head_content_version` names the raw version `artifact` was rendered from, for a link under
+    a derived version. The link records it beside the heads it holds
+    (`datasets.version_artifact_head`), whether the upsert kept the old digest or not, since
+    either way a rendering from that head made this version. A link written with none keeps the
+    heads it holds. `code_index_stamp` is the stamp of the code index and render format the
+    file was rendered under (`versions.rendering_stamp`), which the head's row records in place
+    of the one an earlier write left; a write with none leaves the row's as it is.
     """
     lock_version_links(tx, subject_id=subject_id, content_version=content_version)
+    key = enriched_rendering_key(artifact.rendering, artifact.enrichment_digest)
     tx.execute(
         "INSERT INTO datasets.version_artifact "
         "(subject_id, content_version, artifact_digest, rendering_key, "
@@ -220,11 +272,22 @@ def _insert_artifact(
             subject_id,
             content_version,
             artifact.artifact_digest,
-            enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
+            key,
             dict(artifact.rendering),
             artifact.media_type,
             now - WORKING_TIER_RETENTION,
         ),
+    )
+    if head_content_version is None:
+        return
+    tx.execute(
+        "INSERT INTO datasets.version_artifact_head "
+        "(subject_id, content_version, rendering_key, head_content_version, code_index_stamp) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (subject_id, content_version, rendering_key, head_content_version) "
+        "DO UPDATE SET code_index_stamp = EXCLUDED.code_index_stamp "
+        "WHERE EXCLUDED.code_index_stamp IS NOT NULL",
+        (subject_id, content_version, key, head_content_version, code_index_stamp),
     )
 
 
@@ -245,7 +308,8 @@ _INSERT_VERSION_SQL = (
 def _insert_version(
     tx: Transaction, record: VersionRecord, *, trace_id: str | None, now: datetime
 ) -> bool:
-    """Insert `record` and link its artifacts. `True` when this call created the row."""
+    """Insert `record` and link its artifacts, each under the head a derived record was
+    rendered from (`base_content_version`). `True` when this call created the row."""
     inserted_row = tx.fetch_one(
         _INSERT_VERSION_SQL,
         (
@@ -270,10 +334,13 @@ def _insert_version(
             content_version=record.content_version,
             artifact=artifact,
             now=now,
+            head_content_version=record.base_content_version,
+            code_index_stamp=record.code_index_stamp,
         )
     created = inserted_row is not None
     if not created:
         _fill_year_coverage(tx, record)
+        _refresh_incomplete_after(tx, record)
     if record.describer is not None:
         _record_description(tx, record, created=created, now=now)
     return created
@@ -315,6 +382,51 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
             json.dumps({**body, "coverage": coverage} if isinstance(body, Mapping) else body),
             *key,
         ),
+    )
+
+
+def _refresh_incomplete_after(tx: Transaction, record: VersionRecord) -> None:
+    """Store the `incomplete_after` `record` holds on its version, already on record, in place
+    of the stored one when they differ: a dataset version's as its later mint judged it
+    (`ManifestFacts.incomplete_after`), a computed version's as its republish derived it from
+    its inputs' records (`FrameLineage.incomplete_after`). A write that could not judge it
+    (`None`) changes nothing. The frame's rows are the same, so only the partial periods its
+    sources mark can differ: a version recorded before versions stored them, or under a release
+    whose partial period has since completed, takes the later judgement.
+
+    A judgement goes with the `built_at` of the catalogue build that made it, a computed
+    version's with the newest build among the input judgements it read
+    (`ManifestFacts.incomplete_after_built_at`, `FrameLineage.incomplete_after_built_at`). A
+    write judged by an older build than the stored judgement's, or by no known build, leaves
+    the stored one standing, so an instance still bound to the previous build during a
+    rollout, or a republish that read an input's older judgement, cannot undo a newer one; a
+    write judged by the same or a later build replaces it. It runs under the version's link
+    lock, as `_fill_year_coverage` does.
+    """
+    facts = record.facts
+    if facts.incomplete_after is None:
+        return
+    built_at = facts.incomplete_after_built_at
+    key = (record.subject_id, record.content_version)
+    lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
+    row = tx.fetch_one(
+        "SELECT incomplete_after, incomplete_after_built_at FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s",
+        key,
+    )
+    if row is None:
+        return
+    stored_built_at = cast("datetime | None", row["incomplete_after_built_at"])
+    if stored_built_at is not None and (built_at is None or built_at < stored_built_at):
+        return
+    judged = [dict(entry) for entry in facts.incomplete_after]
+    if row["incomplete_after"] == judged and stored_built_at == built_at:
+        return
+    tx.execute(
+        "UPDATE datasets.version_record "
+        "SET incomplete_after = %s, incomplete_after_built_at = %s "
+        "WHERE subject_id = %s AND content_version = %s",
+        (json.dumps(judged), built_at, *key),
     )
 
 
@@ -736,10 +848,12 @@ class LiveVersionLister:
         self._store = store
 
     def list_versions(self, subject_id: str) -> list[ListedVersion]:
-        failure: str | None = None
+        """The subject's versions, newest first, each with the renderings of the files linked
+        under it, read in one transaction."""
+        error: str | None = None
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
-        linked: list[Mapping[str, object]] = []
+        links: list[Mapping[str, object]] = []
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
@@ -750,15 +864,201 @@ class LiveVersionLister:
                     "ORDER BY recorded_at DESC, content_version DESC",
                     (subject_id,),
                 )
-                linked = tx.fetch_all(
+                links = tx.fetch_all(
                     _LINKED_RENDERINGS_SQL.format(where="va.subject_id = %s"), (subject_id,)
                 )
         except Exception as exc:
-            failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
+            error = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if error is not None:
+            raise DatasetsStoreUnavailable(error, sqlstate=sqlstate)
+        return _listed_versions(rows, links, _stored_role_columns(rows))
+
+    def list_head_versions(
+        self, subject_id: str, *, head_content_version: str
+    ) -> list[HeadVersion]:
+        """The subject's versions that link a file made from `head_content_version` or are
+        recorded as derived from it, newest first, each with every file linked under it and the
+        heads that link records, read in one transaction. Links are read without their
+        locations, since an expired file still says which heads made the version."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        links: list[Mapping[str, object]] = []
+        heads: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT content_version, base_content_version "
+                    "FROM datasets.version_record WHERE subject_id = %s "
+                    "AND (base_content_version = %s OR content_version IN ("
+                    "SELECT content_version FROM datasets.version_artifact_head "
+                    "WHERE subject_id = %s AND head_content_version = %s)) "
+                    # `content_version` orders versions recorded at one instant.
+                    "ORDER BY recorded_at DESC, content_version DESC",
+                    (subject_id, head_content_version, subject_id, head_content_version),
+                )
+                if rows:
+                    # Placeholders the in-memory test store binds as well as Postgres does.
+                    listed = (subject_id, *(row["content_version"] for row in rows))
+                    in_listed = ", ".join("%s" for _ in rows)
+                    links = tx.fetch_all(
+                        "SELECT content_version, rendering_key, rendering "
+                        "FROM datasets.version_artifact "
+                        f"WHERE subject_id = %s AND content_version IN ({in_listed}) "
+                        "ORDER BY rendering_key",
+                        listed,
+                    )
+                    heads = tx.fetch_all(
+                        "SELECT content_version, rendering_key, head_content_version, "
+                        "code_index_stamp, read_at FROM datasets.version_artifact_head "
+                        f"WHERE subject_id = %s AND content_version IN ({in_listed})",
+                        listed,
+                    )
+        except Exception as exc:
+            failure = (
+                f"listing versions subject_id {subject_id!r} made from "
+                f"{head_content_version!r} failed: {safe_diagnostics(exc)}"
+            )
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked, _stored_role_columns(rows))
+        made_from: dict[tuple[str, str], dict[str, Mapping[str, object]]] = {}
+        for head in heads:
+            key = (cast(str, head["content_version"]), cast(str, head["rendering_key"]))
+            made_from.setdefault(key, {})[cast(str, head["head_content_version"])] = head
+        linked: dict[str, list[HeadLink]] = {}
+        for link in links:
+            content_version = cast(str, link["content_version"])
+            head_rows = made_from.get((content_version, cast(str, link["rendering_key"])), {})
+            linked.setdefault(content_version, []).append(
+                HeadLink(
+                    rendering=cast("Mapping[str, object]", link["rendering"]),
+                    heads=frozenset(head_rows),
+                    rendered_under={
+                        head: cast(str, row["code_index_stamp"])
+                        for head, row in head_rows.items()
+                        if row["code_index_stamp"] is not None
+                    },
+                    read_at={
+                        head: cast(datetime, row["read_at"])
+                        for head, row in head_rows.items()
+                        if row["read_at"] is not None
+                    },
+                )
+            )
+        return [
+            HeadVersion(
+                content_version=(content_version := cast(str, row["content_version"])),
+                base_content_version=cast("str | None", row["base_content_version"]),
+                links=tuple(linked.get(content_version, ())),
+            )
+            for row in rows
+        ]
+
+    def list_read_renderings(self, subject_id: str, *, read_since: datetime) -> list[ReadRendering]:
+        """Each rendering of the subject's links an analysis root read as made from any head at
+        or after `read_since`, once with its latest read, latest first, read in one
+        transaction. Equal renderings linked under several versions, made from several heads,
+        are one rendering."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT va.rendering, vah.read_at "
+                    "FROM datasets.version_artifact_head vah "
+                    "JOIN datasets.version_artifact va ON va.subject_id = vah.subject_id "
+                    "AND va.content_version = vah.content_version "
+                    "AND va.rendering_key = vah.rendering_key "
+                    "WHERE vah.subject_id = %s AND vah.read_at >= %s "
+                    # `rendering_key` orders reads recorded at one instant.
+                    "ORDER BY vah.read_at DESC, vah.rendering_key",
+                    (subject_id, read_since),
+                )
+        except Exception as exc:
+            failure = (
+                f"listing renderings read of subject_id {subject_id!r} failed: "
+                f"{safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        read: dict[str, ReadRendering] = {}
+        for row in rows:
+            rendering = cast("Mapping[str, object]", row["rendering"])
+            read.setdefault(
+                _json_key(rendering),
+                ReadRendering(rendering=rendering, read_at=cast(datetime, row["read_at"])),
+            )
+        return list(read.values())
+
+    def renderings_read_since(self, subject_id: str, *, read_since: datetime) -> bool:
+        """Whether a head row of the subject records a read at or after `read_since`, read with
+        one `EXISTS`."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        row: Mapping[str, object] | None = None
+        try:
+            with self._store.transaction() as tx:
+                row = tx.fetch_one(
+                    "SELECT EXISTS (SELECT 1 FROM datasets.version_artifact_head "
+                    "WHERE subject_id = %s AND read_at >= %s) AS found",
+                    (subject_id, read_since),
+                )
+        except Exception as exc:
+            failure = (
+                f"checking renderings read of subject_id {subject_id!r} failed: "
+                f"{safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return row is not None and bool(row["found"])
+
+    def mark_rendering_read(
+        self,
+        subject_id: str,
+        *,
+        content_version: str,
+        head_content_version: str,
+        rendering_keys: Sequence[str],
+        read_at: datetime,
+        unless_read_since: datetime,
+    ) -> None:
+        """Set `read_at` on the head rows of the links under `content_version` keyed by any of
+        `rendering_keys` for `head_content_version`, unless a row records a read at or after
+        `unless_read_since`, in one statement."""
+        if not rendering_keys:
+            return
+        failure: str | None = None
+        sqlstate: str | None = None
+        keys = ", ".join("%s" for _ in rendering_keys)
+        try:
+            with self._store.transaction() as tx:
+                tx.execute(
+                    "UPDATE datasets.version_artifact_head SET read_at = %s "
+                    "WHERE subject_id = %s AND content_version = %s "
+                    f"AND head_content_version = %s AND rendering_key IN ({keys}) "
+                    "AND (read_at IS NULL OR read_at < %s)",
+                    (
+                        read_at,
+                        subject_id,
+                        content_version,
+                        head_content_version,
+                        *rendering_keys,
+                        unless_read_since,
+                    ),
+                )
+        except Exception as exc:
+            failure = (
+                f"marking a read of subject_id {subject_id!r} content_version "
+                f"{content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int

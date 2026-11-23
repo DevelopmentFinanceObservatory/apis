@@ -5,11 +5,13 @@ over the SQLite-backed version store.
 from __future__ import annotations
 
 import contextvars
+import copy
 import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,7 +24,8 @@ from artifact_store import (
     Tier,
 )
 from artifact_store.inventory import InventoryBatch, InventoryEntry
-from dataset_store.snapshot import LiveSnapshotReader
+from dataset_store.clock import utc_now
+from dataset_store.snapshot import LiveSnapshotReader, working_tier_expired
 from datasets_api import door_executor
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.snapshot import build_snapshot_door
@@ -237,13 +240,24 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
     """Records fake uploads and copies in the inventory tables that `LiveSnapshotReader` joins,
     as the GCS store records each destination it writes. A `deferred` view adds those rows to
     its batch, as `LiveArtifactStore.deferred` does, and shares this store's objects and
-    counters."""
+    counters. A write of bytes whose working location is past retention renews it, as
+    `LiveArtifactStore` does: the location moves to `<digest>#r<n>` with a fresh `stored_at`.
+    A `renewing` view judges retention that far ahead, as `LiveArtifactStore.renewing` does."""
 
     def __init__(self, *, inventory: LiveArtifactInventory) -> None:
         super().__init__()
         self._inventory = inventory
+        self._ahead = timedelta(0)
+
+    def renewing(self, *, within: timedelta) -> _InventoryRecordingArtifactStore:
+        view = copy.copy(self)
+        view._ahead = within
+        return view
 
     def _record(self, stored: StoredArtifact) -> StoredArtifact:
+        renewal = self._renewal(stored)
+        if renewal is not None:
+            stored = replace(stored, object_name=f"{stored.digest}#r{renewal}", deduplicated=False)
         entry = InventoryEntry(
             digest=stored.digest,
             tier=stored.tier,
@@ -251,6 +265,7 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
             object_name=stored.object_name,
             size_bytes=stored.size_bytes,
             uploaded=not stored.deduplicated,
+            renewal=renewal,
         )
         batch = _deferred_batch.get()
         if batch is not None:
@@ -258,6 +273,23 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
         else:
             self._inventory.write(entry)
         return stored
+
+    def _renewal(self, stored: StoredArtifact) -> int | None:
+        """The renewal number a deduplicated working write takes when its location is past
+        retention, else `None`."""
+        if not stored.deduplicated or stored.tier != Tier.working:
+            return None
+        location = self._inventory.get_location(stored.digest, tier=stored.tier)
+        if location is None:
+            return None
+        stored_at = location.stored_at
+        if isinstance(stored_at, str):  # the SQLite double holds text
+            stored_at = datetime.fromisoformat(stored_at)
+        if stored_at.tzinfo is None:  # SQLite's CURRENT_TIMESTAMP is UTC
+            stored_at = stored_at.replace(tzinfo=UTC)
+        if not working_tier_expired(stored_at, now=utc_now() + self._ahead):
+            return None
+        return location.renewal + 1
 
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
         return self._record(super().put(data, tier=tier))

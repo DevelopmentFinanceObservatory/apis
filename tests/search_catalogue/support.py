@@ -16,6 +16,9 @@ from search.catalogue.artifact import (
     CatalogueExample,
     CataloguePlace,
     Counts,
+    OriginCounts,
+    OriginProvenances,
+    OriginSplit,
     PlaceCounts,
     YearRange,
     build_key,
@@ -186,6 +189,7 @@ _INPUTS = BuildInputs(
     coverage_build_id="coverage-1",
     build_commit="abc123",
     examples_digest="digest",
+    un_system_enabled=True,
 )
 
 
@@ -198,7 +202,20 @@ def sample_catalogue(version: str = "20260930T000000Z-00000001") -> CatalogueArt
         started_at=datetime(2026, 9, 30, tzinfo=UTC),
         built_at=datetime(2026, 9, 30, tzinfo=UTC),
         inputs=_INPUTS,
-        counts=Counts(indicators=9, datasets=5, publishers=4, countries=2, aid=aid),
+        counts=Counts(
+            indicators=9,
+            datasets=5,
+            publishers=4,
+            countries=2,
+            aid=aid,
+            by_origin=OriginCounts(
+                dfo=OriginSplit(indicators=4, datasets=1, publishers=1),
+                data_commons=OriginSplit(indicators=6, datasets=4, publishers=3),
+            ),
+        ),
+        provenances=OriginProvenances(
+            dfo=["provenance/CRS"], data_commons=["provenance/WDI", "provenance/WHO"]
+        ),
         examples=[
             CatalogueExample(
                 id=0,

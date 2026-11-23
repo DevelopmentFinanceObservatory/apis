@@ -35,6 +35,7 @@ from datasets_api.background_admission import (
     BACKGROUND_VALUE,
     leaving_headroom,
 )
+from datasets_api.delivery import record_manifest
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
 from datasets_api.doors.definition import (
     OPERATION_SUBMITTED_RESPONSES,
@@ -107,6 +108,7 @@ def mint_deps(deps: Deps, *, deadline: float | None) -> MintDeps:
         now=deps.now,
         rebuilds=deps.rebuilds,
         variable_breadth=deps.variable_breadth,
+        version_lister=deps.version_lister,
     )
 
 
@@ -146,7 +148,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps, background: bool) -> 
     headroom = BACKGROUND_HEADROOM if background else 0
     submitted_resource: OperationResource | None = None
     with (
-        door_call("mint", logger=logger) as call,
+        door_call("mint", logger=logger, delivers=True) as call,
         request_deadline(deadline),
         leaving_headroom(headroom),
     ):
@@ -164,6 +166,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps, background: bool) -> 
                 ),
                 timeout=settings.mint_timeout_seconds,
             )
+            record_manifest(manifest)
         except OperationBacklogFull:
             if background:
                 raise MintBackgroundDeclined() from None
@@ -182,9 +185,11 @@ async def _mint_response(body: MintRequest, *, deps: Deps, background: bool) -> 
                 **retry_after_headers(submitted_resource.operation),
             },
         )
-    return JSONResponse(
-        manifest.model_dump(mode="json", exclude_none=True),
-        headers=no_store_headers(server_timing=call.server_timing),
+    return call.delivered(
+        JSONResponse(
+            manifest.model_dump(mode="json", exclude_none=True),
+            headers=no_store_headers(server_timing=call.server_timing),
+        )
     )
 
 

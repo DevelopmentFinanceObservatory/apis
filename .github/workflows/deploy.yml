@@ -57,8 +57,10 @@ name: Deploy
 # every deploy runs both rather than trying to detect whether any is needed.
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
-# service has moved and `backfill-descriptions` as the last step (see those
-# steps). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
+# service has moved and `backfill-descriptions` after it (see those steps).
+# Between the apis service's move and the settle, the deploy calls the new
+# revision so its background builds finish before readers arrive (see the
+# warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
 # variable check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
@@ -489,6 +491,28 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # The new revision builds the skills index, the Graph schema document
+      # and the UN terms body beside serving, and Cloud Run throttles the CPU
+      # of an instance with no request in flight, so a revision nobody calls
+      # stalls those builds until its first readers pay for them. This step
+      # calls the paths whose handlers wait on those builds, as the deployer
+      # with an ID token for the service URL, retrying a 503, 504 or 429 for
+      # up to 600 seconds. A 401 or 403 (the deployer's run.invoker grant
+      # and its token-creator grant on itself are not applied yet), slowness
+      # past the bound, or an unreadable URL or token warns and the deploy
+      # goes on. Any other status is an error the step records without
+      # failing, so the maintenance steps below still run, and the job's last
+      # step fails the deploy on it. See .github/scripts/deploy_warm.sh.
+      - name: Warm the new revision
+        id: warm
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          SERVICE: ${{ vars.SERVICE_APIS }}
+          REGION: ${{ vars.REGION }}
+          PROJECT_ID: ${{ vars.PROJECT_ID }}
+          DEPLOYER: ${{ secrets.WIF_SA }}
+        run: .github/scripts/deploy_warm.sh
+
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
@@ -541,3 +565,17 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --wait \
             --args=backfill-descriptions
+
+      # The warm step records an error answer without failing, so the settle
+      # and the backfill run first; this step then fails the deploy on it.
+      - name: Fail on errors the new revision answered while warming
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          WARM_STATUS: ${{ steps.warm.outputs.status }}
+        run: |
+          set -euo pipefail
+          echo "warm status: $WARM_STATUS"
+          if [ "$WARM_STATUS" = error ]; then
+            echo "::error::The new revision answered a warm path with an error; see the 'Warm the new revision' step."
+            exit 1
+          fi

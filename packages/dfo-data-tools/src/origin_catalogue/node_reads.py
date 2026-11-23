@@ -52,13 +52,13 @@ _LABEL_NODES_PER_REQUEST: Final[int] = 500
 """Nodes named in one `->name` read, as many as `dc_graph.GraphClient.node_labels_batch`
 names in one."""
 
-_MAX_PAGES: Final[int] = 400
+MAX_PAGES: Final[int] = 400
 """Pages one read may take. The largest group and topic lists end well inside it."""
 
-_STALLED_PAGE_LIMIT: Final[int] = 3
+STALLED_PAGE_LIMIT: Final[int] = 3
 """Consecutive pages that add nothing before a read counts as stalled."""
 
-_REPEATED_PAGE_WAITS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0, 4.0)
+REPEATED_PAGE_WAITS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0, 4.0)
 """The waits before each further attempt at a page the graph answered
 with a token the read had already been given. A page that still repeats one
 after the last wait, 7 seconds in all, stops the read."""
@@ -90,7 +90,7 @@ class NodeReadFault(Exception):
 
 class _NotAdvancing(Exception):
     """A paged read repeated a token on every attempt at one page, added
-    nothing for `_STALLED_PAGE_LIMIT` pages, or passed `_MAX_PAGES`."""
+    nothing for `STALLED_PAGE_LIMIT` pages, or passed `MAX_PAGES`."""
 
 
 class _Refused(Exception):
@@ -133,9 +133,9 @@ class NodeRun:
         """One page of a paged read, whose answer carries no token or one
         outside `given`, the tokens the read has been given so far. An
         answer repeating one of them is dropped and the page requested again
-        after each of `_REPEATED_PAGE_WAITS_SECONDS`. Raises `_NotAdvancing`
+        after each of `REPEATED_PAGE_WAITS_SECONDS`. Raises `_NotAdvancing`
         once they are spent, or when the next wait would pass the deadline."""
-        waits = iter(_REPEATED_PAGE_WAITS_SECONDS)
+        waits = iter(REPEATED_PAGE_WAITS_SECONDS)
         while True:
             body = self.post(payload)
             if body.get("nextToken") not in given:
@@ -226,7 +226,7 @@ def _subjects_paged(
     tokens: set[str] = set()
     token: str | None = None
     idle_pages = 0
-    for _ in range(_MAX_PAGES):
+    for _ in range(MAX_PAGES):
         payload: dict = {"nodes": list(nodes), "property": f"<-{property}"}
         if token is not None:
             payload["nextToken"] = token
@@ -244,7 +244,7 @@ def _subjects_paged(
         idle_pages = (
             idle_pages + 1 if sum(len(subjects) for subjects in found.values()) == before else 0
         )
-        if idle_pages >= _STALLED_PAGE_LIMIT:
+        if idle_pages >= STALLED_PAGE_LIMIT:
             raise _NotAdvancing
         tokens.add(token)
     raise _NotAdvancing
@@ -286,7 +286,7 @@ def _arc_pages(run: NodeRun, node: str, first: dict, arc: str) -> dict[str, list
     merged: dict[str, list[dict]] = {}
     tokens: set[str] = set()
     body = first
-    for _ in range(_MAX_PAGES):
+    for _ in range(MAX_PAGES):
         arcs = ((body.get("data") or {}).get(node) or {}).get("arcs") or {}
         for property, targets in arcs.items():
             merged.setdefault(property, []).extend(targets.get("nodes", []))
@@ -419,8 +419,11 @@ def iter_node_labels(
 
 
 __all__ = [
+    "MAX_PAGES",
     "NODES_PER_REQUEST",
     "READ_CONCURRENCY",
+    "REPEATED_PAGE_WAITS_SECONDS",
+    "STALLED_PAGE_LIMIT",
     "NodeGraph",
     "NodeReadFault",
     "NodeReadFaultKind",

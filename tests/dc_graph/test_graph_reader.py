@@ -18,6 +18,7 @@ from dc_graph import (
     ArcSubjectPage,
     ArcTarget,
     Facet,
+    GraphCapExceededError,
     GraphClient,
     GraphDeadlineExceededError,
     GraphNotAdvancingError,
@@ -833,6 +834,123 @@ def test_node_all_arc_targets_many_halves_a_chunk_the_mixer_continues():
     ]
     assert all("nextToken" not in json.loads(request.content) for request in requests)
     assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY}
+
+
+_KENYA_PAGES = [
+    {"data": {"country/KEN": {"arcs": _TYPED}}, "nextToken": "tok1"},
+    {
+        "data": {
+            "country/KEN": {
+                "arcs": {"name": {"nodes": [{"value": "Kenya", "provenanceId": "dc/base/Schema"}]}}
+            }
+        },
+        "nextToken": "tok2",
+    },
+    {"data": {"country/KEN": {"arcs": _TYPED}}},
+]
+"""Three pages of `->*` for country/KEN read alone, the last typing it again."""
+
+_PAGE_BYTES = max(len(json.dumps(page)) for page in _KENYA_PAGES)
+
+
+def _sent_tokens(requests: list[httpx.Request]) -> list[str | None]:
+    return [json.loads(request.content).get("nextToken") for request in requests]
+
+
+def test_node_all_arc_targets_many_pages_a_capped_node_the_mixer_continues_alone():
+    # A continuation for one dcid cannot be halved, so a capped read follows its pages.
+    transport, requests = _sequenced(_KENYA_PAGES)
+
+    result = _reader(transport).node_all_arc_targets_many(
+        ["country/KEN"], max_bytes=4 * _PAGE_BYTES
+    )
+
+    assert _sent_tokens(requests) == [None, "tok1", "tok2"]
+    targets = result["country/KEN"]
+    assert targets is not None
+    assert [target.value for target in targets["name"]] == ["Kenya"]
+    assert [target.value for target in targets["typeOf"]] == ["Country"]
+
+
+@pytest.mark.parametrize(
+    ("max_bytes", "raised", "sent"),
+    [
+        pytest.param(None, GraphReadError, [None], id="uncapped-refuses-the-continuation"),
+        pytest.param(
+            2 * _PAGE_BYTES, GraphCapExceededError, [None, "tok1", "tok2"], id="pages-share-one-cap"
+        ),
+    ],
+)
+def test_node_all_arc_targets_many_bounds_a_node_the_mixer_continues_alone(
+    max_bytes: int | None, raised: type[Exception], sent: list[str | None]
+):
+    """An uncapped read refuses a single-dcid continuation without paging it, and a capped one
+    stops once its pages together pass the cap, each page under it alone."""
+    transport, requests = _sequenced(_KENYA_PAGES)
+
+    with pytest.raises(raised):
+        _reader(transport).node_all_arc_targets_many(["country/KEN"], max_bytes=max_bytes)
+
+    assert _sent_tokens(requests) == sent
+
+
+@pytest.mark.parametrize(
+    ("pages", "sent", "cause"),
+    [
+        pytest.param(
+            [{"data": {}, "nextToken": "tok1"}, {"data": {}, "nextToken": "tok1"}],
+            [None, "tok1"],
+            GraphNotAdvancingError,
+            id="repeated-token",
+        ),
+        pytest.param(
+            [{"data": {}, "nextToken": "tok1"}, {"data": {}, "nextToken": "tok2"}],
+            [None, "tok1"],
+            GraphNotAdvancingError,
+            id="page-cap-sends-no-further-page",
+        ),
+        pytest.param(
+            [
+                {"data": {}, "nextToken": "tok1"},
+                {"data": {"country/KEN": {"arcs": ["typeOf"]}}},
+            ],
+            [None, "tok1"],
+            None,
+            id="malformed-later-page",
+        ),
+    ],
+)
+def test_a_single_dcid_continuation_that_cannot_finish_raises_the_read_error(
+    monkeypatch: pytest.MonkeyPatch,
+    pages: list[dict],
+    sent: list[str | None],
+    cause: type[Exception] | None,
+):
+    monkeypatch.setattr(graph_module, "_NODE_ARCS_MANY_MAX_PAGES", 2)
+    transport, requests = _sequenced(pages)
+
+    with pytest.raises(GraphReadError) as raised:
+        _reader(transport).node_all_arc_targets_many(["country/KEN"], max_bytes=4 * _PAGE_BYTES)
+
+    assert _sent_tokens(requests) == sent
+    if cause is None:
+        assert raised.value.__cause__ is None
+    else:
+        assert isinstance(raised.value.__cause__, cause)
+
+
+def test_a_single_dcid_continuation_finishing_on_the_last_page_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(graph_module, "_NODE_ARCS_MANY_MAX_PAGES", 2)
+    transport, requests = _sequenced([_KENYA_PAGES[0], _KENYA_PAGES[2]])
+
+    result = _reader(transport).node_all_arc_targets_many(
+        ["country/KEN"], max_bytes=4 * _PAGE_BYTES
+    )
+
+    assert _sent_tokens(requests) == [None, "tok1"]
+    assert result["country/KEN"] == _COUNTRY
 
 
 _WITH_UNRESOLVED = {

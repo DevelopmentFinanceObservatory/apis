@@ -13,8 +13,9 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
 
-from code_index.types import AnyAxis, PartyKind, PartyRow
+from code_index.types import ANY_AXIS, AnyAxis, PartyKind, PartyRow, WholeMarker
 from dc_graph import label_or_self_name
 from dfo_platform.roles import RoleAxis, role_key_axis
 from graph_release.context import served_origin_key
@@ -165,10 +166,10 @@ def party_kind_of(
     """The kind the code index's `parties` row declares for the party `ref` on `axis`, the
     axis of the role the reader reads (`ANY_AXIS` for a reader of no role), in `datasets`, the
     provenances the reader serves (`PartyRow.kind_over`), which holds whatever the graph says
-    (a group of organisations is typed `Organization` and declared `total`). Empty `datasets`
-    reads every dataset that publishes the party on `axis`. `None` for a ref the rows do not
-    list, for a party no dataset publishes on `axis`, and for a party that takes different
-    kinds in those datasets.
+    (a group of organisations is typed `Organization` and declared `total`). A composite
+    provenance among `datasets` reads as its component tables, and empty `datasets` reads every
+    dataset that publishes the party on `axis`. `None` for a ref the rows do not list, for a
+    party no dataset publishes on `axis`, and for a party that takes no one kind in `datasets`.
 
     Search, the options document and every download read this one source, since the index
     lists every party a declared dataset publishes. A coverage build carrying a party the index
@@ -178,51 +179,100 @@ def party_kind_of(
     return None if party is None else party.kind_over(axis, datasets)
 
 
-def party_count(
+@dataclass(frozen=True, slots=True)
+class PartySplit:
+    """The members of a role on one axis, split by kind (`party_split`): `parties`, the
+    countable parties, and `residuals`, the members that hold figures no other party does
+    ("Africa, unallocated by country"). Both are sorted and leave out the totals the Datasets
+    cut of party totals leaves out (`datasets_api.party_totals`). A frame minted
+    `without_party_totals` holds the rows of both, so `member_count`, which counts both, is
+    the number of members on the frame's column for the role."""
+
+    parties: tuple[str, ...]
+    residuals: tuple[str, ...]
+
+    @property
+    def member_count(self) -> int:
+        """How many members the frame holds for the role: its parties and residual members."""
+        return len(self.parties) + len(self.residuals)
+
+    @property
+    def party_count(self) -> int:
+        """How many countable parties the role holds."""
+        return len(self.parties)
+
+    @property
+    def residual_count(self) -> int:
+        """How many residual members the role holds."""
+        return len(self.residuals)
+
+
+def party_split(
     dcids: Collection[str],
     *,
     axis: RoleAxis | AnyAxis,
     parties: Mapping[str, PartyRow],
     datasets: Collection[str],
-) -> int:
-    """How many of `dcids`, members of a role on `axis`, are parties: those the code index's
-    `parties` declares no `total` on `axis` in `datasets` (`party_kind_of`), the members the
-    Datasets cut of party totals keeps in every cell (`datasets_api.party_totals`). When every
-    member is a total the count is all of them. The count reads no year, series or dataset of a
-    row. It leaves out the totals the cut keeps in a cell that holds only totals: the whole ones,
-    or all of them in a series that holds no other party. It counts every total of a role of
-    only totals, where the cut keeps only the whole ones of a cell that has one."""
-    kept = sum(
-        party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) != "total"
-        for dcid in dcids
-    )
-    return kept or len(dcids)
+) -> PartySplit:
+    """`dcids`, members of a role on `axis`, split by the kind the code index's `parties`
+    declares for each on `axis` in `datasets` (`party_kind_of`): the `residual` members, and
+    the parties, every other member except a `total`. A member the index does not list, or
+    one of differing kinds in `datasets`, is a party. When every member is a total, the
+    parties are all of them. The split reads no year, series or dataset of a row. Its parties
+    leave out the totals the Datasets cut of party totals keeps in a cell that holds only
+    totals: the whole ones, or all of them in a series that holds no other party.
+
+    The role axis fact (`RoleAxisFact.member_count` and `residual_count`), the
+    `role_scope_defaulted` warning, coverage's open-role dimension, a composite's scope and
+    the heading all count members through this one split, so they agree."""
+    ordered = sorted(set(dcids))
+    kinds = {
+        dcid: party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) for dcid in ordered
+    }
+    residuals = tuple(dcid for dcid in ordered if kinds[dcid] == "residual")
+    kept = tuple(dcid for dcid in ordered if kinds[dcid] not in ("total", "residual"))
+    if not kept and not residuals:
+        kept = tuple(ordered)
+    return PartySplit(parties=kept, residuals=residuals)
 
 
 def is_whole_total(party: PartyRow, *, year: int | None, provenance: str | None) -> bool:
-    """Whether `party` is a whole total on a row of `provenance` in `year`: a `total` with a
-    marker for `provenance` (`PartyRow.marker`) that applies in `year`. A marker applies in
+    """Whether `party` is a whole total on a row of `provenance` in `year`: a `total` there
+    (`PartyRow.kind_over`) with a marker for `provenance` (`PartyRow.marker_over`, which reads
+    a composite of one table through that table) that applies in `year`. A marker applies in
     every year when its `years` is `None`, and otherwise only in a `year` inside that window. A
     row with no `provenance`, or no `year` where a window is set, reads as no whole total, the
     reading that holds in every dataset and year."""
-    if provenance is None or (marker := party.marker(provenance)) is None:
+    if provenance is None:
         return False
-    return party.kind_in(provenance) == "total" and _in_window(marker.years, year)
+    return _is_whole(party, party.marker_over(provenance), year=year, provenance=provenance)
+
+
+def _is_whole(
+    party: PartyRow, marker: WholeMarker | None, *, year: int | None, provenance: str
+) -> bool:
+    """Whether `marker`, the marker of `party` on rows of `provenance`, makes it a whole total
+    there in `year`."""
+    return (
+        marker is not None
+        and party.kind_over(ANY_AXIS, (provenance,)) == "total"
+        and _in_window(marker.years, year)
+    )
 
 
 def whole_cell(party: PartyRow, *, year: int | None, provenance: str | None) -> str:
     """The `party_whole` cell of `party` on a row of `provenance` in `year`: `true` when it is a
     whole total there (`is_whole_total`) and `false` when it is not. Empty when the row lacks
-    what decides it: a party with whole markers on a row with no `provenance`, or on one with no
-    `year` where that dataset's marker sets a window. A pivot's year-free cell, a period across
-    years and a table without the column all read so. A party with no marker reads `false`,
-    which holds in every dataset and year."""
-    if party.whole and provenance is None:
-        return ""
-    marker = None if provenance is None else party.marker(provenance)
+    what decides it: a party with whole markers on a row with no `provenance`, or on one with
+    no `year` where the marker for `provenance` (`PartyRow.marker_over`) sets a window. A
+    pivot's year-free cell, a period across years and a table without the column all read so.
+    A party with no marker reads `false`, which holds in every dataset and year."""
+    if provenance is None:
+        return "" if party.whole else "false"
+    marker = party.marker_over(provenance)
     if marker is not None and marker.years is not None and year is None:
         return ""
-    return "true" if is_whole_total(party, year=year, provenance=provenance) else "false"
+    return "true" if _is_whole(party, marker, year=year, provenance=provenance) else "false"
 
 
 def party_cell(

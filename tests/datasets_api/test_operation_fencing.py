@@ -25,6 +25,7 @@ from datasets_api.operations import worker as worker_module
 from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
+from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS
 from datasets_api.operations.worker import RUN_DEADLINE_SECONDS, run_operation
 from materialise.trace import UNKNOWN_FAMILY
 from series_coverage.index import Estimate
@@ -141,7 +142,13 @@ class _CrashingTaskClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         self.calls.append((operation_id, submission_count))
         if len(self.calls) == 1:
             raise TimeoutError("process died before create_task returned")

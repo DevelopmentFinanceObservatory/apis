@@ -559,7 +559,7 @@ class _Names:
         if unit_class.currency is None:
             return self.labels.get(unit)
         noun = currency_noun(unit_class.currency, label=self.labels.get(unit))
-        basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=None)
+        basis = price_basis(requested=None, unit_class=unit_class, stated=None)
         return price_basis_phrase(basis, currency_noun=noun)
 
     def unit(self, unit: str | None) -> NodeRef | None:

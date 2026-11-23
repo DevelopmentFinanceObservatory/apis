@@ -13,7 +13,8 @@ from dfo_platform import ProblemSpec, refused
 from dfo_platform.state import StateSlot
 from skills_api.doors._response_cache import GenerationBodyCache
 from skills_api.routing import SKILL_ID_MAX_LENGTH
-from skills_index import SharedSkillsIndex
+from skills_index import SharedSkillsIndex, SkillsIndex
+from skills_index.config import SKILLS_INDEX_REQUEST_WAIT_SECONDS
 
 
 class SkillsIndexNotBuilt(Exception):
@@ -41,6 +42,19 @@ class SkillNotFound(Exception):
     def __init__(self, skill_id: str) -> None:
         self.skill_id = skill_id
         super().__init__(f"skill {skill_id!r} is not published on this deployment")
+
+
+async def built_index(shared: SharedSkillsIndex) -> SkillsIndex:
+    """The served index, after waiting up to `SKILLS_INDEX_REQUEST_WAIT_SECONDS` for the first
+    build when none has finished.
+
+    Raises:
+        SkillsIndexNotBuilt: the first build has not finished in time, or failed.
+    """
+    index = await shared.ready(timeout_s=SKILLS_INDEX_REQUEST_WAIT_SECONDS)
+    if index is None:
+        raise SkillsIndexNotBuilt()
+    return index
 
 
 def index_not_built_problem() -> ProblemSpec:

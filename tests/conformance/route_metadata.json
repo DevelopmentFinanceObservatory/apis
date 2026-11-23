@@ -55,6 +55,15 @@
   },
   {
     "has_description": true,
+    "method": "GET",
+    "name": "get_derived_link",
+    "operation_id": "datasets_get_derived_link",
+    "path": "/api/datasets/derived/{id}/{content_version}/files/{digest}",
+    "summary": "Get Derived Link",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
     "method": "POST",
     "name": "post_export",
     "operation_id": "datasets_post_export",
@@ -659,6 +668,24 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_schema_node",
+    "operation_id": "graph_get_schema_node",
+    "path": "/api/graph/schema/node/{dcid}",
+    "summary": "Get Schema Node",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_search",
+    "operation_id": "graph_get_schema_search",
+    "path": "/api/graph/schema/search",
+    "summary": "Get Schema Search",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_schema_terms",
     "operation_id": "graph_get_schema_terms",
     "path": "/api/graph/schema/terms",
@@ -668,10 +695,37 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_un_schema_terms",
+    "operation_id": "graph_get_un_schema_terms",
+    "path": "/api/graph/schema/terms/un_system",
+    "summary": "Get Un Schema Terms",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_schema_usage",
     "operation_id": "graph_get_schema_usage",
     "path": "/api/graph/schema/usage",
     "summary": "Get Schema Usage",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_usage_base",
+    "operation_id": "graph_get_schema_usage_base",
+    "path": "/api/graph/schema/usage/base",
+    "summary": "Get Schema Usage Base",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_usage_un_system",
+    "operation_id": "graph_get_schema_usage_un_system",
+    "path": "/api/graph/schema/usage/un_system",
+    "summary": "Get Schema Usage Un System",
     "surface": "graph"
   },
   {
@@ -798,6 +852,15 @@
     "operation_id": "presentation_get_release",
     "path": "/api/presentation/release",
     "summary": "Get Release",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_sample",
+    "operation_id": "presentation_read_share_sample",
+    "path": "/api/presentation/share-sample",
+    "summary": "Read Share Sample",
     "surface": "presentation"
   },
   {

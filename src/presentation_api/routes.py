@@ -33,6 +33,7 @@ __all__ = [
     "SHARE_HISTORY_PATH",
     "SHARE_IMPORT_PATH",
     "SHARE_PATH",
+    "SHARE_SAMPLE_PATH",
     "SHARE_SLOT_DATA_PATH",
     "SHARE_SLOT_PATH",
     "SHARE_SNAPSHOT_PATH",
@@ -61,6 +62,8 @@ SHARE_IMPORT_PATH = f"{SHARE_PATH}/import"
 SHARE_HISTORY_PATH = f"{SHARE_PATH}/history"
 SHARE_SLOT_PATH = f"{SHARE_PATH}/slots/{{slot}}"
 SHARE_SLOT_DATA_PATH = f"{SHARE_SLOT_PATH}/data"
+# Outside `SHARES_PATH`, so `SHARE_PATH`'s public pattern does not match it.
+SHARE_SAMPLE_PATH = "/api/presentation/share-sample"
 
 ROUTE_ENDPOINTS: Mapping[RouteKey, str] = MappingProxyType(
     {
@@ -81,6 +84,7 @@ ROUTE_ENDPOINTS: Mapping[RouteKey, str] = MappingProxyType(
         ("GET", SHARE_HISTORY_PATH): SHARES_ENDPOINT,
         ("GET", SHARE_SLOT_PATH): SHARES_ENDPOINT,
         ("GET", SHARE_SLOT_DATA_PATH): SHARES_ENDPOINT,
+        ("GET", SHARE_SAMPLE_PATH): SHARES_ENDPOINT,
     }
 )
 

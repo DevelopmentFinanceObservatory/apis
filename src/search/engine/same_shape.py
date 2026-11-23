@@ -19,6 +19,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.composites import binds_composite
+from code_index.labels import PricesKind
 from code_index.shared import get_index
 from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from search.engine.config import settings
@@ -489,7 +490,9 @@ def _merge_resolved_facets(
     Other axes retain one reference only when every member reports the same
     scalar selection. Missing values, differing refs, or any ``per_series``
     selection produce a merged ``per_series`` facet, which on the unit axis lists every
-    member's units in group order.
+    member's units in group order. The unit axis states the union of its members' price
+    bases (`ResolvedFacet.prices`), unstated where some member states none, and of those
+    the bases no member infers (`ResolvedFacet.stated_prices`).
     """
     from search.models import ResolvedFacet
 
@@ -515,6 +518,7 @@ def _merge_resolved_facets(
             distinct.setdefault(f.ref, f)
         if not heterogeneous and len(distinct) == 1:
             shared = next(iter(distinct.values()))
+            prices, stated_prices = _merged_prices(present, every_member=not heterogeneous)
             result[axis] = ResolvedFacet(
                 basis=basis,
                 ref=shared.ref,
@@ -524,15 +528,38 @@ def _merge_resolved_facets(
                 documentation=shared.documentation,
                 currency=shared.currency,
                 account=shared.account,
+                prices=prices,
+                stated_prices=stated_prices,
             )
         else:
+            prices, stated_prices = _merged_prices(present, every_member=len(present) == len(group))
             refs = (ref for f in present for ref in ([f.ref] if f.ref else f.refs or ()))
             result[axis] = ResolvedFacet(
                 basis=basis,
                 selection="per_series",
                 refs=list(dict.fromkeys(refs)) if axis == "unit" else None,
+                prices=prices,
+                stated_prices=stated_prices,
             )
     return result
+
+
+def _merged_prices(
+    facets: Sequence[ResolvedFacet], *, every_member: bool
+) -> tuple[list[PricesKind] | None, list[PricesKind] | None]:
+    """The price bases a merged unit facet states: `ResolvedFacet.prices`, the union of
+    `facets`' own, current before constant, and `ResolvedFacet.stated_prices`, those of them
+    no facet infers. Both None where a member carries no unit facet (`every_member` false)
+    or some facet states none."""
+    if not every_member or any(f.prices is None for f in facets):
+        return None, None
+    held = {prices for f in facets for prices in f.prices or ()}
+    inferred = {
+        prices for f in facets for prices in f.prices or () if prices not in (f.stated_prices or ())
+    }
+    order: tuple[PricesKind, ...] = ("current", "constant")
+    merged = [prices for prices in order if prices in held]
+    return merged, [prices for prices in merged if prices not in inferred]
 
 
 def _union_entities(group: list[RegionResult]) -> list[Entity]:

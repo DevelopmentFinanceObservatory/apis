@@ -38,6 +38,9 @@ _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
         ("src/datasets_api/manifest.py", "warning_model", "cast(str, warning['code'])"),
         ("src/datasets_api/manifest.py", "reshape_warning_models", "code"),
         ("src/datasets_api/doors/meta.py", "classify_meta_exception", "exc.refusal_code"),
+        # `UnavailableRoot.of` names an unreadable root with the code its
+        # `FrameUnavailable` or `SnapshotRevoked` refusal already carries.
+        ("src/datasets_api/analysis.py", "of", "refused.code"),
         # `RefreshNotPermitted.code`, a class attribute the sweep collects.
         ("src/datasets_api/live_refresh.py", "classify_live_refresh_exception", "exc.code"),
         (

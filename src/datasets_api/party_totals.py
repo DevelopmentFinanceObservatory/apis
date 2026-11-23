@@ -12,10 +12,11 @@ For each open party role, in column-name order, the rows whose party the code in
 `total` in the row's dataset (`materialise.enrichment.party_kind_of` for the row's `provenance`)
 can be left out, each role reading the rows the roles before it kept. A party can be a total in
 one dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), so the cut keys
-on the party and the dataset together. A row with no provenance reads the kind of every dataset,
-and keeps a party whose kind differs between datasets. Parties of kind `party` or `residual`,
-and parties the index declares no kind for, stay. A bound role is left alone whatever its
-parties' kinds.
+on the party and the dataset together. A composite's rows read the kind of its component
+tables (`code_index.types.PartyRow.kinds_over`), so a cut of the DAC2a bilateral composite
+leaves out the IMF trust funds that DAC2A declares a total, though the CRS declares them a
+party. Parties of kind `party` or `residual`, and parties the index declares no kind for,
+stay. A bound role is left alone whatever its parties' kinds.
 
 A role decides each cell on its own. A cell is one series of the role, one full `time_period`
 value and one provenance. A series is the value of every other column of the frame's grain, which

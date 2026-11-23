@@ -97,6 +97,9 @@ def client() -> TestClient:
             dataset_usage=new_schema_cache(
                 entries=1, executor=executor, generation=UNKNOWN_GENERATION
             ),
+            origin_usage=new_schema_cache(
+                entries=2, executor=executor, generation=UNKNOWN_GENERATION
+            ),
             check_executor=new_check_executor(),
         ),
     )

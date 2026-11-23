@@ -101,7 +101,7 @@ def test_a_frame_whose_statvars_declare_no_known_code_system_decodes_nothing():
     assert build_decode_plan(table, index=index) is None
 
 
-def test_happy_path_resolves_a_label_for_a_declared_code():
+def test_happy_path_resolves_the_code_dcid_for_a_declared_code():
     table = _table((("dcid:SV_A", "p1", "r1", "2020", 1.0),))
     index = _index(
         statvars=(_statvar("SV_A", constraint_properties={"crsPurpose": _PURPOSE_HEALTH.dcid}),)
@@ -111,7 +111,7 @@ def test_happy_path_resolves_a_label_for_a_declared_code():
 
     assert plan is not None
     assert plan.requests == (("stat_var", "crsPurpose"),)
-    assert plan.lookup == {"dcid:SV_A": {"crsPurpose": "Basic health care"}}
+    assert plan.lookup == {"dcid:SV_A": {"crsPurpose": _PURPOSE_HEALTH.dcid}}
 
 
 def test_a_property_not_declared_on_the_row_reads_as_the_declaration_own_absent_reading():
@@ -134,7 +134,7 @@ def test_a_property_not_declared_on_the_row_reads_as_the_declaration_own_absent_
     assert plan is not None
     assert plan.requests == (("stat_var", "crsPurpose"),)
     assert plan.lookup["dcid:SV_A"] == {"crsPurpose": "not_declared"}
-    assert plan.lookup["dcid:SV_B"] == {"crsPurpose": "Basic health care"}
+    assert plan.lookup["dcid:SV_B"] == {"crsPurpose": _PURPOSE_HEALTH.dcid}
 
 
 def test_the_absent_reading_value_placed_in_the_cell_is_read_generically_not_hardcoded():
@@ -156,7 +156,7 @@ def test_the_absent_reading_value_placed_in_the_cell_is_read_generically_not_har
 
     assert plan is not None
     assert plan.lookup["dcid:SV_A"] == {"futureCodeSystem": "unmeasured"}
-    assert plan.lookup["dcid:SV_B"] == {"futureCodeSystem": "Future Value A"}
+    assert plan.lookup["dcid:SV_B"] == {"futureCodeSystem": _FUTURE_A.dcid}
 
 
 def test_a_declared_value_the_index_carries_no_code_row_for_is_a_genuine_miss():
@@ -196,7 +196,7 @@ def test_a_statvar_absent_from_the_index_entirely_is_a_genuine_miss_for_every_re
     plan = build_decode_plan(table, index=index)
 
     assert plan is not None
-    assert plan.lookup["dcid:SV_known"] == {"crsPurpose": "Basic health care"}
+    assert plan.lookup["dcid:SV_known"] == {"crsPurpose": _PURPOSE_HEALTH.dcid}
     assert plan.lookup["dcid:SV_ghost"] == {}
 
 
@@ -213,8 +213,8 @@ def test_extra_refs_decode_a_zero_row_member_absent_from_the_table():
     plan = build_decode_plan(table, index=index, extra_refs=("dcid:SV_zero",))
 
     assert plan is not None
-    assert plan.lookup["dcid:SV_A"] == {"crsPurpose": "Basic health care"}
-    assert plan.lookup["dcid:SV_zero"] == {"crsPurpose": "Basic health care"}
+    assert plan.lookup["dcid:SV_A"] == {"crsPurpose": _PURPOSE_HEALTH.dcid}
+    assert plan.lookup["dcid:SV_zero"] == {"crsPurpose": _PURPOSE_HEALTH.dcid}
 
 
 def test_extra_refs_alone_with_no_stat_var_column_still_builds_a_plan():
@@ -226,7 +226,7 @@ def test_extra_refs_alone_with_no_stat_var_column_still_builds_a_plan():
     plan = build_decode_plan(table, index=index, extra_refs=("dcid:SV_zero",))
 
     assert plan is not None
-    assert plan.lookup == {"dcid:SV_zero": {"crsPurpose": "Basic health care"}}
+    assert plan.lookup == {"dcid:SV_zero": {"crsPurpose": _PURPOSE_HEALTH.dcid}}
 
 
 def test_an_index_gap_extra_ref_decodes_the_same_way_a_table_row_would():

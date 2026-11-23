@@ -24,6 +24,8 @@ from graph_api.schema_models import (
     SchemaCheckResponse,
     SchemaCheckRow,
 )
+from origin_catalogue import Catalogue, UnTables
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, un_mirror, un_variable
 
 from .conftest import FakeGraphNodeReader
 from .schema_fixture import (
@@ -220,6 +222,7 @@ def _checked(
     lookup: SchemaLookup | None = None,
     *,
     un_served: bool = True,
+    catalogue: Catalogue = CATALOGUE,
 ) -> CheckedRows:
     """`check_rows` over the rows `plan_reads` takes."""
     lookup = lookup or _lookup()
@@ -230,6 +233,7 @@ def _checked(
         lookup=lookup,
         reader=reader or _RecordingReader(),
         code_index=INDEX,
+        catalogue=catalogue,
         un_served=un_served,
         generation="g1",
         deadline=_DEADLINE,
@@ -245,9 +249,10 @@ def _check(
     lookup: SchemaLookup | None = None,
     *,
     un_served: bool = True,
+    catalogue: Catalogue = CATALOGUE,
 ) -> list[_Finding]:
     """The findings over every row, as `(field, property, subject, value, served, code)`."""
-    checked = _checked(rows, reader, lookup, un_served=un_served)
+    checked = _checked(rows, reader, lookup, un_served=un_served, catalogue=catalogue)
     assert checked.rows_checked == len(rows)
     return [
         (
@@ -1249,6 +1254,82 @@ def test_a_un_id_gets_origin_not_served_with_no_read_while_the_un_origin_is_off(
     assert off.batches == []
     assert "origin_not_served" not in {finding[-1] for finding in _check([row], on)}
     assert on.batches != []
+
+
+# A UN System StatVar as the UN deployment serves it: its population type is the series
+# `undata/eclac/SERIES-INSUF_PENSION`, typed by ECLAC's series class and no `Class`.
+_UN_SERIES = "undata/eclac/SERIES-INSUF_PENSION"
+_UN_EXCLUDED_SERIES = "undata/eclac/SERIES-EXCLUDED"
+_UN_VARIABLE = "undata/eclac/INSUF_PENSION.AGE--Y65T79__AVERAGING_METHOD--SIMPLE_AVERAGE"
+_UN_NODES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
+    **_CHECK_NODES,
+    _UN_SERIES: {"typeOf": ("undata/eclac/SERIES",)},
+    _UN_EXCLUDED_SERIES: {"typeOf": ("undata/eclac/SERIES",)},
+    "undata/eclac/SERIES-UNLISTED": {"typeOf": ("undata/eclac/SERIES",)},
+    "undata/eclac/SERIES": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
+    "undata/AGE-Y65T79": {"typeOf": ("undata/AGE",)},
+    "undata/AVERAGING_METHOD-SIMPLE_AVERAGE": {"typeOf": ("undata/AVERAGING_METHOD",)},
+    "undataAge": {"typeOf": ("Property",)},
+    "undataAveragingMethod": {"typeOf": ("Property",)},
+    "value": {"typeOf": ("Property",)},
+}
+_UN_CATALOGUE = FakeCatalogue(
+    un=UnTables(
+        mirror=un_mirror(
+            {
+                _UN_VARIABLE: un_variable(
+                    _UN_SERIES, name="Older adults receiving insufficient pensions"
+                )
+            },
+            excluded={"undata/eclac/EXCLUDED.SEX--F": _UN_EXCLUDED_SERIES},
+        )
+    )
+)
+
+
+def _un_row(population_type: str) -> SchemaCheckRow:
+    return SchemaCheckRow.model_validate(
+        {
+            "dcid": _UN_VARIABLE,
+            "population_type": population_type,
+            "measured_property": "value",
+            "stat_type": "measuredValue",
+            "constraint_properties": {
+                "undataAge": "undata/AGE-Y65T79",
+                "undataAveragingMethod": "undata/AVERAGING_METHOD-SIMPLE_AVERAGE",
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("population_type", "expected"),
+    [
+        pytest.param(_UN_SERIES, [], id="series-the-catalogue-holds"),
+        pytest.param(_UN_EXCLUDED_SERIES, [], id="series-the-registry-excludes"),
+        pytest.param(
+            "undata/eclac/SERIES-UNLISTED",
+            [_cell("population_type", "undata/eclac/SERIES-UNLISTED", "not_a_class")],
+            id="series-the-catalogue-does-not-hold",
+        ),
+        pytest.param(
+            "undata/AGE-Y65T79",
+            [_cell("population_type", "undata/AGE-Y65T79", "not_a_class")],
+            id="un-code-list-member",
+        ),
+        pytest.param(
+            "crsPurpose",
+            [_cell("population_type", "crsPurpose", "not_a_class")],
+            id="base-property",
+        ),
+    ],
+)
+def test_a_un_population_type_is_a_series_its_variables_name(
+    population_type: str, expected: list[_Finding]
+) -> None:
+    row = _un_row(population_type)
+
+    assert _check([row], _RecordingReader(_UN_NODES), catalogue=_UN_CATALOGUE) == expected
 
 
 def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> None:

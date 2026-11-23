@@ -156,10 +156,13 @@ class SourceDocumentation:
     `source_data_url` (`sourceDataUrl`), `citation` (`licenseAttribution`)
     and `license_url` (`license`) are the value every child agrees on.
     `last_update` is the latest child `lastDataRefreshDate` and
-    `next_expected_update` the earliest `nextDataRefreshDate`. `documents`
-    maps each of the four document properties a sole child carries to its
-    distinct stored values, MCF-escaped Markdown; it is empty for an entry
-    with several children."""
+    `next_expected_update` the earliest `nextDataRefreshDate`.
+    `partial_periods` maps each child that states a `partialObservationDate`
+    to it: the period (`2025`) for which the child's import holds only part
+    of the source's data, as the pipeline marks it. A child the pipeline does
+    not mark is left out. `documents` maps each of the four document
+    properties a sole child carries to its distinct stored values,
+    MCF-escaped Markdown; it is empty for an entry with several children."""
 
     provenances: tuple[str, ...] = ()
     publisher: str | None = None
@@ -169,6 +172,32 @@ class SourceDocumentation:
     last_update: str | None = None
     next_expected_update: str | None = None
     documents: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    partial_periods: Mapping[str, str] = field(default_factory=dict)
+
+
+class Undocumented(LookupError):
+    """The catalogue cannot say whether a provenance's import marks a partial period: it lists
+    no row for the provenance, or no documentation of its entry that covers it."""
+
+    def __init__(self, provenance: str) -> None:
+        self.provenance = provenance
+        super().__init__(f"the origin catalogue documents no provenance {provenance!r}")
+
+
+def partial_period_of(catalogue: Catalogue, provenance: str) -> str | None:
+    """The period `provenance`'s import holds only part of, as its source-index entry's
+    documentation states it (`SourceDocumentation.partial_periods`), `None` when the pipeline
+    marks none.
+
+    Raises:
+        Undocumented: `catalogue` lists no row for `provenance`, or no documentation of its
+            entry naming it among its `provenances`, so whether it is marked is unknown.
+    """
+    row = catalogue.provenance(provenance)
+    documentation = None if row is None else catalogue.source_documentation(entry_ref(row))
+    if documentation is None or provenance not in documentation.provenances:
+        raise Undocumented(provenance)
+    return documentation.partial_periods.get(provenance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,7 +958,9 @@ __all__ = [
     "SeriesAdmission",
     "SourceRef",
     "UnTables",
+    "Undocumented",
     "entry_ref",
+    "partial_period_of",
     "release_held_arcs",
     "release_held_family",
 ]

@@ -170,23 +170,31 @@ def _assemble(
     )
 
 
-async def _run_resolve(
-    deps: GraphDeps, body: ResolveRequest, *, policy: MembershipPolicy | None
+async def run_resolve(
+    deps: GraphDeps,
+    body: ResolveRequest,
+    *,
+    policy: MembershipPolicy | None,
+    deadline: float | None = None,
+    near_matches: bool = True,
 ) -> ResolveResponse:
     """Refresh the generation before setting the deadline, so `resolver.resolve` sees a fresh
     stamp after an idle gap.
 
-    The resolver's reads share one absolute deadline, set before their first submission so
-    executor queue time counts against it.
+    The resolver's reads share one absolute monotonic deadline, set before their first
+    submission so executor queue time counts against it: `deadline` when given, else
+    `GRAPH_RESOLVE_TIMEOUT_SECONDS` after the refresh. `near_matches` asks the resolver for
+    near matches, which a caller that drops them can skip.
     """
     await deps.generation.refresh_if_stale()
 
-    deadline = time.monotonic() + GRAPH_RESOLVE_TIMEOUT_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + GRAPH_RESOLVE_TIMEOUT_SECONDS
     resolutions = await deps.resolver.resolve(
         body.texts,
         kinds=body.kinds,
         code_system=body.code_system,
-        near_matches=True,
+        near_matches=near_matches,
         deadline=deadline,
     )
     expand = "members" in body.expand
@@ -227,7 +235,7 @@ def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
 
 async def resolve(body: ResolveRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
     response = await asyncio.wait_for(
-        _run_resolve(deps, body, policy=published_membership(request)),
+        run_resolve(deps, body, policy=published_membership(request)),
         timeout=GRAPH_RESOLVE_TIMEOUT_SECONDS,
     )
     return JSONResponse(response.model_dump(mode="json"))

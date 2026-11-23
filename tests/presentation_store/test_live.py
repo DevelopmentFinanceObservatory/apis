@@ -714,6 +714,53 @@ def test_an_import_keeps_its_id_time_and_history_once_and_refuses_an_id_holding_
     ] == [(1, "cmp_a", {"without_party_totals": True}, at)]
 
 
+def test_a_share_sample_draws_live_shares_within_its_window_with_their_shown_slots(live_store):
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    # A window of its own, since the live database keeps every test's shares.
+    start = datetime(2001, 1, 1, tzinfo=UTC) + timedelta(days=secrets.randbelow(3000))
+
+    def imported(offset: int, cards: int) -> ImportedShare:
+        return ImportedShare(
+            id="Sa" + secrets.token_hex(3),
+            kind="canvas",
+            mode="snapshot",
+            title="Sampled",
+            owner=None,
+            payload=None,
+            created_at=start + timedelta(hours=offset),
+            write_token_sha256=None,
+            cards=tuple(_share_card(f"cmp_{n}") for n in range(cards)),
+            renderings={},
+        )
+
+    first, second, gone = imported(0, 2), imported(1, 0), imported(2, 1)
+    for share in (first, second, gone):
+        assert shares.import_share(share) is True
+    shares.delete_share(share_id=gone.id)
+
+    window = shares.sample_shares(
+        limit=10, created_after=start, created_before=start + timedelta(days=1)
+    )
+    capped = shares.sample_shares(
+        limit=1, created_after=start, created_before=start + timedelta(days=1)
+    )
+    after = shares.sample_shares(
+        limit=10, created_after=start + timedelta(hours=1), created_before=start + timedelta(days=1)
+    )
+
+    assert sorted((share.id, share.mode, share.created_at, share.slots) for share in window) == (
+        sorted(
+            [
+                (first.id, "snapshot", first.created_at, 2),
+                (second.id, "snapshot", second.created_at, 0),
+            ]
+        )
+    )
+    assert len(capped) == 1
+    assert [share.id for share in after] == [second.id]
+
+
 def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
     _apply()
     shares = LiveShareStore(store=live_store)

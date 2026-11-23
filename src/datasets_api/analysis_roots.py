@@ -10,6 +10,13 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   the version's stored frame (`current.head_rendering`). A `groupby` sum or a party-totals cut
   that changes the frame is a version of its own (`render.DerivedVersion`), and that version is
   the root's dataset, as it is the `dataset` of data-mcp's mint record.
+  Once a read has recorded that version, a later read of the same dataset version with the
+  same minting options under the same code index and render format reads it with no render
+  (`LiveRootSource._recorded_rendering`). Each such read, rendered or recorded, records when
+  the rendering was last read from that dataset version (`render_ahead.mark_root_read`), which
+  chooses what a new head renders before a reader asks (`render_ahead.render_ahead`). A read of
+  a recorded version whose stored frame or read file ends working-tier retention within the
+  renewal margin queues its renewal for the worker (`operations.renewal`).
 - With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
   frame1 document).
 - With `columns` the frame is the dataset version's frame-layout file of those columns, decoded
@@ -18,7 +25,8 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   of a converted unit.
 
 The frame is named by the pair `frame_ref_for` derives from the columns, the groupby and the
-party-totals cut, as data-mcp names it, so two renderings of one version are two frames.
+party-totals cut, and for a frame-layout file from the render format its cells were written
+under (`versions.RENDER_FORMAT`), so two renderings of one version are two frames.
 
 A root that leaves `columns` to the default is read with the version's default enrichment
 (`default_enrichment`): the root asks the mint for `enrichment: "default"`, which resolves the
@@ -26,21 +34,46 @@ columns from the roles the version's frame holds, and its record keeps the resol
 (`record_options`). The verbs read them to keep group totals out of a sum or rank and to rank
 places at one level.
 
+A request root that states no `groupby`, under a step other than `filter`, and whose
+version's frame holds more than one StatVar with data (`description_record.summed_refs`) is
+read summed (`implied_groupby`), unless a step over it names `stat_var`: its options gain
+`groupby` `{by: <"time_period" and the summable axes its steps name, sorted>, op: "sum"}`, and
+`codes`, the code dcids the filters over it keep on each axis `by` keeps, when they keep some
+(`analysis.PlannedRoot`), so its record, the recipe's normal form and the format 2 ref state the
+sum. When the sum refuses
+`rollup_not_summable`, inline or as a queued rebuild that failed with that code, the root is
+read unsummed, records the refusal (`ResolvedRoot.sum_refused`) and logs one
+`datasets_analysis_root_sum_refused` line. A root whose groupby summed StatVars names them
+(`ResolvedRoot.stat_vars_summed`).
+
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
-newest version of the rendering, rebuilt when its head is stale, in one serve. A dataset root under `latest`
-is served the same way with the rendering it records, so it is read by its rendering, since its
-version alone can record two renderings that the newest data splits. A rebuild
+newest version of the rendering, rebuilt when its head is stale, in one serve, summed as the
+stored head's trace implies so no other rendering is made. A dataset root under `latest` is
+served the same way with the rendering it records, so it is read by its rendering, since its
+version alone can record two renderings that the newest data splits. A request reads one
+version of a dataset: a later root of a dataset an earlier root served renders from the
+version that serve read. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
 and will not be retried refuses as the refresh door refuses it (`RefreshRebuildFailed`).
 `newest_spec_version` names the dataset version a Spec root reads.
+
+Under `latest: "stored"` a Spec or dataset root reads the version its dataset's stored head
+names, judged by the rules of the head GET from records alone (`current.stored_head_version`), and
+is then read as a pinned root naming that version is (`LiveRootSource._stored_head`), so both
+key alike. Every root of one dataset reads that one version, and the head's check is submitted
+once. With `defer_renders` nothing renders while the root resolves: a rendering whose file or
+stored frame is not served resolves to the version its records name, its party-kind file named
+by the stamp a render now writes, and renders when the root is located (`_Deferred`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+import logging
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, cast
 
 import pyarrow as pa
@@ -55,7 +88,9 @@ from dfo_frame_grammar import (
     unit_cell_array,
 )
 from dfo_frame_grammar.grammar import (
+    STAT_VAR_COLUMN,
     STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     UnitRequest,
     unit_cell_from_json,
@@ -63,43 +98,84 @@ from dfo_frame_grammar.grammar import (
 
 from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
-from dataset_store.snapshot import StoredArtifactLocation
+from code_index.query import CodeIndex
+from code_index.types import summable_axes
+from dataset_store.snapshot import (
+    SnapshotRevoked,
+    StoredArtifactLocation,
+    StoredVersion,
+    read_servable_version,
+)
 from datasets_api.analysis import (
+    STAT_VAR_PREFIX,
+    STAT_VAR_WORD,
+    STORED,
     AnalysisPending,
+    AnalysisTooLarge,
     DatasetRoot,
+    Latest,
     LocatedRoot,
     ResolvedRoot,
     RootExpired,
     RootNotStored,
     RootRendering,
     SpecRoot,
+    StoredHead,
     recorded_dataset_root,
 )
-from datasets_api.current import DefinitionDeps, head_rendering, load_stored
+from datasets_api.current import (
+    DefinitionDeps,
+    UnstoredFile,
+    UnstoredRendering,
+    head_rendering,
+    load_stored,
+    render_unstored,
+    stored_head_version,
+)
 from datasets_api.default_enrichment import (
     KIND_COLUMNS,
     coverage_roles,
     with_default_enrichment,
 )
 from datasets_api.derived import root_rendering
+from datasets_api.description_record import summed_refs
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.doors.snapshot import servable_snapshot_manifest
+from datasets_api.groupby import adds_stat_vars, selected_contributors
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.operations.renewal import renew_if_expiring
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
+from datasets_api.recorded_rendering import MintingOptions, mintings_rendered_under
 from datasets_api.render import (
+    check_options_supported,
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
+    refuse_past_fold_ceiling,
+    resolved_rendering_keys,
     servable_frame_location,
 )
-from datasets_api.store_errors import read_stored_frame
+from datasets_api.render_ahead import mark_recorded_read, mark_root_read, read_recently
+from datasets_api.store_errors import (
+    read_stored_frame,
+    stored_frame_distinct,
+    stored_frame_row_count,
+)
+from datasets_api.timings import phase
+from datasets_api.versions import RENDER_FORMAT, HeadVersion, enrichment_stamp, rendering_stamp
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
     enrichment_role,
 )
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from materialise.reshape import RollupNotSummableError
+from series_coverage.shared import CoverageSnapshot
 from spec_registry.reader import StoredDefinition
+
+logger = logging.getLogger(__name__)
 
 # The bare frame-layout Parquet data-mcp mints a frame with.
 _BASE_OPTIONS: Mapping[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
@@ -130,12 +206,43 @@ def frame_ref_for(
     `{spec_id, content_version}` is named by: the version's own pair with none of them, else
     `cv_` and 32 hex digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted,
     "content_version"}`, with `groupby` when set, its `by` sorted, `"without_party_totals":
-    true` when the cut is asked for, and the `enrichment_stamp` of its file when the columns
-    ask for kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way.
+    true` when the cut is asked for, the `enrichment_stamp` of its file when the columns ask
+    for kinds, and `"render_format": versions.RENDER_FORMAT` when `columns` is not empty.
+    data-mcp's `frame_materialisation.frame_ref_for` names frames from the columns, the
+    content version and the groupby alone.
 
     The pair names what a recipe replays: a cut that leaves nothing out serves its base
     version, and the frame read with it is still named apart from the frame read without it,
-    since the two replay differently once the data holds party totals."""
+    since the two replay differently once the data holds party totals. A root with `columns`
+    reads its frame-layout file, whose decoded `stat_var_<code_system>` and party-kind cells
+    are the render format's, so a frame rendered under another format is another frame. The
+    other roots read a stored frame, which a format change gives a new `content_version`
+    (`render.DerivedVersion`) or leaves as it is."""
+    return frame_ref_under(
+        spec_id=spec_id,
+        content_version=content_version,
+        columns=columns,
+        groupby=groupby,
+        without_party_totals=without_party_totals,
+        enrichment_stamp=enrichment_stamp,
+        render_format=RENDER_FORMAT,
+    )
+
+
+def frame_ref_under(
+    *,
+    spec_id: str,
+    content_version: str,
+    columns: Sequence[str],
+    groupby: Mapping[str, Any] | None,
+    without_party_totals: bool,
+    enrichment_stamp: str | None,
+    render_format: str | None,
+) -> FrameRef:
+    """The pair `frame_ref_for` names a frame by when frame-layout files are written in
+    `render_format`. `None` names it as a root was named before its name carried a render
+    format, with no `render_format` member, so a stored recipe's root names the format of the
+    file it read (`recipe_replay.StoredRootSource`)."""
     if not columns and groupby is None and not without_party_totals:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
@@ -145,6 +252,8 @@ def frame_ref_for(
         preimage["without_party_totals"] = True
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
+    if columns and render_format is not None:
+        preimage["render_format"] = render_format
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
     return FrameRef(spec_id=spec_id, content_version=f"cv_{digest}")
 
@@ -184,6 +293,164 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
     return resolved
 
 
+def implied_groupby(
+    stat_vars: Sequence[str],
+    *,
+    path_words: frozenset[str],
+    code_index: CodeIndex,
+    codes: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any] | None:
+    """The `groupby` a root read with no stated one is read with, from the StatVars with data
+    in its version, `stat_vars` as bare dcids (`LiveRootSource._contributing`), and the words
+    the steps over it name: none when the words name `stat_var` or there are fewer than two
+    StatVars, else `{by, op: "sum"}`, `by` `time_period` and the summable axes those StatVars
+    decode (`code_index` declarations) that the words name, as the axis or as its
+    `stat_var_<axis>` column, sorted as `mint_options` sorts a stated `by`: the groupby a
+    caller following the refusal's summed read states. The datasets door sums every other
+    summable axis away, and `stat_var` with them (conformance C120).
+
+    `codes`, the code dcids the filters over the root keep on each axis
+    (`analysis.PlannedRoot`), becomes the groupby's `codes` on each axis `by` keeps, sorted and
+    each once as `GroupbyOptions` holds them, so the sum reads only the StatVars whose rows
+    those filters keep (conformance C120b); a groupby keeping none of their axes has none, and
+    neither has one selecting none of `stat_vars` (`selected_contributors`), whose sum would be
+    empty where the filter over the unselected sum lists the values its column holds
+    (`unmatched_breakdown_values`)."""
+    if STAT_VAR_WORD in path_words:
+        return None
+    if len(stat_vars) < 2:
+        return None
+    summable = summable_axes(code_index.declarations)
+    axes: set[str] = set()
+    for dcid in stat_vars:
+        if (row := code_index.statvar_by_dcid(dcid)) is not None:
+            axes.update(summable.intersection(row.constraint_properties))
+    named = {word.removeprefix(STAT_VAR_PREFIX) for word in path_words} & axes
+    groupby: dict[str, Any] = {"by": sorted({TIME_PERIOD_COLUMN, *named}), "op": "sum"}
+    selected = {axis: sorted(set(kept)) for axis, kept in (codes or {}).items() if axis in named}
+    if selected and selected_contributors(stat_vars, index=code_index, codes=selected):
+        groupby["codes"] = dict(sorted(selected.items()))
+    return groupby
+
+
+def _sum_refused(refused: RollupNotSummableError) -> dict[str, str]:
+    return {"axis": refused.axis, "precondition": refused.precondition}
+
+
+_SUM_REFUSED_EVENT = "datasets_analysis_root_sum_refused"
+"""The `event` of the line logged when the datasets door refuses a sum the planner implied for
+an analysis root, which is then read unsummed."""
+
+
+def _log_sum_refused(
+    *,
+    spec_id: str,
+    content_version: str,
+    by: Mapping[str, Any],
+    refused: Mapping[str, str],
+    operation_id: str | None = None,
+) -> None:
+    logger.info(
+        "analysis root read unsummed spec_id=%s content_version=%s axis=%s precondition=%s",
+        spec_id,
+        content_version,
+        refused["axis"],
+        refused["precondition"],
+        extra={
+            JSON_FIELDS_ATTR: {
+                "event": _SUM_REFUSED_EVENT,
+                "spec_id": spec_id,
+                "content_version": content_version,
+                "by": list(by["by"]),
+                "axis": refused["axis"],
+                "precondition": refused["precondition"],
+                "operation_id": operation_id,
+            }
+        },
+    )
+
+
+def summed_count(
+    version: StoredVersion | None, *, rendered: int | None, contributors: int, adds: bool = True
+) -> int:
+    """How many StatVars a groupby rendering summed into its version, whose record is
+    `version`: the count a stored `stat_vars_summed` warning states (`rendered`), else
+    `contributors`, the StatVars with rows in the dataset version it renders that its
+    `groupby.codes` selection keeps, the ones the renderer sums
+    (`GroupbyCollapseRendering.contributing_member_count`); 0 under two. 0 too
+    when the record says the frame summed nothing, as for a version with no base version or a
+    derived one whose `frame_summed` is false, and when the groupby `adds` nothing, a re-key
+    keeping each StatVar in a tuple of its own (`groupby.adds_stat_vars`). A missing record or
+    an unrecorded `frame_summed` is unknown and reads as summed."""
+    if not adds or (
+        version is not None
+        and (version.base_content_version is None or version.frame_summed is False)
+    ):
+        return 0
+    count = rendered if rendered is not None else contributors
+    return count if count > 1 else 0
+
+
+def _listed_base(options: Mapping[str, Any], base: str) -> str | None:
+    """The dataset version a root read with `options` names as its rendering's base: `base`,
+    the version a groupby sums, for a sum of every StatVar, which keeps the dataset's periods
+    and entities. A party-totals cut, and a sum whose groupby selects `codes`, can each leave a
+    period or an entity out, so a rendering that cuts or selects names no base and is matched
+    to no dataset version (conformance C121f)."""
+    groupby = options.get("groupby")
+    if groupby is None or options.get("without_party_totals") is True or groupby.get("codes"):
+        return None
+    return base
+
+
+def _with_summed(root: ResolvedRoot, count: int, named: Sequence[str]) -> ResolvedRoot:
+    """`root` with the `count` StatVars its groupby summed, `named` as far as its trace names
+    them."""
+    if not count:
+        return root
+    return replace(root, summed_count=count, stat_vars_summed=tuple(named))
+
+
+def _rendered_count(manifest: Manifest) -> int | None:
+    """The count of StatVars with rows the renderer summed into a groupby rendering, as the
+    `stat_vars_summed` warning a version stored while collapses raised one carries, `None`
+    when it carries none."""
+    return next(
+        (
+            warning.contributing_member_count
+            for warning in manifest.warnings
+            if warning.code == _SUMMED_WARNING
+        ),
+        None,
+    )
+
+
+_SUMMED_WARNING = "stat_vars_summed"
+_DCID = "dcid:"
+
+
+def _counts_recorded(trace: Mapping[str, Any]) -> bool:
+    """Whether every StatVar `trace` resolved records its observation count."""
+    entries = trace.get("resolved_stat_vars") or ()
+    return all(isinstance(entry.get("observation_count"), int) for entry in entries)
+
+
+# The precondition a queued rebuild's `rollup_not_summable` names when its operation records
+# no refusal body to read it from.
+_UNRECORDED = "unrecorded"
+
+
+def _rebuild_sum_refused(failed: RefreshRebuildFailed) -> dict[str, str]:
+    """The `{axis, precondition}` of the `rollup_not_summable` a queued rebuild met, taken from the axis of
+    its recorded issue and its recorded detail, which names the precondition, as far as the
+    operation records them."""
+    refusal = failed.refusal
+    issues = (refusal.issues or []) if refusal is not None else []
+    axis = next((issue.axis for issue in issues if issue.axis), None)
+    detail = refusal.detail if refusal is not None else None
+    return {"axis": axis or _UNRECORDED, "precondition": detail or _UNRECORDED}
+
+
 @dataclass(frozen=True)
 class _FrameLayoutFile:
     """A root read from its frame-layout file `artifact`."""
@@ -198,7 +465,55 @@ class _LocatedFrame:
     location: StoredArtifactLocation
 
 
-_Handle = _FrameLayoutFile | _LocatedFrame
+@dataclass(frozen=True)
+class _UnstoredFrameLayout:
+    """A root read from the frame-layout bytes `data` a verification rendered in memory."""
+
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _UnstoredFrame:
+    """A root read from the canonical frame `file` a verification rendered in memory."""
+
+    file: UnstoredFile
+
+
+@dataclass(frozen=True)
+class _Deferred:
+    """A root resolved from records under `latest: "stored"` whose rendering of the dataset
+    version `root` names is not served: `locate` renders it (`LiveRootSource._stored`) with the
+    record `options`, under `revoked_under`."""
+
+    root: DatasetRoot
+    options: Mapping[str, Any]
+    revoked_under: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Unserved:
+    """A version a minting rendering recorded as made from the dataset version a root names,
+    whose stored frame or file of the rendering is not served (`_recorded_rendering`)."""
+
+    content_version: str
+
+
+class RenderNeeded(Exception):
+    """A root under `latest: "stored"` whose minting rendering no record names, or whose trace
+    counts no observations so its sums' series are read from the stored frame
+    (`LiveRootSource._contributing`), so its version, and the request key, are known only once
+    a frame is read. A source that defers renders raises it, and the caller resolves the
+    request again on a source that renders (`doors.analysis`)."""
+
+    def __init__(self, *, spec_id: str, content_version: str) -> None:
+        self.spec_id = spec_id
+        self.content_version = content_version
+        super().__init__(
+            f"the rendering of {spec_id} {content_version} the root reads is not recorded"
+        )
+
+
+_Handle = _FrameLayoutFile | _LocatedFrame | _UnstoredFrameLayout | _UnstoredFrame
 """What `read` reads. `resolve` gives a root read from its stored frame no handle, so a root
 `locate` has not located holds none `read` accepts."""
 
@@ -262,19 +577,144 @@ def frame_from_frame_layout(data: bytes) -> Frame:
     return build_frame_from_arrow(table, role_keys=role_keys)
 
 
+def _root(
+    *,
+    spec_id: str,
+    content_version: str,
+    options: Mapping[str, Any],
+    artifact: ArtifactEntryModel | None,
+    rows: int,
+    source: object,
+    base_content_version: str | None = None,
+    stamp: str | None = None,
+) -> ResolvedRoot:
+    """The root read at `{spec_id, content_version}` with `options`, its frame named by
+    `frame_ref_for` and `artifact`'s enrichment stamp, else `stamp` for a file not yet read
+    (`LiveRootSource._deferred`), read through `source`, rendered from the dataset version
+    `base_content_version`."""
+    columns = tuple(options.get("columns") or ())
+    if artifact is not None:
+        stamp = artifact.enrichment_stamp
+    frame = frame_ref_for(
+        spec_id=spec_id,
+        content_version=content_version,
+        columns=columns,
+        groupby=options.get("groupby"),
+        without_party_totals=options.get("without_party_totals") is True,
+        enrichment_stamp=stamp,
+    )
+    dataset = FrameRef(spec_id=spec_id, content_version=content_version)
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "frame": frame.model_dump(),
+        "dataset": dataset.model_dump(),
+        "options": dict(options),
+        "scope": {},
+    }
+    if stamp is not None and requests_kinds(columns):
+        record["enrichment_stamp"] = stamp
+    return ResolvedRoot(
+        frame=frame,
+        dataset=dataset,
+        record=record,
+        rendering=root_rendering(options),
+        rows=rows,
+        source=source,
+        base_content_version=base_content_version,
+    )
+
+
 class LiveRootSource:
     """`analysis.RootSource` over the Datasets surface's stores, for one request.
 
-    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`)."""
+    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`).
+    `render` false reads a dataset root's rendering where its file is stored, and renders one
+    whose file has aged out in memory from the version's stored frame (`current.render_unstored`),
+    storing nothing, so a verification (`analysis.verify_analysis`) writes nothing and still
+    reads a version whose stored frame is held. `max_root_rows` is then the most rows the roots
+    this source has located hold together: a rendering that would take them past it is refused
+    `AnalysisTooLarge` (`analysis_root_rows`) before it is rendered, counted at its version's
+    stored frame's rows, which bound the rendering's. A root that resolves and then fails
+    `locate` counts nothing, since nothing of it is read.
 
-    def __init__(self, *, deps: DefinitionDeps, recipes: RecipeReader) -> None:
+    `defer_renders` resolves a root under `latest: "stored"` from records alone: a rendering
+    the version links or a version a minting records serves, and one whose file is not served
+    resolves to the version the records name and renders at `locate` (`_Deferred`), so a key
+    and a stored answer read no frame and make no rendering. A minting rendering no record
+    names raises `RenderNeeded`. Without it a stored root renders on `resolve`, as a pinned
+    root does."""
+
+    def __init__(
+        self,
+        *,
+        deps: DefinitionDeps,
+        recipes: RecipeReader,
+        render: bool = True,
+        max_root_rows: int | None = None,
+        defer_renders: bool = False,
+    ) -> None:
         self._deps = deps
         self._recipes = recipes
+        self._render = render
+        self._max_root_rows = max_root_rows
+        self._defer_renders = defer_renders
+        # Set while a root under `latest: "stored"` resolves with renders deferred, so nothing
+        # reads a frame (`_contributing`).
+        self._deferring = False
+        self._located_rows = 0
+        # The stored head each dataset's first root under `latest: "stored"` resolved to, by
+        # its served id, or the refusal or pending answer it met, so every root of a dataset
+        # reads one version and its check is submitted once.
+        self._heads: dict[str, StoredHead | Exception] = {}
+        # The version each served definition's first newest root read, by its spec id, with the
+        # dataset version the serve read it from, `None` for its record's base (`_first_read`).
+        # Written once per spec id, so every root of that dataset in the request reads one
+        # dataset version.
+        self._newest_versions: dict[str, tuple[str, str | None]] = {}
+        # The StatVars with rows in each old-trace dataset version, by (spec id, version).
+        self._stat_vars: dict[tuple[str, str], list[str]] = {}
+
+    @property
+    def code_index(self) -> CodeIndex:
+        """The request's code index, which breakdown filter values resolve through."""
+        return self._deps.code_index
+
+    def _refuse_rendering_past_bound(self, rows: int) -> None:
+        """Refuse a rendering in memory of a stored frame of `rows` rows that would take the
+        roots located past `max_root_rows`.
+
+        Raises:
+            AnalysisTooLarge: `analysis_root_rows`.
+        """
+        cap = self._max_root_rows
+        held = self._located_rows + rows
+        if cap is not None and held > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=held, cap=cap)
 
     def resolve(
-        self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        latest: Latest,
+        trace_id: str | None,
+        path_words: frozenset[str] | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
     ) -> ResolvedRoot:
+        """The version `root` is read at (`RootSource.resolve`). A stated groupby the code
+        index cannot serve refuses first (`check_options_supported`), before any version,
+        stored rendering or answer is looked up by it. Under `latest: "stored"` the root reads
+        its dataset's stored head (`_stored_head`).
+
+        Raises:
+            QueryOptionsInvalid: As `check_options_supported` refuses `root`'s rendering.
+            RenderNeeded: Under `latest: "stored"` with `defer_renders`, as `_stored` says.
+        """
         deps = self._deps
+        if root.rendering.groupby is not None:
+            check_options_supported(
+                MintOptions.model_validate(mint_options(root.rendering)),
+                code_index=deps.code_index,
+            )
         if (
             isinstance(root, DatasetRoot)
             and deps.snapshot_reader.read_version(root.spec_id, root.content_version) is None
@@ -284,40 +724,500 @@ class LiveRootSource:
                 content_version=root.content_version,
                 reason="no such version is stored",
             )
+        if latest == STORED:
+            return self._stored_head(root, path_words=path_words, codes=codes, trace_id=trace_id)
         if isinstance(root, SpecRoot) or latest:
-            # The newest data is read in the rendering the root names, as a fresh root of
-            # that rendering reads it, so a version recording two renderings stays readable.
-            served = served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
-            requested = mint_options(root.rendering)
-            manifest = self._serve(
+            return self._newest(root, path_words=path_words, codes=codes, trace_id=trace_id)
+        return self._at_version(root, path_words=path_words, codes=codes, trace_id=trace_id)
+
+    def _stored_head(
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
+    ) -> ResolvedRoot:
+        """`root` read at the version its dataset's stored head names
+        (`current.stored_head_version`), in the rendering it names, as a pinned root naming that
+        version reads it (`_at_version`), so the two resolve to one record and one version. The
+        first root of a dataset reads the head and submits its check, and every later root of
+        it reads that version, judged for revocation under the id it posts. A head the rules cannot serve answers pending on its queued
+        rebuild, and a check or rebuild that failed for good refuses as a dataset root whose
+        queued rebuild failed does (`RefreshRebuildFailed`).
+
+        Raises:
+            AnalysisPending: The dataset has no servable head, and its rebuild is queued.
+            RefreshRebuildFailed: The head's check or rebuild failed for good.
+            SnapshotRevoked: The head's version is taken down.
+        """
+        served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
+        head = self._heads.get(served.spec_id)
+        if head is None:
+            head = self._head_of(served, posted=root.spec_id)
+            # A revocation is judged under the id each root posts (`_at_version` judges it for
+            # a head read already), so it is never shared with a root posted under another id.
+            if not isinstance(head, SnapshotRevoked):
+                self._heads[served.spec_id] = head
+        if isinstance(head, Exception):
+            raise head
+        self._deferring = self._defer_renders
+        try:
+            resolved = self._at_version(
+                DatasetRoot(
+                    spec_id=served.spec_id,
+                    content_version=head.content_version,
+                    rendering=root.rendering,
+                ),
+                path_words=path_words,
+                codes=codes,
+                trace_id=trace_id,
+                revoked_under=(root.spec_id,),
+                defer=self._defer_renders,
+            )
+        finally:
+            self._deferring = False
+        return replace(resolved, head=head)
+
+    def _head_of(self, served: StoredDefinition, *, posted: str) -> StoredHead | Exception:
+        """The stored head of `served`, read under revocations of `posted`, or the pending
+        answer or refusal it meets in its place."""
+        try:
+            version = stored_head_version(served, deps=self._deps, revoked_under=(posted,))
+        except OperationSubmitted as submitted:
+            operation = submitted.operation
+            if operation.state == "failed":
+                return RefreshRebuildFailed(
+                    operation_id=operation.id,
+                    refusal_code=operation.refusal_code,
+                    refusal=operation.refusal,
+                )
+            return _pending(operation.id)
+        except SnapshotRevoked as revoked:
+            return revoked
+        return StoredHead(
+            spec_id=served.spec_id,
+            content_version=version.content_version,
+            freshness=version.freshness,
+        )
+
+    def _at_version(
+        self,
+        root: DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        revoked_under: Sequence[str] = (),
+        codes: Mapping[str, Sequence[str]] | None = None,
+        defer: bool = False,
+    ) -> ResolvedRoot:
+        """The version `root` names, read in the rendering it names, summed as the planner
+        implies (`_implied`) from the version's trace. A sum the door refuses reads the
+        version unsummed. `revoked_under` is `load_stored`'s, and `defer` is `_stored`'s.
+
+        A sum, implied or stated, over a version a party-totals cut minted reads the cut's
+        base version with the cut and the sum in one rendering (`_cut_base`), the rendering
+        that version's own frame would give, so the sum does not need the cut version's
+        file."""
+        spec_id, content_version = root.spec_id, root.content_version
+        stored = load_stored(
+            subject_id=spec_id,
+            content_version=content_version,
+            deps=self._deps,
+            include_artifacts=False,
+            revoked_under=revoked_under,
+        )
+        options = record_options(mint_options(root.rendering), coverage=stored.coverage)
+        groupby = (
+            None
+            if path_words is None
+            else self._implied(
+                spec_id, content_version, stored.trace, path_words=path_words, codes=codes
+            )
+        )
+        if (groupby is not None or "groupby" in options) and (
+            base := self._cut_base(spec_id, content_version)
+        ) is not None:
+            rendering = root.rendering.model_copy(update={"without_party_totals": True})
+            return self._at_version(
+                DatasetRoot(spec_id=spec_id, content_version=base, rendering=rendering),
+                path_words=path_words,
+                trace_id=trace_id,
+                revoked_under=revoked_under,
+                codes=codes,
+                defer=defer,
+            )
+        read = partial(
+            self._stored,
+            root,
+            stored,
+            trace_id=trace_id,
+            revoked_under=revoked_under,
+            defer=defer,
+        )
+        if groupby is None:
+            return read(options=options)
+        try:
+            return read(options={**options, "groupby": groupby})
+        except RollupNotSummableError as refused:
+            sum_refused = _sum_refused(refused)
+            _log_sum_refused(
+                spec_id=spec_id, content_version=content_version, by=groupby, refused=sum_refused
+            )
+            return replace(read(options=options), sum_refused=sum_refused)
+
+    def _cut_base(self, spec_id: str, content_version: str) -> str | None:
+        """The base version of `content_version` when a party-totals cut minted it (its record
+        names a base and `frame_summed` false), else `None`."""
+        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
+        if version is None or version.base_content_version is None:
+            return None
+        return version.base_content_version if version.frame_summed is False else None
+
+    def _implied(
+        self,
+        spec_id: str,
+        content_version: str,
+        trace: Mapping[str, Any],
+        *,
+        path_words: frozenset[str] | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        """The groupby the planner implies for a root of the version `content_version`, whose
+        trace is `trace`, read under `path_words` with the selection `codes`
+        (`implied_groupby`), or `None` for a root it implies none for."""
+        if path_words is None:
+            return None
+        return implied_groupby(
+            self._contributing(spec_id, content_version, trace),
+            path_words=path_words,
+            code_index=self._deps.code_index,
+            codes=codes,
+        )
+
+    def _contributing(
+        self, spec_id: str, content_version: str, trace: Mapping[str, Any]
+    ) -> list[str]:
+        """The StatVars with data in the dataset version `content_version`, as bare dcids:
+        those its `trace` counts observations for (`summed_refs`), or, for a trace that counts
+        none, as a version minted before traces counted them records, the distinct `stat_var`
+        cells of the version's stored frame (`_stored_stat_vars`), read once per version. A
+        root resolving with renders deferred reads no frame, so it raises `RenderNeeded` there
+        and is resolved where it may read one, as a pinned root is.
+
+        Raises:
+            RenderNeeded: The trace counts none, while renders are deferred.
+        """
+        if _counts_recorded(trace):
+            return summed_refs(trace)
+        key = (spec_id, content_version)
+        if key not in self._stat_vars and self._deferring:
+            raise RenderNeeded(spec_id=spec_id, content_version=content_version)
+        if key not in self._stat_vars:
+            self._stat_vars[key] = self._stored_stat_vars(spec_id, content_version, trace)
+        return self._stat_vars[key]
+
+    def _stored_stat_vars(
+        self, spec_id: str, content_version: str, trace: Mapping[str, Any]
+    ) -> list[str]:
+        """The distinct `stat_var` cells of the stored frame of `content_version`, under the
+        bounds of the sum that reads the same frame: a frame1 document past its decode bound
+        refuses on its recorded size (`refuse_frame1_past_decode_bound`), and a canonical frame
+        of more rows than `groupby_fold_max_rows` refuses on its Parquet row count
+        (`refuse_past_fold_ceiling`), before any cell is decoded, as the sum's fold would. A
+        canonical frame is read for its `stat_var` column alone. A version with no servable
+        stored frame, or whose file is gone, names every StatVar its trace resolved: the read
+        that needs the frame then refuses as `RootExpired`.
+
+        Raises:
+            OverCeilingError: `bytes`, for a frame1 document past its bound, or `rows`, for a
+                canonical frame past the fold's.
+        """
+        resolved = [
+            str(entry["ref"]).removeprefix(_DCID) for entry in trace.get("resolved_stat_vars") or ()
+        ]
+        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
+        location = servable_frame_location(locations, now=self._deps.now())
+        if location is None:
+            return resolved
+        refuse_frame1_past_decode_bound(
+            location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
+        )
+        try:
+            data = self._deps.artifact_store.get(
+                artifact_digest=location.artifact_digest, tier=Tier(location.tier)
+            )
+        except ArtifactNotFoundError:
+            return resolved
+        rows = stored_frame_row_count(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
+        if rows is not None:
+            refuse_past_fold_ceiling(rows, cap=self._deps.settings.groupby_fold_max_rows)
+        cells = stored_frame_distinct(
+            data,
+            media_type=location.media_type,
+            digest=location.artifact_digest,
+            column=STAT_VAR_COLUMN,
+        )
+        return sorted({str(cell).removeprefix(_DCID) for cell in cells if cell is not None})
+
+    def _newest(
+        self,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        codes: Mapping[str, Sequence[str]] | None = None,
+    ) -> ResolvedRoot:
+        """`root` read at its dataset's newest version, in the rendering it names, summed as
+        the planner implies (`_implied`).
+
+        One request reads one version of a dataset. Each root of a dataset is served
+        (`_serve_newest`), which rebuilds a stale head and queues a rebuild past the inline
+        budget, and a later root keeps the answer only while it reads the version the first
+        serve read. Any other root renders from that version (`_at_version`), so a head that
+        moves during the request is not read twice."""
+        served = served_spec(spec_id=root.spec_id, deps=self._deps, trace_id=trace_id)
+        read = self._first_read(served.spec_id)
+        newest = self._serve_newest(
+            served, root, path_words=path_words, codes=codes, trace_id=trace_id, read=read
+        )
+        if newest is not None:
+            return newest
+        # `_serve_newest` records the first read before it returns `None`.
+        first = self._first_read(served.spec_id)
+        assert first is not None
+        version = DatasetRoot(
+            spec_id=served.spec_id,
+            content_version=first,
+            rendering=root.rendering,
+        )
+        return self._at_version(
+            version,
+            path_words=path_words,
+            codes=codes,
+            trace_id=trace_id,
+            revoked_under=(root.spec_id,),
+        )
+
+    def _serve_newest(
+        self,
+        served: StoredDefinition,
+        root: SpecRoot | DatasetRoot,
+        *,
+        path_words: frozenset[str] | None,
+        trace_id: str | None,
+        read: str | None = None,
+        codes: Mapping[str, Sequence[str]] | None = None,
+    ) -> ResolvedRoot | None:
+        """A root of `served` read at its newest version, served in the one rendering it
+        reads: summed as the planner implies from the stored head's version and trace
+        (`_head_version`), so no rendering is made only to read a trace; a revoked head gives
+        no guess and defers to the serve. The first root records the dataset version its serve
+        read (`_newest_versions`), and `read` is that version for a later root. `None` when the
+        version served implies another sum than the head did, as when the serve rebuilt the
+        head or there was none, or when a later root's serve read another dataset version than
+        `read`, even into the same derived version: the root is then read from `read`."""
+        # The newest data is read in the rendering the root names, as a fresh root of
+        # that rendering reads it, so a version recording two renderings stays readable.
+        requested = mint_options(root.rendering)
+        head = self._head_version(served.spec_id, posted=root.spec_id, path_words=path_words)
+        groupby = (
+            None
+            if head is None
+            else self._implied(served.spec_id, *head, path_words=path_words, codes=codes)
+        )
+        served_manifest: tuple[Manifest, str | None] | None = None
+        sum_refused: dict[str, str] | None = None
+        operation_id: str | None = None
+        if groupby is not None:
+            try:
+                served_manifest = self._serve(
+                    served,
+                    MintOptions.model_validate({**requested, "groupby": groupby}),
+                    posted=root.spec_id,
+                    trace_id=trace_id,
+                )
+                requested = {**requested, "groupby": groupby}
+            except RollupNotSummableError as refused:
+                sum_refused = _sum_refused(refused)
+            except RefreshRebuildFailed as failed:
+                # A rebuild past the inline budget meets the same refusal on the worker.
+                if failed.refusal_code != RollupNotSummableError.code:
+                    raise
+                sum_refused = _rebuild_sum_refused(failed)
+                operation_id = failed.operation_id
+        if served_manifest is None:
+            served_manifest = self._serve(
                 served,
                 MintOptions.model_validate(requested),
                 posted=root.spec_id,
                 trace_id=trace_id,
             )
-            # The mint resolved a default enrichment against the version it served.
-            options = record_options(requested, coverage=manifest.coverage)
-            return self._resolved(
+        manifest, base = served_manifest
+        if read is None:
+            self._newest_versions[served.spec_id] = (manifest.content_version, base)
+        elif (base or self._base_version(served.spec_id, manifest.content_version)) != read:
+            return None
+        if groupby is not None and sum_refused is not None:
+            _log_sum_refused(
                 spec_id=served.spec_id,
                 content_version=manifest.content_version,
-                options=options,
-                manifest=manifest,
+                by=groupby,
+                refused=sum_refused,
+                operation_id=operation_id,
             )
-        spec_id, content_version = root.spec_id, root.content_version
-        stored = load_stored(
-            subject_id=spec_id, content_version=content_version, deps=deps, include_artifacts=False
+        elif (
+            path_words is not None
+            and self._implied(
+                served.spec_id,
+                base or self._base_version(served.spec_id, manifest.content_version),
+                manifest.trace,
+                path_words=path_words,
+                codes=codes,
+            )
+            != groupby
+        ):
+            return None
+        # The mint resolved a default enrichment against the version it served.
+        options = record_options(requested, coverage=manifest.coverage)
+        resolved = self._resolved(
+            spec_id=served.spec_id,
+            content_version=manifest.content_version,
+            options=options,
+            manifest=manifest,
+            base=base,
         )
-        options = record_options(mint_options(root.rendering), coverage=stored.coverage)
+        return replace(resolved, sum_refused=sum_refused)
+
+    def _head_version(
+        self, spec_id: str, *, posted: str, path_words: frozenset[str] | None
+    ) -> tuple[str, Mapping[str, Any]] | None:
+        """The version the head of `spec_id` names and its trace, read from its record with no
+        rendering, or `None` for a root the planner implies no sum for, a subject with no head,
+        or a head whose version is revoked. The trace only guesses the sum the serve reads; a
+        revoked head gives no guess, since the serve's freshness check may replace it, and the
+        version the serve reads is then judged, revocation included, as with no head."""
+        if path_words is None:
+            return None
+        head = self._deps.head_store.read_head(spec_id)
+        if head is None:
+            return None
+        try:
+            stored = load_stored(
+                subject_id=spec_id,
+                content_version=head.content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=(posted,),
+            )
+        except SnapshotRevoked:
+            return None
+        return head.content_version, stored.trace
+
+    def _first_read(self, spec_id: str) -> str | None:
+        """The dataset version the first newest root of `spec_id` in this request read
+        (`_newest_versions`), or `None` before one has."""
+        first = self._newest_versions.get(spec_id)
+        if first is None:
+            return None
+        content_version, read = first
+        return read or self._base_version(spec_id, content_version)
+
+    def _base_version(self, spec_id: str, content_version: str) -> str:
+        """The dataset version `content_version` renders: the base its record keeps for a
+        derived version."""
+        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
+        if version is None or version.base_content_version is None:
+            return content_version
+        return version.base_content_version
+
+    def _stored(
+        self,
+        root: DatasetRoot,
+        stored: Manifest,
+        *,
+        options: Mapping[str, Any],
+        trace_id: str | None,
+        revoked_under: Sequence[str] = (),
+        defer: bool = False,
+    ) -> ResolvedRoot:
+        """The version `root` names, whose manifest is `stored`, read with `options`: its
+        stored frame, or the rendering those options make of it. With `defer` nothing renders:
+        a rendering the records serve answers as it does without, and one they do not serve
+        resolves to the version they name and renders at `locate` (`_deferred`).
+
+        A sum the door refuses (`rollup_not_summable`) records no version, so under `defer` a
+        root implying it raises `RenderNeeded` on every stored request and its analysis thread
+        attempts the fold again before reading the root unsummed.
+
+        Raises:
+            RenderNeeded: With `defer`, a minting rendering no record names.
+        """
+        deps = self._deps
+        spec_id, content_version = root.spec_id, root.content_version
         manifest = stored
         if options.keys() - _BASE_OPTIONS.keys():
-            rendered = head_rendering(
-                subject_id=spec_id,
-                content_version=content_version,
-                deps=deps,
-                options=MintOptions.model_validate(options),
-                trace_id=trace_id,
-                coverage_snapshot=deps.coverage.snapshot(),
+            mint = MintOptions.model_validate(options)
+            coverage_snapshot = deps.coverage.snapshot()
+            recorded = self._recorded_rendering(
+                spec_id,
+                content_version,
+                mint,
+                base=lambda: stored,
+                revoked_under=revoked_under,
+                unserved=defer,
             )
+            if isinstance(recorded, _Unserved):
+                return self._deferred(
+                    root,
+                    stored,
+                    options=options,
+                    content_version=recorded.content_version,
+                    revoked_under=revoked_under,
+                )
+            rendered = recorded
+            if rendered is None:
+                rendered = head_rendering(
+                    subject_id=spec_id,
+                    content_version=content_version,
+                    deps=deps,
+                    options=mint,
+                    trace_id=trace_id,
+                    coverage_snapshot=coverage_snapshot,
+                    render=self._render and not defer,
+                    revoked_under=revoked_under,
+                )
+                self._mark_read(spec_id, content_version, rendered)
+            if rendered is None and defer:
+                if mint.groupby is not None or mint.without_party_totals:
+                    raise RenderNeeded(spec_id=spec_id, content_version=content_version)
+                return self._deferred(
+                    root,
+                    stored,
+                    options=options,
+                    content_version=content_version,
+                    revoked_under=revoked_under,
+                )
+            if rendered is None and not self._render:
+                self._refuse_rendering_past_bound(stored.coverage.rows)
+                unstored = render_unstored(
+                    subject_id=spec_id,
+                    content_version=content_version,
+                    options=mint,
+                    manifest=stored,
+                    deps=deps,
+                    coverage_snapshot=coverage_snapshot,
+                )
+                if unstored is not None:
+                    return self._unstored(
+                        spec_id=spec_id,
+                        content_version=content_version,
+                        options=options,
+                        unstored=unstored,
+                        stored=stored,
+                    )
             if rendered is None or _data_artifact(rendered) is None:
                 raise RootExpired(
                     spec_id=spec_id,
@@ -325,72 +1225,420 @@ class LiveRootSource:
                     reason="its stored frame has expired, so its rendering cannot be made",
                 )
             manifest = rendered
-        # A groupby sum or a party-totals cut that changed the frame answers its own version.
+        # A groupby sum or a party-totals cut that changed the frame answers its own version,
+        # made from the version the root names.
         return self._resolved(
             spec_id=spec_id,
             content_version=manifest.content_version,
             options=options,
             manifest=manifest,
+            base=content_version if manifest.content_version != content_version else None,
+        )
+
+    def _deferred(
+        self,
+        root: DatasetRoot,
+        stored: Manifest,
+        *,
+        options: Mapping[str, Any],
+        content_version: str,
+        revoked_under: Sequence[str],
+    ) -> ResolvedRoot:
+        """The root `root` reads with `options`, the version `content_version` its records
+        name (the version `root` names, or the version a minting recorded from it), resolved
+        from that version's record with no file read and rendered at `locate`. A file of
+        party-kind cells is named by the stamp a render under the serving code index writes
+        (`versions.enrichment_stamp` over the version's roles), the stamp a read of the
+        rendered file names."""
+        spec_id = root.spec_id
+        manifest = (
+            stored
+            if content_version == root.content_version
+            else load_stored(
+                subject_id=spec_id,
+                content_version=content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=revoked_under,
+            )
+        )
+        stamp = enrichment_stamp(
+            options,
+            role_columns=coverage_roles(manifest.coverage),
+            enrichment_digest=self._deps.code_index.enrichment_digest,
+        )
+        resolved = self._resolved(
+            spec_id=spec_id,
+            content_version=content_version,
+            options=options,
+            manifest=manifest,
+            base=root.content_version if content_version != root.content_version else None,
+            stamp=stamp,
+        )
+        return replace(
+            resolved,
+            source=_Deferred(root=root, options=dict(options), revoked_under=tuple(revoked_under)),
+        )
+
+    def _recorded_rendering(
+        self,
+        spec_id: str,
+        content_version: str,
+        options: MintOptions,
+        *,
+        base: Callable[[], Manifest],
+        revoked_under: Sequence[str],
+        unserved: bool = False,
+    ) -> Manifest | _Unserved | None:
+        """The stored version an earlier read made of the dataset version `content_version`
+        with the minting options of `options`, a `groupby` sum or a party-totals cut, for an
+        analysis root read in that rendering: a pinned dataset root (`_stored`), or a Spec root
+        or a dataset root under `latest` whose serve keeps its head (`_serve`). It is the newest
+        version a link of that minting records as rendered from `content_version` under the
+        serving code index and render format (`versions.rendering_stamp`,
+        `recorded_rendering.mintings_rendered_under`), listing the file of
+        the rendering. `None` for a rendering that mints nothing, when no version is recorded
+        so, and when the newest one cannot serve: its stored frame file is not servable, it or
+        its recorded base is revoked under `revoked_under`, or it links no file of the
+        rendering. The caller then renders, and an older recorded version never answers in
+        place of the newest. With `unserved`, a newest version that is recorded and not revoked
+        but whose stored frame or file is not served answers `_Unserved`, its version, for a
+        caller that renders it later (`_deferred`).
+
+        `base` reads the dataset version `content_version` with its revocation checked under
+        `revoked_under`, so a revoked dataset version answers nothing here even when the
+        recorded version's record names another base. Its coverage resolves a default
+        enrichment, as the render does (`current.head_rendering`). A request repeated thereby
+        reads its stored answer with no render.
+
+        Raises:
+            SnapshotRevoked: `base` found the dataset version revoked.
+        """
+        deps = self._deps
+        lister = deps.version_lister
+        minting = MintingOptions(
+            groupby=options.groupby, without_party_totals=options.without_party_totals
+        )
+        if lister is None or (minting.groupby is None and not minting.without_party_totals):
+            return None
+        stamp = rendering_stamp(deps.code_index.stamp.content_hash)
+        recorded = next(
+            (
+                version
+                for version in lister.list_head_versions(
+                    spec_id, head_content_version=content_version
+                )
+                if minting
+                in mintings_rendered_under(
+                    version, head_content_version=content_version, code_index_stamp=stamp
+                )
+            ),
+            None,
+        )
+        if recorded is None:
+            return None
+        keys = resolved_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )(base())
+        now = deps.now()
+        with phase("snapshot_state"):
+            try:
+                stored = read_servable_version(
+                    deps.snapshot_reader,
+                    subject_id=spec_id,
+                    content_version=recorded.content_version,
+                    now=now,
+                    revoked_under=revoked_under,
+                )
+            except SnapshotRevoked:
+                return None
+        frame = servable_frame_location(stored.servable, now=now)
+        if frame is None:
+            return self._unserved(spec_id, content_version, recorded, keys) if unserved else None
+        manifest = servable_snapshot_manifest(
+            stored,
+            id=spec_id,
+            content_version=recorded.content_version,
+            now=now,
+            settings=deps.settings,
+            rendering_keys=lambda _: keys,
+            enrichment_digest=deps.code_index.enrichment_digest,
+        )
+        artifact = _data_artifact(manifest)
+        if artifact is None:
+            # The frame is served though the rendering's file is not, so the frame a later
+            # render reads is renewed as a served rendering's is.
+            self._renew_expiring(spec_id, recorded.content_version, frame)
+            return self._unserved(spec_id, content_version, recorded, keys) if unserved else None
+        last_read = next(
+            (
+                link.read_at.get(content_version)
+                for link in recorded.links
+                if dict(link.rendering) == dict(artifact.rendering)
+            ),
+            None,
+        )
+        if not read_recently(last_read, now=now):
+            self._mark_read(spec_id, content_version, manifest)
+        self._renew_expiring(
+            spec_id,
+            recorded.content_version,
+            frame,
+            *(loc for loc in stored.servable if dict(loc.rendering) == dict(artifact.rendering)),
+        )
+        return manifest
+
+    def _unserved(
+        self,
+        spec_id: str,
+        content_version: str,
+        recorded: HeadVersion,
+        keys: Sequence[str],
+    ) -> _Unserved:
+        """`recorded`, whose rendering keyed by `keys` is not served, as `_Unserved`, its read
+        from `content_version` recorded from the links in hand
+        (`render_ahead.mark_recorded_read`), so render ahead keeps rendering what stored
+        answers still read."""
+        lister = self._deps.version_lister
+        if lister is not None and self._render:
+            mark_recorded_read(
+                lister,
+                subject_id=spec_id,
+                recorded=recorded,
+                head_content_version=content_version,
+                rendering_keys=keys,
+                enrichment_digest=self._deps.code_index.enrichment_digest,
+                now=self._deps.now(),
+            )
+        return _Unserved(recorded.content_version)
+
+    def _renew_expiring(
+        self, spec_id: str, content_version: str, *locations: StoredArtifactLocation
+    ) -> None:
+        """Queue the renewal of each of `locations`, linked under `{spec_id, content_version}`,
+        whose working-tier retention ends within the renewal margin
+        (`operations.renewal.renew_if_expiring`). A verification (`render` false) queues
+        nothing."""
+        if not self._render:
+            return
+        for location in locations:
+            renew_if_expiring(
+                self._deps, location, subject_id=spec_id, content_version=content_version
+            )
+
+    def _mark_read(self, spec_id: str, content_version: str, manifest: Manifest | None) -> None:
+        """Record a read of the rendering `manifest` lists as made from the dataset version
+        `content_version`, which a render ahead reads (`render_ahead.mark_root_read`). A
+        rendering that minted no version of its own, and none at all, record nothing, and a
+        verification (`render` false) writes nothing."""
+        lister = self._deps.version_lister
+        if lister is None or manifest is None or not self._render:
+            return
+        mark_root_read(
+            lister,
+            subject_id=spec_id,
+            head_content_version=content_version,
+            manifest=manifest,
+            enrichment_digest=self._deps.code_index.enrichment_digest,
+            now=self._deps.now(),
         )
 
     def _serve(
         self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
-    ) -> Manifest:
+    ) -> tuple[Manifest, str | None]:
         """The served definition's head in the rendering `options` names, honouring revocations
-        under `posted`, the id the root names, as a request naming that id does.
+        under `posted`, the id the root names, as a request naming that id does, and the
+        dataset version the manifest was read from. The serve judges the head's freshness as
+        the definition door does, and a head it keeps answers a minting rendering from the
+        version recorded for it (`_recorded_rendering`) before rendering one. The dataset
+        version read is the raw version a rebuild in the serve materialised, else the head the
+        serve answered from, either of which can differ from the base a recorded version's
+        record keeps when two heads make the same version, else `None` for its record's base
+        (`_base_version`), read only when a caller needs it.
 
         Raises:
             AnalysisPending: A rebuild runs past the inline budget.
             RefreshRebuildFailed: The rebuild failed and will not be retried.
         """
+        revoked_under = (posted,)
+        # The head each manifest `load_head` answered was read from, by its version, and the
+        # raw version a rebuild materialised.
+        read_from: dict[str, str] = {}
+        materialised: list[str] = []
+
+        def load_head(content_version: str, coverage_snapshot: CoverageSnapshot) -> Manifest | None:
+            base = partial(
+                load_stored,
+                subject_id=served.spec_id,
+                content_version=content_version,
+                deps=self._deps,
+                include_artifacts=False,
+                revoked_under=revoked_under,
+            )
+            manifest = self._recorded_rendering(
+                served.spec_id, content_version, options, base=base, revoked_under=revoked_under
+            )
+            # Only a caller that asks for `unserved` gets one.
+            assert not isinstance(manifest, _Unserved)
+            if manifest is None:
+                manifest = head_rendering(
+                    subject_id=served.spec_id,
+                    content_version=content_version,
+                    deps=self._deps,
+                    options=options,
+                    trace_id=trace_id,
+                    coverage_snapshot=coverage_snapshot,
+                    revoked_under=revoked_under,
+                )
+                self._mark_read(served.spec_id, content_version, manifest)
+            if manifest is not None:
+                read_from[manifest.content_version] = content_version
+            return manifest
+
         try:
-            return serve_spec(
+            manifest = serve_spec(
                 stored=served,
                 options=options,
                 trigger="get",
                 deps=self._deps,
                 trace_id=trace_id,
-                revoked_under=(posted,),
+                load_head=load_head,
+                revoked_under=revoked_under,
+                on_materialised=materialised.append,
             )
         except OperationSubmitted as submitted:
             operation = submitted.operation
             if operation.state == "failed":
                 raise RefreshRebuildFailed(
-                    operation_id=operation.id, refusal_code=operation.refusal_code
+                    operation_id=operation.id,
+                    refusal_code=operation.refusal_code,
+                    refusal=operation.refusal,
                 ) from None
             raise _pending(operation.id) from None
+        base = materialised[-1] if materialised else read_from.get(manifest.content_version)
+        return manifest, base
 
     def _resolved(
-        self, *, spec_id: str, content_version: str, options: Mapping[str, Any], manifest: Manifest
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        options: Mapping[str, Any],
+        manifest: Manifest,
+        base: str | None = None,
+        stamp: str | None = None,
     ) -> ResolvedRoot:
-        columns = tuple(options.get("columns") or ())
-        artifact = _data_artifact(manifest) if columns else None
-        stamp = artifact.enrichment_stamp if artifact is not None else None
-        frame = frame_ref_for(
+        """The root `manifest`, the version `content_version`, read with `options`. A groupby's
+        version names `base`, the dataset version it was made from, else its record's base.
+        `stamp` names a file `manifest` does not list (`_root`)."""
+        artifact = _data_artifact(manifest) if options.get("columns") else None
+        root = _root(
             spec_id=spec_id,
             content_version=content_version,
-            columns=columns,
-            groupby=options.get("groupby"),
-            without_party_totals=options.get("without_party_totals") is True,
-            enrichment_stamp=stamp,
-        )
-        dataset = FrameRef(spec_id=spec_id, content_version=content_version)
-        record: dict[str, Any] = {
-            "schema_version": 1,
-            "frame": frame.model_dump(),
-            "dataset": dataset.model_dump(),
-            "options": dict(options),
-            "scope": {},
-        }
-        if stamp is not None and requests_kinds(columns):
-            record["enrichment_stamp"] = stamp
-        return ResolvedRoot(
-            frame=frame,
-            dataset=dataset,
-            record=record,
-            rendering=root_rendering(options),
+            options=options,
+            artifact=artifact,
             rows=manifest.coverage.rows,
             source=None if artifact is None else _FrameLayoutFile(artifact),
+            stamp=stamp,
+        )
+        if "groupby" not in options:
+            return root
+        # A groupby answers a version of its own, which names the dataset version it sums
+        # (`_listed_base`).
+        version = self._deps.snapshot_reader.read_version(spec_id, content_version)
+        base = (
+            base
+            or (version.base_content_version if version is not None else None)
+            or content_version
+        )
+        root = replace(root, base_content_version=_listed_base(options, base))
+        rendered = _rendered_count(manifest)
+        if rendered is not None:
+            # A stored warning is a collapse's from before re-keys, so it summed.
+            count = summed_count(version, rendered=rendered, contributors=0)
+        else:
+            contributors = self._selected(
+                self._contributing(spec_id, base, manifest.trace), options["groupby"]
+            )
+            count = summed_count(
+                version,
+                rendered=None,
+                contributors=len(contributors),
+                adds=self._adds(contributors, options["groupby"]),
+            )
+        return _with_summed(
+            root, count, self._selected(summed_refs(manifest.trace), options["groupby"])
+        )
+
+    def _selected(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> list[str]:
+        """`contributors` that `groupby` sums: those its `codes` selection keeps after its
+        `levels` roll-up (`selected_contributors`), every one with no selection."""
+        return selected_contributors(
+            contributors,
+            index=self._deps.code_index,
+            codes=groupby.get("codes"),
+            levels=groupby.get("levels"),
+        )
+
+    def _adds(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> bool:
+        """Whether `groupby` adds `contributors`, bare dcids, together (`adds_stat_vars`), on
+        the summable axes its `by` keeps. A stacked composite's component sum is not told
+        apart here; its components share their kept codes, so they add."""
+        index = self._deps.code_index
+        by = groupby.get("by") or ()
+        kept = sorted(summable_axes(index.declarations) & frozenset(by))
+        return adds_stat_vars(
+            contributors,
+            index=index,
+            kept=kept,
+            levels=dict(groupby.get("levels") or {}),
+            components=False,
+        )
+
+    def _unstored(
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        options: Mapping[str, Any],
+        unstored: UnstoredRendering,
+        stored: Manifest,
+    ) -> ResolvedRoot:
+        """The root `unstored`, a rendering of the version `content_version` whose manifest is
+        `stored`, renders: read from its frame-layout bytes when the root names `columns`, else
+        from the derived version's canonical frame it made, else, when the rendering answers
+        the version read, from that version's stored frame (`locate`). A groupby names the
+        StatVars it summed as a stored rendering does (`stat_vars_summed`)."""
+        columns = bool(options.get("columns"))
+        source: _Handle | None
+        if columns:
+            source = _UnstoredFrameLayout(unstored.data)
+        elif unstored.frame is not None:
+            source = _UnstoredFrame(unstored.frame)
+        else:
+            source = None
+        root = _root(
+            spec_id=spec_id,
+            content_version=unstored.content_version,
+            options=options,
+            artifact=unstored.artifact if columns else None,
+            rows=unstored.rows,
+            source=source,
+            base_content_version=_listed_base(options, content_version),
+        )
+        if "groupby" not in options or unstored.content_version == content_version:
+            return root
+        contributors = self._selected(
+            self._contributing(spec_id, content_version, stored.trace), options["groupby"]
+        )
+        count = summed_count(
+            None,
+            rendered=None,
+            contributors=len(contributors),
+            adds=self._adds(contributors, options["groupby"]),
+        )
+        return _with_summed(
+            root, count, self._selected(summed_refs(stored.trace), options["groupby"])
         )
 
     def locate(self, root: ResolvedRoot) -> LocatedRoot:
@@ -402,6 +1650,43 @@ class LiveRootSource:
             RootExpired: The version has no servable stored frame.
             OverCeilingError: `bytes`, for a frame1 document past the bound.
         """
+        located = self._located(root)
+        self._located_rows += located.rows or 0
+        return located
+
+    def _rendered(self, root: ResolvedRoot, deferred: _Deferred) -> ResolvedRoot:
+        """`root`, resolved from records (`_deferred`), with its rendering made now and read
+        through it, as a pinned root naming the same version renders it.
+
+        Raises:
+            RootExpired: The render names another frame than `root` was keyed on.
+        """
+        named = deferred.root
+        stored = load_stored(
+            subject_id=named.spec_id,
+            content_version=named.content_version,
+            deps=self._deps,
+            include_artifacts=False,
+            revoked_under=deferred.revoked_under,
+        )
+        rendered = self._stored(
+            named,
+            stored,
+            options=deferred.options,
+            trace_id=None,
+            revoked_under=deferred.revoked_under,
+        )
+        if rendered.frame != root.frame:
+            raise RootExpired(
+                spec_id=root.dataset.spec_id,
+                content_version=root.dataset.content_version,
+                reason="its rendering now makes another frame than the one it was read as",
+            )
+        return replace(root, source=rendered.source)
+
+    def _located(self, root: ResolvedRoot) -> LocatedRoot:
+        if isinstance(root.source, _Deferred):
+            root = self._rendered(root, root.source)
         if isinstance(root.source, _Handle):
             return LocatedRoot.of(root)
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
@@ -428,6 +1713,11 @@ class LiveRootSource:
         handle = root.source
         if not isinstance(handle, _Handle):
             raise TypeError(f"a root is read only once `locate` locates it, not from {handle!r}")
+        if isinstance(handle, _UnstoredFrameLayout):
+            return frame_from_frame_layout(handle.data)
+        if isinstance(handle, _UnstoredFrame):
+            file = handle.file
+            return read_stored_frame(file.data, media_type=file.media_type, digest=file.digest)
         store = self._deps.artifact_store
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
         if isinstance(handle, _FrameLayoutFile):

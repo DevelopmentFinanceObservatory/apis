@@ -37,6 +37,15 @@ def test_sync_budget_requests_env_override(monkeypatch: pytest.MonkeyPatch) -> N
     assert DatasetsBuildSettings().sync_budget_requests == 7
 
 
+def test_inferred_sums_select_codes_only_when_the_environment_turns_it_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revisions that cannot read `groupby.codes` may still serve, so the default is off."""
+    assert DatasetsBuildSettings().analysis_sum_selected_codes is False
+    monkeypatch.setenv("DATASETS_ANALYSIS_SUM_SELECTED_CODES", "true")
+    assert DatasetsBuildSettings().analysis_sum_selected_codes is True
+
+
 def test_sync_budget_rows_non_integer_fails_fast_naming_the_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -79,6 +88,59 @@ def test_head_recheck_at_or_past_max_age_fails_fast_naming_both_variables(
         DatasetsConfigError,
         match=r"DATASETS_HEAD_RECHECK_SECONDS.*DATASETS_HEAD_MAX_AGE_SECONDS",
     ):
+        DatasetsBuildSettings.from_env()
+
+
+@pytest.mark.parametrize(("margin", "refused"), [("2592000", True), ("2591999", False)])
+def test_a_renew_margin_at_or_past_working_retention_fails_fast_naming_it(
+    monkeypatch: pytest.MonkeyPatch, margin: str, refused: bool
+) -> None:
+    monkeypatch.setenv("DATASETS_RENEW_MARGIN_SECONDS", margin)
+    if refused:
+        with pytest.raises(DatasetsConfigError, match=r"DATASETS_RENEW_MARGIN_SECONDS"):
+            DatasetsBuildSettings.from_env()
+    else:
+        assert DatasetsBuildSettings.from_env().renew_margin_seconds == int(margin)
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "named"),
+    [
+        ("86400", "DATASETS_HEAD_MAX_AGE_SECONDS"),
+        ("3600", "DATASETS_HEAD_MAX_AGE_SECONDS"),
+        ("604800", "DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS"),
+    ],
+)
+def test_serve_stale_ceiling_at_or_under_a_max_age_fails_fast_naming_the_variables(
+    monkeypatch: pytest.MonkeyPatch, ceiling: str, named: str
+) -> None:
+    monkeypatch.setenv("DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS", ceiling)
+    with pytest.raises(
+        DatasetsConfigError,
+        match=rf"DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS.*{named}",
+    ):
+        DatasetsBuildSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("principal", "variable", "refused"),
+    [
+        ("probe-secret", "DATASETS_ANALYSIS_MAX_CONCURRENCY", True),
+        ("probe-secret", "DATASETS_MATERIALISE_MAX_CONCURRENCY", True),
+        ("", "DATASETS_ANALYSIS_MAX_CONCURRENCY", False),
+    ],
+)
+def test_a_verify_grant_with_one_analysis_thread_or_permit_fails_fast_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch, principal: str, variable: str, refused: bool
+) -> None:
+    """A verification leaves one analysis thread and one materialise permit free, so with
+    one of either it could never run."""
+    monkeypatch.setenv("VERIFY_PRINCIPAL", principal)
+    monkeypatch.setenv(variable, "1")
+    if not refused:
+        assert DatasetsBuildSettings.from_env().analysis_max_concurrency == 1
+        return
+    with pytest.raises(DatasetsConfigError, match=f"{variable}.*VERIFY_PRINCIPAL"):
         DatasetsBuildSettings.from_env()
 
 

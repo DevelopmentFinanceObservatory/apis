@@ -500,13 +500,15 @@ def _statements(sql: str) -> list[str]:
 def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
     """After its lock, each settle statement is a statement of migration 0026, whose window it
     closes, with the old shape narrowed from "not a label" to "neither a label nor a caller
-    key" (an address's `ip:` or an account's `user:`), so they cannot drift apart otherwise. Version facts and the enrichment `kind` are
-    counted only: the insert triggers of migrations 0030 and 0033 repair them."""
+    key" (an address's `ip:`, an account's `user:` or a conversation's `conversation:`), so they
+    cannot drift apart otherwise. Version facts and the enrichment `kind` are counted only: the
+    insert triggers of migrations 0030 and 0033 repair them."""
     migration = (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
     expected = [
         statement.replace(
             f"NOT starts_with({column}, 'secret-sha256:')",
-            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|(ip|user):[0-9a-f]{{32}})$'",
+            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}}|user:[0-9a-f]{{32}}"
+            "|conversation:[0-9a-f]{32})$'",
         )
         for statement, column in zip(
             _statements(migration), ("raw.principal", "raw.principal", "principal"), strict=True

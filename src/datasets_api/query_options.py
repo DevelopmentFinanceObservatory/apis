@@ -2,7 +2,10 @@
 The encoder uses the same namespace in reverse. Unknown or repeated keys fail here. `MintOptions`
 validates recognised values as body requests. `groupby.by` and `columns` use comma-separated lists
 whose grammars exclude commas from entries. `groupby.levels` is a comma-separated list of
-`<code_system>:<depth>` pairs, such as `crsPurpose:0`.
+`<code_system>:<depth>` pairs, such as `crsPurpose:0`. `groupby.codes` is a comma-separated list
+of `<code_system>:<code>|<code>...` entries, such as `crsPurpose:CRSPurposeCode111|CRSPurposeCode112`;
+each entry splits at its first `:`, and a code dcid holds neither `|` nor `,`
+(`mint_models.GROUPBY_CODE_PATTERN`).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ _NAMESPACE: dict[str, tuple[str, str | None]] = {
     "groupby.by": ("groupby", "by"),
     "groupby.op": ("groupby", "op"),
     "groupby.levels": ("groupby", "levels"),
+    "groupby.codes": ("groupby", "codes"),
     "pivot.index": ("pivot", "index"),
     "pivot.columns": ("pivot", "columns"),
     "columns": ("columns", None),
@@ -83,6 +87,8 @@ def parse_query_options(items: Sequence[tuple[str, str]]) -> MintOptions:
         field, subfield = _NAMESPACE[key]
         if key == "groupby.levels":
             nested.setdefault(field, {})["levels"] = _parse_levels(value)
+        elif key == "groupby.codes":
+            nested.setdefault(field, {})["codes"] = _parse_codes(value)
         elif subfield is not None:
             nested.setdefault(field, {})[subfield] = (
                 value.split(",") if key in _COMMA_JOINED_NESTED_KEYS else value
@@ -100,6 +106,27 @@ def parse_query_options(items: Sequence[tuple[str, str]]) -> MintOptions:
         first = exc.errors()[0]
         pointer = "/options/" + "/".join(pointer_segment(segment) for segment in first["loc"])
         raise QueryOptionsInvalid(pointer=pointer, detail=first["msg"]) from exc
+
+
+def _parse_codes(value: str) -> dict[str, list[str]]:
+    """Parses `groupby.codes` entries. An entry without a `:` or a repeated code system raises
+    `QueryOptionsInvalid`. `MintOptions` refuses an empty or malformed code and an axis absent
+    from `groupby.by`, at the same pointers as the body."""
+    codes: dict[str, list[str]] = {}
+    for entry in value.split(","):
+        code_system, separator, listed = entry.partition(":")
+        if not separator:
+            raise QueryOptionsInvalid(
+                pointer=pointer_for_key("groupby.codes"),
+                detail=f"groupby.codes entry {entry!r} is not <code_system>:<code>|<code>...",
+            )
+        if code_system in codes:
+            raise QueryOptionsInvalid(
+                pointer=pointer_for_key("groupby.codes"),
+                detail=f"groupby.codes names {code_system!r} more than once",
+            )
+        codes[code_system] = listed.split("|")
+    return codes
 
 
 def _parse_levels(value: str) -> dict[str, int]:
@@ -140,7 +167,8 @@ def encode_query_options(options: MintOptions) -> dict[str, str]:
     `without_party_totals` only when true, the spelling a `party_totals` request decodes to.
     `columns` and `groupby.by` are comma-joined, and their closed grammars exclude commas from
     entries.
-    `groupby.levels` joins its `<code_system>:<depth>` pairs in code-system order."""
+    `groupby.levels` joins its `<code_system>:<depth>` pairs in code-system order, and
+    `groupby.codes` its `<code_system>:<code>|<code>...` entries the same way."""
     encoded: dict[str, str] = {}
     for key, (field, subfield) in _NAMESPACE.items():
         if field == "format":
@@ -155,6 +183,15 @@ def encode_query_options(options: MintOptions) -> dict[str, str]:
                         encoded[key] = ",".join(
                             f"{code_system}:{depth}"
                             for code_system, depth in sorted(cast(dict[str, int], value).items())
+                        )
+                    continue
+                if key == "groupby.codes":
+                    if value is not None:
+                        encoded[key] = ",".join(
+                            f"{code_system}:{'|'.join(listed)}"
+                            for code_system, listed in sorted(
+                                cast(dict[str, list[str]], value).items()
+                            )
                         )
                     continue
                 encoded[key] = (

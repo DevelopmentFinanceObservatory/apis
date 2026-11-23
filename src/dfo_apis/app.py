@@ -38,6 +38,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.app import search_surface
 
 if TYPE_CHECKING:
+    from datasets_api.config import DatasetsBuildSettings
     from datasets_api.deps import DepsCell
     from datasets_api.doors.analysis import RunningAnalyses
 
@@ -93,10 +94,12 @@ def datasets_link() -> DatasetsLink:
 @dataclass(frozen=True, slots=True)
 class _Shared:
     """What the gated surfaces of one app share: Search's rate cache, and the `DatasetsLink`
-    when the Datasets surface mounts."""
+    when the Datasets surface mounts. `datasets_settings` is the Datasets surface's settings
+    when the app reads them first, `None` to have the surface read its own."""
 
     rate_cache: RateTableCache
     datasets: DatasetsLink | None
+    datasets_settings: DatasetsBuildSettings | None = None
 
 
 def _datasets_factory(shared: _Shared) -> Surface:
@@ -105,7 +108,10 @@ def _datasets_factory(shared: _Shared) -> Surface:
     link = shared.datasets
     assert link is not None  # `datasets` is set whenever the Datasets surface mounts
     return datasets_surface(
-        rate_cache=shared.rate_cache, deps_cell=link.cell, running_analyses=link.running_analyses
+        settings=shared.datasets_settings,
+        rate_cache=shared.rate_cache,
+        deps_cell=link.cell,
+        running_analyses=link.running_analyses,
     )
 
 
@@ -189,12 +195,15 @@ def all_surfaces() -> list[Surface]:
     ]
 
 
-def deployed_surfaces() -> list[Surface]:
-    """Return enabled surfaces in mount order for `create_app()` to compose."""
+def deployed_surfaces(*, datasets_settings: DatasetsBuildSettings | None = None) -> list[Surface]:
+    """Return enabled surfaces in mount order for `create_app()` to compose. The Datasets
+    surface runs under `datasets_settings`, read from the environment when omitted."""
     rate_cache = RateTableCache()
     flags = _SurfaceFlags()
     shared = _Shared(
-        rate_cache=rate_cache, datasets=datasets_link() if flags.datasets_surface else None
+        rate_cache=rate_cache,
+        datasets=datasets_link() if flags.datasets_surface else None,
+        datasets_settings=datasets_settings,
     )
     surfaces = [search_surface(rate_cache=rate_cache)]
     surfaces.extend(
@@ -206,14 +215,23 @@ def deployed_surfaces() -> list[Surface]:
 def create_app() -> FastAPI:
     """Build the service app. `DFO_WORKER_SURFACE` selects the separate worker app with
     `POST /internal/datasets/operations/{operation_id}/run`. Enabled API surfaces
-    share the platform's RFC 9457 envelope, code registry, and trace id.
+    share the platform's RFC 9457 envelope, code registry, and trace id. When Datasets mounts,
+    the platform names each request's delivery identity under the caller settings the Datasets
+    surface resolves callers under, read once.
     """
-    if _SurfaceFlags().worker_surface:
+    flags = _SurfaceFlags()
+    if flags.worker_surface:
         from datasets_api.operations.worker_app import build_worker_app
 
         return build_worker_app()
+    settings: DatasetsBuildSettings | None = None
+    if flags.datasets_surface:
+        from datasets_api.config import DatasetsBuildSettings
+
+        settings = DatasetsBuildSettings.from_env()
     return platform_create_app(
-        deployed_surfaces(),
+        deployed_surfaces(datasets_settings=settings),
+        caller_settings=settings.caller if settings is not None else None,
         # One `DFO_CORS_ORIGINS` allowlist applies to every mounted surface.
         cors_origins=parse_cors_origins(),
         title="DFO APIs",

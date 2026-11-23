@@ -1,9 +1,9 @@
 """A definition whose window leaves its end unstated reads to the current year
 (`materialise.window.election_window`), so its stored head is current only while a read would
 end at the same year. Its dependency fingerprint carries the window it read, and past the
-recheck interval a new calendar year re-reads the head on every path: a mint, a GET and the
-options route. Inside the interval the head serves with no read, clock included. The re-read
-keeps its content version when the data it reads is unchanged.
+recheck interval a new calendar year re-reads the head on every checked path: a mint, the
+options route, and the worker's check behind a GET (`test_worker_e2e`). Inside the interval the
+head serves with no read, clock included. The re-read keeps its content version when the data it reads is unchanged.
 A window stating its end, and one with no years, hold no clock.
 """
 
@@ -95,9 +95,12 @@ class _Dataset:
         return response.json()
 
     def get(self) -> dict:
+        return self.read().json()
+
+    def read(self):
         response = self.client.get(f"/api/datasets/{self.spec_id}")
         assert response.status_code == 200, response.text
-        return response.json()
+        return response
 
     def options(self) -> dict:
         response = self.client.get(f"/api/datasets/{self.spec_id}/options")
@@ -141,52 +144,21 @@ def test_a_fresh_mint_in_a_new_year_reads_to_that_year(
     assert dataset.window_read() == (2016, 2027)
 
 
-@pytest.mark.parametrize(
-    ("data", "served_2027", "same_content"),
-    [(range(2016, 2022), (2016, 2021), True), (range(2016, 2031), (2016, 2027), False)],
-    ids=["data_ended_before_the_clock", "data_runs_past_the_clock"],
-)
-def test_a_get_in_a_new_year_re_reads_an_open_ended_head(
-    monkeypatch: pytest.MonkeyPatch,
-    data: range,
-    served_2027: tuple[int, int],
-    same_content: bool,
-) -> None:
-    """A head minted in 2026 serves a GET of 2027 inside the recheck interval, and the first
-    GET past it re-reads the head. With data ending in 2021 the re-read serves the same
-    content version; with data running to 2030 it serves 2027 too."""
-    dataset = _Dataset(monkeypatch, years=data, window=_SINCE_2016, clock=2026)
-    before = dataset.get()
-    assert before["trace"]["served_from"] == "head"
-    sdmx_reads = dataset.sdmx_calls.n
-
-    dataset.set_clock(2027)
-    inside = dataset.get()
-    assert inside["trace"]["served_from"] == "head"
-    assert inside["content_version"] == before["content_version"]
-    dataset.age()
-    after = dataset.get()
-
-    assert after["trace"]["served_from"] == "materialise"
-    assert dataset.sdmx_calls.n == sdmx_reads + 1
-    assert _served(after) == served_2027
-    assert (after["content_version"] == before["content_version"]) is same_content
-    assert dataset.head_store.head_for(dataset.spec_id).content_version == after["content_version"]
-    assert dataset.window_read() == (2016, 2027)
-    # The re-read head is current for the rest of 2027.
-    assert dataset.get()["trace"]["served_from"] == "head"
-
-
 def test_the_options_route_re_reads_a_head_the_clock_moved_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In 2027 the first options call past the recheck interval re-reads a head minted in 2026
-    and, finding the same content version, advances its window. The second options call and a
-    GET serve the head."""
+    """In 2027 a GET inside the recheck interval serves the head minted in 2026 as current with
+    no read. Past the interval, the first options call re-reads it and, finding the same
+    content version, advances its window. The second options call and a GET serve the head."""
     dataset = _Dataset(monkeypatch, years=range(2016, 2022), window=_SINCE_2016, clock=2026)
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
+    inside = dataset.read()
+    assert inside.json()["trace"]["served_from"] == "head"
+    assert inside.json()["content_version"] == dataset.minted["content_version"]
+    assert inside.headers["x-dfo-freshness"] == "current"
+    assert dataset.sdmx_calls.n == sdmx_reads
     dataset.age()
     first = dataset.options()
     second = dataset.options()
@@ -240,7 +212,7 @@ def test_a_window_holding_no_clock_serves_its_head_in_a_new_year(
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
-    after = dataset.get()
+    after = dataset.options()
 
     assert after["trace"]["served_from"] == "head"
     assert after["content_version"] == dataset.minted["content_version"]
@@ -263,11 +235,11 @@ def test_a_window_starting_after_the_clock_is_re_read_once_the_clock_reaches_it(
 
     dataset.set_clock(2027)
     dataset.age()
-    assert dataset.get()["trace"]["served_from"] == "head"
+    assert dataset.options()["trace"]["served_from"] == "head"
 
     dataset.set_clock(2028)
     dataset.age()
-    after = dataset.get()
+    after = dataset.options()
     assert after["trace"]["served_from"] == "materialise"
     assert _served(after) == (2028, 2028)
     assert dataset.window_read() == (2028, 2028)

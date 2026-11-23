@@ -70,6 +70,11 @@ USER_AGENT: str = "dfo-apis (+https://github.com/DevelopmentFinanceObservatory/a
 # Parsed inputs raise ``request_invalid``. ``max_variables`` clamps with a warning.
 # Keeping these values out of the environment keeps model and capability caps aligned.
 SEARCH_MAX_PARTS: int = 6
+# Parts a parsed request may hold when every part names a `source_code`. Recall reads the
+# StatVars a code names in place of matching variable_text, so a code part is cheap: six took
+# 1.0 s of server time on dfo-dev. Legs past `max_variable_concurrency` queue for a permit.
+# A request with any part lacking a code keeps SEARCH_MAX_PARTS.
+SEARCH_MAX_CODE_PARTS: int = 32
 SEARCH_MAX_PART_ENTITIES: int = 16
 SEARCH_MAX_VARIABLE_TEXT_CHARS: int = 200
 SEARCH_MAX_ENTITY_TEXT_CHARS: int = 128
@@ -162,8 +167,13 @@ class SearchSettings(BaseSettings):
     # 622 ms, and chunked requests p95 about 1.1 s.
     jev_ceiling_s: float = 2.5
 
-    # Jev requests in flight per event loop, chunks of a split request included.
-    jev_max_concurrency: int = 8
+    # Jev requests in flight per event loop, chunks of a split request included. One
+    # search runs up to 8 legs at once, each with a Jev call in flight, so 64 serves 8
+    # concurrent searches without a slot wait. It stays below the client's 100-connection
+    # pool (`jev_client._LIMITS`): a call past the cap waits here and fails as `slot_wait`
+    # or `queued_timeout`, which the breaker ignores, where a wait in the pool would fail
+    # as `timeout` and open it.
+    jev_max_concurrency: int = 64
 
     # Percent of queries, 0 to 100, `binder="jev"` routes to Jev, picked by a hash of the
     # normalised query so a repeated query keeps its binder; the rest go to Gemini. Read only
@@ -406,6 +416,8 @@ class SearchSettings(BaseSettings):
     # The cap 96 matches the parsed door's 6 parts x 16 entities and admits ordinary G20 asks.
     # Resolvekit costs about 0.3-0.4 ms per entity. 96 takes tens of milliseconds of the
     # 45-s request budget. The cap bounds work on the process's single shared resolver thread.
+    # The parsed and dataset_resubmit doors refuse past it too, counting the distinct dcids
+    # their parts pin and names they resolve (`entity_checks.check_entity_count`).
     max_entities: int = 96
 
     # Raw mention cap, checked alongside max_entities before scanning entity spans.
@@ -472,7 +484,8 @@ class SearchSettings(BaseSettings):
 
     # -- Variable pipeline concurrency ------------------------------------
     # Concurrent variable legs per request. The limit must cover max_variables.
-    # Entity resolution uses one separate call for the full unique-entity set (up to 96).
+    # Entity resolution uses one separate call for the full unique-entity set (up to
+    # max_entities).
     max_variable_concurrency: int = 8
 
     # -- Client-side caches (per-LiveGraphClient, cleared on restart) -----
@@ -665,6 +678,8 @@ class SearchSettings(BaseSettings):
                 "role_bulk_rank_max_rows": observation_settings().role_bulk_rank_max_rows,
                 "max_options": self.max_options,
                 "max_parts": SEARCH_MAX_PARTS,
+                "max_code_parts": SEARCH_MAX_CODE_PARTS,
+                "max_entities": self.max_entities,
                 "max_part_entities": SEARCH_MAX_PART_ENTITIES,
                 "max_variable_text_chars": SEARCH_MAX_VARIABLE_TEXT_CHARS,
                 "max_entity_text_chars": SEARCH_MAX_ENTITY_TEXT_CHARS,

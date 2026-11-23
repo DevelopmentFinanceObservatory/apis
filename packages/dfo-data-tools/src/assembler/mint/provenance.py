@@ -10,19 +10,22 @@ from __future__ import annotations
 import datetime
 import hashlib
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
 from assembler.ports import NamedSeries, ResolvedFrame
+from assembler.resolve import ResolvedSeries
 from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
 from dfo_platform.columns import PROVENANCE_COLUMN
+from materialise.partial_period import reaches
 
 DESCRIPTION_PROVENANCE_MEMBERS = ("sources", "freshness", "warnings", "citation")
 """The provenance members a lineage-only provenance leaves out, since a description carries
@@ -376,6 +379,92 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
     return str(end_year) if end_year is not None else None
 
 
+def drawn_rows(
+    *, series: Sequence[ResolvedSeries], periods: Mapping[str, Collection[str]]
+) -> list[Mapping[str, object]] | None:
+    """The frame rows a card draws: each resolved series' rows in the periods `periods` gives
+    for that series' id, none for a series it does not name. `None` for a card that binds no
+    series, which draws on the whole frame."""
+    if not series:
+        return None
+    return [
+        row
+        for one in series
+        for row in one.rows
+        if row.get(TIME_PERIOD_COLUMN) in periods.get(one.id, ())
+    ]
+
+
+def _frame_rows(frame: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """A frame document's rows keyed by column."""
+    columns = list(cast("Sequence[str]", frame.get("columns") or ()))
+    return [
+        dict(zip(columns, row, strict=True))
+        for row in cast("Sequence[Sequence[object]]", frame.get("rows") or ())
+    ]
+
+
+def recorded_incomplete_after(
+    manifest: Mapping[str, object],
+) -> list[Mapping[str, object]] | None:
+    """The entries stating how complete a frame's rows are, as its version stored them
+    (`incomplete_after` of `datasets_api.manifest.version_document`). A dataset version's are
+    as its mint judged them, a computed version's as its publish derived them
+    (`datasets_api.lineage_incomplete`). `None` when the version stores none, whose
+    completeness is unknown."""
+    held = manifest.get("incomplete_after")
+    return None if held is None else list(cast("Sequence[Mapping[str, object]]", held))
+
+
+def drawn_partial_entries(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
+) -> list[Mapping[str, object]] | None:
+    """The `partial` entries of the frame's version record (`recorded_incomplete_after`) that a
+    row the card draws, of `rows` or else the whole frame's, reaches: a row whose own
+    `provenance` and `stat_var` cells the entry names, and whose period reaches the entry's
+    `partial_period` (`materialise.partial_period.reaches`). A row with no `provenance` cell is
+    named by an entry with none. `unmarked` and `unknown` entries are never drawn partial.
+    `[]` when the card draws none; `None` when the version stores no record. Nothing is read
+    beyond the frame's manifest."""
+    entries = recorded_incomplete_after(resolved_frame.manifest)
+    if entries is None:
+        return None
+    marked = [entry for entry in entries if entry.get("status") == "partial"]
+    if not marked:
+        return []
+    drawn = [
+        (period, (row.get(PROVENANCE_COLUMN), _bare(stat_var)))
+        for row in (_frame_rows(resolved_frame.frame) if rows is None else rows)
+        if isinstance(period := row.get(TIME_PERIOD_COLUMN), str)
+        and isinstance(stat_var := row.get(STAT_VAR_COLUMN), str)
+    ]
+    return [entry for entry in marked if _drawn_reaches(entry, drawn)]
+
+
+def _drawn_reaches(
+    entry: Mapping[str, object], drawn: Sequence[tuple[str, tuple[object, str]]]
+) -> bool:
+    cells = {
+        (entry.get("provenance"), _bare(stat_var))
+        for stat_var in cast("Sequence[str]", entry["stat_vars"])
+    }
+    mark = cast(str, entry["partial_period"])
+    return any(cell in cells and reaches(period, mark) for period, cell in drawn)
+
+
+def _partial_period(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]] | None
+) -> bool:
+    """Whether a row the card draws reaches a partial period its version recorded for the row's
+    own cells (`drawn_partial_entries`), so the card holds only part of that source's data
+    there. A version that recorded nothing reads as complete."""
+    return bool(drawn_partial_entries(resolved_frame=resolved_frame, rows=rows))
+
+
+def _bare(stat_var: str) -> str:
+    return stat_var.removeprefix(STAT_VAR_REF_PREFIX)
+
+
 def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
     """The steps a card takes after drawing its selection: a stat card's `change` between its
     two basis periods (`description.compose.change_step`), else none."""
@@ -396,14 +485,17 @@ def _build_provenance(
     sources: tuple[dict[str, object], ...],
     card_steps: Sequence[Step],
     clock: Callable[[], datetime.datetime],
+    drawn: Sequence[Mapping[str, object]] | None,
 ) -> dict[str, object]:
     """The provenance of a card drawn from `resolved_frame`, citing `sources`. The citation
     routes through the DFO as the steps known to have made the card's figures decide
     (`description.citation.figures_processed`): the version's, then the card's own
-    `card_steps`."""
+    `card_steps`. `freshness.partial_period` judges the rows the card draws, `drawn`
+    (`drawn_rows`), or the whole frame's for `None`."""
     manifest = resolved_frame.manifest
     record = resolved_frame.description_record
     warnings = cast(Sequence[Mapping[str, object]], manifest.get("warnings") or ())
+    data_through = _data_through(manifest)
     return {
         "inputs": [
             {
@@ -414,10 +506,10 @@ def _build_provenance(
         "execution_ref": resolved_frame.replay_key,
         "sources": list(sources),
         "freshness": {
-            "data_through": _data_through(manifest),
+            "data_through": data_through,
             "last_refreshed": None,
             "next_expected": None,
-            "partial_period": False,
+            "partial_period": _partial_period(resolved_frame=resolved_frame, rows=drawn),
         },
         "warnings": _translate_warnings(warnings, labels=resolved_frame.labels),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),

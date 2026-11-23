@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from search.engine.config import (
+    SEARCH_MAX_CODE_PARTS,
     SEARCH_MAX_ENTITY_TEXT_CHARS,
     SEARCH_MAX_PART_ENTITIES,
     SEARCH_MAX_PARTS,
@@ -18,7 +19,7 @@ from search.engine.config import (
     SEARCH_MAX_VARIABLE_TEXT_CHARS,
     settings,
 )
-from search.models import ParsedEntity, ParsedInput, ParsedPart
+from search.models import _PARSED_MAX_PARTS, ParsedEntity, ParsedInput, ParsedPart
 
 
 def _min_part(**overrides) -> dict:
@@ -40,8 +41,8 @@ class TestCapParity:
             pytest.param(
                 ParsedInput.model_fields["parts"],
                 1,
-                SEARCH_MAX_PARTS,
-                id="max_parts_matches_config",
+                SEARCH_MAX_CODE_PARTS,
+                id="max_code_parts_matches_config",
             ),
             pytest.param(
                 ParsedPart.model_fields["entities"],
@@ -96,19 +97,41 @@ class TestCapParity:
     def test_field_caps_match_config(self, field, metadata_index, config_limit):
         assert field.metadata[metadata_index].max_length == config_limit
 
+    def test_uncoded_parts_cap_matches_config(self):
+        # The lower cap lives in a validator, not in the field's metadata.
+        assert _PARSED_MAX_PARTS == SEARCH_MAX_PARTS
+
 
 class TestParsedInputParts:
     def test_empty_parts_refuses(self):
         with pytest.raises(ValidationError):
             ParsedInput.model_validate({"parts": []})
 
-    def test_parts_over_max_refuses(self):
-        with pytest.raises(ValidationError):
-            ParsedInput.model_validate({"parts": [_min_part()] * (SEARCH_MAX_PARTS + 1)})
+    @pytest.mark.parametrize(
+        ("coded", "uncoded", "accepted"),
+        [
+            pytest.param(0, SEARCH_MAX_PARTS, True, id="free-text-at-cap"),
+            pytest.param(SEARCH_MAX_PARTS, 1, False, id="one-free-text-past-cap"),
+            pytest.param(0, SEARCH_MAX_PARTS + 1, False, id="free-text-past-cap"),
+            pytest.param(SEARCH_MAX_CODE_PARTS, 0, True, id="code-at-cap"),
+            pytest.param(SEARCH_MAX_CODE_PARTS + 1, 0, False, id="code-past-cap"),
+        ],
+    )
+    def test_parts_cap_depends_on_every_part_naming_a_code(self, coded, uncoded, accepted):
+        parts = [_min_part(source_code=f"DT.CODE.{i}") for i in range(coded)]
+        parts += [_min_part()] * uncoded
+        if accepted:
+            assert len(ParsedInput.model_validate({"parts": parts}).parts) == len(parts)
+            return
+        with pytest.raises(ValidationError) as excinfo:
+            ParsedInput.model_validate({"parts": parts})
+        (error,) = excinfo.value.errors()
+        assert error["loc"] == ("parts",)
 
-    def test_parts_at_max_accepts(self):
-        req = ParsedInput.model_validate({"parts": [_min_part()] * SEARCH_MAX_PARTS})
-        assert len(req.parts) == SEARCH_MAX_PARTS
+    def test_a_blank_code_counts_as_no_code(self):
+        parts = [_min_part(source_code=f"DT.CODE.{i}") for i in range(SEARCH_MAX_PARTS)]
+        with pytest.raises(ValidationError):
+            ParsedInput.model_validate({"parts": [*parts, _min_part(source_code="  ")]})
 
     def test_unknown_top_level_field_refuses(self):
         with pytest.raises(ValidationError):

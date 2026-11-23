@@ -20,7 +20,7 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
-# The schema covers version records, artifacts, revocations, references, caller allowances,
+# The schema covers version records, artifacts and their heads, revocations, references, caller allowances,
 # inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
@@ -49,6 +49,8 @@ CREATE TABLE datasets.version_record (
     input_content_versions TEXT,
     composed_stat_vars TEXT,
     continuations TEXT,
+    incomplete_after TEXT,
+    incomplete_after_built_at TEXT,
     frame_sha256 TEXT,
     frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
@@ -61,6 +63,15 @@ CREATE TABLE datasets.version_artifact (
     rendering TEXT NOT NULL,
     media_type TEXT NOT NULL,
     PRIMARY KEY (subject_id, content_version, rendering_key)
+);
+CREATE TABLE datasets.version_artifact_head (
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    rendering_key TEXT NOT NULL,
+    head_content_version TEXT NOT NULL,
+    code_index_stamp TEXT,
+    read_at TEXT,
+    PRIMARY KEY (subject_id, content_version, rendering_key, head_content_version)
 );
 CREATE TABLE datasets.version_revocation (
     subject_id TEXT NOT NULL,
@@ -195,6 +206,10 @@ _JSONB_EQUALS = re.compile(r"(\w+(?: -> '\w+')?) = %s::jsonb")
 """A JSONB column, or one key of it, compared with a parameter in a `WHERE` clause."""
 
 
+_JSONB_REMOVE = re.compile(r"(\w+) - '(\w+)' AS \1")
+"""A JSONB column read without one top-level key, SQLite's `json_remove`."""
+
+
 def _to_sqlite(sql: str) -> str:
     sql = sql.replace(_ROLE_COLUMNS_SQL, "role_columns(output_profile) AS role_columns")
     # SQLite runs one writer at a time, so a row lock has nothing to add.
@@ -204,6 +219,7 @@ def _to_sqlite(sql: str) -> str:
     head, where, condition = sql.partition(" WHERE ")
     sql = head + where + _JSONB_EQUALS.sub(r"json(\1) = json(%s)", condition)
     sql = sql.replace("%s::jsonb", "%s")
+    sql = _JSONB_REMOVE.sub(r"json_remove(\1, '$.\2') AS \1", sql)
     return _to_sqlite_paramstyle(sql)
 
 
@@ -232,6 +248,7 @@ _JSON_COLUMNS = frozenset(
         "input_content_versions",
         "composed_stat_vars",
         "continuations",
+        "incomplete_after",
         "rendering",
         "signal",
         "recipe",
@@ -259,10 +276,12 @@ _TIMESTAMP_COLUMNS = frozenset(
         "confirmed_at",
         "materialised_at",
         "prepared_at",
+        "incomplete_after_built_at",
         "claimed_at",
         "updated_at",
         "dispatched_at",
         "submitted_at",
+        "read_at",
     }
 )
 _BOOL_COLUMNS = frozenset({"retryable", "final_delivery", "frame_summed"})

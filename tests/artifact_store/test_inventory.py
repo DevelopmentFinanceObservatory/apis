@@ -636,3 +636,46 @@ def test_concurrent_renewers_converge_on_the_uploaded_renewal_name(
     bucket = client.buckets[_BUCKETS[Tier.working]]
     first_stored_at = renewing_at if uploader_moves_first else bucket.time_created[f"{digest}#r1"]
     assert _location(dataset_store, digest) == (f"{digest}#r1", first_stored_at, 1)
+
+
+@pytest.mark.parametrize(
+    ("age", "renews"),
+    [(WORKING_TIER_RETENTION - timedelta(days=5), True), (timedelta(days=10), False)],
+    ids=["inside_the_margin", "outside_the_margin"],
+)
+def test_a_renewing_view_renews_bytes_whose_retention_ends_within_its_margin(
+    dataset_store, age: timedelta, renews: bool
+):
+    """`renewing(within=...)` uploads bytes whose location ends retention within the margin
+    again under the next renewal name, a new object whose creation time is now, and moves the
+    location there with a fresh `stored_at`; the store itself and bytes further from the end of
+    retention deduplicate."""
+    client = FakeGCSClient()
+    now = datetime.now(UTC)
+    minted_at = now - age
+    minting = LiveArtifactStore(
+        buckets=_BUCKETS,
+        inventory=LiveArtifactInventory(store=dataset_store, now=lambda: minted_at),
+        client=client,
+        now=lambda: minted_at,
+    )
+    store = LiveArtifactStore(
+        buckets=_BUCKETS,
+        inventory=LiveArtifactInventory(store=dataset_store, now=lambda: now),
+        client=client,
+        now=lambda: now,
+    )
+    digest = minting.put(_RENEWING, tier=Tier.working).digest
+    bucket = client.buckets[_BUCKETS[Tier.working]]
+
+    plain = store.put(_RENEWING, tier=Tier.working)
+    renewed = store.renewing(within=timedelta(days=7)).put(_RENEWING, tier=Tier.working)
+
+    assert (plain.object_name, plain.deduplicated) == (digest, True)
+    if renews:
+        assert (renewed.object_name, renewed.deduplicated) == (f"{digest}#r1", False)
+        assert _location(dataset_store, digest) == (f"{digest}#r1", now, 1)
+        assert bucket.time_created[f"{digest}#r1"] >= now
+    else:
+        assert (renewed.object_name, renewed.deduplicated) == (digest, True)
+        assert _location(dataset_store, digest) == (digest, minted_at, 0)

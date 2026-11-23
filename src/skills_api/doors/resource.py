@@ -19,6 +19,7 @@ from skills_api.deps import (
     SkillNotFound,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
+    built_index,
     classify_skill_lookup_exception,
 )
 from skills_api.models import SkillResourceContent, media_type
@@ -103,9 +104,7 @@ async def get_resource(
         raise ResourcePathTooLong(len(path))
 
     shared = deps.skills_index
-    index = shared.index
-    if index is None:
-        raise SkillsIndexNotBuilt()
+    index = await built_index(shared)
 
     return deps.resource_cache.respond(
         generation=index,

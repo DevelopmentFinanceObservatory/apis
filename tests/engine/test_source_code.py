@@ -17,8 +17,10 @@ from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
+from search.engine import fanout
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
+from search.engine.config import SEARCH_MAX_CODE_PARTS, settings
 from search.engine.core import resolve_async
 from search.engine.entry import parsed as parsed_entry
 from search.engine.extract import ExtractedEntity, Extraction
@@ -660,6 +662,53 @@ def test_a_restated_code_part_posts_back_to_the_same_spec(monkeypatch):
 
     assert first.restatement.variable_text == "debt service"
     assert _answer(first.restatement, monkeypatch).spec.spec_id == first.spec.spec_id
+
+
+def test_a_request_of_more_code_parts_than_concurrent_legs_queues_every_leg(monkeypatch):
+    """A parsed request of `SEARCH_MAX_CODE_PARTS` code parts runs every leg, at most
+    `max_variable_concurrency` at once, the rest waiting for a permit."""
+    running = 0
+    peak = 0
+    legs: list[str] = []
+    resolve = fanout.resolve_variable
+
+    async def counted(variable_text, **kwargs):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        legs.append(variable_text)
+        try:
+            # Yields, so every leg holding a permit is in flight before any finishes.
+            await asyncio.sleep(0)
+            return await resolve(variable_text, **kwargs)
+        finally:
+            running -= 1
+
+    monkeypatch.setattr(fanout, "resolve_variable", counted)
+    patch_coverage(monkeypatch, _COVERAGE_ROWS, role_names=_ROLE_NAMES)
+    graph = _graph()
+    parts = [
+        ParsedPart(
+            variable_text=f"debt service {i}",
+            entities=[ParsedEntity(text="Kenya")],
+            source_code=_DEGG,
+        )
+        for i in range(SEARCH_MAX_CODE_PARTS)
+    ]
+
+    response = asyncio.run(
+        resolve_async(
+            ResolveRequest(input=ParsedInput(parts=parts)),
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_BindLLM(),
+            sdmx=FakeSdmxClient(observations={}),
+        )
+    )
+
+    assert response.kind == "resolution"
+    assert sorted(legs) == sorted(part.variable_text for part in parts)
+    assert peak == settings().max_variable_concurrency < SEARCH_MAX_CODE_PARTS
 
 
 def test_a_code_none_of_whose_statvars_the_graph_confirms_refuses_not_held():

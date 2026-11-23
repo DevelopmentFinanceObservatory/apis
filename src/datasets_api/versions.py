@@ -69,6 +69,32 @@ NO_PARTY_ROLE = "no_party_role"
 holds no party role. It holds no party-kind cell, so its bytes are the same under every code
 index and its key is the same under every digest. No digest, a hex SHA-256, equals it."""
 
+RENDER_FORMAT = "axis_dcid_party_kind"
+"""The cells a render writes into a frame-layout file and a derived version's frame for unchanged
+data and options. Under `axis_dcid_party_kind` each decoded `stat_var_<code_system>` cell holds
+its code's dcid (`datasets_api.decode`), and a party's kind and class cells on a declared
+composite's rows read the composite's component tables (`code_index.types.PartyRow.kinds_over`),
+as a party-totals cut does. It salts the link key of a frame-layout file
+(`version_store.rendering_key`) and joins the stamp a derived version's links record
+(`rendering_stamp`), so a file or version rendered under another format matches no request and
+the next request renders it again. It also names an analysis root read from a frame-layout file
+(`analysis_roots.frame_ref_for`), so an analysis over such a root after a change is a new output
+pair. Change it with any change to those cells."""
+
+
+def holds_frame_cells(rendering: Mapping[str, object]) -> bool:
+    """Whether `rendering` is a frame-layout file's (`layout: "frame"`), whose cells are the
+    frame's as reshaped, so its link key carries `RENDER_FORMAT`."""
+    return rendering.get("layout") == "frame"
+
+
+def rendering_stamp(code_index_hash: str) -> str:
+    """The stamp a derived version's links record beside the head they were rendered from
+    (`HeadLink.rendered_under`): `code_index_hash`, the content hash of the code index the render
+    read, then `+` and `RENDER_FORMAT`. A recorded sum is reused only under the stamp the serving
+    build computes (`recorded_rendering.mintings_rendered_under`)."""
+    return f"{code_index_hash}+{RENDER_FORMAT}"
+
 
 def enrichment_stamp(
     rendering: Mapping[str, object], *, role_columns: Iterable[str], enrichment_digest: str | None
@@ -136,6 +162,10 @@ class VersionRecord:
     # Whether a derived version's frame holds its summed rows (`render.DerivedVersion.summed`):
     # set exactly when `base_content_version` is.
     frame_summed: bool | None = None
+    # The stamp of the code index and render format a derived version's files were rendered
+    # under (`rendering_stamp`), which each link records beside the head it names
+    # (`datasets.version_artifact_head.code_index_stamp`). `None` records none.
+    code_index_stamp: str | None = None
     # Builds and settles the version's description record in the transaction that writes the
     # version row. `None` writes no record.
     describer: VersionDescriber | None = field(default=None, compare=False)
@@ -355,6 +385,43 @@ class ListedVersion:
 
 
 @dataclass(frozen=True)
+class HeadLink:
+    """One file linked under a version: its `rendering`, and every raw head a write named as
+    making it (`datasets.version_artifact_head`), empty on a link no write named a head for, as
+    on every link under a raw version and every link written before links held heads.
+    `rendered_under` maps each of those heads whose row records it to the stamp
+    (`rendering_stamp`) of the code index and render format the last write naming that head
+    rendered the file under, and `read_at` each head whose row records it to the last time an
+    analysis root read the file as the rendering made from that head
+    (`render_ahead.READ_MARK_INTERVAL`)."""
+
+    rendering: Mapping[str, object]
+    heads: frozenset[str] = frozenset()
+    rendered_under: Mapping[str, str] = field(default_factory=dict)
+    read_at: Mapping[str, datetime] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReadRendering:
+    """A rendering an analysis root read as made from some head of its dataset, and the last
+    time it did (`datasets.version_artifact_head.read_at`)."""
+
+    rendering: Mapping[str, object]
+    read_at: datetime
+
+
+@dataclass(frozen=True)
+class HeadVersion:
+    """A version a listing by head names (`VersionLister.list_head_versions`), with every file
+    linked under it (`links`), whichever heads each names. `base_content_version` is the base its
+    record keeps, the one it was first recorded from."""
+
+    content_version: str
+    base_content_version: str | None
+    links: tuple[HeadLink, ...] = ()
+
+
+@dataclass(frozen=True)
 class VersionsPageKey:
     """Where a page of a versions listing ends: the last listed version's `recorded_at` and
     `content_version`, the listing's sort key."""
@@ -368,6 +435,14 @@ class VersionLister(Protocol):
         """Return the subject's stored versions, newest first. Empty when it holds none."""
         ...
 
+    def list_head_versions(
+        self, subject_id: str, *, head_content_version: str
+    ) -> list[HeadVersion]:
+        """Return the subject's versions that link a file made from `head_content_version` or
+        are recorded as derived from it, newest first, each with every file linked under it.
+        Empty when it holds none."""
+        ...
+
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
@@ -375,6 +450,31 @@ class VersionLister(Protocol):
         starting after `after`. A version lists once, from its record under the earliest of
         `subject_ids` that records it, and is left out when that record's version or base
         version is revoked under any of them."""
+        ...
+
+    def list_read_renderings(self, subject_id: str, *, read_since: datetime) -> list[ReadRendering]:
+        """Return each rendering of the subject's links that an analysis root read as made from
+        any head at or after `read_since`, once with its latest read, latest first."""
+        ...
+
+    def renderings_read_since(self, subject_id: str, *, read_since: datetime) -> bool:
+        """Whether an analysis root read a rendering of the subject's links as made from any
+        head at or after `read_since`."""
+        ...
+
+    def mark_rendering_read(
+        self,
+        subject_id: str,
+        *,
+        content_version: str,
+        head_content_version: str,
+        rendering_keys: Sequence[str],
+        read_at: datetime,
+        unless_read_since: datetime,
+    ) -> None:
+        """Record `read_at` as the last read of the links under `content_version` keyed by any
+        of `rendering_keys`, as made from `head_content_version`, unless they record a read at
+        or after `unless_read_since`. A link holding no row for that head records nothing."""
         ...
 
 

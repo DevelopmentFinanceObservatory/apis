@@ -95,9 +95,11 @@ from datasets_api.manifest import (
     assemble_manifest,
     collapsed_citation,
     collapsed_head_manifest,
+    collapsed_incomplete_after,
     coverage_facts_of,
     definition_version_record,
     healed_citation,
+    incomplete_after,
     manifest_output_options,
     persisted_manifest,
     provenance_refs_of,
@@ -114,7 +116,7 @@ from datasets_api.manifest_models import (
     WarningModel,
     year_coverage_counted,
 )
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.origin import (
     OriginGap,
     catalogue_build_id,
@@ -153,6 +155,7 @@ from datasets_api.versions import (
     VersionWrite,
     WrittenVersion,
     link_digest,
+    rendering_stamp,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.config import PublicSiteSettings
@@ -548,6 +551,11 @@ class DefinitionPrewrite:
     # The year members of the version's `coverage` (`manifest.year_coverage`), counted here
     # from the index the run elected over and joined to every manifest the write half builds.
     year_coverage: Mapping[str, object] = field(default_factory=dict)
+    # How complete the rows are, judged per source (`manifest.incomplete_after`) against the
+    # catalogue bound to the mint, `None` when it could not be judged, and that catalogue's
+    # `built_at`, `None` with it.
+    incomplete_after: list[dict[str, object]] | None = None
+    incomplete_after_built_at: datetime | None = None
 
 
 def _documentation_complete(source_citations: Mapping[str, SourceCitation]) -> bool:
@@ -934,6 +942,7 @@ def prewrite_definition(
             "identity": stored.identity,
         }
         years = year_coverage(result, requests=requests, index=coverage_index)
+        judged = incomplete_after(result)
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -964,19 +973,22 @@ def prewrite_definition(
             documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
             year_coverage=years,
+            incomplete_after=None if judged is None else judged.entries,
+            incomplete_after_built_at=None if judged is None else judged.built_at,
         )
 
 
 @dataclass(frozen=True)
 class ServedDefinition:
     """A serve's response, the head its run advanced to, `None` when a concurrent writer
-    advanced it first, and the member family the run's trace states. The response states that
-    family whatever version it serves, derived ones included, and whichever writer won the
-    head."""
+    advanced it first, the member family the run's trace states, and the raw version the run
+    materialised, which the response is or was derived from. The response states that family
+    whatever version it serves, derived ones included, and whichever writer won the head."""
 
     manifest: Manifest
     head: SubjectHead | None
     family: StatedFamily
+    content_version: str
 
 
 def serve_definition(
@@ -1050,7 +1062,10 @@ def serve_definition(
             ),
         )
         return ServedDefinition(
-            manifest=manifest, head=head, family=prewrite.result.trace.family_statement
+            manifest=manifest,
+            head=head,
+            family=prewrite.result.trace.family_statement,
+            content_version=prewrite.result.content_version,
         )
 
     with bounded_materialise_slot(
@@ -1071,14 +1086,18 @@ def _base_record(
     """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
     `describer`. It takes the stored body when the version is on record (`persisted`), else
     this call's. A stored body whose year coverage was never counted
-    (`year_coverage_counted`) takes this call's `coverage`, which the write stores on the
-    version (`VersionRecordWriter.write_version`)."""
+    (`year_coverage_counted`) takes this call's `coverage`, and every stored body takes this
+    call's `incomplete_after` and the build that judged it when this call judged one, which the
+    write stores on the version unless an older build judged it than the one that judged the
+    stored record (`VersionRecordWriter.write_version`)."""
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
         materialisation=prewrite.result,
         artifacts=[],
         record_only_artifacts=artifacts,
+        incomplete_after=prewrite.incomplete_after,
+        incomplete_after_built_at=prewrite.incomplete_after_built_at,
     )
     record = replace(record, describer=describer)
     if persisted is None:
@@ -1087,6 +1106,12 @@ def _base_record(
     if isinstance(facts, ManifestFacts) and not year_coverage_counted(facts.coverage):
         assert isinstance(record.facts, ManifestFacts)
         facts = replace(facts, coverage=record.facts.coverage)
+    if isinstance(facts, ManifestFacts) and prewrite.incomplete_after is not None:
+        facts = replace(
+            facts,
+            incomplete_after=prewrite.incomplete_after,
+            incomplete_after_built_at=prewrite.incomplete_after_built_at,
+        )
     return replace(record, facts=facts)
 
 
@@ -1104,6 +1129,8 @@ def _describers(
         figures=prewrite.result.series_statistics.figures,
         collapsed=collapsed,
         collapsed_summed=rendered is None or rendered.collapsed_summed,
+        collapsed_adds=rendered is None or rendered.collapsed_adds,
+        collapsed_groupby=None if rendered is None else rendered.collapsed_groupby,
         code_index=deps.code_index,
         enrichment=deps.enrichment,
         deadline=deps.deadline,
@@ -1330,6 +1357,10 @@ class _RenderPass:
     collapsed: VersionRecord | None
     collapsed_figures: SeriesFigures | None
     collapsed_summed: bool = True
+    # Whether that collapse added StatVars together (`render.DerivedVersion.adds`).
+    collapsed_adds: bool = True
+    # The groupby that summed it, whose `codes` select the StatVars it adds.
+    collapsed_groupby: GroupbyOptions | None = None
 
     def write(
         self,
@@ -1577,9 +1608,16 @@ def _render_pass(
             record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
             frame_summed=derived.summed,
+            code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
+            incomplete_after=collapsed_incomplete_after(
+                prewrite.incomplete_after, derived_statistics.figures
+            ),
+            incomplete_after_built_at=prewrite.incomplete_after_built_at,
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,
+        collapsed_adds=derived.adds,
+        collapsed_groupby=derived.groupby,
     )
 
 

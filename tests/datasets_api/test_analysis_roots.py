@@ -19,22 +19,36 @@ import rfc8785
 from dfo_frame_grammar.grammar import UnitRequest
 
 from artifact_store import LiveArtifactInventory
+from dataset_store.snapshot import SnapshotRevoked
 from datasets_api import analysis_roots
-from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
+from datasets_api.analysis import (
+    AnalysisPending,
+    DatasetRoot,
+    ResolvedRoot,
+    RootExpired,
+    RootRendering,
+    RootRenderingUnreadable,
+    SpecRoot,
+)
 from datasets_api.analysis_roots import (
     LiveRootSource,
     frame_from_frame_layout,
     frame_ref_for,
+    frame_ref_under,
     mint_options,
     record_options,
+    summed_count,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.current import StoredHeadVersion
 from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import CoverageModel
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from datasets_api.versions import RENDER_FORMAT
 from dfo_analysis_engine.frame_ref import FrameRef
 
 from ._deps_doubles import Unwired, closable_permits
@@ -231,6 +245,146 @@ def test_a_root_read_from_its_stored_frame_is_read_only_once_located(
         roots.read(resolved)  # ty: ignore[invalid-argument-type] -- the unlocated read under test
 
 
+def test_a_root_that_expires_once_resolved_counts_nothing_against_the_render_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root of 1,500,000 rows resolves and then has no servable stored frame, so nothing of
+    it is read: a later root's in-memory rendering of 1,000,000 rows stays within the bound of
+    2,000,000 and is rendered."""
+    expired_cv, rendered_cv = "cv_" + "1" * 32, "cv_" + "2" * 32
+    rows = {expired_cv: 1_500_000, rendered_cv: 1_000_000}
+    renders: list[str] = []
+
+    def stored(*, content_version: str, **_: object) -> object:
+        coverage = CoverageModel(rows=rows[content_version], dimensions=[])
+        return SimpleNamespace(content_version=content_version, coverage=coverage, artifacts=[])
+
+    def render(*, content_version: str, **_: object) -> None:
+        renders.append(content_version)
+
+    monkeypatch.setattr(analysis_roots, "load_stored", stored)
+    monkeypatch.setattr(analysis_roots, "head_rendering", lambda **_: None)
+    monkeypatch.setattr(analysis_roots, "render_unstored", render)
+    deps = SimpleNamespace(
+        snapshot_reader=SimpleNamespace(
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None),
+            read_artifact_locations=lambda *_: (),
+        ),
+        coverage=SimpleNamespace(snapshot=lambda: None),
+        now=lambda: datetime.now(UTC),
+        version_lister=None,
+        code_index=None,
+    )
+    roots = LiveRootSource(
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        recipes=Unwired("recipes"),  # ty: ignore[invalid-argument-type]
+        render=False,
+        max_root_rows=2_000_000,
+    )
+    expired = roots.resolve(
+        DatasetRoot(spec_id=_SPEC, content_version=expired_cv, rendering=RootRendering(columns=())),
+        latest=False,
+        trace_id=None,
+    )
+    with pytest.raises(RootExpired):
+        roots.locate(expired)
+    summed = RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"})
+
+    # The fake renders nothing, so the root is refused as expired once it has been rendered.
+    with pytest.raises(RootExpired):
+        roots.resolve(
+            DatasetRoot(spec_id=_SPEC, content_version=rendered_cv, rendering=summed),
+            latest=False,
+            trace_id=None,
+        )
+    assert renders == [rendered_cv]
+
+
+_TWO_COUNTED = {
+    "resolved_stat_vars": [
+        {"ref": "dcid:A", "observation_count": 3},
+        {"ref": "dcid:B", "observation_count": 2},
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "rendered", "count"),
+    [
+        pytest.param(None, None, 2, id="no-record-is-unknown"),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=None),
+            None,
+            2,
+            id="unrecorded-frame-summed-is-unknown",
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=True), 3, 3, id="renderer-count"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=_CV, frame_summed=False), 3, 0, id="a-cut-frame"
+        ),
+        pytest.param(
+            SimpleNamespace(base_content_version=None, frame_summed=None), 3, 0, id="no-derived"
+        ),
+    ],
+)
+def test_a_groupby_counts_the_stat_vars_it_summed_unless_its_record_says_none(
+    version: object, rendered: int | None, count: int
+) -> None:
+    """The renderer's count wins over the StatVars the trace counts (2 here)."""
+    assert summed_count(version, rendered=rendered, contributors=2) == count  # ty: ignore[invalid-argument-type]
+
+
+def test_a_groupby_rendered_in_memory_names_the_stat_vars_it_summed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification renders a root's groupby in memory (`render` false), and the root names
+    the StatVars it summed as a stored rendering does."""
+    derived_cv = "cv_" + "2" * 32
+    monkeypatch.setattr(
+        analysis_roots,
+        "load_stored",
+        lambda **_: SimpleNamespace(
+            content_version=_CV,
+            coverage=CoverageModel(rows=2, dimensions=[]),
+            artifacts=[],
+            trace=_TWO_COUNTED,
+        ),
+    )
+    monkeypatch.setattr(analysis_roots, "head_rendering", lambda **_: None)
+    monkeypatch.setattr(
+        analysis_roots,
+        "render_unstored",
+        lambda **_: SimpleNamespace(
+            content_version=derived_cv, artifact=None, data=b"", rows=1, frame=None
+        ),
+    )
+    deps = SimpleNamespace(
+        snapshot_reader=SimpleNamespace(
+            read_version=lambda *_: SimpleNamespace(base_content_version=None, frame_summed=None)
+        ),
+        coverage=SimpleNamespace(snapshot=lambda: None),
+        code_index=_hierarchical_code_index(),
+        version_lister=None,
+    )
+    roots = LiveRootSource(
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        recipes=Unwired("recipes"),  # ty: ignore[invalid-argument-type]
+        render=False,
+    )
+    summed = RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"})
+
+    resolved = roots.resolve(
+        DatasetRoot(spec_id=_SPEC, content_version=_CV, rendering=summed),
+        latest=False,
+        trace_id=None,
+    )
+
+    assert resolved.dataset.content_version == derived_cv
+    assert (resolved.summed_count, resolved.stat_vars_summed) == (2, ("A", "B"))
+
+
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     plain = frame_ref_for(spec_id=_SPEC, content_version=_CV, columns=(), enrichment_stamp="s")
     typed = frame_ref_for(
@@ -241,9 +395,32 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     )
 
     assert (plain.spec_id, plain.content_version) == (_SPEC, _CV)
-    preimage = {"columns": ["observationAbout_type"], "content_version": _CV}
+    preimage = {
+        "columns": ["observationAbout_type"],
+        "content_version": _CV,
+        "render_format": RENDER_FORMAT,
+    }
     assert typed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
-    salted = {"columns": ["party_kind"], "content_version": _CV, "enrichment_stamp": "s"}
+    before_formats = frame_ref_under(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=("observationAbout_type",),
+        groupby=None,
+        without_party_totals=False,
+        enrichment_stamp="s",
+        render_format=None,
+    )
+    del preimage["render_format"]
+    assert (
+        before_formats.content_version
+        == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
+    )
+    salted = {
+        "columns": ["party_kind"],
+        "content_version": _CV,
+        "enrichment_stamp": "s",
+        "render_format": RENDER_FORMAT,
+    }
     assert kinds.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(salted)).hexdigest()[:32]
     summed = frame_ref_for(
         spec_id=_SPEC,
@@ -260,9 +437,26 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     assert summed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(grouped)).hexdigest()[:32]
 
 
-# data-mcp's `test_frame_materialisation` pins the same pair for the same rendering, so the two
-# producers of a root frame's pair cannot drift apart.
-_SHARED_PAIR = "cv_bb722d06259f357e6961a081f1c1f141"
+@pytest.mark.parametrize(
+    "columns",
+    [("party_kind",), ("stat_var_crsPurpose",), ("observationAbout_type",)],
+    ids=["kinds", "decoded_axis", "graph_field"],
+)
+def test_a_frame_of_columns_rendered_under_another_format_is_another_frame(
+    monkeypatch: pytest.MonkeyPatch, columns: tuple[str, ...]
+) -> None:
+    """A frame read from a frame-layout file is named by the render format its cells were
+    written under, so an analysis over it after a format change is a new output pair. A
+    stored frame, read with no columns, keeps its pair."""
+    named = {"spec_id": _SPEC, "content_version": _CV, "enrichment_stamp": "s"}
+    old, old_plain = frame_ref_for(columns=columns, **named), frame_ref_for(columns=(), **named)
+    monkeypatch.setattr(analysis_roots, "RENDER_FORMAT", "another_format")
+
+    assert frame_ref_for(columns=columns, **named) != old
+    assert frame_ref_for(columns=(), **named) == old_plain
+
+
+_SHARED_PAIR = "cv_e244d79cb074364845d27ee6558b1d65"
 
 
 @pytest.mark.parametrize("by", [["origin", "time_period"], ["time_period", "origin"]])
@@ -287,6 +481,36 @@ def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_
 
     assert ref.content_version == _SHARED_PAIR
     assert bare.content_version.startswith("cv_") and bare.content_version != _CV
+
+
+def test_a_code_selection_names_its_own_frame_and_leaves_an_unselected_one_s_name_alone() -> None:
+    """A rendering without `groupby.codes` leaves it out of the dump, so it names its frame and
+    record as a groupby that never states it does. One with codes names another frame, the
+    same for any order of them."""
+
+    def pair(codes: dict[str, list[str]] | None) -> FrameRef:
+        rendering = RootRendering(
+            columns=("party_kind",),
+            without_party_totals=True,
+            groupby=GroupbyOptions(by=["time_period", "origin"], op="sum", codes=codes),
+        )
+        options = mint_options(rendering)
+        return frame_ref_for(
+            spec_id=_SPEC,
+            content_version=_CV,
+            columns=options["columns"],
+            groupby=options["groupby"],
+            without_party_totals=True,
+            enrichment_stamp=None,
+        )
+
+    assert mint_options(RootRendering(groupby=GroupbyOptions(by=["b", "a"], op="sum")))[
+        "groupby"
+    ] == {"by": ["a", "b"], "op": "sum"}
+    assert pair(None).content_version == _SHARED_PAIR
+    selected = pair({"origin": ["B", "A", "B"]})
+    assert selected.content_version not in {_SHARED_PAIR, pair({"origin": ["A"]}).content_version}
+    assert selected == pair({"origin": ["A", "B"]})
 
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
@@ -401,6 +625,109 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
             enrichment_stamp=None,
         ).model_dump()
     )
+
+
+def test_verify_renders_a_root_whose_rendering_is_not_stored_in_memory_and_stores_nothing() -> None:
+    """A root's groupby file is not stored, as after its 30 days in the working tier, while its
+    version's stored frame is held. A verification renders the file in memory and computes the
+    frame a run then stores, writing no row and no object."""
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+        settings=DatasetsBuildSettings.from_env().model_copy(
+            update={"verify_principal": "probe-secret"}
+        ),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    root = {
+        "spec_id": spec_id,
+        "content_version": raw,
+        "rendering": {"columns": [], "groupby": _STAT_VARS_SUM},
+    }
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+    probe = {"x-dfo-principal": "probe-secret"}
+    changes, objects = store.total_changes, len(artifact_store._objects)
+    verified = client.post(
+        "/api/datasets/analysis", json={"tree": tree, "verify": True}, headers=probe
+    )
+    assert (store.total_changes, len(artifact_store._objects)) == (changes, objects)
+    ran = client.post("/api/datasets/analysis", json={"tree": tree})
+    again = client.post(
+        "/api/datasets/analysis", json={"tree": tree, "verify": True}, headers=probe
+    )
+
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    assert (body["outcome"], body["unavailable_roots"]) == ("not_stored", [])
+    assert ran.status_code == 200, ran.text
+    assert body["frame_content_version"] == ran.json()["frame_content_version"]
+    assert again.json()["outcome"] == "same"
+
+
+@pytest.mark.parametrize(("max_root_rows", "rendered"), [(2_000_000, 1), (1, 0)])
+def test_verify_renders_no_root_in_memory_past_the_root_row_bound(
+    monkeypatch: pytest.MonkeyPatch, max_root_rows: int, rendered: int
+) -> None:
+    """A root whose groupby file is not stored is rendered in memory only while its version's
+    stored frame keeps the roots within `analysis_max_root_rows`; past it the verification
+    refuses `over_ceiling` without rendering it."""
+    renders: list[str] = []
+    render_unstored = analysis_roots.render_unstored
+
+    def counted(**kwargs):
+        renders.append(kwargs["content_version"])
+        return render_unstored(**kwargs)
+
+    monkeypatch.setattr(analysis_roots, "render_unstored", counted)
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+        settings=DatasetsBuildSettings.from_env().model_copy(
+            update={"verify_principal": "probe-secret", "analysis_max_root_rows": max_root_rows}
+        ),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    root = {
+        "spec_id": spec_id,
+        "content_version": raw,
+        "rendering": {"columns": [], "groupby": _STAT_VARS_SUM},
+    }
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+    verified = client.post(
+        "/api/datasets/analysis",
+        json={"tree": tree, "verify": True},
+        headers={"x-dfo-principal": "probe-secret"},
+    )
+
+    assert verified.status_code == 200, verified.text
+    assert len(renders) == rendered
+    assert (verified.json()["refusal_code"] == "over_ceiling") is not rendered
 
 
 def _summed_stat_vars(client, data: dict, *, latest: bool = False) -> dict:
@@ -741,3 +1068,39 @@ def test_a_root_whose_rebuild_was_queued_waits_unless_the_rebuild_failed(
 
     with pytest.raises(refused):
         roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
+
+
+def test_a_stored_head_revoked_under_one_posted_id_refuses_that_id_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two roots of one dataset posted under two ids, the head's version taken down under the
+    first: that root refuses `snapshot_revoked`, and the root posted under the served id still
+    reads the head, judged as `latest: true` judges each id."""
+    alias = "spec_" + "b" * 32
+    monkeypatch.setattr(
+        analysis_roots,
+        "served_spec",
+        lambda **_: SimpleNamespace(spec_id=_SPEC, identity={"entities": {}}),
+    )
+
+    def head(stored: object, *, revoked_under: Sequence[str], **_: object) -> object:
+        if alias in revoked_under:
+            raise SnapshotRevoked(id=alias, content_version=_CV, reason="taken down")
+        return StoredHeadVersion(content_version=_CV, freshness="current")
+
+    monkeypatch.setattr(analysis_roots, "stored_head_version", head)
+    pair = FrameRef(spec_id=_SPEC, content_version=_CV)
+    monkeypatch.setattr(
+        LiveRootSource,
+        "_at_version",
+        lambda self, root, **_: ResolvedRoot(
+            frame=pair, dataset=pair, record={}, rendering=dict(root.rendering)
+        ),
+    )
+    roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
+
+    with pytest.raises(SnapshotRevoked):
+        roots.resolve(SpecRoot(spec_id=alias), latest="stored", trace_id=None)
+    resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest="stored", trace_id=None)
+
+    assert resolved.version() == {"spec_id": _SPEC, "content_version": _CV}

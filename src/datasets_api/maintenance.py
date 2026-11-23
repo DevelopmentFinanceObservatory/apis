@@ -46,7 +46,7 @@ failed, and reads the settings `sweep` reads.
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
 its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
-an open caller's `ip:` or `user:` key, so a repeat run changes nothing, and the table lock they run under
+an open caller's `ip:`, `user:` or `conversation:` key, so a repeat run changes nothing, and the table lock they run under
 holds concurrent pins back until they finish. It runs them in one transaction, then writes one
 `datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
@@ -301,10 +301,27 @@ nothing. An id that is not a share id gets one `presentation_share_take_down_ref
 line and exits 1 without opening the store. It reads the Presentation store's runtime database
 settings.
 
+`render-ahead` runs daily from the maintenance Job's schedule, and by hand after a deploy or a
+graph release that changes the code index or `versions.RENDER_FORMAT`, either of which leaves
+every recorded groupby sum and party-totals cut behind (`render_ahead`). For each dataset whose links an analysis root read
+within `DATASETS_RENDER_AHEAD_READ_WINDOW_SECONDS`, read latest first, it renders from the
+dataset's head the renderings read in that window that the head does not record under the
+serving stamp, at most `DATASETS_RENDER_AHEAD_PER_HEAD` per dataset and
+`DATASETS_RENDER_AHEAD_MAX` in all, starting none after `RENDER_AHEAD_BUDGET`. It writes one
+`datasets_render_ahead_run` line with the counts and exits 1 when a render failed or the store
+is unreachable. A second run renders nothing. A dataset whose head moves during the run is
+passed over. It builds the worker's dependencies (`operations.worker_app`), so it runs only
+where the worker's rendering settings are set: `DFO_PUBLIC_SITE_URL` and
+`DFO_SITE_DATASET_LINKS`, which enter every rendition token, `DATASETS_GRAPH_BASE_URL`,
+`DATASETS_SDMX_BASE_URL`, `UN_GRAPH_BASE_URL`, the served graph release and
+`ORIGIN_CATALOGUE_URI`, beside the buckets and the database. The maintenance Job carries them
+and the worker's 4 GiB.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
-of the API surfaces, such as `DFO_PUBLIC_SITE_URL`. `remint-card-descriptions` is the one
-exception: it loads frames as the Presentation service does, and its execution passes the
-service's graph and catalogue settings.
+of the API surfaces, such as `DFO_PUBLIC_SITE_URL`. `remint-card-descriptions` and
+`render-ahead` are the exceptions: the first loads frames as the Presentation service does, and
+its execution passes the service's graph and catalogue settings, and the second renders as the
+worker does.
 """
 
 from __future__ import annotations
@@ -313,6 +330,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
@@ -367,14 +385,17 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.admission import MaterialisePermits
 from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
 from datasets_api.config import (
     DEFAULT_OPERATION_DEADLINE_SECONDS,
+    DatasetsBuildSettings,
     DatasetsConfigError,
     DatasetsSettings,
     FoldCeilingSettings,
 )
+from datasets_api.current import DefinitionDeps
 from datasets_api.description_record import (
     backfill_record,
     computed_inputs,
@@ -396,6 +417,7 @@ from datasets_api.operation_store import (
     fail_abandoned_operations,
     utc_now,
 )
+from datasets_api.operations.worker_app import _live_deps_factory
 from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
 from datasets_api.party_totals import PartyTotalsCut, cut_frame
 from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, CaseOutcome, record_case
@@ -416,6 +438,7 @@ from datasets_api.render import (
     render_and_store_canonical_frame,
     stored_frame_location,
 )
+from datasets_api.render_ahead import RenderedAhead, heads_read_since, render_ahead
 from datasets_api.retention_admission import sweep_copy_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import (
@@ -606,10 +629,13 @@ def _age_operations() -> int:
     return 0
 
 
-_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|(ip|user):[0-9a-f]{32})$'"
+_LABELLED = (
+    "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32}|user:[0-9a-f]{32}|conversation:[0-9a-f]{32})$'"
+)
 """Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
-(`dfo_platform.caller.address_key` or an account's, which the website names). A pin principal it does not match is the raw secret the
-image before migration 0026 stored."""
+(`dfo_platform.caller.address_key`, a vouched account's `user:` value, or a vouched
+`conversation:` value). A pin principal it does not match is the raw secret the image before
+migration 0026 stored."""
 
 SETTLE_STATEMENTS: tuple[str, ...] = (
     "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE",
@@ -644,8 +670,8 @@ WHERE reference_kind = 'pin'
   AND principal !~ {_LABELLED}""",
 )
 """The statements of `0026_artifact_reference_principal_label.sql`, which the migration
-explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` or `user:`
-key and a second run are left alone. The lock queues pins until the transaction ends: a pin landing between
+explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:`, `user:` or
+`conversation:` key and a second run are left alone. The lock queues pins until the transaction ends: a pin landing between
 the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
 row the count reports."""
 
@@ -2484,6 +2510,118 @@ def _root_bases(
     return frozenset(bases)
 
 
+RENDER_AHEAD_BUDGET = timedelta(minutes=45)
+"""How long after its start `render-ahead` starts a render, within the Job's timeout."""
+
+
+def run_render_ahead(
+    *,
+    store: DatasetStore,
+    deps: DefinitionDeps,
+    deadline: float,
+    now: Clock = utc_now,
+) -> int:
+    """Render ahead from the head of every dataset whose links an analysis root read within
+    `render_ahead_read_window_seconds` (`render_ahead.render_ahead`), datasets read latest
+    first, at most `render_ahead_per_head` renderings each and `render_ahead_max` in all,
+    starting none once the monotonic `deadline` has passed. Emit one `datasets_render_ahead_run`
+    line with the counts and return the number of renders that failed. A second run renders
+    nothing a first one rendered."""
+    settings = deps.settings
+    since = now() - timedelta(seconds=settings.render_ahead_read_window_seconds)
+    heads = heads_read_since(store, read_since=since)
+    remaining = settings.render_ahead_max
+    totals = RenderedAhead()
+    visited = 0
+    for subject_id, head in heads:
+        if remaining <= 0 or time.monotonic() >= deadline:
+            break
+        visited += 1
+        done = render_ahead(
+            subject_id,
+            head_content_version=head,
+            deps=deps,
+            read_since=since,
+            limit=min(settings.render_ahead_per_head, remaining),
+            deadline=deadline,
+        )
+        remaining -= done.rendered + done.failed
+        totals = RenderedAhead(
+            due=totals.due + done.due,
+            rendered=totals.rendered + done.rendered,
+            failed=totals.failed + done.failed,
+            left=totals.left + done.left,
+        )
+    emit(
+        "datasets_render_ahead_run",
+        heads=len(heads),
+        heads_visited=visited,
+        due=totals.due,
+        rendered=totals.rendered,
+        failed=totals.failed,
+        left=totals.left,
+        code_index=deps.code_index.stamp.content_hash,
+    )
+    return totals.failed
+
+
+def _render_ahead() -> int:
+    """Run `run_render_ahead` with the worker's dependencies (`operations.worker_app`), built
+    from the settings the worker reads, under the served graph release and the published origin
+    catalogue."""
+    deadline = time.monotonic() + RENDER_AHEAD_BUDGET.total_seconds()
+    try:
+        build = DatasetsBuildSettings.from_env()
+        settings = DatasetsSettings.from_env()
+    except (DatasetsConfigError, ValidationError) as exc:
+        emit("datasets_maintenance_failed", severity="ERROR", task="render-ahead", error=str(exc))
+        return 1
+    store = LiveDatasetStore(connections=shared_pool())
+    try:
+        with ExitStack() as stack:
+            release = get_release_service()
+            stack.enter_context(bound_served_release(release))
+            stack.enter_context(bound_catalogue(get_catalogue_service().snapshot()))
+            graph = build_graph_client(
+                base_url=settings.graph_base_url,
+                token=build.graph_token,
+                un_base_url=settings.un_graph_base_url,
+                un_availability=SdmxClient(
+                    base_url=settings.un_graph_base_url, timeout=build.sdmx_timeout_seconds
+                ),
+                **settings.graph_cache_options(),
+            )
+            stack.callback(graph.close)
+            sdmx = SdmxClient(
+                base_url=settings.sdmx_base_url,
+                token=build.graph_token,
+                timeout=build.sdmx_timeout_seconds,
+            )
+            stack.callback(sdmx.close)
+            deps = _live_deps_factory(
+                store=store,
+                graph=graph,
+                sdmx=sdmx,
+                artifact_store=LiveArtifactStore(
+                    buckets={
+                        Tier.working: settings.artifact_bucket_working,
+                        Tier.pinned: settings.artifact_bucket_pinned,
+                    },
+                    inventory=LiveArtifactInventory(store=store),
+                ),
+                coverage=get_coverage_service(),
+                materialise_semaphore=MaterialisePermits(1),
+                settings=build,
+            )(code_index=get_index())
+            failed = run_render_ahead(store=store, deps=deps, deadline=deadline)
+    except DatasetsStoreUnavailable as exc:
+        emit("datasets_maintenance_failed", severity="ERROR", task="render-ahead", error=str(exc))
+        return 1
+    finally:
+        close_shared_pool()
+    return 1 if failed else 0
+
+
 def run_take_down_share(*, share_store: ShareStore, share_id: str) -> None:
     """Take the share `share_id` down as its owner's delete does, and log whether one was up."""
     # Presentation is another surface's store, so its modules load for this task alone.
@@ -2595,6 +2733,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     normalise.add_argument("--dry-run", action="store_true")
     normalise.set_defaults(run=_normalise_recipes)
+    tasks.add_parser(
+        "render-ahead",
+        help="render from each dataset's head the sums and cuts analysis roots read recently",
+    ).set_defaults(run=_render_ahead)
     take_down = tasks.add_parser(
         "take-down-share", help="take a share down as its owner's delete does, with no token"
     )
