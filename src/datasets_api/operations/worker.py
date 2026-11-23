@@ -22,8 +22,8 @@ before the version record and before each artifact render and upload, and a run 
 transient path (`WorkDeadlinePassed`). The claim's lease, `LEASE_SECONDS`, outlasts the work
 deadline by the time the final writes need, and a head advance after the deadline and inside the
 lease is safe because the fence refuses it once another attempt claims the row. Deterministic
-failures are terminal. Transient failures release the row to `pending`, so the next Cloud Tasks
-retry can claim it at once. The final attempt records a retryable failure instead, so an identical
+failures are terminal. Transient failures release the row to `pending`, so the next delivery,
+the retry task the worker route schedules or else Cloud Tasks' own retry, can claim it at once. The final attempt records a retryable failure instead, so an identical
 resubmit can reset the row. Errors from parsing the stored request or `raw_fetch_guard` take the
 same failure path.
 
@@ -68,8 +68,8 @@ from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import Operation, OperationStore
 from datasets_api.operations.lease import LEASE_SECONDS, RUN_DEADLINE_SECONDS
-from datasets_api.operations.render_ahead_queue import render_ahead_head
-from datasets_api.operations.renewal import renew_location, renewal_target
+from datasets_api.operations.render_ahead_queue import RENDER_AHEAD_MARKER, render_ahead_head
+from datasets_api.operations.renewal import RENEW_MARKER, renew_location, renewal_target
 from datasets_api.operations.submit import (
     member_dcids,
     request_identity_member_dcids,
@@ -126,10 +126,17 @@ class _FencedProgress(RowProgress):
     the fence refuses cancels the run; a store failure is logged and the next chunk writes
     again. One lock orders the writes, so the stored total never moves backwards."""
 
-    def __init__(self, *, operation: Operation, operation_store: OperationStore) -> None:
+    def __init__(
+        self,
+        *,
+        operation: Operation,
+        operation_store: OperationStore,
+        subject_id: str | None = None,
+    ) -> None:
         super().__init__()
         self._operation = operation
         self._operation_store = operation_store
+        self._subject_id = subject_id
         self._write_lock = threading.Lock()
 
     def add(self, rows: int) -> None:
@@ -150,8 +157,10 @@ class _FencedProgress(RowProgress):
                 return
         if written is None:
             logger.warning(
-                "Datasets operation %r: attempt %d no longer owns the row; cancelling the run",
+                "Datasets operation %r (subject_id=%r): attempt %d no longer owns the row; "
+                "cancelling the run",
                 self._operation.id,
+                self._subject_id,
                 self._operation.attempt_count,
             )
             self.cancel()
@@ -217,7 +226,11 @@ def run_operation(
     )
     if deadline is not None:
         deps = dataclasses.replace(deps, deadline=deadline, work_deadline=deadline)
-    row_progress = _FencedProgress(operation=operation, operation_store=operation_store)
+    # For log lines only; the run reads the subject again inside its failure classification.
+    logged_subject_id = logged_subject(operation)
+    row_progress = _FencedProgress(
+        operation=operation, operation_store=operation_store, subject_id=logged_subject_id
+    )
     # The raw version a rebuild in the run materialised, which the render ahead renders from.
     materialised: list[str] = []
     try:
@@ -295,9 +308,10 @@ def run_operation(
         basis = family_basis(deps)
     except (MaterialisationCancelled, HeadFenceLost) as exc:
         logger.warning(
-            "Datasets operation %r: attempt %d stopped writing; the row "
+            "Datasets operation %r (subject_id=%r): attempt %d stopped writing; the row "
             "belongs to another attempt or is no longer running",
             operation.id,
+            logged_subject_id,
             operation.attempt_count,
         )
         raise OperationSuperseded(str(exc)) from exc
@@ -310,9 +324,10 @@ def run_operation(
             # A failure the classifier cannot render, as one whose code the registry maps on no
             # status under `datasets.mint`, would otherwise leave the row running.
             logger.exception(
-                "Datasets operation %r: classifying its failure %r raised; marking it failed "
-                "(internal_error)",
+                "Datasets operation %r (subject_id=%r): classifying its failure %r raised; "
+                "marking it failed (internal_error)",
                 operation.id,
+                logged_subject_id,
                 exc,
             )
             operation_store.fail(
@@ -327,8 +342,9 @@ def run_operation(
             log_problem(spec, exc, logger=logger, context="datasets")
         if spec is not None and (not spec.retryable or isinstance(exc, _MembersChanged)):
             logger.info(
-                "Datasets operation %r failed without a retry (%s): %s",
+                "Datasets operation %r (subject_id=%r) failed without a retry (%s): %s",
                 operation.id,
+                logged_subject_id,
                 spec.code,
                 exc,
             )
@@ -343,10 +359,11 @@ def run_operation(
         if is_final_attempt:
             code = spec.code if spec is not None else "internal_error"
             logger.warning(
-                "Datasets operation %r failed transiently on its own last Cloud Tasks "
+                "Datasets operation %r (subject_id=%r) failed transiently on its last "
                 "attempt; marking it failed (%s) rather than leaving it for a retry that "
                 "will never come: %r",
                 operation.id,
+                logged_subject_id,
                 code,
                 exc,
             )
@@ -358,9 +375,10 @@ def run_operation(
             )
             return
         logger.warning(
-            "Datasets operation %r failed transiently, releasing it for the next "
-            "retry to claim immediately: %r",
+            "Datasets operation %r (subject_id=%r) failed transiently, releasing it for the "
+            "next retry to claim immediately: %r",
             operation.id,
+            logged_subject_id,
             exc,
         )
         operation_store.release(operation.id, attempt=operation.attempt_count)
@@ -421,7 +439,11 @@ def _run_renewal(
         basis = family_basis(deps)
     except Exception as exc:
         logger.warning(
-            "Datasets operation %r: renewing %r failed", operation.id, digest, exc_info=True
+            "Datasets operation %r (subject_id=%r): renewing %r failed",
+            operation.id,
+            subject_id,
+            digest,
+            exc_info=True,
         )
         transient = isinstance(
             exc,
@@ -540,6 +562,26 @@ def _render_ahead(subject_id: str, *, head_content_version: str, deps: Definitio
         )
 
 
+def operation_kind(operation: Operation) -> str:
+    """`renewal`, `render_ahead`, or `definition` for every other operation (mints, exports and
+    head checks), read from the request identity's marker without parsing it, for log lines."""
+    identity = operation.request_identity
+    if RENEW_MARKER in identity:
+        return "renewal"
+    if RENDER_AHEAD_MARKER in identity:
+        return "render_ahead"
+    return "definition"
+
+
+def logged_subject(operation: Operation) -> str | None:
+    """The operation's subject id for log lines, or `None` when its request identity names
+    none it can parse."""
+    try:
+        return request_identity_subject_id(operation.request_identity)
+    except (KeyError, TypeError):
+        return None
+
+
 def _check_members_unchanged(
     subject_id: str, *, stored: tuple[str, ...] | None, resolved: tuple[str, ...]
 ) -> None:
@@ -554,5 +596,7 @@ __all__ = [
     "RUN_DEADLINE_SECONDS",
     "OperationSuperseded",
     "OperationTransientFailure",
+    "logged_subject",
+    "operation_kind",
     "run_operation",
 ]

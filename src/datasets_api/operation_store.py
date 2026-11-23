@@ -25,7 +25,9 @@ operation deadline returns `None`.
 `progress`, `record_estimate`, `complete`, `fail`, and `release` require `state = 'running'` and
 the claim's token, and return `None` once the token is stale or the row leaves `running`.
 `release` returns a running row to `pending` and clears its lease and `final_delivery`, so the
-next Cloud Tasks retry claims it at once.
+next delivery claims it at once. `submission_attempts` counts the claims of the current
+submission: `claim` adds one, `release` leaves it, and a reset sets it to 0. The worker reads it
+for the attempt cap (`datasets_api.operations.worker_app`).
 
 A lease that has ended means its attempt has stopped owning the row. Whether another delivery
 will run it is what `final_delivery` records. A row is abandoned when nothing will finish it:
@@ -55,7 +57,7 @@ the run serves what the current head gives for this rendering. A reset of a row 
 is still due for moves it to a new submission, and that delivery answers `superseded`. That
 preserves the original options and estimate. A reset returns the row to `pending`, clears the
 lease, `final_delivery`, `refusal_code`, `refusal`, `retryable` and `dispatched_at`, sets
-`rows_written` to 0, and updates `submitted_at` while incrementing `submission_count`, so its
+`rows_written` and `submission_attempts` to 0, and updates `submitted_at` while incrementing `submission_count`, so its
 task gets a new name. Identity, options, admission coverage, and catalogue build keep their
 admitted values. The attempt token carries on, so a superseded attempt's late writes stay
 fenced. Deterministic failures stay unchanged.
@@ -126,7 +128,7 @@ _COLUMNS = (
     "estimate_requests, rows_written, subject_id, content_version, refusal_code, "
     "attempt_count, claimed_at, lease_seconds, created_at, updated_at, "
     "submission_count, retryable, dispatched_at, submitted_at, origin_catalogue_build_id, "
-    "refusal, final_delivery, confirmed_at, family"
+    "refusal, final_delivery, confirmed_at, family, submission_attempts"
 )
 
 # The end of a running row's static lease.
@@ -267,7 +269,8 @@ class Operation:
     ended on, and `None` on every other row, including one whose stored refusal this image
     cannot parse.
     `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`
-    fences worker writes. `claimed_at` and `lease_seconds` are the current claim's
+    fences worker writes. `submission_attempts` is how many claims the current submission has
+    made, 0 on a row no claim of this image has counted. `claimed_at` and `lease_seconds` are the current claim's
     static lease, set on every `running` row. `final_delivery` is whether that claim was made
     by the task's last delivery, and `None` on a row that is not claimed or that an image
     recording no delivery claimed. `dispatched_at` is when the current submission's
@@ -301,6 +304,7 @@ class Operation:
     final_delivery: bool | None = None
     confirmed_at: datetime | None = None
     family: RecordedFamily | None = None
+    submission_attempts: int = 0
 
     def lease_ended(self, now: datetime) -> bool:
         """Whether this is a `running` row whose claim has stopped owning it at `now`, the rule
@@ -535,6 +539,7 @@ def _operation_from_row(row: Mapping[str, object]) -> Operation:
         final_delivery=cast("bool | None", row["final_delivery"]),
         confirmed_at=cast("datetime | None", row["confirmed_at"]),
         family=parse_recorded_family(row["family"]),
+        submission_attempts=cast("int | None", row["submission_attempts"]) or 0,
     )
 
 
@@ -725,8 +730,8 @@ class LiveOperationStore:
                 "INSERT INTO datasets.operation "
                 "(id, request_identity, options, coverage_stamp, state, estimate_rows, "
                 "estimate_requests, rows_written, attempt_count, created_at, updated_at, "
-                "submitted_at, origin_catalogue_build_id) "
-                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s) "
+                "submitted_at, origin_catalogue_build_id, submission_attempts) "
+                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s, 0) "
                 f"ON CONFLICT (id) DO NOTHING RETURNING {_COLUMNS}",
                 (
                     id,
@@ -746,7 +751,7 @@ class LiveOperationStore:
             "UPDATE datasets.operation SET state = 'pending', "
             "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
             "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
-            "family = NULL, "
+            "family = NULL, submission_attempts = 0, "
             "submission_count = submission_count + 1, dispatched_at = NULL, "
             "submitted_at = %s, updated_at = %s "
             f"WHERE id = %s AND {_RESETTABLE} RETURNING {_COLUMNS}",
@@ -784,8 +789,9 @@ class LiveOperationStore:
             "claiming",
             id,
             "UPDATE datasets.operation SET state = 'running', "
-            "attempt_count = attempt_count + 1, claimed_at = %s, lease_seconds = %s, "
-            "final_delivery = %s, updated_at = %s "
+            "attempt_count = attempt_count + 1, "
+            "submission_attempts = COALESCE(submission_attempts, 0) + 1, "
+            "claimed_at = %s, lease_seconds = %s, final_delivery = %s, updated_at = %s "
             f"WHERE id = %s AND submission_count = %s AND {_CLAIMABLE}",
             (
                 now,

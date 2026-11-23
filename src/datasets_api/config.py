@@ -278,8 +278,14 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     verify_principal: str = Field(default="", validation_alias="verify_principal")
 
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
-    # (3). The worker marks the operation failed on its final transient attempt.
+    # (3). The worker marks the operation failed on its final transient attempt. It caps the
+    # runs of one submission across the queue's own retries and the worker's retry tasks.
     operation_max_attempts: int = Field(default=3, ge=1)
+
+    # How long after a transient failure that released its row the worker schedules the
+    # operation's next run, as a new task (`operations.worker_app`). A crashed run releases
+    # nothing and waits for the queue's own backoff instead.
+    operation_retry_delay_seconds: int = Field(default=60, ge=1)
 
     # Maximum live pending/running rows. `create_or_get` refuses a new operation at the limit.
     operation_backlog_max: int = Field(default=20, ge=1)

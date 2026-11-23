@@ -223,7 +223,9 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
     assert stored is not None and stored.state == "done"
 
 
-def test_non_final_transient_failure_releases_the_lease_and_raises():
+def test_non_final_transient_failure_releases_the_lease_and_raises(
+    caplog: pytest.LogCaptureFixture,
+):
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
@@ -240,13 +242,49 @@ def test_non_final_transient_failure_releases_the_lease_and_raises():
                 is_final_attempt=False,
             )
 
-    with pytest.raises(OperationTransientFailure):
+    with (
+        caplog.at_level(logging.WARNING, logger=worker_module.__name__),
+        pytest.raises(OperationTransientFailure),
+    ):
         _run()
 
     stored = operation_store.get(operation.id)
     assert stored is not None
     # The released row has no lease, so the next delivery claims it at once.
     assert (stored.state, stored.claimed_at, stored.lease_seconds) == ("pending", None, None)
+    assert [r.args[:2] for r in caplog.records] == [(operation.id, _SUBJECT_ID)]
+
+
+def test_an_identity_naming_no_subject_logs_none_and_still_releases(
+    caplog: pytest.LogCaptureFixture,
+):
+    operation_store = _operation_store()
+    created = operation_store.create_or_get(
+        request_identity={"input": {}},
+        options=_OPTIONS,
+        coverage_stamp="cov_1",
+        origin_catalogue_build_id="fake-catalogue",
+        estimate=Estimate(rows=200_000, requests=5),
+    )
+    operation = operation_store.claim(
+        created.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+    )
+    assert operation is not None
+
+    with (
+        caplog.at_level(logging.WARNING, logger=worker_module.__name__),
+        pytest.raises(OperationTransientFailure),
+    ):
+        run_operation(
+            operation=operation,
+            deps=_deps(),
+            operation_store=operation_store,
+            is_final_attempt=False,
+        )
+
+    assert [r.args[:2] for r in caplog.records] == [(operation.id, None)]
+    stored = operation_store.get(operation.id)
+    assert stored is not None and stored.state == "pending"
 
 
 def test_a_run_past_its_work_deadline_releases_before_it_renders_or_uploads(
@@ -292,14 +330,19 @@ def test_a_run_past_its_work_deadline_releases_before_it_renders_or_uploads(
         ),
     ],
 )
-def test_final_attempt_transient_failure_marks_failed_retryable(failure, code):
+def test_final_attempt_transient_failure_marks_failed_retryable(
+    failure, code, caplog: pytest.LogCaptureFixture
+):
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
     def _raise_transient(*, spec_id, deps):
         raise failure
 
-    with pytest.MonkeyPatch.context() as mp:
+    with (
+        caplog.at_level(logging.WARNING, logger=worker_module.__name__),
+        pytest.MonkeyPatch.context() as mp,
+    ):
         mp.setattr(worker_module, "_resolve_spec_requests", _raise_transient)
         run_operation(
             operation=operation,
@@ -314,6 +357,8 @@ def test_final_attempt_transient_failure_marks_failed_retryable(failure, code):
     assert stored.refusal_code == code
     # The transient failure remains retryable on resubmission despite exhausting this task's attempts.
     assert stored.retryable is True
+    final_lines = [r.args[:2] for r in caplog.records if r.levelno == logging.WARNING]
+    assert (operation.id, _SUBJECT_ID) in final_lines
 
 
 def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_index():
