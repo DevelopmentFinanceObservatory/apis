@@ -207,6 +207,43 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ("ODA to multilateral development banks", [], False),
         ("bilateral and multilateral ODA from the UK", [], False),
         ("ODA net of debt relief", [], False),
+        # A reply's "no" closed by a clause or sentence mark negates nothing after it.
+        (
+            "no, count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No. Count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "no, include imputed multilateral aid",
+            [(_INCLUSIVE, "include imputed multilateral")],
+            False,
+        ),
+        ("no; gross ODA to Kenya", [(_GROSS, "gross")], False),
+        ("no, show gross ODA to Kenya", [(_GROSS, "gross")], False),
+        ("not gross ODA to Kenya", [], False),
+        # "with" states the inclusive scope where it names the imputed share.
+        ("with imputed multilateral aid", [(_INCLUSIVE, "with imputed multilateral")], False),
+        (
+            "count it with imputed multilateral aid",
+            [(_INCLUSIVE, "with imputed multilateral")],
+            False,
+        ),
+        (
+            "bilateral with imputed multilateral",
+            [(_INCLUSIVE, "bilateral with imputed multilateral")],
+            False,
+        ),
+        ("ODA to Kenya with multilateral aid", [], False),
+        # A negator that reaches its word still negates it.
+        ("aid to Kenya, not multilateral", [(_BILATERAL, "not multilateral")], False),
+        ("no multilateral aid to Kenya", [(_BILATERAL, "no multilateral")], False),
+        ("aid with no multilateral share", [(_BILATERAL, "no multilateral")], False),
+        ("no, not multilateral", [(_BILATERAL, "not multilateral")], False),
     ],
 )
 def test_read_stated_scope(text, stated, total):
@@ -230,6 +267,7 @@ def test_read_stated_scope(text, stated, total):
         ("ODA to Kenya, bilateral plus imputed multilateral, in 2020", "ODA to Kenya, , in 2020"),
         ("aid from France not including multilateral", "aid from France"),
         ("including imputed multilateral", ""),
+        ("no, count it including imputed multilateral aid", "no, count it aid"),
         # Scope words that also name measures and parties stay, and a text without a scope
         # phrase stays as it is.
         ("net bilateral  ODA", "net bilateral  ODA"),

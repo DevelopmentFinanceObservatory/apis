@@ -157,6 +157,7 @@ def test_an_admitted_stretch_leaves_no_word_of_itself_in_the_text(query, phrase)
         ),
         pytest.param("not net", "not net", id="the-whole-query"),
         pytest.param("ODA to Kenya", "", id="empty"),
+        pytest.param("no, show gross ODA to Kenya", "", id="a-reply-no-reads-nothing"),
     ],
 )
 def test_a_stretch_failing_admission_leaves_the_query_byte_identical(query, phrase):
@@ -316,6 +317,18 @@ def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
             ("debt relief", "humanitarian aid"),
             [("excluding debt relief and all humanitarian aid", ";")],
             id="a-word-that-is-no-cue",
+        ),
+        pytest.param(
+            "no, show aid to Kenya excluding France",
+            ("France",),
+            [("excluding France", ";")],
+            id="a-reply-no-before-the-cue",
+        ),
+        pytest.param(
+            "no, show aid to Kenya excluding France and not Uganda",
+            ("France", "Uganda"),
+            [("excluding France", ";"), ("not Uganda", ";")],
+            id="a-reply-no-and-a-second-cue",
         ),
     ],
 )

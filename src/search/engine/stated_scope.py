@@ -7,8 +7,11 @@ Two axes are read:
 
 - Provider scope. "bilateral" states `provider:bilateral`, as does "multilateral" under a
   negation or exclusion ("excluding multilateral", "not multilateral institutions",
-  `bind_repair.occurrence_negated`). "including multilateral" (also "incl.", "inclusive of",
-  "plus", and "bilateral plus imputed multilateral") states `provider:inclusive`. Where
+  `bind_repair.occurrence_negated`). "including multilateral" (also "include(s)", "incl.",
+  "inclusive of", "plus", "with imputed multilateral", and "bilateral plus imputed
+  multilateral") states `provider:inclusive`. A negator closed by a clause or sentence mark
+  ("No, count it including imputed multilateral") answers what came before and negates
+  nothing after it. Where
   "bilateral plus multilateral" names no imputed share, the part's dataset reads it as its
   own option summing the two lines (`provider.with_summed_provider`): the inclusive
   composite on the CRS and DAC2a, total ODA (`provider:contributions`) on DAC1. Words
@@ -125,9 +128,13 @@ _MULTILATERAL = re.compile(r"\bmultilaterals?\b", re.IGNORECASE)
 # `bilateral` and `imputed` mark the phrase summing the bilateral and multilateral lines
 # with no imputed share named ("bilateral plus multilateral"), which each dataset reads as
 # its own option summing the two (`StatedScope.sums_providers`).
+# "with" states the scope only where it names the imputed share ("with imputed
+# multilateral"); "with multilateral" stays a mention.
 _INCLUSIVE = re.compile(
-    r"\b(?P<bilateral>bilateral\s+)?(?:including|incl\b\.?|inclusive\s+of|plus)\s+"
-    r"(?:the\s+)?(?P<imputed>imputed\s+)?multilaterals?\b" + _heads(_PROVIDER_HEADS),
+    r"\b(?P<bilateral>bilateral\s+)?"
+    r"(?:(?:including|includes?|incl\b\.?|inclusive\s+of|plus)\s+(?:the\s+)?"
+    r"|with\s+(?:the\s+)?(?=imputed\b))"
+    r"(?P<imputed>imputed\s+)?multilaterals?\b" + _heads(_PROVIDER_HEADS),
     re.IGNORECASE,
 )
 # Words naming a donor's core contributions to the multilaterals, DAC1's multilateral ODA:

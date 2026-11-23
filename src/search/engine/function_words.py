@@ -89,12 +89,21 @@ COUNT_WORDS = frozenset({"number", "numbers"})
 # households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})
 
+# A negator closed by a clause or sentence mark answers what came before ("No, count it
+# including imputed multilateral", "No. Show gross ODA"), so it negates nothing after the
+# mark. `INTERJECTION` finds such a negator, and `NEGATION_CUE` and
+# `bind_repair._label_negated_in_text` pass over it.
+_NEGATOR = r"(?:not|no|never)\b"
+_CLAUSE_CLOSE = r"\s*[,.;:!?]"
+INTERJECTION = re.compile(rf"\b{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
+
 # The words that negate or exclude what follows: an exclusion read starts each stretch it
 # leaves out at one (`exclusion_read._pieces`), a scope phrase's origin starts at the one
 # before it (`stated_scope._cue_start`), and a measure value's name after one in its stretch
-# names nothing (`qualifier_match.measure_values_named`).
+# names nothing (`qualifier_match.measure_values_named`). An interjection (`INTERJECTION`)
+# is no cue.
 NEGATION_CUE = re.compile(
-    r"\b(?:non|not|no|never|excluding|exclude|excludes|except|without|other\s+than|"
-    r"rather\s+than|excl)\b",
+    rf"\b(?:{_NEGATOR}(?!{_CLAUSE_CLOSE})|non|excluding|exclude|excludes|except|without|"
+    r"other\s+than|rather\s+than|excl)\b",
     re.IGNORECASE,
 )
