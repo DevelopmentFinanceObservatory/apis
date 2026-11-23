@@ -160,6 +160,7 @@ from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.operations.renewal import renew_on_hit
+from datasets_api.operations.task_create_pool import joining_creates
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import PhaseTimings, door_call, phase
@@ -762,18 +763,21 @@ class _AnalysisRoutes:
             current, deadline=time.monotonic() + current.settings.analysis_timeout_seconds
         )
         with door_call(name, logger=logger, delivers=record is not None) as call:
-            try:
-                answer = await answering(current, deps, call.timings)
-            except AnalysisPending as pending:
-                outcome: JSONResponse = _pending(pending)
-            except (AnalysisRefused, Refusal) as refused:
-                outcome = _refused(refused)
-            else:
-                if record is not None:
-                    record(answer)
-                started = time.perf_counter()
-                outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
-                call.timings.record("serialise", (time.perf_counter() - started) * 1000)
+            # A `latest: "stored"` root's head check task create runs beside the rest of
+            # the call.
+            async with joining_creates(call.timings):
+                try:
+                    answer = await answering(current, deps, call.timings)
+                except AnalysisPending as pending:
+                    outcome: JSONResponse = _pending(pending)
+                except (AnalysisRefused, Refusal) as refused:
+                    outcome = _refused(refused)
+                else:
+                    if record is not None:
+                        record(answer)
+                    started = time.perf_counter()
+                    outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
+                    call.timings.record("serialise", (time.perf_counter() - started) * 1000)
         outcome.headers["Server-Timing"] = call.server_timing
         return call.delivered(outcome)
 

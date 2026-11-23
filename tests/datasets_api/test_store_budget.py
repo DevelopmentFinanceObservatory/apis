@@ -30,6 +30,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from dataset_store.store import DatasetStore, Transaction
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_create_pool import InlineTaskCreates
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.timings import count
@@ -56,7 +57,8 @@ _ALIAS_MINT_TRANSACTIONS = 8
 _ALIAS_HEAD_HIT_TRANSACTIONS = 5
 # Past the recheck window a head hit also records the head's check and its dispatch, and confirms
 # nothing: the definition read, the head read, the version read, the check's read (which tells
-# the read whether it wrote the row), its record, its dispatch and the retention read.
+# the read whether it wrote the row), its record, its dispatch and the retention read. The
+# surface here creates the task inline, so the dispatch counts in the read's own transactions.
 _CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 7
 # The served ids the posted id of the version-addressed read is bound to.
 _BOUND_SERVED_IDS = 2
@@ -168,6 +170,8 @@ def _built_surface(
         coverage=coverage,
         operation_store=LiveOperationStore(store=store, now=now),
         task_client=FakeTaskClient(),
+        # Inline, so a create's transactions count on this thread, one at a time.
+        task_creates=InlineTaskCreates(),
         now=now,
     )
     try:

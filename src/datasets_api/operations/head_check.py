@@ -20,27 +20,35 @@ again once it passes the window once more. A new row or a reset leaves
 `1 / HEAD_CHECK_HEADROOM_SHARE` of `operation_backlog_max` free, so checks never fill the
 backlog that callers waiting on an export need.
 
-The read that inserted or reset the row creates its task, waiting at most
-`HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS`, so a slow Cloud Tasks holds a read-executor permit for
-that long at most. A create that fails or times out leaves the row undispatched. Nobody polls
-a check, so the poll's enqueue recovery never runs for it. A later read retries the create once
-the row has waited `ENQUEUE_RECOVERY_SECONDS`, after claiming that retry in the store
-(`claim_dispatch_retry`), so one read per recovery interval retries it across instances, and
-during an outage each spec costs one short create per interval.
+The read that inserted or reset the row records it in the request (the `head_check` phase) and
+hands its task create to the surface's `TaskCreatePool` (`operations.task_create_pool`), which
+creates it on a pool thread waiting at most `HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS` while the read
+builds the rest of its answer, and states `pending`. The door joins the create before its
+response leaves (`task_create_pool.joining_creates`, the `head_check_join` phase), at most until
+that deadline, so the create runs while the request holds the instance's CPU. A read outside
+such a door creates the task in the request and states what the create left. A pool already full
+refuses the create, and the read states `stale`. A create that fails, times out, outlives the
+join, or never runs leaves the row undispatched. Nobody polls a check, so the poll's enqueue
+recovery never runs for it. A later read retries the create once the row has waited
+`ENQUEUE_RECOVERY_SECONDS`, after claiming that retry in the store (`claim_dispatch_retry`), so
+one read per recovery interval retries it across instances, and during an outage each spec costs
+one short create per interval.
 
 A check that failed for good (a deterministic refusal, `over_ceiling` for one) stays `failed`
 until retention deletes it, so the read sends the call to the work executor, which judges the
 head in the request and answers the refusal.
-A full backlog, a store error, or a failed task create logs and answers `stale`; none of them
-fails the read.
+A full backlog, a store error, or a full pool logs and answers `stale`, and a failed task create
+logs on the pool thread; none of them fails the read.
 
 An analysis root under `latest: "stored"` judges the head by the same rules
 (`current.stored_head_version`), and a dataset with no servable head queues this same operation
-as its rebuild (`head_check_operation`), whose id the 202 names.
+as its rebuild (`head_check_operation`), whose id the 202 names. That rebuild creates its task
+in the request, so the 202 names the row as the create left it.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import timedelta
 from typing import Literal
@@ -54,6 +62,7 @@ from datasets_api.operation_store import (
 )
 from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS, dispatch_if_due
 from datasets_api.operations.task_client import TaskClient
+from datasets_api.operations.task_create_pool import TaskCreates, offered_creates
 from datasets_api.origin import catalogue_build_id
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import phase
@@ -81,10 +90,11 @@ HEAD_CHECK_OPTIONS = MintOptions(format="parquet", bundle=False, layout="frame")
 # is half of it.
 HEAD_CHECK_HEADROOM_SHARE = 2
 
-# The longest a read waits on its check's task create. A Cloud Tasks create answers in well
-# under a second when the service is healthy, and a create that times out is retried after
-# `ENQUEUE_RECOVERY_SECONDS` under the same task name, so a longer wait buys nothing a reader
-# should pay for.
+# The longest a check's task create waits, on a pool thread for a read past the window, whose
+# door joins it as long at most, and in the request for a queued rebuild. A Cloud Tasks create
+# answers in well under a second when the service is healthy, and a create that times out is
+# retried after `ENQUEUE_RECOVERY_SECONDS` under the same task name, so a longer wait buys
+# nothing.
 HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS = 1.0
 
 _ZERO_ESTIMATE = Estimate(rows=0, requests=0)
@@ -103,18 +113,21 @@ def submit_head_check(
     operation_store: OperationStore,
     task_client: TaskClient,
     backlog_max: int,
+    task_creates: TaskCreates,
 ) -> HeadCheckState:
-    """Record or join the head check of `subject_id`, create its task when this read wrote the
-    row or claimed the retry of a lost create, and return what the served head states:
-    `pending` while the check is pending or running with its task created, `stale` when it
-    could not be submitted or its task is not created, and `failed` when it failed."""
+    """Record or join the head check of `subject_id`, hand its task create to `task_creates`
+    when this read wrote the row or claimed the retry of a lost create, and return what the
+    served head states: `pending` while the check is pending or running with its task created
+    or handed off, `stale` when it could not be submitted or its task is not created, and
+    `failed` when it failed."""
     try:
-        operation = head_check_operation(
+        state, _operation = request_head_check(
             subject_id=subject_id,
             coverage_stamp=coverage_stamp,
             operation_store=operation_store,
             task_client=task_client,
             backlog_max=backlog_max,
+            task_creates=task_creates,
         )
     except OperationBacklogFull as exc:
         logger.warning(
@@ -130,7 +143,69 @@ def submit_head_check(
             exc_info=True,
         )
         return "stale"
-    return head_check_state(operation)
+    return state
+
+
+def request_head_check(
+    *,
+    subject_id: str,
+    coverage_stamp: str,
+    operation_store: OperationStore,
+    task_client: TaskClient,
+    backlog_max: int,
+    task_creates: TaskCreates,
+) -> tuple[HeadCheckState, Operation]:
+    """The state a read past the recheck window states for `subject_id`'s head and the check's
+    row as the read left it. The row is recorded or joined in the request (the `head_check`
+    phase), and its task create, when this read is due to make it, is handed to
+    `task_creates` and recorded for the door to join (`task_create_pool.offered_creates`), so
+    the create runs beside the rest of the read. A create still running states `pending`, one
+    already settled states what it left (`head_check_state`), and one `task_creates` refused
+    leaves the row undispatched and states `stale`. With no door to join it, the read creates
+    the task itself and states what the create left.
+
+    Raises:
+        OperationBacklogFull: The backlog leaves no room for a new row.
+        DatasetsStoreUnavailable: The store failed.
+    """
+    with phase("head_check"):
+        operation, due = _record(
+            subject_id=subject_id,
+            coverage_stamp=coverage_stamp,
+            operation_store=operation_store,
+            backlog_max=backlog_max,
+        )
+    if not due:
+        return head_check_state(operation), operation
+    create = functools.partial(
+        dispatch_if_due,
+        operation,
+        operation_store=operation_store,
+        task_client=task_client,
+        timeout=HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS,
+    )
+    offered = offered_creates()
+    if offered is None:
+        # No door joins a handed-off create, so the read creates it, as `InlineTaskCreates`.
+        with phase("head_check"):
+            dispatched = create()
+        return head_check_state(dispatched), dispatched
+    with phase("head_check"):
+        future = task_creates.offer(create)
+    if future is None:
+        logger.warning(
+            "Datasets head check for %r recorded but its task create was not queued; a later "
+            "read retries it; serving the head as stale",
+            subject_id,
+        )
+        return "stale", operation
+    if future.done():
+        if future.cancelled() or future.exception() is not None:
+            return "stale", operation
+        dispatched = future.result()
+        return head_check_state(dispatched), dispatched
+    offered.add(future, timeout=HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS)
+    return "pending", operation
 
 
 def head_check_operation(
@@ -141,64 +216,70 @@ def head_check_operation(
     task_client: TaskClient,
     backlog_max: int,
 ) -> Operation:
-    """The head check row of `subject_id`, recorded or joined as `submit_head_check` records
-    it, with its task created when this read wrote the row or claimed the retry of a lost
-    create. An analysis root under `latest: "stored"` whose dataset has no servable head queues
-    its rebuild here, since the worker's `serve_current` rebuilds a head it cannot confirm.
+    """The head check row of `subject_id`, recorded or joined as `request_head_check` records
+    it, with its task created in the request when this read wrote the row or claimed the retry
+    of a lost create. An analysis root under `latest: "stored"` whose dataset has no servable
+    head queues its rebuild here, since the worker's `serve_current` rebuilds a head it cannot
+    confirm, and the 202 names the row as it stands after the create.
 
     Raises:
         OperationBacklogFull: The backlog leaves no room for a new row.
         DatasetsStoreUnavailable: The store failed.
     """
+    with phase("head_check"):
+        operation, due = _record(
+            subject_id=subject_id,
+            coverage_stamp=coverage_stamp,
+            operation_store=operation_store,
+            backlog_max=backlog_max,
+        )
+        if not due:
+            return operation
+        return dispatch_if_due(
+            operation,
+            operation_store=operation_store,
+            task_client=task_client,
+            timeout=HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS,
+        )
+
+
+def _record(
+    *,
+    subject_id: str,
+    coverage_stamp: str,
+    operation_store: OperationStore,
+    backlog_max: int,
+) -> tuple[Operation, bool]:
+    """The head check row of `subject_id`, recorded or joined, and whether this read is due to
+    create its task: the row is `pending` with no recorded dispatch, and this read inserted or
+    reset it or claimed the retry of its lost create."""
     identity = head_check_identity(subject_id)
     options = HEAD_CHECK_OPTIONS.model_dump(mode="json")
     build_id = catalogue_build_id()
-    with phase("head_check"):
-        before = operation_store.get(
-            compute_operation_id(
-                request_identity=identity, origin_catalogue_build_id=build_id, options=options
-            )
+    before = operation_store.get(
+        compute_operation_id(
+            request_identity=identity, origin_catalogue_build_id=build_id, options=options
         )
-        operation = operation_store.create_or_get(
-            request_identity=identity,
-            options=options,
-            coverage_stamp=coverage_stamp,
-            origin_catalogue_build_id=build_id,
-            estimate=_ZERO_ESTIMATE,
-            headroom=backlog_max // HEAD_CHECK_HEADROOM_SHARE,
-        )
-        # A new row, or a reset under a new submission, is this read's to create a task for.
-        wrote = before is None or before.submission_count != operation.submission_count
-        return _dispatch(
-            operation, wrote=wrote, operation_store=operation_store, task_client=task_client
-        )
-
-
-def _dispatch(
-    operation: Operation,
-    *,
-    wrote: bool,
-    operation_store: OperationStore,
-    task_client: TaskClient,
-) -> Operation:
-    """Create the task of a `pending` row with no recorded dispatch, under the read's short
-    timeout, when this read `wrote` the row or claimed the retry of its lost create. Any other
-    row is returned unchanged."""
-    if operation.state != "pending" or operation.dispatched_at is not None:
-        return operation
-    if not wrote:
-        claimed = operation_store.claim_dispatch_retry(
-            operation.id, submission_count=operation.submission_count, retry_after=_RECOVERY
-        )
-        if claimed is None:
-            return operation
-        operation = claimed
-    return dispatch_if_due(
-        operation,
-        operation_store=operation_store,
-        task_client=task_client,
-        timeout=HEAD_CHECK_ENQUEUE_TIMEOUT_SECONDS,
     )
+    operation = operation_store.create_or_get(
+        request_identity=identity,
+        options=options,
+        coverage_stamp=coverage_stamp,
+        origin_catalogue_build_id=build_id,
+        estimate=_ZERO_ESTIMATE,
+        headroom=backlog_max // HEAD_CHECK_HEADROOM_SHARE,
+    )
+    if operation.state != "pending" or operation.dispatched_at is not None:
+        return operation, False
+    # A new row, or a reset under a new submission, is this read's to create a task for.
+    if before is None or before.submission_count != operation.submission_count:
+        return operation, True
+    claimed = operation_store.claim_dispatch_retry(
+        operation.id, submission_count=operation.submission_count, retry_after=_RECOVERY
+    )
+    if claimed is None:
+        return operation, False
+    return claimed, True
 
 
 def head_check_state(operation: Operation) -> HeadCheckState:
@@ -222,5 +303,6 @@ __all__ = [
     "head_check_identity",
     "head_check_operation",
     "head_check_state",
+    "request_head_check",
     "submit_head_check",
 ]
