@@ -89,13 +89,18 @@ COUNT_WORDS = frozenset({"number", "numbers"})
 # households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})
 
-# A negator closed by a clause or sentence mark answers what came before ("No, count it
-# including imputed multilateral", "No. Show gross ODA"), so it negates nothing after the
-# mark. `INTERJECTION` finds such a negator, and `NEGATION_CUE` and
-# `bind_repair._label_negated_in_text` pass over it.
-_NEGATOR = r"(?:not|no|never)\b"
-_CLAUSE_CLOSE = r"\s*[,.;:!?]"
-INTERJECTION = re.compile(rf"\b{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
+# A negator that opens the text or a sentence and is closed by a clause mark, a spaced
+# dash or ")" answers what came before ("No, count it including imputed multilateral",
+# "No. Show gross ODA", "No - show gross ODA"), so it negates nothing after the mark.
+# `INTERJECTION` finds such a negator, and `NEGATION_CUE` and
+# `bind_repair._label_negated_in_text` pass over it. A negator inside a sentence ("ODA,
+# not, as before, multilateral") still negates, and so does a "no-" compound.
+NEGATORS = ("not", "no", "never")
+_NEGATOR = r"(?:" + "|".join(NEGATORS) + r")\b"
+_CLAUSE_CLOSE = r"(?:\s*[,.;:!?)\u2013\u2014]|\s+-(?=\s))"
+_OPENS = r"(?:^|(?<=\A\s)|(?<=[.!?])|(?<=[.!?]\s)|(?<=[.!?]\s\s))"
+_NOT_OPENS = r"(?<!\A)(?<!\A\s)(?<![.!?])(?<![.!?]\s)(?<![.!?]\s\s)"
+INTERJECTION = re.compile(rf"{_OPENS}{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
 
 # The words that negate or exclude what follows: an exclusion read starts each stretch it
 # leaves out at one (`exclusion_read._pieces`), a scope phrase's origin starts at the one
@@ -103,7 +108,7 @@ INTERJECTION = re.compile(rf"\b{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
 # names nothing (`qualifier_match.measure_values_named`). An interjection (`INTERJECTION`)
 # is no cue.
 NEGATION_CUE = re.compile(
-    rf"\b(?:{_NEGATOR}(?!{_CLAUSE_CLOSE})|non|excluding|exclude|excludes|except|without|"
+    rf"\b(?:{_NOT_OPENS}{_NEGATOR}|{_NEGATOR}(?!{_CLAUSE_CLOSE})|non|excluding|exclude|excludes|except|without|"
     r"other\s+than|rather\s+than|excl)\b",
     re.IGNORECASE,
 )

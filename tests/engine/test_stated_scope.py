@@ -223,6 +223,32 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ("aid to Kenya, not multilateral", [(_BILATERAL, "not multilateral")], False),
         ("no multilateral aid to Kenya", [(_BILATERAL, "no multilateral")], False),
         ("aid with no multilateral share", [(_BILATERAL, "no multilateral")], False),
+        (
+            "No - count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No \u2014 count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "Show net ODA. No, count it including imputed multilateral aid",
+            [(_NET, "net"), (_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "aid to Kenya, not, as before, multilateral",
+            [(_BILATERAL, "not, as before, multilateral")],
+            False,
+        ),
+        (
+            "aid to Kenya, never, ever multilateral",
+            [(_BILATERAL, "never, ever multilateral")],
+            False,
+        ),
+        ("aid to Kenya no-multilateral", [(_BILATERAL, "no-multilateral")], False),
         ("not net ODA", [], False),
     ],
 )

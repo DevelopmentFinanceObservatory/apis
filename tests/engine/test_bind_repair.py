@@ -21,11 +21,13 @@ from search.engine.bind import (
 from search.engine.bind_repair import (
     FiredDefault,
     _label_named_in_text,
+    _label_negated_in_text,
     apply_declared_defaults,
     apply_named_exclusions,
     declared_default_slots_named,
     defaulted_slot_notes,
     defaulted_slots_named,
+    occurrence_negated,
 )
 from search.engine.exclusion_read import Exclusion, ExclusionRead, LeftOut, admit_exclusions
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
@@ -1044,3 +1046,30 @@ class TestAReplyValueAboveTheDefault:
                     }
                 )
             ]
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "negated"),
+    [
+        ("women", "data without men. No, women", False),
+        ("women", "no, women", False),
+        ("women", "No - women", False),
+        ("women", "no \u2014 women", False),
+        ("women", "no\u2014women", False),
+        ("women", "no) women", False),
+        ("women", "show data, not, as before, women", True),
+        ("women", "data never, ever women", True),
+        ("women", "no-women", True),
+        ("women", "not women", True),
+    ],
+)
+def test_a_negator_negates_unless_it_opens_a_sentence_a_mark_closes(label, text, negated):
+    assert _label_negated_in_text(label, text) is negated
+
+
+def test_an_earlier_negated_occurrence_stays_negated_beside_a_later_one():
+    text = "net, not gross, gross ODA"
+    start = text.rindex("gross")
+
+    assert occurrence_negated(text, start, start + len("gross")) is True
+    assert occurrence_negated(text, text.index("gross"), text.index("gross") + 5) is True
