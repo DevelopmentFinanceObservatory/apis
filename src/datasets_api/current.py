@@ -80,7 +80,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import cast
+from typing import TypeGuard, cast
 
 from artifact_store import ArtifactSink, ArtifactStore, StoredArtifact, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
@@ -1402,6 +1402,30 @@ def _head_is_fresh(head: SubjectHead, *, now: datetime, deps: DefinitionDeps) ->
     return now - head.confirmed_at < deps.head_recheck_interval and not _import_replaced(head)
 
 
+def stored_head_servable(
+    head: SubjectHead | None,
+    *,
+    now: datetime,
+    recheck_interval: timedelta,
+    serve_stale_max_age: timedelta,
+) -> TypeGuard[SubjectHead]:
+    """Whether a stored read serves from `head` at `now` by its head rule alone, before its
+    version's revocation is read: a head keyed on no import, or on the one the bound release
+    carries, confirmed inside `recheck_interval` or materialised less than
+    `serve_stale_max_age` (`head_serve_stale_max_age_seconds`) ago. No head, a replaced import
+    and a head past that ceiling do not serve.
+
+    `serve_stored_head`, `stored_head_version` and the stored-head check
+    (`stored_heads.dataset_heads`) judge a head by this one rule, so the check answers the
+    version a `latest: "stored"` read serves."""
+    if head is None or _import_replaced(head):
+        return False
+    return (
+        now - head.confirmed_at < recheck_interval
+        or now - head.materialised_at < serve_stale_max_age
+    )
+
+
 # The rebuild reasons that name no fingerprint member (`serve_current`).
 _NO_HEAD = "no_head"
 _MAX_AGE = "max_age"
@@ -1682,13 +1706,15 @@ def serve_stored_head(
         coverage_snapshot = deps.coverage.snapshot()
     with phase("head_read"):
         head = deps.head_store.read_head(stored.spec_id)
-    if head is None or _import_replaced(head):
-        return HeadRead(stored=stored, head=head)
     now = deps.now()
-    fresh = _head_is_fresh(head, now=now, deps=deps)
-    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
-    if not fresh and now - head.materialised_at >= ceiling:
+    if not stored_head_servable(
+        head,
+        now=now,
+        recheck_interval=deps.head_recheck_interval,
+        serve_stale_max_age=timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds),
+    ):
         return HeadRead(stored=stored, head=head)
+    fresh = _head_is_fresh(head, now=now, deps=deps)
     served = _serve_head(
         head,
         subject_id=stored.spec_id,
@@ -1772,14 +1798,14 @@ def stored_head_version(
         backlog_max=deps.settings.operation_backlog_max,
     )
     now = deps.now()
-    ceiling = timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds)
-    fresh = head is not None and _head_is_fresh(head, now=now, deps=deps)
-    if (
-        head is None
-        or _import_replaced(head)
-        or (not fresh and now - head.materialised_at >= ceiling)
+    if not stored_head_servable(
+        head,
+        now=now,
+        recheck_interval=deps.head_recheck_interval,
+        serve_stale_max_age=timedelta(seconds=deps.settings.head_serve_stale_max_age_seconds),
     ):
         raise OperationSubmitted(operation=queue())
+    fresh = _head_is_fresh(head, now=now, deps=deps)
     # The version's existence and revocation, as `load_stored` checks them, with no manifest,
     # which no caller here reads.
     with phase("snapshot_state"):
@@ -2214,6 +2240,7 @@ __all__ = [
     "serve_fresh_head",
     "serve_stored_head",
     "stamp_trace",
+    "stored_head_servable",
     "stored_head_version",
     "without_pointers",
 ]

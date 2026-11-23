@@ -26,6 +26,7 @@ from datasets_api.doors.derived import build_derived_door, build_derived_files_d
 from datasets_api.doors.description import build_description_door
 from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door
+from datasets_api.doors.heads import build_heads_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.mint import build_mint_door
 from datasets_api.doors.observations import build_observations_door
@@ -55,6 +56,7 @@ _ENDPOINTS = {
     "meta": ("datasets.operations",),
     "register": ("datasets.register",),
     "mint": ("datasets.mint",),
+    "heads": ("datasets.heads",),
     "definition": ("datasets.definition", "datasets.options", "datasets.members"),
     "refresh": ("datasets.refresh",),
     "analysis": ("datasets.analysis",),
@@ -84,6 +86,7 @@ def doors() -> dict[str, DoorContribution]:
         "meta": build_meta_door(deps=cell, settings=settings),
         "register": build_register_door(deps=cell),
         "mint": build_mint_door(deps=cell),
+        "heads": build_heads_door(deps=cell),
         "definition": build_definition_door(deps=cell),
         "refresh": build_refresh_door(deps=cell, settings=settings),
         "analysis": build_analysis_door(deps=cell, running=RunningAnalyses()),

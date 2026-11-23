@@ -488,6 +488,14 @@ def _served_identity(
     return None if served is identity else recompute_identity(served)
 
 
+def served_spec_id(stored: StoredDefinition, *, code_index: CodeIndex) -> str:
+    """The id `resolve_served_definition` resolves the registered definition `stored` to with
+    no scope, under `code_index`, from memory alone: it reads, registers and binds nothing. A
+    stored read keys the head it serves on this id."""
+    served = _served_identity(stored.identity, scope=None, code_index=code_index)
+    return stored.spec_id if served is None else served.spec_id
+
+
 def resolve_served_definition(
     stored: StoredDefinition,
     *,

@@ -92,11 +92,11 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 dfo-analysis-engine = { workspace = true }
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c9fb26086a4f6b28678d7289882908d078983e17", subdirectory = "python/spec-kit" }
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c9fb26086a4f6b28678d7289882908d078983e17", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c9fb26086a4f6b28678d7289882908d078983e17", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c9fb26086a4f6b28678d7289882908d078983e17", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c9fb26086a4f6b28678d7289882908d078983e17", subdirectory = "python/descriptions" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "dcdc7e3f3338a2ebdc758fa4de6217a590e14686", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "dcdc7e3f3338a2ebdc758fa4de6217a590e14686", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "dcdc7e3f3338a2ebdc758fa4de6217a590e14686", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "dcdc7e3f3338a2ebdc758fa4de6217a590e14686", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "dcdc7e3f3338a2ebdc758fa4de6217a590e14686", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
