@@ -137,6 +137,7 @@ from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import prepare_index_views
 from search.engine.schema import schema_payload
+from search.engine.stated_scope import read_stated_scope
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     ConversionCatalogueService,
@@ -148,6 +149,11 @@ from search.models import (
     OptionsResponse,
     ResolveRequest,
     ResolveResponse,
+    StatedScopeEntry,
+    StatedScopeReading,
+    StatedScopeRequest,
+    StatedScopeResponse,
+    TextOrigin,
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
@@ -600,6 +606,28 @@ async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
     result = OptionsResponse(diagnostics=diagnostics, for_=body.for_, options=computed.options)
     # Keep the `for` alias and meaningful `coverage=null` for unconfirmed SSE coverage.
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
+
+
+async def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
+    """The scope each posted text states, in order: the entries the raw-text door would read
+    from it, whether it asks for a total, and every provider option it names
+    (`stated_scope.read_stated_scope`). A client confirms which provider options a text
+    states, as a user message or as a requirement's measure."""
+    readings = []
+    for text in body.texts:
+        stated = read_stated_scope(text)
+        readings.append(
+            StatedScopeReading(
+                entries=[
+                    StatedScopeEntry(axis=e.axis, option_id=e.option_id, origin=e.origin)
+                    for e in stated.entries
+                    if isinstance(e.origin, TextOrigin)
+                ],
+                total=stated.total,
+                mentions=list(stated.mentions),
+            )
+        )
+    return StatedScopeResponse(readings=readings)
 
 
 async def get_health() -> HealthResponse:
@@ -1226,6 +1254,7 @@ def search_surface(
         "/api/search/resolve", response_model=ResolveResponse, responses=_RESOLVE_RESPONSES
     )(resolve)
     router.post("/api/search/options", response_model=OptionsResponse)(list_options)
+    router.post("/api/search/stated-scope", response_model=StatedScopeResponse)(read_stated_scopes)
     router.get("/api/search/healthz", response_model=HealthResponse)(get_health)
     router.get(
         "/api/search/json-schema",
