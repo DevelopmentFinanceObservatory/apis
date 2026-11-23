@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal
 from code_index.members import family_declares_roles
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, tokenize, word_tokens
-from code_index.types import PartyRow, PartyWord
+from code_index.types import PartyRow, PartyWord, StatVarRow
 from entity_resolution.types import Group, Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
@@ -64,6 +64,7 @@ from search.engine.retrieval.bound_values import (
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
+    shape_slot_properties,
 )
 from search.engine.retrieval.whole_reading import WholeReading, whole_population, whole_reading
 from search.engine.role_text import asks_members, role_contradicted
@@ -73,6 +74,7 @@ from search.engine.shape import (
     entities_by_role,
     is_role_bearing,
     required_role_names,
+    role_class,
     role_names_by_axis,
 )
 from search.heading.departure_fact import UndirectedRule
@@ -566,6 +568,82 @@ def without_open_axis_gaps(state: ResolveState, shapes: Sequence[ShapeDraft]) ->
         if any(declares.values()):
             kept = [s for s in kept if declares.get(id(s), True) or shape_family(s) is None]
     return kept
+
+
+def without_denominator_twins(
+    state: ResolveState, shapes: Sequence[ShapeDraft]
+) -> list[ShapeDraft]:
+    """`shapes` less the twin of a ratio pair that the part's roles do not elect.
+
+    A total and its by-creditor twin share a five-tuple and derive one shape, whose role-class
+    election elects the total unless the part asks for the creditor. A ratio's twin divides
+    by its own denominator's by-creditor twin, so the pair derives two shapes, and this rule
+    elects between them as that election would (`_denominator_twins`). The shape declaring
+    the extra roles stays when the query asks for one of their axes, by an open role
+    (`state.open_axes`) or a role it needs (`query_role_axes`), and leaves otherwise. With no
+    creditor role open, DT.CUR.USDL.ZS answers the US-dollar share of the public and publicly
+    guaranteed stock, and with the creditor open the share by creditor."""
+    asked = query_role_axes(state) | state.open_axes
+    index = get_index()
+
+    def leaves(shape: ShapeDraft) -> bool:
+        for other in shapes:
+            if other is shape:
+                continue
+            if (split := _denominator_twins(shape, other, index)) is not None:
+                return bool(split & asked)
+            if (split := _denominator_twins(other, shape, index)) is not None:
+                return not split & asked
+        return False
+
+    return [shape for shape in shapes if not leaves(shape)]
+
+
+def _denominator_twins(
+    total: ShapeDraft, split: ShapeDraft, index: CodeIndex
+) -> frozenset[RoleAxis] | None:
+    """The flow axes `split` breaks `total` down by, when the two are a ratio and its twin:
+    their five-tuples differ only in the denominator, they read the same slot properties,
+    `split` declares every role `total` does and more, and `split`'s denominator is the same
+    breakdown of `total`'s, an index row with the same five-tuple and constraints declaring
+    the same extra roles. None for any other pair, and when the index lacks either
+    denominator."""
+    if (
+        total.meas_denom_dcid is None
+        or split.meas_denom_dcid is None
+        or total.meas_denom_dcid == split.meas_denom_dcid
+        or total.meas_denom_unresolved
+        or split.meas_denom_unresolved
+        or shape_five_tuple(total)._replace(meas_denom_dcid=None)
+        != shape_five_tuple(split)._replace(meas_denom_dcid=None)
+        or shape_slot_properties(total) != shape_slot_properties(split)
+    ):
+        return None
+    if not role_class(total) < role_class(split):
+        return None
+    extra = role_class(split) - role_class(total)
+    base = index.statvar_by_dcid(total.meas_denom_dcid)
+    base_split = index.statvar_by_dcid(split.meas_denom_dcid)
+    if base is None or base_split is None or _row_measure(base) != _row_measure(base_split):
+        return None
+    base_roles = frozenset(base.observation_properties)
+    split_roles = frozenset(base_split.observation_properties)
+    if not base_roles < split_roles or split_roles - base_roles != extra:
+        return None
+    axes = frozenset(axis for role in extra if (axis := axis_for_role(role)) is not None)
+    return axes or None
+
+
+def _row_measure(row: StatVarRow) -> tuple[object, ...]:
+    """What an index row measures, its roles aside: its five-tuple and constraints."""
+    return (
+        row.population_type,
+        row.measured_property,
+        row.stat_type,
+        row.measurement_qualifier,
+        row.measurement_denominator,
+        dict(row.constraint_properties),
+    )
 
 
 def names_a_place(state: ResolveState) -> bool:

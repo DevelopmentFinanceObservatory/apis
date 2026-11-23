@@ -113,6 +113,18 @@ _PPG = {
     "financialPositionType": "AmountOutstanding",
     "guaranteeStatus": "PublicOrPubliclyGuaranteed",
 }
+# DT.CUR.USDL.ZS's StatVars: the US-dollar share of the PPG stock and its by-creditor twin,
+# which divides by the by-creditor PPG stock, so the two differ in their denominators too.
+_USDL = "DT.CUR.USDL.ZS"
+_USD_SHARE = (
+    "Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_AsAFractionOf_"
+    "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal"
+)
+_USD_SHARE_BY_CREDITOR = (
+    "Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_ByCreditor_AsAFractionOf_"
+    "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_ByCreditor_Nominal"
+)
+_USD = {"currencyOfDenomination": "CurrencyUSD", "financialPositionType": "AmountOutstanding"}
 
 
 def _arcs(
@@ -121,14 +133,21 @@ def _arcs(
     constraints: dict[str, str],
     code: str,
     population: str = "FinancialFlow",
+    denominator: str | None = None,
 ) -> dict:
+    """A StatVar's arcs: a ratio of the stock `denominator` when it names one, else a
+    nominal amount."""
     return {
         "name": {"nodes": [{"value": name}]},
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
         "populationType": {"nodes": [{"dcid": population}]},
         "measuredProperty": {"nodes": [{"dcid": "amount"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
-        "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
+        **(
+            {"measurementDenominator": {"nodes": [{"dcid": denominator}]}}
+            if denominator
+            else {"measurementQualifier": {"nodes": [{"dcid": "Nominal"}]}}
+        ),
         "constraintProperties": {"nodes": [{"dcid": p} for p in constraints]},
         "sourceIndicatorCode": {"nodes": [{"value": code}]},
         "observationProperties": {"nodes": [{"dcid": r} for r in roles]},
@@ -194,6 +213,28 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
                     "FinancialPosition",
                 ),
             },
+            _USD_SHARE: {
+                "label": "US dollar share of PPG debt",
+                "arcs": _arcs(
+                    "US dollar share of PPG debt",
+                    _RECIPIENT,
+                    _USD,
+                    _USDL,
+                    "FinancialPosition",
+                    denominator=_PPG_STOCK,
+                ),
+            },
+            _USD_SHARE_BY_CREDITOR: {
+                "label": "US dollar share of PPG debt by creditor",
+                "arcs": _arcs(
+                    "US dollar share of PPG debt by creditor",
+                    _PROVIDER_RECIPIENT,
+                    _USD,
+                    _USDL,
+                    "FinancialPosition",
+                    denominator=_PPG_STOCK_BY_CREDITOR,
+                ),
+            },
             _NET_FLOW: {
                 "label": "Concessional net flows",
                 "arcs": _arcs(
@@ -223,6 +264,8 @@ _COVERAGE_ROWS = [
     (_PPG_STOCK, "f_ppg", "", _KEN, _YEARS),
     (_PPG_STOCK_BY_CREDITOR, "f_ppg_cr", "country/CHN", _KEN, _YEARS),
     (_VARIABLE_PPG_STOCK, "f_vppg", "", _KEN, _YEARS),
+    (_USD_SHARE, "f_usd", "", _KEN, _YEARS),
+    (_USD_SHARE_BY_CREDITOR, "f_usd_cr", "country/CHN", _KEN, _YEARS),
 ]
 _ROLE_NAMES = {
     _AGGREGATE: RoleNames(donor=None, recipient="financingRecipient"),
@@ -234,6 +277,8 @@ _ROLE_NAMES = {
     _PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
     _PPG_STOCK_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
     _VARIABLE_PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
+    _USD_SHARE: RoleNames(donor=None, recipient="financingRecipient"),
+    _USD_SHARE_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
 }
 
 
@@ -1092,3 +1137,28 @@ def test_a_code_two_named_sources_hold_offers_each_as_the_only_included_source(
     assert ids.status == "definite"
     assert crs.status == "no_data"
     assert crs.no_data.reason != "source_code_ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("open_roles", "elected"),
+    [(None, _USD_SHARE), (["creditor"], _USD_SHARE_BY_CREDITOR)],
+    ids=["aggregate", "by-creditor"],
+)
+def test_a_ratio_code_elects_its_aggregate_unless_the_creditor_is_open(
+    open_roles, elected, monkeypatch
+):
+    """DT.CUR.USDL.ZS's by-creditor share divides by the by-creditor PPG stock, so its two
+    StatVars derive two shapes. They are twins all the same: no open role elects the share
+    of the aggregate stock and the open creditor the share by creditor, with no choice left
+    to the bind model."""
+    part = ParsedPart(
+        variable_text=_USDL,
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_USDL,
+        open_roles=open_roles,
+    )
+
+    answer = _answer(part, monkeypatch)
+
+    assert answer.status == "definite", answer
+    assert _minted_members(answer.spec) == {elected}
