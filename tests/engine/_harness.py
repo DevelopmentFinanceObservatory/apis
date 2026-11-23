@@ -498,6 +498,7 @@ def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
         if fixture.latest_date is not None
         else (max(dates) if dates else None),
         scaling_factor=fixture.scaling_factor,
+        observation_period=fixture.observation_period,
         dates=tuple(dates),
         values=tuple(value for _, value in fixture.points),
         dates_complete=len(dates) >= obs_count,

@@ -557,6 +557,26 @@ _SPAN_FACETS = {
             "2", _points(range(2010, 2025), 2.0), provenance_id="p", measurement_method="Estimated"
         ),
     ],
+    # Reported monthly to 2020-01 and estimated monthly from 2020-02: the estimates serve
+    # the months after the last reported one, February 2020 among them.
+    "continued-monthly": [
+        ObsFacetFixture(
+            "1",
+            (
+                *((f"{y}-{m:02d}", 1.0) for y in (2018, 2019) for m in range(1, 13)),
+                ("2020-01", 1.0),
+            ),
+            provenance_id="p",
+            observation_period="P1M",
+        ),
+        ObsFacetFixture(
+            "2",
+            tuple((f"{y}-{m:02d}", 2.0) for y in (2020, 2021) for m in range(1, 13))[1:],
+            provenance_id="p",
+            measurement_method="Estimated",
+            observation_period="P1M",
+        ),
+    ],
     # Two facets under one method contest 2011 to 2018. The first holds 46 rows in the
     # window and 8 in the span, the second 14 in both.
     "contested": [
@@ -574,14 +594,14 @@ _SPAN_FACETS = {
 
 def _span_preview(
     case: str,
-    served: frozenset[int],
+    served: frozenset[int] | None,
     *,
     candidates: dict[str, MaterialiseFacet] | None = None,
     years: TimeWindow | None = _ELECTED,
 ) -> tuple[list[list[tuple[str, float | None]]], list[list[str] | None]]:
-    """Kenya's series points read in `served` and each SDMX request's periods (None for
-    every period), for `case`'s facets under a plan elected under `years`, 1973 to 2024
-    unless given. `candidates` replaces the plan's candidate of a facet id, the coverage a
+    """Kenya's series points read in `served` (every year of the plan's window for None)
+    and each SDMX request's periods (None for every period), for `case`'s facets under a
+    plan elected under `years`, 1973 to 2024 unless given. `candidates` replaces the plan's candidate of a facet id, the coverage a
     read ranks contested facets by, leaving the rows SDMX holds."""
     graph, sdmx, requests = build_materialise_double(
         {("Count_Person", _KEN): _SPAN_FACETS[case]}, honour_periods=True
@@ -641,27 +661,37 @@ def test_a_component_read_in_its_served_years_asks_sdmx_for_none_before_them(cas
 
 
 @pytest.mark.parametrize(
-    ("case", "served"),
+    ("case", "served", "point"),
     [
-        pytest.param("one-facet", _SERVED, id="one-facet"),
+        pytest.param("one-facet", _SERVED, ("2011", 1.0), id="one-facet"),
         # The recorded 2019 cuts the estimates up to it, so 2016 to 2018 serve none.
-        pytest.param("continued", frozenset(range(2011, 2019)), id="continued"),
+        pytest.param("continued", frozenset(range(2011, 2019)), ("2015", 1.0), id="continued"),
         # The first facet, the more rows in the window, keeps 2011 to 2018.
-        pytest.param("contested", _SERVED, id="contested"),
+        pytest.param("contested", _SERVED, ("2018", 1.0), id="contested"),
+        # The estimates serve February 2020 on, after the last reported month.
+        pytest.param(
+            "continued-monthly", frozenset({2020}), ("2020-02", 2.0), id="continued-monthly"
+        ),
     ],
 )
 def test_a_component_read_in_its_served_years_serves_the_whole_window_read_s_points(
-    monkeypatch, case, served
+    monkeypatch, case, served, point
 ):
     """The span read serves the points a read of the whole window keeps in the span: a
-    continued series keeps its estimates past the last recorded year in the window, and
-    contested facets rank over the window."""
+    continued series keeps its estimates past the last recorded period in the window, and
+    contested facets rank over the window. Both are the points the plan's own read of its
+    window serves in the span, `point` among them."""
+    unnarrowed, _periods = _span_preview(case, None)
     bounded, _periods = _span_preview(case, served)
     _whole_window(monkeypatch)
     whole, whole_periods = _span_preview(case, served)
 
     assert whole_periods == [None]
     assert bounded == whole
+    assert whole == [
+        kept for points in unnarrowed if (kept := [p for p in points if int(p[0][:4]) in served])
+    ]
+    assert point in whole[0]
 
 
 def test_a_component_read_in_its_served_years_ranks_contested_facets_by_coverage(monkeypatch):

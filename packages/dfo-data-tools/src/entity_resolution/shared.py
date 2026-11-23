@@ -10,6 +10,7 @@ snapshot."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -163,6 +164,19 @@ def _resolve_cache_dir(cache_dir: Path | None) -> Path:
     return Path(env_value)
 
 
+_cached_wordings: dict[tuple[str, str], GroupWordings] = {}
+"""The last built wordings, keyed by `_wordings_key`. One entry bounds it. `_build` runs under
+the singleton's lock, so builds do not race. The process's group registry is fixed, so the
+key leaves it out."""
+
+
+def _wordings_key(pack_dir: Path) -> tuple[str, str]:
+    """What the wordings derive from: the pack (its directory name is the content hash of the
+    records and curated aliases) and the curated query aliases file."""
+    query_aliases = pack.query_aliases_path().read_bytes()
+    return pack_dir.name, hashlib.sha256(query_aliases).hexdigest()
+
+
 def _build(cache_dir: Path | None) -> SharedResolver:
     resolved = _resolve_cache_dir(cache_dir)
     # Read the memberships with the resolver, so no request is the one that reads them.
@@ -181,20 +195,25 @@ def _build(cache_dir: Path | None) -> SharedResolver:
     )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="resolvekit")
     started = time.monotonic()
+    key = _wordings_key(pack_dir)
     try:
-        group_wordings = executor.submit(
-            build_group_wordings,
-            resolver,
-            alias_index,
-            shared_memberships().groups,
-            curated=curated,
-        ).result()
+        group_wordings = _cached_wordings.get(key)
+        if group_wordings is None:
+            group_wordings = executor.submit(
+                build_group_wordings,
+                resolver,
+                alias_index,
+                shared_memberships().groups,
+                curated=curated,
+            ).result()
+            _cached_wordings.clear()
+            _cached_wordings[key] = group_wordings
     except BaseException:
         executor.shutdown(wait=True)
         resolver.close()
         raise
     logger.info(
-        "built group wordings in %.2f s: %d aliases, %d skipped, %d unnamed names",
+        "group wordings ready in %.2f s: %d aliases, %d skipped, %d unnamed names",
         time.monotonic() - started,
         len(group_wordings.aliases),
         len(group_wordings.skipped),
