@@ -110,7 +110,11 @@ from datasets_api.capabilities import build_capabilities
 from datasets_api.codes_materialise import ExcludedByRegistry
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import resolve_enrichment
-from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
+from datasets_api.doors.snapshot import (
+    read_snapshot_currency,
+    read_snapshot_manifest,
+    read_stored_version,
+)
 from datasets_api.manifest import (
     collapsed_head_manifest,
     collapsed_incomplete_after,
@@ -1767,13 +1771,17 @@ def stored_head_version(
         or (not fresh and now - head.materialised_at >= ceiling)
     ):
         raise OperationSubmitted(operation=queue())
-    load_stored(
-        subject_id=stored.spec_id,
-        content_version=head.content_version,
-        deps=deps,
-        include_artifacts=False,
-        revoked_under=revoked_under,
-    )
+    # The version's existence and revocation, as `load_stored` checks them, with no manifest,
+    # which no caller here reads.
+    with phase("snapshot_state"):
+        read_stored_version(
+            id=stored.spec_id,
+            content_version=head.content_version,
+            spec_reader=None,
+            snapshot_reader=deps.snapshot_reader,
+            now=deps.now(),
+            revoked_under=revoked_under,
+        )
     if fresh:
         return StoredHeadVersion(content_version=head.content_version, freshness="current")
     try:
