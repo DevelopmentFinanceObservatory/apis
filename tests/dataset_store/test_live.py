@@ -6,6 +6,7 @@ Skipped by default. Set DFO_DATASET_STORE_LIVE_DSN
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import tempfile
@@ -27,6 +28,7 @@ from artifact_store import ArtifactLocation, ArtifactNotFoundError, CopyBounds
 from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
+from code_index.shared import get_index
 from dataset_store import ConnectionPool, LiveDatasetStore
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
@@ -47,7 +49,9 @@ from datasets_api.allowance import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.doors.heads import head_content_version
 from datasets_api.doors.pin import pin_artifact
+from datasets_api.kinds.spec_id import served_spec_id
 from datasets_api.operation_store import (
     _LIVE,
     _UNTRACKED_LEASE,
@@ -109,6 +113,7 @@ from tests.datasets_api._legacy_conversion_trace import (
 )
 from tests.datasets_api._snapshot_doubles import FakeSpecReader
 from tests.datasets_api._version_record_store import TEST_BASIS, materialisation_record
+from tests.datasets_api.test_mint_canonical_identity import _identity as _aid_identity
 from tests.spec_registry.conftest import minimal_identity, shape_for
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1300,6 +1305,151 @@ def test_live_head_store_states_each_family_at_the_confirmation_it_writes(live_s
 def test_live_head_store_read_head_returns_none_for_an_unknown_subject(live_store):
     store = LiveHeadStore(store=live_store)
     assert store.read_head("spec:does-not-exist-at-all") is None
+
+
+def _register_identity(live_store, identity: dict) -> str:
+    recomputed = recompute_identity(identity)
+    LiveSpecRegistry(store=live_store).register_definition(
+        identity_definition=recomputed.identity,
+        schema_version=1,
+        supplied_spec_id=recomputed.spec_id,
+    )
+    return recomputed.spec_id
+
+
+def _stored_head(
+    live_store, subject_id: str, content_version: str, *, imported_data: str | None = None
+) -> None:
+    _insert_version_record(live_store, subject_id=subject_id, content_version=content_version)
+    record = materialisation_record(subject_id=subject_id, content_version=content_version)
+    if imported_data is not None:
+        record = replace(
+            record, dependencies={**record.dependencies, "imported_data": imported_data}
+        )
+    written = LiveHeadStore(store=live_store).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
+        materialisation=record,
+        expected_materialisation_id=None,
+    )
+    assert written is not None
+
+
+def _half_bound_aid_identity() -> dict:
+    """The aid identity with only `crsTypeOfFlow` unbound: another non-canonical posted form
+    of the canonical identity `_aid_identity(pins_bound=True)`."""
+    identity = _aid_identity(pins_bound=True)
+    for slot in identity["slots"]:
+        if slot["property"] == "crsTypeOfFlow":
+            slot["binding"] = {"state": "unbound"}
+    return identity
+
+
+def _revoke(live_store, subject_id: str, content_version: str) -> None:
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation (subject_id, content_version, reason, "
+            "revoked_at) VALUES (%s, %s, %s, now())",
+            (subject_id, content_version, "test"),
+        )
+
+
+def test_live_head_store_reads_every_asked_specs_stored_head_in_one_transaction(
+    live_store, monkeypatch: pytest.MonkeyPatch
+):
+    """`read_stored_heads` against the real tables: the head of each registered spec's served
+    id, whether its version is withdrawn under the served or the asked id, and no entry for an
+    unregistered or quarantined spec, in one transaction for the whole batch."""
+    served_head, no_head, replaced, revoked_base, quarantined = (
+        _register_identity(live_store, minimal_identity(shape=shape_for(f"stored_heads_{n}")))
+        for n in range(5)
+    )
+    _stored_head(live_store, served_head, "cv_served")
+    _stored_head(live_store, replaced, "cv_replaced", imported_data="sha256:replaced-import")
+    _stored_head(live_store, revoked_base, "cv_derived")
+    _insert_version_record(live_store, subject_id=revoked_base, content_version="cv_base")
+    with live_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET base_content_version = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            ("cv_base", revoked_base, "cv_derived"),
+        )
+    _revoke(live_store, revoked_base, "cv_base")
+    _stored_head(live_store, quarantined, "cv_quarantined")
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.identity_quarantine "
+            "(id_kind, subject_id, held_bytes, incoming_bytes) VALUES (%s, %s, %s, %s)",
+            ("spec", quarantined, b"held", b"incoming"),
+        )
+    # Two non-canonical posted ids resolve to the canonical served id that holds the head. A
+    # revocation under one of them withdraws the version for a read under that id alone.
+    canonical = recompute_identity(_aid_identity(pins_bound=True))
+    registry = LiveSpecRegistry(store=live_store)
+    posted = _register_identity(live_store, _aid_identity(pins_bound=False))
+    revoked_posted = _register_identity(live_store, _half_bound_aid_identity())
+    for posted_id in (posted, revoked_posted):
+        registry.register_served_definition(
+            served=canonical, schema_version=1, posted_spec_id=posted_id
+        )
+    _stored_head(live_store, canonical.spec_id, "cv_aliased")
+    _insert_version_record(live_store, subject_id=revoked_posted, content_version="cv_aliased")
+    _revoke(live_store, revoked_posted, "cv_aliased")
+    unregistered = f"spec_{'0' * 32}"
+    asked = [
+        served_head,
+        no_head,
+        replaced,
+        revoked_posted,
+        revoked_base,
+        quarantined,
+        posted,
+        canonical.spec_id,
+        unregistered,
+    ]
+    transactions = 0
+    transaction = live_store.transaction
+
+    @contextmanager
+    def counted():
+        nonlocal transactions
+        transactions += 1
+        with transaction() as tx:
+            yield tx
+
+    monkeypatch.setattr(live_store, "transaction", counted)
+
+    reads = LiveHeadStore(store=live_store).read_stored_heads(
+        asked, served_id=functools.partial(served_spec_id, code_index=get_index())
+    )
+
+    assert transactions == 1
+    summary = {
+        spec_id: (None if read.head is None else read.head.content_version, read.withdrawn)
+        for spec_id, read in reads.items()
+    }
+    assert summary == {
+        served_head: ("cv_served", False),
+        no_head: (None, False),
+        replaced: ("cv_replaced", False),
+        revoked_posted: ("cv_aliased", True),
+        revoked_base: ("cv_derived", True),
+        posted: ("cv_aliased", False),
+        canonical.spec_id: ("cv_aliased", False),
+    }
+    replaced_head = reads[replaced].head
+    assert replaced_head is not None
+    assert replaced_head.dependencies is not None
+    assert replaced_head.dependencies["imported_data"] == "sha256:replaced-import"
+    assert (
+        head_content_version(
+            reads[replaced],
+            now=replaced_head.confirmed_at,
+            recheck_interval=timedelta(seconds=900),
+            serve_stale_max_age=timedelta(days=14),
+        )
+        is None
+    )
 
 
 def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_store):

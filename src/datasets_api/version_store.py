@@ -113,6 +113,7 @@ from datasets_api.versions import (
     ListedVersion,
     MaterialisationRecord,
     ReadRendering,
+    StoredHeadRead,
     SubjectHead,
     VersionDescriber,
     VersionRecord,
@@ -132,6 +133,7 @@ from materialise.trace import (
     parse_recorded_family,
     recorded_family_json,
 )
+from spec_registry.reader import StoredDefinition, read_stored_definitions
 
 Clock = Callable[[], datetime]
 
@@ -746,6 +748,27 @@ def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
+class _ServedIdFailed(Exception):
+    """Carries an exception `read_stored_heads`' `served_id` raised out of its transaction, so
+    it reaches the caller as raised and not as a store failure."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+def _served_ids(
+    definitions: Mapping[str, StoredDefinition],
+    spec_ids: Sequence[str],
+    *,
+    served_id: Callable[[StoredDefinition], str],
+) -> dict[str, str]:
+    try:
+        return {spec_id: served_id(definitions[spec_id]) for spec_id in spec_ids}
+    except Exception as exc:
+        raise _ServedIdFailed(exc) from exc
+
+
 def _listed_versions(
     rows: Sequence[Mapping[str, object]],
     linked: Sequence[Mapping[str, object]],
@@ -1121,14 +1144,15 @@ _HEAD_COLUMNS = (
 )
 
 # A head's columns with its fingerprint kept only while its run produced its version.
-_JUDGED_HEAD_SELECT = (
-    "SELECT h.content_version, h.confirmed_at, h.materialised_at, h.materialisation_id, "
+_JUDGED_HEADS = (
+    "SELECT h.subject_id, h.content_version, h.confirmed_at, h.materialised_at, "
+    "h.materialisation_id, "
     "CASE WHEN m.content_version = h.content_version THEN h.dependencies END AS dependencies, "
     "h.family "
     "FROM datasets.subject_head h "
     "LEFT JOIN datasets.materialisation m ON m.id = h.materialisation_id "
-    "WHERE h.subject_id = %s"
 )
+_JUDGED_HEAD_SELECT = _JUDGED_HEADS + "WHERE h.subject_id = %s"
 
 
 def _insert_materialisation(
@@ -1307,3 +1331,122 @@ class LiveHeadStore:
         if row is None:
             return None
         return _head(subject_id, row)
+
+    def read_stored_heads(
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+    ) -> dict[str, StoredHeadRead]:
+        asked = list(dict.fromkeys(spec_ids))
+        if not asked:
+            return {}
+        failure: str | None = None
+        sqlstate: str | None = None
+        reads: dict[str, StoredHeadRead] = {}
+        try:
+            with self._store.transaction() as tx:
+                reads = _stored_heads_in(tx, asked, served_id=served_id)
+        except _ServedIdFailed as exc:
+            # Not a store failure: raise what resolving the served id raised.
+            raise exc.error from None
+        except Exception as exc:
+            failure = f"reading stored heads of {asked!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return reads
+
+
+def _placeholders(count: int) -> str:
+    return ", ".join(["%s"] * count)
+
+
+def _stored_heads_in(
+    tx: Transaction, asked: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+) -> dict[str, StoredHeadRead]:
+    """`LiveHeadStore.read_stored_heads` inside `tx`, the asked ids distinct: their stored
+    definitions and bindings, the quarantine of every id a stored read of them refuses on, the
+    heads of their served ids, and the record and revocations of each head's version, one
+    statement each over the whole batch."""
+    quarantined, definitions = read_stored_definitions(tx, asked)
+    registered = [spec_id for spec_id in asked if spec_id in definitions]
+    if not registered:
+        return {}
+    bound: dict[str, set[str]] = {}
+    for row in tx.fetch_all(
+        "SELECT posted_spec_id, served_spec_id FROM datasets.spec_alias "
+        f"WHERE posted_spec_id IN ({_placeholders(len(registered))})",
+        tuple(registered),
+    ):
+        bound.setdefault(cast(str, row["posted_spec_id"]), set()).add(
+            cast(str, row["served_spec_id"])
+        )
+    served = _served_ids(definitions, registered, served_id=served_id)
+    resolved = sorted(set(served.values()) - set(registered))
+    if resolved:
+        quarantined |= {
+            cast(str, row["subject_id"])
+            for row in tx.fetch_all(
+                "SELECT subject_id FROM datasets.identity_quarantine WHERE id_kind = %s "
+                f"AND subject_id IN ({_placeholders(len(resolved))})",
+                ("spec", *resolved),
+            )
+        }
+    readable = {
+        spec_id: served_id_
+        for spec_id, served_id_ in served.items()
+        if quarantined.isdisjoint({spec_id, served_id_, *bound.get(spec_id, ())})
+    }
+    subjects = sorted(set(readable.values()))
+    heads = (
+        {
+            cast(str, row["subject_id"]): _head(cast(str, row["subject_id"]), row)
+            for row in tx.fetch_all(
+                _JUDGED_HEADS + f"WHERE h.subject_id IN ({_placeholders(len(subjects))})",
+                tuple(subjects),
+            )
+        }
+        if subjects
+        else {}
+    )
+    named = sorted({(head.subject_id, head.content_version) for head in heads.values()})
+    bases: dict[tuple[str, str], str | None] = {}
+    revoked: set[tuple[str, str]] = set()
+    if named:
+        for row in tx.fetch_all(
+            "SELECT subject_id, content_version, base_content_version "
+            "FROM datasets.version_record WHERE "
+            + " OR ".join(["(subject_id = %s AND content_version = %s)"] * len(named)),
+            tuple(value for pair in named for value in pair),
+        ):
+            key = (cast(str, row["subject_id"]), cast(str, row["content_version"]))
+            bases[key] = cast("str | None", row["base_content_version"])
+        revoking = sorted({*readable, *subjects})
+        versions = sorted(
+            {cv for _, cv in named} | {base for base in bases.values() if base is not None}
+        )
+        revoked = {
+            (cast(str, row["subject_id"]), cast(str, row["content_version"]))
+            for row in tx.fetch_all(
+                "SELECT subject_id, content_version FROM datasets.version_revocation "
+                f"WHERE subject_id IN ({_placeholders(len(revoking))}) "
+                f"AND content_version IN ({_placeholders(len(versions))})",
+                (*revoking, *versions),
+            )
+        }
+    reads: dict[str, StoredHeadRead] = {}
+    for spec_id, subject_id in readable.items():
+        head = heads.get(subject_id)
+        if head is None:
+            reads[spec_id] = StoredHeadRead(head=None)
+            continue
+        key = (subject_id, head.content_version)
+        if key not in bases:
+            reads[spec_id] = StoredHeadRead(head=head, withdrawn=True)
+            continue
+        withdrawing = {
+            (revoker, cv)
+            for revoker in (subject_id, spec_id)
+            for cv in (head.content_version, bases[key])
+            if cv is not None
+        }
+        reads[spec_id] = StoredHeadRead(head=head, withdrawn=not revoked.isdisjoint(withdrawing))
+    return reads
