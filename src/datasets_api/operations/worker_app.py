@@ -213,6 +213,21 @@ class WorkerSettings(BaseSettings):
             raise DatasetsConfigError(str(exc)) from exc
 
 
+class RetryQueueSettings(BaseSettings):
+    """`DFO_TASKS_QUEUE` alone, for a worker whose URL and invoker account were injected."""
+
+    model_config = SettingsConfigDict()
+
+    tasks_queue: str | None = Field(default=None, min_length=1, validation_alias="DFO_TASKS_QUEUE")
+
+    @classmethod
+    def from_env(cls) -> RetryQueueSettings:
+        try:
+            return cls()
+        except ValidationError as exc:
+            raise DatasetsConfigError(str(exc)) from exc
+
+
 def _bearer_token(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
@@ -342,16 +357,21 @@ def build_worker_app(
 
                 if _deps is None and _deps_for_index is None:
                     if _retry_client is None:
-                        if worker_settings is None:
-                            worker_settings = WorkerSettings.from_env()
-                        if worker_settings.tasks_queue is None:
+                        # With the URL and invoker injected, only the optional queue is read
+                        # from the environment, so the required pair is never demanded.
+                        tasks_queue = (
+                            worker_settings.tasks_queue
+                            if worker_settings is not None
+                            else RetryQueueSettings.from_env().tasks_queue
+                        )
+                        if tasks_queue is None:
                             logger.warning(
                                 "Datasets worker: DFO_TASKS_QUEUE is unset, so a transient "
                                 "failure waits for the queue's own retry backoff"
                             )
                         else:
                             live_retry_client = build_live_task_client(
-                                queue=worker_settings.tasks_queue,
+                                queue=tasks_queue,
                                 worker_url=_worker_url,
                                 worker_invoker_service_account=_worker_invoker_service_account,
                             )
