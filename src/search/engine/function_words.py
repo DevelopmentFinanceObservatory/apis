@@ -89,18 +89,33 @@ COUNT_WORDS = frozenset({"number", "numbers"})
 # households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})
 
-# A negator that opens the text or a sentence and is closed by a clause mark, a spaced
-# dash or ")" answers what came before ("No, count it including imputed multilateral",
-# "No. Show gross ODA", "No - show gross ODA"), so it negates nothing after the mark.
-# `INTERJECTION` finds such a negator, and `NEGATION_CUE` and
-# `bind_repair._label_negated_in_text` pass over it. A negator inside a sentence ("ODA,
-# not, as before, multilateral") still negates, and so does a "no-" compound.
+# A "no" that opens the text or a sentence and is closed by a clause mark, a dash or ")"
+# answers what came before ("No, count it including imputed multilateral", "No. Show gross
+# ODA", "No - show gross ODA"), so it negates nothing after the mark; so does a "never"
+# closed by a sentence-final mark. A discourse opener may precede it ("Hmm, no, ..."). A
+# "not" is never a reply: "not, as before, multilateral" still negates, as does a negator
+# inside a sentence and a "no-" compound. `INTERJECTION` finds such a reply, and
+# `NEGATION_CUE` and `bind_repair._label_negated_in_text` pass over it.
 NEGATORS = ("not", "no", "never")
-_NEGATOR = r"(?:" + "|".join(NEGATORS) + r")\b"
-_CLAUSE_CLOSE = r"(?:\s*[,.;:!?)\u2013\u2014]|\s+-(?=\s))"
-_OPENS = r"(?:^|(?<=\A\s)|(?<=[.!?])|(?<=[.!?]\s)|(?<=[.!?]\s\s))"
-_NOT_OPENS = r"(?<!\A)(?<!\A\s)(?<![.!?])(?<![.!?]\s)(?<![.!?]\s\s)"
-INTERJECTION = re.compile(rf"{_OPENS}{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECASE)
+_DISCOURSE_OPENERS = ("ok", "okay", "hmm", "oh", "ah", "well", "sorry", "actually")
+_CLAUSE_CLOSE = r"(?:\s*[,.;:!?)\u2013\u2014]|\s*-(?=\s)|\s*--)"
+_SENTENCE_CLOSE = r"\s*[.!?]"
+_SENTENCE_STARTS = (r"\A", r"\A\s", r"[.!?]", r"[.!?]\s", r"[.!?]\s\s")
+# Fixed-width lookbehinds, one per way a sentence can start before the reply word.
+_OPENING_LOOKBEHINDS = (
+    *_SENTENCE_STARTS,
+    *(
+        f"{start}{word}{gap}"
+        for start in _SENTENCE_STARTS[:2] + _SENTENCE_STARTS[3:4]
+        for word in _DISCOURSE_OPENERS
+        for gap in (r"\s", r",\s")
+    ),
+)
+_OPENS = "(?:^|" + "|".join(f"(?<={look})" for look in _OPENING_LOOKBEHINDS) + ")"
+_NOT_OPENS = "".join(f"(?<!{look})" for look in _OPENING_LOOKBEHINDS)
+INTERJECTION = re.compile(
+    rf"{_OPENS}(?:no\b(?={_CLAUSE_CLOSE})|never\b(?={_SENTENCE_CLOSE}))", re.IGNORECASE
+)
 
 # The words that negate or exclude what follows: an exclusion read starts each stretch it
 # leaves out at one (`exclusion_read._pieces`), a scope phrase's origin starts at the one
@@ -108,7 +123,7 @@ INTERJECTION = re.compile(rf"{_OPENS}{_NEGATOR}(?={_CLAUSE_CLOSE})", re.IGNORECA
 # names nothing (`qualifier_match.measure_values_named`). An interjection (`INTERJECTION`)
 # is no cue.
 NEGATION_CUE = re.compile(
-    rf"\b(?:{_NOT_OPENS}{_NEGATOR}|{_NEGATOR}(?!{_CLAUSE_CLOSE})|non|excluding|exclude|excludes|except|without|"
-    r"other\s+than|rather\s+than|excl)\b",
+    rf"\b(?:not\b|{_NOT_OPENS}(?:no|never)\b|no\b(?!{_CLAUSE_CLOSE})|never\b(?!{_SENTENCE_CLOSE})|"
+    r"non|excluding|exclude|excludes|except|without|other\s+than|rather\s+than|excl)\b",
     re.IGNORECASE,
 )

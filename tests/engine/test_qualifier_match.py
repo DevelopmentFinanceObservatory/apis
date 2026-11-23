@@ -614,6 +614,11 @@ def test_measure_value_plural_reaches_its_singular_registered_label():
             id="a-name-after-a-negation-cue",
         ),
         pytest.param("no, climate finance commitments", {"Commitment"}, id="a-reply-no-is-no-cue"),
+        pytest.param(
+            "not, as before, attributed climate finance",
+            set(),
+            id="a-name-after-a-comma-closed-not",
+        ),
         pytest.param("private finance mobilised", {"amountMobilised"}, id="a-graph-name"),
         pytest.param("finance mobilised by guarantees", {"amountMobilised"}, id="a-declared-word"),
         pytest.param("climate finance commitments", {"Commitment"}, id="no-attribution"),

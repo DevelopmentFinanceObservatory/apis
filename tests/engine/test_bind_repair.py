@@ -1056,6 +1056,11 @@ class TestAReplyValueAboveTheDefault:
         ("women", "No - women", False),
         ("women", "no \u2014 women", False),
         ("women", "no\u2014women", False),
+        ("women", "Hmm, no, women", False),
+        ("women", "OK no, women", False),
+        ("women", "No -- women", False),
+        ("women", "No- women", False),
+        ("women", "Not, as before, women", True),
         ("women", "no) women", False),
         ("women", "show data, not, as before, women", True),
         ("women", "data never, ever women", True),
@@ -1067,7 +1072,7 @@ def test_a_negator_negates_unless_it_opens_a_sentence_a_mark_closes(label, text,
     assert _label_negated_in_text(label, text) is negated
 
 
-def test_an_earlier_negated_occurrence_stays_negated_beside_a_later_one():
+def test_a_second_occurrence_stays_negated_by_a_not_before_the_first():
     text = "net, not gross, gross ODA"
     start = text.rindex("gross")
 
