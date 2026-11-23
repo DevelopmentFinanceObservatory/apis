@@ -10,6 +10,7 @@ store over it too, so a head check or any other write would show in its change c
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -18,6 +19,8 @@ from typing import Any, cast
 
 import pytest
 
+import datasets_api.doors.heads as heads_door
+from code_index.composites import COMPOSITES
 from code_index.shared import get_index
 from dataset_store.snapshot import StoredVersion, VersionState
 from datasets_api.config import DatasetsBuildSettings
@@ -35,7 +38,8 @@ from dfo_platform.timings import count
 from graph_release.context import current_release
 from materialise.trace import UNKNOWN_FAMILY
 from spec_registry import LiveSpecRegistry, recompute_identity
-from spec_registry.reader import StoredDefinition
+from spec_registry.reader import LiveSpecReader, StoredDefinition
+from tests.code_index.aid_identity import CRS_PROVENANCE
 from tests.spec_registry.conftest import shape_for
 
 from ._app_factories import make_client
@@ -45,7 +49,7 @@ from ._version_record_store import (
     FakeVersionRecordDatasetStore,
     materialisation_record,
 )
-from .conftest import FakeDatasetStore, minimal_identity
+from .conftest import minimal_identity
 from .test_mint_canonical_identity import _identity as _aid_identity
 
 _PATH = "/api/datasets/heads"
@@ -67,7 +71,17 @@ def _unregistered(n: int) -> str:
 
 
 class _Rig:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One SQLite store holds the registry, heads, versions and operations, and backs the
+    app's registry, spec reader, head store and operation store, so any write a read made
+    would move its change count."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        head_writer: LiveHeadStore | None = None,
+        read_max_concurrency: int | None = None,
+    ) -> None:
         self.store = FakeVersionRecordDatasetStore()
         self.transactions = 0
         transaction = self.store.transaction
@@ -84,8 +98,10 @@ class _Rig:
         settings = DatasetsBuildSettings.from_env()
         self.task_client = FakeTaskClient()
         self.client = make_client(
-            registry=LiveSpecRegistry(store=FakeDatasetStore()),
-            head_writer=LiveHeadStore(store=self.store, now=lambda: _NOW),
+            registry=LiveSpecRegistry(store=self.store),
+            spec_reader=LiveSpecReader(store=self.store),
+            head_writer=head_writer or LiveHeadStore(store=self.store, now=lambda: _NOW),
+            read_max_concurrency=read_max_concurrency,
             operation_store=LiveOperationStore(store=self.store, settings=settings),
             task_client=self.task_client,
             task_creates=InlineTaskCreates(),
@@ -166,9 +182,11 @@ class _Rig:
                 ("spec", spec_id),
             )
 
-    def get(self, spec_ids: list[str]):
+    def get(self, spec_ids: list[str], *, extra: tuple[tuple[str, str], ...] = ()):
         self.transactions = 0
-        return self.client.get(_PATH, params=[("spec_id", spec_id) for spec_id in spec_ids])
+        return self.client.get(
+            _PATH, params=[*(("spec_id", spec_id) for spec_id in spec_ids), *extra]
+        )
 
 
 @pytest.fixture
@@ -268,6 +286,12 @@ def test_a_batch_reads_in_one_transaction_and_writes_nothing(rig: _Rig) -> None:
     rig.head(ids[1], _cv(1), age=_PAST_WINDOW)
     # Past the ceiling and with no head, where a stored read queues a rebuild.
     rig.head(ids[2], _cv(2), age=_PAST_CEILING)
+    # A non-canonical posted id, which a stored read would resolve by registering its served
+    # definition and binding it (`resolve_served_definition`).
+    posted = rig.register(_aid_identity(pins_bound=False))
+    canonical = recompute_identity(_aid_identity(pins_bound=True)).spec_id
+    rig.head(canonical, _cv(5))
+    ids.append(posted)
     changes = rig.store.total_changes
 
     resp = rig.get(ids)
@@ -275,6 +299,7 @@ def test_a_batch_reads_in_one_transaction_and_writes_nothing(rig: _Rig) -> None:
     assert resp.status_code == 200, resp.text
     assert rig.transactions == 1
     assert "db_transactions;desc=1" in resp.headers["server-timing"]
+    assert resp.json()["heads"][-1] == {"spec_id": posted, "content_version": _cv(5)}
     assert rig.store.total_changes == changes
     assert rig.task_client.enqueued == []
 
@@ -294,6 +319,7 @@ def test_the_answer_is_cacheable_for_five_minutes(rig: _Rig) -> None:
         pytest.param([_unregistered(1), _unregistered(1)], id="repeated"),
         pytest.param(["spec_ABC"], id="malformed"),
         pytest.param([f"spec_{'A' * 32}"], id="uppercase"),
+        pytest.param([f"{_unregistered(1)}\n"], id="trailing-newline"),
     ],
 )
 def test_a_query_outside_the_grammar_refuses_request_invalid_with_no_store(
@@ -312,6 +338,117 @@ def test_the_cap_itself_is_answered(rig: _Rig) -> None:
 
     assert resp.status_code == 200
     assert len(resp.json()["heads"]) == HEADS_MAX
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param((("cb", "123"),), id="cache-buster"),
+        pytest.param((("spec_ids", _unregistered(2)),), id="near-miss-name"),
+    ],
+)
+def test_a_query_naming_another_parameter_refuses_request_invalid_with_no_store(
+    rig: _Rig, extra: tuple[tuple[str, str], ...]
+) -> None:
+    resp = rig.get([_unregistered(1)], extra=extra)
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "request_invalid"
+    assert resp.headers["cache-control"] == "no-store"
+    assert rig.transactions == 0
+
+
+def _unresolvable_identity() -> dict:
+    """An identity whose provenance set names a composite, which canonicalisation refuses
+    (`code_index.composites.CompositeNotServable`), as a stored read of it does."""
+    return minimal_identity(
+        shape=shape_for("heads_unresolvable"),
+        facets={"provenance": {"state": "set", "refs": [COMPOSITES[0].provenance, CRS_PROVENANCE]}},
+    )
+
+
+def test_a_spec_with_no_served_id_answers_null_beside_the_others(rig: _Rig) -> None:
+    first, last = rig.register(), rig.register()
+    rig.head(first, _cv(1))
+    rig.head(last, _cv(2))
+    unresolvable = rig.register(_unresolvable_identity())
+
+    resp = rig.get([first, unresolvable, last])
+
+    assert resp.status_code == 200, resp.text
+    assert [head["content_version"] for head in resp.json()["heads"]] == [_cv(1), None, _cv(2)]
+
+
+def test_any_other_failure_resolving_a_served_id_is_not_a_store_failure(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(stored: StoredDefinition, *, code_index: object) -> str:
+        raise RuntimeError("canonicalisation bug")
+
+    monkeypatch.setattr(heads_door, "served_spec_id", broken)
+
+    resp = rig.get([rig.register()])
+
+    assert resp.status_code == 500
+    assert resp.json()["code"] == "internal_error"
+
+
+def test_a_quarantined_served_id_answers_null_for_a_clean_asked_id(rig: _Rig) -> None:
+    posted = rig.register(_aid_identity(pins_bound=False))
+    canonical = recompute_identity(_aid_identity(pins_bound=True)).spec_id
+    rig.head(canonical, _cv(1))
+    rig.quarantine(canonical)
+
+    resp = rig.get([posted])
+
+    assert resp.json()["heads"] == [{"spec_id": posted, "content_version": None}]
+
+
+def test_a_revocation_under_the_served_id_answers_null_for_the_asked_id(rig: _Rig) -> None:
+    posted = rig.register(_aid_identity(pins_bound=False))
+    canonical = recompute_identity(_aid_identity(pins_bound=True)).spec_id
+    rig.head(canonical, _cv(1))
+    rig.revoke(canonical, _cv(1))
+
+    resp = rig.get([posted])
+
+    assert resp.json()["heads"] == [{"spec_id": posted, "content_version": None}]
+
+
+class _GatedHeadStore(LiveHeadStore):
+    """Holds every stored-head read until `gate` is set; `entered` is set when one waits."""
+
+    def __init__(self, *, store: FakeVersionRecordDatasetStore) -> None:
+        super().__init__(store=store, now=lambda: _NOW)
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+
+    def read_stored_heads(self, spec_ids, *, served_id):
+        self.entered.set()
+        assert self.gate.wait(5)
+        return super().read_stored_heads(spec_ids, served_id=served_id)
+
+
+def test_a_full_read_executor_refuses_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    head_store = _GatedHeadStore(store=FakeVersionRecordDatasetStore())
+    rig = _Rig(monkeypatch, head_writer=head_store, read_max_concurrency=1)
+    held: list[Any] = []
+    first = threading.Thread(target=lambda: held.append(rig.get([_unregistered(1)])))
+    first.start()
+    try:
+        assert head_store.entered.wait(5)
+
+        resp = rig.get([_unregistered(2)])
+    finally:
+        head_store.gate.set()
+        first.join(5)
+
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "service_unavailable"
+    assert resp.headers["cache-control"] == "no-store"
+    assert held[0].status_code == 200
 
 
 def test_heads_is_never_read_as_a_dataset_id(rig: _Rig) -> None:

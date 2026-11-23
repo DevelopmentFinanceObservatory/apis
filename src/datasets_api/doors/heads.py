@@ -3,7 +3,8 @@ spec the query names, the dataset version a `latest: "stored"` read of it would 
 stored head now, or null. It is open to every caller.
 
 The query names 1 to `HEADS_MAX` distinct `spec_id`s, each `spec_` and 32 lowercase hexadecimal
-digits. Anything else refuses `request_invalid` (400) at `/spec_id`. The 200 is `DatasetHeads`,
+digits, and no other parameter, so an added parameter cannot split the edge cache. Anything else
+refuses `request_invalid` (400) at the parameter at fault. The 200 is `DatasetHeads`,
 one `DatasetHead` per asked spec in query order.
 
 Each spec resolves to its served id as a stored read resolves it
@@ -11,7 +12,7 @@ Each spec resolves to its served id as a stored read resolves it
 and the head of that id is judged by the stored read's own rule
 (`current.stored_head_servable`), so a head past the recheck window and inside
 `head_serve_stale_max_age_seconds` answers its version. `content_version` is null for an
-unregistered or quarantined spec, a spec with no head, a head keyed on an import the bound
+unregistered or quarantined spec, one whose stored identity a stored read refuses to resolve, a spec with no head, a head keyed on an import the bound
 release no longer carries, a head past that ceiling, and a head whose version has no record or
 is revoked, or whose base version is, under the served id or the asked id.
 
@@ -31,14 +32,16 @@ from __future__ import annotations
 import functools
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Query
+from dfo_spec_kit.identity import IdentityError
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_index.composites import CompositeNotServable
 from code_index.query import CodeIndex
 from datasets_api.backpressure import Backpressure
 from datasets_api.current import stored_head_servable
@@ -50,6 +53,7 @@ from datasets_api.timings import count, door_call, phase, run_with_timings
 from datasets_api.versions import HeadReader, StoredHeadRead
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
+from spec_registry.reader import StoredDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +61,20 @@ HEADS_MAX: Final = 64
 HEADS_CACHE_CONTROL: Final = "public, max-age=300"
 
 _SPEC_ID_PATTERN: Final = r"^spec_[0-9a-f]{32}$"
-_SPEC_ID = re.compile(_SPEC_ID_PATTERN)
+# `fullmatch` with no anchors: `$` also matches before a trailing newline.
+_SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
 
 
 class HeadsRequestInvalid(Refusal):
-    """A query naming no `spec_id`, more than `HEADS_MAX`, one twice, or one outside the id
-    grammar. Maps to `request_invalid` (400) at `/spec_id`."""
+    """A query naming no `spec_id`, more than `HEADS_MAX`, one twice, one outside the id
+    grammar, or any other parameter. Maps to `request_invalid` (400) at the parameter it
+    names."""
 
     code = "request_invalid"
-    pointer = "/spec_id"
 
-    def __init__(self, detail: str) -> None:
+    def __init__(self, detail: str, *, pointer: str = "/spec_id") -> None:
         self.detail = detail
+        self.pointer = pointer
         super().__init__(detail)
 
 
@@ -100,6 +106,21 @@ class DatasetHeads(BaseModel):
     heads: list[DatasetHead] = Field(description="one entry per asked spec, in query order")
 
 
+def check_query(parameters: Iterable[str]) -> None:
+    """Refuse a query naming any parameter other than `spec_id`, so an added parameter cannot
+    make another cache key for one answer.
+
+    Raises:
+        HeadsRequestInvalid: A parameter other than `spec_id`, at that parameter.
+    """
+    unknown = next((name for name in parameters if name != "spec_id"), None)
+    if unknown is not None:
+        raise HeadsRequestInvalid(
+            f"{unknown!r} is not a parameter of this route; name only spec_id",
+            pointer=f"/{unknown}",
+        )
+
+
 def check_spec_ids(spec_ids: Sequence[str] | None) -> list[str]:
     """`spec_ids` as a list, when it names 1 to `HEADS_MAX` distinct ids in the grammar.
 
@@ -111,7 +132,7 @@ def check_spec_ids(spec_ids: Sequence[str] | None) -> list[str]:
         raise HeadsRequestInvalid("name at least one spec_id")
     if len(spec_ids) > HEADS_MAX:
         raise HeadsRequestInvalid(f"name at most {HEADS_MAX} spec_id values")
-    malformed = next((spec_id for spec_id in spec_ids if not _SPEC_ID.match(spec_id)), None)
+    malformed = next((spec_id for spec_id in spec_ids if not _SPEC_ID.fullmatch(spec_id)), None)
     if malformed is not None:
         raise HeadsRequestInvalid(
             f"{malformed!r} is not a spec id: `spec_` and 32 lowercase hexadecimal digits"
@@ -144,6 +165,17 @@ def head_content_version(
     return head.content_version
 
 
+def _served_or_none(stored: StoredDefinition, *, code_index: CodeIndex) -> str | None:
+    """`stored`'s served id (`served_spec_id`), or `None` when its stored identity has none: a
+    composite named in a provenance set (`CompositeNotServable`) or an identity the kit
+    refuses (`IdentityError`). A stored read of it refuses with the same error, so it serves
+    from no head."""
+    try:
+        return served_spec_id(stored, code_index=code_index)
+    except (CompositeNotServable, IdentityError):
+        return None
+
+
 def read_dataset_heads(
     *,
     spec_ids: Sequence[str],
@@ -158,7 +190,7 @@ def read_dataset_heads(
     count("db_transactions", 0)
     with phase("heads_read"):
         reads = head_reader.read_stored_heads(
-            spec_ids, served_id=functools.partial(served_spec_id, code_index=code_index)
+            spec_ids, served_id=functools.partial(_served_or_none, code_index=code_index)
         )
     return DatasetHeads(
         heads=[
@@ -183,6 +215,7 @@ def build_heads_door(*, deps: DepsCell) -> DoorContribution:
 
     @router.get("/api/datasets/heads", response_model=DatasetHeads)
     async def read_heads(
+        request: Request,
         spec_id: Annotated[
             list[str] | None,
             # Declared for the OpenAPI document only. `check_spec_ids` enforces it, so every
@@ -200,6 +233,7 @@ def build_heads_door(*, deps: DepsCell) -> DoorContribution:
         current = deps.get()
         settings = current.settings
         with door_call("heads", logger=logger) as call:
+            check_query(request.query_params.keys())
             asked = check_spec_ids(spec_id)
             answer = await current.read_executor.run(
                 functools.partial(
@@ -245,6 +279,7 @@ __all__ = [
     "HeadsBackpressure",
     "HeadsRequestInvalid",
     "build_heads_door",
+    "check_query",
     "check_spec_ids",
     "head_content_version",
     "read_dataset_heads",
