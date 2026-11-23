@@ -411,12 +411,39 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 def test_worker_then_service_move_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-4:] == [
+    assert names[-6:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
+        "Warm the new revision",
         "Settle rows the previous image wrote",
         "Backfill description records",
+        "Fail on errors the new revision answered while warming",
     ]
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("error", 1), ("warm", 0), ("forbidden", 0)])
+def test_the_deploy_fails_on_a_warm_error_only_after_the_maintenance_steps(
+    status: str, exit_code: int
+):
+    """The warm step calls the new revision as the deployer and records its outcome without
+    failing, so the settle and the backfill run whatever the revision answered; the last step
+    fails the deploy on an error answer alone."""
+    warm = _step("warm")
+    assert warm["run"].strip() == ".github/scripts/deploy_warm.sh"
+    assert warm["env"]["SERVICE"] == "${{ vars.SERVICE_APIS }}"
+    assert warm["env"]["DEPLOYER"] == "${{ secrets.WIF_SA }}"
+    assert "continue-on-error" not in warm
+
+    last = _steps()[-1]
+    assert last["env"]["WARM_STATUS"] == "${{ steps.warm.outputs.status }}"
+    check = subprocess.run(
+        ["bash", "-c", last["run"]],
+        env={"PATH": "/usr/bin:/bin", "WARM_STATUS": status},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == exit_code
 
 
 def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_step():
@@ -434,9 +461,20 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 18
+    assert len(later) == 20
+    # The warm step and the warm verdict also run when the target image already serves, so a
+    # rerun after a failed warm probes the live revision again instead of going green.
+    warm_checks = {
+        "Warm the new revision",
+        "Fail on errors the new revision answered while warming",
+    }
     for step in later:
-        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+        expected = (
+            "steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'"
+            if step.get("name") in warm_checks
+            else "steps.decide.outputs.deploy == 'true'"
+        )
+        assert step["if"] == expected, step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():

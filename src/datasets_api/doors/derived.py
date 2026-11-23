@@ -37,7 +37,7 @@ file and the digest link bind `datasets.files`, whose writer refusals the file a
 (`excel_limit`, `parquet_size_bound`). All three admit every caller. The manifest and the
 link read and sign on the read executor, and a file renders on the work executor under a
 materialise permit. `POST /api/datasets/analysis` with `include: ["manifest"]` embeds the
-manifest this door answers (`derived_manifest`).
+manifest this door answers (`derived_manifest_model`).
 """
 
 from __future__ import annotations
@@ -198,8 +198,9 @@ def derived_reads(current: Deps) -> DerivedReads:
     )
 
 
-def derived_manifest(*, id: str, content_version: str, current: Deps) -> dict[str, Any]:
-    """The body `GET /api/datasets/derived/{id}/{content_version}` answers, read now.
+def derived_manifest_model(*, id: str, content_version: str, current: Deps) -> DerivedManifest:
+    """The `DerivedManifest` `GET /api/datasets/derived/{id}/{content_version}` answers, read
+    now, validated once, for a caller that dumps it inside its own body.
 
     Raises:
         SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `read_derived_manifest` does.
@@ -207,7 +208,18 @@ def derived_manifest(*, id: str, content_version: str, current: Deps) -> dict[st
     facts = read_derived_manifest(
         spec_id=id, content_version=content_version, reads=derived_reads(current)
     )
-    return DerivedManifest.model_validate(manifest_body(facts)).model_dump(mode="json")
+    return DerivedManifest.model_validate(manifest_body(facts))
+
+
+def derived_manifest(*, id: str, content_version: str, current: Deps) -> dict[str, Any]:
+    """The body `GET /api/datasets/derived/{id}/{content_version}` answers, read now.
+
+    Raises:
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `read_derived_manifest` does.
+    """
+    return derived_manifest_model(
+        id=id, content_version=content_version, current=current
+    ).model_dump(mode="json")
 
 
 def derived_file[T](
@@ -621,6 +633,7 @@ __all__ = [
     "build_derived_files_door",
     "derived_file",
     "derived_manifest",
+    "derived_manifest_model",
     "derived_reads",
     "link_cache_control",
     "renew_derived_link",

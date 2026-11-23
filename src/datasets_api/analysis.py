@@ -195,6 +195,7 @@ from datasets_api.publish_models import (
 )
 from datasets_api.recipe_store import AnswerRecord, RecipeStore
 from datasets_api.render import frame_file_location, linked_stored_frame, stored_frame_sha256
+from datasets_api.timings import phase
 from datasets_api.versions import VersionRecordWriter
 from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
@@ -2528,12 +2529,26 @@ def _evaluated_frames(
 ) -> Computed:
     """Evaluate the working tree over `frames`, the frames of `resolved` in its order, a
     stored op-spec's filter values on a breakdown column matched to them through `codes`
-    (`_Engine.matched`).
+    (`_Engine.matched`). Times under the `evaluate` phase.
 
     Raises:
         AnalysisTooLarge: The frame passes the rows the publish door stores
             (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
+    with phase("evaluate"):
+        return _evaluated_tree(working, resolved, frames, bounds=bounds, latest=latest, codes=codes)
+
+
+def _evaluated_tree(
+    working: dict[str, Any],
+    resolved: Sequence[LocatedRoot],
+    frames: Sequence[Frame],
+    *,
+    bounds: AnalysisBounds,
+    latest: bool,
+    codes: CodeIndex | None,
+) -> Computed:
+    """`_evaluated_frames` outside its phase."""
     engine = _Engine(frames=frames, resolved=resolved, codes=codes)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
@@ -2724,21 +2739,20 @@ def prepare_analysis(
     trace_id: str | None = None,
 ) -> PreparedAnalysis:
     """Plan `request`'s tree, resolve its roots and take its request key, reading no frame.
+    Planning and resolving time under the `resolve_roots` phase, the key under `request_key`.
 
     Raises:
         AnalysisPending: A root is still building.
         SeveralMembers, FrameUnavailable, AnalysisTooLarge: As their docstrings say.
     """
-    working, roots = plan_roots(request, source=source, bounds=bounds)
-    resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-    working, resolved = merged_roots(working, resolved, roots)
+    with phase("resolve_roots"):
+        working, roots = plan_roots(request, source=source, bounds=bounds)
+        resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+        working, resolved = merged_roots(working, resolved, roots)
     latest = request.latest is True
-    return PreparedAnalysis(
-        working=working,
-        resolved=tuple(resolved),
-        latest=latest,
-        key=request_key(working, resolved, latest=latest),
-    )
+    with phase("request_key"):
+        key = request_key(working, resolved, latest=latest)
+    return PreparedAnalysis(working=working, resolved=tuple(resolved), latest=latest, key=key)
 
 
 def stored_heads(prepared: PreparedAnalysis) -> list[StoredHead]:
@@ -2763,23 +2777,26 @@ def stored_answer(
     digest the body's ref names, else `None`. With `summary` false the body is read without
     its `summary` (`RecipeStore.read_answer`). A hit calls `on_hit` with the pair the body
     names and its frame file's location, which the door hands to the renewal of a file near
-    the end of its working-tier retention (`operations.renewal.renew_if_expiring`).
+    the end of its working-tier retention (`operations.renewal.renew_if_expiring`). The read,
+    the file check and `on_hit` time under the `stored_answer` phase.
 
     Raises:
         SnapshotRevoked: The pair the body names is taken down.
     """
-    stored = stores.recipe_store.read_answer(request_key=prepared.key, summary=summary)
-    if stored is None:
-        return None
-    held = _held_file(
-        stores, FrameRef(spec_id=stored.spec_id, content_version=stored.content_version)
-    )
-    body: dict[str, Any] = dict(stored.body)
-    if held is None or held.artifact_digest != body["ref"]["members"][0]["artifact"]["digest"]:
-        return None
-    if on_hit is not None:
-        on_hit(stored.spec_id, stored.content_version, held.location)
-    return body
+    with phase("stored_answer"):
+        stored = stores.recipe_store.read_answer(request_key=prepared.key, summary=summary)
+        if stored is None:
+            return None
+        held = _held_file(
+            stores, FrameRef(spec_id=stored.spec_id, content_version=stored.content_version)
+        )
+        body: dict[str, Any] = dict(stored.body)
+        digest = body["ref"]["members"][0]["artifact"]["digest"]
+        if held is None or held.artifact_digest != digest:
+            return None
+        if on_hit is not None:
+            on_hit(stored.spec_id, stored.content_version, held.location)
+        return body
 
 
 def run_prepared(
@@ -2798,7 +2815,8 @@ def run_prepared(
         AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
         SnapshotRevoked: The pair the tree computes is taken down.
     """
-    located = locate_roots(prepared.resolved, source=source, cap=bounds.max_root_rows)
+    with phase("locate_roots"):
+        located = locate_roots(prepared.resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         computed = _evaluated(
             prepared.working,
@@ -2807,7 +2825,8 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        stored = _store(computed, stores, trace_id=trace_id)
+        with phase("store_frame"):
+            stored = _store(computed, stores, trace_id=trace_id)
         evaluation = replace(
             computed.evaluation,
             ref=stored.ref,
@@ -2830,14 +2849,15 @@ def run_prepared(
         ),
         created=stored.created,
     )
-    stores.recipe_store.write_answer(
-        AnswerRecord(
-            request_key=prepared.key,
-            spec_id=evaluation.ref.spec_id,
-            content_version=evaluation.ref.content_version,
-            body=result.body(),
+    with phase("write_answer"):
+        stores.recipe_store.write_answer(
+            AnswerRecord(
+                request_key=prepared.key,
+                spec_id=evaluation.ref.spec_id,
+                content_version=evaluation.ref.content_version,
+                body=result.body(),
+            )
         )
-    )
     return result
 
 
