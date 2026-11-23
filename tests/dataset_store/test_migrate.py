@@ -410,6 +410,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0048_version_record_incomplete_after.sql",
         "0049_version_artifact_head_code_index.sql",
         "0050_version_artifact_head_read_at.sql",
+        "0051_operation_submission_attempts.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
