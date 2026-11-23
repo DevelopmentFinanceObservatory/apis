@@ -2529,12 +2529,26 @@ def _evaluated_frames(
 ) -> Computed:
     """Evaluate the working tree over `frames`, the frames of `resolved` in its order, a
     stored op-spec's filter values on a breakdown column matched to them through `codes`
-    (`_Engine.matched`).
+    (`_Engine.matched`). Times under the `evaluate` phase.
 
     Raises:
         AnalysisTooLarge: The frame passes the rows the publish door stores
             (`PUBLISH_MAX_ROWS`), refused before it is digested.
     """
+    with phase("evaluate"):
+        return _evaluated_tree(working, resolved, frames, bounds=bounds, latest=latest, codes=codes)
+
+
+def _evaluated_tree(
+    working: dict[str, Any],
+    resolved: Sequence[LocatedRoot],
+    frames: Sequence[Frame],
+    *,
+    bounds: AnalysisBounds,
+    latest: bool,
+    codes: CodeIndex | None,
+) -> Computed:
+    """`_evaluated_frames` outside its phase."""
     engine = _Engine(frames=frames, resolved=resolved, codes=codes)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
@@ -2801,7 +2815,8 @@ def run_prepared(
         AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
         SnapshotRevoked: The pair the tree computes is taken down.
     """
-    located = locate_roots(prepared.resolved, source=source, cap=bounds.max_root_rows)
+    with phase("locate_roots"):
+        located = locate_roots(prepared.resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         computed = _evaluated(
             prepared.working,
@@ -2810,7 +2825,8 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        stored = _store(computed, stores, trace_id=trace_id)
+        with phase("store_frame"):
+            stored = _store(computed, stores, trace_id=trace_id)
         evaluation = replace(
             computed.evaluation,
             ref=stored.ref,
@@ -2833,14 +2849,15 @@ def run_prepared(
         ),
         created=stored.created,
     )
-    stores.recipe_store.write_answer(
-        AnswerRecord(
-            request_key=prepared.key,
-            spec_id=evaluation.ref.spec_id,
-            content_version=evaluation.ref.content_version,
-            body=result.body(),
+    with phase("write_answer"):
+        stores.recipe_store.write_answer(
+            AnswerRecord(
+                request_key=prepared.key,
+                spec_id=evaluation.ref.spec_id,
+                content_version=evaluation.ref.content_version,
+                body=result.body(),
+            )
         )
-    )
     return result
 
 

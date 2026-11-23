@@ -117,7 +117,7 @@ def test_live_equal_to_target_does_not_deploy(repo: Path, tmp_path: Path):
     result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
 
     assert result.returncode == 0, result.stderr
-    assert "deploy=false" in output
+    assert output == "deploy=false\ntarget_live=true\n"
 
 
 def test_docs_only_diff_since_live_does_not_deploy(repo: Path, tmp_path: Path):
@@ -129,7 +129,7 @@ def test_docs_only_diff_since_live_does_not_deploy(repo: Path, tmp_path: Path):
     result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
 
     assert result.returncode == 0, result.stderr
-    assert "deploy=false" in output
+    assert output == "deploy=false\ntarget_live=false\n"
 
 
 def test_src_change_several_commits_back_still_deploys(repo: Path, tmp_path: Path):
