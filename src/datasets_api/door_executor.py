@@ -72,16 +72,18 @@ class DoorExecutor:
         A callable is asked at every poll, so a waiting job can leave room for others that
         arrive while it waits.
 
-        `timings`, when given, records `queue` from submission to the job's start and
-        `handoff` from the job's finish to this coroutine resuming on the event loop.
+        `timings`, when given, records `queue` from this call to the job's start, the wait for
+        a permit included, and `handoff` from the job's finish to this coroutine resuming on
+        the event loop.
         """
+        entered = time.perf_counter()
         admitted_by = time.monotonic() + wait_seconds
         leave = (lambda: headroom) if isinstance(headroom, int) else headroom
         while not self.semaphore.acquire_leaving(leave()):
             if time.monotonic() >= admitted_by or (keep_waiting is not None and not keep_waiting()):
                 raise refuse()
             await asyncio.sleep(_ADMISSION_POLL_SECONDS)
-        timed = _TimedJob(job, timings) if timings is not None else None
+        timed = _TimedJob(job, timings, entered=entered) if timings is not None else None
         try:
             future = self.executor.submit(timed if timed is not None else job)
         except BrokenExecutor:
@@ -133,13 +135,13 @@ class DoorExecutor:
 
 
 class _TimedJob[T]:
-    """A job that records its `queue` phase on start and its `handoff` phase on demand. A job
-    still running when its caller stops waiting records no `handoff`."""
+    """A job that records its `queue` phase, from `entered` to its start, and its `handoff`
+    phase on demand. A job still running when its caller stops waiting records no `handoff`."""
 
-    def __init__(self, job: Callable[[], T], timings: PhaseTimings) -> None:
+    def __init__(self, job: Callable[[], T], timings: PhaseTimings, *, entered: float) -> None:
         self._job = job
         self._timings = timings
-        self._submitted_at = time.perf_counter()
+        self._submitted_at = entered
         self._finished_at: float | None = None
 
     def __call__(self) -> T:
