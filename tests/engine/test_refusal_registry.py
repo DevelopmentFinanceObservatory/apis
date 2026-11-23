@@ -16,6 +16,7 @@ _UNBOUND_PATHS = frozenset(
         "/api/search/json-schema",
         "/api/search/capabilities",
         "/api/search/catalogue",
+        "/api/search/stated-scope",
     }
 )
 

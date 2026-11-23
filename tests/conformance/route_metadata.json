@@ -1008,6 +1008,15 @@
     "surface": "search"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "read_stated_scopes",
+    "operation_id": "search_read_stated_scopes",
+    "path": "/api/search/stated-scope",
+    "summary": "Read Stated Scopes",
+    "surface": "search"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "list_skills",

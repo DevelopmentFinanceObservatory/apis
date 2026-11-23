@@ -221,6 +221,12 @@ from .spec import (
     SpecDefinition,
     UnitConversion,
 )
+from .stated_scope_door import (
+    StatedScopeEntry,
+    StatedScopeReading,
+    StatedScopeRequest,
+    StatedScopeResponse,
+)
 from .statvar import (
     DateRange,
     ResolvedStatVars,
@@ -501,6 +507,10 @@ __all__ = [
     "SpecObservations",
     "StatVar",
     "StatVarSlotValue",
+    "StatedScopeEntry",
+    "StatedScopeReading",
+    "StatedScopeRequest",
+    "StatedScopeResponse",
     "StatusLiteral",
     "TextOrigin",
     "TimeWindow",
