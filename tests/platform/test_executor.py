@@ -7,7 +7,6 @@ import asyncio
 import contextvars
 import logging
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -222,14 +221,16 @@ class TestContextCarryingSubmission:
 class TestMapInThreads:
     def test_results_keep_item_order_when_calls_finish_in_reverse(self):
         """Each call waits for the next item's call to finish, so the calls finish last item
-        first, which also proves they run side by side. Each sees the caller's context."""
+        first, which also proves they run side by side. Each sees the caller's context, on a
+        daemon thread that interpreter exit does not wait for."""
         finished = [threading.Event() for _ in range(4)]
 
         def call(index: int) -> str:
             if index + 1 < len(finished):
                 assert finished[index + 1].wait(timeout=5)
             finished[index].set()
-            return f"{_REQUEST_VALUE.get()}-{index}"
+            daemon = "daemon" if threading.current_thread().daemon else "joined"
+            return f"{_REQUEST_VALUE.get()}-{index}-{daemon}"
 
         token = _REQUEST_VALUE.set("bound")
         try:
@@ -237,9 +238,10 @@ class TestMapInThreads:
         finally:
             _REQUEST_VALUE.reset(token)
 
-        assert results == ["bound-0", "bound-1", "bound-2", "bound-3"]
+        assert results == [f"bound-{index}-daemon" for index in range(4)]
 
     def test_raises_the_earliest_failed_item_after_a_later_one_fails_first(self):
+        """Item 0 starts before item 2, so item 2's failure cannot stop it."""
         later_failed = threading.Event()
 
         def call(index: int) -> int:
@@ -254,23 +256,19 @@ class TestMapInThreads:
         with pytest.raises(KeyError, match="item 0"):
             map_in_threads(call, range(3), max_workers=3, thread_name_prefix="t-map")
 
-    def test_a_failure_cancels_the_calls_not_yet_started(self):
-        """Each later call sleeps 20 ms, so the 49 of them would take about a second
-        unless the failure cancels them."""
+    def test_a_failure_starts_no_later_item(self):
         started: list[int] = []
 
         def call(index: int) -> int:
             started.append(index)
             if index == 0:
                 raise ValueError("item 0")
-            time.sleep(0.02)
             return index
 
         with pytest.raises(ValueError, match="item 0"):
             map_in_threads(call, range(50), max_workers=1, thread_name_prefix="t-map")
 
-        assert started[0] == 0
-        assert len(started) < 50
+        assert started == [0]
 
     def test_no_items_start_no_threads(self):
         assert map_in_threads(str, [], max_workers=4, thread_name_prefix="t-map") == []

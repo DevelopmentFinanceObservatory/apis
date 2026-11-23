@@ -599,6 +599,12 @@ def get_release_service() -> ReleaseService:
     return _singleton.acquire()
 
 
+def release_release_service(service: ReleaseService) -> None:
+    """Gives back one hold `get_release_service()` took. Raises `RuntimeError` for a service
+    it never returned or one released more often than acquired."""
+    _singleton.release(service)
+
+
 def reset_release_service() -> None:
     """Test-only: clears the singleton so the next access rebuilds it."""
     _singleton.force_reset()
@@ -613,5 +619,6 @@ __all__ = [
     "ReleaseViews",
     "build_release_views",
     "get_release_service",
+    "release_release_service",
     "reset_release_service",
 ]

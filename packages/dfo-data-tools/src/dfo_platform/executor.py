@@ -8,7 +8,7 @@ import contextvars
 import logging
 import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import FIRST_EXCEPTION, Executor, Future, ThreadPoolExecutor, wait
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from typing import Any, override
 
 logger = logging.getLogger(__name__)
@@ -137,28 +137,56 @@ async def run_in_executor_with_context[*Ts, R](
 def map_in_threads[T, R](
     fn: Callable[[T], R], items: Sequence[T], *, max_workers: int, thread_name_prefix: str
 ) -> list[R]:
-    """`fn(item)` for each item, in `items` order, run on up to `max_workers` new threads,
-    each call under a copy of the caller's context.
+    """`fn(item)` for each item, in `items` order, run on up to `max_workers` new daemon
+    threads, each call under a copy of the caller's context.
 
-    For synchronous code that waits on many independent reads, such as startup. On the first
-    failure the calls not yet started are cancelled and the running ones finish. Then the
-    exception of the earliest failed item in `items` order is raised, the one a loop over
-    `items` would have raised.
+    For synchronous code that waits on many independent reads, such as startup. Workers
+    start items in `items` order, so every item before a failed one has started by the time
+    it fails. On the first failure no further item starts and the started ones finish. Then
+    the exception of the earliest failed item is raised, the one a loop over `items` would
+    have raised. The workers are daemon threads, so interpreter exit does not wait for the
+    items a caller abandoned, and an exception that interrupts the caller's wait, such as
+    `KeyboardInterrupt`, stops them starting further items.
     """
     if not items:
         return []
-    with ContextCarryingExecutor(
-        max_workers=min(max_workers, len(items)), thread_name_prefix=thread_name_prefix
-    ) as pool:
-        futures = [pool.submit(fn, item) for item in items]
-        wait(futures, return_when=FIRST_EXCEPTION)
-        if any(future.done() and future.exception() is not None for future in futures):
-            for future in futures:
-                future.cancel()
-            wait(futures)
-            raise next(
-                error
-                for future in futures
-                if not future.cancelled() and (error := future.exception()) is not None
-            )
-        return [future.result() for future in futures]
+    context = contextvars.copy_context()
+    results: dict[int, R] = {}
+    errors: dict[int, BaseException] = {}
+    lock = threading.Lock()
+    next_index = 0
+    stopped = False
+
+    def take() -> int | None:
+        nonlocal next_index
+        with lock:
+            if stopped or next_index >= len(items):
+                return None
+            index, next_index = next_index, next_index + 1
+            return index
+
+    def work() -> None:
+        nonlocal stopped
+        while (index := take()) is not None:
+            try:
+                results[index] = context.copy().run(fn, items[index])
+            except BaseException as exc:
+                errors[index] = exc
+                with lock:
+                    stopped = True
+
+    workers = [
+        threading.Thread(target=work, name=f"{thread_name_prefix}_{n}", daemon=True)
+        for n in range(min(max_workers, len(items)))
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+    finally:
+        with lock:
+            stopped = True
+    if errors:
+        raise errors[min(errors)]
+    return [results[index] for index in range(len(items))]

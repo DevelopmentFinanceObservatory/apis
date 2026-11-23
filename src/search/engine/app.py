@@ -22,14 +22,16 @@ Upstream timeouts bound stalled calls.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import dataclasses
 import functools
 import json
 import logging
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -57,7 +59,6 @@ from dfo_platform.build import build_commit
 from dfo_platform.cloud_logging import log_event
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
-from dfo_platform.executor import submit_with_context
 from dfo_platform.named import cut
 from dfo_platform.problem import log_problem
 from dfo_platform.request_deadline import request_deadline
@@ -74,7 +75,7 @@ from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, get_release_service
+from graph_release.service import ReleaseService, get_release_service, release_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -1196,29 +1197,46 @@ def _require_jev_key() -> None:
 
 
 def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
-    """The origin catalogue and graph release services, the release loading on a second thread
+    """The origin catalogue and graph release services, the release loading on a daemon thread
     under the caller's context while the catalogue loads on this one, since each first load
-    downloads its artifact. A failing catalogue raises its error once the release load has
-    finished, after logging the release's own error, if any, as
-    `search_startup_stage_failed`."""
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-release-load") as pool:
-        release = submit_with_context(
-            pool, lambda: _timed_load("graph_release", get_release_service)
-        )
+    downloads its artifact.
+
+    A failing catalogue raises its error at once and abandons the release load, which process
+    exit does not wait for. When an abandoned load finishes, it gives back the release service
+    it acquired, or logs its own error as `search_startup_stage_failed`."""
+    release: Future[ReleaseService] = Future()
+    context = contextvars.copy_context()
+
+    def load_release() -> None:
+        release.set_running_or_notify_cancel()
         try:
-            catalogue = _timed_load("origin_catalogue", get_catalogue_service)
-        except Exception:
-            if (release_error := release.exception()) is not None:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "search_startup_stage_failed",
-                    exc_info=release_error,
-                    stage="graph_release",
-                    error=type(release_error).__name__,
-                )
-            raise
-        return catalogue, release.result()
+            loaded = context.run(lambda: _timed_load("graph_release", get_release_service))
+            release.set_result(loaded)
+        except BaseException as exc:
+            release.set_exception(exc)
+
+    threading.Thread(target=load_release, name="graph-release-load", daemon=True).start()
+    try:
+        catalogue = _timed_load("origin_catalogue", get_catalogue_service)
+    except Exception:
+        release.add_done_callback(_abandon_release_load)
+        raise
+    return catalogue, release.result()
+
+
+def _abandon_release_load(release: Future[ReleaseService]) -> None:
+    """Gives back the service an abandoned release load acquired, or logs its error."""
+    if (error := release.exception()) is None:
+        release_release_service(release.result())
+        return
+    log_event(
+        logger,
+        logging.ERROR,
+        "search_startup_stage_failed",
+        exc_info=error,
+        stage="graph_release",
+        error=type(error).__name__,
+    )
 
 
 def _timed_load[T](stage: str, load: Callable[[], T]) -> T:

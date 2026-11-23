@@ -128,33 +128,41 @@ def test_load_reads_every_table_file_side_by_side(tmp_path: Path, monkeypatch) -
 
 
 def test_load_refuses_with_the_first_bad_file_in_reading_order(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A UN file and a table file both fail their hash. The table file, which the loader
-    read first when it read one file at a time, names the error, and each file read that
-    ran logs its failure."""
+    """A table file fails its hash and a later UN file fails to read. The table file, which
+    the loader read first when it read one file at a time, names the error, and each file
+    read that ran logs its failure."""
     uri = _uri(tmp_path)
     publish_sample(uri, un_mirror=sample_un_mirror())
-    for name in ("provenances.json", UN_TOPICS_FILE):
-        path = _build_dir(tmp_path) / name
-        path.write_bytes(path.read_bytes() + b" ")
+    path = _build_dir(tmp_path) / "provenances.json"
+    path.write_bytes(path.read_bytes() + b" ")
+    read = artifact._read
 
+    def read_or_miss(file_uri: str) -> bytes:
+        if file_uri.endswith(f"/{UN_TOPICS_FILE}"):
+            raise FileNotFoundError(file_uri)
+        return read(file_uri)
+
+    monkeypatch.setattr(artifact, "_read", read_or_miss)
     with (
         caplog.at_level(logging.INFO, logger=artifact.__name__),
-        pytest.raises(CatalogueArtifactError) as refused,
+        pytest.raises(CatalogueArtifactError),
     ):
         load_catalogue(uri)
 
-    assert "provenances.json" in str(refused.value)
-    assert UN_TOPICS_FILE not in str(refused.value)
     failed = {
-        fields["file"]: (record.levelno, fields["error"])
+        fields["file"]: (record.levelno, fields["part"], fields["error"])
         for record in caplog.records
         if (fields := getattr(record, JSON_FIELDS_ATTR, {})).get("event")
         == "origin_catalogue_file_failed"
     }
-    assert failed["provenances"] == (logging.WARNING, "CatalogueArtifactError")
-    assert set(failed) <= {"provenances", "un_topics"}
+    assert failed["provenances.json"] == (
+        logging.WARNING,
+        "provenances",
+        "CatalogueArtifactError",
+    )
+    assert set(failed) <= {"provenances.json", UN_TOPICS_FILE}
 
 
 def test_manifest_records_counts_overlaps_identity_and_size(tmp_path: Path) -> None:

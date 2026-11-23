@@ -1360,11 +1360,13 @@ def _read_files(
     SHA-256 the manifest does not record or whose bytes do not match it. Reads
     `READ_WORKERS` files at a time and refuses with the error of the earliest refused file
     in `logical` order. Logs one `origin_catalogue_file_read` line per file read, one
-    WARNING `origin_catalogue_file_failed` line per file refused or not read, and one
+    WARNING `origin_catalogue_file_failed` line per file refused or not read, each naming
+    the logical name in `part` and the manifest's file name in `file`, and one
     `origin_catalogue_files_read` line for the batch."""
 
     def read(logical_name: str) -> bytes:
         started = time.monotonic()
+        file_name = manifest.files.get(logical_name)
         try:
             uri = join_uri(prefix, _manifest_file(manifest, logical_name))
             raw = _read(uri)
@@ -1380,7 +1382,8 @@ def _read_files(
                 logging.WARNING,
                 "origin_catalogue_file_failed",
                 build_id=manifest.build_id,
-                file=logical_name,
+                part=logical_name,
+                file=file_name,
                 error=type(exc).__name__,
                 duration_ms=round((time.monotonic() - started) * 1000),
             )
@@ -1390,7 +1393,8 @@ def _read_files(
             logging.INFO,
             "origin_catalogue_file_read",
             build_id=manifest.build_id,
-            file=logical_name,
+            part=logical_name,
+            file=file_name,
             bytes=len(raw),
             duration_ms=round((time.monotonic() - started) * 1000),
         )
