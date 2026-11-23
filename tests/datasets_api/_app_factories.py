@@ -18,6 +18,7 @@ from datasets_api.export_store import LiveExportStore
 from datasets_api.mint_deps import MintDeps
 from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
+from datasets_api.operations.task_create_pool import TaskCreates
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
@@ -82,6 +83,7 @@ def make_app(
     coverage=None,
     operation_store: OperationStore | None = None,
     task_client: TaskClient | None = None,
+    task_creates: TaskCreates | None = None,
     catalogue: CatalogueService | None = None,
     now: Clock | None = None,
     deps_cell: DepsCell | None = None,
@@ -93,7 +95,8 @@ def make_app(
     The head store, the operation store and other omitted writers are the null implementations,
     and the version writer and snapshot reader follow `offline_version_pair`. An omitted reader
     reads nothing until a write, and an omitted writer records what it writes into a fake
-    reader. `task_client` defaults to `FakeTaskClient`.
+    reader. `task_client` defaults to `FakeTaskClient`, and `task_creates` to the pool the
+    lifespan builds, which creates head checks' tasks after the read answers.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
     injects both over the store its version writer shares. `export_store` defaults to one over
     the recipe store's store when both default, else over an empty SQLite-backed store. `description_store` defaults to one
@@ -160,6 +163,7 @@ def make_app(
         ("code_index", code_index),
         ("rate_cache", rate_cache),
         ("coverage", coverage),
+        ("task_creates", task_creates),
         ("catalogue", catalogue),
         ("now", now),
         ("deps_cell", deps_cell),

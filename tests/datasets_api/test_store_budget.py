@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import threading
 import traceback
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -54,10 +54,11 @@ _HEAD_HIT_TRANSACTIONS = 4
 _ALIAS_MINT_TRANSACTIONS = 8
 # A head hit under a non-canonical posted id adds the served definition's read and binding.
 _ALIAS_HEAD_HIT_TRANSACTIONS = 5
-# Past the recheck window a head hit also records the head's check and its dispatch, and confirms
-# nothing: the definition read, the head read, the version read, the check's read (which tells
-# the read whether it wrote the row), its record, its dispatch and the retention read.
-_CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 7
+# Past the recheck window a head hit also records the head's check, and confirms nothing: the
+# definition read, the head read, the version read, the check's read (which tells the read
+# whether it wrote the row), its record and the retention read. The record of the task create's
+# dispatch runs on the task create pool after the read answers.
+_CHECKED_LATER_HEAD_HIT_TRANSACTIONS = 6
 # The served ids the posted id of the version-addressed read is bound to.
 _BOUND_SERVED_IDS = 2
 # Past the 15-minute recheck window and inside the 24-hour maximum age.
@@ -120,6 +121,23 @@ class _CountingStore:
             yield tx
 
 
+class _HeldCreates:
+    """Holds every task create a read hands off until `run`, so a test counts the read's own
+    transactions apart from the create's."""
+
+    def __init__(self) -> None:
+        self.held: list[Callable[[], object]] = []
+
+    def offer(self, create: Callable[[], object]) -> bool:
+        self.held.append(create)
+        return True
+
+    def run(self) -> None:
+        held, self.held = self.held, []
+        for create in held:
+            create()
+
+
 @dataclass
 class _Surface:
     client: object
@@ -127,6 +145,7 @@ class _Surface:
     registry: LiveSpecRegistry
     # The surface's clock reads `start + offset[0]`.
     offset: list[timedelta]
+    task_creates: _HeldCreates
 
 
 @contextmanager
@@ -151,6 +170,7 @@ def _built_surface(
         client=FakeGCSClient(),
     )
     registry = LiveSpecRegistry(store=spec_store)
+    task_creates = _HeldCreates()
 
     def now() -> datetime:
         return start + offset[0]
@@ -168,10 +188,17 @@ def _built_surface(
         coverage=coverage,
         operation_store=LiveOperationStore(store=store, now=now),
         task_client=FakeTaskClient(),
+        task_creates=task_creates,
         now=now,
     )
     try:
-        yield _Surface(client=client, budget=budget, registry=registry, offset=offset)
+        yield _Surface(
+            client=client,
+            budget=budget,
+            registry=registry,
+            offset=offset,
+            task_creates=task_creates,
+        )
     finally:
         client.__exit__(None, None, None)
         version_store.close()
@@ -263,12 +290,14 @@ def test_a_head_hit_past_the_recheck_window_adds_only_its_check(surface):
     assert resp.headers["x-dfo-freshness"] == "pending"
     assert len(budget.transactions) <= _CHECKED_LATER_HEAD_HIT_TRANSACTIONS, _counted(budget)
     assert not any("confirm_head" in caller for caller in budget.transactions), _counted(budget)
-    # `LiveOperationStore` runs each statement under `_guarded`: the read, the record and the
-    # dispatch.
+    # `LiveOperationStore` runs each statement under `_guarded`: the read and the record.
     operation_calls = [caller for caller in budget.transactions if "_guarded" in caller]
-    assert len(operation_calls) == 3, _counted(budget)
+    assert len(operation_calls) == 2, _counted(budget)
     assert budget.max_in_flight == 1, _counted(budget)
     assert budget.signings == 0
+    # The handed-off create records its dispatch in one more transaction.
+    surface.task_creates.run()
+    assert len([caller for caller in budget.transactions if "_guarded" in caller]) == 3
 
 
 @contextmanager

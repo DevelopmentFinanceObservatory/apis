@@ -3,7 +3,7 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the allowance ledger, the coverage service and rate cache, the source of the code index each request reads, the
+the allowance ledger, the pool that creates head checks' tasks off the request path, the coverage service and rate cache, the source of the code index each request reads, the
 whole-variable breadth reader, one materialise semaphore, and four executors.
 
 The analysis executor runs analysis trees (`datasets_api.doors.analysis`), so a long
@@ -18,7 +18,7 @@ the work executor only when the head cannot answer it (`datasets_api.doors.defin
 
 A dependency the caller supplies in `DepsOverrides` is used as given and never closed here.
 Every other one is built live from `DatasetsSettings` and closed when the lifespan ends, after
-the four executors drain within one `ShutdownBudget`.
+the four executors and then the task create pool drain within one `ShutdownBudget`.
 """
 
 from __future__ import annotations
@@ -52,6 +52,7 @@ from datasets_api.operations.task_client import (
     TaskClientSettings,
     build_live_task_client,
 )
+from datasets_api.operations.task_create_pool import TaskCreatePool, TaskCreates
 from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS
 from datasets_api.recipe_store import LiveRecipeStore, RecipeStore
@@ -101,6 +102,9 @@ class Deps:
     sdmx: SdmxClient
     artifact_store: ArtifactStore
     task_client: TaskClient
+    # Creates the tasks of head checks stored reads recorded, off the request path
+    # (`operations.task_create_pool`).
+    task_creates: TaskCreates
     coverage: ServedCoverage
     rate_cache: RateTableCache
     # The code index a request reads (`code_index`): the caller's when it supplied one, else
@@ -185,6 +189,7 @@ class DepsOverrides:
     sdmx: SdmxClient | None = None
     artifact_store: ArtifactStore | None = None
     task_client: TaskClient | None = None
+    task_creates: TaskCreates | None = None
     now: Clock = utc_now
 
     def needs_store(self) -> bool:
@@ -344,11 +349,20 @@ async def open_deps(
         budget = ShutdownBudget()
         code_index_source = _index_source(overrides.code_index)
 
+        task_creates = overrides.task_creates
+        task_create_pool: TaskCreatePool | None = None
+        if task_creates is None:
+            task_create_pool = TaskCreatePool()
+            task_creates = task_create_pool
+
         async def _drain() -> None:
             for executor in executors:
                 executor.executor.shutdown(wait=False, cancel_futures=True)
             for executor in executors:
                 await asyncio.to_thread(executor.drain, budget)
+            # After the doors, which offer it creates, and before the task client closes.
+            if task_create_pool is not None:
+                await asyncio.to_thread(task_create_pool.shutdown, budget)
 
         # Registered last, so the drain runs before any client or the pool closes.
         stack.push_async_callback(_drain)
@@ -388,6 +402,7 @@ async def open_deps(
             sdmx=sdmx,
             artifact_store=artifact_store,
             task_client=task_client,
+            task_creates=task_creates,
             coverage=overrides.coverage,
             rate_cache=overrides.rate_cache,
             code_index_source=code_index_source,

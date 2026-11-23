@@ -21,6 +21,7 @@ from datasets_api.deps import (
 )
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_create_pool import InlineTaskCreates
 from datasets_api.versions import NullHeadWriter
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
@@ -42,7 +43,7 @@ class Unwired:
 def fake_deps(**overrides: object) -> Deps:
     """A `Deps` of offline doubles. The head store, the operation store and the other writers
     are the null implementations, the version writer and snapshot reader follow
-    `offline_version_pair`, the task client is a `FakeTaskClient`, and every other client or
+    `offline_version_pair`, the task client is a `FakeTaskClient` whose creates run inline (`InlineTaskCreates`), and every other client or
     store is `Unwired` unless `overrides` names it. A `code_index` override serves every read,
     and without one each read takes `get_index()`. No breadth reader is bound, `now` defaults to
     `utc_now`, and the executors and semaphore follow `settings`."""
@@ -57,6 +58,7 @@ def fake_deps(**overrides: object) -> Deps:
         "head_store": NullHeadWriter(),
         "operation_store": NullOperationStore(),
         "task_client": FakeTaskClient(),
+        "task_creates": InlineTaskCreates(),
         "coverage": get_coverage_service(),
         "rate_cache": RateTableCache(),
         "code_index_source": index_source,

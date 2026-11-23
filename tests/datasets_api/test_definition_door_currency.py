@@ -102,10 +102,11 @@ def _client(
     coverage=None,
     operation_store=None,
     task_client=None,
+    task_creates=None,
 ):
     """Builds a definition-door client with live version stores by default. Tests can inject
-    artifact stores, a `CodeIndex`, coverage fixtures, and the operation store and task client a
-    head check from a GET is submitted to."""
+    artifact stores, a `CodeIndex`, coverage fixtures, and the operation store, task client and
+    task create pool a head check from a GET is submitted to."""
     version_store = FakeVersionRecordDatasetStore() if with_version_store else None
     if version_store is not None and artifact_store is None:
         artifact_store = _RenderableArtifactStore(
@@ -122,6 +123,7 @@ def _client(
         coverage=coverage,
         operation_store=operation_store,
         task_client=task_client,
+        task_creates=task_creates,
     )
 
 
