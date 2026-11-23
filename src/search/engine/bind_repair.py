@@ -22,7 +22,7 @@ from code_index.query import CodeIndex
 from code_index.tokens import tokenize, word_tokens
 from code_index.types import BroadReading, ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
-from search.engine.function_words import FUNCTION_WORDS
+from search.engine.function_words import FUNCTION_WORDS, INTERJECTION
 from search.engine.qualifier_match import (
     CONNECTIVES,
     QualifierMatch,
@@ -61,7 +61,9 @@ def _label_negated_in_text(label: str, text: str) -> bool:
     """Treat the first whole-word match as evidence against a value in a negation or exclusion.
 
     Check negators and exclusion phrases within the preceding three words, plus a
-    fused or spaced ``non`` prefix. Later matches require separate calls.
+    fused or spaced ``non`` prefix. A negator closed by a clause or sentence mark
+    (`function_words.INTERJECTION`, "no, ...") negates nothing after it. Later matches
+    require separate calls.
     """
     pattern = r"\b" + re.escape(label) + r"\b"
     match = re.search(pattern, text, re.IGNORECASE)
@@ -70,7 +72,7 @@ def _label_negated_in_text(label: str, text: str) -> bool:
     prefix = text[: match.start()]
     if re.search(r"\bnon[\s-]*$", prefix, re.IGNORECASE):
         return True
-    prefix_words = re.findall(r"[\w']+", prefix)
+    prefix_words = re.findall(r"[\w']+", INTERJECTION.sub(" ", prefix))
     window_text = " ".join(prefix_words[-_NEGATION_WINDOW_WORDS:]).lower()
     for negator in _NEGATORS:
         if re.search(r"\b" + re.escape(negator) + r"\b", window_text):

@@ -207,6 +207,23 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ("ODA to multilateral development banks", [], False),
         ("bilateral and multilateral ODA from the UK", [], False),
         ("ODA net of debt relief", [], False),
+        # A reply's "no" closed by a clause or sentence mark negates nothing after it.
+        (
+            "no, count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No. Count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        ("no; gross ODA to Kenya", [(_GROSS, "gross")], False),
+        # A negator that reaches its word still negates it.
+        ("aid to Kenya, not multilateral", [(_BILATERAL, "not multilateral")], False),
+        ("no multilateral aid to Kenya", [(_BILATERAL, "no multilateral")], False),
+        ("aid with no multilateral share", [(_BILATERAL, "no multilateral")], False),
+        ("not net ODA", [], False),
     ],
 )
 def test_read_stated_scope(text, stated, total):
