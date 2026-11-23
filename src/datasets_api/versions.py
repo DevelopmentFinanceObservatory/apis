@@ -14,7 +14,7 @@ fence refuses raises `HeadFenceLost`. The default null writers record or advance
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -27,6 +27,7 @@ from description.facts import Basis, DescriptionRecord
 from description.stored import FieldPath
 from materialise.enrichment import PARTY_FIELDS, is_party_role
 from materialise.trace import RecordedFamily, StatedFamily
+from spec_registry.reader import StoredDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -603,9 +604,29 @@ class HeadWriter(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class StoredHeadRead:
+    """The head a stored read of one registered spec would judge, as
+    `HeadReader.read_stored_heads` reads it: the head of the spec's served id, or `None`, and
+    whether the version it names is withdrawn, that is, has no record or is revoked, or its
+    base version is, under the served id or the spec's own id (`read_stored_version`)."""
+
+    head: SubjectHead | None
+    withdrawn: bool = False
+
+
 class HeadReader(Protocol):
     def read_head(self, subject_id: str) -> SubjectHead | None:
         """`None` when no head has ever been written for this subject."""
+        ...
+
+    def read_stored_heads(
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+    ) -> dict[str, StoredHeadRead]:
+        """For each of `spec_ids` that is registered, the head of its served id, the id
+        `served_id` gives for its stored definition, and that head's version state, read in one
+        transaction. A spec missing from the result is unregistered, or quarantined: the spec,
+        a served id bound to it, or its served id. Reads only."""
         ...
 
 
@@ -618,7 +639,8 @@ class HeadStore(HeadReader, HeadWriter, Protocol):
 class NullHeadWriter:
     """No-op `HeadStore` for surfaces without persistence. `advance_head` accepts any expected
     run and any fence, and returns a head stamped with the current time that names no run and
-    states the run's family. `confirm_head` and `read_head` return `None`.
+    states the run's family. `confirm_head` and `read_head` return `None`, and
+    `read_stored_heads` reads no spec.
     """
 
     def advance_head(
@@ -648,3 +670,8 @@ class NullHeadWriter:
 
     def read_head(self, subject_id: str) -> SubjectHead | None:
         return None
+
+    def read_stored_heads(
+        self, spec_ids: Sequence[str], *, served_id: Callable[[StoredDefinition], str]
+    ) -> dict[str, StoredHeadRead]:
+        return {}
