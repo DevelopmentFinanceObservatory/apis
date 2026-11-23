@@ -30,14 +30,19 @@ permit.
 
 A run's place in the attempt cap (`DATASETS_OPERATION_MAX_ATTEMPTS`) is the larger of two counts:
 Cloud Tasks' retry count header, and the claims the submission has made
-(`Operation.submission_attempts`), which the row keeps across tasks. The run is the last when
-either reaches the cap, and a claim past the cap fails the row retryable without running it.
+(`Operation.submission_attempts`), which the row keeps across tasks. The claim itself stores the
+run as the last (`Operation.final_delivery`) when either reaches the cap, so a run that crashes
+on its last allowed attempt leaves a row the poll fails. A claim past the cap fails the row
+retryable without running it.
 
 A transient failure releases the row (`run_operation`, or a failed catalogue read here). The
-route then schedules the operation's next run as a new task `DATASETS_OPERATION_RETRY_DELAY_SECONDS`
-ahead (`RetryTaskClient.enqueue_retry`), named for the failed claim's place in the submission, and
-answers 200 `retrying`, so Cloud Tasks does not also retry the delivery after its 1,680-second
-backoff. The retry task carries the submission's `submission_count`, so it claims like any
+route then schedules the operation's next run as a new task (`RetryTaskClient.enqueue_retry`),
+named for the failed claim's place in the submission, and answers 200 `retrying`, so Cloud Tasks
+does not also retry the delivery after its 1,680-second backoff. The retry after a submission's
+first run is due `DATASETS_OPERATION_RETRY_DELAY_SECONDS` (60) ahead, and every later one
+`DATASETS_OPERATION_RETRY_LATER_DELAY_SECONDS` (900) ahead, so three runs span about 16 minutes
+of an outage. A release that finds the row moved on schedules nothing and answers 200
+`superseded`. The retry task carries the submission's `submission_count`, so it claims like any
 delivery: a row that completed, failed or moved to a new submission meanwhile answers it 200
 without running. When the create fails, or the process has no retry client, the route answers
 503 as before and the queue's own backoff retries the delivery. A run that crashes leaves its
@@ -256,6 +261,7 @@ def build_worker_app(
     max_attempts: int | None = None,
     retry_client: RetryTaskClient | None = None,
     retry_delay_seconds: int | None = None,
+    retry_later_delay_seconds: int | None = None,
     run_in_thread: Callable[..., None] = run_operation,
     catalogue: CatalogueService | None = None,
     release: ReleaseService | None = None,
@@ -283,6 +289,11 @@ def build_worker_app(
         retry_delay_seconds
         if retry_delay_seconds is not None
         else _settings.operation_retry_delay_seconds
+    )
+    _retry_later_delay_seconds = (
+        retry_later_delay_seconds
+        if retry_later_delay_seconds is not None
+        else _settings.operation_retry_later_delay_seconds
     )
     _retry_client: RetryTaskClient | None = retry_client
     _operation_store: OperationStore | None = operation_store
@@ -436,13 +447,18 @@ def build_worker_app(
         retry_client = _retry_client
         if retry_client is None:
             return JSONResponse({"detail": detail}, status_code=503)
+        delay_seconds = (
+            _retry_delay_seconds
+            if operation.submission_attempts <= 1
+            else _retry_later_delay_seconds
+        )
         try:
             await asyncio.to_thread(
                 retry_client.enqueue_retry,
                 operation_id=operation.id,
                 submission_count=operation.submission_count,
                 generation=operation.submission_attempts,
-                delay_seconds=_retry_delay_seconds,
+                delay_seconds=delay_seconds,
             )
         except Exception:
             logger.warning(
@@ -459,7 +475,7 @@ def build_worker_app(
             operation.id,
             subject_id,
             operation.submission_attempts,
-            _retry_delay_seconds,
+            delay_seconds,
         )
         return JSONResponse({"status": "retrying"}, status_code=200)
 
@@ -492,13 +508,15 @@ def build_worker_app(
         final_delivery = retry_count >= _max_attempts - 1
         # Protects tests that issue concurrent claims through a thread pool.
         with _lock:
-            # The claim records whether a later delivery of this task is due, which decides
-            # whether a poll past the lease fails the row or waits for that delivery.
+            # The claim records whether a later run is due, which decides whether a poll past
+            # the lease fails the row or waits for that run: none is once this is the task's
+            # last delivery or the submission's claims reach the cap.
             operation = _operation_store.claim(
                 operation_id,
                 submission_count=submission_count,
                 lease_seconds=LEASE_SECONDS,
                 final_delivery=final_delivery,
+                max_attempts=_max_attempts,
             )
         if operation is None:
             current = _operation_store.get(operation_id)
@@ -562,7 +580,7 @@ def build_worker_app(
                 retryable=True,
             )
             return JSONResponse({"status": "failed"}, status_code=200)
-        is_final_attempt = final_delivery or operation.submission_attempts >= _max_attempts
+        is_final_attempt = bool(operation.final_delivery)
 
         # Count the work deadline from the stored claim time, the instant the lease runs from.
         assert operation.claimed_at is not None
@@ -587,7 +605,8 @@ def build_worker_app(
                         retryable=True,
                     )
                     return JSONResponse({"status": "failed"}, status_code=200)
-                _operation_store.release(operation_id, attempt=operation.attempt_count)
+                if _operation_store.release(operation_id, attempt=operation.attempt_count) is None:
+                    return JSONResponse({"status": "superseded"}, status_code=200)
                 return await _schedule_retry(
                     operation, subject_id=subject_id, detail="origin catalogue unavailable"
                 )

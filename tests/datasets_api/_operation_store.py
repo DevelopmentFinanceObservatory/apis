@@ -43,7 +43,8 @@ CREATE TABLE datasets.operation (
     final_delivery INTEGER,
     confirmed_at TEXT,
     family TEXT,
-    submission_attempts INTEGER
+    submission_attempts INTEGER,
+    submission_attempts_of INTEGER
 );
 """
 
