@@ -257,7 +257,33 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ),
         # A "with" joining two things compared states no scope.
         ("compare France's ODA with imputed multilateral ODA", [], False),
-        ("France's ODA versus ODA with imputed multilateral", [], False),
+        (
+            "France vs Germany ODA with imputed multilateral",
+            [(_INCLUSIVE, "with imputed multilateral")],
+            False,
+        ),
+        (
+            "comparable US ODA with imputed multilateral",
+            [(_INCLUSIVE, "with imputed multilateral")],
+            False,
+        ),
+        (
+            "ODA against malaria with imputed multilateral",
+            [(_INCLUSIVE, "with imputed multilateral")],
+            False,
+        ),
+        # A contraction in a question asks and negates nothing.
+        ("Isn't net ODA lower than gross ODA", [], False),
+        (
+            "Why doesn't France include imputed multilateral",
+            [(_INCLUSIVE, "include imputed multilateral")],
+            False,
+        ),
+        (
+            "Doesn't it include imputed multilateral aid?",
+            [(_INCLUSIVE, "include imputed multilateral")],
+            False,
+        ),
         # A negation reaches only its own clause.
         ("Not net. Gross ODA", [(_GROSS, "Gross")], False),
         ("ODA to Kenya, not net, gross", [(_GROSS, "gross")], False),
@@ -290,6 +316,29 @@ def test_read_stated_scope_entries_total_and_mentions(text, entries, total, ment
         ),
         ("aid excl. multilateral", [(_BILATERAL, "excl. multilateral")], False),
         ("not U.S. bilateral aid", [], False),
+        ("Not tier 2. Gross ODA", [(_GROSS, "Gross")], False),
+        ("Not plan B. Gross ODA", [(_GROSS, "Gross")], False),
+        ("Not health etc. Gross ODA", [(_GROSS, "Gross")], False),
+        # A piece that is no list item ends an exclusion cue's list, and the cue reaches
+        # every item of its list.
+        (
+            "ODA excluding debt relief, no, count it including imputed multilateral",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        ("aid excluding France, gross ODA to Kenya", [(_GROSS, "gross")], False),
+        (
+            "aid excluding France, Germany and multilateral",
+            [(_BILATERAL, "excluding France, Germany and multilateral")],
+            False,
+        ),
+        # A mark straight after an exclusion cue introduces its object.
+        ("ODA excluding: multilateral", [(_BILATERAL, "excluding: multilateral")], False),
+        (
+            "ODA excluding (imputed) multilateral",
+            [(_BILATERAL, "excluding (imputed) multilateral")],
+            False,
+        ),
     ],
 )
 def test_read_stated_scope(text, stated, total):
