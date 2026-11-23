@@ -25,6 +25,7 @@ from search.engine.config import (
     SEARCH_MAX_PARTS,
     SEARCH_MAX_ROLE_TEXT_CHARS,
     SEARCH_MAX_SOURCE_TEXT_CHARS,
+    SEARCH_MAX_STATED_SCOPE_TEXTS,
     SEARCH_MAX_TIME_TEXT_CHARS,
     SEARCH_MAX_UNIT_TEXT_CHARS,
     SEARCH_MAX_VARIABLE_TEXT_CHARS,
@@ -91,6 +92,7 @@ class TestCapabilitiesShape:
             "parsed": True,
             "dataset_resubmit": True,
             "options": True,
+            "stated_scope": True,
         }
 
     def test_default_policies_reflect_pac_default(self, capabilities_body):
@@ -130,6 +132,8 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps["obs_inline_max"] == observation_settings().obs_inline_max
         assert caps["role_bulk_rank_max_rows"] == observation_settings().role_bulk_rank_max_rows
         assert caps["max_options"] == settings().max_options
+        assert caps["max_stated_scope_texts"] == SEARCH_MAX_STATED_SCOPE_TEXTS
+        assert caps["max_stated_scope_text_chars"] == settings().max_query_chars
         assert caps["max_parts"] == SEARCH_MAX_PARTS
         assert caps["max_code_parts"] == SEARCH_MAX_CODE_PARTS
         assert caps["max_entities"] == settings().max_entities
@@ -359,6 +363,13 @@ class TestPerDoorLivenessMatchesEnforcement:
 
         client = make_client()
         assert client.post("/api/search/options", json={}).status_code != 404
+
+    def test_stated_scope_door_advertised_and_reachable(self, capabilities_body):
+        doors = {d["name"]: d["live"] for d in capabilities_body["doors"]}
+        assert doors["stated_scope"] is True
+
+        client = make_client()
+        assert client.post("/api/search/stated-scope", json={"texts": []}).status_code == 200
 
 
 class TestCapabilityVersionAgreesEverywhere:
