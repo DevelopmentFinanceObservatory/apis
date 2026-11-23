@@ -1675,3 +1675,29 @@ def test_a_stored_hit_times_every_stage_under_a_named_phase(
     assert set(metrics) - _NESTED_PHASES == _STORED_HIT_PHASES, stored.headers["server-timing"]
     untimed = total - sum(ms for name, ms in metrics.items() if name not in _NESTED_PHASES)
     assert abs(untimed) < _UNTIMED_TOLERANCE_MS, stored.headers["server-timing"]
+
+
+def test_a_computed_run_times_its_evaluation_under_a_named_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cache miss evaluates the tree under the `evaluate` phase, and its phases sum to `total`:
+    the evaluation sleeps 50 ms, so evaluating outside every phase leaves at least 50 ms of
+    `total` unaccounted for."""
+    stores = Stores()
+    roots = source(stores)
+    real_evaluate = analysis.evaluate
+
+    def slow_evaluate(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(_STAGE_DELAY_SECONDS)
+        return real_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "evaluate", slow_evaluate)
+    with _client(stores, roots, monkeypatch) as client:
+        computed = client.post(_PATH, json={"tree": _TREE})
+
+    assert computed.status_code == 200, computed.text
+    metrics = _phase_ms(computed)
+    total = metrics.pop("total")
+    assert metrics["evaluate"] >= _STAGE_DELAY_SECONDS * 1000, computed.headers["server-timing"]
+    untimed = total - sum(ms for name, ms in metrics.items() if name not in _NESTED_PHASES)
+    assert abs(untimed) < _UNTIMED_TOLERANCE_MS, computed.headers["server-timing"]

@@ -503,9 +503,13 @@ jobs:
       # goes on. Any other status is an error the step records without
       # failing, so the maintenance steps below still run, and the job's last
       # step fails the deploy on it. See .github/scripts/deploy_warm.sh.
+      # The step and that last check also run when the decide step finds the
+      # target image already serving, so a rerun of a deploy whose warm step
+      # failed after traffic moved probes the live revision again and fails
+      # on the same error.
       - name: Warm the new revision
         id: warm
-        if: steps.decide.outputs.deploy == 'true'
+        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
         env:
           SERVICE: ${{ vars.SERVICE_APIS }}
           REGION: ${{ vars.REGION }}
@@ -569,7 +573,7 @@ jobs:
       # The warm step records an error answer without failing, so the settle
       # and the backfill run first; this step then fails the deploy on it.
       - name: Fail on errors the new revision answered while warming
-        if: steps.decide.outputs.deploy == 'true'
+        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
         env:
           WARM_STATUS: ${{ steps.warm.outputs.status }}
         run: |

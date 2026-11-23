@@ -45,7 +45,9 @@
 #                deadline; a warning, since the builds run on for the next
 #                request
 #   forbidden    the token mint or the service answered 401 or 403, as it
-#                does until the infra grants apply; a warning
+#                does until the infra grants apply; a warning. Probing stops
+#                at the first 401 or 403, and the status is `error` instead
+#                when an earlier path answered an error.
 #   unavailable  the service URL or the token could not be read for another
 #                reason; a warning
 #   error        the service answered a path with any other status; an
@@ -139,6 +141,11 @@ for path in "${paths[@]}"; do
         ;;
       401 | 403)
         echo "::warning::$path answered $status, so the new revision was not warmed. The deployer needs roles/run.invoker on '$SERVICE' (infra apis stack)."
+        # The remaining paths would answer the same, so probing ends here,
+        # and an error an earlier path answered still fails the deploy.
+        if [ "$outcome" = error ]; then
+          finish error
+        fi
         finish forbidden
         ;;
       000 | 429 | 502 | 503 | 504)

@@ -462,8 +462,19 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
     assert len(later) == 20
+    # The warm step and the warm verdict also run when the target image already serves, so a
+    # rerun after a failed warm probes the live revision again instead of going green.
+    warm_checks = {
+        "Warm the new revision",
+        "Fail on errors the new revision answered while warming",
+    }
     for step in later:
-        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+        expected = (
+            "steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'"
+            if step.get("name") in warm_checks
+            else "steps.decide.outputs.deploy == 'true'"
+        )
+        assert step["if"] == expected, step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():

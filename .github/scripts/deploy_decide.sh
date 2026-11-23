@@ -19,8 +19,12 @@
 #                commit. Unset or any other value runs the normal
 #                comparison. Optional, defaults to false.
 #
-# Writes `deploy=true` or `deploy=false` to $GITHUB_OUTPUT (or stdout, when
-# $GITHUB_OUTPUT is unset, so this runs the same way under a test). Emits
+# Writes `deploy=true` or `deploy=false`, and `target_live=true` when the live
+# image's tag is the target commit or `target_live=false` otherwise, to
+# $GITHUB_OUTPUT (or stdout, when $GITHUB_OUTPUT is unset, so this runs the
+# same way under a test). deploy.yml warms the service and checks the warm
+# outcome whenever the target image serves, so a rerun of a deploy whose warm
+# step failed after traffic moved probes the live revision again. Emits
 # ::notice::/::warning::/::error:: annotations for the cases that need one.
 # Exits non-zero only when the live image can't be read at all: every other
 # outcome is a legitimate decision, not a failure.
@@ -48,6 +52,10 @@ fi
 
 live="${image##*:}"
 deploy=
+target_live=false
+if [ "$live" = "$TARGET" ]; then
+  target_live=true
+fi
 
 if [ "$FORCE" = "true" ]; then
   echo "::notice::deploy forced by workflow_dispatch: deploying $TARGET regardless of the live image $live."
@@ -68,10 +76,10 @@ else
   deploy=true
 fi
 
-echo "target=$TARGET live=$live deploy=$deploy"
+echo "target=$TARGET live=$live deploy=$deploy target_live=$target_live"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+  printf 'deploy=%s\ntarget_live=%s\n' "$deploy" "$target_live" >>"$GITHUB_OUTPUT"
 else
-  echo "deploy=$deploy"
+  printf 'deploy=%s\ntarget_live=%s\n' "$deploy" "$target_live"
 fi
