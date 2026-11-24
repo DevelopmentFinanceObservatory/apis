@@ -491,8 +491,8 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # The new revision builds the skills index and the Graph schema document
-      # beside serving, and Cloud Run throttles the CPU
+      # The new revision builds the skills index, the Graph schema document
+      # and the UN terms body beside serving, and Cloud Run throttles the CPU
       # of an instance with no request in flight, so a revision nobody calls
       # stalls those builds until its first readers pay for them. This step
       # calls the paths whose handlers wait on those builds, as the deployer
