@@ -77,7 +77,7 @@ transaction of its own, and the update holds each copy it writes, the column or 
 run is done, its summary counts the version rows still holding a warning in any old format
 (`legacy_warning_refs`, `warning_formats.count_old_format_rows`), which sets no exit code.
 The summary is emitted once the transaction counting `legacy_warning_refs` has committed. A
-count that fails or runs past `warning_formats.COUNT_TIMEOUT` leaves the count null, puts the
+count that fails or runs past `warning_formats.count_timeout` leaves the count null, puts the
 summary at `ERROR` with the failure in `count_error`, and sets no exit code either: the rows
 are already written, and the next run counts again.
 
@@ -543,7 +543,7 @@ def _emit_counted(
     try:
         if store is not None:
             with store.transaction() as tx:
-                counted = count_old_format_rows(tx)
+                counted = count_old_format_rows(tx, bounds=store.bounds)
             left = counted
     except Exception as exc:
         return _emit_backfilled(

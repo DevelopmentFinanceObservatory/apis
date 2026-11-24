@@ -16,6 +16,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp
 from code_index.types import DatasetDeclaration, StatVarRow
+from dataset_store.bounds import TransactionBounds
 from dataset_store.errors import PoolTimeoutError
 from dataset_store.warning_formats import _OLD_FORMAT_ROWS, OLD_FORMATS
 from datasets_api import maintenance
@@ -183,6 +184,8 @@ class _Store:
     asking for more than `page_rows`, and `fetch_one` its count, the count of rows holding an old
     format and its update, which writes each copy the statement sets, the column or the body's
     `warnings`, while it still holds what the statement says was read there."""
+
+    bounds = TransactionBounds(connect=12.0)
 
     def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int = PAGE_ROWS) -> None:
         self.rows = {(row["subject_id"], row["content_version"]): dict(row) for row in rows}
@@ -701,8 +704,9 @@ def test_the_summary_counts_the_rows_left_in_an_old_format_without_failing(capsy
         1,
         "WARNING",
     )
-    # The count scans the table, so its transaction caps the statement's time.
-    assert any("statement_timeout" in sql for sql in store.executed)
+    # The count scans the table, so its transaction caps the statement's time below the store's
+    # 12 s socket bound.
+    assert "SET LOCAL statement_timeout = '10000ms'" in store.executed
 
 
 def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
