@@ -139,89 +139,12 @@ def fold_key(region: RegionResult) -> tuple[object, ...]:
 
     Regions fold when they share a five-tuple (`five_tuple_key`). A region compared with
     the others (`RegionResult.separate`) keys on its own position, so it never folds and
-    no other region folds into it. `fold_groups` groups by this key before it splits the
-    regions whose codes nest.
+    no other region folds into it. `collapse_same_shape` and the combiner's grouping
+    (`conjoin._group_definite_regions`) both group by this key.
     """
     if region.separate:
         return ("separate", region.earliest_index)
     return five_tuple_key(region.spec)
-
-
-def fold_groups(definite: Sequence[RegionResult]) -> list[list[RegionResult]]:
-    """The groups `definite` folds in, each in request order: the regions sharing a fold key
-    (`fold_key`), split so no member binds a code nested under another member's code on the
-    same slot (`_unnested`). A part asking for a code answers that code, so bilateral ODA
-    (DAC1 1015) stays apart from total ODA (1010), which holds it. `collapse_same_shape` and
-    the combiner's grouping (`conjoin._group_definite_regions`) both group by it."""
-    by_key: dict[tuple[object, ...], list[RegionResult]] = {}
-    for region in definite:
-        by_key.setdefault(fold_key(region), []).append(region)
-    below = _strict_descendants()
-    return [sub for group in by_key.values() for sub in _unnested(group, below)]
-
-
-def _unnested(
-    group: list[RegionResult], below: Callable[[str], frozenset[str]]
-) -> list[list[RegionResult]]:
-    """`group` split until no member binds a code nested under another member's code on one
-    slot off the where axis, `below` naming each code's strict descendants. The members
-    holding such an ancestor split off and are split again, and the rest are split again:
-    bilateral, multilateral and total ODA split into the total and the two lines, which do
-    not nest. Where every member holds such an ancestor, as two parts each binding
-    {130, 13040}, each member answers apart, so every call splits a group into smaller ones
-    and none is empty. Each subgroup keeps request order."""
-    if len(group) < 2:
-        return [group] if group else []
-    codes = [_slot_code_sets(region.spec) for region in group]
-    ancestors = [
-        region
-        for i, region in enumerate(group)
-        if any(_holds_nested(codes[i], codes[j], below) for j in range(len(group)) if j != i)
-    ]
-    if not ancestors:
-        return [group]
-    if len(ancestors) == len(group):
-        return [[region] for region in group]
-    split = {id(region) for region in ancestors}
-    rest = [region for region in group if id(region) not in split]
-    return [*_unnested(ancestors, below), *_unnested(rest, below)]
-
-
-def _strict_descendants() -> Callable[[str], frozenset[str]]:
-    """Each code's descendants in the bound code index, less the code itself, read once per
-    code for the caller's lifetime."""
-    index = get_index()
-    read: dict[str, frozenset[str]] = {}
-
-    def below(code: str) -> frozenset[str]:
-        if code not in read:
-            read[code] = frozenset(index.descendants(code)) - {code}
-        return read[code]
-
-    return below
-
-
-def _slot_code_sets(spec: Spec) -> dict[tuple[str, str | None], frozenset[str]]:
-    """The codes `spec` binds on each slot off the where axis (`_slot_codes`), by slot key."""
-    return {
-        _slot_key_t(slot): codes
-        for slot in spec.resolved.slots
-        if slot.key.axis != "where" and (codes := _slot_codes(slot))
-    }
-
-
-def _holds_nested(
-    ancestor: Mapping[tuple[str, str | None], frozenset[str]],
-    member: Mapping[tuple[str, str | None], frozenset[str]],
-    below: Callable[[str], frozenset[str]],
-) -> bool:
-    """Whether `ancestor` binds, on some slot, a code that holds one of `member`'s codes on
-    that slot as a strict descendant (`below`)."""
-    return any(
-        not below(held).isdisjoint(member[key])
-        for key in ancestor.keys() & member.keys()
-        for held in ancestor[key]
-    )
 
 
 def _slot_key_t(slot) -> tuple[str, str | None]:
@@ -399,6 +322,24 @@ def _union_query_qualifiers(group: list[RegionResult]) -> list[ResolvedQualifier
                 seen.add(key)
                 merged.append(q)
     return merged
+
+
+def _simplify_merged_union(refs: list[GraphRef]) -> list[GraphRef]:
+    """Drop each of `refs` that descends from another of them.
+
+    A fold reads its members as a union, as the bind of one part reads codes a union
+    connective joins (`phase_rank_bind._combine_matches`): HIV/AIDS (13040) folded with
+    reproductive health (130) binds 130, since 130 already holds 13040. Codes that do not
+    nest keep their own values, so health (120) and HIV/AIDS (13040) stay a set.
+    """
+    index = get_index()
+    nested = {
+        descendant
+        for ref in refs
+        for descendant in index.descendants(ref.ref)
+        if descendant != ref.ref
+    }
+    return [ref for ref in refs if ref.ref not in nested]
 
 
 def _union_open_axis_facts(group: list[RegionResult]) -> tuple[OpenAxisFact, ...]:
@@ -713,7 +654,8 @@ def collapse_same_shape(
     scope_for: ScopeReader | None = None,
     preview_reads: ComponentReads | None = None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge each group of definite regions (`fold_groups`) when their identities align.
+    """Merge definite regions with the same fold key (`fold_key`) when their identities
+    align.
 
     A multi-member group must share its window, scope, identity facets,
     ``unit_lexicon_version``, ``declaration_version``, and request-bound facet
@@ -726,8 +668,11 @@ def collapse_same_shape(
     - Exactly one slot differs, every member binds it to a value or, off the where axis,
       a set (a value reads as a set of one), members binding different sets share no
       ref, the union holds at least two distinct refs, and entity buckets meet the
-      dimensionality rule. No member's code nests under another's (`fold_groups`), so the
-      union keeps every member's codes.
+      dimensionality rule. The refs drop each one nested under another
+      (`_simplify_merged_union`), and one ref left binds a value. A member answering a
+      dataset_resubmit's posted identity (`RegionResult.posted_identity`) refuses a merge
+      that would drop one of its codes, since a posted Spec answers the figure its
+      identity names.
 
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
@@ -739,7 +684,8 @@ def collapse_same_shape(
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
     identity facets, and set ``earliest_index`` to the group's minimum. A merged region
-    states the scope ``scope_for`` builds over the merged identity, none without it. A group
+    states the scope ``scope_for`` builds over the merged identity, none without it, and a
+    group whose scope compiles to another identity does not merge (`_collapse_group`). A group
     of composite answers merges into the composite over the merged identity, minted from the
     members' facets (`_merged_composite`), and refuses without ``preview_reads``, the
     request's clients. Where its members preview, a merged region previews the read of its
@@ -752,11 +698,15 @@ def collapse_same_shape(
     if not definite:
         return [], []
 
+    groups: dict[tuple, list[RegionResult]] = {}
+    for r in definite:
+        groups.setdefault(fold_key(r), []).append(r)
+
     effective: list[RegionResult] = []
     residual_texts: list[tuple[str | None, int]] = []
     # The merged regions whose members embed their previews, which read theirs here.
     buffered: list[RegionResult] = []
-    for group in fold_groups(definite):
+    for group in groups.values():
         group_effective, group_residual = _collapse_group(
             group, set_ref_for, facet_options_for, scope_for, preview_reads
         )
@@ -786,8 +736,10 @@ def _collapse_group(
     of composite answers, which merges into the composite over the merged identity
     (`_with_merged_preview`), refuses without `preview_reads`. The merged region states the
     scope `scope_for` builds over its identity, none without it. A group whose merged scope
-    compiles to another identity refuses, so its members answer apart, each stating its own
-    scope; `assemble.with_scope_choices` raises on such a scope."""
+    compiles to another identity refuses: the members' entries would label the merged
+    answer with a choice it does not serve, as bilateral ODA folded with DAC1's total,
+    whose union keeps the total alone (`_simplify_merged_union`), would label the total
+    bilateral."""
     if len(group) == 1:
         return [group[0]], []
     try:
@@ -898,9 +850,12 @@ def _build_merged_slots(
     A ``None`` key unions unbound slots after the base roster. Otherwise every
     member must bind the differing slot to graph refs, a value as a set of one and a set
     only off the where axis. Members binding different sets must share no ref, and the
-    sets must union to at least two distinct refs, which bind a ``BindingSet``.
-    ``set_ref_for`` labels the set, on what/how only because ``isPartOf`` also represents
-    geographic containment.
+    sets must union to at least two distinct refs. Each ref nested under another drops
+    (`_simplify_merged_union`), except that a member answering a posted identity
+    (`RegionResult.posted_identity`) refuses a merge that would drop one of its codes. One
+    ref left binds a ``BindingValue``, more bind a ``BindingSet``. The set keeps the
+    ``set_ref`` of a member whose set it equals, else ``set_ref_for`` labels it, on what/how
+    only because ``isPartOf`` also represents geographic containment.
     """
     if diff_key is None:
         merged_slots = list(base_spec.resolved.slots)
@@ -943,16 +898,36 @@ def _build_merged_slots(
             diff_refs.append(ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
+    kept = _simplify_merged_union(diff_refs)
+    dropped = {ref.ref for ref in diff_refs} - {ref.ref for ref in kept}
+    if any(
+        region.posted_identity and codes & dropped
+        for region, codes in zip(group, member_codes, strict=True)
+    ):
+        # A posted Spec answers the figure its identity names.
+        raise _RefuseMerge
+    diff_refs = kept
 
     # Slot values may be enum values, so retain the source value_kind.
     source_vk = member_values[0][0].value_kind
     values = [SlotValue(ref=ref, value_kind=source_vk) for ref in diff_refs]
-    set_ref = (
-        set_ref_for([r.ref for r in diff_refs])
-        if diff_key[0] in ("what", "how") and set_ref_for is not None
-        else None
-    )
-    binding = BindingSet(values=values, set_ref=set_ref)
+    binding: BindingValue | BindingSet
+    if len(values) == 1:
+        binding = BindingValue(value=values[0])
+    else:
+        # A member whose set the merge leaves whole keeps naming its group.
+        merged_codes = frozenset(ref.ref for ref in diff_refs)
+        merged_set_ref = next(
+            (
+                b.set_ref
+                for b, codes in zip(bindings, member_codes, strict=True)
+                if isinstance(b, BindingSet) and b.set_ref is not None and codes == merged_codes
+            ),
+            None,
+        )
+        if merged_set_ref is None and diff_key[0] in ("what", "how") and set_ref_for is not None:
+            merged_set_ref = set_ref_for([r.ref for r in diff_refs])
+        binding = BindingSet(values=values, set_ref=merged_set_ref)
     return [
         sl.model_copy(update={"binding": binding}) if _slot_key_t(sl) == diff_key else sl
         for sl in base_spec.resolved.slots
@@ -1114,6 +1089,30 @@ def _slot_codes(slot: Slot) -> frozenset[str]:
     return frozenset(value.ref.ref for value in values if value.ref is not None)
 
 
+def _read_members(
+    group: list[RegionResult],
+    merged_slots: list[Slot],
+    diff_key: tuple[str, str | None] | None,
+) -> list[RegionResult] | None:
+    """The members whose plans a resolve of the merged identity reads: every member, save one
+    binding the differing slot only to codes nested under another member's, which the merged
+    identity drops (`_simplify_merged_union`). None where a member binds both a code the
+    identity keeps and one it drops, since its plan reads the dropped code's series too."""
+    if diff_key is None:
+        return group
+    (merged,) = (slot for slot in merged_slots if _slot_key_t(slot) == diff_key)
+    kept = _slot_codes(merged)
+    members: list[RegionResult] = []
+    for region in group:
+        (slot,) = (s for s in region.spec.resolved.slots if _slot_key_t(s) == diff_key)
+        codes = _slot_codes(slot)
+        if codes <= kept:
+            members.append(region)
+        elif codes & kept:
+            return None
+    return members
+
+
 class _MergedCounts(NamedTuple):
     """The merged answer's read plan (`merged_plan.merged_read_plan`), and the coverage and
     headline stated from it, read from the request's coverage index."""
@@ -1132,7 +1131,7 @@ def _merged_counts(
     reads: ComponentReads | None,
 ) -> _MergedCounts | None:
     """The read plan a resolve of the merged identity builds, rebuilt in memory from the
-    plans of `group`, and the
+    plans of `group`, the members whose codes that identity keeps (`_read_members`), and the
     coverage and headline a single answer states from its plan
     (`coverage.answer_coverage` in the members' `RegionResult.coverage_form`,
     `coverage.answer_headline`), so `build_spec` states the merged answer's download from it
@@ -1731,7 +1730,12 @@ def _merge_group(
     )
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
-    counted = _merged_counts(group, base_spec, diff_key=diff_key, reads=preview_reads)
+    read_members = _read_members(group, merged_slots, diff_key)
+    counted = (
+        None
+        if read_members is None
+        else _merged_counts(read_members, base_spec, diff_key=diff_key, reads=preview_reads)
+    )
     text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
     open_axis_facts = _union_open_axis_facts(group)

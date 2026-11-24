@@ -198,9 +198,10 @@ def test_a_merge_whose_parts_elect_different_facets_counts_the_one_group_it_elec
 
 
 @pytest.mark.parametrize("mode", ["buffered", "streamed"])
-def test_a_code_and_its_child_asked_as_two_parts_answer_and_count_apart(monkeypatch, mode):
-    """Sector B sits under sector A, whose rows include B's. The two parts answer apart, each
-    its own Spec counting its own rows as a resubmit of it does: A's three and B's two."""
+def test_a_posted_code_and_its_child_answer_and_count_apart(monkeypatch, mode):
+    """Sector B sits under sector A, whose rows include B's. Each resubmitted identity is a
+    posted Spec answering the figure it names, so the two answer apart, each counting its
+    own rows as a resubmit of it alone does: A's three and B's two."""
     grid._use_index(monkeypatch, grid._index(parents={"B": "A"}, disjoint=False))
     patch_coverage(
         monkeypatch,

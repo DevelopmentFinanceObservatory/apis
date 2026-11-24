@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
-from search.engine import same_shape
 from search.engine.region import RegionResult
-from search.engine.same_shape import collapse_same_shape, five_tuple_key, fold_groups
+from search.engine.same_shape import collapse_same_shape, five_tuple_key
 from search.engine.spec_build import build_spec
 from search.models import (
     BindingSet,
@@ -437,35 +438,46 @@ def _record(text: str, code: str, *, union: tuple[str, ...] = ()) -> ResolvedQua
 @pytest.mark.parametrize(
     ("codes", "union", "expected"),
     [
-        # Codes that do not nest bind a set whatever union was recorded.
+        # A union one part recorded selected both, so its broader code stands alone.
+        ((_POPULATION, _HIV), (_HIV, _POPULATION), [_POPULATION]),
+        # Two parts extraction split ("HIV/AIDS and reproductive health"), neither with a
+        # union of its own. The fold is the union, and 130 holds 13040.
+        ((_POPULATION, _HIV), (), [_POPULATION]),
+        ((_HIV, _POPULATION), (), [_POPULATION]),
+        # Codes that do not nest stay a set whatever union was recorded.
         ((_HEALTH, _HIV), (_HEALTH, _HIV), [_HIV, _HEALTH]),
         ((_HEALTH, _HIV), (), [_HIV, _HEALTH]),
         # A set binds its codes as a value binds its one ("health and education aid").
         ((_HEALTH_GROUP, _EDUCATION), (), [_EDUCATION, _HEALTH, _POPULATION]),
         ((_EDUCATION, _HEALTH_GROUP), (), [_EDUCATION, _HEALTH, _POPULATION]),
         (((_EDUCATION, _WATER), _HEALTH_GROUP), (), [_EDUCATION, _HEALTH, _POPULATION, _WATER]),
+        ((_HEALTH_GROUP, _HIV), (), [_HEALTH, _POPULATION]),
         # Parts sharing a code would count it in both, so they stay apart.
         (((_HEALTH, _WATER), _HEALTH_GROUP), (), None),
         ((_HEALTH_GROUP, _HEALTH), (), None),
     ],
     ids=[
+        "union-selected-both",
+        "split-parts",
+        "split-parts-narrower-first",
         "no-nesting",
         "no-nesting-split",
         "grouping-and-value",
         "value-and-grouping",
         "grouping-and-grouping",
+        "grouping-holds-value",
         "overlapping-groupings",
         "grouping-shares-value",
     ],
 )
-def test_collapse_same_shape_unions_codes_that_do_not_nest(
+def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
     codes: tuple[str | tuple[str, ...], str | tuple[str, ...]],
     union: tuple[str, ...],
     expected: list[str] | None,
 ):
-    """The fold reads its members as a union, a value as a set of one, and binds every
-    member's codes as a set. Parts that share a code keep the first and residualise the
-    second."""
+    """The fold reads its members as a union, a value as a set of one. A merged code that
+    descends from another merged code drops, and one code left binds a value. Parts that
+    share a code keep the first and residualise the second."""
     first, second = codes
     r_a = _purpose_region(first, 0, _record("first", _first_code(first), union=union))
     r_b = _purpose_region(second, 1, _record("second", _first_code(second)))
@@ -477,97 +489,78 @@ def test_collapse_same_shape_unions_codes_that_do_not_nest(
         return
     assert residual == []
     binding = merged.spec.resolved.slots[0].binding
-    assert isinstance(binding, BindingSet)
-    assert sorted(ref_dcid(v.ref) for v in binding.values) == sorted(expected)
+    if len(expected) == 1:
+        assert isinstance(binding, BindingValue)
+        assert ref_dcid(binding.value.ref) == expected[0]
+    else:
+        assert isinstance(binding, BindingSet)
+        assert sorted(ref_dcid(v.ref) for v in binding.values) == sorted(expected)
     # A slot filter states one provenance: grouped only when every part grouped.
     (purpose,) = merged.spec.resolved.trace.slot_filters
     both_grouped = not isinstance(first, str) and not isinstance(second, str)
     assert purpose.provenance == ("declared_grouping" if both_grouped else "text_recognized")
 
 
-@pytest.mark.parametrize(
-    ("codes", "union"),
-    [
-        # A union one part recorded selected both codes.
-        ((_POPULATION, _HIV), (_HIV, _POPULATION)),
-        # Two parts extraction split ("HIV/AIDS and reproductive health").
-        ((_POPULATION, _HIV), ()),
-        ((_HIV, _POPULATION), ()),
-        # A grouping holding the other part's code's parent.
-        ((_HEALTH_GROUP, _HIV), ()),
-    ],
-    ids=[
-        "union-selected-both",
-        "split-parts",
-        "split-parts-narrower-first",
-        "grouping-holds-value",
-    ],
-)
-def test_collapse_same_shape_keeps_parts_whose_codes_nest_apart(
-    codes: tuple[str | tuple[str, ...], str | tuple[str, ...]], union: tuple[str, ...]
-):
-    """A part whose code descends from another part's code answers its own Spec, as the
-    other does: 130 holds 13040, so HIV/AIDS and reproductive health asked as two parts
-    answer two Specs, and neither residualises."""
-    first, second = codes
-    r_a = _purpose_region(first, 0, _record("first", _first_code(first), union=union))
-    r_b = _purpose_region(second, 1, _record("second", _first_code(second)))
-
-    effective, residual = collapse_same_shape([r_a, r_b])
-
-    assert residual == []
-    first_out, second_out = sorted(effective, key=lambda r: r.earliest_index)
-    assert first_out is r_a and second_out is r_b
-
-
 def _first_code(code: str | tuple[str, ...]) -> str:
     return code if isinstance(code, str) else code[0]
 
 
-def test_parts_each_binding_a_code_and_its_descendant_answer_apart():
-    """Two parts each binding {130, 13040} both hold a code nested under the other's, so no
-    split leaves a smaller group of ancestors, and each part answers apart."""
-    r_a = _purpose_region((_POPULATION, _HIV), 0, _record("first", _POPULATION))
-    r_b = _purpose_region((_POPULATION, _HIV), 1, _record("second", _POPULATION))
+@pytest.mark.parametrize(
+    ("posted", "codes"),
+    [
+        ((True, True), (_HIV, _POPULATION)),
+        ((True, True), (_POPULATION, _HIV)),
+        ((True, False), (_HIV, _POPULATION)),
+        ((False, True), (_POPULATION, _HIV)),
+    ],
+    ids=["both-posted", "both-posted-parent-first", "child-posted", "child-posted-second"],
+)
+def test_a_posted_identity_keeps_its_code_apart_from_a_parent(
+    posted: tuple[bool, bool], codes: tuple[str, str]
+):
+    """A region answering a dataset_resubmit's posted identity answers the figure its
+    identity names, so a fold that would drop its code (HIV/AIDS 13040) under another
+    member's parent (130) refuses, and each region answers its own Spec."""
+    r_a = dataclasses.replace(
+        _purpose_region(codes[0], 0, _record("first", codes[0])), posted_identity=posted[0]
+    )
+    r_b = dataclasses.replace(
+        _purpose_region(codes[1], 1, _record("second", codes[1])), posted_identity=posted[1]
+    )
 
-    assert fold_groups([r_a, r_b]) == [[r_a], [r_b]]
-    effective, residual = collapse_same_shape([r_a, r_b])
+    (kept,), residual = collapse_same_shape([r_a, r_b])
+
+    assert (kept, residual) == (r_a, [("part 1", 1)])
+
+
+def test_a_posted_parent_absorbs_a_worded_child():
+    """A part read from words whose code (13040) nests under a posted identity's (130) folds
+    into it: the posted Spec loses no code and the worded part reads the union."""
+    r_a = dataclasses.replace(
+        _purpose_region(_POPULATION, 0, _record("first", _POPULATION)), posted_identity=True
+    )
+    r_b = _purpose_region(_HIV, 1, _record("second", _HIV))
+
+    (merged,), residual = collapse_same_shape([r_a, r_b])
 
     assert residual == []
-    first, second = sorted(effective, key=lambda r: r.earliest_index)
-    assert first is r_a and second is r_b
-
-
-class _CyclicIndex:
-    """A code index whose codes A and B each hold the other."""
-
-    def descendants(self, code: str) -> frozenset[str]:
-        return frozenset({"A", "B"})
-
-
-def test_parts_whose_codes_hold_each_other_answer_apart(monkeypatch):
-    """Codes whose parent data holds each other leave every part an ancestor, so each part
-    answers apart, and no group is empty."""
-    r_a = _purpose_region("A", 0)
-    r_b = _purpose_region("B", 1)
-    monkeypatch.setattr(same_shape, "get_index", _CyclicIndex)
-
-    assert fold_groups([r_a, r_b]) == [[r_a], [r_b]]
-    assert fold_groups([]) == []
+    binding = merged.spec.resolved.slots[0].binding
+    assert isinstance(binding, BindingValue)
+    assert ref_dcid(binding.value.ref) == _POPULATION
 
 
 def test_collapse_same_shape_keeps_every_union_record_of_one_text():
     """Two members' records of one text survive the fold when one recorded a union and the
-    other did not."""
+    other did not, whichever member comes first."""
     plain = _record("HIV/AIDS", _HIV)
-    joined = _record("HIV/AIDS", _HIV, union=(_HIV, _HEALTH))
+    joined = _record("HIV/AIDS", _HIV, union=(_HIV, _POPULATION))
     r_a = _purpose_region(_HIV, 0, plain)
-    r_b = _purpose_region(_HEALTH, 1, joined, _record("HIV/AIDS", _HIV))
+    r_b = _purpose_region(_POPULATION, 1, joined, _record("HIV/AIDS", _HIV))
 
     (merged,), _ = collapse_same_shape([r_a, r_b])
 
     assert merged.spec.resolved.trace.query_qualifiers == [plain, joined]
-    assert isinstance(merged.spec.resolved.slots[0].binding, BindingSet)
+    assert isinstance(merged.spec.resolved.slots[0].binding, BindingValue)
 
 
 def test_collapse_same_shape_dedupe_same_value():

@@ -13,7 +13,6 @@ read, as the deployed service reads them.
 from __future__ import annotations
 
 import dataclasses
-import itertools
 import logging
 from collections.abc import Sequence
 from typing import cast
@@ -1416,7 +1415,8 @@ def test_a_dac1_provider_line_beside_its_total_answers_apart_with_its_own_choice
 @pytest.mark.parametrize("with_entries", [False, True], ids=["no-scope-entries", "scope-entries"])
 def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, with_entries: bool):
     """A dataset_resubmit of the bilateral ODA and total ODA identities answers each its own
-    Spec, with or without the scope entries the fresh answers applied."""
+    Spec, with or without the scope entries the fresh answers applied: a posted Spec answers
+    the figure its identity names, so total ODA, which holds bilateral ODA, absorbs nothing."""
     texts = ("bilateral ODA net disbursements", "total ODA net disbursements")
     fresh = _ask_dac1_parts(monkeypatch, texts)
     entries = [
@@ -1439,29 +1439,11 @@ def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, 
 
     assert [part.spec.spec_id for part in resubmitted] == [part.spec.spec_id for part in fresh]
     assert [_aid_type(part) for part in resubmitted] == [_DAC1_BILATERAL_ODA, _DAC1_TOTAL_ODA]
-
-
-@pytest.mark.parametrize(
-    "order", list(itertools.permutations(("bilateral", "multilateral", "total")))
-)
-def test_dac1_bilateral_multilateral_and_total_parts_fold_the_lines_beside_the_total(
-    monkeypatch, order: tuple[str, ...]
-):
-    """Bilateral, multilateral and total ODA asked together, in any order: the total answers
-    its own Spec, and the two lines, which do not nest, fold into one answer binding both."""
-    texts = [f"{line} ODA net disbursements" for line in order]
-    by_line = dict(zip(order, _ask_dac1_parts(monkeypatch, texts), strict=True))
-
-    lines = [by_line["bilateral"], by_line["multilateral"]]
-    assert _aid_type(by_line["total"]) == _DAC1_TOTAL_ODA
-    assert {part.spec.spec_id for part in lines} == {lines[0].spec.spec_id}
-    assert lines[0].spec.spec_id != by_line["total"].spec.spec_id
-    assert _aid_type(lines[0]) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
-    assert "binding_folded" not in {w.code for w in by_line["total"].warnings}
+    assert not any("binding_folded" in {w.code for w in part.warnings} for part in resubmitted)
 
 
 def test_bilateral_and_multilateral_dac1_parts_fold_into_their_set(monkeypatch):
-    """A guard on the fold's grouping: DAC1's bilateral and multilateral ODA do not nest, so
+    """A guard on the fold: DAC1's bilateral and multilateral ODA do not nest, so
     the two parts fold into one answer binding both aid types, which states no provider
     choice."""
     first, second = _ask_dac1_parts(

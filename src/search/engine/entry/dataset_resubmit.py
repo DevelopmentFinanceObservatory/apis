@@ -582,6 +582,7 @@ async def handle(
             earliest_index=index,
             separate=entry.separate,
             scope_choices=_served_scope(scope, region),
+            posted_identity=True,
         )
         if (refused := unserved_scope_refusal(answered)) is not None:
             await _cancel_trailing_tasks([answered])

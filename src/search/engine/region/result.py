@@ -377,6 +377,10 @@ class RegionResult:
     # The leg's part is compared with the others (`ParsedPart.separate`), so the fold
     # (`same_shape.fold_key`) keeps it its own part.
     separate: bool = False
+    # The region answers the Spec a dataset_resubmit identity entry posted, whose identity
+    # names the figure it answers, so a same-shape merge never drops its codes under another
+    # entry's (`same_shape._build_merged_slots`).
+    posted_identity: bool = False
     # Operations the question asks for over this region's data, echoed onto its
     # part. Like restatement, part assembly reads them from each original region.
     operations: tuple[Operation, ...] = ()
