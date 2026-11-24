@@ -324,8 +324,10 @@ class _QuantityRecordingBinder(GeminiBinder):
 
 def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
     """The quantity read runs before the menu is seated, and a part whose text is only its
-    series code still sends the bind phrase the bind call reads: the graph name of the
-    code's member among the admissible shapes."""
+    series code, with two admissible shapes, sends the bind phrase the bind call reads: the
+    graph name of the code's member among the admissible shapes. With one admissible shape
+    the part is code-pinned (`phase_rank_bind._pins_on_code`) and the read sends nothing,
+    since the code fixes the measure."""
     code = SeriesCodeMembers(code="DT.DOD.DECT.CD", provenance="WorldBank/IDS", dcids=("sv_debt",))
     name = "External debt stocks, total (DOD, current US$)"
     shape = dataclasses.replace(
@@ -337,10 +339,19 @@ def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
     state.source_code = code
     state.capped_shapes = []
 
-    assert asyncio.run(_read_stated_quantity(state, [shape])) is None
+    assert asyncio.run(_read_stated_quantity(state, [shape, _shape("debt_share")])) is None
 
     (request,) = binder.quantity_requests
     assert (request.variable, request.bind_variable) == ("DT.DOD.DECT.CD", name)
+
+    binder.quantity_requests.clear()
+    state.code_pinned = phase_rank_bind._pins_on_code(state, [shape])
+    assert asyncio.run(_read_stated_quantity(state, [shape])) is None
+    assert (state.code_pinned, binder.quantity_requests) == (True, [])
+
+    # A dropped qualifier phrase Jev reads in the bind keeps the read.
+    state.dropped_qualifier_phrases = ["across all debtor types"]
+    assert not phase_rank_bind._pins_on_code(state, [shape])
 
 
 _DEBTOR_SLOT = SlotKeyDraft(axis="how", property_dcid="idsDebtorType", label="debtor type")

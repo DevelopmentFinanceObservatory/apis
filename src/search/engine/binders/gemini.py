@@ -13,6 +13,7 @@ from search.engine.bind import (
     stated_reading,
     validate_requested_all_bindings,
 )
+from search.engine.binders.assembly import elected_result
 from search.engine.binders.base import (
     BindRequest,
     BindResult,
@@ -49,7 +50,8 @@ class GeminiBinder:
     `bind.bind_universal`, and rates the words the coverage rule leaves unread with
     `stated_words_read.read_stated_words`, on the injected LLM client. A reply that elects a
     shape goes through the house policies over its pool, and a moved election takes the
-    reply's drafts onto the shape the policies elect (`reelect`).
+    reply's drafts onto the shape the policies elect (`reelect`), and the result is
+    assembled as every binder's election is (`assembly.elected_result`).
 
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
@@ -123,13 +125,17 @@ class GeminiBinder:
             return BindResult(output=declined(output), binder=self.name), usage
         pool, holds = rated_pool(shapes, output, ratings)
         choice = request.apply_policies(pool, ratings=ratings, holds=holds, drafts=output.bindings)
-        result = BindResult(
-            output=nominated_near_best(
-                reelect(output, choice, shapes, request.admitted_qualifiers), ratings
-            ),
+        elected = nominated_near_best(
+            reelect(output, choice, shapes, request.admitted_qualifiers), ratings
+        )
+        result = elected_result(
+            request,
+            elected=elected.chosen_shape_index,
+            drafts=elected.bindings,
             binder=self.name,
-            policy_pool=pool,
-            policy_choice=choice,
+            pool=pool,
+            choice=choice,
+            reply=elected,
         )
         return result, usage
 

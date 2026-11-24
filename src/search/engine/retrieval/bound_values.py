@@ -3941,14 +3941,9 @@ def bind_member_values(
     A slot asked in full that the members hold one value on is a request they cannot
     answer: "across all debtor types" beside DT.TDS.DEGG.CD. `bindings` then return as
     drafted beside those drafts, for the caller to refuse the part."""
-    index = get_index()
-    rows = [index.statvar_by_dcid(dcid) for dcid in members]
-    if not rows or any(row is None for row in rows):
+    shared = shared_member_values(members)
+    if shared is None:
         return list(bindings), []
-    first, *rest = (row.constraint_properties for row in rows if row is not None)
-    shared = {
-        prop: value for prop, value in first.items() if all(c.get(prop) == value for c in rest)
-    }
     bound, added = _bind_sole_options(shape, bindings, shared)
     fixed = {binding.property_dcid for binding in added}
     asked_in_full = [
@@ -3959,6 +3954,27 @@ def bind_member_values(
     if asked_in_full:
         return list(bindings), asked_in_full
     return bound, []
+
+
+def member_constraint_values(members: Collection[str]) -> list[Mapping[str, str]] | None:
+    """The constraint values of each StatVar of `members`, by its index row, or None when
+    `members` is empty or the index holds no row for one of them."""
+    index = get_index()
+    rows = [index.statvar_by_dcid(dcid) for dcid in members]
+    if not rows or any(row is None for row in rows):
+        return None
+    return [row.constraint_properties for row in rows if row is not None]
+
+
+def shared_member_values(members: Collection[str]) -> dict[str, str] | None:
+    """The constraint values every StatVar of `members` holds, by property, or None when
+    `members` is empty or the index holds no row for one of them
+    (`member_constraint_values`). `bind_member_values` binds a code's shape to them."""
+    rows = member_constraint_values(members)
+    if rows is None:
+        return None
+    first, *rest = rows
+    return {prop: value for prop, value in first.items() if all(c.get(prop) == value for c in rest)}
 
 
 def canonical_pin_bindings(

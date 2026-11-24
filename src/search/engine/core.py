@@ -12,9 +12,9 @@ import hashlib
 import hmac
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable, Iterable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -25,6 +25,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import refusal
 from dfo_platform.build import build_commit
+from dfo_platform.caller import DeliveryIdentity, current_delivery_identity
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import (
     get_cloud_trace_id,
@@ -66,6 +67,12 @@ from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
+from search.engine.resolve_trace import (
+    TraceOutcome,
+    await_resolve_trace,
+    part_specs,
+    queue_resolve_trace,
+)
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_keys import normalise_query
@@ -123,7 +130,9 @@ class ResolveRecord:
     settle bound (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`) or failed. `second_sample_usage`
     is what the second samples of its exclusion read and extraction cost
     (`CacheScope.second_sample_usage`), which the response does not wait for and the log
-    line's `llm_usage` adds.
+    line's `llm_usage` adds. `pre_ms` is the time from the platform middleware receiving the
+    request to the route body having passed its input checks, and `refresh_ms` is the part of
+    it spent in the generation refresh; both stay None when the route does not set them.
     """
 
     cache: str = "inactive"
@@ -133,19 +142,21 @@ class ResolveRecord:
     done: DoneEvent | None = None
     error_code: str | None = None
     delivered: bool = False
+    pre_ms: int | None = None
+    refresh_ms: int | None = None
     extraction_agreed: bool | None = None
     second_sample_usage: dict | None = None
 
 
-@contextmanager
-def resolve_line(
+@asynccontextmanager
+async def resolve_line(
     request: ResolveRequest,
     record: ResolveRecord,
     *,
     caller: str | None,
     transport: str,
     served_code: Callable[[Exception], str],
-) -> Iterator[None]:
+) -> AsyncIterator[None]:
     """Write `request`'s `resolve` log line when the block ends.
 
     A route holds the block outside the hard cap. A failure reaching it reads the code
@@ -159,28 +170,57 @@ def resolve_line(
     buffered route ends the block once the response is built, before it is sent, so its line
     cannot tell whether the client received the answer.
 
-    The trace ids are read on entry and bound for the line, which `JsonFormatter` stamps at
-    format time, because an SSE body abandoned at a `yield` closes later in a task of its
-    own, outside the request's context.
+    The trace ids and the delivery identity are read on entry, and the trace ids bound for the
+    line, which `JsonFormatter` stamps at format time, because an SSE body abandoned at a
+    `yield` closes later in a task of its own, outside the request's context, where the
+    identity reads `UNRESOLVED_IDENTITY`.
+
+    Before the line, the block queues the resolve's Langfuse trace (`queue_resolve_trace`) and
+    awaits its export for up to `resolve_trace.EXPORT_WAIT_S`, so the line's `trace` field
+    says what became of it. A block ended by cancellation or a closed body, or run in a task
+    being cancelled, queues the trace without waiting, and a cancellation during the wait still
+    writes the line before it propagates.
     """
     trace_id = get_trace_id()
     cloud_trace_id = get_cloud_trace_id()
+    identity = current_delivery_identity()
+    may_wait = True
     try:
         yield
     except BaseException as exc:
         if not record.delivered:
             record.error_code = served_code(exc) if isinstance(exc, Exception) else "cancelled"
+        may_wait = isinstance(exc, Exception)
         raise
     finally:
-        trace_token = set_trace_id(trace_id)
-        cloud_trace_token = set_cloud_trace_id(cloud_trace_id)
+        trace, pending = queue_resolve_trace(
+            trace_id=trace_id,
+            inp=request.input,
+            response=record.response,
+            error_code=record.error_code,
+            surface=identity.surface.value,
+        )
+        task = asyncio.current_task()
         try:
-            _log_resolve(request, record, caller=caller, transport=transport)
-        except Exception:
-            logger.exception("resolve log line failed")
+            if pending is not None and may_wait and task is not None and not task.cancelling():
+                trace = await await_resolve_trace(pending)
         finally:
-            reset_cloud_trace_id(cloud_trace_token)
-            reset_trace_id(trace_token)
+            trace_token = set_trace_id(trace_id)
+            cloud_trace_token = set_cloud_trace_id(cloud_trace_id)
+            try:
+                _log_resolve(
+                    request,
+                    record,
+                    caller=caller,
+                    transport=transport,
+                    identity=identity,
+                    trace=trace,
+                )
+            except Exception:
+                logger.exception("resolve log line failed")
+            finally:
+                reset_cloud_trace_id(cloud_trace_token)
+                reset_trace_id(trace_token)
 
 
 def _close_each(closers: Iterable[Callable[[], object]]) -> None:
@@ -209,6 +249,8 @@ def _log_resolve(
     *,
     caller: str | None,
     transport: str,
+    identity: DeliveryIdentity,
+    trace: TraceOutcome,
 ) -> None:
     """Log one INFO line for a resolve a route ran (`resolve_line`), `resolve ` followed by a
     JSON object. A refusal at the route ahead of the pipeline logs none, and neither does a
@@ -244,6 +286,18 @@ def _log_resolve(
 
     Every response-derived field is null, and every list empty, when the request ended before
     its response event.
+
+    `surface`, `caller_key`, `mcp_client` and `turn_id` come from the request's delivery
+    identity (`dfo_platform.caller.delivery_identity`), read on entry to `resolve_line`.
+    `surface` is `website`, `api` or `mcp` as a vouched upstream names it in `x-dfo-surface`,
+    `studio` for a vouched `conversation:` caller, `direct` with no vouching principal and
+    `unknown` for a vouched request naming none. `caller_key` is the identity's caller, an
+    `ip:` or `conversation:` key followed by 32 hex digits of a keyed digest, never an address,
+    null when none resolves. `mcp_client` is the end client's MCP `initialize` name on an
+    `mcp` request, `turn_id` the Studio turn on a `conversation:` caller's request, each null
+    otherwise. `parts` lists one `{status, spec_ids}` per part in order, `spec_ids` the specs
+    the part answers with in rank order, at most ten (`resolve_trace.part_specs`). `trace` is
+    what became of the request's Langfuse trace (`resolve_trace.TraceOutcome`).
     """
     options = request.response_options
     posted = options.model_dump(exclude_none=True) if options is not None else {}
@@ -268,12 +322,18 @@ def _log_resolve(
                 "trace_id": get_trace_id(),
                 "kind": inp.kind,
                 "caller": caller,
+                "surface": identity.surface.value,
+                "caller_key": identity.caller,
+                "mcp_client": identity.mcp_client,
+                "turn_id": identity.turn_id,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
                 "cache": record.cache,
                 "extraction_agreed": record.extraction_agreed,
                 "memo_hits": record.memo_hits,
                 "memo_misses": record.memo_misses,
+                "pre_ms": record.pre_ms,
+                "refresh_ms": record.refresh_ms,
                 "total_ms": timing.total if timing is not None else None,
                 "by_step": timing.by_step if timing is not None else None,
                 "parts_by_step": [
@@ -281,6 +341,13 @@ def _log_resolve(
                 ],
                 "outcome": outcome,
                 "part_statuses": [part.status for part in parts],
+                "parts": [
+                    {
+                        "status": part.status,
+                        "spec_ids": [spec.spec_id for spec in part_specs(part)],
+                    }
+                    for part in parts
+                ],
                 "no_data_reasons": [
                     part.no_data.reason for part in parts if isinstance(part, NoDataPart)
                 ],
@@ -296,6 +363,7 @@ def _log_resolve(
                 "timed_out": timed_out,
                 "degraded_leg": done.degraded_leg if done is not None else None,
                 "query_hmac": _query_hmac(inp),
+                "trace": trace,
             }
         ),
     )

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import get_args
 
 from code_index.shared import get_index, get_measure_index
@@ -37,6 +37,7 @@ from search.engine.bind import (
     stated_reading,
     validate_requested_all_bindings,
 )
+from search.engine.binders.assembly import anchored_draft, elected_result
 from search.engine.binders.base import BindResult
 from search.engine.binders.election import (
     holds_drafted_values,
@@ -372,7 +373,8 @@ def bind_result(
     populations: Mapping[int, Population] | None = None,
 ) -> tuple[BindResult, Confidence]:
     """`assemble` over `menu`, with the engine's rules applied to the drafts
-    (`bind.ground_bind_output`), and each shape's measure and election scores and the
+    (`bind.ground_bind_output`), assembled as every binder's election is
+    (`assembly.elected_result`), and each shape's measure and election scores and the
     ``none`` share of ``electq`` as the result's scores. The result is `none_first` when
     it elects a shape though ``electq`` gives ``none`` more than any shape (`_none_first`),
     which the decline rule lets through when a shape measures the phrase above `decline`.
@@ -381,11 +383,21 @@ def bind_result(
         menu, answers, stated_form=stated_form, thresholds=thresholds, populations=populations
     )
     shapes = range(len(menu.request.shapes))
-    result = BindResult(
-        output=ground_bind_output(output, menu.request.shapes),
-        binder="jev",
-        policy_pool=conf.pool,
-        policy_choice=conf.choice,
+    grounded = ground_bind_output(output, menu.request.shapes)
+    if grounded.ask is None and conf.pool is not None and conf.choice is not None:
+        result = elected_result(
+            menu.request,
+            elected=grounded.chosen_shape_index,
+            drafts=grounded.bindings,
+            binder="jev",
+            pool=conf.pool,
+            choice=conf.choice,
+            reply=grounded,
+        )
+    else:
+        result = BindResult(output=grounded, binder="jev")
+    result = replace(
+        result,
         scores={
             "measure": [round(conf.measures[i], 3) for i in shapes],
             "election": [round(conf.election.get(i, 0.0), 3) for i in shapes],
@@ -1162,22 +1174,17 @@ def _bind_slot(
         ):
             anchors.append(chosen[0])
             conf.slots[pid] = float(answers.choices[qid][choice])
-    forced = list(dict.fromkeys(m.code_dcid for m in anchors))
     taxonomy = (shape.slot_taxonomy or {}).get(f"{axis}:{property_dcid}", [])
-    # A one-member taxonomy binds that member: mentioned when the phrase names it or the
-    # qualifier matcher set it.
-    if len(taxonomy) == 1 and forced in ([], taxonomy):
-        sole = taxonomy[0]
-        evidence: DraftBindingEvidence = "mentioned" if sole in named or anchors else "sole_option"
+    # A one-member taxonomy binds that member, and the anchors bind their codes.
+    anchored = anchored_draft(shape, axis, property_dcid, anchors, named=named)
+    if anchored is not None:
+        one_member = len(taxonomy) == 1 and anchored.value_dcids == taxonomy
         return _Slot(
-            _draft(prop, "value", taxonomy, evidence=evidence),
+            anchored,
             anchors=tuple(anchors),
-            named={sole: named[sole]} if sole in named else {},
-            one_member=True,
+            named={v: named[v] for v in anchored.value_dcids if v in named and one_member},
+            one_member=one_member,
         )
-    if forced:
-        kind: DraftBindingKind = "value" if len(forced) == 1 else "set"
-        return _Slot(_draft(prop, kind, forced), anchors=tuple(anchors))
     # A named value under another named value adds nothing to it, and the slot's declared
     # default is the engine's to bind.
     index = get_index()
