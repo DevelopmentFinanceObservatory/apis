@@ -56,6 +56,7 @@ def _make_raising_spy(exc_for_entity: dict[str, Exception]):
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         entity = next(iter(request.role_bindings["observationAbout"]))
         if entity in exc_for_entity:
@@ -418,6 +419,7 @@ def test_materialisation_usage_error_propagates_uncaught():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         raise MaterialisationUsageError("malformed request")
 

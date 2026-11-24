@@ -9,7 +9,7 @@ import importlib.resources
 import json
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -154,6 +154,21 @@ class AliasIndex:
 
     def owners_of(self, text: str) -> tuple[CandidateSummary, ...]:
         return self.owners.get(self.normalize(text), ())
+
+    def with_owners(
+        self, candidates: Sequence[CandidateSummary], text: str
+    ) -> tuple[CandidateSummary, ...]:
+        """Append each row that stores `text` as a name and is missing from `candidates`.
+
+        Resolvekit generates no candidate for many stored aliases. Its org exact-name and
+        acronym sources skip `alias` rows, so `OAPEC` misses its organisation. Resolvekit
+        offers only `groups/OPEC`, which the gate rejects. The BYOD build stores each alias
+        with its punctuation, which the org query profile strips, so `C&A Foundation` misses
+        in every source. Appended owners carry no confidence, so they rank after resolvekit's
+        candidates, and they pass the listed-name gate like any other candidate."""
+        present = {candidate.entity_id for candidate in candidates}
+        owners = tuple(owner for owner in self.owners_of(text) if owner.entity_id not in present)
+        return (*candidates, *owners)
 
 
 def build_alias_index(

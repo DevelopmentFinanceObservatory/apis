@@ -567,6 +567,10 @@ class Catalogue(Protocol):
         its intersection with the scope already set. Every other answer is unchanged."""
         ...
 
+    def unscoped(self) -> Catalogue:
+        """This catalogue with no scope (`scope` None). Every other answer is unchanged."""
+        ...
+
     def is_admitted(self, provenance_id: str) -> bool: ...
 
     def admits_in_scope(self, provenance_id: str) -> bool:
@@ -769,6 +773,9 @@ class CatalogueSnapshot:
     def scoped(self, allowed: frozenset[str]) -> CatalogueSnapshot:
         scope = allowed if self.scope is None else self.scope & allowed
         return replace(self, scope=scope)
+
+    def unscoped(self) -> CatalogueSnapshot:
+        return replace(self, scope=None)
 
     def admits_in_scope(self, provenance_id: str) -> bool:
         return (self.scope is None or provenance_id in self.scope) and self.is_admitted(

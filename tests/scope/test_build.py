@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from code_index import declarations as code_index_declarations
 from code_index import scope_conventions
 from code_index.shared import get_index
+from origin_catalogue import scoped_reads
+from origin_catalogue.context import current_source_scope
 from search.engine.spec_id import identity_spec_id
 from search.models import SCOPE_OPTION_ID_PATTERN, Entry, PartScope, TextOrigin
 from search.scope import rules as scope_rules
@@ -213,3 +215,23 @@ def test_an_entry_refuses_an_option_of_another_axis():
             provenance="explicit",
             origin=TextOrigin(text="all of Africa", start=0, end=13),
         )
+
+
+def test_facts_remember_a_read_once_per_source_scope():
+    """A read under a part's source scope and one under none admit different coverage rows,
+    so `ScopeFacts.remembered` keeps them apart, and repeats each from its own memo."""
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    reads: list[frozenset[str] | None] = []
+
+    def read() -> frozenset[str] | None:
+        scope = current_source_scope()
+        reads.append(scope)
+        return scope
+
+    with scoped_reads(frozenset({"provenance/A"})):
+        assert facts.remembered("key", read) == frozenset({"provenance/A"})
+    assert facts.remembered("key", read) is None
+    with scoped_reads(frozenset({"provenance/A"})):
+        assert facts.remembered("key", read) == frozenset({"provenance/A"})
+
+    assert reads == [frozenset({"provenance/A"}), None]

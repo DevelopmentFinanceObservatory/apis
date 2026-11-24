@@ -58,6 +58,7 @@ from .grammar import (
     SourceRef,
     TimeWindow,
     in_window,
+    in_years,
 )
 
 # Leading-underscore names imported below are private in their home submodule
@@ -208,6 +209,7 @@ from .spec import (
     NearestRealSpec,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
+    PriceBasisRoute,
     RelatedMeasure,
     Relaxation,
     ResolvedFacet,
@@ -218,6 +220,12 @@ from .spec import (
     SpecAlternativeMeasure,
     SpecDefinition,
     UnitConversion,
+)
+from .stated_scope_door import (
+    StatedScopeEntry,
+    StatedScopeReading,
+    StatedScopeRequest,
+    StatedScopeResponse,
 )
 from .statvar import (
     DateRange,
@@ -432,6 +440,7 @@ __all__ = [
     "PartyKind",
     "PipelineStepName",
     "PreviewOrder",
+    "PriceBasisRoute",
     "ProvenanceRef",
     "ProviderBinding",
     "ProviderScope",
@@ -498,6 +507,10 @@ __all__ = [
     "SpecObservations",
     "StatVar",
     "StatVarSlotValue",
+    "StatedScopeEntry",
+    "StatedScopeReading",
+    "StatedScopeRequest",
+    "StatedScopeResponse",
     "StatusLiteral",
     "TextOrigin",
     "TimeWindow",
@@ -517,6 +530,7 @@ __all__ = [
     "departures_in_precedence_order",
     "elect_no_data_reason",
     "in_window",
+    "in_years",
     "omitted_observations",
     "role_ref",
     "served_date_range",

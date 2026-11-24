@@ -895,9 +895,11 @@ class PartMemoScope:
         return self._memo is not None
 
     def key(self, payload: ResubmitIdentityPayload, options: EngineOptions) -> str:
-        """The memo key of `payload` resolved under `options`' four enrichment flags."""
+        """The memo key of `payload` resolved under `options`' four enrichment flags and
+        the years its preview reads rows in (`EngineOptions.preview_years`)."""
         return part_memo_key(
             payload=payload,
+            preview_years=options.preview_years,
             engine_flags={
                 "include_option_coverage": options.include_option_coverage,
                 "stream_slot_options": options.stream_slot_options,

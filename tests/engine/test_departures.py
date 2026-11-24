@@ -372,6 +372,36 @@ def test_modelled_values_when_estimates_continue_the_reported_series(end_year, m
 
 
 @pytest.mark.parametrize(
+    ("spec_continued", "read_continued", "modelled"),
+    [
+        (True, None, True),
+        (True, False, False),
+        (False, True, True),
+    ],
+)
+def test_modelled_values_follow_the_continuation_the_preview_s_reads_state(
+    spec_continued, read_continued, modelled
+):
+    """A composite's Spec reads its table identity's plan, while its preview's component
+    reads state the continuation each serves in its own years. The departure follows the
+    reads where they state one, and the Spec's own where they state none."""
+    spec = _spec()
+    observations = SpecObservations(series=[], total_obs=0, truncated=False)
+    spec = spec.model_copy(
+        update={
+            "resolved": spec.resolved.model_copy(
+                update={"observations": observations.stating_continued(read_continued)}
+            ).stating_continued(spec_continued)
+        }
+    )
+
+    facts = spec_departure_facts(spec, operations=())
+
+    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    assert facts == ([expected] if modelled else [])
+
+
+@pytest.mark.parametrize(
     ("role", "binding_ref"), [("destination", "where:"), ("origin", "origin:")]
 )
 @pytest.mark.parametrize(

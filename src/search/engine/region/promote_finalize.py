@@ -85,6 +85,7 @@ def _preview_read(
         },
         unit_request=unit_request,
         elected=state.elected_unit,
+        years=state.preview_years,
     )
 
 

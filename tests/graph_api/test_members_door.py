@@ -151,6 +151,9 @@ def _surface_app(
                     dataset_usage=new_schema_cache(
                         entries=1, executor=dcp, generation=UNKNOWN_GENERATION
                     ),
+                    origin_usage=new_schema_cache(
+                        entries=2, executor=dcp, generation=UNKNOWN_GENERATION
+                    ),
                     check_executor=new_check_executor(),
                 ),
             )

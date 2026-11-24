@@ -6,6 +6,7 @@ windowing, ranking, filtering, failures, and the bound-unit pipeline path.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -42,11 +43,13 @@ from search.engine.region.observations.bulk_conversion import (
     ConvertedPairs,
 )
 from search.engine.region.observations.bulk_role_series import (
+    _bulk_role_series,
     _narrowest_common_role,
     _pair_rows,
     _preview_pairs,
     _served_pairs,
 )
+from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.facet_election import (
@@ -55,7 +58,7 @@ from search.engine.retrieval.facet_election import (
     role_n_obs,
 )
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
-from search.engine.retrieval.read_plan import BulkPlan, PlanRoles
+from search.engine.retrieval.read_plan import BulkPlan, PlanRoles, read_in_years
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
     OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
@@ -63,6 +66,7 @@ from search.observations import (
     observation_settings,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests._json_fields import json_fields
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -1749,6 +1753,464 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
         assert set(call["entities"]["recipient"]) == set(fixed)
         assert set(delivered) == set(fixed)
         assert delivered == sorted(fixed, key=recipients.index, reverse=True)
+
+
+def test_a_read_in_served_years_keeps_the_facet_its_own_window_elects(monkeypatch):
+    """F1 holds every recipient from 2010 to 2016 and F2 two of them from 2017 to 2020.
+    Under the plan's own window, 2010 to 2020, F1 leads, as a Datasets mint under that
+    window elects it, while a plan built over the served years 2017 to 2020 alone elects F2.
+    Read in the served years, the plan keeps F1 and lists those years alone."""
+    recipients = [f"country/BRElect{i}" for i in range(5)]
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        [("F1", _DONOR, r, list(range(2010, 2017))) for r in recipients]
+        + [("F2", _DONOR, r, list(range(2017, 2021))) for r in recipients[:2]],
+    )
+    entities = _obs_entities(recipients)
+    own = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2010, end_year=2020)
+    )
+    narrow = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2017, end_year=2020)
+    )
+    assert (own.facet_id, narrow.facet_id) == ("F1", "F2")
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [
+                    _facet(dates=[str(y) for y in range(2010, 2017)], facet_id="F1"),
+                    _facet(dates=[str(y) for y in range(2017, 2021)], facet_id="F2"),
+                ]
+                for r in recipients[:2]
+            }
+        }
+    )
+
+    region_fetch._build_observations(
+        own,
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=frozenset(range(2017, 2021)),
+    )
+
+    (call,) = sdmx.series_calls
+    assert "F1" in call["facet_ids"]
+    assert call["time_period"] == ["2017", "2018", "2019", "2020"]
+
+
+@pytest.mark.parametrize(
+    ("years", "dates"),
+    [
+        pytest.param(frozenset(range(2018, 2021)), ["2019", "2020"], id="contiguous"),
+        # 2019 lies inside the span and outside the years: the read lists 2018 and 2020 alone.
+        pytest.param(frozenset({2018, 2020}), ["2020"], id="gap"),
+    ],
+)
+def test_a_read_in_served_years_picks_counts_and_shows_their_series_alone(
+    monkeypatch, search_settings, years, dates
+):
+    """Three recipients hold data in 2011 alone and two in 2011, 2019 and 2020. Over the
+    plan's own window, 2010 to 2020, a fixed read of two series takes the first two by
+    identity, which hold no point in the served years, and warns that it shows two of five.
+    Read in the served years, it takes the two holding a point there, shows both with no
+    warning and counts their points in those years alone."""
+    search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=2)
+    old = [f"country/BRA{i}" for i in range(3)]
+    new = [f"country/BRZ{i}" for i in range(2)]
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        [("F1", _DONOR, r, [2011]) for r in old]
+        + [("F1", _DONOR, r, [2011, 2019, 2020]) for r in new],
+    )
+    entities = _obs_entities([*old, *new])
+    plan = bulk_plan(
+        [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2010, end_year=2020)
+    )
+
+    def preview(in_years: frozenset[int] | None):
+        sdmx = FakeSdmxClient(
+            observations={
+                _SV: {
+                    **{_role_tuple(r): [_facet(dates=["2011"])] for r in old},
+                    **{_role_tuple(r): [_facet(dates=["2011", "2019", "2020"])] for r in new},
+                }
+            }
+        )
+        observations, warn = region_fetch._build_observations(
+            plan,
+            [_SV],
+            entities,
+            graph=_GRAPH,
+            materialise_graph=None,
+            materialise_sdmx=None,
+            sdmx=sdmx,
+            coverage=coverage,
+            years=in_years,
+        )
+        (call,) = sdmx.series_calls
+        return observations, warn, call
+
+    _, warn, call = preview(None)
+    assert set(call["entities"]["recipient"]) == set(old[:2])
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_SERIES_TRUNCATED
+
+    observations, warn, call = preview(years)
+
+    assert set(call["entities"]["recipient"]) == set(new)
+    assert call["time_period"] == [str(year) for year in sorted(years)]
+    assert warn is None
+    assert not observations.truncated
+    assert [[p.date for p in series.points] for series in observations.series] == [dates] * 2
+    assert observations.total_obs == 2 * len(dates)
+
+
+@pytest.mark.parametrize(
+    ("period", "listed", "bounded"),
+    [
+        pytest.param("P1Y", ["2019", "2020"], True, id="annual"),
+        pytest.param("P1M", [str(year) for year in range(2010, 2021)], False, id="monthly"),
+    ],
+)
+def test_a_read_in_served_years_lists_them_alone_only_for_annual_facets(
+    monkeypatch, caplog, period, listed, bounded
+):
+    """A facet the coverage states by month cannot be asked for by the year, so the read
+    lists the plan's whole window and keeps the served years once it has read it. Both
+    reads show the same points and log their span counts."""
+    recipients = [f"country/BRM{i}" for i in range(2)]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "F1", _DONOR, r, list(range(2010, 2021))) for r in recipients],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            "F1": FacetMetadata(provenance_id="dc/base/Src", observation_period=period)
+        },
+    )
+    coverage = FakeCoverageService(index).snapshot()
+    entities = _obs_entities(recipients)
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=[str(y) for y in range(2010, 2021)])]
+                for r in recipients
+            }
+        }
+    )
+    caplog.set_level(logging.INFO, logger=region_fetch.logger.name)
+
+    observations, _warn = region_fetch._build_observations(
+        bulk_plan(
+            [_SV],
+            entities,
+            coverage=coverage,
+            window=TimeWindow(start_year=2010, end_year=2020),
+        ),
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=frozenset({2019, 2020}),
+    )
+
+    (call,) = sdmx.series_calls
+    assert call["time_period"] == listed
+    assert [[p.date for p in series.points] for series in observations.series] == [
+        ["2019", "2020"]
+    ] * 2
+    (fields,) = json_fields(caplog, "span_reads_bounded")
+    assert (fields["span_reads_bounded"], fields["span_reads_whole_window"]) == (
+        int(bounded),
+        int(not bounded),
+    )
+
+
+def test_a_converted_read_in_served_years_counts_and_converts_their_points_alone(
+    monkeypatch, search_settings
+):
+    """Thirty recipients hold data from 2010 to 2015 alone and two from 2010 to 2020, under
+    a plan over 2010 to 2020 that shows at most five series. Read in 2019 and 2020, the
+    preview converts, shows and counts the two recipients' points in those years alone,
+    with no truncation or partial-scope warning: the converter is handed no other year."""
+    search_settings(role_bulk_series_max=5)
+    old = [f"country/BRWide{i}" for i in range(30)]
+    new = [f"country/BRServed{i}" for i in range(2)]
+    held = {**dict.fromkeys(old, range(2010, 2016)), **dict.fromkeys(new, range(2010, 2021))}
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "F1", _DONOR, r, list(years)) for r, years in held.items()],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={"F1": FacetMetadata(provenance_id="dc/base/Src", unit="CurrencyEUR")},
+    )
+    coverage = FakeCoverageService(index).snapshot()
+    entities = _obs_entities([*old, *new])
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=[str(y) for y in years], unit="CurrencyEUR")]
+                for r, years in held.items()
+            }
+        }
+    )
+    converted: list[str] = []
+
+    def convert(pair_points, *, facet, conversion):
+        converted.extend(date for points in pair_points.values() for date, _value in points)
+        return _identity_conversion(pair_points, facet=facet, conversion=conversion)
+
+    monkeypatch.setattr(bulk_role_series, "convert_pairs", convert)
+    elected = {
+        _SV: (
+            {
+                "provenance": _facet_selection(
+                    axis="provenance", ref="dc/base/Src", selection_reason="sole_candidate"
+                ),
+                "unit": _facet_selection(
+                    axis="unit",
+                    ref="CurrencyEUR",
+                    selection_reason="converted_from_native",
+                    request=UnitRequest(currency="USD", prices="current"),
+                ),
+            },
+        )
+    }
+
+    observations, warn = region_fetch._build_observations(
+        bulk_plan(
+            [_SV], entities, coverage=coverage, window=TimeWindow(start_year=2010, end_year=2020)
+        ),
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=cast("GraphReader", object()),
+        materialise_sdmx=cast("MaterialiseSdmxClient", object()),
+        rate_cache=cast("RateTableCache", object()),
+        sdmx=sdmx,
+        unit_request=IdentityUnitRequest(currency="USD", prices="current"),
+        elected=elected,
+        coverage=coverage,
+        years=frozenset({2019, 2020}),
+    )
+
+    assert sorted(converted) == ["2019", "2019", "2020", "2020"]
+    assert warn is None
+    assert not observations.truncated
+    assert [sorted(p.date for p in s.points) for s in observations.series] == [["2019", "2020"]] * 2
+    assert observations.total_obs == 4
+
+
+def _points_at(observations, recipient: str) -> list[tuple[str, float | None]]:
+    """The points `observations` serve at `recipient`, empty for none."""
+    return [
+        (p.date, p.value)
+        for s in observations.series
+        if any(e.ref == recipient for e in s.entities)
+        for p in s.points
+    ]
+
+
+@pytest.mark.parametrize(
+    ("holdings", "window", "years", "converted", "served"),
+    [
+        # `FM1` and `FM3`, one identity, contest 2020. Over 2015 to 2020 `FM1`'s four rows
+        # outrank `FM3`'s two; over 2019 to 2020 alone `FM3`'s two outrank `FM1`'s one.
+        pytest.param(
+            [("FM1", [2015, 2016, 2017, 2020]), ("FM3", [2019, 2020])],
+            (2015, 2020),
+            frozenset({2019, 2020}),
+            False,
+            [("2019", 3.0), ("2020", 1.0)],
+            id="collapse-rank",
+        ),
+        # The same contest for a member whose conversion runs arithmetic, which a mint
+        # ranks within each series.
+        pytest.param(
+            [("FM1", [2015, 2016, 2017, 2020]), ("FM3", [2019, 2020])],
+            (2015, 2020),
+            frozenset({2019, 2020}),
+            True,
+            [("2019", 3.0), ("2020", 1.0)],
+            id="collapse-rank-by-series",
+        ),
+        # `FM4` continues `FM1` past 2020, its last year in the window. In 2018 and 2019 the
+        # read holds no `FM1` point, yet the continuation serves none of `FM4`'s there.
+        pytest.param(
+            [("FM1", [2015, 2016, 2017, 2020]), ("FM4", [2018, 2019, 2021, 2022])],
+            (2015, 2022),
+            frozenset({2018, 2019}),
+            False,
+            [],
+            id="continuation-cut",
+        ),
+        # The read holds `FM1`'s 2018 point, and `FM4`'s 2019 one lies after it, yet before
+        # `FM1`'s last year in the window.
+        pytest.param(
+            [("FM1", [2015, 2018, 2020]), ("FM4", [2019, 2021, 2022])],
+            (2015, 2022),
+            frozenset({2018, 2019}),
+            False,
+            [("2018", 1.0)],
+            id="continuation-cut-after-a-selected-point",
+        ),
+    ],
+)
+def test_a_read_in_served_years_serves_the_points_a_mint_of_its_window_keeps(
+    monkeypatch, holdings, window, years, converted, served
+):
+    """A Datasets mint of a composite's component masks and collapses its rows under the
+    component's window and keeps the served years afterwards. Read in those years
+    (`read_plan.read_in_years`), the bulk preview ranks and cuts its facets over coverage
+    in the window it elected under, so at `_R1` it serves what its read of the whole window
+    serves in them."""
+    monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, facet_id, _DONOR, _R1, list(held)) for facet_id, held in holdings],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in _METHODS.items()
+        },
+    )
+    plan = replace(
+        bulk_plan(
+            [_SV],
+            _obs_entities([_R1]),
+            coverage=FakeCoverageService(index).snapshot(),
+            window=TimeWindow(start_year=window[0], end_year=window[1]),
+        ),
+        index_sourced=True,
+    ).narrowed(lambda _sv, _candidate: True)
+    conversion = BulkConversion(
+        unit_request=UnitRequest(currency="USD", prices="current"),
+        elected={
+            _SV: (
+                {
+                    "unit": _facet_selection(
+                        axis="unit", ref="CurrencyUSD", selection_reason="converted_from_native"
+                    )
+                },
+            )
+        },
+        graph=cast("GraphReader", None),
+        sdmx=cast("MaterialiseSdmxClient", None),
+        rate_cache=cast("RateTableCache", None),
+    )
+
+    def read(read_plan: BulkPlan) -> list[tuple[str, float | None]]:
+        sdmx = FakeSdmxClient(
+            observations={
+                _SV: {
+                    _role_tuple(_R1): [
+                        _facet(
+                            dates=[str(y) for y in held],
+                            value=float(sorted(_METHODS).index(facet_id) + 1),
+                            facet_id=facet_id,
+                        )
+                        for facet_id, held in holdings
+                    ]
+                }
+            }
+        )
+        observations, _warn = _bulk_role_series(
+            read_plan,
+            [_SV],
+            sdmx=sdmx,
+            graph=_GRAPH,
+            facet_filter=None,
+            conversion=conversion if converted else None,
+        )
+        return _points_at(observations, _R1)
+
+    narrowed = read_in_years(plan, years)
+    assert narrowed is not None
+    whole = [point for point in read(plan) if int(point[0]) in years]
+
+    assert read(narrowed) == whole == served
+
+
+def _read_in_years(monkeypatch, window, years: frozenset[int], *, covered=(2019, 2020)):
+    """The bulk preview of five recipients holding `F1` in 2019 and 2020 under a plan over
+    `window`, read in `years`, and the SDMX double. Coverage counts their series in
+    `covered`."""
+    recipients = [f"country/BRYear{i}" for i in range(5)]
+    coverage = _patch_role_coverage(
+        monkeypatch, [("F1", _DONOR, r, list(covered)) for r in recipients]
+    )
+    entities = _obs_entities(recipients)
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=["2019", "2020"], facet_id="F1")] for r in recipients
+            }
+        }
+    )
+    observations, _warn = region_fetch._build_observations(
+        bulk_plan([_SV], entities, coverage=coverage, window=window),
+        [_SV],
+        entities,
+        graph=_GRAPH,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=sdmx,
+        coverage=coverage,
+        years=years,
+    )
+    return observations, sdmx
+
+
+def test_a_bulk_read_in_years_its_plan_does_not_hold_omits_with_no_points_and_no_read(
+    monkeypatch,
+):
+    """A plan over 2019 to 2020 read in 2015 alone holds no year to read: the preview omits
+    as holding no point, with no SDMX read."""
+    observations, sdmx = _read_in_years(
+        monkeypatch, TimeWindow(start_year=2019, end_year=2020), frozenset({2015})
+    )
+
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert (observations.omitted.dispatched, observations.omitted.empty) == (0, 0)
+    assert sdmx.series_calls == []
+
+
+@pytest.mark.parametrize(
+    ("covered", "dispatched"),
+    [
+        pytest.param((2019, 2020), 0, id="no-series-to-read"),
+        # Coverage counts 2017, which the read returns no point in.
+        pytest.param((2017, 2019, 2020), 5, id="read-returns-none"),
+    ],
+)
+def test_a_bulk_read_in_years_holding_no_point_omits_as_a_per_series_read_does(
+    monkeypatch, covered, dispatched
+):
+    """The plan over 2015 to 2020 holds 2017, where no recipient's read holds a point: the
+    preview omits for want of points in the year it serves, counting every dispatched pair
+    empty, stated as a per-series read states it
+    (`served_years.no_points_in_served_years`)."""
+    years = frozenset({2017})
+    observations, sdmx = _read_in_years(
+        monkeypatch, TimeWindow(start_year=2015, end_year=2020), years, covered=covered
+    )
+
+    assert len(sdmx.series_calls) == (1 if dispatched else 0)
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert observations == no_points_in_served_years(years, dispatched=dispatched, empty=dispatched)
 
 
 def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():

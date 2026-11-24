@@ -49,6 +49,30 @@ def test_release_shared_twice_then_acquire_builds_anew(tmp_path):
         release_shared(third)
 
 
+def _count_wording_builds(monkeypatch) -> list[int]:
+    builds: list[int] = []
+    real = shared_module.build_group_wordings
+
+    def counting(*args, **kwargs):
+        builds.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(shared_module, "build_group_wordings", counting)
+    monkeypatch.setattr(shared_module, "_cached_wordings", {})
+    return builds
+
+
+def test_sequential_acquires_build_the_wordings_once_until_an_input_changes(tmp_path, monkeypatch):
+    builds = _count_wording_builds(monkeypatch)
+    for _ in range(2):
+        release_shared(acquire_shared(cache_dir=tmp_path))
+    assert len(builds) == 1
+
+    monkeypatch.setattr(shared_module, "_wordings_key", lambda pack_dir: (pack_dir.name, "changed"))
+    release_shared(acquire_shared(cache_dir=tmp_path))
+    assert len(builds) == 2
+
+
 def test_release_shared_refuses_an_object_it_never_returned(tmp_path):
     shared = acquire_shared(cache_dir=tmp_path)
     try:

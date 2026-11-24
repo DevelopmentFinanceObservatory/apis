@@ -27,7 +27,7 @@ from materialise.facets import (
     role_bearing_facet_candidates,
     role_bearing_facets,
 )
-from materialise.generation import elected_latest_year
+from materialise.generation import SpanRead, elected_latest_year
 from materialise.graph import GraphReader
 from materialise.pipeline import (
     DEFAULT_MEMBER_CONCURRENCY,
@@ -90,6 +90,7 @@ __all__ = [
     "RequestedWindow",
     "ResolvedStatVar",
     "RowProgress",
+    "SpanRead",
     "UpstreamResponseError",
     "UpstreamVersionChangedError",
     "compute_output_profile",

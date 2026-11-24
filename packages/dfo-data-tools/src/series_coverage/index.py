@@ -1514,12 +1514,20 @@ class CoverageIndex:
             counts[year] = _series_holding(found.masks, year, self._horizon)
         return counts
 
-    def years_held(self, *, variables: Iterable[str]) -> frozenset[int]:
-        """The years any row of `variables` holds, under every place: the years
-        `series_by_year` counts a series in over the whole horizon, with no binding,
-        `served` or `excluded`, and the source-scope admission every read applies
-        (`_admit_scoped_rows`). Read from the per-pair year masks the index builds once
-        (`_pair_year_masks`), so the cost follows the variables' facets, not their rows."""
+    def years_held(
+        self, *, variables: Iterable[str], bound: BoundRoles = _NO_BINDING
+    ) -> frozenset[int]:
+        """The years any row of `variables` under `bound` holds, as `series_by_year`
+        counts a series in over the whole horizon, with no `served` or `excluded`, and under the
+        source-scope admission every read applies (`_admit_scoped_rows`). With no binding it
+        reads the per-pair year masks the index builds once (`_pair_year_masks`), so the cost
+        follows the variables' facets, not their rows. Under a binding it reads the series
+        `series_years` serves."""
+        if bound:
+            found = self.series_years(variables=list(variables), bound=bound)
+            if found is None:
+                return frozenset()
+            return _years_of(np.bitwise_or.reduce(found.masks, axis=0).tolist(), self._horizon)
         codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
         if not codes:
             return frozenset()

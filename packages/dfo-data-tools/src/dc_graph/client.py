@@ -184,6 +184,17 @@ def is_front_door_refusal(*, status: int, content_type: str | None, body: str) -
     )
 
 
+def _retry_after_seconds(header: str | None) -> float | None:
+    """The non-negative seconds a `Retry-After` header names, `None` for none or an HTTP date."""
+    if header is None:
+        return None
+    try:
+        seconds = float(header.strip())
+    except ValueError:
+        return None
+    return seconds if 0 <= seconds < float("inf") else None
+
+
 class FrontDoorRefused(Exception):
     """A request met the front door's refusal (`is_front_door_refusal`). `post` attaches it as the
     `__cause__` of the `GraphReadError` it raises, so an adapter reading through `post` recognises
@@ -217,8 +228,10 @@ class Facet:
     read judges its own dates (`_reads_annual`). Merging facets of one id
     (`_merge_facets_by_id`, `materialise.facets.merge_facets`) stores the AND of the merged
     facets' evidence in `annual_evidence`, never a judgement of the widened bounds, so one
-    place dated by month keeps the merged facet from reading as annual. `annual_evidence` is
-    `None` on a facet no merge built.
+    place dated by month keeps the merged facet from reading as annual. A coverage facet
+    states no evidence, so a merge reads the other facets' alone. `annual_evidence` is
+    `None` on a facet no merge built, and on a merge of coverage facets alone
+    (`materialise.facets.merge_facets`).
 
     `first_series_end` is the latest date of the series that ends first among those the facet
     holds: a merge across places or StatVars (`materialise.facets.merge_facets`) keeps the
@@ -371,6 +384,31 @@ class ArcSubjectPage:
 
     subjects: tuple[ArcSubject, ...]
     truncated: bool
+
+
+@dataclass(frozen=True)
+class InArcSubject:
+    """One subject of a bracket in-arc read: its `dcid`, the `property` it points through, its
+    `name` (`display_name` over the names its entries carry, `None` for none), its `types`
+    (distinct, in first-occurrence order) and `provenances` (distinct, sorted). A subject
+    reached through two properties is two `InArcSubject`s."""
+
+    dcid: str
+    property: str
+    name: str | None
+    types: tuple[str, ...]
+    provenances: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InArcs:
+    """What `node_in_arcs` read for one node: `subjects` grouped by property in the order the
+    caller named the properties, each property's subjects in first-occurrence order, and
+    `capped`, the properties whose listing stopped at `max_results` with more subjects behind
+    it. A node with no in-arcs holds `subjects=()` and `capped=frozenset()`."""
+
+    subjects: tuple[InArcSubject, ...]
+    capped: frozenset[str]
 
 
 @dataclass
@@ -618,14 +656,44 @@ class GraphClient:
         """
         return self._request("POST", path, payload=payload, deadline=deadline)
 
-    def _post_node(self, payload: dict, *, deadline: float | None) -> dict | None:
-        """POST a `/v2/node` read through `post`. Returns `None` when the front door refuses it
-        (`is_front_door_refusal`), which `_request` records as the read error's cause."""
+    def _post_node(
+        self, payload: dict, *, deadline: float | None, max_bytes: int | None = None
+    ) -> dict | None:
+        """POST a `/v2/node` read through `post`, or through `post_capped_bytes`'s one streamed
+        attempt when `max_bytes` caps the decoded body. Returns `None` when the front door
+        refuses it (`is_front_door_refusal`), which `_request` records as the read error's
+        cause."""
+        return self._post_node_counted(payload, deadline=deadline, max_bytes=max_bytes)[0]
+
+    def _post_node_counted(
+        self,
+        payload: dict,
+        *,
+        deadline: float | None,
+        max_bytes: int | None,
+        already_read: int = 0,
+    ) -> tuple[dict | None, int]:
+        """`_post_node` with the decoded bytes of its body, `0` when `max_bytes` is `None`. The
+        cap error fires once `already_read` plus the body's bytes pass `max_bytes`, so pages
+        of one read share one cap (`_request_capped`)."""
+        if max_bytes is not None:
+            try:
+                return self._request_capped(
+                    "POST",
+                    NODE_PATH,
+                    payload=payload,
+                    max_bytes=max_bytes,
+                    already_read=already_read,
+                    deadline=deadline,
+                    front_door_refusals=True,
+                )
+            except FrontDoorRefused:
+                return None, 0
         try:
-            return self.post(NODE_PATH, payload, deadline=deadline)
+            return self.post(NODE_PATH, payload, deadline=deadline), 0
         except GraphReadError as exc:
             if isinstance(exc.__cause__, FrontDoorRefused):
-                return None
+                return None, 0
             raise
 
     def _read_refused_halves(
@@ -721,6 +789,8 @@ class GraphClient:
                     f"graph returned HTTP {response.status_code} for {path!r}",
                     upstream_status=response.status_code,
                 )
+                if isinstance(error, GraphReadError):
+                    error.retry_after = _retry_after_seconds(response.headers.get("retry-after"))
                 if refused:
                     raise error from FrontDoorRefused(path)
                 raise error
@@ -985,47 +1055,76 @@ class GraphClient:
         property_arc: str,
         semaphore: threading.BoundedSemaphore | None,
         deadline: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict:
         """Read one `/v2/node` page. This mixer repeats continuation tokens for this request shape,
-        so discard the whole response and halve the dcid chunk into fresh requests. A continuation
-        for one dcid raises the read error. A front-door refusal halves the chunk the same way
-        (`_read_refused_halves`).
+        so discard the whole response and halve the dcid chunk into fresh requests. A front-door
+        refusal halves the chunk the same way (`_read_refused_halves`). A continuation for one
+        dcid is followed page by page when `max_bytes` caps the read, every page counting
+        against that one cap (`_page_single_arc`), and raises the read error otherwise.
 
         Acquire `semaphore` for this POST and release it before recursive retries. `deadline`
         bounds the wait and raises `_ChunkDeadlineExpired` when time expires. A bound request
         deadline (`dfo_platform.request_deadline`) also bounds the wait and raises the configured
-        deadline error when it is the one that expires.
+        deadline error when it is the one that expires. `max_bytes` caps each decoded response
+        (`_post_node`).
         """
-        acquired = False
-        if semaphore is not None:
-            wait_deadline = bounded_deadline(deadline)
-            timeout = None if wait_deadline is None else max(0.0, wait_deadline - time.monotonic())
-            acquired = semaphore.acquire(timeout=timeout)
-            if not acquired:
-                detail = (
-                    f"deadline elapsed before {len(dcids)} dcid(s) reached the front of "
-                    "the node-arc semaphore queue"
-                )
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise _ChunkDeadlineExpired(detail)
-                raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {detail}")
-        try:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise _ChunkDeadlineExpired(
-                    f"deadline elapsed before {len(dcids)} dcid(s) reached the front of "
-                    "the node-arc semaphore queue"
-                )
-            body = self._post_node({"nodes": dcids, "property": property_arc}, deadline=deadline)
-        finally:
-            if semaphore is not None and acquired:
-                semaphore.release()
+        body, read = self._post_node_in_slot(
+            {"nodes": dcids, "property": property_arc},
+            semaphore=semaphore,
+            deadline=deadline,
+            max_bytes=max_bytes,
+        )
         if body is None:
             return self._read_refused_halves(
                 dcids,
                 lambda part: self._fetch_single_arc_chunk(
-                    list(part), property_arc=property_arc, semaphore=semaphore, deadline=deadline
+                    list(part),
+                    property_arc=property_arc,
+                    semaphore=semaphore,
+                    deadline=deadline,
+                    max_bytes=max_bytes,
                 ),
             )
+        data = self._checked_node_page(body, dcids)
+        if body.get("nextToken") is None:
+            return data
+        if len(dcids) == 1:
+            if max_bytes is None:
+                raise self._read_error_cls(
+                    f"graph /v2/node reported a continuation reading {property_arc} for "
+                    f"{dcids[0]!r} alone; refusing to return a short mapping"
+                )
+            return self._page_single_arc(
+                dcids[0],
+                property_arc=property_arc,
+                first=body,
+                first_bytes=read,
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
+            )
+        mid = len(dcids) // 2
+        left = self._fetch_single_arc_chunk(
+            dcids[:mid],
+            property_arc=property_arc,
+            semaphore=semaphore,
+            deadline=deadline,
+            max_bytes=max_bytes,
+        )
+        right = self._fetch_single_arc_chunk(
+            dcids[mid:],
+            property_arc=property_arc,
+            semaphore=semaphore,
+            deadline=deadline,
+            max_bytes=max_bytes,
+        )
+        return {**left, **right}
+
+    def _checked_node_page(self, body: dict, dcids: Sequence[str]) -> dict:
+        """The `data` mapping of a `/v2/node` arc page naming `dcids`, after checking that it,
+        each named node's data and that node's `arcs` are mappings. A malformed page raises
+        the read error."""
         if not isinstance(body, dict):
             raise self._read_error_cls("graph /v2/node returned a malformed response body")
         data = body.get("data", {})
@@ -1041,21 +1140,102 @@ class GraphClient:
                 )
             if "arcs" in node_data and not isinstance(node_data["arcs"], dict):
                 raise self._read_error_cls(f"graph /v2/node returned malformed arcs for {dcid!r}")
-        if body.get("nextToken") is None:
-            return data
-        if len(dcids) == 1:
-            raise self._read_error_cls(
-                f"graph /v2/node reported a continuation reading {property_arc} for "
-                f"{dcids[0]!r} alone; refusing to return a short mapping"
+        return data
+
+    def _post_node_in_slot(
+        self,
+        payload: dict,
+        *,
+        semaphore: threading.BoundedSemaphore | None,
+        deadline: float | None,
+        max_bytes: int | None,
+        already_read: int = 0,
+    ) -> tuple[dict | None, int]:
+        """`_post_node_counted` holding a `semaphore` slot for the POST when one is given.
+        `deadline` bounds the wait and raises `_ChunkDeadlineExpired` when time expires; a bound
+        request deadline that expires first raises the configured deadline error."""
+        count = len(payload["nodes"])
+        detail = (
+            f"deadline elapsed before {count} dcid(s) reached the front of "
+            "the node-arc semaphore queue"
+        )
+        acquired = False
+        if semaphore is not None:
+            wait_deadline = bounded_deadline(deadline)
+            timeout = None if wait_deadline is None else max(0.0, wait_deadline - time.monotonic())
+            acquired = semaphore.acquire(timeout=timeout)
+            if not acquired:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise _ChunkDeadlineExpired(detail)
+                raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {detail}")
+        try:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _ChunkDeadlineExpired(detail)
+            return self._post_node_counted(
+                payload, deadline=deadline, max_bytes=max_bytes, already_read=already_read
             )
-        mid = len(dcids) // 2
-        left = self._fetch_single_arc_chunk(
-            dcids[:mid], property_arc=property_arc, semaphore=semaphore, deadline=deadline
-        )
-        right = self._fetch_single_arc_chunk(
-            dcids[mid:], property_arc=property_arc, semaphore=semaphore, deadline=deadline
-        )
-        return {**left, **right}
+        finally:
+            if semaphore is not None and acquired:
+                semaphore.release()
+
+    def _page_single_arc(
+        self,
+        dcid: str,
+        *,
+        property_arc: str,
+        first: dict,
+        first_bytes: int,
+        semaphore: threading.BoundedSemaphore | None,
+        deadline: float | None,
+        max_bytes: int,
+    ) -> dict:
+        """Follow the continuation of `first`, the answer for `dcid` read alone, page by page,
+        and merge every page's arcs in page order. The pages share one `max_bytes` cap,
+        `first_bytes` of it spent on `first`, so the read raises the cap error once their sum
+        passes it. A repeated token or a continuation on page `_NODE_ARCS_MANY_MAX_PAGES` raises
+        the read error from `GraphNotAdvancingError` without sending another page; a refused or
+        malformed page raises the read error. Each page holds a `semaphore` slot."""
+        merged: dict[str, dict] = {}
+        body = first
+        read = first_bytes
+        token: str | None = None
+        pages = 1
+        while True:
+            data = self._checked_node_page(body, [dcid])
+            _merge_node_arcs_page(merged, {dcid: data[dcid]} if dcid in data else {})
+            next_token = body.get("nextToken")
+            if next_token is None:
+                return merged
+            if next_token == token:
+                detail = f"graph /v2/node repeated the continuation token reading {property_arc}"
+            elif pages >= _NODE_ARCS_MANY_MAX_PAGES:
+                detail = (
+                    f"graph /v2/node still reported a continuation after "
+                    f"{_NODE_ARCS_MANY_MAX_PAGES} pages reading {property_arc}"
+                )
+            else:
+                detail = None
+            if detail is not None:
+                stuck = GraphNotAdvancingError(
+                    f"{detail} for {dcid!r}", dcid=dcid, property=property_arc
+                )
+                raise self._read_error_cls(str(stuck)) from stuck
+            token = next_token
+            page, page_bytes = self._post_node_in_slot(
+                {"nodes": [dcid], "property": property_arc, "nextToken": token},
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
+                already_read=read,
+            )
+            if page is None:
+                raise self._read_error_cls(
+                    f"graph front door refused a /v2/node page reading {property_arc} for {dcid!r}",
+                    upstream_status=403,
+                )
+            read += page_bytes
+            pages += 1
+            body = page
 
     def _fetch_arc_chunks(
         self,
@@ -1065,21 +1245,30 @@ class GraphClient:
         chunk_size: int,
         semaphore: threading.BoundedSemaphore | None,
         deadline: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict:
         """Fetch `property_arc` in chunks of at most `chunk_size`. Multiple chunks run in a
         per-call pool sized by `node_arc_call_concurrency`, each holding a `semaphore` slot for
         its POST when one is given. A failure cancels pending futures. One absolute `deadline`
-        bounds every chunk's semaphore wait and request.
+        bounds every chunk's semaphore wait and request, and `max_bytes` caps each response.
         """
         chunks = list(_chunked(dcids, chunk_size))
         if len(chunks) <= 1:
             return self._fetch_single_arc_chunk(
-                dcids, property_arc=property_arc, semaphore=semaphore, deadline=deadline
+                dcids,
+                property_arc=property_arc,
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
             )
 
         def _read_chunk(chunk: list[str]) -> dict:
             return self._fetch_single_arc_chunk(
-                chunk, property_arc=property_arc, semaphore=semaphore, deadline=deadline
+                chunk,
+                property_arc=property_arc,
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
             )
 
         merged: dict = {}
@@ -1183,7 +1372,9 @@ class GraphClient:
             with self._cache_lock:
                 self._arcs_cache[(stamp.key, dcid)] = arcs
 
-    def _post_node_arcs_batch(self, dcids: list[str], *, deadline: float | None) -> dict:
+    def _post_node_arcs_batch(
+        self, dcids: list[str], *, deadline: float | None, max_bytes: int | None = None
+    ) -> dict:
         try:
             return self._fetch_arc_chunks(
                 dcids,
@@ -1191,6 +1382,7 @@ class GraphClient:
                 chunk_size=self._node_arc_batch_chunk_size,
                 semaphore=self._node_arc_semaphore,
                 deadline=deadline,
+                max_bytes=max_bytes,
             )
         except _ChunkDeadlineExpired as exc:
             raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {exc}") from exc
@@ -1273,6 +1465,7 @@ class GraphClient:
         properties: Sequence[str],
         individual_probe_budget: int | None = 0,
         cached: bool = True,
+        max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
@@ -1287,7 +1480,7 @@ class GraphClient:
         generation stamp, and a node answered with arcs joins it. An empty answer does not,
         since a batch can empty an entry depending on which other dcids share it. A caller
         whose reads no other caller repeats passes `cached=False`, which leaves the cache
-        untouched."""
+        untouched. `max_bytes` caps each decoded response."""
         if not dcids:
             return {}
         cache = self._arc_targets_cache if cached else None
@@ -1312,6 +1505,7 @@ class GraphClient:
             properties=properties,
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
+            max_bytes=max_bytes,
         )
         for dcid in misses:
             arcs = read[dcid]
@@ -1323,7 +1517,11 @@ class GraphClient:
         return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
 
     def node_all_arc_targets_many(
-        self, dcids: Sequence[str], *, deadline: float | None = None
+        self,
+        dcids: Sequence[str],
+        *,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's every outgoing property (`->*`) with its targets
         (`parse_arc_targets`, an unresolvable target marked `UNRESOLVED_NODE`), or `None` for a
@@ -1332,14 +1530,18 @@ class GraphClient:
         is confirmed as `node_arc_targets_many` confirms it with `individual_probe_budget=None`:
         read again alone, so `None` for a dcid is the graph's answer for that dcid read alone.
         A property every entry of which `dfo_visible` hides is left out. Uncached. One absolute
-        `deadline` bounds every request."""
+        `deadline` bounds every request, and `max_bytes` caps each decoded response."""
         if not dcids:
             return {}
         unique = list(dict.fromkeys(dcids))
+
+        def read_part(part: Sequence[str]) -> dict:
+            return self._post_node_arcs_batch(list(part), deadline=deadline, max_bytes=max_bytes)
+
         read = self._confirmed_arcs(
             unique,
-            read_all=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
-            read_again=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
+            read_all=read_part,
+            read_again=read_part,
             individual_probe_budget=None,
             deadline=deadline,
         )
@@ -1398,16 +1600,18 @@ class GraphClient:
         properties: Sequence[str],
         individual_probe_budget: int | None,
         deadline: float | None,
+        max_bytes: int | None = None,
     ) -> dict[str, dict | None]:
         """`_confirmed_arcs` over `properties`, the dcids read in `_post_node_arcs_chunked`'s
-        chunks and each retry and probe in one paged `_post_node_arcs`."""
+        chunks and each retry and probe in one paged `_post_node_arcs`, each response capped at
+        `max_bytes`."""
         return self._confirmed_arcs(
             dcids,
             read_all=lambda part: self._post_node_arcs_chunked(
-                part, properties=properties, deadline=deadline
+                part, properties=properties, deadline=deadline, max_bytes=max_bytes
             ),
             read_again=lambda part: self._post_node_arcs(
-                part, properties=properties, deadline=deadline
+                part, properties=properties, deadline=deadline, max_bytes=max_bytes
             ),
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
@@ -1543,14 +1747,23 @@ class GraphClient:
             result[dcid] = found[dcid]
 
     def _post_node_arcs_chunked(
-        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None,
+        max_bytes: int | None = None,
     ) -> dict:
         chunks = list(_chunked(dcids, self._node_arc_chunk_size))
         if len(chunks) <= 1:
-            return self._post_node_arcs(dcids, properties=properties, deadline=deadline)
+            return self._post_node_arcs(
+                dcids, properties=properties, deadline=deadline, max_bytes=max_bytes
+            )
 
         def _read_chunk(chunk: Sequence[str]) -> dict:
-            return self._post_node_arcs(chunk, properties=properties, deadline=deadline)
+            return self._post_node_arcs(
+                chunk, properties=properties, deadline=deadline, max_bytes=max_bytes
+            )
 
         merged: dict = {}
         with ThreadPoolExecutor(
@@ -1567,10 +1780,16 @@ class GraphClient:
         return merged
 
     def _post_node_arcs(
-        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict:
-        """Page the arcs of `dcids` until exhaustion. A front-door refusal on any page reads the
-        dcids again as two halves (`_read_refused_halves`)."""
+        """Page the arcs of `dcids` until exhaustion, each page capped at `max_bytes`. A
+        front-door refusal on any page reads the dcids again as two halves
+        (`_read_refused_halves`)."""
         merged: dict[str, dict] = {}
         token: str | None = None
         for _ in range(_NODE_ARCS_MANY_MAX_PAGES):
@@ -1579,14 +1798,14 @@ class GraphClient:
                 payload["nextToken"] = token
             self._acquire_node_arc_slot(deadline)
             try:
-                body = self._post_node(payload, deadline=deadline)
+                body = self._post_node(payload, deadline=deadline, max_bytes=max_bytes)
             finally:
                 self._node_arc_many_semaphore.release()
             if body is None:
                 return self._read_refused_halves(
                     dcids,
                     lambda part: self._post_node_arcs(
-                        part, properties=properties, deadline=deadline
+                        part, properties=properties, deadline=deadline, max_bytes=max_bytes
                     ),
                 )
             _merge_node_arcs_page(merged, body.get("data", {}))
@@ -1974,6 +2193,165 @@ class GraphClient:
             if token is None or len(capped) == len(unique_dcids):
                 return result("complete")
         return result("budget_exhausted")
+
+    def node_in_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        max_results: int,
+        max_total: int | None = None,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, InArcs]:
+        """Read the incoming arcs of every `dcids` node through every one of `properties` with
+        the bracket form `<-[p]`, one walk per property, the properties in turn. Return every
+        input dcid with its `InArcs`. Each subject carries its name, types and provenances. A
+        subject is distinct within a property and capped at `max_results` per node and property.
+        A further subject marks the property in `InArcs.capped`. A missing node or one with no
+        in-arcs maps to an empty `InArcs`. `max_total` caps a property's subjects summed over
+        every node: once a walk holds that many, it sends no further page and marks the
+        property capped for each node whose listing it may not have finished.
+
+        A property's pages share one `nextToken` walk, which ends once the token is gone or
+        every node is capped under that property, and a capped node leaves the walk's later
+        requests. So one property with many subjects pages no further than its cap, whatever
+        the other properties hold. A repeated token or more than
+        `_NODE_SUBJECTS_MANY_MAX_PAGES` pages in one walk raises the read error. A front-door
+        refusal walks the property again over two halves of the dcids. `max_bytes` caps each
+        decoded response, and one absolute `deadline` bounds every page.
+        """
+        if not dcids:
+            return {}
+        if not properties:
+            raise ValueError("node_in_arcs needs at least one property")
+        unique_dcids = list(dict.fromkeys(dcids))
+        unique_properties = list(dict.fromkeys(properties))
+        for prop in unique_properties:
+            reject_unsafe_property_token(prop)
+        folds: dict[tuple[str, str], _InArcFold] = {}
+        capped: set[tuple[str, str]] = set()
+        for prop in unique_properties:
+            walked = self._walk_in_arcs(
+                unique_dcids,
+                property=prop,
+                max_results=max_results,
+                max_total=max_total,
+                max_bytes=max_bytes,
+                deadline=deadline,
+            )
+            for dcid, (fold, prop_capped) in walked.items():
+                folds[dcid, prop] = fold
+                if prop_capped:
+                    capped.add((dcid, prop))
+        return {
+            dcid: InArcs(
+                subjects=tuple(
+                    subject
+                    for prop in unique_properties
+                    for subject in folds[dcid, prop].subjects(prop)
+                ),
+                capped=frozenset(prop for prop in unique_properties if (dcid, prop) in capped),
+            )
+            for dcid in unique_dcids
+        }
+
+    def _walk_in_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        max_total: int | None,
+        max_bytes: int | None,
+        deadline: float | None,
+    ) -> dict[str, tuple[_InArcFold, bool]]:
+        """One `<-[property]` walk of `node_in_arcs`: each dcid's fold and whether its listing
+        stopped at `max_results`, or may not have finished when the walk stopped at
+        `max_total` subjects. A front-door refusal of any page walks the dcids again as two
+        halves (`_read_refused_halves`)."""
+        spec = f"<-[{property}]"
+        folds = {dcid: _InArcFold() for dcid in dcids}
+        capped: set[str] = set()
+        token: str | None = None
+        total = 0
+        full = False
+        for _ in range(_NODE_SUBJECTS_MANY_MAX_PAGES):
+            pending = [dcid for dcid in dcids if dcid not in capped]
+            payload: dict = {"nodes": pending, "property": spec}
+            if token is not None:
+                payload["nextToken"] = token
+            body = self._post_node(payload, deadline=deadline, max_bytes=max_bytes)
+            if body is None:
+                return self._read_refused_halves(
+                    dcids,
+                    lambda part: self._walk_in_arcs(
+                        part,
+                        property=property,
+                        max_results=max_results,
+                        max_total=max_total,
+                        max_bytes=max_bytes,
+                        deadline=deadline,
+                    ),
+                )
+            data = body.get("data", {})
+            for dcid in pending:
+                arcs = (data.get(dcid) or {}).get("arcs", {})
+                fold = folds[dcid]
+                for entry in arcs.get(property, {}).get("nodes", []):
+                    if entry.get("dcid") is None:
+                        continue
+                    if full and not fold.holds(entry):
+                        capped.add(dcid)
+                        break
+                    before = fold.count
+                    if not fold.add(entry, limit=max_results):
+                        capped.add(dcid)
+                        break
+                    total += fold.count - before
+                    full = max_total is not None and total >= max_total
+            next_token = body.get("nextToken")
+            if next_token is not None and next_token == token:
+                stuck = GraphNotAdvancingError(
+                    f"graph repeated the same nextToken paging {spec!r} for "
+                    f"{list(dcids)!r} instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=spec,
+                )
+                raise self._read_error_cls(str(stuck)) from stuck
+            token = next_token
+            if full and token is not None:
+                capped.update(pending)
+            if token is None or len(capped) == len(folds):
+                return {dcid: (fold, dcid in capped) for dcid, fold in folds.items()}
+        exhausted = GraphNotAdvancingError(
+            f"graph still reported a nextToken after {_NODE_SUBJECTS_MANY_MAX_PAGES} pages "
+            f"reading {spec!r} for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=spec,
+        )
+        raise self._read_error_cls(str(exhausted)) from exhausted
+
+    def node_closure(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
+    ) -> tuple[ArcTarget, ...]:
+        """Read the transitive targets of `dcid` through `property` with `->{property}+`: every
+        node reachable by following the arc one or more times, each with its name, types and
+        provenances (`ArcTarget`), in the order the graph answers. A missing node or one with
+        no such arc returns `()`. Paging, repeated-token and page-bound errors, `max_bytes` and
+        `deadline` are `_post_arc_spec_paged`'s."""
+        reject_unsafe_property_token(property)
+        key = f"{property}+"
+        merged = self._post_arc_spec_paged(
+            [dcid], f"->{key}", max_bytes=max_bytes, deadline=deadline
+        )
+        arcs = (merged.get(dcid) or {}).get("arcs", {})
+        return parse_arc_targets(arcs, [key])[key]
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         """Fetch `->observationProperties` in chunks of `node_arc_batch_chunk_size`, halving on
@@ -2621,11 +2999,17 @@ class GraphClient:
         return result
 
     def _post_arc_spec_paged(
-        self, dcids: Sequence[str], arc_spec: str, *, deadline: float | None = None
+        self,
+        dcids: Sequence[str],
+        arc_spec: str,
+        *,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
     ) -> dict:
         """Page a composed arc expression until exhaustion, merging nodes by dcid and property in
         page order. Repeated tokens or more than `_NODE_ARCS_MANY_MAX_PAGES` pages raise the read
-        error. Every page's POST takes the absolute monotonic `deadline`.
+        error. Every page's POST takes the absolute monotonic `deadline`, and `max_bytes` caps
+        each page (`post_capped_bytes`).
         """
         merged: dict[str, dict] = {}
         token: str | None = None
@@ -2633,7 +3017,9 @@ class GraphClient:
             payload: dict = {"nodes": list(dcids), "property": arc_spec}
             if token is not None:
                 payload["nextToken"] = token
-            body = self.post(NODE_PATH, payload, deadline=deadline)
+            body = self.post_capped_bytes(
+                NODE_PATH, payload, max_bytes=max_bytes, deadline=deadline
+            )
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
@@ -2930,6 +3316,42 @@ class _ArcSubjectFold:
             names=tuple(sorted(self._names[dcid])),
             provenances=tuple(sorted(self._provenances[dcid])),
         )
+
+
+class _InArcFold:
+    """One `(node, property)` listing of a bracket in-arc read: its distinct subjects in
+    first-occurrence order, each with the names, types and provenances of every entry read for it."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, list[dict]] = {}
+
+    @property
+    def count(self) -> int:
+        """The distinct subjects folded."""
+        return len(self._entries)
+
+    def holds(self, entry: dict) -> bool:
+        """Whether `entry` names a subject already folded."""
+        return entry["dcid"] in self._entries
+
+    def add(self, entry: dict, *, limit: int) -> bool:
+        """Fold `entry`. False once it names a subject beyond the `limit`th, which it leaves
+        out."""
+        dcid = entry["dcid"]
+        if dcid not in self._entries and len(self._entries) >= limit:
+            return False
+        self._entries.setdefault(dcid, []).append(entry)
+        return True
+
+    def subjects(self, prop: str) -> Iterator[InArcSubject]:
+        for dcid, entries in self._entries.items():
+            yield InArcSubject(
+                dcid=dcid,
+                property=prop,
+                name=display_name((n for e in entries if (n := e.get("name"))), dcid),
+                types=tuple(dict.fromkeys(t for e in entries for t in e.get("types", ()))),
+                provenances=_entry_provenances(entries),
+            )
 
 
 def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:

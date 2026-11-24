@@ -279,14 +279,15 @@
       "total_population": 27176,
       "unshipped_obs": 107877
     },
-    "sha256": "4e1186997166dd88ee1e19e6ed25dfc3d0d62135a38a445129d5cbd9721837a6",
+    "sha256": "dd1d8b38c277b7c470c2c8785f521ac3010e65dfd5bb5221a1ebe69cafc64ab4",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
         "dimensions": [
           {
             "count": 191,
-            "label": "recipients"
+            "label": "recipients",
+            "residual_count": 23
           },
           {
             "count": 1,
@@ -726,14 +727,15 @@
       "total_population": 9192,
       "unshipped_obs": 0
     },
-    "sha256": "8844877952f299469bcb5cec6b8452cfd0d6a23c72f2a50ffcb70a4dd6c79c4c",
+    "sha256": "fad8ad32906290cf055c827e2889ab627851e6c8a5acb2ae416749d9fd8d8327",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
         "dimensions": [
           {
             "count": 151,
-            "label": "recipients"
+            "label": "recipients",
+            "residual_count": 20
           },
           {
             "count": 1,
@@ -1186,14 +1188,15 @@
       "total_population": 12455,
       "unshipped_obs": 33957
     },
-    "sha256": "55c6029c67fc7c1fc58f0315785a9d22fc009b8e1bbb00d7262a271682ea8aae",
+    "sha256": "f3a6ed10bf4b42ac99e19ccfdea391319d03fa7850c3dbba3187949f0b891b9e",
     "summary": {
       "candidate_count": 2536,
       "coverage": {
         "dimensions": [
           {
             "count": 166,
-            "label": "recipients"
+            "label": "recipients",
+            "residual_count": 20
           },
           {
             "count": 1,

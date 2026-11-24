@@ -9,10 +9,11 @@ the admitted facets.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, assert_never, get_args
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
+from code_index.labels import PRICE_BASIS_AXIS, PricesKind
 from code_index.shared import get_index
 from materialise.facets import nominal_currency
 from search.engine.clients.graph import Facet
@@ -23,7 +24,12 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
-from search.engine.retrieval.read_plan import facets_served, populated_members, series_facets
+from search.engine.retrieval.read_plan import (
+    BulkPlan,
+    facets_served,
+    populated_members,
+    series_facets,
+)
 from search.engine.unit.lexicon import CURRENCY_DISPLAY_NAMES
 from search.models import (
     Coverage,
@@ -42,8 +48,10 @@ from search.observations import CURRENCY_DCID_PREFIX, currency_unit_ref, series_
 
 if TYPE_CHECKING:
     from search.engine.extract import DateRequest
+    from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
+    from search.engine.unit.refs import UnitPrices
     from series_coverage.index import CoverageIndex
 
 
@@ -121,6 +129,7 @@ def _resolved_facets(
     *,
     request_basis: Mapping[str, FacetBasis] | None = None,
     currency_of: Callable[[str], str | None] | None = None,
+    unit_prices: FacetPrices = (None, None),
 ) -> dict[str, ResolvedFacet]:
     """Aggregate per-series facets into `Spec.resolved.facets`.
 
@@ -131,7 +140,9 @@ def _resolved_facets(
     ref or label, with `refs` on the unit axis listing the distinct units in series order. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
-    Keys follow `FacetAxis` order.
+    The unit axis states `unit_prices`, the price bases its series are in
+    (`ResolvedFacet.prices`) and those the data states (`ResolvedFacet.stated_prices`),
+    read per served series by `_facet_prices`. Keys follow `FacetAxis` order.
     """
     result: dict[str, ResolvedFacet] = {}
     for axis in get_args(FacetAxis):
@@ -146,10 +157,12 @@ def _resolved_facets(
             continue
         basis = bound_axes.get(axis, "fallback")
         axis_request_basis = dict(request_basis) if axis == "unit" and request_basis else None
+        every_series = n_with_axis == len(series_facet_maps)
+        prices, stated_prices = unit_prices if axis == "unit" else (None, None)
         # A carried series lacking this axis entirely (n_with_axis short of
         # every series) forces the heterogeneous per_series branch below,
         # the same way a genuine second distinct ref would.
-        if len(distinct) == 1 and n_with_axis == len(series_facet_maps):
+        if len(distinct) == 1 and every_series:
             shared = next(iter(distinct.values()))
             result[axis] = ResolvedFacet(
                 basis=basis,
@@ -164,6 +177,8 @@ def _resolved_facets(
                 account=(
                     provenance_account(get_index(), shared.ref) if axis == "provenance" else None
                 ),
+                prices=prices,
+                stated_prices=stated_prices,
                 request_basis=axis_request_basis,
             )
         else:
@@ -171,9 +186,95 @@ def _resolved_facets(
                 basis=basis,
                 selection="per_series",
                 refs=list(distinct) if axis == "unit" else None,
+                prices=prices,
+                stated_prices=stated_prices,
                 request_basis=axis_request_basis,
             )
     return result
+
+
+_PRICES_ORDER: tuple[PricesKind, ...] = ("current", "constant")
+
+type FacetPrices = tuple[list[PricesKind] | None, list[PricesKind] | None]
+"""A unit facet's `prices` and `stated_prices`."""
+
+
+def _facet_prices(
+    served: Sequence[tuple[str | None, str | None]],
+    *,
+    prices_of: Callable[[str, str | None], UnitPrices | Literal["unread"] | None] | None,
+    requested: PricesKind | None,
+) -> FacetPrices:
+    """The price bases a unit axis states (`ResolvedFacet.prices`) and the ones among them
+    the data states (`ResolvedFacet.stated_prices`), current before constant, over
+    `served`, each served series' unit and its StatVar's `measurementQualifier`:
+    `requested`, a converting unit request's prices, which the request states, else each
+    series' `prices_of` read of its unit under its own qualifier, so one unit under StatVars
+    in both bases states both. A basis is stated where every series in it states it. Both
+    None where `prices_of` is missing or, with no request, some series carries no unit or
+    a unit's currency read failed (`unit.refs.PRICES_UNREAD`), since whether it is money
+    is then unknown."""
+    if requested is not None:
+        return [requested], [requested]
+    if prices_of is None or any(unit is None for unit, _ in served):
+        return None, None
+    read = [
+        unit_prices
+        for unit, qualifier in dict.fromkeys(served)
+        if unit is not None and (unit_prices := prices_of(unit, qualifier)) is not None
+    ]
+    if any(isinstance(unit_prices, str) for unit_prices in read):
+        return None, None
+    priced = [unit_prices for unit_prices in read if not isinstance(unit_prices, str)]
+    bases = {unit_prices.prices for unit_prices in priced}
+    inferred = {unit_prices.prices for unit_prices in priced if not unit_prices.stated}
+    prices = [basis for basis in _PRICES_ORDER if basis in bases]
+    return prices, [basis for basis in prices if basis not in inferred]
+
+
+def _served_units(
+    plan: ReadPlan | None,
+    *,
+    qualifier: str | None,
+    member_facts: Mapping[str, MemberFacts] | None,
+) -> list[tuple[str | None, str | None]]:
+    """Each series `plan` serves as its unit and its StatVar's `measurementQualifier`
+    (`_member_qualifier`): in bulk each StatVar under each facet the group's selection
+    serves it (`BulkPlan.served_facets`), else each served series' lead facet."""
+    if plan is None:
+        return []
+    if isinstance(plan, BulkPlan):
+        served_ids = {candidate.facet_id: candidate for candidate in plan.served_facets}
+        return [
+            (served_ids[facet_id].unit, _member_qualifier(sv, qualifier, member_facts))
+            for sv in plan.served_members
+            for facet_id in plan.selected.get(sv, ())
+            if facet_id in served_ids and served_ids[facet_id].by_sv.get(sv)
+        ]
+    return [
+        (series.group[0].unit, _member_qualifier(series.stat_var, qualifier, member_facts))
+        for series in plan.served
+    ]
+
+
+def _member_qualifier(
+    sv: str, shape_qualifier: str | None, member_facts: Mapping[str, MemberFacts] | None
+) -> str | None:
+    """The `measurementQualifier` of StatVar `sv`: the one its fetched arcs or code index
+    row declare (`member_facts`), as a five-tuple member or as a constraint on the price
+    basis axis, else its code index row's, else the shape's `shape_qualifier`. A family
+    walked from the graph and missing from the code index reads its members' arcs."""
+    facts = (member_facts or {}).get(sv)
+    if facts is not None:
+        declared = facts.read_five_tuple().meas_qual_dcid
+        if declared is None and facts.constraints_known():
+            declared = facts.read_constraints().get(PRICE_BASIS_AXIS)
+        if declared is not None:
+            return declared
+    row = get_index().statvar_by_dcid(sv)
+    if row is not None and row.measurement_qualifier is not None:
+        return row.measurement_qualifier
+    return shape_qualifier
 
 
 def _currency_label(ref: str, labels: Mapping[str, str]) -> str:
@@ -229,6 +330,9 @@ def answer_facets(
     request_basis: Mapping[str, FacetBasis] | None,
     unit_request: IdentityUnitRequest | None,
     currency_of: Callable[[str], str | None],
+    prices_of: Callable[[str, str | None], UnitPrices | Literal["unread"] | None] | None = None,
+    qualifier: str | None = None,
+    member_facts: Mapping[str, MemberFacts] | None = None,
 ) -> dict[str, ResolvedFacet]:
     """`Spec.resolved.facets` for an answer: the facets its read plan serves, aggregated
     across its series (`_resolved_facets`). Every answer builds them here at grounding, on a
@@ -244,7 +348,12 @@ def answer_facets(
     label takes its display name (`_currency_label`). A unit served by every series takes
     the ISO 4217 code `currency_of` (`unit.refs.unit_currency`) names for it. An axis whose
     declared default every series serves (`ReadPlan.declared_defaults`) and that
-    `bound_axes` leaves out takes the basis `declared_default`."""
+    `bound_axes` leaves out takes the basis `declared_default`. The unit axis states its
+    price bases and those the data states (`_facet_prices`): `unit_request`'s prices, else
+    each served series' unit read by `prices_of` (`unit.refs.unit_prices`) under its own
+    StatVar's `measurementQualifier` (`_member_qualifier`: the member's arcs or code index
+    row in `member_facts`, else the code index, else the shape's `qualifier`), unstated
+    with no `prices_of`."""
     converted = _requested_unit_ref(unit_request) if unit_request is not None else None
     facets = series_facets(plan)
     bound_axes = {**_declared_bases(plan, facets), **bound_axes}
@@ -258,7 +367,17 @@ def answer_facets(
                     ref=converted, label=_currency_label(converted, labels)
                 )
         maps.append(facet_map)
-    return _resolved_facets(maps, bound_axes, request_basis=request_basis, currency_of=currency_of)
+    return _resolved_facets(
+        maps,
+        bound_axes,
+        request_basis=request_basis,
+        currency_of=currency_of,
+        unit_prices=_facet_prices(
+            _served_units(plan, qualifier=qualifier, member_facts=member_facts),
+            prices_of=prices_of,
+            requested=unit_request.prices if unit_request is not None else None,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +494,24 @@ class FacetAdmission:
         return facet_admitted(self.axes, facet)
 
 
+@dataclass
+class _TrackedAdmission:
+    """`admission.admits`, noting whether its axis predicates left out a candidate its unit
+    elections admit (`axes_narrowed`)."""
+
+    admission: FacetAdmission
+    axes_narrowed: bool = False
+
+    def __call__(self, stat_var: str, facet: _AxisFacetCandidate) -> bool:
+        elected = self.admission.elected_units
+        if elected is not None and facet.unit not in elected.get(stat_var, frozenset()):
+            return False
+        if facet_admitted(self.admission.axes, facet):
+            return True
+        self.axes_narrowed = True
+        return False
+
+
 @dataclass(frozen=True)
 class FilteredAnswer:
     """An answer under a request's facet filter: the preview's read plan narrowed by the
@@ -412,10 +549,20 @@ def filter_answer(
     (`elected_units`), so the members holding data that it elects none for are left out, and
     the narrowed plan names them (`ReadPlan.leaving_out`). With no filter, or an answer that
     read no facets, the answer is unchanged.
+
+    The narrowed plan is marked `ReadPlan.request_filtered` when the axis predicates
+    (`FacetAdmission.axes`) leave out a candidate the unit elections admit. A twin cluster's
+    currency and a literal unit filter do, and each elects over inputs the answer's identity
+    does not state. The unit elections (`elected_units`) leave it unmarked. They decide the
+    identity's own unit request (`identity.facets["unit"]`) over the members, years,
+    coverage and probes a resolve of the identity reads, so that resolve elects them again.
     """
     if not admission or mat.read_plan is None or mat.coverage_form is None:
         return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
-    narrowed = mat.read_plan.narrowed(admission.admits)
+    admits = _TrackedAdmission(admission)
+    narrowed = mat.read_plan.narrowed(admits)
+    if admits.axes_narrowed:
+        narrowed = replace(narrowed, request_filtered=True)
     if admission.elected_units is not None:
         narrowed = narrowed.leaving_out(
             populated_members(mat.read_plan) - admission.elected_units.keys()

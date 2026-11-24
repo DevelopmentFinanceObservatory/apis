@@ -4,11 +4,13 @@ as the composite it serves.
 A composite identity binds a declared composite provenance (`code_index.composites`): the
 provider-inclusive total of a donor's bilateral flows and its imputed multilateral share
 (stacked), or the OECD headline, net flows to 2017 and grant equivalents from 2018 (spliced).
-The Datasets mint composes its frame from one read per component, keeping the years every
-stacked component's table covers (`materialise.composite.table_years`, `stacked_years`). Search
-reads the same years from the request's coverage snapshot, in memory, and the years each
-component holds under the part's places (`component_years`), so the window a scope option
-offers is the window the mint serves.
+The Datasets mint composes its frame from one read per component, keeping the years a stacked
+composite serves for the frame's places (`materialise.composite.stacked_years`). Search states
+those years by the same rule from the request's coverage snapshot, in memory
+(`materialise.composite.read_component_years`), and counts the series each component holds
+under the part's places (`component_years`). The mint reads a component's held years from the
+rows it read, so a year a source publishes before the snapshot rebuilds can appear in the mint
+before Search states it.
 
 `CompositeMint` mints a Search answer's Spec as the composite (`spec_build.build_spec(composite=)`)
 over the table identity's arguments (`code_index.composites.table_identity`): its identity and
@@ -25,8 +27,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import cast
 
@@ -38,14 +40,24 @@ from code_index.composites import (
     provenance_account,
     table_identity,
 )
-from code_index.members import SourceNotInFamily, identity_family_query, index_family
+from code_index.members import pinned_refs
 from code_index.query import CodeIndex
+from code_index.scope_conventions import RolePopulation
 from code_index.types import CompositeDeclaration
-from dfo_platform.roles import role_key_axis
-from materialise.composite import spans, stacked_years, table_years
-from materialise.enrichment import party_count, party_kind_of
-from origin_catalogue import Catalogue, bound_catalogue
+from materialise.composite import (
+    ComponentYears,
+    bound_roles,
+    component_reads,
+    family_variables,
+    read_component_years,
+    spans,
+    stacked_years,
+)
+from materialise.enrichment import PartySplit, party_split
+from origin_catalogue import Catalogue, bound_catalogue, pinned_reads, scoped_reads
+from search.engine.identity_edit import open_within
 from search.engine.retrieval.bound_values import served_members
+from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     BindingValue,
@@ -78,15 +90,12 @@ from search.models import (
 from search.observations import composite_facet_ref, provenance_refs
 from search.render.labels import join_labels
 from search.scope.tables import ScopeFacts
-from series_coverage.coverage_types import BoundRoles, Role
+from series_coverage.coverage_types import AXIS_COVERAGE_ROLES, BoundRoles, Role
 from series_coverage.coverage_types import Headline as CoverageHeadline
 from series_coverage.index import CoverageIndex, elected_year
 from series_coverage.schema import ABSENT_ENTITY
 
 logger = logging.getLogger(__name__)
-
-_ROLES: Mapping[str, Role] = {"origin": "donor", "destination": "recipient"}
-"""The coverage role each flow role of an identity's entities reads."""
 
 _NO_POINTS: ObservationsOmissionReason = "observations_no_points"
 """The omission of a composite whose components read and found no point in their years."""
@@ -117,32 +126,37 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
     snapshot: every year of a range, clipped to the years the snapshot represents, and every
     year up to its build year for an `all` or `latest` window. A `latest` window also elects
     the year a read of it serves (`series_coverage.index.elected_year`). Empty for a family
-    the index does not decide, or one whose named dataset does not publish it. Read once per
-    identity for one `facts`."""
+    the index does not decide, or one whose named dataset does not publish it. An identity
+    that pins provenances reads under them, within the caller's source scope
+    (`_pinned_reads`). A composite's component read clears that scope first
+    (`origin_catalogue.pinned_reads`), as a mint of it reads its rows. Read once per
+    identity and source scope for one `facts`."""
     key = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return facts.remembered(key, lambda: _component_years(identity, facts=facts))
 
 
 def _component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> YearCounts:
-    index, coverage = facts.index, facts.coverage.index
-    try:
-        family = index_family(index, identity_family_query(index, identity))
-    except SourceNotInFamily:
-        family = None
-    if family is None or not family.rows:
+    with _pinned_reads(identity):
+        return _counted_years(identity, facts=facts)
+
+
+def _counted_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> YearCounts:
+    coverage = facts.coverage.index
+    variables = family_variables(facts.index, identity)
+    if not variables:
         return YearCounts(counts={})
     window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
     first, last = _years_asked(window, coverage)
     if first > last:
         return YearCounts(counts={})
     counts = coverage.series_by_year(
-        variables=[row.dcid for row in family.rows],
-        bound=_bound(identity),
+        variables=variables,
+        bound=bound_roles(identity),
         first_year=first,
         last_year=last,
     )
     latest = elected_year(counts) if window.get("kind") == "latest" else None
-    settled = all(coverage.covers(row.dcid) for row in family.rows)
+    settled = all(coverage.covers(variable) for variable in variables)
     return YearCounts(counts=counts, latest=latest, settled=settled)
 
 
@@ -151,8 +165,9 @@ def donor_years(
 ) -> Mapping[str, frozenset[int]]:
     """The years of its window in which each donor `identity` names holds a series of the
     family it reads, as `component_years` counts them, by donor, from one scan of the
-    family's rows in `facts`' coverage snapshot. A donor holding no series is absent. Read
-    once per identity for one `facts`."""
+    family's rows in `facts`' coverage snapshot, under the provenances `identity` pins
+    within the caller's source scope where it pins any (`_pinned_reads`). A donor holding
+    no series is absent. Read once per identity and source scope for one `facts`."""
     key = "donor_years:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return facts.remembered(key, lambda: _donor_years(identity, facts=facts))
 
@@ -160,20 +175,33 @@ def donor_years(
 def _donor_years(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> Mapping[str, frozenset[int]]:
-    index, coverage = facts.index, facts.coverage.index
-    try:
-        family = index_family(index, identity_family_query(index, identity))
-    except SourceNotInFamily:
-        family = None
-    if family is None or not family.rows:
+    with _pinned_reads(identity):
+        return _held_by_donor(identity, facts=facts)
+
+
+def _pinned_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+    """Binds the caller's catalogue narrowed to the provenances `identity` pins, within its
+    source scope (`origin_catalogue.scoped_reads`), as a plain pinned table reads under a
+    part's scope. It binds nothing where `identity` pins none. A composite's component reads run under
+    `origin_catalogue.pinned_reads(None)` first, so there the pins replace the part's
+    scope."""
+    return scoped_reads(_pins(identity))
+
+
+def _held_by_donor(
+    identity: Mapping[str, object], *, facts: ScopeFacts
+) -> Mapping[str, frozenset[int]]:
+    coverage = facts.coverage.index
+    variables = family_variables(facts.index, identity)
+    if not variables:
         return {}
     window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
     first, last = _years_asked(window, coverage)
     if first > last:
         return {}
     found = coverage.series_years(
-        variables=[row.dcid for row in family.rows],
-        bound=_bound(identity),
+        variables=variables,
+        bound=bound_roles(identity),
         first_year=first,
         last_year=last,
     )
@@ -204,20 +232,6 @@ def _years_asked(window: Mapping[str, object], coverage: CoverageIndex) -> tuple
     return first, last
 
 
-def _bound(identity: Mapping[str, object]) -> BoundRoles:
-    """The places `identity` binds on each coverage role, every entities key read by the
-    flow axis it names (`role_key_axis`), as `code_index.composites` binds a component's
-    destinations."""
-    entities = cast("Mapping[str, Sequence[str]]", identity.get("entities") or {})
-    bound: dict[Role, frozenset[str]] = {}
-    for key, dcids in entities.items():
-        axis = role_key_axis(key)
-        if axis is not None and dcids:
-            role = _ROLES[axis]
-            bound[role] = bound.get(role, frozenset()) | frozenset(dcids)
-    return bound
-
-
 def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object] | None:
     """`identity` as the document a reader of one table's family reads
     (`code_index.composites.table_identity`): itself, or the identity a composite's option was
@@ -233,51 +247,92 @@ def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object
 @dataclass(frozen=True, slots=True)
 class ServedComponent:
     """One component, the series its family holds per year under the part's places, the
-    years it serves in the composite, and the StatVars a mint of it serves (None when the
-    index does not settle them)."""
+    years it serves in the composite, all within its recipe's periods, and the StatVars a
+    mint of it serves (None when the index does not settle them). `elected` is the year a
+    composite under a `latest` window elects, the latest year any of its components serves,
+    and None for any other window."""
 
     component: ComponentIdentity
     years: YearCounts
     served: frozenset[int]
     members: frozenset[str] | None
+    elected: int | None = None
+
+    @property
+    def preview_years(self) -> frozenset[int]:
+        """The years the component's preview reads rows in, the years it serves or,
+        under a `latest` window, the year the composite elects (`elected`) alone where it is
+        one of them. Empty when it previews no year, and then it is not read."""
+        return self.served if self.elected is None else self.served & {self.elected}
 
 
 def served_components(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> list[ServedComponent]:
     """Each component of composite `identity` with the years it serves, as the mint composes
-    them (`materialise.composite`). A stacked composite's years are those every component's
-    table covers (`stacked_years`); in them, a component serves the years it holds a series
-    in, and a zero-filling one (`ComponentRecipe.zero_absent`) every year any component holds
-    one in, since its zero rows fill the cells it lacks. A spliced component serves the years
-    it holds. Raises `code_index.composites.CompositeNotServable` as `component_identities`
-    does, and `ValueError` for an identity that binds no composite."""
+    them (`materialise.composite`). A stacked composite's years follow the mint's rule
+    (`stacked_years`) over the coverage snapshot: every component's table covers them, and
+    every component that reads a missing row as unknown holds a series in them under some of
+    its places. The mint reads those held years from its rows, so it can serve a year
+    before the snapshot holds it. Every component reads with no source scope but the
+    provenances its identity pins (`origin_catalogue.pinned_reads`), whatever scope the caller reads under,
+    so a part's scope build and its composite answer
+    (`region.composite_answer.composite_served`) read the tables the mint reads. In them, a
+    component serves the years it holds a series in, and a zero-filling one
+    (`ComponentRecipe.zero_absent`) every year any component holds one in, since its zero
+    rows fill the cells it lacks. A spliced component serves the years it holds within its
+    recipe's periods, so under a `latest` window, which its identity passes unclipped
+    (`code_index.composites.component_identities`), it serves no year after its period
+    ends. Under a `latest` window either kind elects the latest year any component serves
+    (`ServedComponent.elected`), and a member holding no data in that year serves nothing.
+    Raises `code_index.composites.CompositeNotServable` as
+    `component_identities` does, and `ValueError` for an identity that binds no
+    composite."""
     components = component_identities(facts.index, identity)
     if components is None:
         raise ValueError("the identity binds no composite provenance")
+    with pinned_reads(None):
+        return _served(identity, components, facts=facts)
+
+
+def _served(
+    identity: Mapping[str, object], components: Sequence[ComponentIdentity], *, facts: ScopeFacts
+) -> list[ServedComponent]:
     counted = [
         (component, component_years(component.identity, facts=facts)) for component in components
     ]
-    if _declaration(facts.index, identity).kind != "stacked":
-        return [ServedComponent(c, years, years.held, _members(c)) for c, years in counted]
-    covered = stacked_years(_table_years(c.identity, facts=facts) for c, _ in counted)
-    held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
-    return [
-        ServedComponent(
-            c,
-            years,
-            covered & (held_by_any if c.recipe.zero_absent else years.held),
-            _members(c),
-        )
-        for c, years in counted
-    ]
+    if _declaration(facts.index, identity).kind == "stacked":
+        covered = stacked_years(_read_years(c, facts=facts) for c, _ in counted)
+        held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
+        served = [
+            (c, years, covered & (held_by_any if c.recipe.zero_absent else years.held))
+            for c, years in counted
+        ]
+    else:
+        served = [(c, years, years.held) for c, years in counted]
+    served = [(c, years, _in_periods(c, held)) for c, years, held in served]
+    window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
+    every = frozenset[int]().union(*(years for _, _, years in served))
+    elected = max(every) if window.get("kind") == "latest" and every else None
+    return [ServedComponent(c, years, held, _members(c), elected) for c, years, held in served]
 
 
-def _table_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> frozenset[int]:
-    """The years the table component `identity` reads covers in `facts`' coverage snapshot
-    (`materialise.composite.table_years`), read once per identity for one `facts`."""
-    key = "table:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
-    return facts.remembered(key, lambda: table_years(facts.index, facts.coverage.index, identity))
+def _in_periods(component: ComponentIdentity, years: frozenset[int]) -> frozenset[int]:
+    """`years` within `component`'s recipe periods, all of them where it declares none."""
+    periods = component.recipe.periods
+    return years if periods is None else frozenset(y for y in years if periods.holds(y))
+
+
+def _read_years(component: ComponentIdentity, *, facts: ScopeFacts) -> ComponentYears:
+    """The years `component` reads in `facts`' coverage snapshot
+    (`materialise.composite.read_component_years`), read once per identity for one
+    `facts`."""
+    key = f"years:{component.role}:" + json.dumps(
+        component.identity, sort_keys=True, separators=(",", ":")
+    )
+    return facts.remembered(
+        key, lambda: read_component_years(facts.index, facts.coverage.index, component)
+    )
 
 
 def _members(component: ComponentIdentity) -> frozenset[str] | None:
@@ -302,74 +357,87 @@ def compose_observations(
 
     `reads` holds each component's preview in `served`'s order, None for a component with
     no read (one serving no year, no definite answer, a failed resolve, or one past the
-    deadline). Each component
-    keeps the points of its series dated in a year it serves (`ServedComponent.served`) and
-    its recipe's periods hold, so a spliced component read for `latest` keeps only its own
-    periods, and a series left with no point is dropped. A kept series keeps its own StatVar
-    and is a copy of the component's, so its private estimate marker survives. No zero rows
-    are written for a zero-filling stacked component, since the composite's coverage counts
-    none.
+    deadline). Each component's preview reads rows in its preview years alone
+    (`component_preview`), so its series, points and counts stand as they are: each keeps
+    its own StatVar, and the composite's `total_obs` sums the components'. No zero rows are
+    written for a zero-filling stacked component, since the composite's coverage counts
+    none. `truncated` is true when a component preview holding a series was, and `order`
+    is those previews' when they agree, else None. It serves a continuation
+    (`SpecObservations.continued`) when a component's read does, serves none when every
+    component previewing a year read and serves none, and states nothing of one otherwise,
+    when a read is lost and no other states one.
 
-    `total_obs`, on each series and in sum, subtracts the points dropped: every point of a
-    dropped series, and the visible points cut from a kept one. A truncated series shows only
-    its latest points, so a cut among its hidden earlier points goes uncounted. The cut
-    falls at the tail in practice, where a stacked composite's shared years end before a
-    component's do. A spliced component read for a range holds only its periods' years, so
-    nothing is cut from it. `truncated` is true when a kept component preview was, and
-    `order` is the kept previews' when they agree, else None.
-
-    With no series left, the preview is omitted: `observations_no_points` when every
-    component serving a year read and found no point in the years it serves; else the
-    first omission (in component order) of another reason a component's preview carries;
-    else, when a component serving a year has no read, `observations_probe_failed`. A
-    component serving no year is not read, so it bears on none of these."""
+    With no series, the preview is omitted: `observations_no_points` when every component
+    serving a year read and found no point in the years it serves; else the first omission
+    (in component order) of another reason a component's preview carries; else, when a
+    component serving a year has no read, `observations_probe_failed`. A component
+    previewing no year (`ServedComponent.preview_years`) is not read, so it bears on none of
+    these."""
     series: list[ObservationSeries] = []
     total = 0
     truncated = False
     orders: set[PreviewOrder | None] = set()
-    for item, read in zip(served, reads, strict=True):
-        if read is None or read.omitted is not None:
+    for read in reads:
+        if read is None or read.omitted is not None or not read.series:
             continue
-        removed = 0
-        kept_any = False
-        for each in read.series:
-            points = [point for point in each.points if _serves(item, point.date)]
-            if not points:
-                removed += each.total_obs
-                continue
-            cut = len(each.points) - len(points)
-            removed += cut
-            series.append(
-                each.model_copy(update={"points": points, "total_obs": each.total_obs - cut})
-            )
-            kept_any = True
-        if kept_any:
-            total += max(read.total_obs - removed, 0)
-            truncated = truncated or read.truncated
-            orders.add(read.order)
+        series.extend(read.series)
+        total += read.total_obs
+        truncated = truncated or read.truncated
+        orders.add(read.order)
+    previewed = [read for item, read in zip(served, reads, strict=True) if item.preview_years]
+    continued = (
+        True
+        if any(read is not None and read.continued for read in reads)
+        else False
+        if all(read is not None and read.continued is False for read in previewed)
+        else None
+    )
     if series:
         order = next(iter(orders)) if len(orders) == 1 else None
-        return SpecObservations(series=series, total_obs=total, truncated=truncated, order=order)
-    return _composite_omission(
-        [read for item, read in zip(served, reads, strict=True) if item.served]
-    )
+        composed = SpecObservations(
+            series=series, total_obs=total, truncated=truncated, order=order
+        )
+        return composed.stating_continued(continued)
+    return _composite_omission(previewed).stating_continued(continued)
 
 
-def _serves(item: ServedComponent, date: str) -> bool:
-    """Whether a point of `item` dated `date` lies in a year it serves and its recipe's
-    periods hold. A date with no leading year is kept, as `search.models.in_window` keeps
-    it."""
-    try:
-        year = int(date[:4])
-    except ValueError:
-        return True
-    return _serves_year(item, year)
+def component_spec_id(item: ServedComponent) -> str:
+    """The spec_id of the identity `item`'s preview resolves (`component_preview`), its window
+    included, with each role bound to a population open within its members
+    (`identity_edit.open_within`), as `resubmit.resolve_spec_resubmit` resolves it."""
+    document, _years = component_preview(item)
+    return resolved_spec_id(BaseIdentity.model_validate(document), item.component.populations)
 
 
-def _serves_year(item: ServedComponent, year: int) -> bool:
-    """Whether `item` serves `year` and its recipe's periods hold it."""
-    periods = item.component.recipe.periods
-    return year in item.served and (periods is None or periods.holds(year))
+def resolved_spec_id(identity: BaseIdentity, populations: Mapping[str, RolePopulation]) -> str:
+    """The spec_id of `identity` posted with `populations`, as `resubmit.resolve_spec_resubmit`
+    resolves it: each role `populations` lists open within its members
+    (`identity_edit.open_within`), which leaves an identity already open as it is."""
+    opened, _within = open_within(identity, populations)
+    return identity_spec_id(opened)
+
+
+def component_preview(item: ServedComponent) -> tuple[dict[str, object], frozenset[int]]:
+    """The identity `item`'s preview reads and the years it reads rows in
+    (`ServedComponent.preview_years`).
+
+    The identity is the component's own, so its read elects the facets a Datasets mint of
+    the composite elects under the same window, and its window passes every gate a mint's
+    read of it passes. Its read plan then reads rows over the span of the years while every
+    election keeps that window (`read_plan.read_in_years`), and keeps the points in the
+    years alone, so the preview's series and points lie in those years. Its counts follow
+    the span of the served years and are exact when the served years are contiguous. A
+    composite under a `latest` window, which no mint serves, previews the year it elects
+    (`ServedComponent.elected`): each component serving that year reads it alone as a
+    range, so every component plan reads a range or every date."""
+    identity = dict(item.component.identity)
+    if item.elected is not None:
+        identity["requested_window"] = {
+            "kind": "range",
+            "start_year": item.elected,
+            "end_year": item.elected,
+        }
+    return identity, item.preview_years
 
 
 def _composite_omission(reads: Sequence[SpecObservations | None]) -> SpecObservations:
@@ -431,12 +499,40 @@ class CompositeMint:
     served: tuple[ServedComponent, ...]
     facts: ScopeFacts
     catalogue: Catalogue | None = None
+    # The identity the answer's rows were read for, the composite's table identity, posted or
+    # with its population roles already open (`resolved_spec_id` hashes both alike), and the
+    # roles it binds to a population (`ResubmitIdentityPayload.populations`). None where the
+    # minter read no table of its own, as a same-shape merge does.
+    read: BaseIdentity | None = None
+    read_populations: Mapping[str, RolePopulation] = field(default_factory=dict)
 
     @cached_property
     def declaration(self) -> CompositeDeclaration:
         """The composite `identity`'s provenance facet binds."""
         return _declaration(
             self.facts.index, self.identity.model_dump(mode="json", exclude_none=True)
+        )
+
+    @cached_property
+    def table_components(self) -> tuple[tuple[str, frozenset[int]], ...]:
+        """The spec_id and preview years (`ServedComponent.preview_years`) of each component
+        previewing a year whose preview resolves the read the answer made (`read`). The
+        identity the component's preview resolves hashes to the read's, both with their
+        population roles open (`component_spec_id`, `resolved_spec_id`), window included, and
+        the component reads within the same populations (`read_populations`). Empty where the
+        answer made no read of its own. A component the hash does not settle is none of
+        them. Hashed once per mint, where `spec_build.build_spec` mints it, off the event
+        loop."""
+        if self.read is None:
+            return ()
+        populations = dict(self.read_populations)
+        read_id = resolved_spec_id(self.read, populations)
+        return tuple(
+            (read_id, item.preview_years)
+            for item in self.served
+            if item.preview_years
+            and dict(item.component.populations) == populations
+            and component_spec_id(item) == read_id
         )
 
     @cached_property
@@ -461,31 +557,33 @@ class CompositeMint:
 
     def headline(self, stated: Headline | None) -> Headline | None:
         """The composite's headline (`_headline`), naming `stated`'s window."""
-        return _headline(self.served, stated, facts=self.facts)
+        with self._reading():
+            return _headline(self.served, stated, facts=self.facts)
 
     def parties(self, axis: RoleAxis) -> list[str] | None:
-        """The parties on `axis` of the series every component writes in the years it
+        """The members on `axis` of the series every component writes in the years it
         serves, each read under its own places (`_served_parties`), without the totals
-        `party_count` leaves out (`_parties`). These are the members of the scope `open_axes`
-        states, and `member_count` counts the same parties. None where the snapshot cannot list some
-        serving component's parties (`_lists_parties`)."""
-        held = self._held_parties
-        if held is None:
-            return None
-        return _parties(
-            held[_ROLES[axis]], axis=axis, index=self.facts.index, datasets=self._datasets
-        )
+        `party_split` leaves out: its parties and residual members, as the frame holds
+        them, sorted by ref as a table answer's scope is. These are the members of the scope
+        `open_axes` states. None where the snapshot cannot list some serving component's
+        parties (`_lists_parties`)."""
+        split = self.party_split(axis)
+        return None if split is None else sorted((*split.parties, *split.residuals))
 
-    def member_count(self, axis: RoleAxis) -> int | None:
-        """How many parties `parties(axis)` lists, as `enrichment.party_count` counts them
-        in the components' datasets. It is the count of each `RoleAxisFact` `open_axes` states,
-        which the `role_scope_defaulted` warning states (`role_scope_warnings`). None where
-        they cannot be listed."""
+    def party_split(self, axis: RoleAxis) -> PartySplit | None:
+        """The members `parties(axis)` lists, split into parties and residual members as
+        `enrichment.party_split` splits them in the components' datasets. Its counts are
+        those of each `RoleAxisFact` `open_axes` states, and its party count the one the
+        `role_scope_defaulted` warning states (`role_scope_warnings`). None where they
+        cannot be listed."""
         held = self._held_parties
         if held is None:
             return None
-        return party_count(
-            held[_ROLES[axis]], axis=axis, parties=self.facts.index.parties, datasets=self._datasets
+        return party_split(
+            held[AXIS_COVERAGE_ROLES[axis]],
+            axis=axis,
+            parties=self.facts.index.parties,
+            datasets=self._datasets,
         )
 
     @cached_property
@@ -495,18 +593,19 @@ class CompositeMint:
     @cached_property
     def _held_parties(self) -> dict[Role, frozenset[str]] | None:
         coverage = self.facts.coverage.index
-        unlisted = [
-            item for item in self.served if item.served and not _lists_parties(item, coverage)
-        ]
-        if unlisted:
-            logger.warning(
-                "composite %s keeps the open axes of its table read: the snapshot cannot list "
-                "the parties of %s",
-                self.declaration.provenance,
-                ", ".join(item.component.recipe.dataset for item in unlisted),
-            )
-            return None
-        return _served_parties(self.served, coverage)
+        with self._reading():
+            unlisted = [
+                item for item in self.served if item.served and not _lists_parties(item, coverage)
+            ]
+            if unlisted:
+                logger.warning(
+                    "composite %s keeps the open axes of its table read: the snapshot cannot "
+                    "list the parties of %s",
+                    self.declaration.provenance,
+                    ", ".join(item.component.recipe.dataset for item in unlisted),
+                )
+                return None
+            return _served_parties(self.served, coverage)
 
     def open_axes(
         self, scope: ResolvedScope | None, facts: list[RoleAxisFact] | None
@@ -522,8 +621,8 @@ class CompositeMint:
         if (scope is None and not facts) or self._held_parties is None:
             return scope, facts
         counted = facts and [
-            fact.model_copy(update={"member_count": self.member_count(fact.role)})
-            if fact.member_count is not None
+            fact.counting(split)
+            if fact.member_count is not None and (split := self.party_split(fact.role)) is not None
             else fact
             for fact in facts
         ]
@@ -542,7 +641,8 @@ class CompositeMint:
 
     def stat_vars(self, stated: ResolvedStatVars) -> ResolvedStatVars:
         """`stated`, the table identity's StatVar counts, over every component (`_stat_vars`)."""
-        return _stat_vars(self.served, stated, self.declaration, facts=self.facts)
+        with self._reading():
+            return _stat_vars(self.served, stated, self.declaration, facts=self.facts)
 
     def slots(self, stated: Sequence[Slot]) -> list[Slot]:
         """`stated` with the when slot bound to `window` (`_window_binding`), where some
@@ -615,7 +715,7 @@ class CompositeMint:
         from search.engine.region.grounding import role_scope_defaulted_message
 
         counted = {
-            fact.role: fact.member_count
+            fact.role: (fact.member_count, fact.residual_count or 0)
             for fact in reversed(spec.resolved.role_axis_facts or ())
             if fact.member_count is not None
         }
@@ -631,9 +731,11 @@ class CompositeMint:
                 return warning
             role = cast("RoleAxis", axis)
             opposite: EntityRoleKey = "origin" if role == "destination" else "destination"
+            member_count, residual_count = counted[role]
             message = role_scope_defaulted_message(
                 role,
-                member_count=counted[role],
+                member_count=member_count,
+                residual_count=residual_count,
                 bound_dcids=list(dict.fromkeys(self.identity.entities.get(opposite, ()))),
                 label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
             )
@@ -649,22 +751,6 @@ class CompositeMint:
             return
         with bound_catalogue(self.catalogue):
             yield
-
-
-def _parties(
-    dcids: Iterable[str], *, axis: RoleAxis, index: CodeIndex, datasets: Sequence[str]
-) -> list[str]:
-    """`dcids`, members of a role on `axis`, without the totals `party_count` leaves out of
-    its count, in order: those the code index declares a `total` on `axis` in `datasets`
-    (`party_kind_of`), unless every member is one. The scope lists the parties its role axis
-    fact counts."""
-    ordered = sorted(dcids)
-    kept = [
-        dcid
-        for dcid in ordered
-        if party_kind_of(dcid, axis=axis, parties=index.parties, datasets=datasets) != "total"
-    ]
-    return kept or ordered
 
 
 def _lists_parties(item: ServedComponent, coverage: CoverageIndex) -> bool:
@@ -745,13 +831,15 @@ def _components(served: Sequence[ServedComponent]) -> list[Component]:
 def _with_data(
     item: ServedComponent, bound: BoundRoles, coverage: CoverageIndex, years: Iterable[int]
 ) -> frozenset[str]:
-    """The StatVars of `item` holding a series under `bound` in one of `years`."""
+    """The StatVars of `item` holding a series under `bound` in one of `years`, read under
+    the provenances its identity pins alone (`materialise.composite.component_reads`)."""
     held = sorted(set(years))
     if item.members is None or not held:
         return frozenset()
-    found = coverage.series_years(
-        variables=sorted(item.members), bound=bound, first_year=held[0], last_year=held[-1]
-    )
+    with component_reads(item.component.identity):
+        found = coverage.series_years(
+            variables=sorted(item.members), bound=bound, first_year=held[0], last_year=held[-1]
+        )
     if found is None:
         return frozenset()
     series = found.keys()
@@ -775,7 +863,11 @@ def _stat_vars(
     mint sums by."""
     years = sorted({year for item in served for year in item.served})
     confirmed = sum(
-        len(_with_data(item, _bound(item.component.identity), facts.coverage.index, item.served))
+        len(
+            _with_data(
+                item, bound_roles(item.component.identity), facts.coverage.index, item.served
+            )
+        )
         for item in served
     )
     counts = [len(item.members) if item.members is not None else None for item in served]
@@ -798,8 +890,8 @@ def composite_download(
     """The facts of the default file a Datasets mint of composite `identity` writes, counted
     from `facts`' coverage snapshot in memory as `materialise.composite` composes the frame.
 
-    Each component writes its members' series-years in the years it serves (`served`, as
-    `ServedComponent.served` and its recipe's periods state them). A zero-filling component
+    Each component writes its members' series-years in the years it serves
+    (`ServedComponent.served`, within its recipe's periods). A zero-filling component
     (`ComponentRecipe.zero_absent`) writes, for each member a mint of it serves, one row per
     cell, a (recipient, donor, year), that some component's series fills in the years it
     serves, its own rows and its zero rows alike. Series count the distinct (StatVar,
@@ -863,16 +955,18 @@ def composite_download(
 def _served_series(
     item: ServedComponent, coverage: CoverageIndex
 ) -> Iterator[tuple[tuple[str, str, str], frozenset[int]]]:
-    """Each series of `item`'s members under its identity's places, with the years of it
-    that `item` serves (`_serves_year`), for a series holding one."""
+    """Each series of `item`'s members under its identity's places, read under the
+    provenances its identity pins alone (`materialise.composite.component_reads`), with the
+    years of it that `item` serves, for a series holding one."""
     if item.members is None or not item.served:
         return
-    found = coverage.series_years(
-        variables=sorted(item.members),
-        bound=_bound(item.component.identity),
-        first_year=min(item.served),
-        last_year=max(item.served),
-    )
+    with component_reads(item.component.identity):
+        found = coverage.series_years(
+            variables=sorted(item.members),
+            bound=bound_roles(item.component.identity),
+            first_year=min(item.served),
+            last_year=max(item.served),
+        )
     if found is None:
         return
     epoch = coverage.horizon.epoch_year
@@ -880,7 +974,7 @@ def _served_series(
         held = frozenset(
             year
             for offset in range(bits.bit_length())
-            if bits >> offset & 1 and _serves_year(item, year := epoch + offset)
+            if bits >> offset & 1 and (year := epoch + offset) in item.served
         )
         if held:
             yield key, held
@@ -905,8 +999,9 @@ def _headline(
     facts: ScopeFacts,
 ) -> Headline | None:
     """The composite's headline: the latest year any component serves, counted over the
-    rows of every component serving it, each under its own places (`_headline_year`), with
-    the same counts for it and the two years before it among those the composite serves. A
+    rows of every component serving it, each under its own places and the provenances it
+    pins (`_headline_year`), with the same counts for it and the two years before it among
+    those the composite serves. A
     component reads its own places, so one that binds its destinations to a population
     (`ComponentIdentity.populations`) counts that population alone. The named window is
     `stated`'s, the request's. None when no component serves a year or settles its
@@ -915,11 +1010,12 @@ def _headline(
     years = sorted({year for item in served for year in item.served}, reverse=True)[:3]
     counted: list[HeadlineYear] = []
     for year in years:
-        reads: dict[tuple[tuple[Role, frozenset[str]], ...], set[str]] = {}
+        reads: dict[_ReadKey, set[str]] = {}
         for item in served:
             if year in item.served and item.members is not None:
-                bound = _bound(item.component.identity)
-                reads.setdefault(tuple(sorted(bound.items())), set()).update(item.members)
+                identity = item.component.identity
+                key = (tuple(sorted(bound_roles(identity).items())), _pins(identity))
+                reads.setdefault(key, set()).update(item.members)
         found = _headline_year(coverage, reads, year)
         if found is not None:
             counted.append(found)
@@ -937,35 +1033,48 @@ def _headline(
     )
 
 
+def _pins(identity: Mapping[str, object]) -> frozenset[str] | None:
+    """The provenances `identity` pins (`code_index.members.pinned_refs`), None for none."""
+    facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets") or {})
+    return frozenset(pinned_refs(facets)) or None
+
+
+type _ReadKey = tuple[tuple[tuple[Role, frozenset[str]], ...], frozenset[str] | None]
+"""The places a component binds, as sorted items of `bound_roles`, and the provenances it
+pins (`_pins`). The components of one key read their series together."""
+
+
 def _headline_year(
-    coverage: CoverageIndex,
-    reads: Mapping[tuple[tuple[Role, frozenset[str]], ...], set[str]],
-    year: int,
+    coverage: CoverageIndex, reads: Mapping[_ReadKey, set[str]], year: int
 ) -> HeadlineYear | None:
     """The counts of `year` over `reads`, the StatVars of the components serving it grouped
-    by the places they bind (`_bound`, as sorted items): `CoverageIndex.headline` of one
+    by the places they bind and the provenances they pin (`_ReadKey`), each group read under
+    its pins alone (`origin_catalogue.pinned_reads`). That is `CoverageIndex.headline` of one
     group, or across several the summed observations and series of each group's, whose
-    StatVars differ, and the distinct parties on each role across all of their series in
-    the year. None when no row holds `year`."""
-    found: list[tuple[CoverageHeadline, BoundRoles, list[str]]] = []
-    for key, members in reads.items():
+    StatVars differ, and the distinct parties on each role across all of their series in the
+    year. None when no row holds `year`."""
+    found: list[tuple[CoverageHeadline, BoundRoles, frozenset[str] | None, list[str]]] = []
+    for (places, pins), members in reads.items():
         variables = sorted(members)
-        bound: BoundRoles = dict(key)
-        held = coverage.headline(variables=variables, bound=bound, first_year=year, last_year=year)
+        bound: BoundRoles = dict(places)
+        with pinned_reads(pins):
+            held = coverage.headline(
+                variables=variables, bound=bound, first_year=year, last_year=year
+            )
         if held is not None and held.year == year:
-            found.append((held, bound, variables))
+            found.append((held, bound, pins, variables))
     if not found:
         return None
-    names = coverage.role_names.get(found[0][2][0])
+    names = coverage.role_names.get(found[0][3][0])
     role_dcids = {} if names is None else {"donor": names.donor, "recipient": names.recipient}
     if len(found) == 1:
         role_counts = found[0][0].role_counts
     else:
-        role_counts = _distinct_parties(coverage, [(b, v) for _, b, v in found], year)
+        role_counts = _distinct_parties(coverage, [(b, p, v) for _, b, p, v in found], year)
     return HeadlineYear(
         year=year,
-        observations=sum(held.observations for held, _, _ in found),
-        series=sum(held.series for held, _, _ in found),
+        observations=sum(held.observations for held, _, _, _ in found),
+        series=sum(held.series for held, _, _, _ in found),
         role_counts={
             dcid: count
             for role, count in role_counts.items()
@@ -975,16 +1084,19 @@ def _headline_year(
 
 
 def _distinct_parties(
-    coverage: CoverageIndex, reads: Sequence[tuple[BoundRoles, list[str]]], year: int
+    coverage: CoverageIndex,
+    reads: Sequence[tuple[BoundRoles, frozenset[str] | None, list[str]]],
+    year: int,
 ) -> dict[Role, int]:
     """The distinct donors and recipients of the series `reads` hold in `year`, each read
-    under its own bound, by coverage role; a role no series carries a party on is left
-    out."""
+    under its own bound and pins (`origin_catalogue.pinned_reads`), by coverage role; a role
+    no series carries a party on is left out."""
     parties: dict[Role, set[str]] = {"recipient": set(), "donor": set()}
-    for bound, variables in reads:
-        found = coverage.series_years(
-            variables=variables, bound=bound, first_year=year, last_year=year
-        )
+    for bound, pins, variables in reads:
+        with pinned_reads(pins):
+            found = coverage.series_years(
+                variables=variables, bound=bound, first_year=year, last_year=year
+            )
         if found is None:
             continue
         series = found.keys()

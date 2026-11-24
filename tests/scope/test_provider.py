@@ -27,7 +27,7 @@ from code_index.scope_conventions import (
     PUBLISHED_PROVIDER_SCOPES,
 )
 from code_index.shared import get_index
-from origin_catalogue import bound_catalogue
+from origin_catalogue import bound_catalogue, scoped_reads
 from search.engine import departures
 from search.engine.region.scope_decision import decide_scope
 from search.engine.spec_id import identity_spec_id
@@ -990,6 +990,26 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
     assert table is not None
     (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
     assert option.availability.status == "available"
+
+
+def test_the_inclusive_reach_reads_the_bilateral_years_asked_under_the_part_s_scope():
+    """A part read under the imputed table's source scope holds no bilateral CRS series, so
+    the years its bilateral answer asks for are none, while the composite's components read
+    under their own pins and cover the years both tables hold."""
+    rows = [
+        *((dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _CRS_MEMBERS),
+        *((dcid, "imputed", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _IMPUTED_MEMBERS),
+    ]
+    facts = _facts(rows)
+    identity = _bilateral_identity()
+
+    unscoped = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
+    with scoped_reads(frozenset({_IMPUTED})):
+        scoped = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
+
+    assert unscoped.asked == frozenset(range(2015, 2021))
+    assert scoped.asked == frozenset()
+    assert scoped.covered == unscoped.covered == frozenset(range(2015, 2021))
 
 
 # DAC1's published totals: a donor's total ODA counts its core contributions to
@@ -3237,16 +3257,26 @@ _FRANCE_SHAPED_DESTINATIONS = (
 
 
 @pytest.mark.parametrize(
-    ("source", "recipients", "rows", "series"),
+    ("source", "recipients", "words", "rows", "series"),
     [
-        # Total ODA counts every destination but the two totals.
-        pytest.param(None, 5, 42, 7, id="contributions"),
+        # Total ODA counts every destination but the two totals. The sentence names the
+        # parties apart from the unallocated amounts.
+        pytest.param(
+            None, 5, "to 3 recipients and 2 unallocated amounts", 42, 7, id="contributions"
+        ),
         # The bilateral destinations alone: the two countries and the unallocated line.
-        pytest.param(_DAC2A_BILATERAL, 3, 18, 3, id="bilateral"),
+        pytest.param(
+            _DAC2A_BILATERAL,
+            3,
+            "to 2 recipients and 1 unallocated amount",
+            18,
+            3,
+            id="bilateral",
+        ),
     ],
 )
 def test_a_dac2a_bilateral_answer_counts_the_recipients_its_file_holds(
-    monkeypatch, source: str | None, recipients: int, rows: int, series: int
+    monkeypatch, source: str | None, recipients: int, words: str, rows: int, series: int
 ):
     """An open-destination DAC2a answer read to its bilateral destinations counts, in its
     sentence, its destination fact and its download estimate, the recipients and rows the
@@ -3276,7 +3306,7 @@ def test_a_dac2a_bilateral_answer_counts_the_recipients_its_file_holds(
     assert [(f.role, f.member_count) for f in resolved.role_axis_facts or ()] == [
         ("destination", recipients)
     ]
-    assert f"to {recipients} recipients" in (resolved.rendered_sentence or "")
+    assert words in (resolved.rendered_sentence or "")
     assert resolved.download is not None
     assert (resolved.download.rows, resolved.download.series) == (rows, series)
     # The bilateral reading cites DAC2a as total ODA does, by its declared label.

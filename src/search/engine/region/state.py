@@ -261,6 +261,10 @@ class EngineOptions:
     place_options_pool: PlaceOptionsPool | None = None
     # Monotonic deadline for graph and SDMX reads; `None` means unbounded.
     deadline: float | None = None
+    # Years a resubmit's preview reads rows in, its members elected under the identity's own
+    # window (`fetch._build_observations`); `None` reads the plan's own years. A composite's
+    # component read sets the years the component serves.
+    preview_years: frozenset[int] | None = None
 
 
 def _bound_role_dcids(

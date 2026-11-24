@@ -25,6 +25,73 @@ _MULTILATERAL = "provider:multilateral"
 
 
 @pytest.mark.parametrize(
+    ("text", "entries", "total", "mentions"),
+    [
+        ("What share of G7 ODA is bilateral?", [_BILATERAL], False, [_BILATERAL]),
+        (
+            "US bilateral aid to Kenya as a share of total US ODA",
+            [_BILATERAL],
+            True,
+            [_BILATERAL],
+        ),
+        ("Germany's bilateral ODA as a share of its GNI", [_BILATERAL], False, [_BILATERAL]),
+        (
+            "Show G7 aid to Africa as a share of G7 aid to all developing countries each year "
+            "from 1970 to 2024, including imputed multilateral aid",
+            [_INCLUSIVE],
+            False,
+            [_INCLUSIVE],
+        ),
+        (
+            "Show G7 bilateral aid and imputed multilateral aid to Africa separately",
+            [],
+            False,
+            [],
+        ),
+        (
+            "US bilateral aid to Kenya as a share of US ODA to Kenya including imputed "
+            "multilateral",
+            [],
+            False,
+            [_BILATERAL, _INCLUSIVE],
+        ),
+        (
+            "What share of US ODA goes to multilaterals?",
+            [_MULTILATERAL],
+            False,
+            [_MULTILATERAL],
+        ),
+        (
+            "How much bilateral aid does France give to Mali, and what is France's total ODA?",
+            [_BILATERAL],
+            True,
+            [_BILATERAL],
+        ),
+        (
+            "France's ODA to Mali and Germany's ODA including imputed multilateral aid",
+            [_INCLUSIVE],
+            False,
+            [_INCLUSIVE],
+        ),
+        ("total US ODA", [], True, []),
+        # A kind of provider names no option, even beside "bilateral".
+        ("bilateral and multilateral development banks", [], False, []),
+        # A negated "multilateral" states bilateral; a negated "bilateral" states nothing.
+        ("aid, excluding multilateral", [_BILATERAL], False, [_BILATERAL]),
+        ("non-bilateral aid", [], False, []),
+    ],
+)
+def test_read_stated_scope_entries_total_and_mentions(text, entries, total, mentions):
+    """`mentions` names every provider option read before the two-option collapse that
+    empties `entries`."""
+    stated = read_stated_scope(text)
+
+    assert [e.option_id for e in stated.entries if e.axis == "provider"] == entries
+    assert stated.total is total
+    assert list(stated.mentions) == mentions
+
+
+@pytest.mark.parametrize(
     ("text", "stated", "total"),
     [
         # Recorded messages.
@@ -140,6 +207,74 @@ _MULTILATERAL = "provider:multilateral"
         ("ODA to multilateral development banks", [], False),
         ("bilateral and multilateral ODA from the UK", [], False),
         ("ODA net of debt relief", [], False),
+        # A reply's "no" closed by a clause or sentence mark negates nothing after it.
+        (
+            "no, count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No. Count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        ("no; gross ODA to Kenya", [(_GROSS, "gross")], False),
+        # A negator that reaches its word still negates it.
+        ("aid to Kenya, not multilateral", [(_BILATERAL, "not multilateral")], False),
+        ("no multilateral aid to Kenya", [(_BILATERAL, "no multilateral")], False),
+        ("aid with no multilateral share", [(_BILATERAL, "no multilateral")], False),
+        (
+            "No - count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No \u2014 count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "Show net ODA. No, count it including imputed multilateral aid",
+            [(_NET, "net"), (_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "aid to Kenya, not, as before, multilateral",
+            [(_BILATERAL, "not, as before, multilateral")],
+            False,
+        ),
+        (
+            "aid to Kenya, never, ever multilateral",
+            [(_BILATERAL, "never, ever multilateral")],
+            False,
+        ),
+        ("aid to Kenya no-multilateral", [(_BILATERAL, "no-multilateral")], False),
+        (
+            "Not, as before, multilateral aid to Kenya",
+            [(_BILATERAL, "Not, as before, multilateral")],
+            False,
+        ),
+        (
+            "Hmm, no, count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "OK no, count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No -- count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        (
+            "No- count it including imputed multilateral aid",
+            [(_INCLUSIVE, "including imputed multilateral")],
+            False,
+        ),
+        ("not net ODA", [], False),
     ],
 )
 def test_read_stated_scope(text, stated, total):

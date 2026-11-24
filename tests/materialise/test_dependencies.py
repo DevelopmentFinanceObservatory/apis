@@ -259,6 +259,49 @@ def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
     )
 
 
+@pytest.mark.parametrize(
+    ("provenance", "changed"),
+    [
+        pytest.param(DAC2A_BILATERAL, True, id="stacked"),
+        pytest.param("provenance/ONEOECDHeadlineODA", False, id="spliced"),
+    ],
+)
+def test_a_stacked_composite_head_composed_under_an_earlier_years_rule_rebuilds(
+    monkeypatch: pytest.MonkeyPatch, provenance, changed
+):
+    """A head a stacked composite was composed under the previous served-years rule fails its
+    fingerprint check, though its declaration is unchanged; a spliced composite, which that
+    rule never reads, keeps its head."""
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            composites_module, "STACKED_YEARS_RULE", composites_module.STACKED_YEARS_RULE - 1
+        )
+        stored = replace(
+            _BASE, composites=((provenance, declared_composite_digest(provenance, index=_INDEX)),)
+        )
+    graph = FakeGraphReader(
+        arcs={
+            "provenance/OECDDAC2A": {"lastDataRefreshDate": ("2026-10-07",)},
+            "provenance/ONEConversionTablesDAC": {"lastDataRefreshDate": ("2026-09-30",)},
+        }
+    )
+    window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
+    current = replace(
+        refreshed_dependencies(
+            stored,
+            [_request("A", window), _request("B", window)],
+            graph=graph,
+            coverage=None,
+            code_index=_INDEX,
+        ),
+        recipes=stored.recipes,
+    )
+
+    assert dependency_changes(stored.as_json(), current) == (
+        (f"composites:{provenance}",) if changed else ()
+    )
+
+
 def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ):

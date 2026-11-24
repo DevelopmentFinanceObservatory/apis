@@ -79,6 +79,7 @@ from search.engine.region.observations.bulk_conversion import (
     left_out_omission,
     left_out_warning,
 )
+from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
@@ -178,6 +179,20 @@ class _Served(NamedTuple):
     estimated: frozenset[tuple[str, RoleTuple]]
 
 
+def _within_years(served: _Served, years: frozenset[int]) -> _Served:
+    """`served` keeping the points dated in `years`, and the pairs that hold one."""
+    points = {
+        pair: kept
+        for pair, held in served.points.items()
+        if (kept := [p for p in held if year_of(p[0]) in years])
+    }
+    return _Served(
+        points=points,
+        stated={pair: refs for pair, refs in served.stated.items() if pair in points},
+        estimated=served.estimated & points.keys(),
+    )
+
+
 def _served_pairs(
     plan: BulkPlan,
     rows: Mapping[tuple[str, RoleTuple], list[_Point]],
@@ -206,38 +221,53 @@ def _served_pairs(
     member in `fell_back` serves its newest period in place of the year coverage elected,
     and ranks over coverage in that period's year.
 
+    A plan `read_in_years` narrowed reads the years it serves alone, while a mint of a
+    composite's component masks and collapses the rows of the component's whole window
+    before it keeps those years. Every rank and cut then reads that window from coverage
+    (`BulkPlan.election_bounds`): a continuing facet's points count only after the
+    selected facets' last year in it (`BulkPlan.selected_ends`), and a member in
+    `ranked_by_series` ranks each facet over its coverage at the pair (`_series_ranks`).
+
     A series states the refs its pair's served facets share (`_series_refs`): the selected
     facets holding a served point, else the continuing ones. A pair holds estimates when a
     served point comes from one of the `estimated` facet ids. Refs and the flag read only
     the points served, so a point the period cut or the collapse drops shapes neither."""
     kept_by_sv: dict[str, list[tuple[RoleTuple, _Point]]] = {}
+    members = {sv for sv, _role_tuple in rows}
+    ends = {sv: plan.selected_ends(sv) for sv in members} if plan.served_years else {}
     for (sv, role_tuple), points in rows.items():
         ids = frozenset(plan.selected.get(sv, ()))
         selected = [point for point in points if point[2] in ids]
         last = max((point[0] for point in selected), default=None)
+        end = ends.get(sv, {}).get(role_tuple)
         kept = [
             *selected,
-            *(p for p in points if p[2] not in ids and (last is None or p[0] > last)),
+            *(
+                p
+                for p in points
+                if p[2] not in ids and (last is None or p[0] > last) and _after(p[0], end)
+            ),
         ]
         kept_by_sv.setdefault(sv, []).extend((role_tuple, point) for point in kept)
     served: dict[tuple[str, RoleTuple], list[_Point]] = {}
     for sv, entries in kept_by_sv.items():
-        ranks = None
+        cells = [
+            _collapse_cell(sv, role_tuple, point, plan.candidates) for role_tuple, point in entries
+        ]
+        facet_ids = {point[2] for _rt, point in entries}
         if sv not in ranked_by_series:
             if sv in fell_back:
                 year = year_of(entries[0][1][0])
                 years: YearBounds = (year, year)
             else:
-                years = plan.member_years(sv)
-            ranks = _member_ranks(plan, sv, {point[2] for _rt, point in entries}, years)
-        mask = keep_mask(
-            [
-                _collapse_cell(sv, role_tuple, point, plan.candidates)
-                for role_tuple, point in entries
-            ],
-            rank_within_series=ranks is None,
-            ranks=ranks,
-        )
+                years = plan.election_bounds(sv)
+            ranks = _member_ranks(plan, sv, facet_ids, years)
+            mask = keep_mask(cells, rank_within_series=False, ranks=ranks)
+        elif plan.served_years is not None:
+            ranked = _series_ranks(plan, sv, facet_ids, plan.election_bounds(sv))
+            mask = _series_keep_mask(plan, entries, cells, ranked)
+        else:
+            mask = keep_mask(cells, rank_within_series=True)
         for (role_tuple, point), keep in zip(entries, mask, strict=True):
             if keep:
                 served.setdefault((sv, role_tuple), []).append(point)
@@ -253,6 +283,74 @@ def _served_pairs(
             pair for pair, points in served.items() if any(p[2] in estimated for p in points)
         ),
     )
+
+
+def _after(date: str, end: int | None) -> bool:
+    """Whether a point dated `date` falls after `end`, the selected facets' last year at
+    its pair (`BulkPlan.selected_ends`). A point with no leading year, or a pair with no
+    end, passes."""
+    year = year_of(date)
+    return end is None or year is None or year > end
+
+
+def _series_ranks(
+    plan: BulkPlan, sv: str, facet_ids: Collection[str], years: YearBounds
+) -> dict[RoleTuple, dict[str | None, FacetRank]]:
+    """Each role tuple of `sv` with each of `facet_ids`' collapse rank over the rows a mint
+    of `sv` keeps of it at that tuple alone, counted from coverage in `years`, as
+    `_member_ranks` counts them across every tuple: a facet the selection serves `sv` its
+    rows there, a facet continuing the lead those its continuation keeps
+    (`BulkPlan.continued_years`). A facet holding no row at a tuple ranks with none."""
+    first, last = years
+    selected = plan.selected.get(sv, ())
+    held: dict[RoleTuple, dict[str, list[tuple[int, int]]]] = {}
+    for facet_id in facet_ids:
+        if facet_id not in selected:
+            continue
+        for c in plan.candidates[facet_id].by_sv.get(sv, ()):
+            for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
+                held.setdefault(role_tuple, {}).setdefault(facet_id, []).extend(by_year)
+    if any(facet_id not in selected for facet_id in facet_ids):
+        for facet_id, role_tuple, by_year in plan.continued_years(sv, years):
+            if facet_id in facet_ids:
+                held.setdefault(role_tuple, {}).setdefault(facet_id, []).extend(by_year)
+    return {
+        role_tuple: {
+            facet_id: _rank(
+                plan,
+                facet_id,
+                rows=sum(n for _year, n in by_facet.get(facet_id, ())),
+                spans=[(year, year) for year, _n in by_facet.get(facet_id, ())],
+            )
+            for facet_id in facet_ids
+        }
+        for role_tuple, by_facet in held.items()
+    }
+
+
+def _series_keep_mask(
+    plan: BulkPlan,
+    entries: Sequence[tuple[RoleTuple, _Point]],
+    cells: Sequence[CollapseCell],
+    ranks: Mapping[RoleTuple, Mapping[str | None, FacetRank]],
+) -> list[bool]:
+    """`keep_mask` over `cells`, the cells of `entries`, collapsed within each role tuple
+    under that tuple's ranks (`_series_ranks`), as a mint collapses each series on its own.
+    A facet coverage holds no row of at the tuple ranks with none."""
+    by_tuple: dict[RoleTuple, list[int]] = {}
+    for index, (role_tuple, _point) in enumerate(entries):
+        by_tuple.setdefault(role_tuple, []).append(index)
+    mask = [True] * len(entries)
+    for role_tuple, indices in by_tuple.items():
+        held = ranks.get(role_tuple, {})
+        tuple_ranks = {
+            facet_id: held.get(facet_id) or _rank(plan, facet_id, rows=0, spans=[])
+            for facet_id in {cells[i].facet_id for i in indices}
+        }
+        kept = keep_mask([cells[i] for i in indices], rank_within_series=False, ranks=tuple_ranks)
+        for index, keep in zip(indices, kept, strict=True):
+            mask[index] = keep
+    return mask
 
 
 def _member_ranks(
@@ -271,7 +369,7 @@ def _member_ranks(
     selected = plan.selected.get(sv, ())
     continued: dict[str, list[tuple[int, int]]] = {}
     if any(facet_id not in selected for facet_id in facet_ids):
-        for facet_id, _role_tuple, by_year in plan.continued_years(sv):
+        for facet_id, _role_tuple, by_year in plan.continued_years(sv, years):
             continued.setdefault(facet_id, []).extend(by_year)
     ranks: dict[str | None, FacetRank] = {}
     for facet_id in facet_ids:
@@ -287,19 +385,28 @@ def _member_ranks(
             by_year = continued.get(facet_id, [])
             rows = sum(n for _year, n in by_year)
             spans = [(year, year) for year, _n in by_year]
-        ranks[facet_id] = facet_rank(
-            FacetRankStats(
-                facet_id=facet_id,
-                has_period=plan.candidates[facet_id].observation_period is not None,
-                rows=rows,
-                span_years=(
-                    max(end for _start, end in spans) - min(start for start, _end in spans)
-                    if spans
-                    else -1
-                ),
-            )
-        )
+        ranks[facet_id] = _rank(plan, facet_id, rows=rows, spans=spans)
     return ranks
+
+
+def _rank(
+    plan: BulkPlan, facet_id: str | None, *, rows: int, spans: Sequence[tuple[int, int]]
+) -> FacetRank:
+    """`facet_id`'s collapse rank (`materialise.facet_collapse.facet_rank`) over `rows`
+    rows spanning the years from the first start to the last end of `spans`."""
+    candidate = plan.candidates.get(facet_id) if facet_id is not None else None
+    return facet_rank(
+        FacetRankStats(
+            facet_id=facet_id,
+            has_period=candidate is not None and candidate.observation_period is not None,
+            rows=rows,
+            span_years=(
+                max(end for _start, end in spans) - min(start for start, _end in spans)
+                if spans
+                else -1
+            ),
+        )
+    )
 
 
 def _collapse_cell(
@@ -516,16 +623,21 @@ def _assemble_role_bulk_series(
     converted: ConvertedPairs | None = None,
     target_unit_ref: str | None = None,
     estimated: frozenset[tuple[str, RoleTuple]] = frozenset(),
+    served_years: frozenset[int] | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
     """Build series from the dispatched pairs and return any warning. The pairs in
     `estimated` serve a point of an estimated method (`SeriesRead.holds_estimates`).
+    `served_years` are the years a narrowed plan serves (`ServedYears.years`), which every
+    pair is read in alone.
 
     `converted` holds each converted pair's conversion: its series states the conversion
     and is in `target_unit_ref`, or states no unit for a conversion into each entity's own
     currency, as the per-series path's do.
 
-    No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, or, when `converted`
-    left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
+    No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, stating no point in
+    `served_years` where set (`served_years.no_points_in_served_years`), whether SDMX
+    returned no row for a pair or the served years cut every row it returned, or, when
+    `converted` left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
     `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` omission naming them. Otherwise each pair
     is a series stating the refs its pair's serving facets share (`stated`, `_series_refs`),
     assembled by `search.observations.assemble_role_bulk`,
@@ -538,6 +650,12 @@ def _assemble_role_bulk_series(
     """
     if not pair_points and converted is not None and converted.leaves_out:
         return left_out_omission(converted)
+    if not pair_points and served_years is not None:
+        dispatched = len(plan.to_fetch)
+        return (
+            no_points_in_served_years(served_years, dispatched=dispatched, empty=dispatched),
+            None,
+        )
     if not pair_points:
         return (
             omitted_observations(
@@ -666,6 +784,7 @@ def _bulk_role_series(
                 {},
                 member_constraints=member_constraints,
                 graph=graph,
+                served_years=None if plan.served_years is None else plan.served_years.years,
             )
         return _read_and_assemble(
             plan,
@@ -827,6 +946,10 @@ def _read_and_assemble(
         estimated=estimated_ids,
         fell_back=fell_back,
     )
+    if plan.served_years is not None:
+        # A read of the whole window (`fetch._role_bearing_bulk_dispatch`) masks and collapses every
+        # row of it; the served years are kept once it has.
+        served = _within_years(served, plan.served_years.years)
     converted = None
     if conversion is not None:
         try:
@@ -842,6 +965,7 @@ def _read_and_assemble(
         converted=converted,
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
         estimated=served.estimated,
+        served_years=None if plan.served_years is None else plan.served_years.years,
     )
 
 

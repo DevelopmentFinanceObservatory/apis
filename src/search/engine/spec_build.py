@@ -19,12 +19,13 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import PartyRow
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import party_count
+from materialise.enrichment import party_split
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.departures import members_left_out
+from search.engine.extract import DateRequest
 from search.engine.named_group import NamedGroup
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
@@ -43,7 +44,11 @@ from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
+    NoYearsToRead,
     data_years,
+    plan_years,
+    read_in_years,
+    role_years,
     served_dates,
     served_provenances,
     serves_continuation,
@@ -88,6 +93,7 @@ from search.models import (
     GraphRef,
     Headline,
     IdentityFacetBinding,
+    IdentityFacetValueRequest,
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
@@ -119,9 +125,11 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
+from search.scope.basis import identity_window
 from search.scope.provider import provider_total_code
 from search.scope.region import policy_members, without_residuals
 from search.scope.sector import sector_concept
+from search.scope_window import WindowTooLong
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -826,9 +834,10 @@ def _measure_alternatives(
     differs only in price basis is published with axis "unit" and labelled by its prices; the rest are the measure menu, axis "what" (see
     ``_menu_siblings``). The main label is `measure_label_for_partition`'s. Each
     alternative carries its own identity definition so resubmission can recover that
-    measure family. ``served_rows`` counts the rows a resubmit of a sibling's identity
-    would serve (`option_coverage.measure_served_counter`), and omits a sibling it counts
-    none for.
+    measure family. A unit option's definition binds no unit request
+    (`_without_unit_request`), so it serves the basis its qualifier names. ``served_rows``
+    counts the rows a resubmit of a sibling's identity would serve
+    (`option_coverage.measure_served_counter`), and omits a sibling it counts none for.
     """
     from search.models import (
         SpecAlternativeMeasure,
@@ -846,7 +855,12 @@ def _measure_alternatives(
         *((sibling, "unit", basis) for sibling, basis in unit_options),
     ]
     for sibling_partition, axis, basis in entries:
-        sibling = mint_sibling_identity(identity, sibling_partition, axes, labels)
+        sibling = mint_sibling_identity(
+            identity if basis is None else _without_unit_request(identity),
+            sibling_partition,
+            axes,
+            labels,
+        )
         if sibling.label is None:
             continue
         counted = served_rows(sibling.identity) if served_rows is not None else None
@@ -867,6 +881,18 @@ def _measure_alternatives(
             )
         )
     return alternatives, measure_label_for_partition(partition)
+
+
+def _without_unit_request(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` with its unit request unbound. A unit request names the prices it
+    serves, so a sibling at another price basis that kept it would serve the request's
+    basis, not its own, or refuse: a constant-price series converts to no currency. The
+    sibling then serves its series in the currency they are published in."""
+    facets = identity.facets or {}
+    if not isinstance(facets.get("unit"), IdentityFacetValueRequest):
+        return identity
+    kept = {axis: binding for axis, binding in facets.items() if axis != "unit"}
+    return identity.model_copy(update={"facets": kept or None})
 
 
 class MeasureLabel(NamedTuple):
@@ -984,27 +1010,29 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    Each count is `party_count` of the population on its axis, read in `datasets`, the
-    provenances of the served StatVars. A missing member population yields ``member_count=None``
-    and ``members_available=False``. The origin axis states whether its population holds
+    Each fact counts the population on its axis split into parties and residual members
+    (`party_split`), read in `datasets`, the provenances of the served StatVars. A missing
+    member population yields ``member_count=None``, no ``residual_count`` and
+    ``members_available=False``. The origin axis states whether its population holds
     a multilateral: one of its members where they are known, else one `datasets` publish
     on the axis (`RoleAxisFact.holds_multilaterals`).
     """
     if not facts:
         return None
-    return [
-        RoleAxisFact(
+    stated: list[RoleAxisFact] = []
+    for fact in facts:
+        stated_fact = RoleAxisFact(
             role=fact.role,
-            member_count=(
-                party_count(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
-                if fact.member_dcids is not None
-                else None
-            ),
+            member_count=None,
             members_available=fact.member_dcids is not None,
             holds_multilaterals=_axis_holds_multilaterals(fact, parties=parties, datasets=datasets),
         )
-        for fact in facts
-    ]
+        if fact.member_dcids is not None:
+            stated_fact = stated_fact.counting(
+                party_split(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
+            )
+        stated.append(stated_fact)
+    return stated
 
 
 def _axis_holds_multilaterals(
@@ -1387,6 +1415,7 @@ def build_spec(
     stat_vars_member_count_exact: bool = True,
     walked: WalkedMembers | None = None,
     plan: ReadPlan | None = None,
+    preview_years: frozenset[int] | None = None,
     named_groups: Iterable[NamedGroup] = (),
     coverage_index: CoverageIndex | None = None,
     measure_served_rows: Callable[[BaseIdentity], ServedRows | None] | None = None,
@@ -1403,8 +1432,18 @@ def build_spec(
             and each field the composite states is the mint's (`CompositeMint`): coverage
             in place of ``coverage``, headline, open role axes, StatVar counts, when slot,
             download, measure label, published tables and sources, provenance facet and
-            data years, with no observation preview. Every other field is the table
-            identity's. None mints the table identity itself.
+            data years, with no observation preview and ``ResolvedSpec.continued``
+            false, since the table identity's plan reads none of the components a composite
+            stacks or splices and its component reads state their continuation
+            (``SpecObservations.continued``). A component whose preview resolves the read
+            ``plan`` was elected for, hashed with its window and populations
+            (``CompositeMint.table_components``), is stated from ``plan`` narrowed to the
+            years it previews (``ResolvedSpec.component_continued``), so a request reading
+            no preview resolves it no second time. A plan the request's own filter or window
+            narrowed (``ReadPlan.request_filtered``), or one elected under another window
+            than the read identity's, clamped as a read clamps it (``_reads_window_of``, as
+            a trailing answer's settled plan is), states none. Every other field is the
+            table identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
@@ -1421,6 +1460,11 @@ def build_spec(
             continuation's points (``read_plan.serves_continuation``) becomes
             ``ResolvedSpec.continued``. The part's departures state all four. They never
             feed identity.
+        preview_years: The years the preview reads rows in, a composite component's
+            served years (`EngineOptions.preview_years`). ``ResolvedSpec.continued`` then
+            reads ``plan`` narrowed to them (``read_plan.read_in_years``), so it states a
+            continuation only where one serves a point the preview shows. None reads
+            ``plan`` as it stands.
         coverage_index: The request's coverage index, which ``ResolvedSpec.download``
             counts a role-bearing plan from (``download.download_facts``). Without it, or
             without a plan, the Spec states no download facts.
@@ -1670,12 +1714,59 @@ def build_spec(
         )
         .stating_group_totals(role_group_totals(named_groups, hashed_entities))
         .stating_data_years(years)
-        .stating_continued(serves_continuation(plan))
+        .stating_continued(
+            composite is None and serves_continuation(_previewed(plan, preview_years))
+        )
+        .stating_component_continued(
+            ()
+            if composite is None
+            or plan is None
+            or plan.request_filtered
+            or not _reads_window_of(plan, composite.read, coverage_index)
+            else (
+                (component, years, serves_continuation(_previewed(plan, years)))
+                for component, years in composite.table_components
+            )
+        )
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
     )
     return with_members_left_out(spec)
+
+
+def _reads_window_of(
+    plan: ReadPlan, read: BaseIdentity | None, coverage_index: CoverageIndex | None
+) -> bool:
+    """Whether `plan` reads the years a resolve of `read`, the identity the answer's rows were
+    read for, reads: its requested range as a read clamps it, an open end to the current year
+    and a role read's bounds to `coverage_index`'s horizon (`read_plan.plan_years`,
+    `read_plan.role_years`). A trailing answer settles on a narrower window after its read
+    and elects its plan again there (`trailing.settle_trailing`), so its plan is not the one
+    a resolve of `read` elects."""
+    if read is None:
+        return False
+    window = identity_window(read)
+    if not isinstance(window, TimeWindow):
+        return plan.years == (None if window == "all" else window)
+    request = DateRequest(window=window, latest=False)
+    try:
+        if plan.years == plan_years(request):
+            return True
+        return coverage_index is not None and (
+            plan.years == role_years(request, coverage_index.horizon).years
+        )
+    except (NoYearsToRead, WindowTooLong):
+        return False
+
+
+def _previewed(plan: ReadPlan | None, years: frozenset[int] | None) -> ReadPlan | None:
+    """`plan` narrowed to `years`, the years its preview reads rows in
+    (`read_plan.read_in_years`), None when its own years hold none of them. A plan with no
+    years given, or a `latest` plan, which served years cannot narrow, stands as it is."""
+    if plan is None or years is None or plan.years == "latest":
+        return plan
+    return read_in_years(plan, years)
 
 
 def with_members_left_out(spec: Spec) -> Spec:

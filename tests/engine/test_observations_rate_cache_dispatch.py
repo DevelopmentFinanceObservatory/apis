@@ -126,6 +126,7 @@ def _reader(rate_cache: RateTableCache) -> PreviewReader:
             member_facts=None,
             unit_request=None,
             elected=None,
+            years=None,
         ),
         graph=FakeGraph(),
         sdmx=None,

@@ -3,6 +3,7 @@ reads, and coverage follows that plan."""
 
 from __future__ import annotations
 
+import functools
 import itertools
 import threading
 from dataclasses import dataclass, field, replace
@@ -30,6 +31,7 @@ from search.engine.region.option_coverage import RoleServedFilter
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
+from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -52,6 +54,7 @@ from search.engine.retrieval.read_plan import (
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_resolve import _elect_role_class, _role_plan
 from search.engine.retrieval.role_scope import discover_role_scope, pair_series
+from search.engine.unit.refs import unit_prices
 from search.models import CoverageBreadth, CoverageExact, TimeWindow
 from search.observations import observation_settings
 from search.scope_window import WindowTooLong
@@ -1264,6 +1267,73 @@ def test_a_plan_serves_the_method_its_member_declares_in_the_graph(
     )
 
 
+@dataclass(frozen=True)
+class _Qualified(_Constraints):
+    """Member facts whose graph arcs declare `qualifier` as the member's
+    `measurementQualifier`."""
+
+    qualifier: str | None = None
+
+    def read_five_tuple(self) -> FiveTuple:
+        return FiveTuple("FinancialFlow", "amount", "measuredValue", self.qualifier, None)
+
+
+@pytest.mark.parametrize("max_pairs", [1, 1_000], ids=["bulk", "pairs"])
+@pytest.mark.parametrize(
+    ("qualifiers", "prices", "stated"),
+    [
+        # Each StatVar's own qualifier prices its series, so one unit serves both bases.
+        pytest.param(("Nominal", "RealValue"), ["current", "constant"], None, id="both"),
+        pytest.param(("Nominal", "Nominal"), ["current"], None, id="nominal"),
+        # Members no qualifier prices are in current prices the rule infers.
+        pytest.param((None, None), ["current"], [], id="unqualified"),
+    ],
+)
+def test_a_unit_served_under_each_member_s_qualifier_states_each_basis(
+    search_settings,
+    max_pairs: int,
+    qualifiers: tuple[str | None, str | None],
+    prices: list[str],
+    stated: list[str] | None,
+) -> None:
+    """`_FLOW` and `_FLOW_B` serve one US-dollar facet. Their graph arcs, the members of a
+    walked family the code index does not list, declare each one's qualifier, and the unit
+    facet reads each series' basis under its own member's qualifier."""
+    search_settings(obs_preview_max_pairs=max_pairs)
+    members = [_FLOW, _FLOW_B]
+    index = build_coverage_index(
+        [(sv, "fUsd", ABSENT_ENTITY, _AAA, list(range(2015, 2021))) for sv in members],
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+        facet_metadata={"fUsd": FacetMetadata(provenance_id=_ONE_CLIMATE, unit="USDollar")},
+    )
+    plan = _role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _Constraints()),
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    unit = answer_facets(
+        plan,
+        {},
+        bound_axes={},
+        request_basis=None,
+        unit_request=None,
+        currency_of=lambda _ref: "USD",
+        prices_of=functools.partial(unit_prices, FakeGraph(), deadline=None),
+        member_facts={
+            sv: _Qualified(qualifier=qualifier)
+            for sv, qualifier in zip(members, qualifiers, strict=True)
+        },
+    )["unit"]
+
+    assert (unit.prices, unit.stated_prices) == (prices, prices if stated is None else stated)
+
+
 def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(
     search_settings,
 ) -> None:
@@ -1312,6 +1382,184 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
     assert read_plan.served_dates(plan) == {_FLOW: ("2021", "2021")}
     assert [f.facet_id for f in read_plan.series_facets(plan)] == ["fM2"]
     assert [f.facet_id for f in read_plan.facets_served(plan)] == ["fM2"]
+
+
+def test_a_continuation_counted_in_given_years_cuts_after_the_selection_s_last_year_in_them(
+    search_settings,
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_BBB` to 2020 and at `_CCC` in 2020 alone, and
+    `fE`, an estimate of one source and unit reaching 2022, at `_AAA` to 2022 and at `_CCC`
+    in 2019, so over 2015 to 2022 `fE` continues `fM1` at `_AAA` after 2020 alone. Counted
+    in 2018 and 2019, as a
+    member falling back to an earlier year ranks, the continuation keeps `fE`'s rows after
+    `fM1`'s last year in those years: none at `_AAA`, and 2019 at `_CCC`, where `fM1`
+    holds none, as a mint cuts its rows to that year before it masks them."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2021))) for place in (_AAA, _BBB)),
+        (_FLOW, "fM1", ABSENT_ENTITY, _CCC, [2020]),
+        (_FLOW, "fE", ABSENT_ENTITY, _AAA, list(range(2015, 2023))),
+        (_FLOW, "fE", ABSENT_ENTITY, _CCC, [2019]),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fE", "Estimated"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB, _CCC],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
+        years=read_plan.role_years(
+            DateRequest(window=TimeWindow(start_year=2015, end_year=2022), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    assert isinstance(plan, BulkPlan)
+    assert (plan.facet_id, plan.continuing) == ("fM1", ("fE",))
+
+    assert [
+        (facet_id, by_year) for facet_id, _role_tuple, by_year in plan.continued_years(_FLOW)
+    ] == [("fE", ((2021, 1), (2022, 1)))]
+    assert [
+        (facet_id, by_year)
+        for facet_id, _role_tuple, by_year in plan.continued_years(_FLOW, (2018, 2019))
+    ] == [("fE", ((2019, 1),))]
+
+
+@pytest.mark.parametrize(
+    ("years", "continued"),
+    [
+        pytest.param(frozenset({2020, 2022}), False, id="estimate-between-served-years"),
+        pytest.param(frozenset({2020, 2021}), True, id="estimate-in-a-served-year"),
+    ],
+)
+def test_a_bulk_plan_read_in_years_states_a_continuation_only_in_a_served_year(
+    search_settings, years, continued
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_BBB` to 2020, and `fE`, an estimate of one source
+    and unit, at `_AAA` in 2021 alone, so over 2015 to 2022 `fE` continues `fM1` there in
+    2021. Narrowed to served years whose span holds 2021, the plan states the continuation
+    only when 2021 is one of them, as its read lists the served years alone to SDMX."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2021))) for place in (_AAA, _BBB)),
+        (_FLOW, "fE", ABSENT_ENTITY, _AAA, [2021]),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fE", "Estimated"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(
+            DateRequest(window=TimeWindow(start_year=2015, end_year=2022), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+    assert isinstance(plan, BulkPlan)
+    assert (plan.facet_id, plan.continuing) == ("fM1", ("fE",))
+    narrowed = read_plan.read_in_years(plan, years)
+
+    assert narrowed is not None
+    assert read_plan.serves_continuation(plan) is True
+    assert read_plan.serves_continuation(narrowed) is continued
+
+
+def _facet_dated(
+    facet_id: str, dates: list[str], *, complete: bool, first_series_end: str | None = None
+) -> Facet:
+    """An annual facet of `dc/base/P` from its first to its last date, listing `dates`, the
+    whole of its dates where `complete`."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id="dc/base/P",
+        observation_period="P1Y",
+        obs_count=len(dates) if complete else len(dates) + 10,
+        earliest_date=dates[0],
+        latest_date=dates[-1],
+        dates=tuple(dates),
+        dates_complete=complete,
+        first_series_end=first_series_end,
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded", "continued"),
+    [
+        # The recorded facet's dates end in 2019, so the June 2020 estimate continues it.
+        pytest.param(
+            _facet_dated("fR", [str(y) for y in range(2010, 2020)], complete=True),
+            True,
+            id="recorded-ends-the-year-before",
+        ),
+        # The recorded facet runs to June 2021 at this place, another of its series ending
+        # in 2019, without complete dates, so under the window its last date clips to the
+        # bare 2020, the year the estimate falls in.
+        pytest.param(
+            _facet_dated("fR", ["2010", "2021-06"], complete=False, first_series_end="2019"),
+            False,
+            id="recorded-clipped-to-the-estimate-s-year",
+        ),
+    ],
+)
+def test_a_pair_plan_read_in_years_states_a_continuation_only_past_the_selection_s_year(
+    recorded, continued
+) -> None:
+    """An `Estimated` facet of the recorded facet's source holds June 2020. Over the 2010 to
+    2020 window, and read in 2020 alone, the plan states a continuation only when the
+    estimate follows the recorded facet's last date under the window, compared by year
+    where that date clipped to a bare year."""
+    estimate = replace(
+        _facet_dated("fE", ["2020-06"], complete=True), measurement_method="Estimated"
+    )
+    plan = read_plan.plan_pairs(
+        [
+            PlanSeries(
+                stat_var="sv",
+                role_tuple=(("observationAbout", "country/KEN"),),
+                candidates=(recorded, estimate),
+            )
+        ],
+        members=["sv"],
+        years=TimeWindow(start_year=2010, end_year=2020),
+        declared=NO_DECLARED_POLICIES,
+    )
+    narrowed = read_plan.read_in_years(plan, frozenset({2020}))
+
+    assert isinstance(narrowed, PairPlan)
+    assert [(s.stat_var, s.group_ids) for s in narrowed.served] == [("sv", frozenset({"fR", "fE"}))]
+    assert read_plan.serves_continuation(plan) is continued
+    assert read_plan.serves_continuation(narrowed) is continued
 
 
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
@@ -2201,3 +2449,40 @@ def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_membe
     assert plan.continued_pairs == {sv: expected}
     assert plan.observation_count == 11
     assert plan.max_pair_observations == 11
+
+
+def test_a_plan_read_in_years_keeps_a_series_by_its_group_or_its_filtered_candidates() -> None:
+    """Read in 2016 and 2018, the span 2016 to 2018. "group-gap" elects a group holding 2017
+    alone, a gap year, beside a candidate outside the group holding 2016: it serves no point
+    in those years and leaves the plan, since the span would read it and find nothing.
+    "filtered" lost every candidate to the facet filter and stays, so the read counts it as
+    rejected. "group" holds 2018 in its group, and "unservable" holds 2016 in a candidate
+    with no facet id, which the read counts as failed: both stay."""
+    in_group = _facet("g", range(2017, 2018))
+    unservable = replace(_facet("u", range(2016, 2017)), facet_id=None)
+    series = {
+        "group-gap": ((in_group, _facet("o", range(2016, 2017))), (in_group,)),
+        "filtered": ((), ()),
+        "group": ((_facet("h", range(2018, 2019)),), (_facet("h", range(2018, 2019)),)),
+        "unservable": ((unservable,), ()),
+    }
+    plan = PairPlan(
+        members=tuple(series),
+        years=None,
+        series=tuple(
+            PlanSeries(
+                stat_var=sv,
+                role_tuple=(("observationAbout", "country/ZZZ"),),
+                candidates=candidates,
+                group=group,
+            )
+            for sv, (candidates, group) in series.items()
+        ),
+        declared=NO_DECLARED_POLICIES,
+    )
+
+    narrowed = read_plan.read_in_years(plan, frozenset({2016, 2018}))
+
+    assert narrowed is not None
+    assert narrowed.years == TimeWindow(start_year=2016, end_year=2018)
+    assert [s.stat_var for s in narrowed.series] == ["filtered", "group", "unservable"]

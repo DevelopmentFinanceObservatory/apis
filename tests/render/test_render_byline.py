@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from code_index.labels import PricesKind
 from search.models import (
     METHOD_REF,
     UNIT_REF,
@@ -37,10 +38,19 @@ _CRS = _ref("OECD_CRS", "OECD Creditor Reporting System (CRS)")
 _NOMINAL = _ref("Nominal", "Nominal")
 
 
-def _unit(ref: str) -> dict[str, ResolvedFacet]:
+def _unit(
+    ref: str, prices: PricesKind | None = None, *, stated: bool = True
+) -> dict[str, ResolvedFacet]:
+    """A unit facet on `ref`, in `prices` the data states, or with `stated` false the
+    engine infers (`ResolvedFacet.stated_prices`)."""
     return {
         "unit": ResolvedFacet(
-            basis="fallback", ref=ref, label=ref, currency=_CURRENCY_UNITS.get(ref)
+            basis="fallback",
+            ref=ref,
+            label=ref,
+            currency=_CURRENCY_UNITS.get(ref),
+            prices=None if prices is None else [prices],
+            stated_prices=None if prices is None else [prices] if stated else [],
         )
     }
 
@@ -68,7 +78,7 @@ def test_the_byline_follows_the_heading_period_in_its_own_segment():
     " · ". The unit is a slot token on the unit axis that `UNIT_REF` names."""
     sentence, plan = _render(
         measurement_qualifier=_NOMINAL,
-        facets=_unit("CurrencyUSD"),
+        facets=_unit("CurrencyUSD", "current"),
         stat_vars=_served("1973", "2024"),
         resolved_sources=[_CRS],
     )
@@ -91,22 +101,43 @@ def test_the_byline_follows_the_heading_period_in_its_own_segment():
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        pytest.param({"measurement_qualifier": _NOMINAL}, "Current US dollars", id="nominal"),
         pytest.param(
-            {"measurement_qualifier": _ref("RealValue", "Real value")},
+            {"measurement_qualifier": _NOMINAL, "facets": _unit("USDollar", "current")},
+            "Current US dollars",
+            id="nominal",
+        ),
+        pytest.param(
+            {
+                "measurement_qualifier": _ref("RealValue", "Real value"),
+                "facets": _unit("USDollar", "constant"),
+            },
             "Constant US dollars",
             id="real-value-no-base-year",
         ),
-        pytest.param({}, "US dollars", id="no-price-basis"),
+        # The facet states the basis the served StatVars' qualifier gives where the shape
+        # names none.
+        pytest.param(
+            {"facets": _unit("USDollar", "current")},
+            "Current US dollars",
+            id="stated-by-the-members",
+        ),
+        # Current prices the engine infers for a currency no fact prices read as the
+        # currency alone.
+        pytest.param(
+            {"facets": _unit("USDollar", "current", stated=False)},
+            "US dollars",
+            id="no-price-basis",
+        ),
         pytest.param(
             {
+                "facets": _unit("USDollar"),
                 "identity_facets": {
                     "unit": IdentityFacetValueRequest(
                         request=IdentityUnitRequest(
                             currency="USD", prices="constant", base_year=2022
                         )
                     )
-                }
+                },
             },
             "Constant 2022 US dollars",
             id="unit-request",
@@ -114,7 +145,7 @@ def test_the_byline_follows_the_heading_period_in_its_own_segment():
     ],
 )
 def test_the_unit_token_states_the_price_basis(kwargs, expected: str):
-    _, plan = _render(facets=_unit("USDollar"), **kwargs)
+    _, plan = _render(**kwargs)
     assert next(t for t in plan if t.axis == "unit").text == expected
 
 
@@ -129,44 +160,50 @@ def _converted(currency, prices: str, base_year: int | None) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("unit", "kwargs", "expected", "states"),
+    ("facets", "kwargs", "expected", "states"),
     [
         pytest.param(
-            "CurrencyEUR",
+            _unit("CurrencyEUR"),
             _converted("EUR", "constant", 2024),
             "Constant 2024 euros",
             [UNIT_REF, "axis:measurementQualifier"],
             id="converted-euros",
         ),
         pytest.param(
-            "CurrencyGTQ",
+            _unit("CurrencyGTQ"),
             _converted("GTQ", "current", None),
             "Current Guatemalan quetzales",
             [UNIT_REF, "axis:measurementQualifier"],
             id="converted-quetzales",
         ),
         pytest.param(
-            "CurrencyUSD",
+            _unit("CurrencyUSD", "current"),
             {"measurement_qualifier": _NOMINAL},
             "Current US dollars",
             [UNIT_REF, "axis:measurementQualifier"],
             id="native-us-dollars",
         ),
         pytest.param(
-            "CurrencyEUR",
+            _unit("CurrencyEUR", "current"),
             {"measurement_qualifier": _NOMINAL},
             "Current euros",
             [UNIT_REF, "axis:measurementQualifier"],
             id="native-euros",
         ),
-        pytest.param("CurrencyEUR", {}, "Euros", [UNIT_REF], id="native-euros-no-price-basis"),
+        pytest.param(
+            _unit("CurrencyEUR", "current", stated=False),
+            {},
+            "Euros",
+            [UNIT_REF],
+            id="native-euros-no-price-basis",
+        ),
     ],
 )
-def test_every_currency_is_the_byline_unit_token(unit: str, kwargs, expected: str, states):
+def test_every_currency_is_the_byline_unit_token(facets, kwargs, expected: str, states):
     """Any currency reads in the byline by its plural noun with its price basis, on a
     token keyed by `UNIT_REF` that states the unit and the price-basis axis. The heading
     names no currency."""
-    _, plan = _render(facets=_unit(unit), **kwargs)
+    _, plan = _render(facets=facets, **kwargs)
     (token,) = [t for t in plan if t.axis == "unit"]
     assert (token.text, token.segment, token.binding_ref) == (expected, "byline", UNIT_REF)
     assert token.states == states
@@ -188,16 +225,21 @@ def test_a_role_currency_request_reads_as_the_roles_currency(role: str, expected
 
 
 @pytest.mark.parametrize(
-    ("unit", "expected"),
+    ("unit", "prices", "expected"),
     [
-        pytest.param("ChainedUSDollarBaseYr2017", "Chained 2017 US dollars", id="chained"),
-        pytest.param("undata/UNIT_MEASURE-CR_USD_K", "Constant US dollars", id="constant"),
-        pytest.param("SDG_CU_USD", "Current US dollars", id="current"),
+        pytest.param(
+            "ChainedUSDollarBaseYr2017", "constant", "Chained 2017 US dollars", id="chained"
+        ),
+        pytest.param(
+            "undata/UNIT_MEASURE-CR_USD_K", "constant", "Constant US dollars", id="constant"
+        ),
+        pytest.param("SDG_CU_USD", "current", "Current US dollars", id="current"),
     ],
 )
-def test_a_priced_dollar_unit_reads_the_registry_price_basis(unit, expected):
-    """The unit registry's prices, base year and chaining set the byline's price basis."""
-    _, plan = _render(facets=_unit(unit))
+def test_a_priced_dollar_unit_reads_the_registry_price_basis(unit, prices, expected):
+    """A unit the registry prices states its basis on the unit facet, and the registry's
+    base year and chaining name it in the byline."""
+    _, plan = _render(facets=_unit(unit, prices))
     assert next(t for t in plan if t.axis == "unit").text == expected
 
 
@@ -231,7 +273,7 @@ def test_a_priced_dollar_unit_reads_the_registry_price_basis(unit, expected):
         ),
         pytest.param(
             {
-                "facets": _unit("CurrencyUSD"),
+                "facets": _unit("CurrencyUSD", "current"),
                 "measurement_qualifier": _NOMINAL,
                 "measurement_denominator": _ref("Count_Person", "Total population"),
             },
@@ -264,7 +306,7 @@ def test_only_a_graph_name_is_read_for_its_currency(measure_label, expected):
         measured_property=_ref("disbursements", "Disbursements in US dollars"),
         measure_label=measure_label,
         measurement_qualifier=_NOMINAL,
-        facets=_unit("USDollar"),
+        facets=_unit("USDollar", "current"),
     )
     plan = render_sentence_plan(spec)
     assert [t.text for t in plan if t.axis == "unit" and t.segment == "byline"] == expected
@@ -303,7 +345,7 @@ def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label(id
     spec = _spec(
         measured_property=_ref("disbursements", "Disbursements"),
         measurement_qualifier=_NOMINAL,
-        facets=_unit("CurrencyUSD"),
+        facets=_unit("CurrencyUSD", "current"),
         stat_vars=_served("2024", "2024"),
         resolved_sources=[_CRS],
         requested_window=identity_window,
@@ -325,7 +367,7 @@ def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label(id
 def test_each_byline_item_opens_with_a_capital():
     """A lower-case source label opens with a capital in the byline."""
     sentence, _ = _render(
-        facets=_unit("CurrencyUSD"),
+        facets=_unit("CurrencyUSD", "current"),
         measurement_qualifier=_NOMINAL,
         resolved_sources=[_ref("src", "imputed multilateral sectors")],
     )
@@ -373,7 +415,7 @@ def test_a_bound_method_is_the_last_byline_token(binding, served, expected):
     answer's facets name one."""
     sentence, plan = _render(
         measurement_qualifier=_NOMINAL,
-        facets={**_unit("CurrencyUSD"), **served},
+        facets={**_unit("CurrencyUSD", "current"), **served},
         resolved_sources=[_CRS],
         identity_facets=None if binding is None else {"measurementMethod": binding},
     )
