@@ -304,7 +304,8 @@ class DerivedSide(StrictModel):
     spec_id: str = Field(description="the figure's spec_id")
     option_id: OptionId = Field(description="the option the figure holds on the derived axis")
     provider: OptionId | None = Field(
-        description="the provider option the figure counts; None where the part has no provider axis"
+        default=None,
+        description="the provider option the figure counts; None where the part has no provider axis",
     )
     populations: dict[str, list[str]] = Field(
         description="the dcids each flow side names, by role key; a side left open is absent"
@@ -325,10 +326,11 @@ class DerivedWhole(StrictModel):
     part: DerivedSide = Field(description="the part, compiled without the whole entry")
     whole: DerivedSide = Field(description="the whole, compiled with it")
     years: list[YearSpan] | None = Field(
+        default=None,
         description=(
             "the years both figures serve, where both compile to composites stating their "
             "periods; None where neither states them"
-        )
+        ),
     )
 
 
