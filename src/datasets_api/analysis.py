@@ -282,7 +282,12 @@ ROOT_MINT_OPTIONS = frozenset(
 class RootRendering(BaseModel):
     """How a dataset root's frame is read. `columns` left out takes the enrichment its
     dataset's roles need (`default_enrichment`); `[]` reads the stored frame
-    alone. `groupby` reads the frame summed as a mint with that `options.groupby` sums it."""
+    alone. `groupby` reads the frame summed as a mint with that `options.groupby` sums it.
+
+    A rendering holds `columns` sorted and each listed once, and `groupby.by` sorted, the order
+    `analysis_roots.frame_ref_for` names the frame by. Two roots that list the same columns or
+    `by` axes in another order are therefore one rendering, so they key one request root
+    (`_root_key`), mint one set of options and resolve to one root record."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -297,9 +302,21 @@ class RootRendering(BaseModel):
     )
     groupby: GroupbyOptions | None = None
 
+    @field_validator("columns")
+    @classmethod
+    def _sorted_columns(cls, columns: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        return None if columns is None else tuple(sorted(set(columns)))
+
+    @field_validator("groupby")
+    @classmethod
+    def _sorted_by(cls, groupby: GroupbyOptions | None) -> GroupbyOptions | None:
+        if groupby is None or groupby.by == sorted(groupby.by):
+            return groupby
+        return groupby.model_copy(update={"by": sorted(groupby.by)})
+
     @classmethod
     def of_options(cls, options: Mapping[str, Any]) -> RootRendering:
-        """The rendering a root record's mint `options` state, `columns` as listed."""
+        """The rendering a root record's mint `options` state."""
         return cls(
             without_party_totals=options.get("without_party_totals") is True,
             columns=tuple(options.get("columns") or ()),
@@ -2373,7 +2390,7 @@ def _resolve(
 
 
 def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
-    """The working node `node` with each root renumbered by `index`."""
+    """The working or recipe tree node `node` with each root renumbered by `index`."""
     if not isinstance(node, Mapping):
         return node
     if "root" in node:
@@ -2387,35 +2404,57 @@ def _with_roots(node: Any, index: Mapping[int, int]) -> Any:
     return renumbered
 
 
-def merged_roots[R: ResolvedRoot](
-    working: dict[str, Any], resolved: Sequence[R], planned: Sequence[PlannedRoot]
-) -> tuple[dict[str, Any], list[R]]:
-    """`working` and `resolved`, planned as `planned`, with the roots planned from one request
-    root that resolved to one record made one root. A root reached under two sets of path
-    words is planned twice (`_Plan.root`), and reads one frame when the words imply the same
-    rendering, as they do for a root of one StatVar, so the recipe, its ids and the rows read
-    are those of a tree naming the root once. Two request roots that resolve alike stay two.
-    A merged root keeps the first `sum_refused` among those it merges, and names `stat_var`
-    when any of them did (`ResolvedRoot.stat_var_named`)."""
+def _record_index(records: Sequence[Mapping[str, Any]]) -> dict[int, int]:
+    """Each root of `records` numbered by the first root holding its record."""
+    first: dict[bytes, int] = {}
     index: dict[int, int] = {}
+    for at, record in enumerate(records):
+        index[at] = first.setdefault(rfc8785.dumps(dict(record)), len(first))
+    return index
+
+
+def merged_roots[R: ResolvedRoot](
+    working: dict[str, Any], resolved: Sequence[R]
+) -> tuple[dict[str, Any], list[R]]:
+    """`working` and `resolved` with the roots that resolved to one record made one root,
+    numbered by first reach. The record names the frame read, its dataset version and its
+    mint options, so two roots holding one record read one frame: one request root reached
+    under two sets of path words (`_Plan.root`) whose words imply one rendering, as they do
+    for a root of one StatVar, a sum read for the steps beside the same sum stated, a stated
+    rendering beside a stored recipe's root, or a Spec root beside the version it reads. The
+    recipe, its ids and the rows read are then those of a tree naming the root once, however
+    the request spells it. A merged root keeps the first `sum_refused` among those it
+    merges, and names `stat_var` when any of them did (`ResolvedRoot.stat_var_named`)."""
+    index = _record_index([root.record for root in resolved])
     kept: list[R] = []
-    first: dict[tuple[str, bytes], int] = {}
-    for at, (root, plan) in enumerate(zip(resolved, planned, strict=True)):
-        key = (_root_key(plan.root), rfc8785.dumps(dict(root.record)))
-        if key not in first:
-            first[key] = len(kept)
+    for at, root in enumerate(resolved):
+        if index[at] == len(kept):
             kept.append(root)
-        else:
-            held = kept[first[key]]
-            kept[first[key]] = replace(
-                held,
-                sum_refused=held.sum_refused or root.sum_refused,
-                stat_var_named=held.stat_var_named or root.stat_var_named,
-            )
-        index[at] = first[key]
+            continue
+        held = kept[index[at]]
+        kept[index[at]] = replace(
+            held,
+            sum_refused=held.sum_refused or root.sum_refused,
+            stat_var_named=held.stat_var_named or root.stat_var_named,
+        )
     if len(kept) == len(resolved):
         return working, list(resolved)
     return _with_roots(working, index), kept
+
+
+def merged_recipe_roots(
+    tree: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]] | None:
+    """A stored recipe's `tree` and root records `roots` with the roots holding one record
+    made one root, as `merged_roots` makes them for a run, or `None` when no two roots hold
+    one record."""
+    index = _record_index(roots)
+    first: dict[int, int] = {}
+    for at, number in index.items():
+        first.setdefault(number, at)
+    if len(first) == len(roots):
+        return None
+    return _with_roots(tree, index), [roots[first[number]] for number in range(len(first))]
 
 
 def locate_roots(
@@ -2669,7 +2708,7 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-    working, resolved = merged_roots(working, resolved, roots)
+    working, resolved = merged_roots(working, resolved)
     located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         return _evaluated(
@@ -2748,7 +2787,7 @@ def prepare_analysis(
     with phase("resolve_roots"):
         working, roots = plan_roots(request, source=source, bounds=bounds)
         resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-        working, resolved = merged_roots(working, resolved, roots)
+        working, resolved = merged_roots(working, resolved)
     latest = request.latest is True
     with phase("request_key"):
         key = request_key(working, resolved, latest=latest)
@@ -3168,7 +3207,7 @@ def verify_analysis(
                 roots, source=source, trace_id=trace_id, unavailable=unavailable
             )
             if not unavailable:
-                working, located = merged_roots(working, located, roots)
+                working, located = merged_roots(working, located)
             recorded = sum(root.rows or 0 for root in located)
             if recorded > bounds.max_root_rows:
                 raise AnalysisTooLarge(
@@ -3347,6 +3386,7 @@ __all__ = [
     "compute_analysis",
     "described_steps",
     "left_out_of",
+    "merged_recipe_roots",
     "merged_roots",
     "plan_roots",
     "prepare_analysis",

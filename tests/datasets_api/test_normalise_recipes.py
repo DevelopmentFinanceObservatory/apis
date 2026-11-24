@@ -1,11 +1,11 @@
 """`maintenance normalise-recipes`: a recipe stored with its root columns or `groupby.by` out of
-order gets the
-recipe and hashes the analysis route stores for the same tree, and the card revisions drawing
-its frame move to the new `normal_form_hash`, over the SQLite dataset store double and the
-Presentation store fake."""
+order, or with two roots holding one record, gets the recipe and hashes the analysis route
+stores for the same tree, and the card revisions drawing its frame move to the new
+`normal_form_hash`, over the SQLite dataset store double and the Presentation store fake."""
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any, get_args
 
@@ -73,6 +73,26 @@ def _unsorted(recipe: dict[str, Any]) -> dict[str, Any]:
     return {**old, "normal_form_hash": normal, "replay_key": key}
 
 
+def _last_reach(node: dict[str, Any]) -> dict[str, Any]:
+    """The last root reach under the recipe tree `node`, in input slot order."""
+    if "root" in node:
+        return node
+    return _last_reach(list(node["inputs"].values())[-1])
+
+
+def _duplicated(recipe: dict[str, Any]) -> dict[str, Any]:
+    """`recipe` as the analysis route stored it when two request roots spelled apart resolved to
+    one record: the tree's last reach of its one root reads a second root holding the same
+    record."""
+    (root,) = recipe["roots"]
+    tree = copy.deepcopy(recipe["tree"])
+    _last_reach(tree)["root"] = 1
+    old = {**recipe, "tree": tree, "roots": [root, root]}
+    normal, key = _hashes(old)
+    assert normal == recipe["normal_form_hash"]
+    return {**old, "normal_form_hash": normal, "replay_key": key}
+
+
 def _store_recipe(stores: Stores, spec_id: str, content_version: str, recipe: dict) -> None:
     """Hold `recipe` under the pair in place of any recipe stored there."""
     with stores.store.transaction() as tx:
@@ -125,18 +145,28 @@ def _summary(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     return {key: summary[key] for key in _COUNTS}
 
 
+_GROUPBY = {"columns": _COLUMNS, "groupby": {"by": _BY, "op": "sum"}}
+
+
 @pytest.mark.parametrize(
-    "rendering",
-    [{"columns": _COLUMNS}, {"columns": _COLUMNS, "groupby": {"by": _BY, "op": "sum"}}],
-    ids=["columns", "groupby"],
+    ("tree", "stored", "moved"),
+    [
+        (_summed({"columns": _COLUMNS}), _unsorted, 2),
+        (_summed(_GROUPBY), _unsorted, 2),
+        (step("share_of", _SUMMED, _SUMMED, on=["destination"]), _duplicated, 0),
+    ],
+    ids=["columns", "groupby", "duplicated_root"],
 )
-def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_follow(
-    capsys: pytest.CaptureFixture[str], rendering: dict[str, Any]
+def test_a_recipe_stored_unnormalised_gets_the_analysis_routes_recipe_and_its_cards_follow(
+    capsys: pytest.CaptureFixture[str], tree: dict[str, Any], stored: Any, moved: int
 ):
+    """A recipe's cards move when its `normal_form_hash` does. Merging two roots of one record
+    leaves the normal form, which states each root's options in place, as it is, and moves the
+    replay key alone."""
     stores = Stores()
-    analysed = _analysed(stores, _summed(rendering))
+    analysed = _analysed(stores, tree)
     spec_id, content_version = analysed["subject_id"], analysed["content_version"]
-    old = _unsorted(analysed["recipe"])
+    old = stored(analysed["recipe"])
     _store_recipe(stores, spec_id, content_version, old)
     presentation = FakePresentationStore()
     presentation.state.component_revisions["cmp_drawn"] = [
@@ -160,7 +190,7 @@ def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_
         0,
         {
             "normalised": 1,
-            "revisions": 2,
+            "revisions": moved,
             "replay_key_held": 0,
             "unreproducible": 0,
             "basis_undetermined": 0,
@@ -174,7 +204,7 @@ def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_
         0,
         {
             "normalised": 1,
-            "revisions": 2,
+            "revisions": moved,
             "replay_key_held": 0,
             "unreproducible": 0,
             "basis_undetermined": 0,

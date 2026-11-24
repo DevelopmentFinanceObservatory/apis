@@ -524,28 +524,91 @@ def test_a_refused_sum_logs_the_root_it_reads_unsummed(caplog: pytest.LogCapture
     }
 
 
-def test_two_request_roots_reading_one_version_stay_two_roots() -> None:
-    """A Spec root and a dataset root naming the version it reads resolve to one record, and
-    stay two roots of the recipe, as two roots the request names apart."""
-    client, _, root = _rig(sole=True)
-    spec_root = {"spec_id": root["spec_id"], "rendering": root["rendering"]}
-    tree = {
+_COLUMNS = ["provenance", "recipient", "recipient_type", "stat_var", "time_period", "unit", "value"]
+_BY_AXIS = ["testAxis", "time_period"]
+
+
+def _rendered(root: dict, **rendering: Any) -> dict:
+    return {**root, "rendering": {"columns": [], **rendering}}
+
+
+def _share(data: dict, other: dict) -> dict:
+    return {
         "verb": "share_of",
         "arguments": {"on": ["recipient"]},
         "inputs": {
-            "data": _aggregate(spec_root, group_by=["recipient", "time_period"]),
-            "other": root,
+            "data": _aggregate(data, group_by=["recipient", "time_period"]),
+            "other": other,
         },
     }
 
-    response = _post(client, tree)
 
+def _stored(client, tree: dict) -> dict:
+    """The derived root naming the frame `tree` stores."""
+    response = _post(client, tree)
     assert response.status_code == 200, response.text
     (member,) = response.json()["ref"]["members"]
-    derived = client.get(
-        f"/api/datasets/derived/{member['spec']['spec_id']}/{member['content_version']}"
-    ).json()
-    assert len(derived["recipe"]["roots"]) == 2
+    return {"spec_id": member["spec"]["spec_id"], "content_version": member["content_version"]}
+
+
+def _spellings(spelling: str, client, root: dict) -> tuple[dict, dict]:
+    """A tree naming one root frame of `root` in one spelling, and the same tree with one
+    reach of that frame spelled the way `spelling` names."""
+    by_axis = {"by": _BY_AXIS, "op": "sum"}
+    if spelling == "columns_reordered":
+        stated = _rendered(root, columns=_COLUMNS)
+        return _share(stated, stated), _share(_rendered(root, columns=_COLUMNS[::-1]), stated)
+    if spelling == "groupby_by_reordered":
+        stated = _rendered(root, groupby=by_axis)
+        reordered = _rendered(root, groupby={**by_axis, "by": _BY_AXIS[::-1]})
+        return _share(stated, stated), _share(reordered, stated)
+    if spelling == "beside_a_stored_derivative":
+        stated = _rendered(root, groupby=by_axis)
+        derivative = _stored(client, _aggregate(stated, group_by=["recipient", "time_period"]))
+        reordered = _rendered(root, groupby={**by_axis, "by": _BY_AXIS[::-1]})
+        return _share(stated, derivative), _share(reordered, derivative)
+    if spelling == "summed_on_read_beside_a_stated_sum":
+        stated = _rendered(root, groupby=_SUMMED)
+        return _share(stated, stated), _share(_rendered(root), stated)
+    assert spelling == "spec_root_beside_its_version"
+    spec_root = {"spec_id": root["spec_id"], "rendering": {"columns": []}}
+    return _share(_rendered(root), _rendered(root)), _share(spec_root, _rendered(root))
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "columns_reordered",
+        "groupby_by_reordered",
+        "beside_a_stored_derivative",
+        "summed_on_read_beside_a_stated_sum",
+        "spec_root_beside_its_version",
+    ],
+)
+def test_two_spellings_of_one_root_frame_are_one_root_under_one_replay_key(
+    spelling: str,
+) -> None:
+    """Request roots that resolve to one root record are one root of the recipe, however the
+    request spells them: columns or `groupby.by` in another order, a stated rendering beside a
+    stored recipe's root, a sum read for the steps beside the same sum stated, a Spec root beside
+    the version it reads. Both trees then name one frame pair under one replay key, so the
+    second stores nothing that diverges from the first."""
+    client, _, root = _rig(two_axes=True)
+    canonical, respelled = _spellings(spelling, client, root)
+
+    answers = [_post(client, tree) for tree in (canonical, respelled)]
+
+    assert [answer.status_code for answer in answers] == [200, 200], answers[1].text
+    members = [answer.json()["ref"]["members"][0] for answer in answers]
+    assert members[0]["spec"] == members[1]["spec"]
+    assert members[0]["content_version"] == members[1]["content_version"]
+    keys = [member["spec"]["recipe"]["replay_key"] for member in members]
+    assert keys[0] == keys[1]
+    for member in members:
+        derived = client.get(
+            f"/api/datasets/derived/{member['spec']['spec_id']}/{member['content_version']}"
+        ).json()
+        assert len(derived["recipe"]["roots"]) == 1
 
 
 def test_a_root_merged_under_two_word_sets_keeps_the_refused_sum() -> None:

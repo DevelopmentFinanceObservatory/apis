@@ -263,11 +263,14 @@ line counting the cases written and skipped, and the skipped by reason
 
 `normalise-recipes [--dry-run]` runs by hand, once after the website's share migration job and
 once per environment after the services move to an image whose converted unit keys name their
-deflation basis (`materialise.unit_cells.unit_key_text`), with `--dry-run` first. It rewrites
-each recipe in `datasets.frame_recipe`, superseded or not, in two ways. Root `options.columns`
-not sorted and listed once, and root `options.groupby.by` not sorted, are sorted as
-`analysis_roots.mint_options` writes them. A unit an op-spec pins in `unit`, `left_unit`,
-`right_unit`, `numerator_unit` or `denominator_unit` (`dfo_analysis_engine.op_spec.PinnedUnit`)
+deflation basis (`materialise.unit_cells.unit_key_text`) or that merges the roots holding one
+record (`analysis.merged_roots`), with `--dry-run` first. It rewrites each recipe in
+`datasets.frame_recipe`, superseded or not, in three ways. Root `options.columns` not sorted
+and listed once, and root `options.groupby.by` not sorted, are sorted as
+`analysis_roots.mint_options` writes them. Roots that then hold one record are made one root,
+numbered by first reach (`analysis.merged_recipe_roots`), which moves the replay key alone. A
+unit an op-spec pins in `unit`, `left_unit`, `right_unit`, `numerator_unit` or
+`denominator_unit` (`dfo_analysis_engine.op_spec.PinnedUnit`)
 with a constant-price side and no basis gets the basis of the roots feeding that parameter:
 `left_unit` and `numerator_unit` the roots under `frame_ref`, `right_unit` those under
 `right_frame_ref`, `denominator_unit` those under `denominator_frame_ref`, each of the last two
@@ -278,13 +281,13 @@ on, from the recipe and declared roles its version stores per series
 a root whose definition asks no constant prices adds none. Such a pin equals no rebuilt root's
 cell, so without the basis the recipe refuses `unit_not_present` and its frame stops refreshing.
 For each recipe it changes, it recomputes `normal_form_hash` and `replay_key` as the analysis
-route does, moves the card revisions drawing that frame from the old hash to the new one in the
-Presentation database (`presentation_store.store.rehash_derived_rendering`), then rewrites the
-recipe row. Each database commits on its own, revisions first, so a run stopped between them
+route does, moves the card revisions drawing that frame from the old hash to the new one, when
+it moved, in the Presentation database (`presentation_store.store.rehash_derived_rendering`),
+then rewrites the recipe row. Each database commits on its own, revisions first, so a run stopped between them
 leaves the recipe to the next run. It skips a recipe whose stored hashes the stored recipe does
 not reproduce and one whose new replay key another frame's recipe holds. It leaves the pins of a
 recipe as they are where a pin's roots give no basis or several, or a root's version cannot
-tell, and sorts that recipe's root options. Each skip (`RecipeSkip`) gets one
+tell, and sorts and merges that recipe's roots. Each skip (`RecipeSkip`) gets one
 `datasets_recipe_normalise_skipped` line, which for an undetermined basis also names the pin's
 parameter, its roots and the cause (`BasisCause`). It writes one `datasets_recipes_normalised`
 line with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
@@ -387,7 +390,7 @@ from dataset_store.snapshot import (
 from dataset_store.store import LiveDatasetStore
 from datasets_api.admission import MaterialisePermits
 from datasets_api.allowance import LiveAllowanceLedger
-from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
+from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable, merged_recipe_roots
 from datasets_api.config import (
     DEFAULT_OPERATION_DEADLINE_SECONDS,
     DatasetsBuildSettings,
@@ -2194,13 +2197,23 @@ def _with_sorted_options(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
     return {**recipe, "roots": roots}
 
 
+def _with_merged_roots(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`recipe` with its roots holding one record made one root, as the analysis route merges
+    them (`analysis.merged_recipe_roots`), or `None` when no two roots hold one record."""
+    merged = merged_recipe_roots(recipe["tree"], recipe["roots"])
+    if merged is None:
+        return None
+    tree, roots = merged
+    return {**recipe, "tree": tree, "roots": roots}
+
+
 def run_normalise_recipes(
     *, datasets: DatasetStore, presentation: DatasetStore, dry_run: bool = False
 ) -> int:
     """Rewrite every stored recipe that lists its root columns or `groupby.by` out of order,
-    or pins a constant-price unit without its deflation basis (`_normalised_recipe`),
-    recompute its two hashes, and move the card revisions drawing its frame to the new
-    `normal_form_hash`.
+    holds two roots of one record, or pins a constant-price unit without its deflation basis
+    (`_normalised_recipe`), recompute its two hashes, and move the card revisions drawing its
+    frame to the new `normal_form_hash` when it moved.
     Return how many recipes it skipped (`RecipeSkip`).
 
     Each recipe takes one outcome, so the summary's `normalised`, `unchanged` and skip counts
@@ -2276,14 +2289,15 @@ def run_normalise_recipes(
             continue
         if skip is None:
             normalised += 1
-        revisions += rehash_derived_rendering(
-            presentation,
-            spec_id=spec_id,
-            content_version=content_version,
-            old_hash=old_hash,
-            new_hash=new_hash,
-            dry_run=dry_run,
-        )
+        if new_hash != old_hash:
+            revisions += rehash_derived_rendering(
+                presentation,
+                spec_id=spec_id,
+                content_version=content_version,
+                old_hash=old_hash,
+                new_hash=new_hash,
+                dry_run=dry_run,
+            )
         if dry_run:
             continue
         with datasets.transaction() as tx:
@@ -2354,18 +2368,20 @@ class _BasisUndetermined(Exception):
 def _normalised_recipe(
     recipe: Mapping[str, Any], *, root_bases: _RootBases
 ) -> tuple[dict[str, Any] | None, _BasisUndetermined | None]:
-    """`recipe` with its root options sorted (`_with_sorted_options`) and each pin of a
-    constant-price unit without its basis given its roots' basis (`_basis_pinned`), or `None`
-    when neither changes it, and the pin whose roots give no basis or several. Each rewrite
-    applies on its own, so a recipe whose pins stay as they are takes the sort."""
+    """`recipe` with its root options sorted (`_with_sorted_options`), its roots holding one
+    record then made one root (`_with_merged_roots`), and each pin of a constant-price unit
+    without its basis given its roots' basis (`_basis_pinned`), or `None` when none of them
+    changes it, and the pin whose roots give no basis or several. Each rewrite applies on its
+    own, so a recipe whose pins stay as they are takes the sort and the merge."""
     sorted_recipe = _with_sorted_options(recipe)
-    rewritten = dict(recipe) if sorted_recipe is None else sorted_recipe
+    roots_rewritten = _with_merged_roots(sorted_recipe or recipe) or sorted_recipe
+    rewritten = dict(recipe) if roots_rewritten is None else roots_rewritten
     try:
         tree = _basis_pinned(rewritten["tree"], roots=rewritten["roots"], root_bases=root_bases)
     except _BasisUndetermined as undetermined:
-        return sorted_recipe, undetermined
+        return roots_rewritten, undetermined
     if tree is rewritten["tree"]:
-        return sorted_recipe, None
+        return roots_rewritten, None
     return {**rewritten, "tree": tree}, None
 
 
