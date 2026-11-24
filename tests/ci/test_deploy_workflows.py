@@ -4,6 +4,8 @@ deploy.yml holds the steps. deploy-dev.yml and deploy-prod.yml call it and choos
 triggers and the GitHub Environment.
 """
 
+import json
+import os
 import re
 import subprocess
 from collections import Counter
@@ -70,11 +72,19 @@ def test_prod_deploys_on_a_push_to_main_or_a_dispatch():
     [("deploy-dev.yml", "dev"), ("deploy-prod.yml", "production")],
 )
 def test_each_caller_names_its_environment(caller: str, environment: str):
-    """The branch and the trigger pick the environment."""
-    job = _workflow(caller)["jobs"]["deploy"]
+    """The branch and the trigger pick the environment. Only a dispatch can set the override,
+    which a push or workflow_run passes as false."""
+    workflow = _workflow(caller)
+    job = workflow["jobs"]["deploy"]
 
     assert job["uses"] == "./.github/workflows/deploy.yml"
-    assert job["with"] == {"environment": environment}
+    assert job["with"] == {
+        "environment": environment,
+        "override_manual_traffic": "${{ inputs.override_manual_traffic == true }}",
+    }
+    override = _triggers(workflow)["workflow_dispatch"]["inputs"]["override_manual_traffic"]
+    assert override["type"] == "boolean"
+    assert override["default"] is False
     assert job["permissions"] == _CALLER_PERMISSIONS
     assert job["secrets"] == "inherit"
 
@@ -191,7 +201,8 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, and two service updates.
+    # Six job updates, ten job executions, two service updates, and two reads of the apis
+    # service.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
@@ -202,7 +213,7 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
-            "SERVICE_APIS": 1,
+            "SERVICE_APIS": 3,
         }.items()
     }
 
@@ -287,7 +298,7 @@ def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
         < names.index(update)
         < names.index(build)
         < names.index("Point the datasets worker at the new image")
-        < names.index("Deploy the new revision with no traffic")
+        < names.index("Stage the new revision with no traffic")
     )
 
 
@@ -377,7 +388,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
     for name in (settle, backfill):
         assert "--wait" in _named(name)["run"]
-    assert names.index("Move traffic to the new revision") < names.index(settle)
+    assert names.index("Move traffic to the candidate revision") < names.index(settle)
     assert names.index(settle) < names.index(backfill)
 
 
@@ -408,22 +419,114 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
-def test_candidate_is_probed_before_traffic_moves_then_the_maintenance_steps_run():
+_REVISION = "${{ steps.stage.outputs.revision || steps.decide.outputs.revision }}"
+
+
+def test_one_named_revision_is_staged_probed_and_given_traffic():
+    """The stage step names the revision it created, or a rerun takes the one decide found, and
+    the probe and the traffic move both act on that name."""
     names = [step.get("name") for step in _steps()]
 
     assert names[-7:] == [
         "Point the datasets worker at the new image",
-        "Deploy the new revision with no traffic",
-        "Warm the new revision",
-        "Fail on errors the new revision answered while warming",
-        "Move traffic to the new revision",
+        "Stage the new revision with no traffic",
+        "Warm the candidate revision",
+        "Fail on errors the candidate revision answered while warming",
+        "Move traffic to the candidate revision",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ]
-    deploy = _named("Deploy the new revision with no traffic")["run"]
-    assert "--no-traffic" in deploy and "--tag=candidate" in deploy
-    shift = _named("Move traffic to the new revision")["run"]
-    assert "gcloud run services update-traffic" in shift and "--to-latest" in shift
+    stage = _step("stage")
+    assert stage["name"] == "Stage the new revision with no traffic"
+    assert "--no-traffic" in stage["run"] and "--tag=candidate" in stage["run"]
+    assert _step("warm")["env"]["REVISION"] == _REVISION
+    shift = _named("Move traffic to the candidate revision")
+    assert shift["env"]["REVISION"] == _REVISION
+
+
+_RECORDING_GCLOUD = """#!/bin/bash
+echo "$*" >> "$GCLOUD_LOG"
+case "$*" in
+  *--format=json*) echo "$DESCRIBED" ;;
+  *latestCreatedRevisionName*) echo "$LATEST" ;;
+esac
+"""
+
+
+def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, list]:
+    """Runs a step's script with workflow expressions filled in as Actions would, against a
+    gcloud that records each call."""
+    gcloud = tmp_path / "bin" / "gcloud"
+    gcloud.parent.mkdir()
+    gcloud.write_text(_RECORDING_GCLOUD)
+    gcloud.chmod(0o755)
+    log = tmp_path / "gcloud.log"
+    log.touch()
+    script = re.sub(r"\$\{\{[^}]*\}\}", "svc", _named(name)["run"])
+    ran = subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": f"{gcloud.parent}:{os.environ['PATH']}", "GCLOUD_LOG": str(log), **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return ran, log.read_text().splitlines()
+
+
+def test_the_stage_step_outputs_the_revision_carrying_the_candidate_tag(tmp_path: Path):
+    output = tmp_path / "github_output"
+    described = {
+        "status": {
+            "traffic": [
+                {"percent": 100, "revisionName": "svc-00001-aaa"},
+                {"revisionName": "svc-00002-bbb", "tag": "candidate"},
+            ]
+        }
+    }
+
+    ran, calls = _run_step(
+        "Stage the new revision with no traffic",
+        tmp_path,
+        DESCRIBED=json.dumps(described),
+        GITHUB_OUTPUT=str(output),
+    )
+
+    assert ran.returncode == 0, ran.stderr
+    assert output.read_text() == "revision=svc-00002-bbb\n"
+    assert calls[0].startswith("run services update svc --image=svc --no-traffic --tag=candidate")
+
+
+@pytest.mark.parametrize(
+    ("latest", "exit_code", "after_pin"),
+    [
+        # Traffic follows the latest revision again once the probed one is the latest.
+        ("svc-00002-bbb", 0, "run services update-traffic svc --to-latest"),
+        # A revision created during the probe is tagged for the rerun, and gets no traffic.
+        (
+            "svc-00003-ccc",
+            1,
+            "run services update-traffic svc --update-tags=candidate=svc-00003-ccc",
+        ),
+    ],
+    ids=["latest", "newer-revision"],
+)
+def test_traffic_moves_to_the_probed_revision_by_name(
+    tmp_path: Path, latest: str, exit_code: int, after_pin: str
+):
+    ran, calls = _run_step(
+        "Move traffic to the candidate revision",
+        tmp_path,
+        REVISION="svc-00002-bbb",
+        LATEST=latest,
+    )
+
+    assert ran.returncode == exit_code, ran.stderr
+    assert calls[0].startswith(
+        "run services update-traffic svc --to-revisions=svc-00002-bbb=100 --remove-tags=candidate"
+    )
+    assert calls[1].startswith("run services describe svc")
+    assert calls[2].startswith(after_pin)
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize(("status", "exit_code"), [("error", 1), ("warm", 0), ("forbidden", 0)])
@@ -439,7 +542,7 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit
     assert warm["env"]["REQUIRE_PROBE"] == "${{ inputs.environment == 'production' }}"
     assert "continue-on-error" not in warm
 
-    last = _named("Fail on errors the new revision answered while warming")
+    last = _named("Fail on errors the candidate revision answered while warming")
     assert last["env"]["WARM_STATUS"] == "${{ steps.warm.outputs.status }}"
     check = subprocess.run(
         ["bash", "-c", last["run"]],
@@ -452,11 +555,13 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit
 
 
 def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_step():
-    """The decide step compares Cloud Run's live image with the target and gates every build,
-    migration, and service update on `deploy=true`."""
+    """The decide step reads the service and gates every build, migration, and staging step on
+    `deploy=true`, and the probe, the traffic move, settle and backfill on `release=true`, which
+    a rerun releasing a staged revision also sets."""
     decide = _step("decide")
     assert decide["run"].strip() == ".github/scripts/deploy_decide.sh"
     assert decide["env"]["TARGET"] == "${{ steps.target.outputs.sha }}"
+    assert decide["env"]["OVERRIDE"] == "${{ inputs.override_manual_traffic }}"
 
     script = _SCRIPT.read_text()
     assert "gcloud run services describe" in script
@@ -467,17 +572,17 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
     assert len(later) == 21
-    # The warm step and the warm verdict also run when the target image already serves, so a
-    # rerun after a failed warm probes the live revision again instead of going green.
-    warm_checks = {
-        "Warm the new revision",
-        "Fail on errors the new revision answered while warming",
-        "Move traffic to the new revision",
+    released = {
+        "Warm the candidate revision",
+        "Fail on errors the candidate revision answered while warming",
+        "Move traffic to the candidate revision",
+        "Settle rows the previous image wrote",
+        "Backfill description records",
     }
     for step in later:
         expected = (
-            "steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'"
-            if step.get("name") in warm_checks
+            "steps.decide.outputs.release == 'true'"
+            if step.get("name") in released
             else "steps.decide.outputs.deploy == 'true'"
         )
         assert step["if"] == expected, step
