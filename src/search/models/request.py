@@ -756,10 +756,13 @@ class ResubmitIdentityEntry(StrictModel):
             "asked for a concept takes that concept, which the response's entries echo. The engine compiles them over "
             "identity and resolves the result, whose "
             "resolved.scope_choices states every choice, the entries applied and the "
-            "carried entries left out. Refuses requested_option_unavailable (422) for an "
-            "explicit entry this part cannot serve and conflicting_requested_options (422) "
-            "for two that cannot hold together. None, the default, resolves identity as "
-            "posted"
+            "carried entries left out. One explicit entry <axis>:whole (provider, donor or "
+            "recipient) asks for the part's whole with every other axis held, which "
+            "resolved.scope_choices.derived states beside the part. Refuses "
+            "requested_option_unavailable (422) for an explicit entry this part cannot serve, "
+            "a whole among them, with the options it may post in its place as alternatives, "
+            "and conflicting_requested_options (422) for two that cannot hold together. None, "
+            "the default, resolves identity as posted"
         ),
     )
 

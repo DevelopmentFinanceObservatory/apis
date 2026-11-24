@@ -316,21 +316,37 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
 _WHOLES = {row.dataset: row for row in PROVIDER_WHOLES}
 
 
-def _with_whole(table: AxisTable, dataset: str | None) -> AxisTable:
+def _with_whole(
+    table: AxisTable,
+    dataset: str | None,
+    *,
+    below: bool = False,
+    whole_base: BaseIdentity | None = None,
+) -> AxisTable:
     """`table`, a provider table on `dataset`, with the whole its dataset declares
-    (`PROVIDER_WHOLES`), else the alternatives it offers in its place."""
+    (`PROVIDER_WHOLES`): `ProviderWhole.named_scope` where the part names recipients below
+    the population's total (`below`), else `ProviderWhole.scope` with its alternatives, each
+    where the table offers it and the part does not hold it. `whole_base` is the identity
+    the whole is compiled over (`AxisTable.whole_base`). A table offering no declared whole declares none
+    (`whole_not_offered`), with the alternatives it offers in its place."""
     row = _WHOLES.get(dataset) if dataset is not None else None
     if row is None:
         return table
-    if row.scope is not None and table.option(provider_option_id(row.scope)) is not None:
-        return dataclasses.replace(table, whole=provider_option_id(row.scope))
+    named = below and row.named_scope is not None
+    scope = row.named_scope if named and row.named_scope is not None else row.scope
     alternatives = tuple(
         option_id
-        for scope in row.alternatives
-        if table.option(option_id := provider_option_id(scope)) is not None
+        for alternative in (() if named else row.alternatives)
+        if table.option(option_id := provider_option_id(alternative)) is not None
+        and option_id != table.held
     )
+    whole = provider_option_id(scope)
+    if table.option(whole) is None:
+        return dataclasses.replace(
+            table, whole_alternatives=alternatives, whole_cause="whole_not_offered"
+        )
     return dataclasses.replace(
-        table, whole_alternatives=alternatives, whole_cause="whole_ambiguous"
+        table, whole=whole, whole_alternatives=alternatives, whole_base=whole_base
     )
 
 
@@ -462,7 +478,44 @@ def _published_table(
         published=True,
         conflicts=_basis_conflicts(source) if source is not None else (),
     )
-    return _with_whole(table, row.dataset)
+    named = _destinations(bilateral)
+    population = frozenset() if split is None else frozenset((split.rebound, split.spanning))
+    below = bool(named) and not set(named) <= population
+    # Over the whole population a composite's whole is total ODA to all recipients, the total
+    # of both sides, which a read of total ODA over the open side would count beside the
+    # regional totals.
+    whole_base = (
+        _at_total(bilateral, split.spanning)
+        if split is not None and not below and (bilateral_held or inclusive_held)
+        else None
+    )
+    return _with_whole(table, row.dataset, below=below, whole_base=whole_base)
+
+
+def _destinations(identity: BaseIdentity) -> list[str]:
+    """The dcids `identity` names on the destination side."""
+    return [
+        dcid
+        for key, dcids in identity.entities.items()
+        if role_key_axis(key) == "destination"
+        for dcid in dcids
+    ]
+
+
+def _at_total(identity: BaseIdentity, total: str) -> BaseIdentity:
+    """`identity` naming `total` as its one destination, which it no longer leaves open."""
+    entities = {
+        key: dcids
+        for key, dcids in identity.entities.items()
+        if role_key_axis(key) != "destination"
+    }
+    open_roles = [role for role in identity.open_roles or () if role != "destination"]
+    return identity.model_copy(
+        update={
+            "entities": dict(sorted({**entities, "destination": [total]}.items())),
+            "open_roles": open_roles or None,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -332,6 +332,21 @@ class DerivedWhole(StrictModel):
             "periods; None where neither states them"
         ),
     )
+    members: list[str] | None = Field(
+        default=None,
+        description=(
+            "for a sum_of_members whole, the dcids of the parties the open side sums: every "
+            "party and residual its dataset publishes there, its totals left out; None for "
+            "any other kind"
+        ),
+    )
+    alternatives: list[OptionId] = Field(
+        default_factory=list,
+        description=(
+            "the other options on the axis that also hold the part, which a client may post "
+            "in place of the whole entry (DAC2a's provider:inclusive beside total ODA)"
+        ),
+    )
 
 
 class PartScope(StrictModel):

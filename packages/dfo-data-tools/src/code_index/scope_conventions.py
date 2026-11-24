@@ -562,15 +562,19 @@ PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
 
 @dataclass(frozen=True)
 class ProviderWhole:
-    """The provider option that holds the whole of a part's provider axis on `dataset`: the
-    scope counting every stream each other scope the dataset offers counts. `scope` is None
-    where no scope holds every other, and `alternatives` are then the scopes that each hold
-    the part's streams, among which only the client can choose. `note` says why."""
+    """The provider option that holds the whole of a part's provider axis on `dataset`.
+
+    `scope` is the whole of a part over the dataset's whole recipient population (no
+    recipient named, or the population's own total), and `alternatives` the other scopes
+    that also hold such a part's streams, which a client may ask for in its place.
+    `named_scope` is the whole of a part naming recipients below the population's total (a
+    country or a region), None where it is `scope`. `note` says why."""
 
     dataset: str
-    scope: ProviderScope | None
+    scope: ProviderScope
     alternatives: tuple[ProviderScope, ...]
     note: str
+    named_scope: ProviderScope | None = None
 
 
 # The whole of each table's provider axis. DAC1's total ODA counts the bilateral flows and the
@@ -578,8 +582,11 @@ class ProviderWhole:
 # option is never offered there. On the CRS the inclusive scope adds the imputed share to the
 # bilateral flows, the only other option. DAC2a offers both: the inclusive scope counts the
 # donor's multilateral money as its imputed share of the agencies' spending, and total ODA
-# counts it as core contributions in the year paid, so each holds the bilateral flows and
-# neither holds the other.
+# counts it as core contributions in the year paid, which go to the agencies and so to no
+# country or region. Over a named country or region total ODA counts the bilateral flows
+# alone, so the inclusive scope is the whole there. Over the whole population total ODA is
+# the OECD's denominator of a donor's bilateral share, the figure DAC1 serves for the same
+# donor, and the inclusive scope is the alternative.
 PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
     ProviderWhole(
         dataset=DAC1,
@@ -595,11 +602,13 @@ PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
     ),
     ProviderWhole(
         dataset=DAC2A,
-        scope=None,
-        alternatives=("inclusive", "contributions"),
+        scope="contributions",
+        alternatives=("inclusive",),
+        named_scope="inclusive",
         note=(
-            "DAC2a counts multilateral money two ways, as an imputed share or as core "
-            "contributions, and neither holds the other"
+            "DAC2a total ODA counts core contributions to the agencies and the inclusive "
+            "scope an imputed share of their spending; over a named country or region total "
+            "ODA holds the bilateral flows alone"
         ),
     ),
 )
