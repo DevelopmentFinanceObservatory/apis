@@ -24,6 +24,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from origin_catalogue import DFO
 from search.engine.clients.graph import Facet
+from search.engine.errors import EngineInputError
 from search.engine.events import ObservationsEvent
 from search.engine.quantity import NamedDenominator
 from search.engine.region import (
@@ -39,8 +40,10 @@ from search.engine.region.state import ResolveState
 from search.engine.retrieval import role_resolve
 from search.models import (
     BaseIdentity,
+    ChoiceOrigin,
     DatasetResubmitInput,
     DefinitePart,
+    Entry,
     IdentityBindingValue,
     NoDataPart,
     OptionAvailability,
@@ -1391,64 +1394,90 @@ def test_a_donor_with_no_total_oda_rows_answers_no_observations(
     assert part.no_data.reason == "no_observations"
 
 
-_G7 = "GroupOfSeven"
-# The bilateral and imputed lines at the population's total, from France and the G7.
-_AT_DEVELOPING = {
-    **_AT_TOTAL,
-    (_DAC2A_ATTRIBUTED, _FRA, _DEVELOPING): 9,
-    (_DAC2A_MEMBER, _G7, _DEVELOPING): 1000,
-    (_DAC2A_ATTRIBUTED, _G7, _DEVELOPING): 90,
-}
-_INCLUSIVE_WORDS = "official development assistance from the G7 including imputed multilateral"
+# The bilateral line from France at the developing countries' total, beside `_AT_TOTAL`.
+_AT_DEVELOPING = {**_AT_TOTAL, (_DAC2A_ATTRIBUTED, _FRA, _DEVELOPING): 9}
 
 
-def _developing_answer(donor: str, recipient: str | None, message: str) -> DefinitePart:
-    """The fresh answer for aid from `donor` to `recipient`, or to no recipient named, read
-    over `_AT_DEVELOPING` on a graph holding the G7's node."""
-    entities = [("from", donor), *([("to", recipient)] if recipient else [])]
-    graph = _graph_with_parties()
-    graph._nodes.setdefault(_G7, {"label": "G7", "type": "Grouping"})
+def _france_answer(recipient: str | None) -> DefinitePart:
+    """The fresh answer for ODA from France, to `recipient` or to no recipient named."""
+    entities = [_FRANCE, *([("to", recipient)] if recipient else [])]
+    message = "official development assistance from France" + (
+        f" to {recipient}" if recipient else ""
+    )
     return _part(
         offline_resolve(
             _fresh_request(entities, message=message, open_role=None),
-            graph=graph,
+            graph=_graph_with_parties(),
             llm=_ScriptedLLM(_VARIABLE),
             sdmx=_sdmx(_AT_DEVELOPING),
         )
     )
 
 
-@pytest.mark.parametrize(
-    "recipient", ["developing countries", "all developing countries", "Developing Countries, Total"]
-)
-@pytest.mark.parametrize(
-    ("donor", "message", "source"),
-    [
-        pytest.param(
-            "G7",
-            _INCLUSIVE_WORDS,
-            DAC2A_INCLUSIVE,
-            id="g7-inclusive",
-        ),
-        pytest.param(
-            "France", "official development assistance from France", _BILATERAL, id="france"
-        ),
-    ],
-)
-def test_developing_countries_on_a_composite_answer_the_spec_naming_no_recipient(
-    donor: str, message: str, source: str, recipient: str, monkeypatch: pytest.MonkeyPatch
+def _under_total_oda(part: DefinitePart) -> DefinitePart:
+    """`part`'s scope base resubmitted under `provider:contributions`, DAC2a's total ODA."""
+    choices = part.spec.resolved.scope_choices
+    assert choices is not None
+    switch = Entry(
+        axis="provider",
+        option_id="provider:contributions",
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=f"{part.spec.spec_id}:provider"),
+    )
+    return _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=choices.base.identity,
+                            scope_entries=[switch],
+                        )
+                    ]
+                )
+            ),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(_AT_DEVELOPING),
+        )
+    )
+
+
+def test_developing_countries_keep_their_recipient_through_the_bilateral_composite(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A composite reading DAC2a's bilateral destinations binds their total, "Developing
-    Countries, Total", where its identity names no destination. A part naming that total
-    answers the identity that names none, so "G7 aid including imputed multilateral aid to
-    developing countries" and the same question naming no recipient answer one Spec, as
-    France's bilateral reading does."""
+    """ "France ODA to developing countries" reads DAC2a's bilateral composite naming
+    `DACDevelopingCountries`, in its identity and in its scope's base, and a resubmit of it
+    answers the same Spec. Total ODA to the bilateral side holds no core contribution, so
+    its scope offers no switch to total ODA (`destination_bilateral`) and a resubmit asking
+    for one refuses, where France's ODA to no recipient named switches to total ODA to every
+    recipient."""
     _patched_coverage(monkeypatch, _AT_DEVELOPING)
 
-    named = _developing_answer(donor, recipient, f"{message} to {recipient}")
-    unnamed = _developing_answer(donor, None, message)
+    named = _france_answer("developing countries")
+    unnamed = _france_answer(None)
 
-    identity = named.spec.definition.identity
-    assert "destination" not in identity.entities
-    assert (identity.facets or {}).get("provenance") == IdentityBindingValue(ref=source)
-    assert named.spec.spec_id == unnamed.spec.spec_id
+    choices = named.spec.resolved.scope_choices
+    assert choices is not None
+    assert named.spec.definition.identity.entities["destination"] == [_DEVELOPING]
+    assert choices.base.identity.entities["destination"] == [_DEVELOPING]
+    assert _resolve_resubmit(named.spec.definition.identity, held=_AT_DEVELOPING).spec.spec_id == (
+        named.spec.spec_id
+    )
+    (total,) = [
+        option
+        for choice in choices.choices
+        for option in choice.options
+        if option.option_id == "provider:contributions"
+    ]
+    assert (total.availability.status, total.availability.code) == (
+        "unavailable",
+        "provider_not_offered",
+    )
+    with pytest.raises(EngineInputError) as refused:
+        _under_total_oda(named)
+    assert refused.value.code == "requested_option_unavailable"
+    switched = _under_total_oda(unnamed).spec.definition.identity
+    assert "destination" not in switched.entities
+    assert (switched.facets or {}).get("provenance") is None
