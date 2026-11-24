@@ -94,7 +94,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import sys
+import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
@@ -106,6 +108,8 @@ import pyarrow.parquet as pq
 
 from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import join_uri, read_uri_bytes, write_uri_bytes_if_unchanged
+from dfo_platform.cloud_logging import log_event
+from dfo_platform.executor import map_in_threads
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.catalogue import (
     BaseVariable,
@@ -174,6 +178,8 @@ from origin_catalogue.un_mirror import (
     UnVariable,
     foreign_variables,
 )
+
+logger = logging.getLogger(__name__)
 
 _PARQUET_COMPRESSION = "zstd"
 
@@ -287,6 +293,18 @@ _ARC_TABLES_FILES: Final[dict[str, str]] = {
 }
 
 _FAMILY_FILES: Final[dict[str, str]] = {"families": FAMILIES_FILE}
+
+_ALL_FILES: Final[dict[str, str]] = {
+    **_FILES,
+    **_UN_MIRROR_FILES,
+    **_ARC_TABLES_FILES,
+    **_FAMILY_FILES,
+}
+"""Every file `load_catalogue` reads, so it reads them in one concurrent batch."""
+
+READ_WORKERS: Final[int] = 8
+"""Catalogue files `load_catalogue` and the table readers download at once. Most files
+are small, so each read is mostly one round trip."""
 
 
 class CatalogueArtifactError(Exception):
@@ -858,11 +876,14 @@ def load_catalogue(
     The snapshot also summarises the base arc table alone (`CatalogueSnapshot.base_families`),
     which `max_resident_bytes` does not count.
     """
-    manifest, tables = load_tables(base_uri, max_resident_bytes=max_resident_bytes)
-    prefix = join_uri(format_root(base_uri), VERSIONS_PREFIX, manifest.build_id)
-    mirror = _read_un_mirror(prefix, manifest)
-    arcs = _read_arc_tables(prefix, manifest)
-    families = _read_family_tables(prefix, manifest)
+    prefix, manifest = _read_build_manifest(base_uri, max_resident_bytes=max_resident_bytes)
+    files = _read_files(prefix, manifest, _ALL_FILES)
+    # Each group's bytes leave `files` as the group is decoded, so no group's raw bytes
+    # outlive its decode.
+    tables = _tables_from(prefix, manifest, _take(files, _FILES))
+    mirror = _un_mirror_from(prefix, manifest, _take(files, _UN_MIRROR_FILES))
+    arcs = _arc_tables_from(prefix, manifest, _take(files, _ARC_TABLES_FILES))
+    families = _family_tables_from(prefix, manifest, _take(files, _FAMILY_FILES))
     _check_arc_scope(tables, arcs, label=f"catalogue build {manifest.build_id!r} at {prefix!r}")
     unheld = unheld_successors(tables.superseded, mirror)
     if unheld:
@@ -890,6 +911,15 @@ def load_tables(
     `read_arc_tables` reads. Refuses what
     `load_catalogue` refuses of the pointer, the manifest, the budget and
     these tables."""
+    prefix, manifest = _read_build_manifest(base_uri, max_resident_bytes=max_resident_bytes)
+    return manifest, _tables_from(prefix, manifest, _read_files(prefix, manifest, _FILES))
+
+
+def _read_build_manifest(
+    base_uri: str, *, max_resident_bytes: int | None
+) -> tuple[str, CatalogueManifest]:
+    """The build directory and manifest `current.json` names. Refuses what `load_catalogue`
+    refuses of the pointer, the manifest and the budget."""
     root = format_root(base_uri)
     uri = join_uri(root, POINTER_FILE)
     try:
@@ -918,7 +948,12 @@ def load_tables(
             f"{manifest.families.resident_bytes} for the family tables), over the "
             f"{max_resident_bytes}-byte budget"
         )
-    files = _read_files(prefix, manifest, _FILES)
+    return prefix, manifest
+
+
+def _tables_from(
+    prefix: str, manifest: CatalogueManifest, files: Mapping[str, bytes]
+) -> CatalogueTables:
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     tables = _decode_tables(files, label=label)
     counts = _row_counts(tables)
@@ -927,7 +962,7 @@ def load_tables(
             f"{label} has row counts {counts!r}, but its manifest records "
             f"{dict(manifest.row_counts)!r}"
         )
-    return manifest, tables
+    return tables
 
 
 def read_manifest(base_uri: str, build_id: str) -> CatalogueManifest:
@@ -947,7 +982,12 @@ def read_un_mirror(base_uri: str, manifest: CatalogueManifest) -> UnMirror:
 
 
 def _read_un_mirror(prefix: str, manifest: CatalogueManifest) -> UnMirror:
-    files = _read_files(prefix, manifest, _UN_MIRROR_FILES)
+    return _un_mirror_from(prefix, manifest, _read_files(prefix, manifest, _UN_MIRROR_FILES))
+
+
+def _un_mirror_from(
+    prefix: str, manifest: CatalogueManifest, files: Mapping[str, bytes]
+) -> UnMirror:
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     mirror = decode_un_mirror(files, label=label)
     if foreign := foreign_variables(mirror):
@@ -1054,7 +1094,12 @@ def read_arc_tables(base_uri: str, manifest: CatalogueManifest) -> ArcTables:
 
 
 def _read_arc_tables(prefix: str, manifest: CatalogueManifest) -> ArcTables:
-    files = _read_files(prefix, manifest, _ARC_TABLES_FILES)
+    return _arc_tables_from(prefix, manifest, _read_files(prefix, manifest, _ARC_TABLES_FILES))
+
+
+def _arc_tables_from(
+    prefix: str, manifest: CatalogueManifest, files: Mapping[str, bytes]
+) -> ArcTables:
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     arcs = decode_arc_tables(files, label=label)
     counts = _arc_row_counts(arcs)
@@ -1066,8 +1111,9 @@ def _read_arc_tables(prefix: str, manifest: CatalogueManifest) -> ArcTables:
     return arcs
 
 
-def _read_family_tables(prefix: str, manifest: CatalogueManifest) -> FamilyTables:
-    files = _read_files(prefix, manifest, _FAMILY_FILES)
+def _family_tables_from(
+    prefix: str, manifest: CatalogueManifest, files: Mapping[str, bytes]
+) -> FamilyTables:
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     families = decode_family_tables(files, label=label)
     counts = _family_row_counts(families)
@@ -1311,19 +1357,71 @@ def _read_files(
 ) -> dict[str, bytes]:
     """The files `logical` names, each logical name mapped to its standard file name, read
     from where the manifest puts them and keyed by standard name. Refuses a file whose
-    SHA-256 the manifest does not record or whose bytes do not match it."""
-    files: dict[str, bytes] = {}
-    for logical_name, name in logical.items():
-        uri = join_uri(prefix, _manifest_file(manifest, logical_name))
-        raw = _read(uri)
-        recorded = manifest.file_sha256.get(logical_name)
-        if recorded is None or hashlib.sha256(raw).hexdigest() != recorded:
-            raise CatalogueArtifactError(
-                f"{uri!r} does not match the SHA-256 the manifest of build "
-                f"{manifest.build_id!r} records for {logical_name!r} ({recorded!r})"
+    SHA-256 the manifest does not record or whose bytes do not match it. Reads
+    `READ_WORKERS` files at a time and refuses with the error of the earliest refused file
+    in `logical` order. Logs one `origin_catalogue_file_read` line per file read, one
+    WARNING `origin_catalogue_file_failed` line per file refused or not read, each naming
+    the logical name in `part` and the manifest's file name in `file`, and one
+    `origin_catalogue_files_read` line for the batch."""
+
+    def read(logical_name: str) -> bytes:
+        started = time.monotonic()
+        file_name = manifest.files.get(logical_name)
+        try:
+            uri = join_uri(prefix, _manifest_file(manifest, logical_name))
+            raw = _read(uri)
+            recorded = manifest.file_sha256.get(logical_name)
+            if recorded is None or hashlib.sha256(raw).hexdigest() != recorded:
+                raise CatalogueArtifactError(
+                    f"{uri!r} does not match the SHA-256 the manifest of build "
+                    f"{manifest.build_id!r} records for {logical_name!r} ({recorded!r})"
+                )
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "origin_catalogue_file_failed",
+                build_id=manifest.build_id,
+                part=logical_name,
+                file=file_name,
+                error=type(exc).__name__,
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
-        files[name] = raw
-    return files
+            raise
+        log_event(
+            logger,
+            logging.INFO,
+            "origin_catalogue_file_read",
+            build_id=manifest.build_id,
+            part=logical_name,
+            file=file_name,
+            bytes=len(raw),
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        return raw
+
+    started = time.monotonic()
+    names = list(logical)
+    raws = map_in_threads(
+        read, names, max_workers=READ_WORKERS, thread_name_prefix="origin-catalogue-read"
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "origin_catalogue_files_read",
+        build_id=manifest.build_id,
+        files=len(names),
+        bytes=sum(len(raw) for raw in raws),
+        duration_ms=round((time.monotonic() - started) * 1000),
+        workers=READ_WORKERS,
+    )
+    return {logical[name]: raw for name, raw in zip(names, raws, strict=True)}
+
+
+def _take(files: dict[str, bytes], logical: Mapping[str, str]) -> dict[str, bytes]:
+    """The files of one group, `logical` mapping logical names to standard names, removed
+    from `files`."""
+    return {name: files.pop(name) for name in logical.values()}
 
 
 def _manifest_file(manifest: CatalogueManifest, logical_name: str) -> str:
