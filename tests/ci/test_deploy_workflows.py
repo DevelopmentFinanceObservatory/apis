@@ -435,7 +435,7 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-12:] == [
+    assert names[-13:] == [
         "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
@@ -447,6 +447,7 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
         "Backfill description records",
         "Follow the latest revision again",
         "Check the released image serves",
+        "Fail on a failed warning step",
         "Follow the latest revision after a failure",
     ]
     for name in ("Warm the candidate revision", "Move traffic to the candidate revision"):
@@ -605,6 +606,49 @@ def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
 
 
 @pytest.mark.parametrize(
+    ("rewrite", "backfill", "named"),
+    [
+        ("success", "success", []),
+        ("failure", "success", ["Rewrite warnings in an old format"]),
+        ("success", "failure", ["Backfill warning counts"]),
+        ("failure", "failure", ["Rewrite warnings in an old format", "Backfill warning counts"]),
+    ],
+)
+def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
+    rewrite: str, backfill: str, named: list[str]
+):
+    """A warning step that fails leaves the description backfill, the follow step and the
+    release check to run, and the step after the release check fails the run naming it. The
+    follow step has succeeded by then, so the recovery step after a failure stays idle."""
+    rewrite_step = _step("rewrite_warnings")
+    backfill_step = _step("backfill_warnings")
+    assert rewrite_step["name"] == "Rewrite warnings in an old format"
+    assert backfill_step["name"] == "Backfill warning counts"
+    for step in (rewrite_step, backfill_step):
+        assert step["continue-on-error"] is True
+    names = [step.get("name") for step in _steps()]
+    last = _named("Fail on a failed warning step")
+    assert names.index("Check the released image serves") + 1 == names.index(last["name"])
+    assert last["env"] == {
+        "REWRITE_WARNINGS": "${{ steps.rewrite_warnings.outcome }}",
+        "BACKFILL_WARNINGS": "${{ steps.backfill_warnings.outcome }}",
+    }
+
+    check = subprocess.run(
+        ["bash", "-c", last["run"]],
+        env={"PATH": "/usr/bin:/bin", "REWRITE_WARNINGS": rewrite, "BACKFILL_WARNINGS": backfill},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert check.returncode == (1 if named else 0)
+    errors = [line for line in check.stdout.splitlines() if line.startswith("::error::")]
+    assert [name for name in named if any(f"'{name}'" in line for line in errors)] == named
+    assert len(errors) == len(named)
+
+
+@pytest.mark.parametrize(
     ("entry", "image", "exit_code"),
     [
         ({"percent": 100, "latestRevision": True, "revisionName": "svc-00002-bbb"}, _PUSHED, 0),
@@ -694,7 +738,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 27
+    assert len(later) == 28
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
