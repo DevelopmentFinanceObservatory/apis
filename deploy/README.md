@@ -65,6 +65,8 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Reads the apis service and decides whether the target needs a deploy.
 1. Builds the container image with BuildKit secrets and pushes it to Artifact Registry, when
    the decision is to deploy.
+1. Reads the pushed image index's digest and its linux/amd64 manifest's, while the registry
+   login is fresh, for the stage step's image check.
 1. Points `JOB_DATASETS_MIGRATE` at the new image and executes it with `--wait`.
 1. Points `JOB_PRESENTATION_MIGRATE` at the new image and executes it with `--wait`.
 1. Points `JOB_DATASETS_MAINTENANCE` at the new image. Cloud Scheduler runs its `datasets-maintenance` tasks.
@@ -80,24 +82,23 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Executes `JOB_DATASETS_MAINTENANCE` with `--args=settle --wait`, repeating the data statements of the migrations over rows the previous image wrote between the migration job and the service move.
 1. Executes `JOB_DATASETS_MAINTENANCE` with `--args=backfill-descriptions --wait`, writing a description record for every version row that holds none, including those the previous image wrote before the service move. A version it cannot backfill is logged as one ERROR line and tried again on the next deploy that moves the apis service to a new image or on a `workflow_dispatch` run, as is a collapse whose base holds no record; a re-run of a finished release runs no step. The step fails when the run read no version and met a failure a retry can clear (an unreachable store, a timeout or an overload), so a run in which every version failed for good exits 0 and logs each one.
 1. Makes traffic follow the latest revision again and removes the `candidate` tag, in one `gcloud run services update-traffic --to-latest --remove-tags=candidate`, so a revision `infra` creates for a configuration change serves at once.
-1. Fails the run unless the revision serving 100 percent runs the released image. An `infra` apply that updates the apis service sends the traffic and image its plan refreshed, so one that overlaps the deploy can put the previous traffic or image back, and the check reports it. A revision `infra` creates for a configuration change after the move runs the released image and passes.
-1. After a failure from the traffic move onwards, makes traffic follow the latest revision again with `gcloud run services update-traffic --to-latest`, keeping the `candidate` tag so the next run deploys.
+1. Fails the run unless traffic follows the latest revision at 100 percent and that revision runs the released image. An `infra` apply that updates the apis service sends the traffic and image its plan refreshed, so one that overlaps the deploy can pin traffic again or put the previous image back, and the check reports it and leaves traffic as it found it. A revision `infra` creates for a configuration change after the move runs the released image and passes.
+1. After a failure in settle, backfill or the step that makes traffic follow the latest revision, makes traffic follow the latest revision with `gcloud run services update-traffic --to-latest`, keeping the `candidate` tag so the next run deploys.
 
 Every job moves to the new image before it executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs as the placeholder. A failed job step stops the run before the service moves to the new image.
 
-A run that fails leaves one of three states, and the next run, a rerun included, deploys again from the build in each: a failure before the stage step leaves the previous commit in the template, a failure from the stage step to the release check leaves traffic pinned by name or the `candidate` tag in place, and a failed release check leaves another image serving. That costs a full deploy: about 9 minutes on `dev` and 12 in `production`, most of it the search catalogue run, the two service updates and the build. A failure after the move makes traffic follow the latest revision again before the run ends, and keeps the tag. A failure before the move leaves traffic pinned to the previous revision, so an `infra` change to the apis service serves only after the next deploy succeeds.
+A run that fails leaves one of three states, and the next run, a rerun included, deploys again from the build in each: a failure before the stage step leaves the previous commit in the template, a failure from the stage step to the release check leaves traffic pinned by name or the `candidate` tag in place, and a failed release check leaves another image serving. That costs a full deploy: about 9 minutes on `dev` and 12 in `production`, most of it the search catalogue run, the two service updates and the build. A failure in settle, backfill or the step that makes traffic follow the latest revision again does that before the run ends, and keeps the tag. After a failed release check, traffic stays as the check found it, and the next run deploys. A failure before the move leaves traffic pinned to the previous revision, so an `infra` change to the apis service serves only after the next deploy succeeds.
 
 On `dev` a `slow`, `forbidden` or `unavailable` probe still moves traffic, so only `production` guarantees that a revision that answers an error or does not answer never serves.
 
 ### Keeping a manual rollback
 
-Every push deploys its commit while the environment's caller workflow is enabled, whatever traffic someone set by hand. The caller is `deploy-prod.yml` for `production` and `deploy-dev.yml` for `dev`. Disabling a workflow stops new runs from being triggered, but it does not cancel a run already queued or in progress, and such a run replaces the rollback when it moves traffic. To keep a rollback in `production`, disable the caller, then cancel or wait for its runs, then roll back:
+Every push deploys its commit while the environment's caller workflow is enabled, whatever traffic someone set by hand. The caller is `deploy-prod.yml` for `production` and `deploy-dev.yml` for `dev`. Disabling a workflow stops new runs from being triggered, but it does not cancel a run that has not completed (`pending` in the concurrency queue, `waiting` for approval, `queued` or `in_progress`), and such a run replaces the rollback when it moves traffic. To keep a rollback in `production`, disable the caller, then cancel or wait for every run the listing below prints, then roll back:
 
 ```sh
 gh workflow disable deploy-prod.yml -R DevelopmentFinanceObservatory/apis
-gh run list -R DevelopmentFinanceObservatory/apis --workflow deploy-prod.yml --status in_progress
-gh run list -R DevelopmentFinanceObservatory/apis --workflow deploy-prod.yml --status queued
-gh run cancel <run id> -R DevelopmentFinanceObservatory/apis
+gh run list -R DevelopmentFinanceObservatory/apis --workflow deploy-prod.yml --json databaseId,status -q '.[] | select(.status != "completed")'
+gh run cancel <databaseId> -R DevelopmentFinanceObservatory/apis
 gcloud run services update-traffic <service> --to-revisions=<revision>=100 --region=<region> --project=<project>
 ```
 

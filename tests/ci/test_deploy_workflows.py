@@ -463,10 +463,12 @@ echo "$INDEX"
 """
 
 
-def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, list]:
-    """Runs a step's script with workflow expressions filled in as Actions would, against a
-    gcloud that records each call and a docker that prints `INDEX`, and returns the gcloud
-    calls without their region and project."""
+def _run_step(
+    name: str, tmp_path: Path, expressions: dict[str, str] | None = None, **env: str
+) -> tuple[subprocess.CompletedProcess, list]:
+    """Runs a step's script with workflow expressions filled in as Actions would, from
+    `expressions` or else as `svc`, against a gcloud that records each call and a docker that
+    prints `INDEX`, and returns the gcloud calls without their region and project."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for tool, body in (("gcloud", _RECORDING_GCLOUD), ("docker", _DOCKER)):
@@ -474,7 +476,10 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
         (bin_dir / tool).chmod(0o755)
     log = tmp_path / "gcloud.log"
     log.touch()
-    script = re.sub(r"\$\{\{[^}]*\}\}", "svc", _named(name)["run"])
+    script = _named(name)["run"]
+    for expression, value in (expressions or {}).items():
+        script = script.replace(f"${{{{ {expression} }}}}", value)
+    script = re.sub(r"\$\{\{[^}]*\}\}", "svc", script)
     ran = subprocess.run(
         ["bash", "-c", script],
         env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "GCLOUD_LOG": str(log), **env},
@@ -483,6 +488,26 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
         check=False,
     )
     return ran, [call.split(" --region")[0] for call in log.read_text().splitlines()]
+
+
+def test_the_digest_step_reads_the_index_and_its_linux_amd64_manifest(tmp_path: Path):
+    """It runs right after the build, while the registry login is fresh."""
+    output_file = tmp_path / "github_output"
+    output_file.touch()
+    names = [step.get("name") for step in _steps()]
+
+    ran, _ = _run_step(
+        "Read the pushed image's digests",
+        tmp_path,
+        {"steps.build.outputs.digest": "sha256:index"},
+        INDEX=_INDEX,
+        GITHUB_OUTPUT=str(output_file),
+    )
+
+    assert ran.returncode == 0, ran.stderr
+    assert output_file.read_text() == "digests=sha256:index sha256:aaa\n"
+    build = next(i for i, step in enumerate(_steps()) if step.get("id") == "build")
+    assert names[build + 1] == "Read the pushed image's digests"
 
 
 @pytest.mark.parametrize(
@@ -500,17 +525,18 @@ def test_the_stage_step_tags_and_outputs_the_created_revision_only_when_it_runs_
     tmp_path: Path, latest: str, image: str, exit_code: int
 ):
     """The update leaves the template revision unnamed, since `--tag` would name it, and the
-    tag goes on the revision the update created once its image is the index's linux/amd64
-    manifest."""
+    tag goes on the revision the update created once its digest is one the digest step read
+    after the build. The stage step reads no registry itself."""
     output_file = tmp_path / "github_output"
     output_file.touch()
+    assert "imagetools" not in _named("Stage the new revision with no traffic")["run"]
 
     ran, calls = _run_step(
         "Stage the new revision with no traffic",
         tmp_path,
+        {"steps.pushed.outputs.digests": "sha256:index sha256:aaa"},
         LATEST=latest,
         REVISION_IMAGE=image,
-        INDEX=_INDEX,
         GITHUB_OUTPUT=str(output_file),
     )
 
@@ -573,15 +599,21 @@ def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
 @pytest.mark.parametrize(
     ("entry", "image", "exit_code"),
     [
-        ({"percent": 100, "revisionName": "svc-00002-bbb"}, _PUSHED, 0),
+        ({"percent": 100, "latestRevision": True, "revisionName": "svc-00002-bbb"}, _PUSHED, 0),
         # Traffic follows the latest revision, which `infra` created after the move from the
         # released image.
         ({"percent": 100, "latestRevision": True, "revisionName": "svc-00003-ccc"}, _PUSHED, 0),
         # An `infra` apply that overlapped the deploy put the previous image back.
-        ({"percent": 100, "revisionName": "svc-00001-aaa"}, "host/repo/dfo-apis@sha256:old", 1),
-        ({"percent": 50, "revisionName": "svc-00002-bbb"}, _PUSHED, 1),
+        (
+            {"percent": 100, "latestRevision": True, "revisionName": "svc-00001-aaa"},
+            "host/repo/dfo-apis@sha256:old",
+            1,
+        ),
+        # An `infra` apply that refreshed during settle pinned traffic by name again.
+        ({"percent": 100, "revisionName": "svc-00002-bbb"}, _PUSHED, 1),
+        ({"percent": 50, "latestRevision": True, "revisionName": "svc-00002-bbb"}, _PUSHED, 1),
     ],
-    ids=["released", "infra-revision", "previous-image", "split"],
+    ids=["released", "infra-revision", "previous-image", "pinned", "split"],
 )
 def test_the_run_fails_unless_the_released_image_serves(
     tmp_path: Path, entry: dict, image: str, exit_code: int
@@ -654,7 +686,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 24
+    assert len(later) == 25
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
