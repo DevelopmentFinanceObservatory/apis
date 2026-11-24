@@ -92,6 +92,9 @@ def ratio_twins(index: CodeIndex) -> Mapping[FiveTuple, RatioTwins]:
     3. Denominators and classes order alike: one denominator's roles nest in another's
        exactly when the classes' roles do, by the same extra roles.
     4. One class's roles sit inside every other's. That class is the base.
+    5. Every row of every class is held by one set of provenances, so a source scope that
+       admits the family's shape admits every class its election may pick
+       (`phase_rank_bind._in_scope` reads the base's rows).
 
     A bucket that fails any of them yields no entry, so each of its five-tuples derives a
     shape of its own, and is logged once here with the condition it failed."""
@@ -141,6 +144,9 @@ def _validated(
 ) -> tuple[RatioTwins | None, str]:
     """The family of one bucket's `five_tuples`, or None and the condition it fails
     (`ratio_twins`)."""
+    provenances = {frozenset(row.provenances) for f in five_tuples for row in rows_by_five_tuple[f]}
+    if len(provenances) != 1:
+        return None, "the classes' rows are held by different provenances"
     classes: list[RatioClass] = []
     denominator_roles: dict[FiveTuple, frozenset[str]] = {}
     for five_tuple in five_tuples:

@@ -151,13 +151,20 @@ def _index(listed: Sequence[StatVarRow], statvars: Sequence[StatVarRow] = ()) ->
             None,
             id="class-has-index-family",
         ),
+        pytest.param(
+            [*_STOCKS, _PAIR[0], replace(_PAIR[1], provenances=(_IDS,))],
+            [],
+            None,
+            id="classes-held-by-different-provenances",
+        ),
     ],
 )
 def test_a_bucket_maps_every_class_to_its_family_only_when_valid(listed, statvars, classes):
     """Shares of a stock and its role twins form one family, base first, when every row of
     every class agrees: each class declares one role set, the classes order as their
     denominators do, one class's roles sit inside every other's, each denominator is a
-    role-bearing index row, and no class has an index family. A bucket that fails any of
+    role-bearing index row, no class has an index family, and one set of provenances holds
+    every row. A bucket that fails any of
     these, in any one class, maps none of its five-tuples."""
     index = _index(listed, statvars)
 
