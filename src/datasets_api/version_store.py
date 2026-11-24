@@ -352,7 +352,9 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
     """Store `record`'s `coverage` on its version, already on record, when the stored one was
     never counted (`year_coverage_counted`) and `record`'s was. The column and the `coverage`
     of `immutable_body` take it whole: the two describe one frame, so they differ only in
-    the year members and the member nouns.
+    the year members and the member nouns. The body's other keys are kept as they stand when
+    the row is written, so a concurrent writer of another key, such as the warning rewrite
+    (`warning_formats.rewrite_old_formats`), keeps its write.
 
     The read and the write run under the version's link lock, so of two writers the second
     reads the first's coverage, finds it counted and writes nothing, and both read back one
@@ -364,7 +366,7 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
     key = (record.subject_id, record.content_version)
     lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
     row = tx.fetch_one(
-        "SELECT coverage, immutable_body FROM datasets.version_record "
+        "SELECT coverage FROM datasets.version_record "
         "WHERE subject_id = %s AND content_version = %s",
         key,
     )
@@ -373,17 +375,13 @@ def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
         cast("Mapping[str, object]", stored)
     ):
         return
-    assert row is not None
-    coverage = dict(facts.coverage)
-    body = row["immutable_body"]
+    coverage = json.dumps(dict(facts.coverage))
     tx.execute(
-        "UPDATE datasets.version_record SET coverage = %s, immutable_body = %s "
+        "UPDATE datasets.version_record SET coverage = %s::jsonb, "
+        "immutable_body = CASE WHEN jsonb_typeof(immutable_body) = 'object' "
+        "THEN jsonb_set(immutable_body, '{coverage}', %s::jsonb) ELSE immutable_body END "
         "WHERE subject_id = %s AND content_version = %s",
-        (
-            json.dumps(coverage),
-            json.dumps({**body, "coverage": coverage} if isinstance(body, Mapping) else body),
-            *key,
-        ),
+        (coverage, coverage, *key),
     )
 
 

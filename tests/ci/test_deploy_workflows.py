@@ -193,14 +193,14 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, two service updates, two reads of the apis
+    # Six job updates, twelve job executions, two service updates, two reads of the apis
     # service, and four traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
-            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_DATASETS_MAINTENANCE": 5,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
@@ -363,11 +363,14 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
 
 def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
     """The previous image writes rows in the old shape, and versions without a description
-    record, until both services move, so the settle and then the description backfill run after
-    the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the settle, so its failure never holds the settle back."""
+    record, until both services move, so the settle, the warning rewrite, the warning backfill
+    and then the description backfill run after the apis service moves, and they are the
+    deploy's only maintenance executions. The settle runs first, so its pin repair waits on
+    none of the others."""
     names = [step.get("name") for step in _steps()]
     settle = "Settle rows the previous image wrote"
+    rewrite = "Rewrite warnings in an old format"
+    warnings = "Backfill warning counts"
     backfill = "Backfill description records"
     executions = [
         step.get("name")
@@ -375,13 +378,14 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [settle, backfill]
+    assert executions == [settle, rewrite, warnings, backfill]
     assert "--args=settle" in _named(settle)["run"]
+    assert "--args=rewrite-warnings" in _named(rewrite)["run"]
+    assert "--args=backfill-warnings" in _named(warnings)["run"]
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
-    for name in (settle, backfill):
+    for name in executions:
         assert "--wait" in _named(name)["run"]
     assert names.index("Move traffic to the candidate revision") < names.index(settle)
-    assert names.index(settle) < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -406,6 +410,8 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     for name in (
         "Point the datasets maintenance job at the new image",
         "Settle rows the previous image wrote",
+        "Rewrite warnings in an old format",
+        "Backfill warning counts",
         "Backfill description records",
     ):
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
@@ -429,13 +435,15 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-10:] == [
+    assert names[-12:] == [
         "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
         "Fail on errors the candidate revision answered while warming",
         "Move traffic to the candidate revision",
         "Settle rows the previous image wrote",
+        "Rewrite warnings in an old format",
+        "Backfill warning counts",
         "Backfill description records",
         "Follow the latest revision again",
         "Check the released image serves",
@@ -686,7 +694,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 25
+    assert len(later) == 27
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
