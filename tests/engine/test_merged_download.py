@@ -198,9 +198,10 @@ def test_a_merge_whose_parts_elect_different_facets_counts_the_one_group_it_elec
 
 
 @pytest.mark.parametrize("mode", ["buffered", "streamed"])
-def test_a_merge_of_a_code_and_its_child_counts_the_parent_alone(monkeypatch, mode):
-    """Sector B sits under sector A, whose rows include B's. The merge binds A alone, so its
-    download counts sector A's three rows, and none of sector B's two."""
+def test_a_posted_code_and_its_child_answer_and_count_apart(monkeypatch, mode):
+    """Sector B sits under sector A, whose rows include B's. Each resubmitted identity is a
+    posted Spec answering the figure it names, so the two answer apart, each counting its
+    own rows as a resubmit of it alone does: A's three and B's two."""
     grid._use_index(monkeypatch, grid._index(parents={"B": "A"}, disjoint=False))
     patch_coverage(
         monkeypatch,
@@ -213,17 +214,21 @@ def test_a_merge_of_a_code_and_its_child_counts_the_parent_alone(monkeypatch, mo
             "usd": FacetMetadata(provenance_id=grid._BROAD, unit="USD", observation_period="P1Y")
         },
     )
+    identities = [_flow_identity("A", _KEN), _flow_identity("B", _KEN)]
+    clients = {"materialise_graph": _flow_reader(), "sdmx": None}
 
-    merged, alone = _merged_and_resubmitted(
-        [_flow_identity("A", _KEN), _flow_identity("B", _KEN)],
-        graph=_flow_graph(),
-        mode=mode,
-        materialise_graph=_flow_reader(),
-    )
+    parent, child = _parts(identities, graph=_flow_graph(), mode=mode, **clients)
+    alone = [
+        _parts([spec.definition.identity], graph=_flow_graph(), mode="buffered", **clients)[0]
+        for spec in (parent, child)
+    ]
 
-    assert _rows(merged) == _rows(alone) == 3
-    assert merged.resolved.download == alone.resolved.download
-    assert merged.resolved.coverage == alone.resolved.coverage
+    assert parent.spec_id != child.spec_id
+    assert [spec.spec_id for spec in alone] == [parent.spec_id, child.spec_id]
+    assert (_rows(parent), _rows(child)) == (3, 2)
+    assert [parent.resolved.download, child.resolved.download] == [
+        spec.resolved.download for spec in alone
+    ]
 
 
 @pytest.mark.usefixtures("index")

@@ -2090,6 +2090,8 @@ def test_build_candidates_region_one_survivor_collapses_to_definite(repeats: int
     assert region.variable_text == "birth rate"
     assert region.earliest_index == 2
     assert region.separate is True
+    # The survivor is a posted Spec, which a same-shape merge keeps whole.
+    assert region.posted_identity is True
     assert region.timing_by_step == {"recall": 8}
     warning = next(w for w in region.warnings if w.code == "candidates_collapsed_definite")
     assert warning.message == (

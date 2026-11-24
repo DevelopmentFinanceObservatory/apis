@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from search.engine.region import RegionResult
@@ -501,6 +503,50 @@ def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
 
 def _first_code(code: str | tuple[str, ...]) -> str:
     return code if isinstance(code, str) else code[0]
+
+
+@pytest.mark.parametrize(
+    ("posted", "codes"),
+    [
+        ((True, True), (_HIV, _POPULATION)),
+        ((True, True), (_POPULATION, _HIV)),
+        ((True, False), (_HIV, _POPULATION)),
+        ((False, True), (_POPULATION, _HIV)),
+    ],
+    ids=["both-posted", "both-posted-parent-first", "child-posted", "child-posted-second"],
+)
+def test_a_posted_identity_keeps_its_code_apart_from_a_parent(
+    posted: tuple[bool, bool], codes: tuple[str, str]
+):
+    """A region answering a dataset_resubmit's posted identity answers the figure its
+    identity names, so a fold that would drop its code (HIV/AIDS 13040) under another
+    member's parent (130) refuses, and each region answers its own Spec."""
+    r_a = dataclasses.replace(
+        _purpose_region(codes[0], 0, _record("first", codes[0])), posted_identity=posted[0]
+    )
+    r_b = dataclasses.replace(
+        _purpose_region(codes[1], 1, _record("second", codes[1])), posted_identity=posted[1]
+    )
+
+    (kept,), residual = collapse_same_shape([r_a, r_b])
+
+    assert (kept, residual) == (r_a, [("part 1", 1)])
+
+
+def test_a_posted_parent_absorbs_a_worded_child():
+    """A part read from words whose code (13040) nests under a posted identity's (130) folds
+    into it: the posted Spec loses no code and the worded part reads the union."""
+    r_a = dataclasses.replace(
+        _purpose_region(_POPULATION, 0, _record("first", _POPULATION)), posted_identity=True
+    )
+    r_b = _purpose_region(_HIV, 1, _record("second", _HIV))
+
+    (merged,), residual = collapse_same_shape([r_a, r_b])
+
+    assert residual == []
+    binding = merged.spec.resolved.slots[0].binding
+    assert isinstance(binding, BindingValue)
+    assert ref_dcid(binding.value.ref) == _POPULATION
 
 
 def test_collapse_same_shape_keeps_every_union_record_of_one_text():
