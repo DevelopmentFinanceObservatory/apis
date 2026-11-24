@@ -22,23 +22,26 @@ from code_index.types import IndexStamp, SourceCodeRow, StatVarRow
 from datasets_api.adapter import resolve_definition_members
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from origin_catalogue.families import FamilyKey
-from search.engine import fanout
+from search.engine import fanout, interpret
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.config import SEARCH_MAX_CODE_PARTS, settings
 from search.engine.core import resolve_async
 from search.engine.entry import parsed as parsed_entry
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity import NamedDenominator, check_denominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     bind_member_values,
+    on_ratio_class,
     ratio_twins_of,
     served_members,
     shape_five_tuple,
     shape_population_arcs,
+    shape_ratio_twins,
 )
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import read_five_tuple
@@ -57,6 +60,7 @@ from search.engine.spec_build import build_shape_model
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     DatasetResubmitInput,
+    GraphRef,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -323,19 +327,22 @@ def _answer(
     read: str = _IDS,
     binder: Binder | None = None,
     unobserved: Collection[str] = (),
+    walked: bool = False,
+    nodes: Mapping[str, dict] | None = None,
 ):
     """`part`'s answer through the parsed door, a query's through the raw-text door, or a
-    posted identity's through the resubmit door, which walks the mint's members over the
-    graph, over a graph recalling `recalled` and coverage holding the observations of every
-    StatVar but `unobserved` under the provenance `read`, IDS as the graph holds them, bound
-    by `binder`, the configured one by default."""
+    posted identity's through the resubmit door, over a graph recalling `recalled` and
+    coverage holding the observations of every StatVar but `unobserved` under the provenance
+    `read`, IDS as the graph holds them, bound by `binder`, the configured one by default.
+    The resubmit door walks the mint's members over the graph, and so does any door when
+    `walked` is set, as the deployed app does. The graph holds `nodes` beside its own."""
     rows = [row for row in _COVERAGE_ROWS if row[0] not in unobserved]
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in rows
     }
     patch_coverage(monkeypatch, rows, role_names=_ROLE_NAMES, facet_metadata=metadata)
-    graph = _graph(recalled, unobserved)
+    graph = _graph(recalled, unobserved, nodes)
     response = asyncio.run(
         resolve_async(
             ResolveRequest(
@@ -348,7 +355,7 @@ def _answer(
             llm=llm or _BindLLM(),
             sdmx=FakeSdmxClient(observations={}),
             materialise_graph=member_walk_reader(graph)
-            if isinstance(part, DatasetResubmitInput)
+            if walked or isinstance(part, DatasetResubmitInput)
             else None,
             binder=binder,
         )
@@ -1235,6 +1242,46 @@ _STOCKS_AND_SHARES = (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _USD_SHARE, _USD_SHARE
 
 
 @pytest.mark.parametrize(
+    "held",
+    [_STOCKS_AND_SHARES, (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _USD_SHARE)],
+    ids=["catalogue-holds-twin", "catalogue-lacks-twin"],
+)
+@pytest.mark.parametrize(
+    "recalled",
+    [(_USD_SHARE, _USD_SHARE_BY_CREDITOR), (_USD_SHARE,), (_USD_SHARE_BY_CREDITOR,)],
+    ids=["recall-both", "recall-aggregate", "recall-twin"],
+)
+def test_a_ratio_family_elects_one_class_whatever_recall_and_the_catalogue_hold(
+    recalled, held, bind_catalogue, monkeypatch
+):
+    """With the creditor open, DT.CUR.USDL.ZS elects the share by creditor over the index
+    rows of its ratio family (`bound_values._elected_ratio_class`), so the identity names
+    the by-creditor PPG stock and the mint serves the share by creditor whichever of the
+    code's shares recall returned and whether or not the catalogue holds the by-creditor
+    class's family."""
+    bind_catalogue(_holding(*held))
+    member_detection = interpret._member_detection
+    monkeypatch.setattr(
+        interpret,
+        "_member_detection",
+        lambda members: member_detection([sv for sv in members if sv in recalled]),
+    )
+    part = ParsedPart(
+        variable_text=_USDL,
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_USDL,
+        open_roles=["creditor"],
+    )
+
+    answer = _answer(part, monkeypatch, walked=True)
+
+    assert answer.status == "definite", answer
+    identity = answer.spec.definition.identity
+    assert identity.shape.measurement_denominator.ref == _PPG_STOCK_BY_CREDITOR
+    assert _minted_members(answer.spec) == {_USD_SHARE_BY_CREDITOR}
+
+
+@pytest.mark.parametrize(
     ("recalled", "population", "twin_denominators"),
     [
         (
@@ -1697,3 +1744,118 @@ def test_a_ratio_code_answers_the_base_its_words_name(open_roles, monkeypatch):
     assert answer.status == "definite", answer
     assert _minted_members(answer.spec) == {_USD_SHARE_BY_CREDITOR if open_roles else _USD_SHARE}
     assert "denominator_unverified" not in {warning.code for warning in answer.warnings}
+
+
+def _named(denominator: str) -> NamedDenominator:
+    return NamedDenominator(ref=GraphRef(ref=denominator, label=denominator), base_words="debt")
+
+
+@pytest.mark.parametrize(
+    ("family", "denominator", "named", "expected"),
+    [
+        (True, _PPG_STOCK, _PPG_STOCK, "matches"),
+        (True, _PPG_STOCK_BY_CREDITOR, _PPG_STOCK, "matches"),
+        (True, _PPG_STOCK, _PPG_STOCK_BY_CREDITOR, "refused"),
+        (True, None, _PPG_STOCK_BY_CREDITOR, "matches"),
+        (False, _PPG_STOCK, _PPG_STOCK, "matches"),
+        (False, _PPG_STOCK, _PPG_STOCK_BY_CREDITOR, "refused"),
+        (False, _PPG_STOCK_BY_CREDITOR, _PPG_STOCK_BY_CREDITOR, "matches"),
+        (False, _PPG_STOCK_BY_CREDITOR, _PPG_STOCK, "refused"),
+    ],
+    ids=[
+        "family-aggregate-names-base",
+        "family-by-creditor-names-base",
+        "family-aggregate-names-by-creditor-stock",
+        "family-unresolved-names-by-creditor-stock",
+        "pair-aggregate-names-its-own",
+        "pair-aggregate-names-by-creditor-stock",
+        "pair-by-creditor-names-its-own",
+        "pair-by-creditor-names-stock",
+    ],
+)
+def test_a_named_denominator_holds_each_ratio_class_to_its_base(
+    family, denominator, named, expected, bind_catalogue, monkeypatch
+):
+    """DT.CUR.USDL.ZS's shares as one ratio family (`code_index.ratio_twins`) divide by one
+    base, the PPG stock, so that stock named matches either class once the election resolves
+    it (`bound_values.on_ratio_class`), and the by-creditor stock named refuses the
+    aggregate share, matching only the shape still spanning both classes. An index holding
+    no row of the by-creditor stock keeps the shares apart as two bases, each matching its
+    own denominator alone (`quantity.check_denominator`)."""
+    if not family:
+        _serving_index(monkeypatch, _listing(_PPG_STOCK, _USD_SHARE, _USD_SHARE_BY_CREDITOR))
+    bind_catalogue(_holding())
+    shapes = derive_shapes(confirmed_svs=[_USD_SHARE, _USD_SHARE_BY_CREDITOR], graph=_graph())
+    if family:
+        (shape,) = shapes
+        if denominator is not None:
+            ratio = shape_ratio_twins(shape)
+            (ratio_class,) = (c for c in ratio.classes if c.denominator == denominator)
+            shape = on_ratio_class(shape, ratio_class)
+    else:
+        (shape,) = (s for s in shapes if s.meas_denom_dcid == denominator)
+
+    assert shape.meas_denom_dcid == (denominator or _PPG_STOCK)
+    assert check_denominator(shape, _named(named)) == expected
+
+
+# A share of another quantity over the by-creditor PPG stock: no class of DT.CUR.USDL.ZS's
+# ratio family, so it puts the by-creditor stock on the quantity read's list.
+_FLOW_SHARE_BY_CREDITOR = (
+    f"Amount_FinancialFlow_Disbursement_ByCreditor_AsAFractionOf_{_PPG_STOCK_BY_CREDITOR}"
+)
+
+
+@pytest.mark.parametrize(
+    ("named", "open_roles", "elected"),
+    [
+        (_PPG_STOCK_BY_CREDITOR, None, None),
+        (_PPG_STOCK_BY_CREDITOR, ["creditor"], _USD_SHARE_BY_CREDITOR),
+        (_PPG_STOCK, None, _USD_SHARE),
+    ],
+    ids=["by-creditor-stock-aggregate-elected", "by-creditor-stock-creditor-open", "stock"],
+)
+def test_a_ratio_code_refuses_a_by_creditor_base_its_roles_do_not_elect(
+    named, open_roles, elected, monkeypatch
+):
+    """A question naming the by-creditor PPG stock as the base of DT.CUR.USDL.ZS, where
+    another share on the menu divides by that stock, refuses denominator_not_available when
+    no open role elects the aggregate share, which divides by the PPG stock: an aggregate
+    never answers for a named by-creditor stock. With the creditor open the share by creditor
+    answers it, and the PPG stock named answers the aggregate."""
+    member_detection = interpret._member_detection
+    monkeypatch.setattr(
+        interpret,
+        "_member_detection",
+        lambda members: member_detection([*members, _FLOW_SHARE_BY_CREDITOR]),
+    )
+    nodes = {
+        _FLOW_SHARE_BY_CREDITOR: {
+            "label": "Disbursements as a share of PPG debt by creditor",
+            "arcs": _arcs(
+                "Disbursements as a share of PPG debt by creditor",
+                _PROVIDER_RECIPIENT,
+                {"financialFlowType": "Disbursement"},
+                "OTHER.CODE",
+                denominator=_PPG_STOCK_BY_CREDITOR,
+            ),
+        }
+    }
+    base = "public and publicly guaranteed debt by creditor"
+    part = ParsedPart(
+        variable_text=f"US dollar share of {base}",
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_USDL,
+        open_roles=open_roles,
+    )
+    listed = [_PPG_STOCK, _PPG_STOCK_BY_CREDITOR]
+    llm = _BindLLM(quantity=QuantityOutput(base_words=base, denominator_index=listed.index(named)))
+
+    answer = _answer(part, monkeypatch, llm, nodes=nodes)
+
+    if elected is None:
+        assert answer.status == "no_data", answer
+        assert answer.no_data.reason == "denominator_not_available"
+    else:
+        assert answer.status == "definite", answer
+        assert _minted_members(answer.spec) == {elected}

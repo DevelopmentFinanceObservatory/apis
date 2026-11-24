@@ -107,7 +107,7 @@ class ShapeDraft:
     # narrowed to some of its members.
     twin_families: tuple[FamilyKey, ...] = field(default=(), compare=False)
     # The shape_id of the shape spanning ratio twins that the role-class election resolved
-    # this one from (`bound_values.on_denominator`), the menu reading it stands in for: its
+    # this one from (`bound_values.on_ratio_class`), the menu reading it stands in for: its
     # own shape_id is that of the denominator it resolved to. None on every other shape.
     menu_shape_id: str | None = field(default=None, compare=False)
     # The role set the role-class election narrowed a held shape to
