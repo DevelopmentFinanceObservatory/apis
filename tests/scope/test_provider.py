@@ -13,6 +13,7 @@ read, as the deployed service reads them.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import logging
 from collections.abc import Sequence
 from typing import cast
@@ -31,9 +32,12 @@ from code_index.scope_conventions import (
 from code_index.shared import get_index
 from origin_catalogue import bound_catalogue, scoped_reads
 from search.engine import departures
+from search.engine.assemble import ScopeNotServedError, with_scope_choices
+from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.region import pipeline
 from search.engine.region.result import RegionResult
 from search.engine.region.scope_decision import decide_scope
+from search.engine.response_cache import ResponseCache
 from search.engine.spec_id import identity_spec_id
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -84,7 +88,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import offline_events, offline_resolve
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import listing
 from tests.scope import test_basis as basis
@@ -1289,31 +1293,34 @@ def test_a_dac1_multilateral_oda_answer_the_words_pick_is_stated(
     assert not any(d.entry.axis == "provider" for d in scope.dropped_entries)
 
 
-def _ask_dac1_parts(
-    monkeypatch: pytest.MonkeyPatch, texts: Sequence[str], *, message: str | None = None
-) -> list[DefinitePart]:
-    """The US parts `texts`, each asked over 2010 to 2023 with `message`, the bilateral,
-    multilateral or total ODA a part names its only recall, over US series of all three."""
-    members = tuple(m for ms in _DAC1_MEMBERS_BY_CODE.values() for m in ms)
-    basis._cover(monkeypatch, members)
-    recall = {
-        "bilateral": _DAC1_BILATERAL_MEMBERS,
-        "multilateral": _DAC1_MULTILATERAL_MEMBERS,
-        "total": _DAC1_TOTAL_MEMBERS,
-    }
-    graph = FakeGraph(
+_DAC1_LINES = {
+    "bilateral": _DAC1_BILATERAL_MEMBERS,
+    "multilateral": _DAC1_MULTILATERAL_MEMBERS,
+    "total": _DAC1_TOTAL_MEMBERS,
+}
+_DAC1_ALL_MEMBERS = tuple(m for ms in _DAC1_MEMBERS_BY_CODE.values() for m in ms)
+
+
+def _dac1_lines_graph(texts: Sequence[str]) -> FakeGraph:
+    """The United States and every DAC1 member, each of `texts` recalling the members of the
+    line its first word names (`_DAC1_LINES`)."""
+    return FakeGraph(
         nodes={
             _USA: {"label": "United States", "type": "Country"},
-            **{dcid: basis._member_node(dcid) for dcid in members},
+            **{dcid: basis._member_node(dcid) for dcid in _DAC1_ALL_MEMBERS},
         },
         detect={
             text: {"svs": list(found), "cosine_scores": [0.9] * len(found)}
             for text in texts
-            for found in [recall[text.split()[0]]]
+            for found in [_DAC1_LINES[text.split()[0]]]
         },
         resolve={"United States": _USA},
     )
-    request = ResolveRequest(
+
+
+def _dac1_lines_request(texts: Sequence[str], *, message: str | None = None) -> ResolveRequest:
+    """The US parts `texts` over 2010 to 2023, with `message`."""
+    return ResolveRequest(
         input=ParsedInput(
             parts=[
                 ParsedPart(
@@ -1326,15 +1333,37 @@ def _ask_dac1_parts(
             user_message=message,
         )
     )
-    response = offline_resolve(
-        request,
-        graph=graph,
-        llm=_PickingLLM(),
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-    )
+
+
+def _definite_parts(response: object) -> list[DefinitePart]:
     assert isinstance(response, Resolution), response
     assert all(isinstance(part, DefinitePart) for part in response.parts), response.parts
     return cast("list[DefinitePart]", response.parts)
+
+
+def _ask_dac1_parts(
+    monkeypatch: pytest.MonkeyPatch, texts: Sequence[str], *, message: str | None = None
+) -> list[DefinitePart]:
+    """The US parts `texts`, each asked over 2010 to 2023 with `message`, the bilateral,
+    multilateral or total ODA a part names its only recall, over US series of all three."""
+    basis._cover(monkeypatch, _DAC1_ALL_MEMBERS)
+    response = offline_resolve(
+        _dac1_lines_request(texts, message=message),
+        graph=_dac1_lines_graph(texts),
+        llm=_PickingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    return _definite_parts(response)
+
+
+def _aid_type(part: DefinitePart) -> str | list[str] | None:
+    """The DAC1 aid type the part's identity binds: a value, the refs of a set, or None."""
+    (binding,) = (
+        s.binding for s in part.spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    if isinstance(binding, IdentityBindingSet):
+        return sorted(binding.refs)
+    return binding.ref if isinstance(binding, IdentityBindingValue) else None
 
 
 _SHARE_MESSAGE = "What share of US ODA was bilateral each year from 2010 to 2023?"
@@ -1368,13 +1397,12 @@ def test_a_dac1_provider_line_beside_its_total_answers_apart_with_its_own_choice
     monkeypatch, texts: tuple[str, str], line: str, option: str, message: str | None
 ):
     """A part on DAC1's bilateral or multilateral ODA shares its total's five-tuple, and the
-    union of the two lines keeps the total alone, so a fold would answer the total under the
-    line's provider choice. Each part answers its own Spec with the choice its line holds."""
+    total's aid type holds the line's. The two parts answer apart, each its own Spec, the
+    line's with the provider choice its words state."""
     line_part, total_part = _ask_dac1_parts(monkeypatch, texts, message=message)
 
     assert line_part.spec.spec_id != total_part.spec.spec_id
-    assert _slot_ref(line_part.spec.definition.identity, "dac1AidType") == line
-    assert _slot_ref(total_part.spec.definition.identity, "dac1AidType") == _DAC1_TOTAL_ODA
+    assert (_aid_type(line_part), _aid_type(total_part)) == (line, _DAC1_TOTAL_ODA)
     assert (_provider(line_part.spec).active, _provider(line_part.spec).provenance) == (
         option,
         "explicit",
@@ -1385,69 +1413,133 @@ def test_a_dac1_provider_line_beside_its_total_answers_apart_with_its_own_choice
         assert "binding_folded" not in {w.code for w in part.warnings}
 
 
+@pytest.mark.parametrize("with_entries", [False, True], ids=["no-scope-entries", "scope-entries"])
+def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, with_entries: bool):
+    """A dataset_resubmit of the bilateral ODA and total ODA identities answers each its own
+    Spec, with or without the scope entries the fresh answers applied."""
+    texts = ("bilateral ODA net disbursements", "total ODA net disbursements")
+    fresh = _ask_dac1_parts(monkeypatch, texts)
+    entries = [
+        ResubmitIdentityEntry(
+            variable_text=text,
+            identity=part.spec.definition.identity,
+            scope_entries=list(_scope(part.spec).entries) if with_entries else None,
+        )
+        for text, part in zip(texts, fresh, strict=True)
+    ]
+
+    resubmitted = _definite_parts(
+        offline_resolve(
+            ResolveRequest(input=DatasetResubmitInput(entries=entries)),
+            graph=_dac1_lines_graph(()),
+            llm=_PickingLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    assert [part.spec.spec_id for part in resubmitted] == [part.spec.spec_id for part in fresh]
+    assert [_aid_type(part) for part in resubmitted] == [_DAC1_BILATERAL_ODA, _DAC1_TOTAL_ODA]
+
+
+@pytest.mark.parametrize(
+    "order", list(itertools.permutations(("bilateral", "multilateral", "total")))
+)
+def test_dac1_bilateral_multilateral_and_total_parts_fold_the_lines_beside_the_total(
+    monkeypatch, order: tuple[str, ...]
+):
+    """Bilateral, multilateral and total ODA asked together, in any order: the total answers
+    its own Spec, and the two lines, which do not nest, fold into one answer binding both."""
+    texts = [f"{line} ODA net disbursements" for line in order]
+    by_line = dict(zip(order, _ask_dac1_parts(monkeypatch, texts), strict=True))
+
+    lines = [by_line["bilateral"], by_line["multilateral"]]
+    assert _aid_type(by_line["total"]) == _DAC1_TOTAL_ODA
+    assert {part.spec.spec_id for part in lines} == {lines[0].spec.spec_id}
+    assert lines[0].spec.spec_id != by_line["total"].spec.spec_id
+    assert _aid_type(lines[0]) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
+    assert "binding_folded" not in {w.code for w in by_line["total"].warnings}
+
+
 def test_bilateral_and_multilateral_dac1_parts_fold_into_their_set(monkeypatch):
-    """DAC1's bilateral and multilateral ODA do not nest, so the two parts fold into one answer
-    binding both aid types, which states no provider choice."""
+    """A guard on the fold's grouping: DAC1's bilateral and multilateral ODA do not nest, so
+    the two parts fold into one answer binding both aid types, which states no provider
+    choice."""
     first, second = _ask_dac1_parts(
         monkeypatch, ("bilateral ODA net disbursements", "multilateral ODA net disbursements")
     )
 
     assert first.spec.spec_id == second.spec.spec_id
-    (binding,) = (
-        s.binding for s in first.spec.definition.identity.slots if s.property == "dac1AidType"
-    )
-    assert isinstance(binding, IdentityBindingSet)
-    assert sorted(binding.refs) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
+    assert _aid_type(first) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
     assert not any(c.axis == "provider" for c in _scope(first.spec).choices)
     assert "binding_folded" in {w.code for w in second.warnings}
 
 
-def test_a_part_whose_scope_compiles_another_identity_fails_closed(monkeypatch, caplog):
-    """A definite part whose scope compiles to an identity other than its Spec answers
-    no_data `facet_not_available` and logs the fault, in place of restating the scope over
-    the Spec it serves with choices that describe other rows."""
+def test_a_scope_compiling_another_identity_is_refused_by_with_scope_choices(monkeypatch):
+    """Attaching a scope whose compiled identity is not the Spec raises, naming both."""
+    bilateral, total = _ask_dac1_parts(
+        monkeypatch, ("bilateral ODA net disbursements", "total ODA net disbursements")
+    )
+
+    with pytest.raises(ScopeNotServedError) as raised:
+        with_scope_choices(total.spec, _scope(bilateral.spec))
+
+    assert (raised.value.spec_id, raised.value.compiled_spec_id) == (
+        total.spec.spec_id,
+        bilateral.spec.spec_id,
+    )
+
+
+@pytest.mark.parametrize("mismatched", [True, False], ids=["mismatched", "control"])
+def test_a_part_whose_scope_compiles_another_identity_fails_closed(
+    monkeypatch, caplog, mismatched: bool
+):
+    """A definite answer whose scope compiles to an identity other than its Spec answers
+    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg, stores no
+    response and streams no event under its spec_id. The control states its own scope."""
+    texts = ("total ODA net disbursements",)
     (bilateral,) = _ask_dac1_parts(monkeypatch, ("bilateral ODA net disbursements",))
-    stated = pipeline._with_scope_choices
+    (total,) = _ask_dac1_parts(monkeypatch, texts)
+    if mismatched:
+        stated = pipeline._with_scope_choices
 
-    def other_scope(result: RegionResult) -> RegionResult:
-        return dataclasses.replace(stated(result), scope_choices=_scope(bilateral.spec))
+        def other_scope(result: RegionResult) -> RegionResult:
+            return dataclasses.replace(stated(result), scope_choices=_scope(bilateral.spec))
 
-    monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
+        monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
+    cache = ResponseCache()
+
     with caplog.at_level(logging.ERROR, logger="search.engine.conjoin"):
-        response = offline_resolve(
-            ResolveRequest(
-                input=ParsedInput(
-                    parts=[
-                        ParsedPart(
-                            variable_text="total ODA net disbursements",
-                            entities=[ParsedEntity(text="United States", role_text="from")],
-                            time_text="2010 to 2023",
-                        )
-                    ]
-                )
-            ),
-            graph=FakeGraph(
-                nodes={
-                    _USA: {"label": "United States", "type": "Country"},
-                    **{dcid: basis._member_node(dcid) for dcid in _DAC1_TOTAL_MEMBERS},
-                },
-                detect={
-                    "total ODA net disbursements": {
-                        "svs": list(_DAC1_TOTAL_MEMBERS),
-                        "cosine_scores": [0.9] * len(_DAC1_TOTAL_MEMBERS),
-                    }
-                },
-                resolve={"United States": _USA},
-            ),
+        events = offline_events(
+            _dac1_lines_request(texts),
+            graph=_dac1_lines_graph(texts),
             llm=_PickingLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
+            stream_slot_options=True,
+            response_cache=cache,
         )
 
-    assert isinstance(response, Resolution), response
+    (response,) = [e.response for e in events if isinstance(e, ResponseEvent)]
+    (done,) = [e for e in events if isinstance(e, DoneEvent)]
     (part,) = response.parts
-    assert isinstance(part, NoDataPart), part
-    assert part.no_data.reason == "facet_not_available"
-    assert any(bilateral.spec.spec_id in record.getMessage() for record in caplog.records)
+    carrying = [e.kind for e in events if total.spec.spec_id in e.model_dump_json()]
+    logged = [
+        (record.spec_id, record.compiled_spec_id)
+        for record in caplog.records
+        if hasattr(record, "compiled_spec_id")
+    ]
+    if mismatched:
+        assert isinstance(part, NoDataPart), part
+        assert part.no_data.reason == "facet_not_available"
+        assert done.degraded_leg
+        assert cache.stats().entries == 0
+        assert carrying == []
+        assert logged == [(total.spec.spec_id, bilateral.spec.spec_id)]
+    else:
+        assert isinstance(part, DefinitePart) and part.spec.spec_id == total.spec.spec_id
+        assert not done.degraded_leg
+        assert cache.stats().entries > 0
+        assert len(carrying) > 1
+        assert logged == []
 
 
 def _dac1_identity(

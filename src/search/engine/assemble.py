@@ -215,7 +215,8 @@ def with_skills(spec: Spec, *, index: SkillsIndex) -> Spec:
 
 class ScopeNotServedError(ValueError):
     """A part's scope compiles to an identity other than the Spec the part answers, so its
-    choices would label rows they do not describe (`with_scope_choices`)."""
+    choices describe another identity's rows (`with_scope_choices`). `spec_id` is the
+    Spec's, `compiled_spec_id` the scope's."""
 
     def __init__(self, *, spec_id: str, compiled_spec_id: str) -> None:
         super().__init__(f"the scope compiled {compiled_spec_id}, but the part answers {spec_id}")
@@ -225,9 +226,10 @@ class ScopeNotServedError(ValueError):
 
 def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
     """Attach how the part was counted under ``resolved.scope_choices``. The scope's compiled
-    record is ``spec`` itself, a composite's stating the years each component serves; a
-    scope compiling any other identity raises `ScopeNotServedError`, since its choices
-    describe that identity's rows and not the ones ``spec`` serves. Its
+    record is ``spec`` itself, a composite's stating the years each component serves. A
+    scope compiling any other identity raises `ScopeNotServedError`: its choices describe
+    that identity's rows. Each producer of a scope refuses such an answer before assembly
+    (`region.result.unserved_scope_refusal`). Its
     measure-basis labels name whose prices deflate the answer as ``spec``'s conversion states
     it (`scope.basis.with_deflation_basis`). An
     alternative measure on a basis the measure-basis choice offers

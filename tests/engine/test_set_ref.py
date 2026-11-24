@@ -374,9 +374,9 @@ def _set_slot(axis: Axis, *values: SlotValue, set_ref: GraphRef | None = None) -
     )
 
 
-def test_collapse_same_shape_keeps_the_set_ref_of_a_member_set_the_merge_leaves_whole() -> None:
-    """Health (120 and 130, named by its group) folded with HIV/AIDS (13040, under 130)
-    binds health's set, so the merge keeps health's group over `set_ref_for`'s."""
+def test_collapse_same_shape_keeps_a_named_group_apart_from_a_code_nested_under_it() -> None:
+    """Health (120 and 130, named by its group) and HIV/AIDS (13040, under 130) answer apart,
+    so health keeps its own binding and group, and `set_ref_for` names nothing."""
     health = GraphRef(ref="HealthGroup", label="health")
     sh = _shape(axis="what")
     codes = [
@@ -385,15 +385,19 @@ def test_collapse_same_shape_keeps_the_set_ref_of_a_member_set_the_merge_leaves_
     ]
     r1 = _region(sh, _set_slot("what", *codes, set_ref=health), sv="sv/1", index=0)
     r2 = _region(sh, _value_slot("what", "CRSPurposeCode13040"), sv="sv/2", index=1)
+    named: list[list[str]] = []
 
-    (merged,), residual = collapse_same_shape(
-        [r1, r2], set_ref_for=lambda _: GraphRef(ref="WRONG", label="WRONG")
+    effective, residual = collapse_same_shape(
+        [r1, r2], set_ref_for=lambda dcids: named.append(dcids)
     )
 
     assert residual == []
-    (binding,) = (s.binding for s in merged.spec.resolved.slots if s.binding.kind == "set")
+    first, second = sorted(effective, key=lambda r: r.earliest_index)
+    assert first is r1 and second is r2
+    (binding,) = (s.binding for s in first.spec.resolved.slots if s.binding.kind == "set")
     assert isinstance(binding, BindingSet)
     assert binding.set_ref == health
+    assert named == []
 
 
 @pytest.mark.parametrize(

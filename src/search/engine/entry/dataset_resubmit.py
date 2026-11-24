@@ -100,7 +100,7 @@ from search.engine.codes import CODE_CATALOG
 from search.engine.concurrency import bounded_semaphore
 from search.engine.config import settings
 from search.engine.conjoin import assemble_region
-from search.engine.deadline import _await_bounded
+from search.engine.deadline import _await_bounded, _cancel_trailing_tasks
 from search.engine.departures import warning_key
 from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
 from search.engine.entity_checks import check_entity_count
@@ -129,6 +129,7 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import (
     any_degraded,
+    unserved_scope_refusal,
     with_runnable_operations,
 )
 from search.engine.region.scope_decision import bilateral_withheld_warning, scope_facts
@@ -573,7 +574,7 @@ async def handle(
                 region = await with_composite_observations(region, semaphore=sem)
             elif not params.stream_observations:
                 region = await with_composite_continuation(region, semaphore=sem)
-        return dataclasses.replace(
+        answered = dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
@@ -582,6 +583,10 @@ async def handle(
             separate=entry.separate,
             scope_choices=_served_scope(scope, region),
         )
+        if (refused := unserved_scope_refusal(answered)) is not None:
+            await _cancel_trailing_tasks([answered])
+            return refused
+        return answered
 
     def _memo_hit(stored: RegionResult) -> RegionResult:
         """Return `stored` with this request's relaunch closures, built over its own conversion

@@ -1,6 +1,6 @@
 """`compile`: a base identity, its scope entries and the axis tables to one selection.
 
-Pure: it reads only its arguments and does no I/O. The rules it holds to:
+It reads its arguments and the bound code index, and does no I/O. The rules it holds to:
 
 - An explicit entry is applied or refused as posted. One naming an absent axis, an
   option the axis does not offer, or an unavailable option refuses
@@ -24,8 +24,10 @@ Pure: it reads only its arguments and does no I/O. The rules it holds to:
   `conflicts_with` naming the entry, which is the switch compile refuses. One that
   conflicts only with a default stays available, since the default moves.
 - The identity is edited only on axes whose active option differs from the one the base
-  holds. A selection the base already holds, a switch to the active option among them,
-  compiles to the base and its spec_id.
+  holds, and takes its canonical form (`code_index.members.canonical_identity`), as the
+  identity a resubmit of it serves does (`bound_values.canonicalise_identity`). A selection
+  the base already holds, a switch to the active option among them, compiles to the base's
+  canonical form, the base itself and its spec_id when the base is canonical.
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from code_index.members import canonical_identity
+from code_index.shared import get_index
 from search.engine.spec_id import identity_spec_id, mint_identity
 from search.models import (
     BaseIdentity,
@@ -285,8 +289,9 @@ def _compiled_identity(
     order: Sequence[ScopeAxis],
     active: Mapping[ScopeAxis, _Settled],
 ) -> tuple[BaseIdentity, str]:
-    """`base` edited on every axis whose active option is not the one it holds, minted;
-    `base` itself when there is none."""
+    """`base` edited on every axis whose active option is not the one it holds, in its
+    canonical form (`canonical_identity`) and minted; `base` itself when there is no edit
+    and `base` is canonical."""
     identity = base
     edited = False
     for axis in order:
@@ -297,9 +302,11 @@ def _compiled_identity(
         assert option is not None
         identity = apply_binding(identity, option.binding, [o.binding for o in table.options])
         edited = True
-    if not edited:
+    document = identity.model_dump(mode="json", exclude_none=True)
+    canonical = canonical_identity(get_index(), document)
+    if not edited and canonical is document:
         return base, base_spec_id
-    spec_id, minted = mint_identity(identity.model_dump(exclude_none=True))
+    spec_id, minted = mint_identity(canonical)
     return minted, spec_id
 
 
