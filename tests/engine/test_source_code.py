@@ -1511,10 +1511,13 @@ _CODE_PAIRS = {
 }
 
 
-def _parity_outcome(answer) -> tuple[str, str | None, frozenset[frozenset[str]] | None]:
-    """An answer's status, its no_data reason, and the role sets of the members it mints."""
+def _parity_outcome(
+    answer,
+) -> tuple[str, str | None, frozenset[frozenset[str]] | None, tuple[str, ...]]:
+    """An answer's status, its no_data reason, the role sets of the members it mints, and the
+    places its identity binds as creditors (the origin)."""
     if answer.status == "no_data":
-        return answer.status, answer.no_data.reason, None
+        return answer.status, answer.no_data.reason, None, ()
     reason = None
     roles = frozenset(
         frozenset(
@@ -1524,44 +1527,66 @@ def _parity_outcome(answer) -> tuple[str, str | None, frozenset[frozenset[str]] 
         )
         for member in _minted_members(answer.spec)
     )
-    return answer.status, reason, roles
+    origin = tuple(answer.spec.definition.identity.entities.get("origin", ()))
+    return answer.status, reason, roles, origin
 
 
 _DEBTOR = frozenset({frozenset(_RECIPIENT)})
 _CREDITOR_AND_DEBTOR = frozenset({frozenset(_PROVIDER_RECIPIENT)})
+# Which of a code's two StatVars (`_CODE_PAIRS`) the coverage holds no observations of.
+_AGGREGATE_UNOBSERVED = (0,)
+_BY_CREDITOR_UNOBSERVED = (1,)
 
 
 @pytest.mark.parametrize(
-    ("entities", "open_roles", "aggregate_observed", "outcome"),
+    ("entities", "open_roles", "unobserved", "outcome"),
     [
-        ([("Kenya", "to")], None, True, ("definite", None, _DEBTOR)),
-        ([("Kenya", "to")], ["creditor"], True, ("definite", None, _CREDITOR_AND_DEBTOR)),
+        ([("Kenya", "to")], None, (), ("definite", None, _DEBTOR, ())),
+        ([("Kenya", "to")], ["creditor"], (), ("definite", None, _CREDITOR_AND_DEBTOR, ())),
         (
             [("Kenya", "to"), ("China", "from")],
             None,
-            True,
-            ("definite", None, _CREDITOR_AND_DEBTOR),
+            (),
+            ("definite", None, _CREDITOR_AND_DEBTOR, (_CHN,)),
         ),
-        ([("Kenya", "to"), ("China", None)], None, True, ("no_data", "role_not_resolved", None)),
-        ([("Kenya", None)], None, True, ("definite", None, _DEBTOR)),
-        ([("Kenya", "to")], None, False, ("no_data", "no_observations", None)),
+        (
+            [("Kenya", "to"), ("China", None)],
+            None,
+            (),
+            ("definite", None, _CREDITOR_AND_DEBTOR, (_CHN,)),
+        ),
+        (
+            [("Kenya", "to"), ("China", None)],
+            None,
+            _BY_CREDITOR_UNOBSERVED,
+            ("no_data", "role_not_resolved", None, ()),
+        ),
+        ([("Kenya", None)], None, (), ("definite", None, _DEBTOR, ())),
+        ([("Kenya", "to")], None, _AGGREGATE_UNOBSERVED, ("no_data", "no_observations", None, ())),
     ],
     ids=[
         "no-open-role",
         "open-creditor",
         "directed-creditor",
         "undirected-creditor",
+        "undirected-creditor-unobserved",
         "undirected-place",
         "aggregate-unobserved",
     ],
 )
 def test_a_ratio_code_answers_as_the_stock_code_it_divides_by(
-    entities, open_roles, aggregate_observed, outcome, monkeypatch
+    entities, open_roles, unobserved, outcome, monkeypatch
 ):
     """DT.CUR.USDL.ZS's shares divide by DT.DOD.DPPG.CD's stocks, and its by-creditor share
     by the by-creditor stock. Asked alike, the ratio code answers as the stock code does: the
-    same status, no_data reason and role set of the members it mints. The stock is the
-    oracle; `outcome` pins what it answers."""
+    same status, no_data reason, role set of the members it mints and creditors it binds.
+    The stock is the oracle; `outcome` pins what it answers.
+
+    China named without a direction beside Kenya as debtor takes the creditor side the
+    debtor leaves free where the coverage holds a by-creditor series with China there (the
+    `complement` rule of `undirected.settle_undirected_axis`). Without that series no rule
+    settles China's side and no reading holds data on it, so the part refuses
+    `role_not_resolved`."""
 
     def answered(code: str):
         part = ParsedPart(
@@ -1570,8 +1595,8 @@ def test_a_ratio_code_answers_as_the_stock_code_it_divides_by(
             source_code=code,
             open_roles=open_roles,
         )
-        unobserved = () if aggregate_observed else _CODE_PAIRS[code][:1]
-        return _parity_outcome(_answer(part, monkeypatch, unobserved=unobserved))
+        dark = tuple(_CODE_PAIRS[code][i] for i in unobserved)
+        return _parity_outcome(_answer(part, monkeypatch, unobserved=dark))
 
     stock = answered(_DPPG)
 
