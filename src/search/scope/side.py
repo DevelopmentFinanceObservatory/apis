@@ -37,7 +37,7 @@ reads them only where an entry posts their axis (`build.SIDE_RULES`).
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from code_index.composites import (
     DECLARED_COMPOSITES,
@@ -46,9 +46,11 @@ from code_index.composites import (
     destination_population,
 )
 from code_index.declarations import CONTAINING_TOTALS
+from code_index.query import CodeIndex
 from code_index.scope_conventions import BILATERAL_SOURCES
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
+from search.catalogue.counts import COUNTRY_PREFIX
 from search.engine.region.coverage_series import series_held
 from search.engine.retrieval.bound_values import identity_dataset, served_members
 from search.engine.retrieval.whole_reading import identity_years, whole_reading
@@ -63,6 +65,8 @@ from search.models import (
     TimeWindow,
 )
 from search.models.vocab import SCOPE_OPTION_ID_PATTERN
+from search.scope.provider import _window_days
+from search.scope.region import policy_members_between, policy_members_throughout
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, Conflict, ScopeFacts
 
@@ -98,12 +102,16 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
     containing = _containing(dataset, flow)
     marked = () if rebound or containing else _marked(dataset, flow, base.requested_window)
     total = rebound or containing or (marked[0] if len(marked) == 1 else None)
-    if named == [total] or (len(marked) > 1 and len(named) == 1 and named[0] in marked):
-        return None
     held = f"{axis}:named"
     whole = f"{axis}:whole"
     members = f"{axis}:members"
-    outside = _outside(named, containing) if rebound is None and containing is not None else ()
+    if named == [total] or (len(marked) > 1 and len(named) == 1 and named[0] in marked):
+        return _whole_already(axis, key, named)
+    outside = (
+        _outside(named, containing, base.requested_window)
+        if rebound is None and containing is not None
+        else ()
+    )
     totals = (
         marked
         if len(marked) > 1
@@ -187,6 +195,27 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
     )
 
 
+def _whole_already(axis: ScopeAxis, key: str, named: list[str]) -> AxisTable:
+    """The table of a side the part names by its whole: one option, held, which is the
+    whole, so an entry asking for it refuses `part_is_whole`."""
+    whole = f"{axis}:whole"
+    return AxisTable(
+        axis=axis,
+        options=(
+            Option(
+                option_id=whole,
+                label=_label(named[0]),
+                binding=SideBinding(role=key, refs=named),
+                availability=OptionAvailability(status="available"),
+            ),
+        ),
+        preference=(whole,),
+        held=whole,
+        rules={whole: "side_whole"},
+        whole=whole,
+    )
+
+
 def _label(dcid: str) -> str:
     party = get_index().parties.get(dcid)
     return party.label if party is not None and party.label else dcid
@@ -236,17 +265,37 @@ def _containing(dataset: str, flow: RoleAxis) -> str | None:
     return None if held is None else held.total
 
 
-def _outside(named: Sequence[str], total: str) -> tuple[str, ...]:
-    """The parties of `named` a containing total does not hold: those whose members
-    (`provider._members`, a country itself or the members of the group it totals) are not
-    all members of the group `total` totals in the membership policy."""
-    from search.scope.provider import _members
-
+def _outside(named: Sequence[str], total: str, window: IdentityWindow) -> tuple[str, ...]:
+    """The parties of `named` a containing total does not hold over `window`: those whose
+    members (a country itself, or the members of the group it totals on any day of the
+    window) are not all members of the group `total` totals on every day of it
+    (`region.policy_members_throughout`), as Korea is not of the DAC's before 2010."""
+    first, last = _window_days(window)
     index = get_index()
-    held = _members(total, index)
+    held = _group_members(total, index, lambda group: policy_members_throughout(group, first, last))
     return tuple(
-        party for party in named if not (members := _members(party, index)) or not members <= held
+        party
+        for party in named
+        if not (
+            members := _group_members(
+                party, index, lambda group: policy_members_between(group, first, last)
+            )
+        )
+        or not members <= held
     )
+
+
+def _group_members(
+    party: str, index: CodeIndex, members_of: Callable[[str], frozenset[str]]
+) -> frozenset[str]:
+    """What a total of `party` sums: the country itself, or `members_of` the group it totals
+    (`PartyRow.totals`); empty for any other party."""
+    if party.startswith(COUNTRY_PREFIX):
+        return frozenset((party,))
+    row = index.parties.get(party)
+    if row is None or row.totals is None:
+        return frozenset()
+    return members_of(row.totals)
 
 
 def _marked(dataset: str, flow: RoleAxis, window: IdentityWindow) -> tuple[str, ...]:

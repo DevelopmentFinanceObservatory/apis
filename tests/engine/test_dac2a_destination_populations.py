@@ -1414,8 +1414,11 @@ def _france_answer(recipient: str | None) -> DefinitePart:
     )
 
 
-def _under_total_oda(part: DefinitePart) -> DefinitePart:
-    """`part`'s scope base resubmitted under `provider:contributions`, DAC2a's total ODA."""
+def _under_total_oda(
+    part: DefinitePart, held: dict[tuple[str, str, str], int] = _AT_DEVELOPING
+) -> DefinitePart:
+    """`part`'s scope base resubmitted under `provider:contributions`, DAC2a's total ODA,
+    read over `held`."""
     choices = part.spec.resolved.scope_choices
     assert choices is not None
     switch = Entry(
@@ -1439,7 +1442,7 @@ def _under_total_oda(part: DefinitePart) -> DefinitePart:
             ),
             graph=_graph_with_parties(),
             llm=_ScriptedLLM(_VARIABLE),
-            sdmx=_sdmx(_AT_DEVELOPING),
+            sdmx=_sdmx(held),
         )
     )
 
@@ -1451,8 +1454,8 @@ def test_developing_countries_keep_their_recipient_through_the_bilateral_composi
     `DACDevelopingCountries`, in its identity and in its scope's base, and a resubmit of it
     answers the same Spec. Total ODA to the bilateral side holds no core contribution, so
     its scope offers no switch to total ODA (`destination_bilateral`) and a resubmit asking
-    for one refuses, where France's ODA to no recipient named switches to total ODA to every
-    recipient."""
+    for one refuses, where France's ODA to no recipient named switches to total ODA to all
+    recipients, the published total of both sides."""
     _patched_coverage(monkeypatch, _AT_DEVELOPING)
 
     named = _france_answer("developing countries")
@@ -1478,6 +1481,9 @@ def test_developing_countries_keep_their_recipient_through_the_bilateral_composi
     with pytest.raises(EngineInputError) as refused:
         _under_total_oda(named)
     assert refused.value.code == "requested_option_unavailable"
-    switched = _under_total_oda(unnamed).spec.definition.identity
-    assert "destination" not in switched.entities
+    at_all = {**_AT_DEVELOPING, (_DAC2A_MEMBER, _FRA, _ALL_RECIPIENTS): 500}
+    _patched_coverage(monkeypatch, at_all)
+    switched = _under_total_oda(unnamed, at_all).spec.definition.identity
+    assert switched.entities["destination"] == [_ALL_RECIPIENTS]
+    assert not switched.open_roles
     assert (switched.facets or {}).get("provenance") is None

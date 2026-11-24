@@ -8,6 +8,10 @@ and the CRS and DAC2a parts are `test_provider`'s identities over its coverage s
 
 from __future__ import annotations
 
+import dataclasses
+from datetime import date
+from types import SimpleNamespace
+
 import pytest
 
 from code_index.composites import destination_population
@@ -15,6 +19,7 @@ from code_index.shared import get_index
 from search.engine.region import whole_totals
 from search.models import (
     BaseIdentity,
+    IdentityWindowRange,
     Option,
     OptionAvailability,
     PartScope,
@@ -22,7 +27,7 @@ from search.models import (
     ProviderScope,
     SlotBinding,
 )
-from search.scope import side
+from search.scope import region, side
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
 from search.scope.rules import AXIS_RULES
@@ -55,7 +60,7 @@ def _switched(base: BaseIdentity, option_id: str) -> PartScope:
 
 @pytest.mark.parametrize("code", [_BILATERAL, _MULTILATERAL])
 def test_a_dac1_provider_lines_whole_is_total_oda_for_the_same_donor(monkeypatch, code: str):
-    """B12, C8, C9: US bilateral (or multilateral) ODA's whole over the provider axis is
+    """US bilateral (or multilateral) ODA's whole over the provider axis is
     DAC1 total ODA for the US, whatever entry the part holds on the axis. The whole's spec_id
     is the total's, the part's is the line's, and the donor is untouched."""
     total, total_spec_id = _total_base(monkeypatch)
@@ -80,7 +85,7 @@ def test_a_dac1_provider_lines_whole_is_total_oda_for_the_same_donor(monkeypatch
 
 
 def test_a_donor_outside_the_containing_total_has_no_donor_whole(monkeypatch):
-    """B2: DAC1's DAC countries' total holds no multilateral, so a part naming the DAC's
+    """DAC1's DAC countries' total holds no multilateral, so a part naming the DAC's
     multilaterals is refused a donor whole naming the parties outside it, with the side
     summed over its members offered in its place."""
     total, _ = _total_base(monkeypatch)
@@ -96,7 +101,7 @@ def test_a_donor_outside_the_containing_total_has_no_donor_whole(monkeypatch):
 
 
 def test_total_odas_provider_whole_refuses_as_the_part_itself(monkeypatch):
-    """C12: a whole posted again asks for the whole of a whole, which refuses once."""
+    """A whole posted again asks for the whole of a whole, which refuses once."""
     total, _ = _total_base(monkeypatch)
 
     refused = build_part_scope(
@@ -117,7 +122,7 @@ def test_total_odas_provider_whole_refuses_as_the_part_itself(monkeypatch):
 def test_a_dac1_donors_whole_is_the_dac_countries_total_where_covered(
     monkeypatch, covered: bool, expected: list[str] | None
 ):
-    """B1, B2, B6: the donor whole on DAC1 binds the containing total, provider option and
+    """The donor whole on DAC1 binds the containing total, provider option and
     years held, or refuses where the request's coverage holds no series there."""
     total, total_spec_id = _total_base(monkeypatch)
     facts = (
@@ -192,22 +197,33 @@ def test_the_dac1_provider_table_declares_total_oda_its_whole(monkeypatch):
     assert whole is not None and isinstance(whole.binding, ProviderBinding | SlotBinding)
 
 
-def test_a_donor_whole_the_snapshot_cannot_read_refuses_with_its_own_cause(monkeypatch):
+@pytest.mark.parametrize(
+    ("code", "covered", "alternatives"),
+    [
+        pytest.param(_BILATERAL, _MULTILATERAL, ("donor:members",), id="bilateral"),
+        pytest.param(_TOTAL, _BILATERAL, (), id="total-oda"),
+    ],
+)
+def test_a_donor_whole_the_snapshot_cannot_read_refuses_with_its_own_cause(
+    monkeypatch, code: str, covered: str, alternatives: tuple[str, ...]
+):
     """A snapshot holding no series of the whole's variables cannot say whether the DAC
-    countries' total serves the part, so the donor whole refuses `coverage_unknown` and
-    offers the side summed over its members, where reading it as covered would state an
-    unread total."""
+    countries' total serves the part, so the donor whole refuses `coverage_unknown`, where
+    reading it as covered would state an unread total. It offers the side summed over its
+    members in its place only where that sum holds with the provider option the part holds:
+    beside total ODA it would count the agencies' outflows twice."""
     total, _ = _total_base(monkeypatch)
-    # Bilateral ODA alone: the snapshot covers none of total ODA's variables.
-    facts = provider_fixture._dac1_facts(_BILATERAL)
+    base = total if code == _TOTAL else _switched(total, "provider:bilateral").compiled.identity
+    # The snapshot covers none of the part's own variables at the total.
+    facts = provider_fixture._dac1_facts(covered)
 
-    refused = build_part_scope(base=total, entries=[switch("donor:whole")], records={}, facts=facts)
+    refused = build_part_scope(base=base, entries=[switch("donor:whole")], records={}, facts=facts)
 
     assert isinstance(refused, Refusal)
     assert (refused.code, refused.cause, refused.alternatives) == (
         "requested_option_unavailable",
         "coverage_unknown",
-        ("donor:members",),
+        alternatives,
     )
 
 
@@ -378,14 +394,17 @@ def test_dac2a_total_oda_and_bilateral_read_one_row_for_a_named_country():
 @pytest.mark.parametrize(
     "destination", [None, provider_fixture._DEVELOPING], ids=["open", "developing-countries"]
 )
-@pytest.mark.parametrize("option", ["provider:bilateral", "provider:inclusive"])
+@pytest.mark.parametrize(
+    "option", ["provider:bilateral", "provider:inclusive", "provider:contributions"]
+)
 def test_a_dac2a_part_over_the_whole_population_takes_total_oda_as_its_whole(
     destination: str | None, option: str
 ):
     """Over the whole recipient population the provider whole is DAC2a's total ODA to all
     recipients, the published total of both sides, with the inclusive scope offered in its
     place where the part does not hold it. A part naming the developing countries' total and
-    one leaving the side open take one whole."""
+    one leaving the side open take one whole, whatever option the part holds: total ODA to
+    the developing countries counts the bilateral flows alone."""
     part = _dac2a_part(destination, option)
 
     scope = build_part_scope(
@@ -401,7 +420,7 @@ def test_a_dac2a_part_over_the_whole_population_takes_total_oda_as_its_whole(
     assert derived.alternatives == (
         [] if option == "provider:inclusive" else ["provider:inclusive"]
     )
-    assert derived.part.spec_id == part.compiled.spec_id == scope.base.spec_id
+    assert derived.part.spec_id == part.compiled.spec_id
     whole = scope.compiled.identity
     assert whole.entities["destination"] == [provider_fixture._ALL_RECIPIENTS]
     assert not whole.open_roles
@@ -441,3 +460,144 @@ def test_the_developing_countries_part_reads_the_total_of_the_population_the_ope
     assert whole.derived.kind == "published_total"
     assert whole.compiled.identity.entities["destination"] == [population.total]
     assert whole.compiled.identity.facets == africa.compiled.identity.facets
+
+
+def test_a_part_naming_its_side_whole_refuses_as_the_whole_itself(monkeypatch):
+    """A part naming the DAC countries' total already is its donor whole, which refuses
+    once, as a provider whole posted again does."""
+    total, _ = _total_base(monkeypatch)
+    base = total.model_copy(update={"entities": {"origin": [provider_fixture._DAC_COUNTRIES]}})
+
+    refused = build_part_scope(
+        base=base, entries=[switch("donor:whole")], records={}, facts=_facts()
+    )
+
+    assert isinstance(refused, Refusal)
+    assert (refused.code, refused.cause) == ("requested_option_unavailable", "part_is_whole")
+
+
+def test_a_donor_outside_the_dac_over_the_part_s_years_has_no_dac_total_whole(monkeypatch):
+    """A containing total holds a donor only over the years it is a member: with Korea in
+    the DAC from 2010, over 2000-2005 the DAC countries' total holds no Korean ODA and
+    Korea's donor whole refuses `part_outside_whole`, and over 2015-2019 it holds it. The
+    membership policy dates no DAC membership, so the test dates Korea's."""
+    policy = region.shared_membership_policy()
+    group = get_index().parties[provider_fixture._DAC_COUNTRIES].totals
+    assert group is not None
+
+    class Dated:
+        def __contains__(self, ref: str) -> bool:
+            return ref in policy
+
+        def get(self, ref: str):
+            held = policy.get(ref)
+            if ref != group:
+                return held
+            rows = [
+                dataclasses.replace(row, valid_from=date(2010, 1, 1)) if row.member == _KOR else row
+                for row in held.rows
+            ]
+            return SimpleNamespace(rows=rows)
+
+    monkeypatch.setattr(region, "shared_membership_policy", lambda: Dated())
+    total, _ = _total_base(monkeypatch)
+
+    def asked(first: int, last: int) -> PartScope | Refusal:
+        base = total.model_copy(
+            update={
+                "entities": {"origin": [_KOR]},
+                "requested_window": IdentityWindowRange(start_year=first, end_year=last),
+            }
+        )
+        return build_part_scope(
+            base=base, entries=[switch("donor:whole")], records={}, facts=_facts()
+        )
+
+    before = asked(2000, 2005)
+    after = asked(2015, 2019)
+
+    assert isinstance(before, Refusal) and before.cause == "part_outside_whole"
+    assert not (isinstance(after, Refusal) and after.cause == "part_outside_whole")
+
+
+_KOR = "country/KOR"
+
+
+def test_two_whole_entries_refuse_as_conflicting():
+    """One post asks for one whole: a second whole entry refuses as conflicting with the
+    first."""
+    part = _dac2a_part(_AFRICA)
+
+    refused = build_part_scope(
+        base=part.compiled.identity,
+        entries=[switch("provider:whole"), switch("recipient:whole")],
+        records={},
+        facts=_dac2a_facts(),
+    )
+
+    assert isinstance(refused, Refusal)
+    assert (refused.code, refused.cause, refused.entry, refused.blocker) == (
+        "conflicting_requested_options",
+        "two_wholes",
+        1,
+        0,
+    )
+
+
+@pytest.mark.parametrize("listed", [False, True], ids=["totalled", "listed"])
+def test_a_dac2a_whole_over_the_whole_population_compiles_again_from_its_own_scope(listed: bool):
+    """Over the whole population the provider whole reads total ODA to all recipients, and
+    its scope states the identity it compiled over, so its base and entries posted again
+    compile to the same Spec. A switch to total ODA from a part that totals its recipient
+    side reads that total too; from a part listing every recipient it keeps the listing."""
+    part = _dac2a_part(None)
+    if not listed:
+        unlisted = part.compiled.identity.model_copy(update={"open_roles": None})
+        part = build_part_scope(base=unlisted, entries=[], records={}, facts=_dac2a_facts())
+        assert isinstance(part, PartScope)
+    facts = _dac2a_facts()
+
+    whole = build_part_scope(
+        base=part.compiled.identity, entries=[switch("provider:whole")], records={}, facts=facts
+    )
+    switched = build_part_scope(
+        base=part.compiled.identity,
+        entries=[switch("provider:contributions")],
+        records={},
+        facts=facts,
+    )
+    assert isinstance(whole, PartScope) and isinstance(switched, PartScope)
+    again = build_part_scope(
+        base=whole.base.identity, entries=whole.entries, records={}, facts=facts
+    )
+
+    assert isinstance(again, PartScope)
+    assert again.compiled.spec_id == whole.compiled.spec_id
+    destination = switched.compiled.identity.entities.get("destination")
+    if listed:
+        assert destination is None
+        assert switched.compiled.identity.open_roles == ["destination"]
+    else:
+        assert destination == [provider_fixture._ALL_RECIPIENTS]
+        assert switched.compiled.spec_id == whole.compiled.spec_id
+
+
+def test_total_oda_to_an_agency_takes_total_oda_to_all_recipients_as_its_whole():
+    """A multilateral agency is on the side total ODA alone reads, so France's total ODA to
+    IDA takes the population's whole, total ODA to all recipients; the inclusive scope
+    serves no agency, so it is offered nowhere in its place."""
+    base = provider_fixture._dac2a_identity(
+        "Gross", donor=provider_fixture._FRA, destination=provider_fixture._IDA
+    )
+
+    scope = build_part_scope(
+        base=base, entries=[switch("provider:whole")], records={}, facts=_dac2a_facts()
+    )
+
+    assert isinstance(scope, PartScope) and scope.derived is not None
+    whole = scope.compiled.identity
+    assert whole.entities["destination"] == [provider_fixture._ALL_RECIPIENTS]
+    assert (scope.derived.whole.option_id, scope.derived.alternatives) == (
+        "provider:contributions",
+        [],
+    )

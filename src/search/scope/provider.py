@@ -326,7 +326,7 @@ def _with_whole(
     """`table`, a provider table on `dataset`, with the whole its dataset declares
     (`PROVIDER_WHOLES`): `ProviderWhole.named_scope` where the part names recipients below
     the population's total (`below`), else `ProviderWhole.scope` with its alternatives, each
-    where the table offers it and the part does not hold it. `whole_base` is the identity
+    where the table offers it available and the part does not hold it. `whole_base` is the identity
     the whole is compiled over (`AxisTable.whole_base`). A table offering no declared whole declares none
     (`whole_not_offered`), with the alternatives it offers in its place."""
     row = _WHOLES.get(dataset) if dataset is not None else None
@@ -337,7 +337,8 @@ def _with_whole(
     alternatives = tuple(
         option_id
         for alternative in (() if named else row.alternatives)
-        if table.option(option_id := provider_option_id(alternative)) is not None
+        if (option := table.option(option_id := provider_option_id(alternative))) is not None
+        and option.availability.status != "unavailable"
         and option_id != table.held
     )
     whole = provider_option_id(scope)
@@ -480,13 +481,14 @@ def _published_table(
     )
     named = _destinations(bilateral)
     population = frozenset() if split is None else frozenset((split.rebound, split.spanning))
-    below = bool(named) and not set(named) <= population
-    # Over the whole population a composite's whole is total ODA to all recipients, the total
-    # of both sides, which a read of total ODA over the open side would count beside the
-    # regional totals.
+    # Below the population's total: countries and regions on the bilateral side. A part
+    # naming a multilateral agency or the population's total takes the population's whole.
+    below = bool(named) and rule is not None and rule.bilateral and not set(named) <= population
+    # Over the whole population the whole is total ODA to all recipients, the total of both
+    # sides, whatever option the part holds.
     whole_base = (
         _at_total(bilateral, split.spanning)
-        if split is not None and not below and (bilateral_held or inclusive_held)
+        if split is not None and not below and named != [split.spanning]
         else None
     )
     return _with_whole(table, row.dataset, below=below, whole_base=whole_base)
@@ -503,7 +505,8 @@ def _destinations(identity: BaseIdentity) -> list[str]:
 
 
 def _at_total(identity: BaseIdentity, total: str) -> BaseIdentity:
-    """`identity` naming `total` as its one destination, which it no longer leaves open."""
+    """`identity` naming `total` as its one destination, with the destination side taken out
+    of its open roles."""
     entities = {
         key: dcids
         for key, dcids in identity.entities.items()
