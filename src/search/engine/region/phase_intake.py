@@ -192,6 +192,9 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     state.whole_listed = {
         name: axis for name, axis in sides.items() if name in state.member_entities or axis in over
     }
+    state.whole_listed_parties = {
+        name: dcids for name, dcids in whole_named.items() if name in state.whole_listed
+    }
     state.open_axes |= set(state.whole_listed.values())
     whole_named = {
         name: dcids for name, dcids in whole_named.items() if name not in state.whole_listed
@@ -634,16 +637,7 @@ def _prune_shapes_by_listing(
     listing alone. A population every shape lists exactly is no cause of the refusal."""
     if not state.whole_listed:
         return shapes, []
-    resolved = {
-        name: resolution.entity
-        for name, resolution in cast(Recall, state.rcl).resolutions.items()
-        if name in state.whole_listed and isinstance(resolution, Resolved)
-    }
-    listed = {
-        name: dcids
-        for name, dcids in _whole_named(state, resolved).items()
-        if name in state.whole_listed
-    }
+    listed = state.whole_listed_parties
     parties = get_index().parties
     covered = {
         name: {cls for dcid in dcids for marker in parties[dcid].whole for cls in marker.covers}

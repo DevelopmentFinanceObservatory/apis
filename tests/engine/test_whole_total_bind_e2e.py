@@ -4309,6 +4309,40 @@ def test_developing_countries_listed_under_total_oda_list_off_dac2a(
     assert [source.ref for source in spec.resolved.trace.resolved_sources] == [CRS_PROVENANCE]
 
 
+@pytest.mark.parametrize("text", _DEVELOPING_TEXTS[:2])
+def test_developing_countries_on_the_raw_door_name_one_population_read_whole_or_listed(
+    monkeypatch: pytest.MonkeyPatch, text: str
+):
+    """Extraction marks "developing countries" with `members` true or false. Either way the
+    text states the developing countries' total as its ref; read whole DAC2a binds that total
+    as the recipient, and read as its members the recipient side opens on the listing
+    gate's shape."""
+    _developing_coverage(monkeypatch)
+    france = ExtractedEntity(text="France", span="France", role="source", cue="from")
+
+    def answer(members: bool) -> DefinitePart:
+        listed = ExtractedEntity(text=text, span=text, role="recipient", cue="to", members=members)
+        return _part(
+            offline_resolve(
+                ResolveRequest(input=RawTextInput(query=f"{_VARIABLE} from France to {text}")),
+                graph=_graph(variable=_VARIABLE),
+                llm=_ScriptedLLM(_VARIABLE, entities=(france, listed)),
+                sdmx=FakeSdmxClient(observations={}, availability={}),
+            )
+        )
+
+    whole, listed = answer(members=False), answer(members=True)
+
+    for part in (whole, listed):
+        assert [(e.text, e.refs) for e in part.entity_refs] == [
+            ("France", [_FRA]),
+            (text, [_DEVELOPING]),
+        ]
+    assert whole.spec.definition.identity.entities.get("destination") == [_DEVELOPING]
+    assert listed.spec.definition.identity.open_roles == ["destination"]
+    assert listed.spec.definition.identity.entities.get("destination") is None
+
+
 def test_developing_countries_as_the_donor_refuse_as_misdirected(
     monkeypatch: pytest.MonkeyPatch,
 ):
