@@ -32,7 +32,7 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from entity_resolution import EntityResolutionError, EntityResolver
+from entity_resolution import Ambiguous, Entity, EntityResolutionError, EntityResolver, Resolution
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
@@ -50,6 +50,7 @@ from search.engine.errors import (
 from search.engine.exclusion_read import ExclusionRead
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import phase_election as election_module
 from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -1111,17 +1112,26 @@ _DAC1_TOTAL_ODA = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal
 def _total_oda_resolve(
     monkeypatch: pytest.MonkeyPatch,
     part: ParsedPart,
+    replies: Mapping[str, Resolution | Exception] | None = None,
 ) -> tuple[Part, set[str]]:
     """`part` resolved over DAC1's total ODA from the United States, recalled for the bare
     words "total ODA" and for `part`'s own variable, with the binder rating "US" and "UK"
     unstated, as the deployed binder rates "US" in "total US ODA", and every text the
-    entity resolver was asked."""
+    entity resolver was asked. The resolver answers a text `replies` holds with its
+    resolution there, or fails the call it is asked in with its exception there."""
     asked: set[str] = set()
     resolve = EntityResolver.resolve
+    replied = replies or {}
 
     async def recording(self, texts, **kwargs):
         asked.update(texts)
-        return await resolve(self, texts, **kwargs)
+        for text in texts:
+            if isinstance(replied.get(text), Exception):
+                raise replied[text]
+        found = await resolve(self, texts, **kwargs)
+        return [
+            replied.get(text, resolution) for text, resolution in zip(texts, found, strict=True)
+        ]
 
     monkeypatch.setattr(EntityResolver, "resolve", recording)
     patch_coverage(
@@ -1202,6 +1212,69 @@ def test_a_variable_word_restating_a_bound_party_reads_as_that_party(
     assert isinstance(part, DefinitePart), part
     assert part.spec.definition.identity.entities == {"origin": [_USA]}
     assert _sources(part.spec) == [_DAC1]
+
+
+def _country(dcid: str, name: str) -> Entity:
+    return Entity(dcid=dcid, name=name, kind="country", graph_types=("Country",))
+
+
+@pytest.mark.parametrize(
+    ("candidates", "restates"),
+    [
+        pytest.param(
+            (_country(_USA, "United States"), _country(_GBR, "United Kingdom")),
+            True,
+            id="one-bound-candidate",
+        ),
+        pytest.param(
+            (_country(_GBR, "United Kingdom"), _country("country/AUS", "Australia")),
+            False,
+            id="no-bound-candidate",
+        ),
+    ],
+)
+def test_an_ambiguous_word_restates_the_one_bound_party_among_its_candidates(
+    monkeypatch: pytest.MonkeyPatch, candidates, restates
+):
+    """A word the resolver reads as ambiguous restates the party the part binds when exactly
+    one of its candidates is that party, as intake settles an ambiguous surface on the name
+    beside it, and stays uncovered when none is."""
+    part, _asked = _total_oda_resolve(
+        monkeypatch,
+        ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
+        {"US": Ambiguous(candidates=candidates)},
+    )
+
+    if restates:
+        assert isinstance(part, DefinitePart), part
+        assert part.spec.definition.identity.entities == {"origin": [_USA]}
+    else:
+        assert isinstance(part, NoDataPart), part
+        assert part.no_data.reason == "qualifier_not_bound"
+
+
+def test_a_failed_restatement_read_leaves_the_word_uncovered(monkeypatch: pytest.MonkeyPatch):
+    """A resolver failure while reading "US" restates nothing: the part refuses on the word,
+    as it does with no restatement rule, and the read is noted as lost."""
+    noted: list[str] = []
+    note = election_module.note_degraded_read
+
+    def noting(read: str) -> None:
+        noted.append(read)
+        note(read)
+
+    monkeypatch.setattr(election_module, "note_degraded_read", noting)
+    part, asked = _total_oda_resolve(
+        monkeypatch,
+        ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
+        {"US": EntityResolutionError("resolver down")},
+    )
+
+    assert "US" in asked
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == ["US"]
+    assert "restated entity read" in noted
 
 
 def test_a_variable_word_naming_a_party_the_part_does_not_bind_stays_unbound(

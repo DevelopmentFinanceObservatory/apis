@@ -8,14 +8,17 @@ import copy
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from typing import Final
 
+import dc_graph
 from code_index.scope_conventions import ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import word_tokens
 from code_index.types import MeasureAxis
-from entity_resolution import Group, Resolution, Resolved
+from entity_resolution import Ambiguous, EntityResolutionError, Group, Resolution, Resolved
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_broad_readings,
@@ -31,8 +34,9 @@ from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import whole_total_ended_fact
-from search.engine.errors import LLMInfraError
+from search.engine.errors import GraphInfraError, LLMInfraError
 from search.engine.extract import slot_default_answers
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierReadings,
@@ -1257,7 +1261,7 @@ async def judge_coverage(state: ResolveState) -> None:
         return
     state.coverage_judged = True
     await _rate_unread_words(state)
-    await read_restated_entity_words(state)
+    await read_restated_entity_words(state, ((state, _coverage_terms(state)),))
     record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
@@ -1295,9 +1299,24 @@ async def judge_coverage(state: ResolveState) -> None:
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
 
-def _resolution_dcids(resolution: Resolution | None) -> frozenset[str]:
-    """The dcids a resolution names its entity by: a resolved entity's node, or a group's
-    registry id and node."""
+def _names_bound(resolution: Resolution, bound: AbstractSet[str]) -> bool:
+    """Whether `resolution` names one of the dcids `bound`: a resolved entity's node, a
+    group's registry id or node, or the one candidate of an ambiguous text that is bound,
+    which intake settles such a text on beside a name that resolves to it
+    (`surface_resolution._settle`)."""
+    if isinstance(resolution, Resolved):
+        return resolution.entity.dcid in bound
+    if isinstance(resolution, Group):
+        node = resolution.entity
+        return resolution.dcid in bound or (node is not None and node.dcid in bound)
+    if isinstance(resolution, Ambiguous):
+        return sum(candidate.dcid in bound for candidate in resolution.candidates) == 1
+    return False
+
+
+def _bound_dcids(resolution: Resolution) -> frozenset[str]:
+    """The dcids a resolution of one of the part's entities binds: a resolved entity's
+    node, or a group's registry id and node."""
     if isinstance(resolution, Resolved):
         return frozenset({resolution.entity.dcid})
     if isinstance(resolution, Group):
@@ -1308,39 +1327,75 @@ def _resolution_dcids(resolution: Resolution | None) -> frozenset[str]:
     return frozenset()
 
 
-async def read_restated_entity_words(state: ResolveState) -> None:
+# The failures of the restatement read that leave every word as the rule read it.
+_RESTATEMENT_READ_FAILURES: Final = (
+    EntityResolutionError,
+    GraphInfraError,
+    dc_graph.GraphReadError,
+    dc_graph.GraphCapExceededError,
+    TimeoutError,
+)
+
+
+async def read_restated_entity_words(
+    state: ResolveState,
+    answers: Sequence[tuple[ResolveState, Sequence[ResolvedQualifier]]],
+) -> None:
     """Read as an entity of the part each stretch of the variable the coverage rule would
-    leave uncovered on the elected answer (`_coverage_reading`), or a word of one, that
-    resolves to an entity the part binds, on any role: its resolution names a dcid the
-    resolution of one of the part's entities names. "US" in "total US ODA" beside the donor
-    United States reads as that donor (`ResolveState.restated_entity_words`, read by
-    `ResolveState.entity_texts`), as "United States" in the phrase would, while "UK" beside
-    it names a party the part does not bind and stays uncovered. The resolver is asked once,
-    and only when the rule leaves a stretch uncovered."""
+    leave uncovered on any of `answers`, or a word of one, that resolves to an entity the
+    part binds, on any role. Each answer is the elected answer or a view of a candidate
+    (`answer_view`) with the terms the rule reads on it as recorded. "US" in "total US ODA"
+    beside the donor United States reads as that donor (`ResolveState.restated_entity_words`,
+    read by `ResolveState.entity_texts`), as "United States" in the phrase would, while
+    "UK" beside it names a party the part does not bind and stays uncovered. A word restating
+    an entity restates it on every answer, so `state` and each answer keep every word read.
+
+    The resolver is asked once, for the union of the answers' uncovered stretches and of
+    their words other than function words, and only when some answer leaves one. A failed
+    read restates nothing, is logged and noted as lost (`note_degraded_read`), so each
+    word stays as the rule read it."""
     rcl = state.rcl
-    if rcl is None or state.shape_draft is None:
+    if rcl is None:
         return
-    bound = frozenset().union(*map(_resolution_dcids, rcl.resolutions.values()))
+    bound = frozenset().union(*map(_bound_dcids, rcl.resolutions.values()))
     if not bound:
         return
-    records = _coverage_reading(state, _coverage_terms(state)).records
     texts = list(
         dict.fromkeys(
             text
-            for record in records
+            for answer, terms in answers
+            if answer.shape_draft is not None
+            for record in _coverage_reading(answer, terms).records
             if record.evidence == "uncovered"
-            for text in (record.text, *(word.text for word in word_tokens(record.text)))
+            for text in (
+                record.text,
+                *(
+                    word.text
+                    for word in word_tokens(record.text)
+                    if word.text.casefold() not in FUNCTION_WORDS
+                ),
+            )
+            if text not in state.restated_entity_words
         )
     )
     if not texts:
         return
-    found = await state.resolver.resolve(texts, deadline=state.deadline)
+    try:
+        found = await state.resolver.resolve(texts, deadline=state.deadline)
+    except _RESTATEMENT_READ_FAILURES:
+        logger.warning("restated entity read failed; each word reads as uncovered", exc_info=True)
+        note_degraded_read("restated entity read")
+        return
     restated = tuple(
         text
         for text, resolution in zip(texts, found, strict=True)
-        if _resolution_dcids(resolution) & bound
+        if _names_bound(resolution, bound)
     )
+    if not restated:
+        return
     state.restated_entity_words = (*state.restated_entity_words, *restated)
+    for answer, _terms in answers:
+        answer.restated_entity_words = state.restated_entity_words
 
 
 async def judge_answer_coverage(
@@ -1353,7 +1408,9 @@ async def judge_answer_coverage(
     candidate's own read served (`answer_view`), so "refugee" in "refugee assistance" is
     unread on "Assistance received" and read on "Refugee assistance given", whichever of
     the two was elected. The binder rates the words the lexical readers leave on each
-    candidate, one call per candidate that leaves any, all at once (`_rated_words`).
+    candidate, one call per candidate that leaves any, all at once (`_rated_words`), and a
+    word any candidate would leave uncovered that restates one of the part's entities reads
+    as that entity on every candidate, in one resolver call (`read_restated_entity_words`).
 
     Each record no requirement of the part's ledger holds a phrase of is recorded as the
     elected reading's records are (`requirements.record_coverage`). Return each answer's
@@ -1365,9 +1422,11 @@ async def judge_answer_coverage(
         return tuple(() for _answer in answers)
     views = [answer_view(state, shape, bindings, read) for shape, bindings, read in answers]
     ratings = await asyncio.gather(*(_rated_words(state, view) for view in views))
-    uncovered: list[tuple[ResolvedQualifier, ...]] = []
     for view, rated in zip(views, ratings, strict=True):
         view.stated_word_ratings = rated
+    await read_restated_entity_words(state, [(view, _query_records(view)) for view in views])
+    uncovered: list[tuple[ResolvedQualifier, ...]] = []
+    for view in views:
         records = tuple(
             record
             for record in _coverage_records(view, _query_records(view))
