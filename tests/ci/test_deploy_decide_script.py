@@ -68,45 +68,68 @@ _NEWER = "dfo-dev-apis-00003-ccc"
 def _service(
     commit: str,
     *,
-    serving: str | None = _STAGED,
+    pinned: str | None = None,
+    split: bool = False,
     candidate: str | None = None,
     latest: str = _STAGED,
     ready: str | None = None,
 ) -> dict:
     """A `gcloud run services describe --format=json` document, trimmed to the fields Cloud Run
-    returns for the apis service: the template's image, the latest created revision (built
-    from that image), the latest ready one (`latest` unless given), and the traffic entries.
-    `serving` names the revision with 100 percent of traffic, or None for a split."""
-    traffic = (
-        [{"percent": 100, "revisionName": serving, "latestRevision": serving == _STAGED}]
-        if serving
-        else [
+    returns for the apis service: the template's image, the latest created revision (built from
+    that image), the latest ready one (`latest` unless given), and the traffic asked for in
+    `spec.traffic` and resolved in `status.traffic`. Traffic follows the latest revision unless
+    `pinned` names a revision or `split` is set. A `candidate` tag on a revision that never
+    became ready appears in `spec.traffic` only."""
+    ready = ready or latest
+    if split:
+        asked = [
             {"percent": 50, "revisionName": _SERVING},
             {"percent": 50, "revisionName": _STAGED},
         ]
-    )
+        resolved = asked
+    elif pinned:
+        asked = [{"percent": 100, "revisionName": pinned}]
+        resolved = asked
+    else:
+        asked = [{"percent": 100, "latestRevision": True}]
+        resolved = [{"percent": 100, "latestRevision": True, "revisionName": ready}]
     if candidate:
-        traffic.append({"revisionName": candidate, "tag": "candidate", "url": "https://tagged"})
+        tag = {"revisionName": candidate, "tag": "candidate"}
+        asked = [*asked, tag]
+        if not (candidate == latest and ready != latest):
+            resolved = [*resolved, {**tag, "url": "https://tagged"}]
     return {
-        "spec": {"template": {"spec": {"containers": [{"image": _image_for(commit)}]}}},
+        "spec": {
+            "template": {"spec": {"containers": [{"image": _image_for(commit)}]}},
+            "traffic": asked,
+        },
         "status": {
             "latestCreatedRevisionName": latest,
-            "latestReadyRevisionName": ready or latest,
-            "traffic": traffic,
+            "latestReadyRevisionName": ready,
+            "traffic": resolved,
         },
     }
 
 
-def _fake_gcloud(bin_dir: Path, *, service: dict | None = None, exit_code: int = 0) -> None:
-    """A PATH shim standing in for `gcloud run services describe`: prints the service as JSON
-    under `--format=json`, and the template's image under the value format that reads it."""
+def _fake_gcloud(
+    bin_dir: Path, *, service: dict | None = None, job_commit: str = "", exit_code: int = 0
+) -> None:
+    """A PATH shim standing in for `gcloud run services describe`, which prints the service as
+    JSON under `--format=json` and the template's image under the value format that reads it,
+    and for `gcloud run jobs describe`, which prints the job's image tagged `job_commit`, or the
+    template's commit when unset."""
     bin_dir.mkdir(exist_ok=True)
     image = service["spec"]["template"]["spec"]["containers"][0].get("image", "") if service else ""
+    job_image = _image_for(job_commit) if job_commit else image
     script = bin_dir / "gcloud"
     script.write_text(
         f"""#!/usr/bin/env bash
 if [ "{exit_code}" != 0 ]; then
   exit {exit_code}
+fi
+if [ "$2" = jobs ]; then
+  echo "{job_image}"
+  exit 0
 fi
 for arg in "$@"; do
   case "$arg" in
@@ -143,6 +166,7 @@ def _run_decide(
             "REGION": "northamerica-northeast1",
             "PROJECT_ID": "dev-fin-observatory",
             "TARGET": target,
+            "MAINTENANCE_JOB": "dfo-dev-datasets-maintenance",
             "FORCE": force,
             "OVERRIDE": override,
             "GITHUB_OUTPUT": str(output_file),
@@ -155,12 +179,17 @@ def _image_for(sha: str) -> str:
     return f"northamerica-northeast1-docker.pkg.dev/dev-fin-observatory/datacommons/dfo-apis:{sha}"
 
 
-def _outputs(deploy: bool, release: bool, revision: str = "") -> str:
-    return f"deploy={str(deploy).lower()}\nrelease={str(release).lower()}\nrevision={revision}\n"
+def _outputs(deploy: bool, probe: bool, release: bool, revision: str = "") -> str:
+    flags = {"deploy": deploy, "probe": probe, "release": release}
+    return "".join(f"{key}={str(value).lower()}\n" for key, value in flags.items()) + (
+        f"revision={revision}\n"
+    )
 
 
-_NOTHING = _outputs(False, False)
-_DEPLOY = _outputs(True, True)
+_NOTHING = _outputs(False, False, False)
+_DEPLOY = _outputs(True, True, True)
+_RELEASE_STAGED = _outputs(False, True, True, _STAGED)
+_FINISH_STAGED = _outputs(False, False, True, _STAGED)
 
 
 def test_live_equal_to_target_does_not_deploy(repo: Path, tmp_path: Path):
@@ -259,33 +288,36 @@ def test_force_with_live_equal_to_target_still_deploys(repo: Path, tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("target_of", "latest", "ready", "force", "expected"),
+    ("target_of", "latest", "ready", "job_of", "force", "expected"),
     [
         # A rerun releases the revision an earlier run staged for this commit, without building.
-        ("staged", _STAGED, _STAGED, "false", _outputs(False, True, _STAGED)),
+        ("staged", _STAGED, _STAGED, "staged", "false", _RELEASE_STAGED),
         # A staged revision that never became ready is built again.
-        ("staged", _STAGED, _SERVING, "false", _DEPLOY),
+        ("staged", _STAGED, _SERVING, "staged", "false", _DEPLOY),
         # A dispatch rebuilds even a ready staged revision.
-        ("staged", _STAGED, _STAGED, "true", _DEPLOY),
+        ("staged", _STAGED, _STAGED, "staged", "true", _DEPLOY),
+        # A later run moved the jobs and the worker to another image, so the release rebuilds.
+        ("staged", _STAGED, _STAGED, "docs", "false", _DEPLOY),
         # The commit after a staged one deploys even with a docs-only diff from it, since the
         # previous revision still serves.
-        ("docs", _STAGED, _STAGED, "false", _DEPLOY),
+        ("docs", _STAGED, _STAGED, "staged", "false", _DEPLOY),
         # A revision created after the stop (an `infra` apply) gets no traffic while the pin
         # holds, so the next deploy builds and moves traffic, whatever the target.
-        ("staged", _NEWER, _NEWER, "false", _DEPLOY),
-        ("docs", _NEWER, _NEWER, "false", _DEPLOY),
+        ("staged", _NEWER, _NEWER, "staged", "false", _DEPLOY),
+        ("docs", _NEWER, _NEWER, "staged", "false", _DEPLOY),
     ],
     ids=[
         "rerun",
         "rerun-not-ready",
         "dispatch",
+        "jobs-on-another-image",
         "docs-only-after-staged",
         "rerun-after-newer-revision",
         "docs-only-after-newer-revision",
     ],
 )
 def test_a_revision_staged_by_a_stopped_deploy(
-    repo: Path, tmp_path: Path, target_of, latest, ready, force, expected
+    repo: Path, tmp_path: Path, target_of, latest, ready, job_of, force, expected
 ):
     """An earlier deploy staged revision `_STAGED` with the `candidate` tag and stopped before
     traffic moved, so `_SERVING` still serves, pinned by name."""
@@ -293,47 +325,111 @@ def test_a_revision_staged_by_a_stopped_deploy(
     staged = _commit(repo, "feat: change app", {"src/app.py": "2\n"})
     docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
     bin_dir = tmp_path / "bin"
+    commits = {"staged": staged, "docs": docs}
     _fake_gcloud(
         bin_dir,
-        service=_service(staged, serving=_SERVING, candidate=_STAGED, latest=latest, ready=ready),
+        service=_service(staged, pinned=_SERVING, candidate=_STAGED, latest=latest, ready=ready),
+        job_commit=commits[job_of],
     )
-    target = staged if target_of == "staged" else docs
 
-    result, output = _run_decide(repo, bin_dir, tmp_path, target=target, force=force)
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=commits[target_of], force=force)
 
     assert result.returncode == 0, result.stderr
     assert output == expected
 
 
 @pytest.mark.parametrize(
-    ("target_of", "serving", "force", "override", "refused"),
+    ("traffic", "target_of", "expected"),
+    [
+        # The release moved traffic and stopped before settle, backfill or the tag removal: a
+        # rerun finishes it without probing.
+        ({"candidate": _STAGED}, "released", _FINISH_STAGED),
+        ({"pinned": _STAGED, "candidate": _STAGED}, "released", _FINISH_STAGED),
+        # A pin by name on the latest revision is what a move that stopped before restoring
+        # `--to-latest` leaves.
+        ({"pinned": _STAGED}, "released", _FINISH_STAGED),
+        ({"pinned": _STAGED}, "docs", _FINISH_STAGED),
+        # A dispatch rebuilds.
+        ({"candidate": _STAGED}, "new", _DEPLOY),
+    ],
+    ids=["tag-on-serving", "pinned-and-tagged", "pinned-latest", "pinned-latest-docs", "new"],
+)
+def test_a_release_that_moved_traffic_and_stopped_is_finished(
+    repo: Path, tmp_path: Path, traffic, target_of, expected
+):
+    """Revision `_STAGED` serves; its release did not remove the tag or restore following the
+    latest revision."""
+    _commit(repo, "init", {"src/app.py": "1\n", "README.md": "hello\n"})
+    released = _commit(repo, "feat: change app", {"src/app.py": "2\n"})
+    docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
+    new = _commit(repo, "feat: change app again", {"src/app.py": "3\n"})
+    bin_dir = tmp_path / "bin"
+    _fake_gcloud(bin_dir, service=_service(released, **traffic))
+    target = {"released": released, "docs": docs, "new": new}[target_of]
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
+
+    assert result.returncode == 0, result.stderr
+    assert output == expected
+
+
+@pytest.mark.parametrize(
+    ("service", "target_of"),
+    [
+        # The latest revision never started, so traffic still follows the latest ready one.
+        ({"latest": _NEWER, "ready": _STAGED}, "latest"),
+        ({"latest": _NEWER, "ready": _STAGED}, "docs"),
+        # The stage step's revision never started, so its tag appears in `spec.traffic` only.
+        ({"pinned": _SERVING, "candidate": _STAGED, "ready": _SERVING}, "latest"),
+    ],
+    ids=["latest-not-ready", "latest-not-ready-docs", "staged-not-ready"],
+)
+def test_a_revision_that_never_started_is_not_a_move_by_hand(
+    repo: Path, tmp_path: Path, service, target_of
+):
+    """Nobody moved traffic, so a rerun or a docs-only commit deploys."""
+    _commit(repo, "init", {"src/app.py": "1\n", "README.md": "hello\n"})
+    latest = _commit(repo, "feat: change app", {"src/app.py": "2\n"})
+    docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
+    bin_dir = tmp_path / "bin"
+    _fake_gcloud(bin_dir, service=_service(latest, **service))
+    target = {"latest": latest, "docs": docs}[target_of]
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
+
+    assert result.returncode == 0, result.stdout
+    assert output == _DEPLOY
+
+
+@pytest.mark.parametrize(
+    ("target_of", "traffic", "force", "override", "refused"),
     [
         # A rerun of the commit someone moved traffic off refuses.
-        ("held", _SERVING, "false", "false", True),
+        ("held", {"pinned": _SERVING}, "false", "false", True),
         # So does a dispatch of it, and a commit with the same image inputs.
-        ("held", _SERVING, "true", "false", True),
-        ("docs", _SERVING, "false", "false", True),
+        ("held", {"pinned": _SERVING}, "true", "false", True),
+        ("docs", {"pinned": _SERVING}, "false", "false", True),
         # A split counts as traffic moved by hand.
-        ("held", None, "false", "false", True),
+        ("held", {"split": True}, "false", "false", True),
         # The override deploys.
-        ("held", _SERVING, "true", "true", False),
-        ("held", None, "true", "true", False),
+        ("held", {"pinned": _SERVING}, "true", "true", False),
+        ("held", {"split": True}, "true", "true", False),
         # A commit with other image inputs deploys over the hold.
-        ("fix", _SERVING, "false", "false", False),
+        ("fix", {"pinned": _SERVING}, "false", "false", False),
     ],
     ids=["rerun", "dispatch", "docs-only", "split", "override", "split-override", "new-code"],
 )
 def test_traffic_moved_by_hand_refuses_a_target_that_would_undo_it(
-    repo: Path, tmp_path: Path, target_of, serving, force, override, refused
+    repo: Path, tmp_path: Path, target_of, traffic, force, override, refused
 ):
     """Someone moved traffic off revision `_STAGED`, which carries no `candidate` tag since its
-    deploy released it."""
+    release finished."""
     _commit(repo, "init", {"src/app.py": "1\n", "README.md": "hello\n"})
     held = _commit(repo, "feat: change app", {"src/app.py": "2\n"})
     docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
     fix = _commit(repo, "fix: change app back", {"src/app.py": "3\n"})
     bin_dir = tmp_path / "bin"
-    _fake_gcloud(bin_dir, service=_service(held, serving=serving))
+    _fake_gcloud(bin_dir, service=_service(held, **traffic))
     target = {"held": held, "docs": docs, "fix": fix}[target_of]
 
     result, output = _run_decide(
@@ -347,6 +443,18 @@ def test_traffic_moved_by_hand_refuses_a_target_that_would_undo_it(
     else:
         assert result.returncode == 0, result.stderr
         assert output == _DEPLOY
+
+
+def test_a_hold_off_a_commit_the_checkout_does_not_know_deploys(repo: Path, tmp_path: Path):
+    """Inputs that can't be compared are not the same inputs, so the target deploys."""
+    target = _commit(repo, "init", {"src/app.py": "1\n"})
+    bin_dir = tmp_path / "bin"
+    _fake_gcloud(bin_dir, service=_service("not-a-real-commit-placeholder", pinned=_SERVING))
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
+
+    assert result.returncode == 0, result.stdout
+    assert output == _DEPLOY
 
 
 def test_watched_paths_match_the_workflows_declared_image_inputs():

@@ -28,7 +28,10 @@
 # when the tag sits on another revision, the script ends as `error` and probes
 # nothing, since any other URL reaches a different revision. The
 # token's audience is the service URL, which Cloud Run requires for a tagged
-# URL too; the script logs whether the minted token carries it.
+# URL too. The script decodes the minted token's `aud` claim, ends as `error`
+# when it is not the service URL that describe returned, and logs the match.
+# A 401 or 403 from a route after that match means Cloud Run refused the token
+# on the tagged URL or the deployer lacks roles/run.invoker.
 #
 # The UN terms route answers 404 with `cause.code` `origin_not_served` when the
 # deployment turns the UN origin off (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED`).
@@ -66,9 +69,9 @@
 # is unset, so this runs the same way under a test):
 #
 #   warm         every route answered 200
-#   slow         a route still answered 502, 503, 504 or 429, or nothing, at
-#                its deadline; a warning, since the builds run on for the
-#                next request, or `error` under REQUIRE_PROBE
+#   slow         a route still answered 502, 503, 504 or 429 at its
+#                deadline; a warning, since the builds run on for the next
+#                request, or `error` under REQUIRE_PROBE
 #   forbidden    the token mint or the revision answered 401 or 403, as it
 #                does until the infra grants apply; a warning, or `error`
 #                under REQUIRE_PROBE. Probing stops at the first 401 or 403,
@@ -77,8 +80,10 @@
 #   unavailable  the service URL or the access token could not be read, or
 #                the token mint failed for 4 attempts; a warning, or `error`
 #                under REQUIRE_PROBE
-#   error        the revision answered a route with any other status, or no
-#                traffic entry carries PROBE_TAG on REVISION
+#   error        the revision answered a route with any other status, a
+#                route never answered at all within its deadline (probing
+#                stops there), no traffic entry carries PROBE_TAG on
+#                REVISION, or the token's audience is not the service URL
 #
 # Exits 0 for every outcome; deploy.yml's next step fails the job on `error`.
 # Exits non-zero only on a missing required variable.
@@ -216,9 +221,9 @@ except (IndexError, ValueError):
 id_token="$(sed -n 1p <<<"$minted")"
 echo "::add-mask::$id_token"
 if [ "$(sed -n 2p <<<"$minted")" = yes ]; then
-  echo "ID token audience: the service URL."
+  echo "ID token aud claim: the service URL that describe returned."
 else
-  echo "::error::The ID token generateIdToken returned does not carry the service URL as its audience, which Cloud Run requires on a tagged URL."
+  echo "::error::The ID token generateIdToken returned has an aud claim other than the service URL that describe returned, which Cloud Run requires on a tagged URL."
   finish error
 fi
 
@@ -235,6 +240,7 @@ for probe in "${probes[@]}"; do
   fi
   end=$((SECONDS + route_seconds))
   attempts=0
+  answered=false
   while :; do
     attempts=$((attempts + 1))
     remaining=$((end - SECONDS))
@@ -248,13 +254,16 @@ for probe in "${probes[@]}"; do
       -H "X-Serverless-Authorization: Bearer $id_token" \
       "$probe_url$path" 2>"$work/curl.err")" || status="000"
     echo "$method $path attempt $attempts answered $status."
+    if [ "$status" != 000 ]; then
+      answered=true
+    fi
 
     case "$status" in
       200)
         break
         ;;
       401 | 403)
-        echo "::warning::$path answered $status, so revision $REVISION was not probed. The deployer needs roles/run.invoker on '$SERVICE' (infra apis stack)."
+        echo "::warning::$path answered $status to a token whose aud claim is the service URL, so Cloud Run refused the token on the tagged URL, or the deployer lacks roles/run.invoker on '$SERVICE' (infra apis stack). Revision $REVISION was not probed."
         # The remaining routes would answer the same, so probing ends here,
         # and an error an earlier route answered still fails the deploy.
         if [ "$outcome" = error ]; then
@@ -263,6 +272,10 @@ for probe in "${probes[@]}"; do
         finish forbidden
         ;;
       000 | 429 | 502 | 503 | 504)
+        if [ "$SECONDS" -ge "$end" ] && [ "$answered" = false ]; then
+          echo "::error::$path never answered in $attempts attempt(s) and ${route_seconds} s, so revision $REVISION hangs; probing stops here."
+          finish error
+        fi
         if [ "$SECONDS" -ge "$end" ]; then
           echo "::warning::$path still answered $status after $attempts attempt(s) and ${route_seconds} s; its build runs on for the next request."
           if [ "$outcome" = warm ]; then

@@ -19,18 +19,19 @@ name: Deploy
 # same tip and reconciles the service to it, so an older commit's run never
 # ships an older commit over a newer one.
 #
-# What the target needs is decided against the revision that serves the apis
-# service, by `.github/scripts/deploy_decide.sh`. When the latest created
-# revision serves, its commit is the template's image tag, and a target equal
+# What the target needs is decided from the traffic the apis service asks
+# for, by `.github/scripts/deploy_decide.sh`. The `candidate` tag marks a
+# release that has not finished. When the latest created revision serves and
+# carries no tag, its commit is the template's image tag, and a target equal
 # to that commit, or one whose diff from it touches none of the watched
-# paths, skips every later step. When an older revision serves because a
-# deploy stopped before traffic moved, a rerun of that deploy releases the
-# revision it staged, and any other target deploys. When someone moved
-# traffic by hand, a target with the image inputs of the revision they moved
-# it off refuses, unless a dispatch sets override_manual_traffic. A serving
-# tag that isn't a commit this checkout knows (a placeholder image, or a
-# since-deleted branch) can't be compared, so the job deploys rather than risk
-# skipping a real change.
+# paths, skips every later step. When a deploy stopped before traffic moved, a
+# rerun releases the revision it staged; when a release stopped after traffic
+# moved, a rerun finishes it; any other target deploys. When someone pinned
+# traffic to an older revision by hand, a target with the image inputs of the
+# latest revision refuses, unless a dispatch sets override_manual_traffic. A
+# serving tag that isn't a commit this checkout knows (a placeholder image, or
+# a since-deleted branch) can't be compared, so the job deploys rather than
+# risk skipping a real change.
 #
 # On workflow_dispatch the decide step still reads the service, so an
 # unreadable service fails loudly, but deploys regardless of the diff.
@@ -198,13 +199,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v3
         if: steps.target.outputs.sha != ''
 
-      # Reads which revision serves the apis service and decides from it:
+      # Reads the traffic the apis service asks for and decides from it:
       # `deploy` builds the image, runs the jobs and stages a new revision;
-      # `release` probes a revision, moves traffic to it, settles and
-      # backfills; `revision` names a revision an earlier run staged for this
-      # commit, which a rerun releases without building. It refuses a target
-      # that would undo traffic someone moved by hand, unless the dispatch
-      # sets override_manual_traffic. See the script for the full decision.
+      # `probe` probes the candidate before traffic moves; `release` moves
+      # traffic, settles, backfills and removes the `candidate` tag; `revision`
+      # names a revision an earlier run staged or released for this commit,
+      # which a rerun releases or finishes without building. It refuses a
+      # target that would undo traffic someone moved by hand, unless the
+      # dispatch sets override_manual_traffic. See the script for the full
+      # decision.
       - name: Decide whether to deploy
         id: decide
         if: steps.target.outputs.sha != ''
@@ -213,6 +216,7 @@ jobs:
           REGION: ${{ vars.REGION }}
           PROJECT_ID: ${{ vars.PROJECT_ID }}
           TARGET: ${{ steps.target.outputs.sha }}
+          MAINTENANCE_JOB: ${{ vars.JOB_DATASETS_MAINTENANCE }}
           FORCE: ${{ github.event_name == 'workflow_dispatch' }}
           OVERRIDE: ${{ inputs.override_manual_traffic }}
         run: .github/scripts/deploy_decide.sh
@@ -491,12 +495,14 @@ jobs:
       # here would fight that too. This step runs only once both migration
       # jobs above have exited 0, so the service never serves an image ahead
       # of the schema it expects. `--no-traffic` creates the revision with no
-      # traffic and pins the traffic to the revision serving now, by name;
-      # `--tag=candidate` gives the new revision a URL of its own. The step
-      # checks that the tag sits on the revision the update created, the latest
-      # created one, and fails otherwise, so a tag left on an older revision is
-      # never probed. It outputs that revision's name, and the probe and the
-      # traffic move act on that revision alone.
+      # traffic and pins the traffic to the revision serving now, by name. The
+      # step then reads the revision the update created, the latest created
+      # one, and tags it `candidate` with `update-traffic`, which gives it a
+      # URL of its own and moves the tag off any older revision. `--tag` on the
+      # update would make gcloud name the template revision, which the infra
+      # repository's Terraform does not ignore, so every later apply would
+      # clear the name and create a revision. It outputs the revision's name,
+      # and the probe and the traffic move act on that revision alone.
       - name: Stage the new revision with no traffic
         id: stage
         if: steps.decide.outputs.deploy == 'true'
@@ -505,26 +511,23 @@ jobs:
           gcloud run services update "${{ vars.SERVICE_APIS }}" \
             --image="${{ steps.image.outputs.image }}" \
             --no-traffic \
-            --tag=candidate \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
           revision="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
-            --format=json |
-            python3 -c '
-          import json, sys
-          status = json.load(sys.stdin)["status"]
-          created = status.get("latestCreatedRevisionName")
-          tagged = [e.get("revisionName") for e in status.get("traffic", []) if e.get("tag") == "candidate"]
-          print(created if created and tagged == [created] else "")
-          ')"
+            --format='value(status.latestCreatedRevisionName)')"
           if [ -z "$revision" ]; then
-            echo "::error::The candidate tag is not on the revision this update created, so the deploy stops before probing."
+            echo "::error::The apis service reported no latest created revision after the update."
             exit 1
           fi
-          echo "Staged revision $revision with no traffic."
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --update-tags="candidate=$revision" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+          echo "Staged revision $revision with no traffic and the candidate tag."
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
 
       # The candidate revision builds the skills index, the Graph schema
@@ -535,8 +538,10 @@ jobs:
       # deployer with an ID token for the service URL: the routes whose
       # handlers wait on those builds, and `POST /api/search/stated-scope`.
       # Each route retries a 502, 503, 504 or 429, or no answer, for up to 300
-      # seconds. On dev, a route still slow at its deadline, an answer of 401
-      # or 403, or an unreadable URL or token warns and the deploy goes on. In
+      # seconds. A route that never answers at all within its deadline is an
+      # error everywhere and ends the probe, since a hung revision is broken,
+      # not building. On dev, a route still slow at its deadline, an answer of
+      # 401 or 403, or an unreadable URL or token warns and the deploy goes on. In
       # production (REQUIRE_PROBE) each of those is an error, so every route
       # must answer 200. Any other status is an error everywhere, except a 404
       # `origin_not_served` from the UN terms route, which a deployment with
@@ -547,7 +552,7 @@ jobs:
       # .github/scripts/deploy_warm.sh.
       - name: Warm the candidate revision
         id: warm
-        if: steps.decide.outputs.release == 'true'
+        if: steps.decide.outputs.probe == 'true'
         env:
           SERVICE: ${{ vars.SERVICE_APIS }}
           REGION: ${{ vars.REGION }}
@@ -559,7 +564,7 @@ jobs:
         run: .github/scripts/deploy_warm.sh
 
       - name: Fail on errors the candidate revision answered while warming
-        if: steps.decide.outputs.release == 'true'
+        if: steps.decide.outputs.probe == 'true'
         env:
           WARM_STATUS: ${{ steps.warm.outputs.status }}
         run: |
@@ -570,44 +575,46 @@ jobs:
             exit 1
           fi
 
-      # Moves all traffic to the probed revision by name and removes its
-      # candidate tag in one update. When no revision was created since,
-      # traffic then follows the latest revision again, so a revision `infra`
-      # creates for a configuration change serves at once, as before this
-      # deploy. A revision created while the probe ran (an `infra` apply) has
-      # not been probed: the step tags it `candidate`, keeps traffic on the
-      # probed revision and fails, and a rerun probes and releases it.
+      # Moves all traffic to the probed revision in one update, so the move
+      # either happens whole or not at all. When the revision is still the
+      # latest created one, traffic follows the latest revision again, so a
+      # revision `infra` creates for a configuration change serves at once, as
+      # before this deploy; one created in the seconds between the check and
+      # the update serves unprobed, as one created just after the deploy
+      # would. When a newer revision appeared while the probe ran (an `infra`
+      # apply), the update pins traffic to the probed revision by name and
+      # moves the `candidate` tag to the newer one, and the last step fails so
+      # a rerun probes and releases it. The `candidate` tag stays on a
+      # released revision until settle and backfill have run, so a rerun after
+      # either fails finishes the release.
       - name: Move traffic to the candidate revision
+        id: move
         if: steps.decide.outputs.release == 'true'
         env:
           REVISION: ${{ steps.stage.outputs.revision || steps.decide.outputs.revision }}
         run: |
           set -euo pipefail
-          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
-            --to-revisions="$REVISION=100" \
-            --remove-tags=candidate \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --quiet
           latest="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --format='value(status.latestCreatedRevisionName)')"
-          if [ "$latest" != "$REVISION" ]; then
+          if [ "$latest" = "$REVISION" ]; then
             gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+              --to-latest \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --quiet
+            echo "Revision $REVISION serves all traffic, and traffic follows the latest revision."
+          else
+            gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+              --to-revisions="$REVISION=100" \
               --update-tags="candidate=$latest" \
               --region="${{ vars.REGION }}" \
               --project="${{ vars.PROJECT_ID }}" \
               --quiet
-            echo "::error::Revision $latest was created while $REVISION was probed, and has not been probed. $REVISION serves all traffic; rerun this deploy to probe and release $latest."
-            exit 1
+            echo "Revision $REVISION serves all traffic, pinned by name; revision $latest, created while $REVISION was probed, now carries the candidate tag."
+            echo "newer=$latest" >> "$GITHUB_OUTPUT"
           fi
-          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
-            --to-latest \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --quiet
-          echo "Revision $REVISION serves all traffic, and traffic follows the latest revision."
 
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
@@ -662,3 +669,24 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --wait \
             --args=backfill-descriptions
+
+      # Ends the release: removes the `candidate` tag, which marks a release
+      # that has not finished, once traffic moved and settle and backfill ran.
+      # When a newer revision appeared while the probe ran, that revision now
+      # carries the tag, and the step fails so a rerun probes and releases it.
+      - name: Finish the release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          NEWER: ${{ steps.move.outputs.newer }}
+        run: |
+          set -euo pipefail
+          if [ -n "$NEWER" ]; then
+            echo "::error::Revision $NEWER was created while the candidate was probed, and has not been probed. Rerun this deploy to probe and release it."
+            exit 1
+          fi
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --remove-tags=candidate \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+          echo "The release is finished; no revision carries the candidate tag."

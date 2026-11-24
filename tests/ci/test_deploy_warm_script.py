@@ -9,6 +9,7 @@ import os
 import stat
 import subprocess
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,7 +43,8 @@ def _id_token(audience: str) -> str:
 class _Server:
     """Answers each path from its scripted statuses in order, repeating the last, and records
     every request. A 200 from the mint path carries an ID token for the requested audience,
-    or for `audience` when set."""
+    or for `audience` when set. A status of 0 answers nothing for 3 s, past the script's
+    per-attempt timeout under a 2 s deadline."""
 
     def __init__(self, replies: dict[str, list[tuple[int, dict[str, str]]]]) -> None:
         self.replies = replies
@@ -58,6 +60,9 @@ class _Server:
                 server.requests.append((self.path, dict(self.headers), body))
                 queue = server.replies.get(self.path, [(404, {})])
                 status, headers = queue.pop(0) if len(queue) > 1 else queue[0]
+                if status == 0:
+                    time.sleep(3)
+                    return
                 if self.path == _MINT_PATH and status == 200:
                     audience = server.audience or json.loads(body)["audience"]
                     payload = json.dumps({"token": _id_token(audience)}).encode()
@@ -282,7 +287,6 @@ def test_a_tagged_candidate_is_probed_at_its_own_url_with_a_token_for_the_servic
     _, headers, body = candidate.requests[-1]
     assert headers["X-Serverless-Authorization"] == f"Bearer {_id_token(service.url)}"
     assert json.loads(body)["texts"]
-    assert "ID token audience: the service URL." in result.stdout
 
 
 @pytest.mark.parametrize("required", ["false", "true"])
@@ -327,6 +331,17 @@ def test_a_token_for_another_audience_is_an_error(serve, tmp_path: Path):
 
     assert output == "status=error\n"
     assert server.paths() == [_MINT_PATH]
+
+
+def test_a_route_that_never_answers_ends_the_probe_as_an_error(serve, tmp_path: Path):
+    """A hung revision is broken, not building, so dev does not move traffic to it after
+    waiting out every route."""
+    server = serve(_ok() | {"/api/skills": [(0, {})]})
+
+    _, output = _run_warm(server, tmp_path, deadline=2)
+
+    assert output == "status=error\n"
+    assert "/api/graph/schema" not in server.paths()
 
 
 def test_the_token_mint_retries_a_transient_failure(serve, tmp_path: Path):
