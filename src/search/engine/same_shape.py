@@ -669,10 +669,11 @@ def collapse_same_shape(
       a set (a value reads as a set of one), members binding different sets share no
       ref, the union holds at least two distinct refs, and entity buckets meet the
       dimensionality rule. The refs drop each one nested under another
-      (`_simplify_merged_union`), and one ref left binds a value. A member answering a
-      dataset_resubmit's posted identity (`RegionResult.posted_identity`) refuses a merge
-      that would drop one of its codes, since a posted Spec answers the figure its
-      identity names.
+      (`_simplify_merged_union`), and one ref left binds a value.
+
+    A member answering a dataset_resubmit's posted identity (`RegionResult.posted_identity`)
+    refuses a merge that would drop one of its codes under another member's, since a posted
+    Spec answers the figure its identity names (`_build_merged_slots`).
 
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
@@ -732,14 +733,16 @@ def _collapse_group(
     scope_for: ScopeReader | None,
     preview_reads: ComponentReads | None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge one group; keep the first member and residualise the rest on refusal. A group
-    of composite answers, which merges into the composite over the merged identity
-    (`_with_merged_preview`), refuses without `preview_reads`. The merged region states the
-    scope `scope_for` builds over its identity, none without it. A group whose merged scope
-    compiles to another identity refuses: the members' entries would label the merged
-    answer with a choice it does not serve, as bilateral ODA folded with DAC1's total,
-    whose union keeps the total alone (`_simplify_merged_union`), would label the total
-    bilateral."""
+    """Merge one group; keep the first member and residualise the rest on refusal, so each
+    member answers its own Spec. A group of composite answers, which merges into the
+    composite over the merged identity (`_with_merged_preview`), refuses without
+    `preview_reads`. The merged region states the scope `scope_for` builds over its
+    identity, none without it.
+
+    A group whose merged scope compiles to another identity refuses, and the whole group
+    answers apart: the members' entries would label the merged answer with a choice it does
+    not serve, as bilateral ODA folded with DAC1's total, whose union keeps the total alone
+    (`_simplify_merged_union`), would label the total bilateral."""
     if len(group) == 1:
         return [group[0]], []
     try:

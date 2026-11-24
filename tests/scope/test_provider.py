@@ -32,6 +32,7 @@ from code_index.shared import get_index
 from origin_catalogue import bound_catalogue, scoped_reads
 from search.engine import departures
 from search.engine.assemble import ScopeNotServedError, with_scope_choices
+from search.engine.entry import dataset_resubmit
 from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.region import pipeline
 from search.engine.region.result import RegionResult
@@ -1472,28 +1473,50 @@ def test_a_scope_compiling_another_identity_is_refused_by_with_scope_choices(mon
 
 
 @pytest.mark.parametrize("mismatched", [True, False], ids=["mismatched", "control"])
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
 def test_a_part_whose_scope_compiles_another_identity_fails_closed(
-    monkeypatch, caplog, mismatched: bool
+    monkeypatch, caplog, door: str, mismatched: bool
 ):
     """A definite answer whose scope compiles to an identity other than its Spec answers
-    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg, stores no
-    response and streams no event under its spec_id. The control states its own scope."""
+    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg and streams
+    no event under its spec_id, its trailing tasks cancelled; a fresh search stores no
+    response. Each door's producer refuses it: a fresh search's terminal and a resubmit's
+    entry. The control states its own scope."""
     texts = ("total ODA net disbursements",)
     (bilateral,) = _ask_dac1_parts(monkeypatch, ("bilateral ODA net disbursements",))
     (total,) = _ask_dac1_parts(monkeypatch, texts)
-    if mismatched:
+    if mismatched and door == "fresh":
         stated = pipeline._with_scope_choices
 
         def other_scope(result: RegionResult) -> RegionResult:
             return dataclasses.replace(stated(result), scope_choices=_scope(bilateral.spec))
 
         monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
+    if mismatched and door == "resubmit":
+        monkeypatch.setattr(
+            dataset_resubmit, "_served_scope", lambda _served, _region: _scope(bilateral.spec)
+        )
+    request = (
+        _dac1_lines_request(texts)
+        if door == "fresh"
+        else ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=texts[0],
+                        identity=total.spec.definition.identity,
+                        scope_entries=list(_scope(total.spec).entries),
+                    )
+                ]
+            )
+        )
+    )
     cache = ResponseCache()
 
     with caplog.at_level(logging.ERROR, logger="search.engine.region.result"):
         events = offline_events(
-            _dac1_lines_request(texts),
-            graph=_dac1_lines_graph(texts),
+            request,
+            graph=_dac1_lines_graph(texts if door == "fresh" else ()),
             llm=_PickingLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             stream_slot_options=True,
@@ -1513,17 +1536,19 @@ def test_a_part_whose_scope_compiles_another_identity_fails_closed(
         assert isinstance(part, NoDataPart), part
         assert part.no_data.reason == "facet_not_available"
         assert done.degraded_leg
-        assert cache.stats().entries == 0
         assert carrying == []
         assert logged == [(total.spec.spec_id, bilateral.spec.spec_id)]
-        assert part.entity_refs == total.entity_refs
-        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
     else:
         assert isinstance(part, DefinitePart) and part.spec.spec_id == total.spec.spec_id
         assert not done.degraded_leg
-        assert cache.stats().entries > 0
         assert len(carrying) > 1
         assert logged == []
+    if door == "fresh":
+        # The resubmit door stores no response, whatever its answer.
+        assert (cache.stats().entries > 0) is not mismatched
+    if door == "fresh" and mismatched:
+        assert part.entity_refs == total.entity_refs
+        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
 
 
 def _dac1_identity(

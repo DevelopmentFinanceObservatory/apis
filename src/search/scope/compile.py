@@ -61,8 +61,11 @@ class Compiled:
 
     `entries` are the entries applied, in axis order, and `dropped` the carried entries
     left out. `choices` hold one choice per axis with every option's availability.
-    `identity` is what the active options compile to and `spec_id` its id; `base_spec_id`
-    is the base identity's."""
+    `identity` is what the active options compile to, in canonical form, and `spec_id` its
+    id; `base_spec_id` is the base identity's as posted. Each choice's id, and the scope's
+    id (`PartScope.id`), name that posted base, so a base posted without its table's
+    invariants keys its choices on its own spec_id while `spec_id` names the canonical
+    identity the part serves."""
 
     entries: tuple[Entry, ...]
     dropped: tuple[DroppedEntry, ...]
@@ -302,6 +305,9 @@ def _compiled_identity(
         assert option is not None
         identity = apply_binding(identity, option.binding, [o.binding for o in table.options])
         edited = True
+    # Every base is read, edited or not: a dataset_resubmit's posted base may lack its
+    # table's invariants, and compile cannot tell it from a fresh answer's canonical one.
+    # The family query `canonical_identity` reads is memoised per index.
     document = identity.model_dump(mode="json", exclude_none=True)
     canonical = canonical_identity(get_index(), document)
     if not edited and canonical is document:
