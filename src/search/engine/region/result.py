@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -378,6 +379,10 @@ class RegionResult:
     # The leg's part is compared with the others (`ParsedPart.separate`), so the fold
     # (`same_shape.fold_key`) keeps it its own part.
     separate: bool = False
+    # The region answers the Spec a dataset_resubmit identity entry posted, whose identity
+    # names the figure it answers, so a same-shape merge never drops its codes under another
+    # entry's (`same_shape._build_merged_slots`).
+    posted_identity: bool = False
     # Operations the question asks for over this region's data, echoed onto its
     # part. Like restatement, part assembly reads them from each original region.
     operations: tuple[Operation, ...] = ()
@@ -495,6 +500,54 @@ class RegionResult:
         """Whether the answer states `alternates_unevaluated`: an alternate was left
         unevaluated because its presence read did not complete."""
         return any(warning.code == ALTERNATES_UNEVALUATED for warning in self.warnings)
+
+
+logger = logging.getLogger(__name__)
+
+
+def unserved_scope_refusal(region: RegionResult) -> RegionResult | None:
+    """The no_data `facet_not_available` answer that replaces `region` where `region` is a
+    definite answer whose scope compiles to an identity other than its Spec, whose choices
+    describe that identity's rows (`assemble.with_scope_choices`); None otherwise.
+
+    The refusal is a producer's fault, logged at ERROR with both spec_ids. It is marked
+    `degraded`, so the door reports a degraded leg and no cache stores the response, and
+    it carries none of `region`'s trailing tasks or relaunches, so nothing streams under
+    the refused spec_id once the caller cancels `region`'s tasks
+    (`deadline._cancel_trailing_tasks`)."""
+    scope = region.scope_choices
+    if (
+        region.status != "definite"
+        or scope is None
+        or scope.compiled.spec_id == region.spec.spec_id
+    ):
+        return None
+    logger.error(
+        "the answer %s states a scope compiling %s; the part fails closed and is not cached",
+        region.spec.spec_id,
+        scope.compiled.spec_id,
+        extra={"spec_id": region.spec.spec_id, "compiled_spec_id": scope.compiled.spec_id},
+    )
+    return RegionResult(
+        variable_text=region.variable_text,
+        status="no_data",
+        specs=(),
+        no_data_reason="facet_not_available",
+        warnings=(),
+        timing_by_step=dict(region.timing_by_step),
+        earliest_index=region.earliest_index,
+        llm_usage=region.llm_usage,
+        restatement=region.restatement,
+        parsed_form=region.parsed_form,
+        separate=region.separate,
+        operations=region.operations,
+        entity_words=region.entity_words,
+        entity_refs=region.entity_refs,
+        admitted_qualifier_phrases=region.admitted_qualifier_phrases,
+        unapplied_qualifier_warnings=region.unapplied_qualifier_warnings,
+        name_corrections=region.name_corrections,
+        degraded=True,
+    )
 
 
 def any_degraded(regions: Iterable[RegionResult]) -> bool:

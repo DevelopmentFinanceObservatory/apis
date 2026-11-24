@@ -100,7 +100,7 @@ from search.engine.codes import CODE_CATALOG
 from search.engine.concurrency import bounded_semaphore
 from search.engine.config import settings
 from search.engine.conjoin import assemble_region
-from search.engine.deadline import _await_bounded
+from search.engine.deadline import _await_bounded, _cancel_trailing_tasks
 from search.engine.departures import warning_key
 from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
 from search.engine.entity_checks import check_entity_count
@@ -129,6 +129,7 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import (
     any_degraded,
+    unserved_scope_refusal,
     with_runnable_operations,
 )
 from search.engine.region.scope_decision import bilateral_withheld_warning, scope_facts
@@ -558,7 +559,8 @@ async def handle(
             region = await asyncio.to_thread(
                 _with_withheld_reading, region, entry, coverage=params.coverage
             )
-        if promoted.read is not promoted.identity and region.status == "definite":
+        composite = promoted.read is not promoted.identity and region.status == "definite"
+        if composite:
             started = now_ms()
             # The components read to the deadline the entry's own reads ran to, the
             # full-read bound where its member walk ran the full read.
@@ -569,11 +571,7 @@ async def handle(
             )
             region = _as_composite(region, promoted.identity, reads=reads)
             steps["as_composite"] = now_ms() - started
-            if params.include_observations and not params.stream_observations:
-                region = await with_composite_observations(region, semaphore=sem)
-            elif not params.stream_observations:
-                region = await with_composite_continuation(region, semaphore=sem)
-        return dataclasses.replace(
+        answered = dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
@@ -581,7 +579,17 @@ async def handle(
             earliest_index=index,
             separate=entry.separate,
             scope_choices=_served_scope(scope, region),
+            posted_identity=True,
         )
+        # Refused before a composite's components are read.
+        if (refused := unserved_scope_refusal(answered)) is not None:
+            await _cancel_trailing_tasks([answered])
+            return refused
+        if composite and params.include_observations and not params.stream_observations:
+            return await with_composite_observations(answered, semaphore=sem)
+        if composite and not params.stream_observations:
+            return await with_composite_continuation(answered, semaphore=sem)
+        return answered
 
     def _memo_hit(stored: RegionResult) -> RegionResult:
         """Return `stored` with this request's relaunch closures, built over its own conversion

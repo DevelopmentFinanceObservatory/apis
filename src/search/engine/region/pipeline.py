@@ -91,7 +91,11 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import RegionResult, every_member_phrases
+from search.engine.region.result import (
+    RegionResult,
+    every_member_phrases,
+    unserved_scope_refusal,
+)
 from search.engine.region.scope_decision import ScopeDecision, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
@@ -1068,6 +1072,9 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         state,
                     )
                     answered = _with_scope_choices(_stating_unpublished_wholes(result, state))
+                    if (refused := unserved_scope_refusal(answered)) is not None:
+                        await _cancel_trailing_tasks([answered])
+                        return refused
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))

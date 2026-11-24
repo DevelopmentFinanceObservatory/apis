@@ -7,13 +7,12 @@ IDA survive even when the geo pack's income-group result wins the merge.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 from resolvekit import EntityRecord, Resolver
 from resolvekit.core.model.result import CandidateSummary
 from resolvekit.packs.org.normalizer import OrgNormalizer
 
-from entity_resolution.pack import fold_hyphens
 from entity_resolution.types import MatchedAs
 
 _ORG_PACK_ID = "org"
@@ -42,34 +41,19 @@ def _pack_normalize(resolver: Resolver, text: str, candidate: CandidateSummary) 
     return normalizer.normalize(text)
 
 
-def _listed_as(
-    normalized_text: str, entity: EntityRecord, *, fold: Callable[[str], str]
-) -> MatchedAs | None:
+def _listed_as(normalized_text: str, entity: EntityRecord) -> MatchedAs | None:
     """How `entity` lists the text: its canonical name, then a code, then any other name.
 
-    Names compare after `fold`, applied to the text and the stored name alike; codes compare
-    as stored. A text a record holds both as a code and as an alias (`KE` for Kenya) matches
-    as `code`."""
-    folded = fold(normalized_text)
-    if folded == fold(entity.canonical_name_norm) or any(
-        folded == fold(name.value_norm) and name.kind == _CANONICAL for name in entity.names
+    A text a record holds both as a code and as an alias (`KE` for Kenya) matches as `code`."""
+    if normalized_text == entity.canonical_name_norm or any(
+        normalized_text == name.value_norm and name.kind == _CANONICAL for name in entity.names
     ):
         return "name"
     if any(normalized_text == code.value_norm for code in entity.codes):
         return "code"
-    if any(folded == fold(name.value_norm) for name in entity.names):
+    if any(normalized_text == name.value_norm for name in entity.names):
         return "alias"
     return None
-
-
-def _name_fold(candidate: CandidateSummary) -> Callable[[str], str]:
-    """How the names of `candidate`'s pack compare: hyphen-folded for org records
-    (`pack.fold_hyphens`, as the alias index keys them), as normalised otherwise."""
-    return fold_hyphens if candidate.pack_id == _ORG_PACK_ID else _unfolded
-
-
-def _unfolded(value: str) -> str:
-    return value
 
 
 def filter_listed_candidates(
@@ -81,13 +65,7 @@ def filter_listed_candidates(
         (candidate, matched_as)
         for candidate in candidates
         if (entity := resolver.entity(candidate.entity_id)) is not None
-        and (
-            matched_as := _listed_as(
-                _pack_normalize(resolver, text, candidate),
-                entity,
-                fold=_name_fold(candidate),
-            )
-        )
+        and (matched_as := _listed_as(_pack_normalize(resolver, text, candidate), entity))
         is not None
     ]
     return sorted(
