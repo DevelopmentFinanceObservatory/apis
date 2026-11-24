@@ -671,6 +671,10 @@ def collapse_same_shape(
       dimensionality rule. The refs drop each one nested under another
       (`_simplify_merged_union`), and one ref left binds a value.
 
+    A member answering a dataset_resubmit's posted identity (`RegionResult.posted_identity`)
+    refuses a merge that would drop one of its codes under another member's, since a posted
+    Spec answers the figure its identity names (`_build_merged_slots`).
+
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
     claim combinations no member resolved. Differing resolved facets merge as
@@ -681,7 +685,8 @@ def collapse_same_shape(
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
     identity facets, and set ``earliest_index`` to the group's minimum. A merged region
-    states the scope ``scope_for`` builds over the merged identity, none without it. A group
+    states the scope ``scope_for`` builds over the merged identity, none without it, and a
+    group whose scope compiles to another identity does not merge (`_collapse_group`). A group
     of composite answers merges into the composite over the merged identity, minted from the
     members' facets (`_merged_composite`), and refuses without ``preview_reads``, the
     request's clients. Where its members preview, a merged region previews the read of its
@@ -728,20 +733,28 @@ def _collapse_group(
     scope_for: ScopeReader | None,
     preview_reads: ComponentReads | None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge one group; keep the first member and residualise the rest on refusal. A group
-    of composite answers, which merges into the composite over the merged identity
-    (`_with_merged_preview`), refuses without `preview_reads`. The merged region states the
-    scope `scope_for` builds over its identity, none without it."""
+    """Merge one group; keep the first member and residualise the rest on refusal, so each
+    member answers its own Spec. A group of composite answers, which merges into the
+    composite over the merged identity (`_with_merged_preview`), refuses without
+    `preview_reads`. The merged region states the scope `scope_for` builds over its
+    identity, none without it.
+
+    A group whose merged scope compiles to another identity refuses, and the whole group
+    answers apart: the members' entries would label the merged answer with a choice it does
+    not serve, as bilateral ODA folded with DAC1's total, whose union keeps the total alone
+    (`_simplify_merged_union`), would label the total bilateral."""
     if len(group) == 1:
         return [group[0]], []
     try:
         if preview_reads is None and _binds_composite(group[0].spec):
             raise _RefuseMerge
         merged_region = _merge_group(group, set_ref_for, facet_options_for, preview_reads)
+        scope = scope_for(merged_region, group) if scope_for is not None else None
+        if scope is not None and scope.compiled.spec_id != merged_region.spec.spec_id:
+            raise _RefuseMerge
     except _RefuseMerge:
         residual = [(r.variable_text, r.earliest_index) for r in group[1:]]
         return [group[0]], residual
-    scope = scope_for(merged_region, group) if scope_for is not None else None
     return [dataclasses.replace(merged_region, scope_choices=scope)], []
 
 
@@ -841,10 +854,11 @@ def _build_merged_slots(
     member must bind the differing slot to graph refs, a value as a set of one and a set
     only off the where axis. Members binding different sets must share no ref, and the
     sets must union to at least two distinct refs. Each ref nested under another drops
-    (`_simplify_merged_union`). One ref left binds a ``BindingValue``, more bind a
-    ``BindingSet``. The set keeps the ``set_ref`` of a member whose set it equals, else
-    ``set_ref_for`` labels it, on what/how only because ``isPartOf`` also represents
-    geographic containment.
+    (`_simplify_merged_union`), except that a member answering a posted identity
+    (`RegionResult.posted_identity`) refuses a merge that would drop one of its codes. One
+    ref left binds a ``BindingValue``, more bind a ``BindingSet``. The set keeps the
+    ``set_ref`` of a member whose set it equals, else ``set_ref_for`` labels it, on what/how
+    only because ``isPartOf`` also represents geographic containment.
     """
     if diff_key is None:
         merged_slots = list(base_spec.resolved.slots)
@@ -887,7 +901,15 @@ def _build_merged_slots(
             diff_refs.append(ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
-    diff_refs = _simplify_merged_union(diff_refs)
+    kept = _simplify_merged_union(diff_refs)
+    dropped = {ref.ref for ref in diff_refs} - {ref.ref for ref in kept}
+    if any(
+        region.posted_identity and codes & dropped
+        for region, codes in zip(group, member_codes, strict=True)
+    ):
+        # A posted Spec answers the figure its identity names.
+        raise _RefuseMerge
+    diff_refs = kept
 
     # Slot values may be enum values, so retain the source value_kind.
     source_vk = member_values[0][0].value_kind

@@ -13,6 +13,8 @@ from typing import get_args
 
 import pytest
 
+from search.engine.retrieval.bound_values import canonicalise_identity
+from search.engine.spec_id import identity_spec_id, mint_identity
 from search.models import (
     BaseIdentity,
     EntitiesBinding,
@@ -22,6 +24,11 @@ from search.models import (
 from search.scope.compile import Compiled, Refusal, compile
 from search.scope.edits import ScopeTableError, apply_binding
 from search.scope.tables import AxisTable, CompileFacts
+from tests.code_index.aid_identity import (
+    AID_TYPE,
+    IMPUTED_PROVENANCE,
+    imputed_education_aid_identity,
+)
 from tests.scope._axes import (
     BASE,
     CONFLICTS,
@@ -322,6 +329,24 @@ def test_entries_over_no_axis_tables_compile_to_the_base_with_no_choices():
 
     assert isinstance(result, Compiled)
     assert (result.choices, result.identity, result.entries) == ((), BASE, ())
+
+
+def test_a_base_posted_without_its_tables_invariant_compiles_to_its_canonical_form():
+    """A base naming the imputed table with its aid type unbound compiles to the identity
+    binding the one aid type the table holds, the spec_id a resubmit of it serves."""
+    posted = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in posted["slots"]:
+        if slot["property"] == AID_TYPE:
+            slot["binding"] = {"state": "unbound"}
+    _, base = mint_identity(posted)
+    canonical = canonicalise_identity(base)
+    assert canonical is not base
+
+    result = compile(base, (), CompileFacts(axes=()))
+
+    assert isinstance(result, Compiled)
+    assert result.spec_id == identity_spec_id(canonical)
+    assert result.base_spec_id == identity_spec_id(base)
 
 
 def test_a_switch_edits_only_the_members_its_axis_binds():
