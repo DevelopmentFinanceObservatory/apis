@@ -503,12 +503,13 @@ class TestWarmUp:
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
         """The UN terms route reads the live reader's UN client, so a mixer listing of `Class`
-        names none of its terms, and the lifespan builds it before the first request."""
+        names none of its terms, and the lifespan starts building it without a request."""
         graph = _graph()
         age = ArcSubject(dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",))
         un = FakeUnGraph({"Class": ((age,),), "Property": ((age,),)})
 
         with _live_client(monkeypatch, graph, un=un) as client:
+            wait_until(lambda: len(un.requests) == 2 and _schema_stats(client)["entries"] == 1)
             mixer_reads = _reads(graph)
             warmed = list(un.requests)
             terms = client.get("/api/graph/schema/terms/un_system")
