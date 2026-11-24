@@ -4,17 +4,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from fastapi.testclient import TestClient
 from langfuse import Langfuse
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from dfo_platform.caller import (
@@ -67,21 +71,29 @@ def _drain() -> None:
     resolve_trace._EXECUTOR.submit(lambda: None).result(timeout=10)
 
 
-@pytest.fixture
-def exported(monkeypatch) -> Iterator[Callable[[], list[ReadableSpan]]]:
-    """Turn tracing on with a client that exports to memory, and yield a function returning
-    the spans exported once every queued trace has been recorded."""
+def _tracing_to(monkeypatch, exporter: SpanExporter) -> Langfuse:
+    """Turn tracing on with a client exporting through `exporter`, wrapped as `_client` wraps
+    its own."""
     for name, value in _ON.items():
         monkeypatch.setenv(name, value)
-    exporter = InMemorySpanExporter()
-    # The SDK keeps one resource manager per public key, so each test gets its own key.
+    results = resolve_trace._ExportResults(exporter)
+    # The SDK keeps one resource manager per public key, so each client gets its own key.
     client = Langfuse(
         public_key=f"pk-{uuid.uuid4().hex}",
         secret_key="sk-test",
         tracer_provider=TracerProvider(),
-        span_exporter=exporter,
+        span_exporter=results,
     )
-    monkeypatch.setattr(resolve_trace, "_client", lambda: client)
+    monkeypatch.setattr(resolve_trace, "_client", lambda: resolve_trace._Tracing(client, results))
+    return client
+
+
+@pytest.fixture
+def exported(monkeypatch) -> Iterator[Callable[[], list[ReadableSpan]]]:
+    """Turn tracing on with a client that exports to memory, and yield a function returning
+    the spans exported once every queued trace has been recorded."""
+    exporter = InMemorySpanExporter()
+    client = _tracing_to(monkeypatch, exporter)
 
     def finished() -> list[ReadableSpan]:
         _drain()
@@ -90,6 +102,21 @@ def exported(monkeypatch) -> Iterator[Callable[[], list[ReadableSpan]]]:
 
     yield finished
     client.shutdown()
+
+
+class _ScriptedExporter(SpanExporter):
+    """An exporter that answers every export with `answer`, or raises when it is None."""
+
+    def __init__(self, answer: SpanExportResult | None) -> None:
+        self.answer = answer
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        if self.answer is None:
+            raise ConnectionError("exporter down")
+        return self.answer
+
+    def shutdown(self) -> None:
+        pass
 
 
 def _run_line(request: ResolveRequest, record: ResolveRecord, *, surface: DeliverySurface) -> dict:
@@ -241,6 +268,114 @@ def test_a_parsed_request_traces_its_whole_input(exported):
         "error_code": "cancelled",
     }
     assert attributes["langfuse.trace.metadata.surface"] == "website"
+
+
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        pytest.param(SpanExportResult.SUCCESS, "sent", id="success"),
+        pytest.param(SpanExportResult.FAILURE, "failed", id="failure"),
+        pytest.param(None, "failed", id="raises"),
+    ],
+)
+def test_the_line_reads_the_exporter_s_own_result(monkeypatch, answer, outcome):
+    client = _tracing_to(monkeypatch, _ScriptedExporter(answer))
+    try:
+        logged = _run_line(
+            make_request("aid to Kenya"), ResolveRecord(), surface=DeliverySurface.website
+        )
+    finally:
+        client.shutdown()
+
+    assert logged["trace"] == outcome
+
+
+@pytest.mark.parametrize(("status", "outcome"), [(200, "sent"), (401, "failed")])
+def test_the_process_client_posts_to_the_langfuse_otlp_path_and_reads_its_status(
+    monkeypatch, status, outcome
+):
+    """The client `_client` builds, against a local host answering every OTLP post with
+    `status`, as Langfuse answers keys it rejects with 401."""
+    posts: list[tuple[str, str | None]] = []
+
+    class _Host(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            posts.append((self.path, self.headers.get("Authorization")))
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Host)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    public_key = f"pk-{uuid.uuid4().hex}"
+    for name, value in _ON.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", public_key)
+    monkeypatch.setenv("LANGFUSE_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}/")
+    resolve_trace._client.cache_clear()
+    try:
+        logged = _run_line(
+            make_request("aid to Kenya"), ResolveRecord(), surface=DeliverySurface.mcp
+        )
+    finally:
+        _drain()
+        resolve_trace._client().client.shutdown()
+        resolve_trace._client.cache_clear()
+        server.shutdown()
+
+    assert logged["trace"] == outcome
+    auth = "Basic " + base64.b64encode(f"{public_key}:sk-test".encode()).decode()
+    assert (resolve_trace.OTLP_PATH, auth) in posts
+
+
+def test_a_drain_past_its_deadline_cancels_the_queued_traces(monkeypatch, held_worker):
+    """The held worker keeps the first trace in flight past the drain's deadline. The traces
+    queued behind it never run, release their slots, and a trace queued after the shutdown
+    reads `dropped`."""
+    shared = resolve_trace._EXECUTOR
+    worker = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(resolve_trace, "_EXECUTOR", worker)
+    monkeypatch.setattr(resolve_trace, "SHUTDOWN_DRAIN_S", 0.1)
+    ran: list[str] = []
+    held = resolve_trace._client
+
+    def _counted_client():
+        ran.append("client")
+        return held()
+
+    monkeypatch.setattr(resolve_trace, "_client", _counted_client)
+
+    def _queue() -> tuple[str, object]:
+        return resolve_trace.queue_resolve_trace(
+            trace_id=_TRACE_ID,
+            inp=make_request("aid to Kenya").input,
+            response=None,
+            error_code=None,
+            surface="website",
+        )
+
+    queued = [_queue() for _ in range(4)]
+    asyncio.run(resolve_trace.drain_resolve_traces())
+    late = _queue()
+    held_worker.set()
+    worker.shutdown(wait=True)
+    monkeypatch.setattr(resolve_trace, "_EXECUTOR", shared)
+
+    assert [outcome for outcome, _future in queued] == ["queued"] * 4
+    assert [future.cancelled() for _outcome, future in queued] == [False, True, True, True]
+    assert ran == ["client"]
+    assert late == ("dropped", None)
+    assert asyncio.run(resolve_trace.await_resolve_trace(queued[1][1])) == "dropped"
+    taken = [
+        resolve_trace._PENDING.acquire(blocking=False) for _ in range(resolve_trace.PENDING_CAP)
+    ]
+    for _ in range(sum(taken)):
+        resolve_trace._PENDING.release()
+    assert all(taken)
 
 
 @pytest.mark.parametrize(
