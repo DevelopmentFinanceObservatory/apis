@@ -1943,8 +1943,11 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     whose members some end not bound whole holds states its own ref first, so a client
     matches the set it named (`_own_ref`, as read on the first such end), then those
     members in `place_order`. A text naming a whole population ("all donors",
-    `ResolveState.whole_named`) binds the parties it names that the binding holds. A text
-    no end binds, ambiguous or unresolved, is left out.
+    `ResolveState.whole_named`) binds the parties it names that the binding holds, and one
+    asked member by member (`ResolveState.whole_listed_parties`) states the parties it names,
+    whose side the answer lists open, so "developing countries" states
+    `DACDevelopingCountries` read whole or listed. A text no end binds, ambiguous or
+    unresolved, is left out.
 
     A part refused before a shape's places are installed (`ResolveState.places_bound`),
     whether before election or after it, states the node each text names alone
@@ -1980,6 +1983,7 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):
             refs[text] = tuple(held)
+    refs.update(state.whole_listed_parties)
     return refs
 
 

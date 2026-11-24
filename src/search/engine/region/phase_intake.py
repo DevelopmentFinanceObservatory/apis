@@ -99,10 +99,7 @@ async def _phase_recall(state: ResolveState) -> None:
     """Run recall and record its candidates for place-set resolution. Recall searches the
     part's text without each word that names a party on an axis the request leaves unnamed
     (`place_roles.stated_party_words`). A detection the door made of the part's text under
-    its scope (`ResolveState.detected`) stands in for recall's own (`interpret.recall`). On
-    a door whose caller states each entity's role, the part's roles and its words for each
-    entity mark the words an origin organisation owns, which pull in no family
-    (`origin_words.owned_ranges`)."""
+    its scope (`ResolveState.detected`) stands in for recall's own (`interpret.recall`)."""
     t0 = now_ms()
     rcl: Recall = await recall(
         state.variable,
@@ -115,9 +112,6 @@ async def _phase_recall(state: ResolveState) -> None:
         members=None if state.source_code is None else state.source_code.dcids,
         party_words=frozenset(named.word for named in stated_party_words(state)),
         detected=state.detected,
-        door=state.door,
-        entity_roles=state.entity_roles,
-        entity_words=state.entity_words,
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0
@@ -191,6 +185,9 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     )
     state.whole_listed = {
         name: axis for name, axis in sides.items() if name in state.member_entities or axis in over
+    }
+    state.whole_listed_parties = {
+        name: dcids for name, dcids in whole_named.items() if name in state.whole_listed
     }
     state.open_axes |= set(state.whole_listed.values())
     whole_named = {
@@ -634,16 +631,7 @@ def _prune_shapes_by_listing(
     listing alone. A population every shape lists exactly is no cause of the refusal."""
     if not state.whole_listed:
         return shapes, []
-    resolved = {
-        name: resolution.entity
-        for name, resolution in cast(Recall, state.rcl).resolutions.items()
-        if name in state.whole_listed and isinstance(resolution, Resolved)
-    }
-    listed = {
-        name: dcids
-        for name, dcids in _whole_named(state, resolved).items()
-        if name in state.whole_listed
-    }
+    listed = state.whole_listed_parties
     parties = get_index().parties
     covered = {
         name: {cls for dcid in dcids for marker in parties[dcid].whole for cls in marker.covers}

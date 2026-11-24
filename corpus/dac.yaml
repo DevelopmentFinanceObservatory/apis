@@ -549,47 +549,6 @@
       entities: [{dcid: country/KOR, role: destination}]
       operations: [{verb: rank, over: origin}]
 
-- id: dq-dac-052
-  query: 'parsed: disbursements, IDA as provider, 2022'
-  door: parsed
-  parsed:
-    - {variable_text: disbursements, entities: [{text: IDA, role_text: from}], time_text: '2022'}
-  why: DAC2a publishes IDA as a provider of disbursements to every recipient; IDS counts only IDA grants to debtors, one instrument of its lending.
-  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, overlap: [ids], probe: [source_election]}
-  expect:
-    definite:
-      measure: {family: [dac2a.oda_gross_received, dac2a.oda_net_received]}
-      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}]
-      window: {kind: range, start: 2022, end: 2022}
-
-- id: dq-dac-053
-  query: 'parsed: disbursements, World Bank IDA as provider, 2022'
-  door: parsed
-  parsed:
-    - {variable_text: disbursements, entities: [{text: World Bank IDA, role_text: from}], time_text: '2022'}
-  why: '"World Bank IDA" is the stored alias "World Bank-IDA" written with a space, so it resolves to IDA, which DAC2a publishes as a provider.'
-  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, overlap: [ids], probe: [source_election]}
-  expect:
-    definite:
-      measure: {family: [dac2a.oda_gross_received, dac2a.oda_net_received]}
-      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}]
-      window: {kind: range, start: 2022, end: 2022}
-
-- id: dq-dac-054
-  query: 'parsed: IDA disbursements, International Development Association as provider, 2022'
-  door: parsed
-  parsed:
-    - variable_text: IDA disbursements
-      entities: [{text: IDA, name: International Development Association, role_text: from}]
-      time_text: '2022'
-  why: '"IDA" in the variable is the provider the part binds, not DAC1 aid type 2103, so no qualifier is refused and DAC2a answers IDA''s disbursements.'
-  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, overlap: [ids], probe: [source_election]}
-  expect:
-    definite:
-      measure: {family: [dac2a.oda_gross_received, dac2a.oda_net_received]}
-      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}]
-      window: {kind: range, start: 2022, end: 2022}
-
 - id: dq-dac-055
   query: 'parsed: net ODA including imputed multilateral from the G7 to developing countries, 2022'
   door: parsed

@@ -1021,6 +1021,10 @@ class ResolveState:
     # member (`member_entities`), with the side it names: it holds no place set and names
     # no total, and the side is among `open_axes`, so the answer lists that side's parties.
     whole_listed: dict[str, RoleAxis] = field(default_factory=dict)
+    # The dcids each text of `whole_listed` names (`whole_totals.named_whole`), in query
+    # order: the population its side lists, which the text states as its refs
+    # (`place_roles.bound_entity_refs`).
+    whole_listed_parties: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The texts of the part naming a whole population, listed or not, that the request
     # directs to the side other than the one its parties are published on, in query order.
     # They refuse the part `role_incompatible` before any shape is derived, which names
