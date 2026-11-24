@@ -60,6 +60,7 @@ from search.engine.region.coverage_series import series_held, series_span
 from search.engine.retrieval.bound_values import identity_dataset, served_members
 from search.engine.retrieval.whole_reading import identity_years, whole_reading
 from search.models import (
+    SCOPE_OPTION_ID_PATTERN,
     BaseIdentity,
     IdentityWindow,
     Option,
@@ -69,7 +70,6 @@ from search.models import (
     SideBinding,
     TimeWindow,
 )
-from search.models.vocab import SCOPE_OPTION_ID_PATTERN
 from search.scope.provider import _window_days
 from search.scope.region import policy_members_between, policy_members_throughout
 from search.scope.state import AxisRecord
