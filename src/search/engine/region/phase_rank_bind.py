@@ -154,7 +154,6 @@ from search.engine.region.place_roles import (
     on_undirected_axis,
     part_states,
     parties_of_kind,
-    without_denominator_twins,
     without_open_axis_gaps,
     without_unasked_axes,
 )
@@ -204,6 +203,7 @@ from search.engine.retrieval.bound_values import (
     price_basis_order,
     query_phrases_read,
     read_held_families,
+    role_total,
     shape_constraint_values,
     shape_datasets,
     shape_family,
@@ -351,7 +351,11 @@ async def _read_denominators(state: ResolveState, shapes: list[ShapeDraft]) -> N
 
 
 def _kinds_of(reads: Mapping[str, DenominatorRead]) -> dict[str, DenominatorKind]:
-    return {denominator: read.kind for denominator, read in reads.items()}
+    """The kind of each read denominator, keyed by its role total
+    (`bound_values.role_total`) as `quantity.normalisation_class` looks it up. A
+    denominator and its role twins share a five-tuple and constraints, so they are one
+    kind."""
+    return {role_total(denominator): read.kind for denominator, read in reads.items()}
 
 
 def _quantity_denominators(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[GraphRef]:
@@ -971,12 +975,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         )
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
-    # does survives (`without_open_axis_gaps`). Of a ratio and its by-creditor twin, which
-    # divides by its own denominator's twin and so derives a shape of its own, the one the
-    # part's roles elect stays (`without_denominator_twins`).
-    eligible_shapes = _without_unasked_opt_in(
-        state, without_denominator_twins(state, without_open_axis_gaps(state, admitted))
-    )
+    # does survives (`without_open_axis_gaps`).
+    eligible_shapes = _without_unasked_opt_in(state, without_open_axis_gaps(state, admitted))
     if not eligible_shapes:
         # Nothing is admitted and nothing was refused, so no candidate cleared the score
         # floor; a refused reading takes the branch above.

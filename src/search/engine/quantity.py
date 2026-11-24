@@ -18,6 +18,11 @@ A question can also name the denominator itself ("debt to GDP"). The quantity re
 (`quantity_read`) picks it from the StatVar denominators the menu's shapes divide by
 (`NamedDenominator`), and
 `check_denominator` holds the elected shape to it.
+
+A StatVar denominator means its role total (`bound_values.role_total`): the by-creditor
+PPG debt stock is the PPG debt stock broken down by creditor, so a share of the first and a
+share of the second divide by one base. `denominator_meaning`, the kinds lookup of
+`normalisation_class` and `check_denominator` compare denominators by it.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from typing import TYPE_CHECKING, Literal
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.measure_verdict import shape_pairs
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
+from search.engine.retrieval.bound_values import role_total
 from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
 from search.engine.shape import ShapeDraft, counts_persons, measures_count
 from search.models import GraphRef, QuantityForm
@@ -70,13 +76,18 @@ def shape_denominator_kind(shape: ShapeDraft) -> DenominatorKind | None:
 def denominator_meaning(shape: ShapeDraft) -> DenominatorKind | tuple[str | None, bool]:
     """What `shape` divides by, equal for two shapes exactly when they divide by one base:
     the kind of a schema term (`shape_denominator_kind`), so `Count_Person` and `PerCapita`
-    are one per-person base, else the arc itself, its dcid and whether it resolves. The
-    status rule (`status_rule._differing_axes`) and the rank election
-    (`bind.rank_elected`) both compare denominators by it."""
+    are one per-person base, else the arc's role total (`bound_values.role_total`) and
+    whether the arc resolves, so a ratio and its by-creditor twin, which divides by the
+    by-creditor stock, mean one base. The status rule (`status_rule._differing_axes`) and
+    the rank election (`bind.rank_elected`) both compare denominators by it."""
     kind = shape_denominator_kind(shape)
     if kind is not None:
         return kind
-    return shape.meas_denom_dcid, shape.meas_denom_unresolved
+    denominator = shape.meas_denom_dcid
+    return (
+        role_total(denominator) if denominator is not None else None,
+        shape.meas_denom_unresolved,
+    )
 
 
 def stated_denominator(shape: ShapeDraft) -> str | None:
@@ -352,8 +363,9 @@ def normalisation_class(
 
     A schema-term denominator's kind is the term's (`shape_denominator_kind`: `PerCapita`
     or `Count_Person` is a person, `area` an area), whether or not its arc resolves. Any
-    other unresolved denominator arc is `unknown`. A StatVar denominator's kind is its
-    entry in `kinds` (`quantity.denominator_kinds`), else other: a person is `per_person`,
+    other unresolved denominator arc is `unknown`. A StatVar denominator's kind is the
+    entry in `kinds` of its role total (`bound_values.role_total`), which keys each read
+    denominator by its total, else other: a person is `per_person`,
     an area `per_area`, other a `series`, and a StatVar whose arcs did not resolve
     `unknown`. With no denominator arc, a plain stat type over a count or a declared amount
     property (`_LEVEL_PROPERTIES`) is a `level`, and anything else, such as an SDG `value`
@@ -365,7 +377,7 @@ def normalisation_class(
         return "unknown"
     denominator = shape.meas_denom_dcid
     if denominator is not None:
-        return _CLASS_OF_DENOMINATOR[(kinds or {}).get(denominator, "other")]
+        return _CLASS_OF_DENOMINATOR[(kinds or {}).get(role_total(denominator), "other")]
     if shape.stat_type_dcid in _LEVEL_STAT_TYPES and (
         measures_count(shape) or shape.meas_prop_dcid in _LEVEL_PROPERTIES
     ):
@@ -463,7 +475,9 @@ type DenominatorCheck = Literal["matches", "unverified", "refused"]
 
 
 def _same_denominator(named: str, stated: str) -> bool:
-    """Whether two denominator dcids are one StatVar or twins in one equivalence cluster."""
+    """Whether two denominator dcids mean one base: their role totals
+    (`bound_values.role_total`) are one StatVar or twins in one equivalence cluster."""
+    named, stated = role_total(named), role_total(stated)
     if named == stated:
         return True
     cluster = CLUSTER_BY_MEMBER.get(named)
@@ -484,9 +498,11 @@ def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> Denominator
     name, so it passes `unverified`. Any other shape with no arc, such as a level, divides
     by nothing and is `refused`: the question's grounded words name a base.
 
-    Two denominators match when they are one dcid or members of one registered equivalence
-    cluster (`CLUSTER_BY_MEMBER`): a ratio is unit-free, so the cluster's currency does not
-    matter. Only this check reads the cluster. The elections compare denominators by dcid.
+    Two denominators match when their role totals (`bound_values.role_total`) are one dcid
+    or members of one registered equivalence cluster (`CLUSTER_BY_MEMBER`): the share by
+    creditor of the by-creditor PPG stock divides by the PPG stock the question names, and a
+    ratio is unit-free, so the cluster's currency does not matter. Only this check reads the
+    cluster. The elections compare denominators by role total (`denominator_meaning`).
     """
     denominator = stated_denominator(shape)
     if denominator is not None:
