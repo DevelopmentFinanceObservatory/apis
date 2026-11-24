@@ -1523,7 +1523,8 @@ def test_france_s_provider_whole_is_total_oda_to_all_recipients(
     """DAC2a declares that the provider whole of a part over the whole recipient population
     rebinds the recipient side (`ProviderWhole.recipient`): France's ODA to developing
     countries, whose switch to total ODA alone is refused, and France's ODA to no recipient
-    named both take total ODA to all recipients, and `derived` states the rebind. Compile
+    named both take total ODA to all recipients, and `derived` states the rebind. The
+    whole's scope base and entries posted again without `whole` answer the same Spec. Compile
     judges the switch to total ODA on the identity the recipient edit produces, so the pair
     holds on the composite where the switch alone is refused."""
     _patched_coverage(monkeypatch, _AT_DEVELOPING)
@@ -1544,6 +1545,25 @@ def test_france_s_provider_whole_is_total_oda_to_all_recipients(
         f"recipient:{_ALL_RECIPIENTS}",
     )
     assert scope.derived.part.spec_id == part.spec.spec_id
+    again = _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=scope.base.identity,
+                            scope_entries=scope.entries,
+                        )
+                    ]
+                )
+            ),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(at_all),
+        )
+    )
+    assert again.spec.spec_id == whole.spec.spec_id
 
 
 def test_a_plain_switch_to_total_oda_on_the_developing_countries_composite_still_refuses(

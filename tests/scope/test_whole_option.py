@@ -26,6 +26,7 @@ from search.models import (
     Entry,
     IdentityWindowAll,
     IdentityWindowRange,
+    OptionAvailability,
     PartScope,
     ProviderBinding,
     ScopeAxis,
@@ -42,6 +43,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.scope import test_provider as provider_fixture
 from tests.scope import test_region as region_fixture
 from tests.scope._axes import switch
+from tests.scope._axes import tables as axes_tables
 
 _TOTAL = provider_fixture._DAC1_TOTAL_ODA
 _BILATERAL = provider_fixture._DAC1_BILATERAL_ODA
@@ -389,19 +391,123 @@ def test_a_donor_whole_keeps_the_part_s_region_and_a_recipient_whole_drops_it():
     assert regions(recipient) != regions(donor)
 
 
-def test_the_whole_states_the_part_s_own_provenance_for_each_choice_it_holds(monkeypatch):
-    """The whole pins the part's choices to hold them, and states each with the provenance
-    the part settled it by; the whole's own axis is the explicit switch."""
+def test_the_whole_s_entries_are_the_part_s_own_plus_its_switch(monkeypatch):
+    """The pins serve the whole's compile alone: the whole's entries are the part's own and
+    the switch on its axis, so a choice the part took by default stays a default, which a
+    later switch moves with the provider."""
     total, _ = _total_base(monkeypatch)
     part = _part(total, [switch("provider:bilateral")], facts=_facts())
 
-    whole = _whole(part, "donor", facts=_facts())
+    whole = _whole(part, "provider", facts=_facts())
 
     assert isinstance(whole, PartScope)
-    assert [(c.axis, c.provenance) for c in whole.choices] == [
-        *((c.axis, c.provenance) for c in part.choices),
-        ("donor", "explicit"),
+    assert [(e.axis, e.option_id) for e in whole.entries] == [
+        ("provider", "provider:contributions")
     ]
+    assert [(c.axis, c.provenance) for c in whole.choices] == [
+        ("measure_basis", "default"),
+        ("provider", "explicit"),
+    ]
+
+
+def _reposted(whole: PartScope, facts: ScopeFacts) -> PartScope:
+    """`whole`'s base and entries posted again with no `whole`, as a same-shape merge
+    compiles them."""
+    scope = build_part_scope(
+        base=whole.base.identity, entries=whole.entries, records={}, facts=facts, refuse=False
+    )
+    assert isinstance(scope, PartScope)
+    return scope
+
+
+def test_a_rebinding_whole_reposts_as_the_figure_it_serves():
+    """France's provider whole at the developing countries rebinds the recipient side. Its
+    scope states the identity it serves as its base and holds no side entry, so its base
+    and entries posted again without `whole` compile the same Spec with nothing dropped."""
+    facts = _dac2a_facts()
+    part = _dac2a_part(provider_fixture._DEVELOPING)
+
+    whole = _whole(part, "provider", facts=facts)
+
+    assert isinstance(whole, PartScope) and whole.derived is not None
+    assert whole.derived.rebind == f"recipient:{provider_fixture._ALL_RECIPIENTS}"
+    assert whole.base.identity == whole.compiled.identity
+    assert not {e.axis for e in whole.entries} & {"donor", "recipient"}
+    again = _reposted(whole, facts)
+    assert (again.compiled.spec_id, again.dropped_entries) == (whole.compiled.spec_id, [])
+
+
+@pytest.mark.parametrize("option", [None, "donor:members"], ids=["total", "members"])
+def test_a_donor_whole_reposts_as_the_figure_it_serves(monkeypatch, option: str | None):
+    """US bilateral ODA's donor whole, the DAC countries' total or every donor summed, states
+    the identity it serves as its base and no donor entry, so its base and entries posted
+    again compile the same Spec with nothing dropped."""
+    total, _ = _total_base(monkeypatch)
+    facts = _facts()
+    part = _part(total, [switch("provider:bilateral")], facts=facts)
+
+    whole = _whole(part, "donor", option, facts=facts)
+
+    assert isinstance(whole, PartScope)
+    assert not {e.axis for e in whole.entries} & {"donor", "recipient"}
+    again = _reposted(whole, facts)
+    assert (again.compiled.spec_id, again.dropped_entries) == (whole.compiled.spec_id, [])
+
+
+def test_the_whole_carries_the_entries_its_part_dropped(monkeypatch):
+    """A part built without refusing reports the entries it could not apply; its whole
+    reports the same."""
+    total, _ = _total_base(monkeypatch)
+    part = build_part_scope(
+        base=total,
+        entries=[switch("provider:bilateral"), switch("sector:120")],
+        records={},
+        facts=_facts(),
+        refuse=False,
+    )
+    assert isinstance(part, PartScope) and part.dropped_entries
+
+    whole = _whole(part, "provider", facts=_facts())
+
+    assert isinstance(whole, PartScope)
+    assert whole.dropped_entries == part.dropped_entries
+
+
+def test_a_whole_moving_an_axis_the_part_holds_refuses(monkeypatch):
+    """A part holds an option no longer served, kept because no option serves, which the
+    whole cannot pin. Where the whole's compile then settles another option on that axis,
+    the whole refuses `whole_moves_<axis>` in place of answering a figure the part does not
+    count beside."""
+    (sector, _region, _basis) = axes_tables()
+    served = {"now": False}
+
+    def sector_rule(base, record, facts) -> AxisTable:
+        unavailable = OptionAvailability(status="unavailable", code="option_not_covered")
+        set_option, one_option = sector.options
+        if not served["now"]:
+            options = tuple(
+                o.model_copy(update={"availability": unavailable}) for o in sector.options
+            )
+            return dataclasses.replace(sector, options=options)
+        return dataclasses.replace(
+            sector,
+            options=(set_option.model_copy(update={"availability": unavailable}), one_option),
+            preference=(one_option.option_id, set_option.option_id),
+        )
+
+    rules: dict[ScopeAxis, AxisRule] = {**AXIS_RULES, "sector": sector_rule}
+    facts = provider_fixture._facts()
+    part = _part(provider_fixture._bilateral_identity(), facts=facts, rules=rules)
+    assert [c.active for c in part.choices if c.axis == "sector"] == [sector.held]
+    served["now"] = True
+
+    refused = _whole(part, "provider", facts=facts, rules=rules)
+
+    assert isinstance(refused, WholeRefusal)
+    assert (refused.code, refused.cause) == (
+        "conflicting_requested_options",
+        "whole_moves_sector",
+    )
 
 
 def test_a_merge_build_reads_no_whole_from_the_scope_entries(monkeypatch):
@@ -697,3 +803,17 @@ def test_an_option_offered_in_place_of_the_whole_is_asked_by_its_id():
     assert whole.derived.part.spec_id == part.compiled.spec_id
     assert switched.derived is None
     assert switched.compiled.spec_id == whole.compiled.spec_id
+
+
+def test_a_side_named_by_a_total_whose_dcid_makes_no_option_id_is_its_own_whole(monkeypatch):
+    """A total whose dcid cannot form an option id (a `/` in it) still names the side the
+    part holds as its whole: the side states it as `<axis>:named`, and a whole request
+    refuses `part_is_whole`."""
+    facts = _dac2a_facts()
+    part = _dac2a_part(provider_fixture._KEN, "provider:contributions")
+    monkeypatch.setattr(side, "_marked", lambda *_: (provider_fixture._KEN,))
+
+    refused = _whole(part, "recipient", facts=facts)
+
+    assert isinstance(refused, WholeRefusal)
+    assert refused.cause == "part_is_whole"

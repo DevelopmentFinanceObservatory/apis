@@ -193,6 +193,8 @@ def _whole_already(
     dataset's total of both sides (`_spanning`) where it is another, which a provider whole
     rebinds the side to (`AxisTable.whole_rebind`)."""
     whole = f"{axis}:{named[0]}" if named else f"{axis}:members"
+    if not _OPTION_ID.fullmatch(whole):
+        whole = f"{axis}:named"
     held = Option(
         option_id=whole,
         label=_label(named[0]) if named else "every member",

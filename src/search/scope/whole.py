@@ -22,6 +22,13 @@ the part's window. The axis's table (`AxisTable.whole`, `AxisTable.whole_alterna
 read off the part's compiled identity, names the option a request with none asks for and
 the options a client may ask for in its place; the alternatives a result lists are those
 whose own derive succeeds.
+
+The pins serve the whole's compile alone. The scope returned states the whole as a client
+re-posts it: its base the identity it serves, its entries the part's own with the switch
+on the whole's axis (none for a side axis, which `derived` states, as it states a rebind),
+so the base and entries posted without `whole` compile the same Spec, and a choice the part
+took by default keeps that provenance. A whole whose answer holds another option than the
+part on an axis it does not set refuses `whole_moves_<axis>`.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from dfo_platform.problem import Alternative
+from dfo_platform.roles import role_key_axis
 from search.engine.errors import EngineInputError
 from search.models import (
     ChoiceOrigin,
@@ -38,6 +46,7 @@ from search.models import (
     DerivedWhole,
     Entry,
     PartScope,
+    RoleAxis,
     ScopeAxis,
     SideBinding,
     WholeRequest,
@@ -78,11 +87,17 @@ def derive_whole(
     conflicts: tuple[Conflict, ...] | None = None,
 ) -> PartScope | WholeRefusal:
     """The scope of `part`'s whole on `request.axis`, stating the pair in
-    `PartScope.derived`, or the refusal of it with the alternatives that derive."""
-    rules = {**(scope_rules.AXIS_RULES if rules is None else rules)}
+    `PartScope.derived`, or the refusal of it with the alternatives that derive. Each
+    candidate whole (the declared whole and its alternatives) is derived in full to learn
+    whether it is offered, so a request runs up to three compiles per candidate (the whole's own, and two that
+    restate it as a client re-posts it) beside its own."""
+    posted = scope_rules.AXIS_RULES if rules is None else rules
+    rules = {**posted}
     if request.axis in SIDE_RULES:
         rules[request.axis] = SIDE_RULES[request.axis]
-    derive = _Derive(part=part, records=records, facts=facts, rules=rules, conflicts=conflicts)
+    derive = _Derive(
+        part=part, records=records, facts=facts, rules=rules, posted=posted, conflicts=conflicts
+    )
     table = rules[request.axis](part.compiled.identity, records.get(request.axis), facts)
     if table is None:
         return WholeRefusal(code="requested_option_unavailable", cause="axis_absent")
@@ -108,6 +123,7 @@ class _Derive:
     records: Mapping[ScopeAxis, AxisRecord]
     facts: ScopeFacts
     rules: Mapping[ScopeAxis, AxisRule]
+    posted: Mapping[ScopeAxis, AxisRule]
     conflicts: tuple[Conflict, ...] | None
 
     def held(self, table: AxisTable) -> str:
@@ -131,15 +147,16 @@ class _Derive:
         assert option is not None
         rules = dict(self.rules)
         switches = [_switch(self.part, table.axis, asked)]
-        roles = {getattr(option.binding, "role", None)}
+        roles = {_role_axis(option.binding)}
         if rebind is not None:
             side = option_axis(rebind)
             rules[side] = SIDE_RULES[side]
             switches.append(_switch(self.part, side, rebind))
             roles |= _side_roles(self.part, side, rebind, records=self.records, facts=self.facts)
+        pins, dropped = self._pins(table.axis, roles - {None})
         compiled = build_part_scope(
             base=self.part.base.identity,
-            entries=[*self._pins(table.axis, roles - {None}), *switches],
+            entries=[*pins, *switches],
             records=self.records,
             facts=self.facts,
             rules=rules,
@@ -161,20 +178,76 @@ class _Derive:
                 code="requested_option_unavailable",
                 cause=served.availability.code or f"option_{served.availability.status}",
             )
-        return _restated(compiled, self.part), asked
+        # Compile reads every axis off the part's base, so the whole states a choice on each
+        # axis the part settles; one it does not hold at the part's option moves.
+        moved = next(
+            (
+                choice.axis
+                for choice in self.part.choices
+                if choice.axis != table.axis
+                and choice.axis not in dropped
+                and choice.active
+                != next((c.active for c in compiled.choices if c.axis == choice.axis), None)
+            ),
+            None,
+        )
+        if moved is not None:
+            return WholeRefusal(code="conflicting_requested_options", cause=f"whole_moves_{moved}")
+        whole = self._posted(table.axis, asked, compiled, dropped)
+        if isinstance(whole, WholeRefusal):
+            return whole
+        return whole, asked
 
-    def _pins(self, axis: ScopeAxis, roles: set[str | None]) -> list[Entry]:
+    def _posted(
+        self, axis: ScopeAxis, asked: str, compiled: PartScope, dropped: set[ScopeAxis]
+    ) -> PartScope | WholeRefusal:
+        """The whole as a client re-posts it: its base the identity it serves, its entries
+        the part's own, less those on `axis` and on the `dropped` axes whose parties the
+        whole replaces, with the switch to `asked` where `axis` is not a side axis, compiled
+        over the axes a fresh answer reads. An entry on an axis the served identity offers
+        no table for is left out, since the identity holds its option (a donor side summed
+        over its members reads no provider axis on DAC1). Refuses `whole_not_restated`
+        where that compile serves another figure than the whole's own."""
+        entries = [e for e in self.part.entries if e.axis != axis and e.axis not in dropped]
+        if axis not in SIDE_RULES:
+            entries.append(_switch(self.part, axis, asked))
+
+        def build(entries: list[Entry], *, refuse: bool) -> PartScope | Refusal:
+            return build_part_scope(
+                base=compiled.compiled.identity,
+                entries=entries,
+                records=self.records,
+                facts=self.facts,
+                rules=self.posted,
+                conflicts=self.conflicts,
+                refuse=refuse,
+            )
+
+        trial = build(entries, refuse=False)
+        assert isinstance(trial, PartScope)
+        unread = [d.entry for d in trial.dropped_entries if d.cause == "axis_absent"]
+        whole = build([e for e in entries if e not in unread], refuse=True)
+        if isinstance(whole, Refusal) or whole.compiled.spec_id != compiled.compiled.spec_id:
+            return WholeRefusal(code="requested_option_unavailable", cause="whole_not_restated")
+        return whole.model_copy(update={"dropped_entries": list(self.part.dropped_entries)})
+
+    def _pins(
+        self, axis: ScopeAxis, roles: set[RoleAxis | None]
+    ) -> tuple[list[Entry], set[ScopeAxis]]:
         """An explicit entry per choice the part settled on an axis other than `axis`,
-        holding its option, less one whose option sets one of the `roles` the whole sets. A
-        choice the part holds on an unavailable option, kept because no option serves, is
-        left to its default."""
+        holding its option, less one whose option sets the parties of one of the flow sides
+        `roles` the whole sets, and the axes so left out. A choice the part holds on an
+        unavailable option, kept because no option serves, is left to its default, which
+        the whole's check that it moves no axis judges."""
         concepts = {entry.axis: entry.concept for entry in self.part.entries}
         pins: list[Entry] = []
+        dropped: set[ScopeAxis] = set()
         for choice in self.part.choices:
             if choice.axis == axis:
                 continue
             held = next(o for o in choice.options if o.option_id == choice.active)
-            if getattr(held.binding, "role", None) in roles:
+            if _role_axis(held.binding) in roles:
+                dropped.add(choice.axis)
                 continue
             if held.availability.status == "unavailable":
                 continue
@@ -187,7 +260,7 @@ class _Derive:
                     origin=ChoiceOrigin(choice_id=choice.id),
                 )
             )
-        return pins
+        return pins, dropped
 
     def derived(
         self, table: AxisTable, whole: PartScope, asked: str, *, alternatives: Sequence[str]
@@ -223,6 +296,13 @@ def _rebind(table: AxisTable, asked: str) -> str | None:
     return table.whole_rebind if asked == table.whole else None
 
 
+def _role_axis(binding: object) -> RoleAxis | None:
+    """The flow side whose parties `binding` sets (`role_key_axis` of its role), None where
+    it sets none."""
+    role = getattr(binding, "role", None)
+    return role_key_axis(role) if isinstance(role, str) else None
+
+
 def _side_roles(
     part: PartScope,
     axis: ScopeAxis,
@@ -230,12 +310,12 @@ def _side_roles(
     *,
     records: Mapping[ScopeAxis, AxisRecord],
     facts: ScopeFacts,
-) -> set[str | None]:
-    """The role the side option `option_id` binds, read off the part's side table; none
-    where the table offers no such option, which compile then refuses."""
+) -> set[RoleAxis | None]:
+    """The flow side the side option `option_id` binds, read off the part's side table;
+    none where the table offers no such option, which compile then refuses."""
     table = SIDE_RULES[axis](part.compiled.identity, records.get(axis), facts)
     option = table.option(option_id) if table is not None else None
-    return {getattr(option.binding, "role", None)} if option is not None else set()
+    return {_role_axis(option.binding)} if option is not None else set()
 
 
 def _switch(part: PartScope, axis: ScopeAxis, option_id: str) -> Entry:
@@ -245,19 +325,6 @@ def _switch(part: PartScope, axis: ScopeAxis, option_id: str) -> Entry:
         provenance="explicit",
         origin=ChoiceOrigin(choice_id=f"{part.id}:{axis}"),
     )
-
-
-def _restated(whole: PartScope, part: PartScope) -> PartScope:
-    """`whole` with each choice that holds the part's option stating the part's provenance,
-    since the whole holds it as the part settled it."""
-    settled = {choice.axis: choice for choice in part.choices}
-    choices = [
-        choice.model_copy(update={"provenance": held.provenance})
-        if (held := settled.get(choice.axis)) is not None and held.active == choice.active
-        else choice
-        for choice in whole.choices
-    ]
-    return whole.model_copy(update={"choices": choices})
 
 
 def _side(scope: PartScope, axis: ScopeAxis, option_id: str) -> DerivedSide:
