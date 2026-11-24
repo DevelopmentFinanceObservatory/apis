@@ -15,7 +15,8 @@
 # follows the latest ready revision; an entry naming a revision with 100
 # percent pins traffic to it. The `candidate` tag marks a release that has not
 # finished: the stage step puts it on the revision it creates, and the last
-# step of a release removes it. The script classifies the service:
+# step of a release removes it. The `previous` tag marks the revision the stage
+# step pinned traffic to. The script classifies the service:
 #
 #   unfinished      the revision tagged `candidate` serves: a release moved
 #                   traffic and stopped before settle, backfill or the tag
@@ -23,10 +24,12 @@
 #                   one and the target's, the deploy finishes it (traffic
 #                   follows the latest revision again, settle, backfill)
 #                   without probing; otherwise the target deploys.
-#   staged          a revision that serves nothing carries the `candidate`
-#                   tag: a deploy staged it and stopped before traffic moved,
-#                   leaving traffic pinned by name. When it is the latest
-#                   created revision, ready, the target's, and the datasets
+#   staged          traffic is pinned to an older revision that carries the
+#                   `previous` tag: the stage step tags the serving revision
+#                   `previous` before its update pins traffic there, so a
+#                   deploy staged a revision and stopped before traffic moved.
+#                   When the `candidate` tag sits on the latest created
+#                   revision, ready, the target's, and the datasets
 #                   maintenance job still runs the target's image, the deploy
 #                   releases it (probe, move traffic, settle, backfill)
 #                   without building. Otherwise the target deploys, and its
@@ -38,12 +41,12 @@
 #                   unfinished release; any other target deploys. When the
 #                   latest created revision never became ready, an older one
 #                   serves with an unknown commit, and the target deploys.
-#   held            traffic is pinned to an older revision and no revision
-#                   carries the `candidate` tag, or traffic is split: someone
-#                   moved traffic by hand. A target with the image inputs of
-#                   the latest created revision would undo that, so the script
-#                   refuses it unless OVERRIDE is set. Any other target
-#                   deploys.
+#   held            traffic is pinned to an older revision without the
+#                   `previous` tag, or split: someone moved traffic by hand,
+#                   whatever tag a stopped deploy left. A target with the
+#                   image inputs of the latest created revision would undo
+#                   that, so the script refuses it unless OVERRIDE is set. Any
+#                   other target deploys.
 #
 # Env:
 #   SERVICE      Cloud Run service name (vars.SERVICE_APIS) -- required
@@ -92,10 +95,10 @@ described="$(gcloud run services describe "$SERVICE" \
   exit 1
 }
 
-# Six fields: the template's image, the latest created and latest ready
+# Seven fields: the template's image, the latest created and latest ready
 # revisions, how traffic is asked for (`latest`, `pinned` or `split`), the
-# revision a pin names, and the revision tagged `candidate`. A missing field
-# prints as `-`.
+# revision a pin names, and the revisions tagged `candidate` and `previous`. A
+# missing field prints as `-`.
 fields="$(python3 -c '
 import json, sys
 service = json.loads(sys.argv[1])
@@ -110,18 +113,19 @@ elif whole:
     mode, pinned = "pinned", whole[0].get("revisionName")
 else:
     mode, pinned = "split", None
-candidate = [e.get("revisionName") for e in traffic if e.get("tag") == "candidate"]
+tags = {e.get("tag"): e.get("revisionName") for e in traffic if e.get("tag")}
 fields = [
     containers[0].get("image"),
     status.get("latestCreatedRevisionName"),
     status.get("latestReadyRevisionName"),
     mode,
     pinned,
-    candidate[0] if candidate else None,
+    tags.get("candidate"),
+    tags.get("previous"),
 ]
 print(" ".join(field or "-" for field in fields))
 ' "$described" 2>/dev/null)" || fields=""
-read -r image latest ready mode pinned candidate <<<"${fields:-- - - - - -}"
+read -r image latest ready mode pinned candidate previous <<<"${fields:-- - - - - - -}"
 
 if [ "$image" = - ] || [ "$latest" = - ]; then
   echo "::error::gcloud run services describe returned no image or latest revision for service '$SERVICE'."
@@ -178,17 +182,6 @@ if [ "$candidate" != - ] && [ "$candidate" = "$serving" ]; then
   else
     deploy=true
   fi
-elif [ "$candidate" != - ]; then
-  state=staged
-  if [ "$FORCE" != true ] && [ "$candidate" = "$latest" ] && [ "$ready" = "$latest" ] &&
-    [ "$commit" = "$TARGET" ] && [ "$(job_commit)" = "$TARGET" ]; then
-    echo "::notice::revision $candidate of $TARGET was staged by an earlier run that stopped before traffic moved; releasing it."
-    probe=true
-    release=true
-    revision="$candidate"
-  else
-    deploy=true
-  fi
 elif [ "$mode" = latest ] && [ "$ready" != "$latest" ]; then
   state="latest-not-ready"
   echo "::notice::the latest revision $latest of '$SERVICE' never became ready, so $ready serves with a commit this script can't read. Deploying."
@@ -208,6 +201,17 @@ elif [ "$serving" = "$latest" ]; then
     echo "::notice::traffic is pinned by name to the latest revision $latest, as a release that stopped after moving traffic leaves it; finishing that release."
     release=true
     revision="$latest"
+  fi
+elif [ "$mode" = pinned ] && [ "$previous" = "$serving" ]; then
+  state=staged
+  if [ "$FORCE" != true ] && [ "$candidate" = "$latest" ] && [ "$ready" = "$latest" ] &&
+    [ "$commit" = "$TARGET" ] && [ "$(job_commit)" = "$TARGET" ]; then
+    echo "::notice::revision $candidate of $TARGET was staged by an earlier run that stopped before traffic moved; releasing it."
+    probe=true
+    release=true
+    revision="$candidate"
+  else
+    deploy=true
   fi
 else
   state=held

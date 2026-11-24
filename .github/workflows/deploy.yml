@@ -494,9 +494,11 @@ jobs:
       # image in Terraform for the same reason, and replacing the manifest
       # here would fight that too. This step runs only once both migration
       # jobs above have exited 0, so the service never serves an image ahead
-      # of the schema it expects. `--no-traffic` creates the revision with no
-      # traffic and pins the traffic to the revision serving now, by name. The
-      # step then reads the revision the update created, the latest created
+      # of the schema it expects. The step first tags the revision serving now
+      # `previous`, which tells the pin the update makes from one a person
+      # makes by hand. `--no-traffic` creates the revision with no traffic and
+      # pins the traffic to that revision, by name. The step then reads the
+      # revision the update created, the latest created
       # one, and tags it `candidate` with `update-traffic`, which gives it a
       # URL of its own and moves the tag off any older revision. `--tag` on the
       # update would make gcloud name the template revision, which the infra
@@ -508,6 +510,26 @@ jobs:
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
+          serving="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format=json |
+            python3 -c '
+          import json, sys
+          service = json.load(sys.stdin)
+          whole = [e for e in service["spec"].get("traffic", []) if e.get("percent") == 100]
+          if whole and whole[0].get("latestRevision"):
+              print(service["status"].get("latestReadyRevisionName", ""))
+          elif whole:
+              print(whole[0].get("revisionName", ""))
+          ')"
+          if [ -n "$serving" ]; then
+            gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+              --update-tags="previous=$serving" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --quiet
+          fi
           gcloud run services update "${{ vars.SERVICE_APIS }}" \
             --image="${{ steps.image.outputs.image }}" \
             --no-traffic \
@@ -582,11 +604,11 @@ jobs:
       # before this deploy; one created in the seconds between the check and
       # the update serves unprobed, as one created just after the deploy
       # would. When a newer revision appeared while the probe ran (an `infra`
-      # apply), the update pins traffic to the probed revision by name and
-      # moves the `candidate` tag to the newer one, and the last step fails so
-      # a rerun probes and releases it. The `candidate` tag stays on a
-      # released revision until settle and backfill have run, so a rerun after
-      # either fails finishes the release.
+      # apply), the update pins traffic to the probed revision by name, tags it
+      # `previous`, and moves the `candidate` tag to the newer one, and the
+      # last step fails so a rerun probes and releases it. The `candidate` tag
+      # stays on a released revision until settle and backfill have run, so a
+      # rerun after either fails finishes the release.
       - name: Move traffic to the candidate revision
         id: move
         if: steps.decide.outputs.release == 'true'
@@ -608,7 +630,7 @@ jobs:
           else
             gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
               --to-revisions="$REVISION=100" \
-              --update-tags="candidate=$latest" \
+              --update-tags="candidate=$latest,previous=$REVISION" \
               --region="${{ vars.REGION }}" \
               --project="${{ vars.PROJECT_ID }}" \
               --quiet
@@ -671,7 +693,8 @@ jobs:
             --args=backfill-descriptions
 
       # Ends the release: removes the `candidate` tag, which marks a release
-      # that has not finished, once traffic moved and settle and backfill ran.
+      # that has not finished, and the `previous` tag, once traffic moved and
+      # settle and backfill ran.
       # When a newer revision appeared while the probe ran, that revision now
       # carries the tag, and the step fails so a rerun probes and releases it.
       - name: Finish the release
@@ -685,8 +708,8 @@ jobs:
             exit 1
           fi
           gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
-            --remove-tags=candidate \
+            --remove-tags=candidate,previous \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
-          echo "The release is finished; no revision carries the candidate tag."
+          echo "The release is finished; no revision carries the candidate or previous tag."

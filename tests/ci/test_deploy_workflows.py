@@ -4,6 +4,7 @@ deploy.yml holds the steps. deploy-dev.yml and deploy-prod.yml call it and choos
 triggers and the GitHub Environment.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -200,8 +201,8 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, two service updates, two reads of the apis
-    # service, and four traffic updates.
+    # Six job updates, ten job executions, two service updates, three reads of the apis
+    # service, and five traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
@@ -212,7 +213,7 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
-            "SERVICE_APIS": 7,
+            "SERVICE_APIS": 9,
         }.items()
     }
 
@@ -474,35 +475,59 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
 
 
 @pytest.mark.parametrize(
-    ("latest", "exit_code", "output"),
+    ("traffic", "latest", "exit_code", "output", "previous"),
     [
-        ("svc-00002-bbb", 0, "revision=svc-00002-bbb\n"),
-        ("", 1, ""),
+        (
+            [{"percent": 100, "latestRevision": True}],
+            "svc-00002-bbb",
+            0,
+            "revision=svc-00002-bbb\n",
+            "svc-00001-aaa",
+        ),
+        # A stopped deploy left traffic pinned; that pin is what the new stage keeps.
+        (
+            [{"percent": 100, "revisionName": "svc-00000-zzz"}],
+            "svc-00002-bbb",
+            0,
+            "revision=svc-00002-bbb\n",
+            "svc-00000-zzz",
+        ),
+        ([{"percent": 100, "latestRevision": True}], "", 1, "", "svc-00001-aaa"),
     ],
-    ids=["created", "unreadable"],
+    ids=["following", "pinned", "unreadable"],
 )
-def test_the_stage_step_tags_and_outputs_the_revision_it_created(
-    tmp_path: Path, latest: str, exit_code: int, output: str
+def test_the_stage_step_tags_the_pinned_revision_and_the_revision_it_created(
+    tmp_path: Path, traffic: list, latest: str, exit_code: int, output: str, previous: str
 ):
-    """The update leaves the template revision unnamed, since `--tag` would name it, and the
-    tag goes on the revision the update created."""
+    """The serving revision is tagged `previous` before the update pins traffic to it. The
+    update leaves the template revision unnamed, since `--tag` would name it, and the
+    `candidate` tag goes on the revision the update created."""
     output_file = tmp_path / "github_output"
     output_file.touch()
+    described = {
+        "spec": {"traffic": traffic},
+        "status": {"latestReadyRevisionName": "svc-00001-aaa"},
+    }
 
     ran, calls = _run_step(
         "Stage the new revision with no traffic",
         tmp_path,
+        DESCRIBED=json.dumps(described),
         LATEST=latest,
         GITHUB_OUTPUT=str(output_file),
     )
 
     assert ran.returncode == exit_code, ran.stderr
     assert output_file.read_text() == output
-    assert calls[0].startswith("run services update svc --image=svc --no-traffic --region")
-    assert "--tag" not in calls[0]
-    assert calls[1].startswith("run services describe svc")
+    made = [call.split(" --region")[0] for call in calls]
     tagged = ["run services update-traffic svc --update-tags=candidate=svc-00002-bbb"]
-    assert [call.split(" --region")[0] for call in calls[2:]] == (tagged if latest else [])
+    assert made == [
+        "run services describe svc",
+        f"run services update-traffic svc --update-tags=previous={previous}",
+        "run services update svc --image=svc --no-traffic",
+        "run services describe svc",
+        *(tagged if latest else []),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -515,7 +540,7 @@ def test_the_stage_step_tags_and_outputs_the_revision_it_created(
         (
             "svc-00003-ccc",
             "run services update-traffic svc --to-revisions=svc-00002-bbb=100"
-            " --update-tags=candidate=svc-00003-ccc",
+            " --update-tags=candidate=svc-00003-ccc,previous=svc-00002-bbb",
             "newer=svc-00003-ccc\n",
         ),
     ],
@@ -545,7 +570,7 @@ def test_traffic_moves_to_the_probed_revision_in_one_update(
 @pytest.mark.parametrize(
     ("newer", "exit_code", "calls"),
     [
-        ("", 0, ["run services update-traffic svc --remove-tags=candidate"]),
+        ("", 0, ["run services update-traffic svc --remove-tags=candidate,previous"]),
         # The newer revision keeps the tag for the rerun that probes it.
         ("svc-00003-ccc", 1, []),
     ],

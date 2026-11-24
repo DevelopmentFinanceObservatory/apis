@@ -63,6 +63,7 @@ def repo(tmp_path: Path) -> Path:
 _SERVING = "dfo-dev-apis-00001-aaa"
 _STAGED = "dfo-dev-apis-00002-bbb"
 _NEWER = "dfo-dev-apis-00003-ccc"
+_HAND = "dfo-dev-apis-00000-zzz"
 
 
 def _service(
@@ -71,6 +72,7 @@ def _service(
     pinned: str | None = None,
     split: bool = False,
     candidate: str | None = None,
+    previous: str | None = None,
     latest: str = _STAGED,
     ready: str | None = None,
 ) -> dict:
@@ -79,7 +81,8 @@ def _service(
     that image), the latest ready one (`latest` unless given), and the traffic asked for in
     `spec.traffic` and resolved in `status.traffic`. Traffic follows the latest revision unless
     `pinned` names a revision or `split` is set. A `candidate` tag on a revision that never
-    became ready appears in `spec.traffic` only."""
+    became ready appears in `spec.traffic` only. `previous` tags the revision a stage step
+    pinned traffic to."""
     ready = ready or latest
     if split:
         asked = [
@@ -98,6 +101,10 @@ def _service(
         asked = [*asked, tag]
         if not (candidate == latest and ready != latest):
             resolved = [*resolved, {**tag, "url": "https://tagged"}]
+    if previous:
+        tag = {"revisionName": previous, "tag": "previous"}
+        asked = [*asked, tag]
+        resolved = [*resolved, {**tag, "url": "https://previous"}]
     return {
         "spec": {
             "template": {"spec": {"containers": [{"image": _image_for(commit)}]}},
@@ -319,8 +326,9 @@ def test_force_with_live_equal_to_target_still_deploys(repo: Path, tmp_path: Pat
 def test_a_revision_staged_by_a_stopped_deploy(
     repo: Path, tmp_path: Path, target_of, latest, ready, job_of, force, expected
 ):
-    """An earlier deploy staged revision `_STAGED` with the `candidate` tag and stopped before
-    traffic moved, so `_SERVING` still serves, pinned by name."""
+    """An earlier deploy tagged `_SERVING` `previous`, staged revision `_STAGED` with the
+    `candidate` tag, and stopped before traffic moved, so `_SERVING` still serves, pinned by
+    name."""
     _commit(repo, "init", {"src/app.py": "1\n", "README.md": "hello\n"})
     staged = _commit(repo, "feat: change app", {"src/app.py": "2\n"})
     docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
@@ -328,7 +336,14 @@ def test_a_revision_staged_by_a_stopped_deploy(
     commits = {"staged": staged, "docs": docs}
     _fake_gcloud(
         bin_dir,
-        service=_service(staged, pinned=_SERVING, candidate=_STAGED, latest=latest, ready=ready),
+        service=_service(
+            staged,
+            pinned=_SERVING,
+            candidate=_STAGED,
+            previous=_SERVING,
+            latest=latest,
+            ready=ready,
+        ),
         job_commit=commits[job_of],
     )
 
@@ -380,9 +395,14 @@ def test_a_release_that_moved_traffic_and_stopped_is_finished(
         ({"latest": _NEWER, "ready": _STAGED}, "latest"),
         ({"latest": _NEWER, "ready": _STAGED}, "docs"),
         # The stage step's revision never started, so its tag appears in `spec.traffic` only.
-        ({"pinned": _SERVING, "candidate": _STAGED, "ready": _SERVING}, "latest"),
+        (
+            {"pinned": _SERVING, "candidate": _STAGED, "previous": _SERVING, "ready": _SERVING},
+            "latest",
+        ),
+        # The stage step pinned traffic and stopped before it tagged its revision.
+        ({"pinned": _SERVING, "previous": _SERVING}, "latest"),
     ],
-    ids=["latest-not-ready", "latest-not-ready-docs", "staged-not-ready"],
+    ids=["latest-not-ready", "latest-not-ready-docs", "staged-not-ready", "stage-untagged"],
 )
 def test_a_revision_that_never_started_is_not_a_move_by_hand(
     repo: Path, tmp_path: Path, service, target_of
@@ -416,8 +436,42 @@ def test_a_revision_that_never_started_is_not_a_move_by_hand(
         ("held", {"split": True}, "true", "true", False),
         # A commit with other image inputs deploys over the hold.
         ("fix", {"pinned": _SERVING}, "false", "false", False),
+        # A hand pin made while a stopped deploy's tags linger: traffic serves a revision other
+        # than the one the stage step tagged `previous`.
+        (
+            "held",
+            {"pinned": _SERVING, "candidate": _NEWER, "previous": _HAND},
+            "false",
+            "false",
+            True,
+        ),
+        (
+            "docs",
+            {"pinned": _SERVING, "candidate": _NEWER, "previous": _HAND},
+            "false",
+            "false",
+            True,
+        ),
+        (
+            "fix",
+            {"pinned": _SERVING, "candidate": _NEWER, "previous": _HAND},
+            "false",
+            "false",
+            False,
+        ),
     ],
-    ids=["rerun", "dispatch", "docs-only", "split", "override", "split-override", "new-code"],
+    ids=[
+        "rerun",
+        "dispatch",
+        "docs-only",
+        "split",
+        "override",
+        "split-override",
+        "new-code",
+        "stale-tags-rerun",
+        "stale-tags-docs-only",
+        "stale-tags-new-code",
+    ],
 )
 def test_traffic_moved_by_hand_refuses_a_target_that_would_undo_it(
     repo: Path, tmp_path: Path, target_of, traffic, force, override, refused
