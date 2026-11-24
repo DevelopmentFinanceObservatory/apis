@@ -114,6 +114,7 @@ from search.engine.retrieval.facts import (
     _dcids_for,
     read_constraints,
     read_declared_roles,
+    read_five_tuple,
     read_name,
     read_slot_taxonomy,
 )
@@ -3466,10 +3467,19 @@ def elected_role_class_shape(
     (`MembershipResolution.walked`). The walk is seeded with the shape's recalled members
     (`ShapeDraft.walk_seeds`).
 
+    A shape spanning a ratio's denominator twins (`ShapeDraft.twin_families`) leaves the
+    recalled election on one denominator, and `query` is read on that denominator's
+    five-tuple from then on, so the tables, the walk and the mint read one five-tuple. A
+    caller that reads its query after this call rebuilds it from the returned shape.
+
     Raises `RoleSignatureError` when the walk meets role sets the election cannot order,
-    and `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
+    or the asked roles cannot choose between a ratio and its twin, and
+    `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
     identity, so no sample answers it."""
     narrowed = _recalled_role_class_shape(shape, query)
+    assert not spans_ratio_twins(narrowed), "the role-class election resolves ratio twins"
+    if narrowed.meas_denom_dcid != shape.meas_denom_dcid:
+        query = replace(query, five_tuple=_member_five_tuple(shape_five_tuple(narrowed)))
     if index_decides(get_index(), query):
         return MembershipResolution(narrowed, MembershipAuthority.AUTHORITATIVE)
     if narrowed.held_family is not None and _tables_hold_five_tuple(narrowed.held_family):
@@ -3630,9 +3640,18 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
     that set; when none of its own members is of that set it
     holds the set's least-constrained member. `shape` is returned unchanged when the index
     decides the query's membership and when the election decides nothing
-    (`_recall_role_election`)."""
-    members = shape.sv_arc_facts
-    if shape.sv_arc_facts_complete or not members or index_decides(get_index(), query):
+    (`_recall_role_election`).
+
+    A shape spanning a ratio's denominator twins (`ShapeDraft.twin_families`) always leaves
+    on one denominator (`on_denominator`): the one its elected members divide by. When the
+    election decides nothing, it is the one denominator the members matching the query's
+    slots divide by, the shape's own when none matches; matching members under two
+    denominators raise `RoleSignatureError`, the refusal a role tie gets."""
+    members = shape.sv_arc_facts or {}
+    spans = spans_ratio_twins(shape)
+    if shape.sv_arc_facts_complete or index_decides(get_index(), query):
+        return on_denominator(shape, shape.meas_denom_dcid) if spans else shape
+    if not members and not spans:
         return shape
     population = shape_population_arcs(shape)
     recall: dict[str, MemberFacts] = {
@@ -3640,8 +3659,15 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
     }
     elected = _recall_role_election(recall, query)
     if elected is None:
-        return shape
+        if not spans:
+            return shape
+        return on_denominator(shape, _unelected_denominator(shape, recall, query))
     role_set, least_constrained = elected
+    if spans:
+        # Derive merges only denominators whose members order alike
+        # (`derive._denominators_order_alike`), so the elected role set divides by one.
+        shape = on_denominator(shape, _member_denominator(recall[least_constrained[0]]))
+        members = shape.sv_arc_facts or {}
     kept = {
         sv: arcs
         for sv, arcs in members.items()
@@ -3666,6 +3692,99 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         sv_arc_facts=kept,
         label=label,
         held_roles=role_set if shape.held_family is not None else None,
+    )
+
+
+def spans_ratio_twins(shape: ShapeDraft) -> bool:
+    """Whether `shape` stands for a ratio and its denominator twins, which derive groups on
+    their denominator's role total: it carries the twins' catalogue families
+    (`ShapeDraft.twin_families`), or one of its members divides by a denominator other
+    than its own."""
+    return bool(shape.twin_families) or any(
+        read_five_tuple(arcs).meas_denom_dcid != shape.meas_denom_dcid
+        for arcs in (shape.sv_arc_facts or {}).values()
+    )
+
+
+def _member_denominator(member: MemberFacts) -> str | None:
+    """The denominator `member` divides by, None for a member that divides by none."""
+    return member.read_five_tuple().meas_denom_dcid
+
+
+def _unelected_denominator(
+    shape: ShapeDraft, recall: Mapping[str, MemberFacts], query: FamilyQuery
+) -> str | None:
+    """The denominator a shape spanning ratio twins (`ShapeDraft.twin_families`) leaves on
+    when the role-class election among `recall`, its population, decides nothing: the one
+    the members matching `query`'s slots divide by, the shape's own when none matches, so
+    the bound values a member lacks refuse on the aggregate as they would on a stock.
+
+    Raises `RoleSignatureError` when the matching members divide by two denominators: the
+    roles cannot tell the ratio from its twin, as a role tie cannot tell two role sets."""
+    denominators = list(
+        dict.fromkeys(
+            _member_denominator(member)
+            for member in recall.values()
+            if _matches_query_slots(member, query.slots)
+        )
+    )
+    if len(denominators) > 1:
+        raise RoleSignatureError(
+            f"members of shape {shape.shape_id!r} matching the bound values divide by "
+            f"{len(denominators)} denominators the asked roles do not choose between: "
+            + ", ".join(str(d) for d in denominators)
+        )
+    return denominators[0] if denominators else shape.meas_denom_dcid
+
+
+def on_denominator(shape: ShapeDraft, denominator: str | None) -> ShapeDraft:
+    """`shape`, which spans ratio twins (`spans_ratio_twins`), standing for its members
+    that divide by `denominator` alone: its five-tuple, catalogue family and shape
+    id are that denominator's, the id derive and a resubmit give such a group
+    (`derive.group_shape_id`), and it spans no twin. A denominator other than the shape's
+    own takes the label its family reads as (`walked_family_label`). It records the id it
+    leaves (`ShapeDraft.menu_shape_id`), the menu reading's. When none of its own
+    members divides by `denominator`, it holds the first member of its population that
+    does."""
+    # derive imports this module, so its shape id rule is read at call time.
+    from search.engine.retrieval.derive import group_shape_id
+
+    five_tuple = shape_five_tuple(shape)._replace(meas_denom_dcid=denominator)
+    key = FamilyKey(*five_tuple, True)
+    held_family = key if key in (shape.held_family, *shape.twin_families) else None
+    population = shape_population_arcs(shape)
+    members = {
+        sv: arcs
+        for sv, arcs in (shape.sv_arc_facts or {}).items()
+        if read_five_tuple(arcs).meas_denom_dcid == denominator
+    } or next(
+        (
+            {sv: arcs}
+            for sv, arcs in population.items()
+            if read_five_tuple(arcs).meas_denom_dcid == denominator
+        ),
+        {},
+    )
+    label = shape.label
+    if denominator != shape.meas_denom_dcid:
+        held = current_catalogue().held_family(key) if held_family is not None else None
+        label = (
+            walked_family_label(
+                members, held=held, population_type_label=None, prop_labels={}, value_labels={}
+            )
+            or shape.label
+        )
+    return replace(
+        shape,
+        shape_id=group_shape_id(five_tuple, role_bearing=True, family=None),
+        meas_denom_dcid=denominator,
+        sv_arc_facts=members,
+        label=label,
+        held_family=held_family,
+        twin_families=(),
+        menu_shape_id=shape.shape_id,
+        held_roles=None,
+        walk_seeds=None,
     )
 
 

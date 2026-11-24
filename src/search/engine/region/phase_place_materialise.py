@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, cast
 
 import dc_graph
+from code_index.members import FamilyQuery
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
@@ -326,12 +327,16 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     # too, for any shape the index or the catalogue's tables leave unsettled and with a
     # member graph to walk. Members it does not settle still answer, under a warning.
     role_keys = bound.role_keys
-    role_query = shape_query(
-        state.shape_draft,
-        without_sampled_claims(state.bindings),
-        role_keys.bound,
-        open_role_keys=role_keys.open,
-    )
+
+    def query_of(shape: ShapeDraft) -> FamilyQuery:
+        return shape_query(
+            shape,
+            without_sampled_claims(state.bindings),
+            role_keys.bound,
+            open_role_keys=role_keys.open,
+        )
+
+    role_query = query_of(state.shape_draft)
     recalled = state.shape_draft
     try:
         resolution = await asyncio.to_thread(
@@ -340,6 +345,9 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     except (RoleSignatureError, FamilyNotResolvableError) as exc:
         return _election_refusal(state, exc)
     state.shape_draft = resolution.value
+    # A shape spanning a ratio's denominator twins leaves the election on one denominator,
+    # so the query is read on the elected shape's five-tuple from here on.
+    role_query = query_of(state.shape_draft)
     # The alternates and siblings start their walks now, beside the elected shape's own, under
     # the plan the recalled election gives. A walk that changes the elected shape makes the
     # plan again, and a walk the new plan needs and this one did not starts then.
@@ -381,17 +389,11 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
             return refused
         recalled = state.shape_draft
         relaxed = True
-        role_query = shape_query(
-            recalled,
-            without_sampled_claims(state.bindings),
-            role_keys.bound,
-            open_role_keys=role_keys.open,
-        )
         try:
             resolution = await asyncio.to_thread(
                 elected_role_class_shape,
                 recalled,
-                role_query,
+                query_of(recalled),
                 walks=state.role_class_walks,
                 arcs_graph=state.graph,
                 deadline=state.deadline,
@@ -399,6 +401,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         except (RoleSignatureError, FamilyNotResolvableError) as exc:
             return _election_refusal(state, exc)
         state.shape_draft = resolution.value
+        role_query = query_of(state.shape_draft)
     state.walked = resolution.walked
     if refuted := _judge_sampled_claims(state, role_keys):
         if (refused := await _unbind_refuted_claims(state, refuted, role_keys)) is not None:

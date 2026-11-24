@@ -50,13 +50,16 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceReference, SourceScope
+from search.engine.spec_build import build_shape_model
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
+    DatasetResubmitInput,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
     RawTextInput,
     ResolveRequest,
+    ResubmitIdentityEntry,
     SourceMention,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -66,6 +69,7 @@ from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._binders import RatingBinder
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import member_walk_reader
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -299,7 +303,7 @@ def _coverage():
 
 
 def _answer(
-    part: ParsedPart | RawTextInput,
+    part: ParsedPart | RawTextInput | DatasetResubmitInput,
     monkeypatch: pytest.MonkeyPatch,
     llm: _BindLLM | None = None,
     *,
@@ -307,10 +311,11 @@ def _answer(
     read: str = _IDS,
     binder: Binder | None = None,
 ):
-    """`part`'s answer through the parsed door, or a query's through the raw-text door,
-    over a graph recalling `recalled` and coverage holding every StatVar's observations
-    under the provenance `read`, IDS as the graph holds them, bound by `binder`, the
-    configured one by default."""
+    """`part`'s answer through the parsed door, a query's through the raw-text door, or a
+    posted identity's through the resubmit door, which walks the mint's members over the
+    graph, over a graph recalling `recalled` and coverage holding every StatVar's
+    observations under the provenance `read`, IDS as the graph holds them, bound by
+    `binder`, the configured one by default."""
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in _COVERAGE_ROWS
@@ -320,12 +325,17 @@ def _answer(
     response = asyncio.run(
         resolve_async(
             ResolveRequest(
-                input=part if isinstance(part, RawTextInput) else ParsedInput(parts=[part])
+                input=part
+                if isinstance(part, RawTextInput | DatasetResubmitInput)
+                else ParsedInput(parts=[part])
             ),
             graph=graph,
             resolver=make_resolver(graph),
             llm=llm or _BindLLM(),
             sdmx=FakeSdmxClient(observations={}),
+            materialise_graph=member_walk_reader(graph)
+            if isinstance(part, DatasetResubmitInput)
+            else None,
             binder=binder,
         )
     )
@@ -1150,17 +1160,21 @@ def test_a_code_two_named_sources_hold_offers_each_as_the_only_included_source(
 
 
 @pytest.mark.parametrize(
-    ("open_roles", "elected"),
-    [(None, _USD_SHARE), (["creditor"], _USD_SHARE_BY_CREDITOR)],
+    ("open_roles", "elected", "denominator"),
+    [
+        (None, _USD_SHARE, _PPG_STOCK),
+        (["creditor"], _USD_SHARE_BY_CREDITOR, _PPG_STOCK_BY_CREDITOR),
+    ],
     ids=["aggregate", "by-creditor"],
 )
 def test_a_ratio_code_elects_its_aggregate_unless_the_creditor_is_open(
-    open_roles, elected, monkeypatch
+    open_roles, elected, denominator, monkeypatch
 ):
-    """DT.CUR.USDL.ZS's by-creditor share divides by the by-creditor PPG stock, so its two
-    StatVars derive two shapes. They are twins all the same: no open role elects the share
-    of the aggregate stock and the open creditor the share by creditor, with no choice left
-    to the bind model."""
+    """DT.CUR.USDL.ZS's by-creditor share divides by the by-creditor PPG stock, its
+    denominator's role twin, so its two StatVars derive one shape. No open role elects the
+    share of the aggregate stock and the open creditor the share by creditor, with no choice
+    left to the bind model, and the identity names the elected share's own denominator, so
+    a resubmit of it answers the same spec and members."""
     part = ParsedPart(
         variable_text=_USDL,
         entities=[ParsedEntity(text="Kenya")],
@@ -1172,6 +1186,17 @@ def test_a_ratio_code_elects_its_aggregate_unless_the_creditor_is_open(
 
     assert answer.status == "definite", answer
     assert _minted_members(answer.spec) == {elected}
+    identity = answer.spec.definition.identity
+    assert identity.shape.measurement_denominator.ref == denominator
+    resubmitted = _answer(
+        DatasetResubmitInput(
+            entries=[ResubmitIdentityEntry(variable_text=_USDL, identity=identity)]
+        ),
+        monkeypatch,
+    )
+    assert resubmitted.status == "definite", resubmitted
+    assert resubmitted.spec.spec_id == answer.spec.spec_id
+    assert _minted_members(resubmitted.spec) == {elected}
 
 
 def _holding(*dcids: str) -> FakeCatalogue:
@@ -1245,3 +1270,34 @@ def test_a_ratio_whose_twin_denominator_the_index_lacks_derives_a_shape_per_deno
         (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR)
     )
     assert all(shape.twin_families == () for shape in shapes)
+
+
+def test_a_shape_spanning_ratio_twins_builds_no_identity(bind_catalogue):
+    """A shape spanning DT.CUR.USDL.ZS's two denominators names neither, so building an
+    answer's shape from it fails, while the pre-bind shape event, which names no members,
+    builds."""
+    bind_catalogue(_holding(*_STOCKS_AND_SHARES))
+    (shape,) = derive_shapes(confirmed_svs=[_USD_SHARE, _USD_SHARE_BY_CREDITOR], graph=_graph())
+
+    assert build_shape_model(shape, [], {}, 2, members=None).shape_id == shape.shape_id
+    with pytest.raises(AssertionError, match="spans ratio twins"):
+        build_shape_model(shape, [], {}, 2, members=[_USD_SHARE, _USD_SHARE_BY_CREDITOR])
+
+
+@pytest.mark.parametrize("open_roles", [None, ["creditor"]], ids=["aggregate", "by-creditor"])
+def test_a_ratio_answer_rates_its_unread_words_on_its_menu_reading(open_roles, monkeypatch):
+    """The binder rates the words the coverage rule leaves unread on DT.CUR.USDL.ZS's
+    answer at its place on the bind menu, the one shape the ratio and its twin derive,
+    whichever denominator the election resolves it to."""
+    binder = RatingBinder(GeminiBinder())
+    part = ParsedPart(
+        variable_text="lending share",
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_USDL,
+        open_roles=open_roles,
+    )
+
+    answer = _answer(part, monkeypatch, binder=binder)
+
+    assert answer.status == "definite", answer
+    assert [request.shape_index for request in binder.requests] == [0]
