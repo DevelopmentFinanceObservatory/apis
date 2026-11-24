@@ -30,9 +30,11 @@ has one key on either path and no raw address is stored. An account caller (`kin
 has a key of `user:` and 32 lowercase hex digits, a digest of the account's id that the website
 computes for a request made with an API key, so its allowances count per account and not per
 address. This service never derives an account key, only accepts the website's. A request whose
-`x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from the website, which names its
-client in `x-dfo-caller`, as `ip:<digest>` or `user:<digest>`. A request that carries
-`x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL` is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
+`x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from an upstream that holds the
+secret, such as the website or the Studio harness, which names its client in `x-dfo-caller`, as
+`ip:<digest>`, `user:<digest>` or `conversation:<digest>`. A request that carries
+`x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL` is unset, refuses
+`CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
 from the right, the entry the proxies in front of this service appended. `request.client` goes
@@ -56,7 +58,8 @@ end client's User-Agent an upstream forwards, else the request's own User-Agent,
 (`Anthropic/ClaudeAI`, `openai-mcp`, `claude-code`), which data-mcp and analysis-mcp forward for
 public callers. It is kept when the stripped single value fully matches `_MCP_CLIENT_NAME`, is
 `invalid` when the header is present but does not match, and is none when the header is absent or
-blank, on an unvouched request and for a `conversation:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16
+blank, on an unvouched request, and for any caller that is neither an `ip:` nor a `user:` caller:
+a `conversation:` caller, or none. The turn id is the `x-dfo-turn` header (`tr_` and 16
 lowercase hex digits) the Studio harness sends for the turn that caused the request, kept only on
 a vouched `conversation:` caller's request when the single value fully matches, else none.
 """
@@ -490,8 +493,8 @@ def _client_token(request: Request) -> str | None:
 
 
 def _mcp_client_of(request: Request) -> str | None:
-    """The `x-dfo-mcp-client` name of a vouched `ip:` or `user:` caller's request: the stripped value
-    when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
+    """The `x-dfo-mcp-client` name of a vouched `ip:` or `user:` caller's request: the stripped
+    value when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
     `MCP_CLIENT_INVALID`."""
     values = request.headers.getlist(MCP_CLIENT_HEADER)
     if not values:

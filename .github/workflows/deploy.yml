@@ -517,8 +517,8 @@ jobs:
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
       # statements for a pin principal that is neither a label nor an open
-      # caller's `ip:`, `user:` or `conversation:` key, under a table lock that holds pins back until it
-      # commits, so a repeat run changes nothing. A version row the previous image writes needs no
+      # caller's `ip:`, `user:` or `conversation:` key, under a table lock
+      # that holds pins back until it commits, so a repeat run changes nothing. A version row the previous image writes needs no
       # repair, also for a request an old revision finishes after this step:
       # the insert trigger of migration 0030 fills the facts of a row written
       # with only immutable_body, and that of migration 0033 renames the

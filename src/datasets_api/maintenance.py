@@ -46,8 +46,8 @@ failed, and reads the settings `sweep` reads.
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
 its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
-an open caller's `ip:`, `user:` or `conversation:` key, so a repeat run changes nothing, and the table lock they run under
-holds concurrent pins back until they finish. It runs them in one transaction, then writes one
+an open caller's `ip:`, `user:` or `conversation:` key, so a repeat run changes nothing, and the
+table lock they run under holds concurrent pins back until they finish. It runs them in one transaction, then writes one
 `datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
 enrichment `kind`. Insert triggers repair the previous image's version rows, also for a request
@@ -681,7 +681,8 @@ WHERE reference_kind = 'pin'
 )
 """The statements of `0026_artifact_reference_principal_label.sql`, which the migration
 explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:`, `user:` or
-`conversation:` key and a second run are left alone. The lock queues pins until the transaction ends: a pin landing between
+`conversation:` key and a second run are left alone. The lock queues pins until the transaction
+ends: a pin landing between
 the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
 row the count reports."""
 
