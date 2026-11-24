@@ -1508,7 +1508,7 @@ def test_a_part_whose_scope_compiles_another_identity_fails_closed(
         monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
     cache = ResponseCache()
 
-    with caplog.at_level(logging.ERROR, logger="search.engine.conjoin"):
+    with caplog.at_level(logging.ERROR, logger="search.engine.region.result"):
         events = offline_events(
             _dac1_lines_request(texts),
             graph=_dac1_lines_graph(texts),
@@ -1534,6 +1534,8 @@ def test_a_part_whose_scope_compiles_another_identity_fails_closed(
         assert cache.stats().entries == 0
         assert carrying == []
         assert logged == [(total.spec.spec_id, bilateral.spec.spec_id)]
+        assert part.entity_refs == total.entity_refs
+        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
     else:
         assert isinstance(part, DefinitePart) and part.spec.spec_id == total.spec.spec_id
         assert not done.degraded_leg

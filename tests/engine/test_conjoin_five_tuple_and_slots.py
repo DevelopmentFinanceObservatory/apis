@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine import same_shape
 from search.engine.region import RegionResult
-from search.engine.same_shape import collapse_same_shape, five_tuple_key
+from search.engine.same_shape import collapse_same_shape, five_tuple_key, fold_groups
 from search.engine.spec_build import build_spec
 from search.models import (
     BindingSet,
@@ -521,6 +522,38 @@ def test_collapse_same_shape_keeps_parts_whose_codes_nest_apart(
 
 def _first_code(code: str | tuple[str, ...]) -> str:
     return code if isinstance(code, str) else code[0]
+
+
+def test_parts_each_binding_a_code_and_its_descendant_answer_apart():
+    """Two parts each binding {130, 13040} both hold a code nested under the other's, so no
+    split leaves a smaller group of ancestors, and each part answers apart."""
+    r_a = _purpose_region((_POPULATION, _HIV), 0, _record("first", _POPULATION))
+    r_b = _purpose_region((_POPULATION, _HIV), 1, _record("second", _POPULATION))
+
+    assert fold_groups([r_a, r_b]) == [[r_a], [r_b]]
+    effective, residual = collapse_same_shape([r_a, r_b])
+
+    assert residual == []
+    first, second = sorted(effective, key=lambda r: r.earliest_index)
+    assert first is r_a and second is r_b
+
+
+class _CyclicIndex:
+    """A code index whose codes A and B each hold the other."""
+
+    def descendants(self, code: str) -> frozenset[str]:
+        return frozenset({"A", "B"})
+
+
+def test_parts_whose_codes_hold_each_other_answer_apart(monkeypatch):
+    """Codes whose parent data holds each other leave every part an ancestor, so each part
+    answers apart, and no group is empty."""
+    r_a = _purpose_region("A", 0)
+    r_b = _purpose_region("B", 1)
+    monkeypatch.setattr(same_shape, "get_index", _CyclicIndex)
+
+    assert fold_groups([r_a, r_b]) == [[r_a], [r_b]]
+    assert fold_groups([]) == []
 
 
 def test_collapse_same_shape_keeps_every_union_record_of_one_text():

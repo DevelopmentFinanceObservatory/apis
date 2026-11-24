@@ -536,6 +536,10 @@ def unserved_scope_refusal(region: RegionResult) -> RegionResult | None:
         separate=region.separate,
         operations=region.operations,
         entity_words=region.entity_words,
+        entity_refs=region.entity_refs,
+        admitted_qualifier_phrases=region.admitted_qualifier_phrases,
+        unapplied_qualifier_warnings=region.unapplied_qualifier_warnings,
+        name_corrections=region.name_corrections,
         degraded=True,
     )
 

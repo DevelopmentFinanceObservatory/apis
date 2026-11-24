@@ -139,8 +139,8 @@ def fold_key(region: RegionResult) -> tuple[object, ...]:
 
     Regions fold when they share a five-tuple (`five_tuple_key`). A region compared with
     the others (`RegionResult.separate`) keys on its own position, so it never folds and
-    no other region folds into it. `collapse_same_shape` and the combiner's grouping
-    (`conjoin._group_definite_regions`) both group by this key.
+    no other region folds into it. `fold_groups` groups by this key before it splits the
+    regions whose codes nest.
     """
     if region.separate:
         return ("separate", region.earliest_index)
@@ -156,27 +156,49 @@ def fold_groups(definite: Sequence[RegionResult]) -> list[list[RegionResult]]:
     by_key: dict[tuple[object, ...], list[RegionResult]] = {}
     for region in definite:
         by_key.setdefault(fold_key(region), []).append(region)
-    return [sub for group in by_key.values() for sub in _unnested(group)]
+    below = _strict_descendants()
+    return [sub for group in by_key.values() for sub in _unnested(group, below)]
 
 
-def _unnested(group: list[RegionResult]) -> list[list[RegionResult]]:
+def _unnested(
+    group: list[RegionResult], below: Callable[[str], frozenset[str]]
+) -> list[list[RegionResult]]:
     """`group` split until no member binds a code nested under another member's code on one
-    slot off the where axis. The members holding such an ancestor split off and are split
-    again, and the rest are split again: bilateral, multilateral and total ODA split into
-    the total and the two lines, which do not nest. Each subgroup keeps request order."""
+    slot off the where axis, `below` naming each code's strict descendants. The members
+    holding such an ancestor split off and are split again, and the rest are split again:
+    bilateral, multilateral and total ODA split into the total and the two lines, which do
+    not nest. Where every member holds such an ancestor, as two parts each binding
+    {130, 13040}, each member answers apart, so every call splits a group into smaller ones
+    and none is empty. Each subgroup keeps request order."""
     if len(group) < 2:
-        return [group]
+        return [group] if group else []
     codes = [_slot_code_sets(region.spec) for region in group]
     ancestors = [
         region
         for i, region in enumerate(group)
-        if any(_holds_nested(codes[i], codes[j]) for j in range(len(group)) if j != i)
+        if any(_holds_nested(codes[i], codes[j], below) for j in range(len(group)) if j != i)
     ]
     if not ancestors:
         return [group]
+    if len(ancestors) == len(group):
+        return [[region] for region in group]
     split = {id(region) for region in ancestors}
     rest = [region for region in group if id(region) not in split]
-    return [*_unnested(ancestors), *_unnested(rest)]
+    return [*_unnested(ancestors, below), *_unnested(rest, below)]
+
+
+def _strict_descendants() -> Callable[[str], frozenset[str]]:
+    """Each code's descendants in the bound code index, less the code itself, read once per
+    code for the caller's lifetime."""
+    index = get_index()
+    read: dict[str, frozenset[str]] = {}
+
+    def below(code: str) -> frozenset[str]:
+        if code not in read:
+            read[code] = frozenset(index.descendants(code)) - {code}
+        return read[code]
+
+    return below
 
 
 def _slot_code_sets(spec: Spec) -> dict[tuple[str, str | None], frozenset[str]]:
@@ -191,15 +213,14 @@ def _slot_code_sets(spec: Spec) -> dict[tuple[str, str | None], frozenset[str]]:
 def _holds_nested(
     ancestor: Mapping[tuple[str, str | None], frozenset[str]],
     member: Mapping[tuple[str, str | None], frozenset[str]],
+    below: Callable[[str], frozenset[str]],
 ) -> bool:
     """Whether `ancestor` binds, on some slot, a code that holds one of `member`'s codes on
-    that slot as a strict descendant."""
-    index = get_index()
+    that slot as a strict descendant (`below`)."""
     return any(
-        code in index.descendants(held) and code != held
+        not below(held).isdisjoint(member[key])
         for key in ancestor.keys() & member.keys()
         for held in ancestor[key]
-        for code in member[key]
     )
 
 
