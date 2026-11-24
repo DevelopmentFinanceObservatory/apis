@@ -748,7 +748,6 @@
   parsed: [{variable_text: DT.CUR.USDL.ZS, entities: [{text: Kenya}], source_code: DT.CUR.USDL.ZS}]
   why: The code's two members divide by different PPG stocks; with no creditor role open, the share of the aggregate stock answers.
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
-  known_failure: {issue: 398, checks: [disposition, measure]}
   expect:
     definite:
       measure:

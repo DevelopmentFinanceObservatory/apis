@@ -51,9 +51,12 @@ from search.engine.region.state import MintedComposite, ResolveState
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
+    on_ratio_class,
     read_held_families,
     shape_population_arcs,
+    shape_ratio_twins,
     slot_expansions,
+    spans_ratio_twins,
 )
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import identity_shape_for
@@ -356,7 +359,15 @@ async def _elected_flagged_match(
     returned is no_data `facet_not_available` (`phase_answer.failed_closed`), which the
     caller returns in place of its refusal, with what the match raised dropped. A match
     whose part read nothing labels no rows, so where its composite cannot be minted it is
-    minted as none and the caller's refusal stands (`_flagged_scope`)."""
+    minted as none and the caller's refusal stands (`_flagged_scope`).
+
+    A refusal before the role-class election, which resolves a shape spanning the classes of
+    a ratio family (`bound_values.spans_ratio_twins`), flags the shape on the family's base
+    class (`bound_values.on_ratio_class`), the aggregate, so its identity names one
+    denominator."""
+    if spans_ratio_twins(state.shape_draft):
+        ratio = shape_ratio_twins(state.shape_draft)
+        state.shape_draft = on_ratio_class(state.shape_draft, ratio.base)
     await read_held_families((state.shape_draft,))
     await judge_coverage(state)
     # Everything the match raises from here is its own (`ResolveState.mark_answer`).

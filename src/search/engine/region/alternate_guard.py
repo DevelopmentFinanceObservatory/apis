@@ -72,6 +72,7 @@ from search.engine.retrieval.bound_values import (
     shape_five_tuple,
     shape_population_arcs,
     shape_query,
+    spans_ratio_twins,
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
@@ -886,8 +887,12 @@ class AlternateJudge:
         """The alternate narrowed to its passing members among every member it stands for
         (`shape_population_arcs`): those whose constraint map equals one a member of the
         elected reading holds first, then member order. An alternate the index carries is
-        judged on its index rows and offered whole, as is one with no member facts. A
-        narrowed alternate stands for its passing members alone (`narrowed_to`)."""
+        judged on its index rows and offered whole, as is one with no member facts and one
+        spanning a ratio family's classes (`spans_ratio_twins`), whose walk elects its class
+        (`bound_values.elected_role_class_shape`). A narrowed alternate stands for its
+        passing members alone (`narrowed_to`)."""
+        if spans_ratio_twins(alternate):
+            return alternate
         _, index_sourced = self.members(alternate)
         facts = shape_population_arcs(alternate)
         if index_sourced or not facts:

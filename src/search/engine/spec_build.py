@@ -38,6 +38,7 @@ from search.engine.retrieval.bound_values import (
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
+    spans_ratio_twins,
     stated_members,
 )
 from search.engine.retrieval.derive import upstream_source
@@ -645,7 +646,14 @@ def build_shape_model(
     whose members are not yet known, and states neither.
     ``suppress_unresolved_population_type_ref`` omits an unlabelled population type
     in the pre-bind shape event, where a dcid shown as a label would read as a confirmed name.
+
+    A shape for an answer (``members`` given) names one denominator: the role-class
+    election resolves a shape spanning a ratio's denominator twins
+    (`bound_values.spans_ratio_twins`) to one before any identity is built from it.
     """
+    assert members is None or not spans_ratio_twins(shape_draft), (
+        f"shape {shape_draft.shape_id!r} spans ratio twins; no identity names one denominator"
+    )
 
     measure_value_labels = {row.dcid: row.label for row in get_measure_index().values}
 
