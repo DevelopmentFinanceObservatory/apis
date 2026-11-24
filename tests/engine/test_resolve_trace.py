@@ -1,8 +1,12 @@
-"""Pins the Langfuse trace `send_resolve_trace` queues for each resolve a route runs."""
+"""Pins the Langfuse trace `queue_resolve_trace` queues for each resolve a route runs, and the
+`trace` field of the `resolve` log line."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -21,13 +25,15 @@ from dfo_platform.caller import (
 )
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from search.engine import resolve_trace
-from search.engine.app import _served_code
+from search.engine.app import _event_source, _served_code
 from search.engine.core import ResolveRecord, resolve_line
 from search.engine.envelope import make_diagnostics, make_query_echo
+from search.engine.events import ResponseEvent
 from search.models import (
     RESOLVE_RESPONSE_ADAPTER,
     CandidateSet,
     CandidatesPart,
+    DatasetResubmitInput,
     NoData,
     NoDataPart,
     ParsedEntity,
@@ -35,6 +41,7 @@ from search.models import (
     ParsedPart,
     Resolution,
     ResolveRequest,
+    ResubmitPlaceholderEntry,
 )
 from tests.engine._harness import EMPTY_SDMX, make_request, resolve_log_lines
 from tests.engine._search_app import search_app
@@ -42,6 +49,17 @@ from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _TRACE_ID = "0123456789abcdef0123456789abcdef"
 _KEYS = {"LANGFUSE_PUBLIC_KEY": "pk-test", "LANGFUSE_SECRET_KEY": "sk-test"}
+_ON = {**_KEYS, "SEARCH_TRACE_ENABLED": "true"}
+_ENV_VARS = (*_KEYS, "SEARCH_TRACE_ENABLED")
+_RESUBMIT = ResolveRequest(
+    input=DatasetResubmitInput(
+        entries=[
+            ResubmitPlaceholderEntry(
+                variable_text="aid", status="no_data", reason="variable_not_resolved"
+            )
+        ]
+    )
+)
 
 
 def _drain() -> None:
@@ -53,7 +71,7 @@ def _drain() -> None:
 def exported(monkeypatch) -> Iterator[Callable[[], list[ReadableSpan]]]:
     """Turn tracing on with a client that exports to memory, and yield a function returning
     the spans exported once every queued trace has been recorded."""
-    for name, value in _KEYS.items():
+    for name, value in _ON.items():
         monkeypatch.setenv(name, value)
     exporter = InMemorySpanExporter()
     # The SDK keeps one resource manager per public key, so each test gets its own key.
@@ -74,18 +92,44 @@ def exported(monkeypatch) -> Iterator[Callable[[], list[ReadableSpan]]]:
     client.shutdown()
 
 
-def _run_line(request: ResolveRequest, record: ResolveRecord, *, surface: DeliverySurface) -> None:
-    """Run one resolve's log block under `_TRACE_ID` and a delivery identity on `surface`."""
-    trace_token = set_trace_id(_TRACE_ID)
-    identity_token = set_delivery_identity(replace(UNRESOLVED_IDENTITY, surface=surface))
-    try:
-        with resolve_line(
+def _run_line(request: ResolveRequest, record: ResolveRecord, *, surface: DeliverySurface) -> dict:
+    """Run one resolve's log block under `_TRACE_ID` and a delivery identity on `surface`, and
+    return its log line."""
+
+    async def _block() -> None:
+        async with resolve_line(
             request, record, caller=None, transport="buffered", served_code=_served_code
         ):
             pass
+
+    trace_token = set_trace_id(_TRACE_ID)
+    identity_token = set_delivery_identity(replace(UNRESOLVED_IDENTITY, surface=surface))
+    try:
+        with resolve_log_lines() as lines:
+            asyncio.run(_block())
     finally:
         reset_delivery_identity(identity_token)
         reset_trace_id(trace_token)
+    [logged] = lines
+    return logged
+
+
+@pytest.fixture
+def held_worker(monkeypatch) -> Iterator[threading.Event]:
+    """Turn tracing on with a client the worker waits for until the yielded gate is set, which
+    teardown sets."""
+    for name, value in _ON.items():
+        monkeypatch.setenv(name, value)
+    gate = threading.Event()
+
+    def _held_client():
+        gate.wait(timeout=30)
+        raise RuntimeError("no client in this test")
+
+    monkeypatch.setattr(resolve_trace, "_client", _held_client)
+    yield gate
+    gate.set()
+    _drain()
 
 
 def _resolution(worked_example_response: dict) -> Resolution:
@@ -119,8 +163,11 @@ def test_a_resolve_sends_one_trace_under_its_own_trace_id(exported, worked_examp
     response = _resolution(worked_example_response)
     query = "aid to Kenya " + "y" * 2000
 
-    _run_line(make_request(query), ResolveRecord(response=response), surface=DeliverySurface.mcp)
+    logged = _run_line(
+        make_request(query), ResolveRecord(response=response), surface=DeliverySurface.mcp
+    )
 
+    assert logged["trace"] == "sent"
     [span] = exported()
     attributes = dict(span.attributes or {})
     assert span.name == "search.resolve"
@@ -197,42 +244,201 @@ def test_a_parsed_request_traces_its_whole_input(exported):
 
 
 @pytest.mark.parametrize(
-    ("keys", "trace_id", "surface"),
+    ("env", "trace_id", "surface", "request_", "outcome"),
     [
-        pytest.param({}, _TRACE_ID, "website", id="no_keys"),
-        pytest.param({"LANGFUSE_PUBLIC_KEY": "pk-test"}, _TRACE_ID, "mcp", id="one_key"),
-        pytest.param(_KEYS, None, "website", id="no_trace_id"),
-        pytest.param(_KEYS, _TRACE_ID, "studio", id="studio"),
-        pytest.param(_KEYS, _TRACE_ID, "api", id="api"),
-        pytest.param(_KEYS, _TRACE_ID, "direct", id="direct"),
-        pytest.param(_KEYS, _TRACE_ID, "unknown", id="unknown"),
+        pytest.param({}, _TRACE_ID, "website", None, "off", id="nothing_set"),
+        pytest.param(_KEYS, _TRACE_ID, "website", None, "off", id="keys_without_opt_in"),
+        pytest.param(
+            {**_KEYS, "SEARCH_TRACE_ENABLED": "yes"},
+            _TRACE_ID,
+            "mcp",
+            None,
+            "off",
+            id="not_1_or_true",
+        ),
+        pytest.param(
+            {"LANGFUSE_PUBLIC_KEY": "pk-test", "SEARCH_TRACE_ENABLED": "1"},
+            _TRACE_ID,
+            "mcp",
+            None,
+            "off",
+            id="one_key",
+        ),
+        pytest.param(_ON, None, "website", None, "skipped", id="no_trace_id"),
+        pytest.param(_ON, _TRACE_ID, "studio", None, "skipped", id="studio"),
+        pytest.param(_ON, _TRACE_ID, "api", None, "skipped", id="api"),
+        pytest.param(_ON, _TRACE_ID, "direct", None, "skipped", id="direct"),
+        pytest.param(_ON, _TRACE_ID, "unknown", None, "skipped", id="unknown"),
+        pytest.param(_ON, _TRACE_ID, "mcp", _RESUBMIT, "skipped", id="dataset_resubmit"),
     ],
 )
-def test_nothing_is_sent_without_both_keys_a_trace_id_and_a_traced_surface(
-    monkeypatch, keys, trace_id, surface
+def test_nothing_is_sent_without_the_opt_in_both_keys_a_trace_id_and_a_traced_request(
+    monkeypatch, env, trace_id, surface, request_, outcome
 ):
-    for name in _KEYS:
+    for name in _ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    for name, value in keys.items():
+    for name, value in env.items():
         monkeypatch.setenv(name, value)
     calls: list[str] = []
     monkeypatch.setattr(resolve_trace, "_client", lambda: calls.append("client"))
 
-    resolve_trace.send_resolve_trace(
+    queued = resolve_trace.queue_resolve_trace(
         trace_id=trace_id,
-        inp=make_request("aid to Kenya").input,
+        inp=(request_ or make_request("aid to Kenya")).input,
         response=None,
         error_code=None,
         surface=surface,
     )
 
     _drain()
+    assert queued == (outcome, None)
     assert calls == []
+
+
+def test_a_trace_past_the_pending_cap_is_dropped_and_the_line_says_so(held_worker):
+    queued = [
+        resolve_trace.queue_resolve_trace(
+            trace_id=_TRACE_ID,
+            inp=make_request("aid to Kenya").input,
+            response=None,
+            error_code=None,
+            surface="website",
+        )[0]
+        for _ in range(resolve_trace.PENDING_CAP)
+    ]
+
+    logged = _run_line(make_request("aid to Kenya"), ResolveRecord(), surface=DeliverySurface.mcp)
+
+    assert set(queued) == {"queued"}
+    assert logged["trace"] == "dropped"
+
+
+@pytest.mark.parametrize(
+    ("export_s", "outcome"),
+    [
+        pytest.param(0.1, "failed", id="export_within_the_wait"),
+        pytest.param(None, "timed_out", id="export_past_the_wait"),
+    ],
+)
+def test_the_request_awaits_its_export_up_to_the_cap_without_blocking_the_loop(
+    monkeypatch, held_worker, export_s, outcome
+):
+    """The held client raises once released, so an export the request waited for reads
+    `failed`, and one it gave up on reads `timed_out`."""
+    monkeypatch.setattr(resolve_trace, "EXPORT_WAIT_S", 0.5)
+    if export_s is not None:
+        threading.Timer(export_s, held_worker.set).start()
+    ticks = 0
+
+    async def _tick() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    async def _run() -> tuple[int, float]:
+        ticker = asyncio.create_task(_tick())
+        await asyncio.sleep(0)
+        before, started = ticks, time.monotonic()
+        async with resolve_line(
+            make_request("aid to Kenya"),
+            ResolveRecord(),
+            caller=None,
+            transport="buffered",
+            served_code=_served_code,
+        ):
+            pass
+        during, waited = ticks - before, time.monotonic() - started
+        ticker.cancel()
+        return during, waited
+
+    trace_token = set_trace_id(_TRACE_ID)
+    identity_token = set_delivery_identity(
+        replace(UNRESOLVED_IDENTITY, surface=DeliverySurface.website)
+    )
+    try:
+        with resolve_log_lines() as lines:
+            during, waited = asyncio.run(_run())
+    finally:
+        reset_delivery_identity(identity_token)
+        reset_trace_id(trace_token)
+
+    [logged] = lines
+    assert logged["trace"] == outcome
+    assert waited < 1.0
+    # The loop kept running other coroutines while the request waited.
+    assert during > 0
+
+
+async def _never() -> None:
+    await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("cancelled", ["in_block", "in_wait", "closed_body"])
+def test_a_cancelled_request_queues_its_trace_without_waiting(monkeypatch, held_worker, cancelled):
+    monkeypatch.setattr(resolve_trace, "EXPORT_WAIT_S", 30.0)
+    record = ResolveRecord()
+
+    def _line():
+        return resolve_line(
+            make_request("aid to Kenya"),
+            record,
+            caller=None,
+            transport="sse",
+            served_code=_served_code,
+        )
+
+    async def _request() -> None:
+        if cancelled == "closed_body":
+
+            async def _stream():
+                no_data = NoDataPart(status="no_data", no_data=NoData(reason="entity_not_resolved"))
+                yield ResponseEvent(
+                    response=Resolution(
+                        query_echo=make_query_echo("aid to Kenya", extract_skipped=False),
+                        diagnostics=make_diagnostics("test-build", [], {}, 5),
+                        parts=[no_data],
+                    )
+                )
+                await _never()
+
+            body = _event_source(
+                _stream(), hard_deadline=time.monotonic() + 60, record=record, line=_line()
+            )
+            await anext(body)
+            await body.aclose()
+            return
+        async with _line():
+            if cancelled == "in_block":
+                await _never()
+
+    async def _run() -> None:
+        task = asyncio.create_task(_request())
+        if cancelled != "closed_body":
+            # Long enough to reach the block, or the wait past it.
+            await asyncio.sleep(0.05)
+            task.cancel()
+        # A request that waited for the held export would hang here.
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=2)
+
+    trace_token = set_trace_id(_TRACE_ID)
+    identity_token = set_delivery_identity(
+        replace(UNRESOLVED_IDENTITY, surface=DeliverySurface.website)
+    )
+    try:
+        with resolve_log_lines() as lines:
+            asyncio.run(_run())
+    finally:
+        reset_delivery_identity(identity_token)
+        reset_trace_id(trace_token)
+
+    [logged] = lines
+    assert logged["trace"] == "queued"
 
 
 @pytest.mark.parametrize("transport", ["buffered", "sse"])
 def test_a_failing_langfuse_client_leaves_the_resolve_standing(monkeypatch, transport):
-    for name, value in _KEYS.items():
+    for name, value in _ON.items():
         monkeypatch.setenv(name, value)
     calls: list[str] = []
 
@@ -259,4 +465,5 @@ def test_a_failing_langfuse_client_leaves_the_resolve_standing(monkeypatch, tran
     assert resp.status_code == 200
     [logged] = lines
     assert logged["error_code"] is None
+    assert logged["trace"] == "failed"
     assert calls == ["client"]

@@ -42,6 +42,7 @@ from search.engine.events import (
     ResponseEvent,
     serialize_sse,
 )
+from search.engine.resolve_trace import TraceOutcome
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_keys import normalise_query
@@ -101,7 +102,14 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
 def _logged(request: ResolveRequest, record: ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
-        _log_resolve(request, record, caller=None, transport="buffered", identity=_IDENTITY)
+        _log_resolve(
+            request,
+            record,
+            caller=None,
+            transport="buffered",
+            identity=_IDENTITY,
+            trace=TraceOutcome.off,
+        )
     [line] = lines
     return line
 
@@ -370,6 +378,7 @@ def test_the_resolve_line_names_the_code_the_route_served(
 
     [logged] = lines
     assert logged["transport"] == transport
+    assert logged["trace"] == "off"
     assert logged["error_code"] == error_code
     assert logged["timed_out"] is timed_out
     served = parse_sse(resp.text)[-1][1] if transport == "sse" else resp.json()
