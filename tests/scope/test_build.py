@@ -143,6 +143,7 @@ def test_a_base_settling_no_live_axis_holds_no_choices_and_refuses_an_entry_on_o
     ("module", "table", "empty"),
     [
         pytest.param(scope_conventions, "SECTOR_GROUPINGS", (), id="sector-groupings"),
+        pytest.param(scope_conventions, "PROVIDER_WHOLES", (), id="provider-wholes"),
         pytest.param(code_index_declarations, "CONTAINING_TOTALS", {}, id="containing-totals"),
     ],
 )
