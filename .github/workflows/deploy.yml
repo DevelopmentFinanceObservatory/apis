@@ -58,9 +58,9 @@ name: Deploy
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
 # service has moved and `backfill-descriptions` after it (see those steps).
-# Between the apis service's move and the settle, the deploy calls the new
-# revision so its background builds finish before readers arrive (see the
-# warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
+# Before traffic moves, the deploy deploys the new revision with no traffic
+# and calls its tagged URL, so its background builds finish before readers
+# arrive and an erroring revision never serves (see the warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
 # variable check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
@@ -480,13 +480,18 @@ jobs:
       # image in Terraform for the same reason, and replacing the manifest
       # here would fight that too. This step runs only once both migration
       # jobs above have exited 0, so the service never serves an image ahead
-      # of the schema it expects.
-      - name: Point Cloud Run at the new image
+      # of the schema it expects. `--no-traffic --tag=candidate` creates the
+      # revision with no traffic and a URL of its own; the warm step probes
+      # that URL, and the traffic step below moves traffic only once the
+      # probes have passed.
+      - name: Deploy the new revision with no traffic
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
           gcloud run services update "${{ vars.SERVICE_APIS }}" \
             --image="${{ steps.image.outputs.image }}" \
+            --no-traffic \
+            --tag=candidate \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
@@ -495,18 +500,22 @@ jobs:
       # and the UN terms body beside serving, and Cloud Run throttles the CPU
       # of an instance with no request in flight, so a revision nobody calls
       # stalls those builds until its first readers pay for them. This step
-      # calls the paths whose handlers wait on those builds, as the deployer
-      # with an ID token for the service URL, retrying a 503, 504 or 429 for
-      # up to 600 seconds. A 401 or 403 (the deployer's run.invoker grant
-      # and its token-creator grant on itself are not applied yet), slowness
-      # past the bound, or an unreadable URL or token warns and the deploy
-      # goes on. Any other status is an error the step records without
-      # failing, so the maintenance steps below still run, and the job's last
-      # step fails the deploy on it. See .github/scripts/deploy_warm.sh.
-      # The step and that last check also run when the decide step finds the
-      # target image already serving, so a rerun of a deploy whose warm step
-      # failed after traffic moved probes the live revision again and fails
-      # on the same error.
+      # calls the revision's tagged URL before traffic moves, as the deployer
+      # with an ID token for the service URL: the paths whose handlers wait on
+      # those builds, and `POST /api/search/stated-scope`, which a client
+      # release needs live. It retries a 503, 504 or 429 for up to 600
+      # seconds. Slowness past the bound warns and the deploy goes on. An
+      # answer of 401 or 403, or an unreadable URL or token, warns on dev,
+      # where the deployer's grants may be missing, and is an error in
+      # production (REQUIRE_PROBE). Any other status is an error, except a
+      # 404 `origin_not_served`, which a deployment with the UN origin off
+      # answers and which skips that route. The step after this one fails the
+      # deploy on an error, with the previous revision still serving. See
+      # .github/scripts/deploy_warm.sh.
+      # The step and the traffic step also run when the decide step finds the
+      # target image already in the service template, so a rerun after a
+      # failed probe probes the candidate again and moves traffic when it
+      # passes.
       - name: Warm the new revision
         id: warm
         if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
@@ -515,7 +524,31 @@ jobs:
           REGION: ${{ vars.REGION }}
           PROJECT_ID: ${{ vars.PROJECT_ID }}
           DEPLOYER: ${{ secrets.WIF_SA }}
+          PROBE_TAG: candidate
+          REQUIRE_PROBE: ${{ inputs.environment == 'production' }}
         run: .github/scripts/deploy_warm.sh
+
+      - name: Fail on errors the new revision answered while warming
+        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
+        env:
+          WARM_STATUS: ${{ steps.warm.outputs.status }}
+        run: |
+          set -euo pipefail
+          echo "warm status: $WARM_STATUS"
+          if [ "$WARM_STATUS" = error ]; then
+            echo "::error::The new revision answered a probe with an error, or could not be probed where the probe is required; traffic stays on the previous revision. See the 'Warm the new revision' step."
+            exit 1
+          fi
+
+      - name: Move traffic to the new revision
+        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --to-latest \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
 
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
@@ -569,17 +602,3 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --wait \
             --args=backfill-descriptions
-
-      # The warm step records an error answer without failing, so the settle
-      # and the backfill run first; this step then fails the deploy on it.
-      - name: Fail on errors the new revision answered while warming
-        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
-        env:
-          WARM_STATUS: ${{ steps.warm.outputs.status }}
-        run: |
-          set -euo pipefail
-          echo "warm status: $WARM_STATUS"
-          if [ "$WARM_STATUS" = error ]; then
-            echo "::error::The new revision answered a warm path with an error; see the 'Warm the new revision' step."
-            exit 1
-          fi

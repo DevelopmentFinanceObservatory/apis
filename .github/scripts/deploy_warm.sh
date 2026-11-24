@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Calls the apis service's warm paths once the new revision serves, so the
-# builds that run beside serving finish before readers arrive. The Search and
+# Calls the apis service's warm paths on the new revision before traffic moves
+# to it, so a revision that answers an error never serves, and the builds that
+# run beside serving finish before readers arrive. The Search and
 # Skills surfaces build the skills index, and the Graph surface builds the
 # schema document and the UN terms body, after the lifespan returns. Cloud Run
 # throttles the CPU of an instance with no request in flight, so a revision
@@ -14,9 +15,22 @@
 #                                      503 `schema_building`)
 #   /api/graph/schema/terms/un_system  the UN terms body (up to 10 s, then
 #                                      503 `schema_building`)
+#   POST /api/search/stated-scope      the stated-scope door, which a client
+#                                      release calls; a probe that answers 200
+#                                      shows the route is live
 #
 # A request keeps its instance's CPU allocated, so the builds run while the
 # script waits, and a 503 the script retries means the build runs on.
+#
+# With PROBE_TAG set, the script probes the revision that Cloud Run tag names, at
+# its tagged URL, which the deploy step created with no traffic. The tagged URL
+# takes the service URL as its token audience. With the tag unset, or with no
+# traffic entry carrying it, the script probes the service URL.
+#
+# The UN terms route answers 404 with `cause.code` `origin_not_served` when the
+# deployment turns the UN origin off (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED`).
+# That answer means the route is not served here, so the script logs a skip
+# and goes on. Any other 404 is an error.
 #
 # Runs after gcloud is authenticated as the deployer service account. The
 # deployer mints an ID token for the service URL through the IAM Credentials
@@ -30,6 +44,13 @@
 #   PROJECT_ID   GCP project id (vars.PROJECT_ID) -- required
 #   DEPLOYER     email of the deployer service account (secrets.WIF_SA) --
 #                required
+#   PROBE_TAG    Cloud Run revision tag to probe. Optional.
+#   REQUIRE_PROBE
+#                `true` in production: a token mint or service answer of 401 or
+#                403, or an unreadable URL or token, ends as `error` instead of
+#                `forbidden` or `unavailable`, so the deploy stops before
+#                traffic moves. Optional, defaults to `false`, where those
+#                outcomes warn and the deploy goes on.
 #   WARM_DEADLINE_SECONDS
 #                how long every path together may take, retries included.
 #                Optional, defaults to 600.
@@ -45,16 +66,16 @@
 #                deadline; a warning, since the builds run on for the next
 #                request
 #   forbidden    the token mint or the service answered 401 or 403, as it
-#                does until the infra grants apply; a warning. Probing stops
+#                does until the infra grants apply; a warning, or `error`
+#                under REQUIRE_PROBE. Probing stops
 #                at the first 401 or 403, and the status is `error` instead
 #                when an earlier path answered an error.
 #   unavailable  the service URL or the token could not be read for another
-#                reason; a warning
+#                reason; a warning, or `error` under REQUIRE_PROBE
 #   error        the service answered a path with any other status; an
 #                error annotation per path
 #
-# Exits 0 for every outcome, so the deploy steps after this one still run.
-# deploy.yml's last step fails the job on `error`. Exits non-zero only on a
+# Exits 0 for every outcome. deploy.yml's next step fails the job on `error`. Exits non-zero only on a
 # missing required variable.
 
 set -euo pipefail
@@ -66,17 +87,30 @@ set -euo pipefail
 deadline_seconds="${WARM_DEADLINE_SECONDS:-600}"
 iam_base="${IAM_CREDENTIALS_BASE:-https://iamcredentials.googleapis.com}"
 
-paths=(/api/skills /api/graph/schema /api/graph/schema/terms/un_system)
+probes=(
+  "GET /api/skills"
+  "GET /api/graph/schema"
+  "GET /api/graph/schema/terms/un_system"
+  "POST /api/search/stated-scope"
+)
+stated_scope_body='{"texts": ["total aid to Kenya in 2022"]}'
+probe_tag="${PROBE_TAG:-}"
+require_probe="${REQUIRE_PROBE:-false}"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 finish() {
-  echo "warm status=$1"
+  local status="$1"
+  if [ "$require_probe" = true ] && { [ "$status" = forbidden ] || [ "$status" = unavailable ]; }; then
+    echo "::error::The new revision could not be probed ($status), and this environment requires the probe before traffic moves."
+    status=error
+  fi
+  echo "warm status=$status"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "status=$1" >>"$GITHUB_OUTPUT"
+    echo "status=$status" >>"$GITHUB_OUTPUT"
   else
-    echo "status=$1"
+    echo "status=$status"
   fi
   exit 0
 }
@@ -88,6 +122,27 @@ url="$(gcloud run services describe "$SERVICE" \
 if [ -z "$url" ]; then
   echo "::warning::Could not read the URL of '$SERVICE', so the new revision was not warmed: $(head -c 500 "$work/describe.err")"
   finish unavailable
+fi
+
+probe_url="$url"
+if [ -n "$probe_tag" ]; then
+  tagged="$(gcloud run services describe "$SERVICE" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format=json 2>"$work/describe-tag.err" |
+    python3 -c '
+import json, sys
+tag = sys.argv[1]
+for entry in json.load(sys.stdin).get("status", {}).get("traffic", []):
+    if entry.get("tag") == tag and entry.get("url"):
+        print(entry["url"])
+        break
+' "$probe_tag")" || tagged=""
+  if [ -n "$tagged" ]; then
+    probe_url="$tagged"
+  else
+    echo "::warning::No traffic entry of '$SERVICE' carries the tag '$probe_tag', so the service URL is probed: $(head -c 500 "$work/describe-tag.err")"
+  fi
 fi
 
 access_token="$(gcloud auth print-access-token 2>"$work/token.err")" || access_token=""
@@ -119,8 +174,14 @@ end=$((SECONDS + deadline_seconds))
 covered=0
 outcome=warm
 
-for path in "${paths[@]}"; do
+for probe in "${probes[@]}"; do
+  method="${probe%% *}"
+  path="${probe#* }"
   covered=$((covered + 1))
+  curl_args=(-X "$method")
+  if [ "$method" = POST ]; then
+    curl_args+=(-H "Content-Type: application/json" --data "$stated_scope_body")
+  fi
   attempts=0
   while :; do
     attempts=$((attempts + 1))
@@ -131,8 +192,9 @@ for path in "${paths[@]}"; do
     max_time=$((remaining < 60 ? remaining : 60))
     status="$(curl -sS -o "$work/body" -D "$work/headers" -w '%{http_code}' \
       --max-time "$max_time" \
+      "${curl_args[@]}" \
       -H "X-Serverless-Authorization: Bearer $id_token" \
-      "$url$path" 2>"$work/curl.err")" || status="000"
+      "$probe_url$path" 2>"$work/curl.err")" || status="000"
 
     case "$status" in
       200)
@@ -166,6 +228,20 @@ for path in "${paths[@]}"; do
           sleep "$wait_seconds"
         fi
         ;;
+      404)
+        code="$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("cause", {}).get("code", ""))
+except Exception:
+    print("")' "$work/body")"
+        if [ "$code" = origin_not_served ]; then
+          echo "$path answered 404 origin_not_served: this deployment does not serve the route, so it is skipped."
+          break
+        fi
+        echo "::error::$path answered 404 on the new revision of '$SERVICE': $(head -c 500 "$work/body")"
+        outcome=error
+        break
+        ;;
       *)
         echo "::error::$path answered $status on the new revision of '$SERVICE': $(head -c 500 "$work/body")"
         outcome=error
@@ -175,8 +251,8 @@ for path in "${paths[@]}"; do
   done
 done
 
-if [ "$covered" -ne "${#paths[@]}" ] || [ "$covered" -eq 0 ]; then
-  echo "::error::warmed $covered of ${#paths[@]} paths."
+if [ "$covered" -ne "${#probes[@]}" ] || [ "$covered" -eq 0 ]; then
+  echo "::error::warmed $covered of ${#probes[@]} paths."
   finish error
 fi
 

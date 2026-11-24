@@ -287,7 +287,7 @@ def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
         < names.index(update)
         < names.index(build)
         < names.index("Point the datasets worker at the new image")
-        < names.index("Point Cloud Run at the new image")
+        < names.index("Deploy the new revision with no traffic")
     )
 
 
@@ -377,7 +377,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
     for name in (settle, backfill):
         assert "--wait" in _named(name)["run"]
-    assert names.index("Point Cloud Run at the new image") < names.index(settle)
+    assert names.index("Move traffic to the new revision") < names.index(settle)
     assert names.index(settle) < names.index(backfill)
 
 
@@ -408,33 +408,38 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
-def test_worker_then_service_move_then_the_maintenance_steps_run():
+def test_candidate_is_probed_before_traffic_moves_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-6:] == [
+    assert names[-7:] == [
         "Point the datasets worker at the new image",
-        "Point Cloud Run at the new image",
+        "Deploy the new revision with no traffic",
         "Warm the new revision",
+        "Fail on errors the new revision answered while warming",
+        "Move traffic to the new revision",
         "Settle rows the previous image wrote",
         "Backfill description records",
-        "Fail on errors the new revision answered while warming",
     ]
+    deploy = _named("Deploy the new revision with no traffic")["run"]
+    assert "--no-traffic" in deploy and "--tag=candidate" in deploy
+    shift = _named("Move traffic to the new revision")["run"]
+    assert "gcloud run services update-traffic" in shift and "--to-latest" in shift
 
 
 @pytest.mark.parametrize(("status", "exit_code"), [("error", 1), ("warm", 0), ("forbidden", 0)])
-def test_the_deploy_fails_on_a_warm_error_only_after_the_maintenance_steps(
-    status: str, exit_code: int
-):
-    """The warm step calls the new revision as the deployer and records its outcome without
-    failing, so the settle and the backfill run whatever the revision answered; the last step
-    fails the deploy on an error answer alone."""
+def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit_code: int):
+    """The warm step calls the candidate revision as the deployer and records its outcome
+    without failing; the next step fails the deploy on an error answer alone, ahead of the
+    traffic step."""
     warm = _step("warm")
     assert warm["run"].strip() == ".github/scripts/deploy_warm.sh"
     assert warm["env"]["SERVICE"] == "${{ vars.SERVICE_APIS }}"
     assert warm["env"]["DEPLOYER"] == "${{ secrets.WIF_SA }}"
+    assert warm["env"]["PROBE_TAG"] == "candidate"
+    assert warm["env"]["REQUIRE_PROBE"] == "${{ inputs.environment == 'production' }}"
     assert "continue-on-error" not in warm
 
-    last = _steps()[-1]
+    last = _named("Fail on errors the new revision answered while warming")
     assert last["env"]["WARM_STATUS"] == "${{ steps.warm.outputs.status }}"
     check = subprocess.run(
         ["bash", "-c", last["run"]],
@@ -461,12 +466,13 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 20
+    assert len(later) == 21
     # The warm step and the warm verdict also run when the target image already serves, so a
     # rerun after a failed warm probes the live revision again instead of going green.
     warm_checks = {
         "Warm the new revision",
         "Fail on errors the new revision answered while warming",
+        "Move traffic to the new revision",
     }
     for step in later:
         expected = (

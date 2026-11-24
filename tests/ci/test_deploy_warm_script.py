@@ -18,7 +18,13 @@ _SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "deploy_
 
 _DEPLOYER = "dfo-apis-deployer@dev-fin-observatory.iam.gserviceaccount.com"
 _MINT_PATH = f"/v1/projects/-/serviceAccounts/{_DEPLOYER}:generateIdToken"
-_WARM_PATHS = ("/api/skills", "/api/graph/schema", "/api/graph/schema/terms/un_system")
+_WARM_PATHS = (
+    "/api/skills",
+    "/api/graph/schema",
+    "/api/graph/schema/terms/un_system",
+    "/api/search/stated-scope",
+)
+_UN_TERMS = "/api/graph/schema/terms/un_system"
 
 # A 503 the script retries: `Retry-After: 0` keeps the retry immediate.
 _BUILDING = (503, {"Retry-After": "0"})
@@ -31,6 +37,7 @@ class _Server:
     def __init__(self, replies: dict[str, list[tuple[int, dict[str, str]]]]) -> None:
         self.replies = replies
         self.requests: list[tuple[str, dict[str, str], bytes]] = []
+        self.bodies: dict[str, bytes] = {}
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -43,7 +50,7 @@ class _Server:
                 payload = (
                     json.dumps({"token": "id-token"}).encode()
                     if self.path == _MINT_PATH and status == 200
-                    else b"{}"
+                    else server.bodies.get(self.path, b"{}")
                 )
                 self.send_response(status)
                 for name, value in headers.items():
@@ -81,9 +88,15 @@ def serve() -> Iterator:
         server.httpd.server_close()
 
 
-def _fake_gcloud(bin_dir: Path, *, url: str, describe_exit: int = 0) -> None:
-    """A PATH shim for `gcloud run services describe` (prints `url`) and `gcloud auth
-    print-access-token`."""
+def _fake_gcloud(
+    bin_dir: Path, *, url: str, describe_exit: int = 0, tagged_url: str | None = None
+) -> None:
+    """A PATH shim for `gcloud run services describe` (prints `url`, or as JSON a traffic entry
+    tagged `candidate` at `tagged_url`) and `gcloud auth print-access-token`."""
+    traffic = [{"percent": 100}]
+    if tagged_url is not None:
+        traffic.append({"tag": "candidate", "url": tagged_url})
+    described = json.dumps({"status": {"url": url, "traffic": traffic}})
     bin_dir.mkdir(exist_ok=True)
     script = bin_dir / "gcloud"
     script.write_text(
@@ -96,6 +109,12 @@ if [ "{describe_exit}" != 0 ]; then
   echo "describe failed" >&2
   exit {describe_exit}
 fi
+for arg in "$@"; do
+  if [ "$arg" = --format=json ]; then
+    echo '{described}'
+    exit 0
+  fi
+done
 echo "{url}"
 """
     )
@@ -103,10 +122,16 @@ echo "{url}"
 
 
 def _run_warm(
-    server: _Server, tmp_path: Path, *, deadline: int = 30, describe_exit: int = 0
+    server: _Server,
+    tmp_path: Path,
+    *,
+    deadline: int = 30,
+    describe_exit: int = 0,
+    tagged_url: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
-    _fake_gcloud(bin_dir, url=server.url, describe_exit=describe_exit)
+    _fake_gcloud(bin_dir, url=server.url, describe_exit=describe_exit, tagged_url=tagged_url)
     output_file = tmp_path / "github_output"
     output_file.write_text("")
     result = subprocess.run(
@@ -124,6 +149,7 @@ def _run_warm(
             "WARM_DEADLINE_SECONDS": str(deadline),
             "IAM_CREDENTIALS_BASE": server.url,
             "GITHUB_OUTPUT": str(output_file),
+            **(extra_env or {}),
         },
     )
     return result, output_file.read_text()
@@ -210,3 +236,81 @@ def test_an_unreadable_service_url_warns(serve, tmp_path: Path):
     assert output == "status=unavailable\n"
     assert "::warning::" in result.stdout
     assert server.paths() == []
+
+
+def test_a_tagged_candidate_is_probed_at_its_own_url_including_the_stated_scope_door(
+    serve, tmp_path: Path
+):
+    service = serve({_MINT_PATH: [(200, {})]})
+    candidate = serve({path: [(200, {})] for path in _WARM_PATHS})
+
+    result, output = _run_warm(
+        service, tmp_path, tagged_url=candidate.url, extra_env={"PROBE_TAG": "candidate"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output == "status=warm\n"
+    assert service.paths() == [_MINT_PATH]
+    assert candidate.paths() == list(_WARM_PATHS)
+    _, headers, body = candidate.requests[-1]
+    assert headers["X-Serverless-Authorization"] == "Bearer id-token"
+    assert json.loads(body)["texts"]
+
+
+def test_a_missing_tag_probes_the_service_url_with_a_warning(serve, tmp_path: Path):
+    server = serve(_ok())
+
+    result, output = _run_warm(server, tmp_path, extra_env={"PROBE_TAG": "candidate"})
+
+    assert output == "status=warm\n"
+    assert "::warning::" in result.stdout
+    assert server.paths() == [_MINT_PATH, *_WARM_PATHS]
+
+
+@pytest.mark.parametrize(
+    ("replies", "required", "status"),
+    [
+        ({_MINT_PATH: [(403, {})]}, "true", "error"),
+        ({_MINT_PATH: [(403, {})]}, "false", "forbidden"),
+        ({_MINT_PATH: [(500, {})]}, "true", "error"),
+        ({"/api/skills": [(401, {})]}, "true", "error"),
+        ({"/api/skills": [(401, {})]}, "false", "forbidden"),
+    ],
+)
+def test_require_probe_turns_an_unprobed_revision_into_an_error(
+    serve, tmp_path: Path, replies, required, status
+):
+    server = serve(_ok() | replies)
+
+    result, output = _run_warm(server, tmp_path, extra_env={"REQUIRE_PROBE": required})
+
+    assert result.returncode == 0, result.stderr
+    assert output == f"status={status}\n"
+
+
+def test_an_unreadable_service_url_is_an_error_when_the_probe_is_required(serve, tmp_path: Path):
+    server = serve(_ok())
+
+    _, output = _run_warm(server, tmp_path, describe_exit=1, extra_env={"REQUIRE_PROBE": "true"})
+
+    assert output == "status=error\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        ({"cause": {"code": "origin_not_served"}}, "warm"),
+        ({"cause": {"code": "node_not_held"}}, "error"),
+        ({}, "error"),
+    ],
+)
+def test_a_404_origin_not_served_skips_the_route_and_any_other_404_fails(
+    serve, tmp_path: Path, body, status
+):
+    server = serve(_ok() | {_UN_TERMS: [(404, {})]})
+    server.bodies[_UN_TERMS] = json.dumps(body).encode()
+
+    _, output = _run_warm(server, tmp_path)
+
+    assert output == f"status={status}\n"
+    assert server.paths() == [_MINT_PATH, *_WARM_PATHS], "the probe goes on after the skip"
