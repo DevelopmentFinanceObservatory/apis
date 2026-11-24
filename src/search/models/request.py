@@ -18,7 +18,7 @@ from .assumption import Assumption
 from .base import StrictModel
 from .entity import EntityGroup
 from .identity import BaseIdentity
-from .scope import Entry
+from .scope import Entry, OptionId
 from .vocab import (
     SCHEMA_VERSION,
     EntityRoleKey,
@@ -684,6 +684,28 @@ class ResubmitIdentityPayload(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class WholeRequest(StrictModel):
+    """A request for a part's whole on one axis (`scope.whole.derive_whole`)."""
+
+    axis: Literal["provider", "donor", "recipient"] = Field(
+        description="the axis the whole widens: whose spending, the donor side or the recipient side"
+    )
+    option_id: OptionId | None = Field(
+        default=None,
+        description=(
+            "the option to take as the whole, one the axis offers as its whole or in its "
+            "place (derived.alternatives, or a refusal's alternatives); None for the whole "
+            "the axis declares"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _option_on_axis(self) -> WholeRequest:
+        if self.option_id is not None and self.option_id.partition(":")[0] != self.axis:
+            raise ValueError(f"option_id {self.option_id!r} is not an option of {self.axis!r}")
+        return self
+
+
 class ResubmitIdentityEntry(StrictModel):
     """One part re-resolved from a single identity -- the payload
     `ResubmitIdentityPayload` carries, plus the text echo and operations every
@@ -760,6 +782,20 @@ class ResubmitIdentityEntry(StrictModel):
             "explicit entry this part cannot serve and conflicting_requested_options (422) "
             "for two that cannot hold together. None, the default, resolves identity as "
             "posted"
+        ),
+    )
+    whole: WholeRequest | None = Field(
+        default=None,
+        description=(
+            "asks for the whole of the part identity and scope_entries compile to: the "
+            "same figure switched on one axis to the option that holds it, every other "
+            "axis held at the part's option. The response answers the whole, and "
+            "resolved.scope_choices.derived states the part beside it. Refuses "
+            "requested_option_unavailable (422) at /whole where the axis offers no whole "
+            "the part can take, the part already is its whole, or the whole serves fewer "
+            "years than the part, and conflicting_requested_options (422) where the whole "
+            "cannot hold another axis's option, each with the options that derive as "
+            "alternatives. None, the default, resolves the part"
         ),
     )
 

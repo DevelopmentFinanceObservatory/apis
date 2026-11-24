@@ -200,7 +200,7 @@ def test_a_resolve_sends_one_trace_under_its_own_trace_id(exported, worked_examp
     assert span.name == "search.resolve"
     assert format(span.context.trace_id, "032x") == _TRACE_ID
     assert attributes["langfuse.trace.name"] == "search.resolve"
-    assert attributes["langfuse.trace.metadata.surface"] == "mcp"
+    assert json.loads(attributes["langfuse.trace.metadata.surface"]) == "mcp"
     assert json.loads(attributes["langfuse.observation.input"]) == {
         "kind": "raw_text",
         "query": query[:500],
@@ -267,7 +267,7 @@ def test_a_parsed_request_traces_its_whole_input(exported):
         "parts": [],
         "error_code": "cancelled",
     }
-    assert attributes["langfuse.trace.metadata.surface"] == "website"
+    assert json.loads(attributes["langfuse.trace.metadata.surface"]) == "website"
 
 
 @pytest.mark.parametrize(
@@ -292,8 +292,9 @@ def test_the_line_reads_the_exporter_s_own_result(monkeypatch, answer, outcome):
 
 @pytest.mark.parametrize(("status", "outcome"), [(200, "sent"), (401, "failed")])
 @pytest.mark.parametrize("export_path", [None, "custom/otel/v1/traces"])
+@pytest.mark.parametrize(("compression", "encoding"), [(None, "gzip"), ("none", None)])
 def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its_status(
-    monkeypatch, status, outcome, export_path
+    monkeypatch, status, outcome, export_path, compression, encoding
 ):
     """The client `_client` builds and a Langfuse client left to build its own exporter post to
     one local host, which answers every OTLP post with `status`, as Langfuse answers keys it
@@ -321,6 +322,15 @@ def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its
     ours, theirs = f"pk-{uuid.uuid4().hex}", f"pk-{uuid.uuid4().hex}"
     for name, value in _ON.items():
         monkeypatch.setenv(name, value)
+    for name in (
+        "LANGFUSE_OTEL_COMPRESSION",
+        "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
+        "OTEL_EXPORTER_OTLP_COMPRESSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    if compression is not None:
+        monkeypatch.setenv("LANGFUSE_OTEL_COMPRESSION", compression)
+    monkeypatch.setenv("LANGFUSE_OTEL_MAX_BATCH_SIZE_BYTES", "1234567")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", ours)
     monkeypatch.setenv("LANGFUSE_BASE_URL", f"{base_url}/")
     if export_path is None:
@@ -328,8 +338,9 @@ def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its
     else:
         monkeypatch.setenv("LANGFUSE_OTEL_TRACES_EXPORT_PATH", export_path)
     resolve_trace._client.cache_clear()
+    default_provider = TracerProvider()
     default = Langfuse(
-        public_key=theirs, secret_key="sk-test", base_url=base_url, tracer_provider=TracerProvider()
+        public_key=theirs, secret_key="sk-test", base_url=base_url, tracer_provider=default_provider
     )
     try:
         logged = _run_line(
@@ -338,6 +349,9 @@ def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its
         with default.start_as_current_observation(name="default", as_type="span"):
             pass
         default.flush()
+        ours_size = getattr(resolve_trace._client().results._exporter, "_max_request_size")  # noqa: B009
+        (processor,) = default_provider._active_span_processor._span_processors
+        theirs_size = getattr(processor, "span_exporter")._exporter._max_request_size  # noqa: B009
     finally:
         _drain()
         resolve_trace._client().client.shutdown()
@@ -358,7 +372,11 @@ def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its
 
     expected_path = f"/{export_path}" if export_path else resolve_trace.OTLP_PATH
     assert {path for path, _ in posts} == {expected_path}
-    assert keyed(ours) == keyed(theirs)
+    our_path, our_headers = keyed(ours)
+    assert (our_path, our_headers) == keyed(theirs)
+    assert our_headers["x-langfuse-ingestion-version"] == "4"
+    assert our_headers.get("content-encoding") == encoding
+    assert ours_size == theirs_size == 1234567
 
 
 def test_a_drain_past_its_deadline_cancels_the_queued_traces(monkeypatch, held_worker):

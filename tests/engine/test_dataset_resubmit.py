@@ -55,6 +55,7 @@ from search.models import (
     SlotBinding,
     TimeWindow,
     Unsupported,
+    WholeRequest,
 )
 from search.models import Entry as ScopeEntry
 from search.render.plan import render_sentence
@@ -2281,6 +2282,13 @@ def test_a_served_identity_resubmitted_with_its_own_scope_entries_keeps_its_spec
     [
         pytest.param(
             False,
+            None,
+            "requested_option_unavailable",
+            "/input/entries/0/whole",
+            id="whole-on-no-provider-axis",
+        ),
+        pytest.param(
+            False,
             [_scope_entry("sector:120+130")],
             "requested_option_unavailable",
             "/input/entries/0/scope_entries/0",
@@ -2305,13 +2313,16 @@ def test_a_served_identity_resubmitted_with_its_own_scope_entries_keeps_its_spec
 def test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry(
     live_axis, scope_entries, code, pointer, monkeypatch
 ):
+    """A scope entry the part cannot take refuses at the entry, and a whole the part has
+    none of (GDP has no provider axis) at `whole`."""
     if live_axis:
         monkeypatch.setattr(scope_rules, "AXIS_RULES", {"sector": _activity_source_rule})
     identity = _gdp_entry(_INDIA, "GDP").identity
+    entry = _scoped_entry(identity, scope_entries)
+    if scope_entries is None:
+        entry = entry.model_copy(update={"whole": WholeRequest(axis="provider")})
 
-    resp = _client().post(
-        "/api/search/resolve", json=_wire_request([_scoped_entry(identity, scope_entries)])
-    )
+    resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
 
     body = resp.json()
     assert (resp.status_code, body["code"], body["pointer"]) == (422, code, pointer)

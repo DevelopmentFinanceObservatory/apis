@@ -941,7 +941,9 @@ def test_the_options_are_the_bases_the_parts_dataset_publishes():
     assert choice.options[2].availability.detail == {"dataset": _DAC2A}
 
 
-def _net_identity(qualifier: str | None, unit_request: dict | None) -> BaseIdentity:
+def _net_identity(
+    qualifier: str | None, unit_request: dict | None, *, denominator: str | None = None
+) -> BaseIdentity:
     shape = {
         "kind": "statvar_schema",
         "population_type": "FinancialFlow",
@@ -950,6 +952,8 @@ def _net_identity(qualifier: str | None, unit_request: dict | None) -> BaseIdent
     }
     if qualifier is not None:
         shape["measurement_qualifier"] = qualifier
+    if denominator is not None:
+        shape["measurement_denominator"] = {"ref": denominator}
     document: dict = {
         "identity_version": "spec1",
         "shape": shape,
@@ -963,38 +967,55 @@ def _net_identity(qualifier: str | None, unit_request: dict | None) -> BaseIdent
 
 
 @pytest.mark.parametrize(
-    ("qualifier", "unit_request", "expected"),
+    ("qualifier", "unit_request", "denominator", "expected"),
     [
-        pytest.param("Nominal", None, "net disbursements, current USD", id="qualifier"),
-        pytest.param(None, None, "net disbursements", id="no-price-basis"),
+        pytest.param("Nominal", None, None, "net disbursements, current USD", id="qualifier"),
+        pytest.param("Nominal", None, "GNI", "net disbursements", id="ratio"),
+        pytest.param(
+            "Nominal", None, "Count_Person", "net disbursements, current USD", id="per-head"
+        ),
+        pytest.param(
+            "Nominal",
+            {"currency": "USD", "prices": "current"},
+            "GNI",
+            "net disbursements",
+            id="ratio-with-unit-request",
+        ),
+        pytest.param(None, None, None, "net disbursements", id="no-price-basis"),
         pytest.param(
             "Nominal",
             {"currency": "USD", "prices": "constant", "base_year": 2024},
+            None,
             "net disbursements, constant 2024 USD",
             id="constant-request",
         ),
         pytest.param(
             "Nominal",
             {"currency": "EUR", "prices": "current"},
+            None,
             "net disbursements, current EUR",
             id="currency-request",
         ),
         pytest.param(
             "Nominal",
             {"currency": {"role": "origin"}, "prices": "constant", "base_year": 2023},
+            None,
             "net disbursements, constant 2023 donor currency",
             id="role-currency-request",
         ),
     ],
 )
 def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
-    qualifier: str | None, unit_request: dict | None, expected: str
+    qualifier: str | None, unit_request: dict | None, denominator: str | None, expected: str
 ):
     """A unit request converts the part, so its prices and currency name every basis option
     over the shape's own price basis."""
     net = next(row for row in BASIS_MEASURES if row.basis == "net")
 
-    assert basis_label(net, _net_identity(qualifier, unit_request)) == expected
+    assert (
+        basis_label(net, _net_identity(qualifier, unit_request, denominator=denominator))
+        == expected
+    )
 
 
 def _tables() -> RecipeTables:

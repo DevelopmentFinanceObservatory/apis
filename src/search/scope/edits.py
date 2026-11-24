@@ -32,11 +32,12 @@ from search.models import (
     ProviderBinding,
     ScopeAxis,
     ShapeBinding,
+    SideBinding,
     SlotBinding,
     YearSpan,
 )
 
-BindingKind = Literal["slot", "entities", "shape", "provider"]
+BindingKind = Literal["slot", "entities", "shape", "provider", "side"]
 IdentityMember = Literal["slots", "entities", "shape", "facets", "requested_window"]
 
 HEADLINE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "spliced")
@@ -63,6 +64,8 @@ AXIS_BINDING: Mapping[ScopeAxis, BindingKind] = {
     "region": "entities",
     "measure_basis": "shape",
     "provider": "provider",
+    "donor": "side",
+    "recipient": "side",
 }
 """The binding kind every option of an axis carries."""
 PUBLISHED_BINDING: Mapping[ScopeAxis, BindingKind] = {"provider": "slot"}
@@ -143,16 +146,39 @@ def _edit_provider(
     (`rebound_destinations`). An option naming no composite removes a stacked composite,
     leaving the window as it is: the bilateral scope on a part the CRS serves, and the
     contributions and multilateral scopes, held by the published donor totals that count
-    them. Binding and removing are inverses on an identity that binds no other provenance
-    and names no destination total of both sides. Raises `ScopeTableError` for an inclusive
+    them. Removing a composite that reads the bilateral destinations from an identity that
+    names and lists no destination names the total of both sides (`spanning_destinations`), the total
+    ODA to all recipients, which a read over the open side would count beside its regional
+    totals. Binding and removing are inverses on an identity that binds no other provenance
+    and names a destination other than the total of both sides. Raises `ScopeTableError` for an inclusive
     option that names no composite."""
     assert isinstance(binding, ProviderBinding)
     if binding.provenance is None:
         if binding.scope == "inclusive":
             raise ScopeTableError("the inclusive option names no composite source")
-        return _with_source(identity, None, kind="stacked")
+        return spanning_destinations(identity, _with_source(identity, None, kind="stacked"))
     edited = _with_source(identity, binding.provenance, kind="stacked")
     return _with_window(rebound_destinations(edited, binding.provenance), binding.window)
+
+
+def _edit_side(
+    identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
+) -> BaseIdentity:
+    """Set the option's role to the parties it names, or, for an option summing the side
+    over its members, state the side open (`open_roles`): a role neither named nor open
+    reads the dataset's default for the side, which a containing total may bind
+    (`whole_totals.with_containing_total`)."""
+    assert isinstance(binding, SideBinding)
+    entities = {key: dcids for key, dcids in identity.entities.items() if key != binding.role}
+    axis = role_key_axis(binding.role)
+    open_roles = [role for role in identity.open_roles or () if role != axis]
+    if binding.refs:
+        entities[binding.role] = list(binding.refs)
+    elif axis is not None:
+        open_roles = sorted({*open_roles, axis})
+    return identity.model_copy(
+        update={"entities": dict(sorted(entities.items())), "open_roles": open_roles or None}
+    )
 
 
 def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentity:
@@ -175,6 +201,35 @@ def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentit
     if entities == identity.entities:
         return identity
     return identity.model_copy(update={"entities": entities})
+
+
+def spanning_destinations(held: BaseIdentity, edited: BaseIdentity) -> BaseIdentity:
+    """`edited`, `held` without its stacked composite, naming the total of both sides
+    (`BilateralSource.spanning`) as its one destination where the composite `held` binds
+    reads the bilateral destinations of a dataset that declares one and `held` names no
+    destination and lists none (`open_roles`); `edited` itself otherwise, a listing of every
+    recipient among them."""
+    pin = (held.facets or {}).get(_PROVENANCE)
+    composite = DECLARED_COMPOSITES.get(pin.ref) if isinstance(pin, IdentityBindingValue) else None
+    if (
+        composite is None
+        or "destination" in (held.open_roles or ())
+        or any(role_key_axis(key) == "destination" for key in held.entities)
+    ):
+        return edited
+    bound = {
+        recipe.dataset for recipe in composite.components if recipe.destinations == "bilateral"
+    }
+    spanning = [row.spanning for row in BILATERAL_SOURCES if row.dataset in bound]
+    if len(spanning) != 1:
+        return edited
+    open_roles = [role for role in edited.open_roles or () if role != "destination"]
+    return edited.model_copy(
+        update={
+            "entities": dict(sorted({**edited.entities, "destination": spanning}.items())),
+            "open_roles": open_roles or None,
+        }
+    )
 
 
 def counted_bilateral_source(
@@ -251,6 +306,7 @@ EDITS: Mapping[BindingKind, Edit] = {
     "provider": Edit(
         members=frozenset({"facets", "entities", "requested_window"}), apply=_edit_provider
     ),
+    "side": Edit(members=frozenset({"entities"}), apply=_edit_side),
 }
 """The edit of each binding kind."""
 

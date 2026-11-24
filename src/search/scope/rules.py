@@ -42,8 +42,8 @@ measure bases its inclusive source does not add on (`provider.provider_rule`).""
 
 def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict, ...]) -> str:
     """The hash of what a compile reads besides the request: the declared scope
-    conventions, the containing totals a part's open side binds
-    (`code_index.declarations.CONTAINING_TOTALS`), the live axes and the conflicts. A stored scope
+    conventions, the provider wholes (`scope_conventions.PROVIDER_WHOLES`), the containing
+    totals a part's open side binds (`code_index.declarations.CONTAINING_TOTALS`), the live axes and the conflicts. A stored scope
     whose rule version differs is recompiled from its entries. Hashed once per distinct
     input, since the conventions are fixed for the life of the process."""
     return _version(
@@ -63,6 +63,7 @@ def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict,
         scope_conventions.REGION_NAMES,
         scope_conventions.CONVENTION_CURRENCY,
         scope_conventions.REGION_READINGS,
+        scope_conventions.PROVIDER_WHOLES,
         tuple(
             (dataset, axis, row)
             for (dataset, axis), row in sorted(declarations.CONTAINING_TOTALS.items())
@@ -88,6 +89,7 @@ def _version(
     region_names: tuple[tuple[str, str], ...],
     convention_currency: str,
     region_readings: tuple[scope_conventions.RegionReading, ...],
+    provider_wholes: tuple[scope_conventions.ProviderWhole, ...],
     containing_totals: tuple[tuple[str, str, declarations.ContainingTotal], ...],
 ) -> str:
     document = {
@@ -105,6 +107,7 @@ def _version(
         "region_names": [list(pair) for pair in region_names],
         "convention_currency": convention_currency,
         "region_readings": [dataclasses.asdict(row) for row in region_readings],
+        "provider_wholes": [dataclasses.asdict(row) for row in provider_wholes],
         "containing_totals": [
             [dataset, axis, dataclasses.asdict(row)] for dataset, axis, row in containing_totals
         ],
