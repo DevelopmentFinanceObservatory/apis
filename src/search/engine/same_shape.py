@@ -681,7 +681,8 @@ def collapse_same_shape(
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
     identity facets, and set ``earliest_index`` to the group's minimum. A merged region
-    states the scope ``scope_for`` builds over the merged identity, none without it. A group
+    states the scope ``scope_for`` builds over the merged identity, none without it, and a
+    group whose scope compiles to another identity does not merge (`_collapse_group`). A group
     of composite answers merges into the composite over the merged identity, minted from the
     members' facets (`_merged_composite`), and refuses without ``preview_reads``, the
     request's clients. Where its members preview, a merged region previews the read of its
@@ -731,17 +732,23 @@ def _collapse_group(
     """Merge one group; keep the first member and residualise the rest on refusal. A group
     of composite answers, which merges into the composite over the merged identity
     (`_with_merged_preview`), refuses without `preview_reads`. The merged region states the
-    scope `scope_for` builds over its identity, none without it."""
+    scope `scope_for` builds over its identity, none without it. A group whose merged scope
+    compiles to another identity refuses: the members' entries would label the merged
+    answer with a choice it does not serve, as bilateral ODA folded with DAC1's total,
+    whose union keeps the total alone (`_simplify_merged_union`), would label the total
+    bilateral."""
     if len(group) == 1:
         return [group[0]], []
     try:
         if preview_reads is None and _binds_composite(group[0].spec):
             raise _RefuseMerge
         merged_region = _merge_group(group, set_ref_for, facet_options_for, preview_reads)
+        scope = scope_for(merged_region, group) if scope_for is not None else None
+        if scope is not None and scope.compiled.spec_id != merged_region.spec.spec_id:
+            raise _RefuseMerge
     except _RefuseMerge:
         residual = [(r.variable_text, r.earliest_index) for r in group[1:]]
         return [group[0]], residual
-    scope = scope_for(merged_region, group) if scope_for is not None else None
     return [dataclasses.replace(merged_region, scope_choices=scope)], []
 
 

@@ -9,6 +9,7 @@ This module makes no graph or LLM calls.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,7 @@ from pydantic import ValidationError
 
 from origin_catalogue import current_catalogue
 from search.engine.assemble import (
+    ScopeNotServedError,
     build_candidates_part,
     build_definite_part,
     build_no_data_part,
@@ -23,6 +25,7 @@ from search.engine.assemble import (
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
 )
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import surviving_facts
 from search.engine.entity_checks import part_entities
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
@@ -70,6 +73,8 @@ if TYPE_CHECKING:
     from search.engine.region.result import AmbiguousEntityCandidate as EngineCandidate
     from search.engine.region.result import AmbiguousSource
     from search.models import GraphRef, Part, QueryEcho
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Warning code and pinned severity/message
@@ -653,40 +658,59 @@ def _build_part(
             warnings = list(representative.warnings)
             if (unavailable := conversion_unavailable_warning(representative.spec)) is not None:
                 warnings.append(unavailable)
-        return build_definite_part(
-            representative.spec,
-            variable_text=variable_text,
-            warnings=warnings,
-            separate=region.separate,
-            timing_ms=timing_ms,
-            restatement=region.restatement,
-            entity_refs=_entity_refs(region, region.restatement),
-            operations=region.operations,
-            include_skills=include_skills,
-            skills_index=skills_index,
-            departure_facts=(
-                *surviving_facts(
-                    raised, [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings]
+        try:
+            return build_definite_part(
+                representative.spec,
+                variable_text=variable_text,
+                warnings=warnings,
+                separate=region.separate,
+                timing_ms=timing_ms,
+                restatement=region.restatement,
+                entity_refs=_entity_refs(region, region.restatement),
+                operations=region.operations,
+                include_skills=include_skills,
+                skills_index=skills_index,
+                departure_facts=(
+                    *surviving_facts(
+                        raised,
+                        [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings],
+                    ),
+                    *(
+                        ()
+                        if folded
+                        else (
+                            *representative.inferred_facts,
+                            *representative.unpublished_whole_facts.get(
+                                representative.spec.spec_id, ()
+                            ),
+                        )
+                    ),
                 ),
-                *(
-                    ()
-                    if folded
-                    else (
-                        *representative.inferred_facts,
-                        *representative.unpublished_whole_facts.get(
-                            representative.spec.spec_id, ()
-                        ),
-                    )
-                ),
-            ),
-            entity_words=region.entity_words,
-            assumption_echo=region.assumption_echo,
-            name_corrections=region.name_corrections,
-            asked_axes=region.every_member_axes,
-            own_spec=None if representative is region else region.spec,
-            members_in_words=region.members_in_words,
-            scope_choices=representative.scope_choices,
-        )
+                entity_words=region.entity_words,
+                assumption_echo=region.assumption_echo,
+                name_corrections=region.name_corrections,
+                asked_axes=region.every_member_axes,
+                own_spec=None if representative is region else region.spec,
+                members_in_words=region.members_in_words,
+                scope_choices=representative.scope_choices,
+            )
+        except ScopeNotServedError as exc:
+            # A producer's fault: the choices would label rows they do not describe, so the
+            # part fails closed and no cache stores the answer.
+            logger.error("%s; the part fails closed and is not cached", exc)
+            note_degraded_read("scope decision")
+            return build_no_data_part(
+                "facet_not_available",
+                variable_text=variable_text,
+                warnings=[],
+                separate=region.separate,
+                timing_ms=timing_ms,
+                restatement=region.restatement,
+                entity_refs=_entity_refs(region, region.restatement),
+                operations=region.operations,
+                include_skills=include_skills,
+                skills_index=skills_index,
+            )
     if region.status == "candidates":
         # Each reading states its own conversion offer, so a null one during a catalogue
         # outage warns once for the part, as a definite answer's does.
