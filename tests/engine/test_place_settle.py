@@ -525,6 +525,7 @@ def _state(
             whole_sets={},
             whole_named={},
             whole_listed={},
+            whole_listed_parties={},
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),

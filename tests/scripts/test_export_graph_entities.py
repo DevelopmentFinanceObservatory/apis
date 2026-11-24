@@ -127,7 +127,10 @@ def _base_arcs():
     }
 
 
-def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_of_grouped_ones():
+def test_export_entities_adds_origin_whole_and_side_totals_listing_codes_of_grouped_ones():
+    """A destination total is exported where it carries a whole marker (`DACAllRecipients`)
+    or totals the bilateral destinations (`DACDevelopingCountries`), which carries none; any
+    other destination total (`DACAsia`) is left out."""
     arcs = _base_arcs() | {
         "ExistingOrganisationTotal": {
             "typeOf": ("Organization",),
@@ -146,6 +149,12 @@ def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_o
             "name": ("all recipients (DAC)",),
             "alternateName": ("All Recipients, Total",),
             "dacCode": ("10200",),
+        },
+        "DACDevelopingCountries": {
+            "typeOf": ("DACGroup",),
+            "name": ("developing countries (DAC)",),
+            "alternateName": ("Developing Countries, Total",),
+            "dacCode": ("10100",),
         },
         "DACPairedTotal": {
             "typeOf": ("DACGroup",),
@@ -180,6 +189,7 @@ def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_o
             label="all recipients (DAC)",
             whole=(WholeMarker("provenance/OECDDAC2A", ("official", "residual"), (1984, 2024)),),
         ),
+        DACDevelopingCountries=_party(axes=("destination",), label="developing countries (DAC)"),
         DACPairedTotal=_party(axes=("origin",), totals="groups/Paired", label="paired total"),
         DACUncodedPairedTotal=_party(
             axes=("origin",), totals="groups/Uncoded", label="uncoded paired total"
@@ -197,6 +207,13 @@ def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_o
             "kind": "aggregate",
             "aliases": ["All Recipients, Total"],
             "dac_code": "10200",
+        },
+        {
+            "dcid": "DACDevelopingCountries",
+            "name": "developing countries (DAC)",
+            "kind": "aggregate",
+            "aliases": ["Developing Countries, Total"],
+            "dac_code": "10100",
         },
         {
             "dcid": "DACOfficialDonors",

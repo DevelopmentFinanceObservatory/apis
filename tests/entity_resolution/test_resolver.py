@@ -465,6 +465,10 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("All Donors, Total", "DACOfficialDonors", "official donors (DAC)"),
         ("all official donors", "DACOfficialDonors", "official donors (DAC)"),
         ("all recipients", "DACAllRecipients", "all recipients (DAC)"),
+        ("Total Recipients", "DACAllRecipients", "all recipients (DAC)"),
+        ("developing countries", "DACDevelopingCountries", "developing countries (DAC)"),
+        ("all developing countries", "DACDevelopingCountries", "developing countries (DAC)"),
+        ("Developing Countries, Total", "DACDevelopingCountries", "developing countries (DAC)"),
         (
             "regional development banks",
             "DACRegionalDevelopmentBanks",
@@ -489,6 +493,41 @@ def test_curated_acronym_resolves_to_the_pinned_parent(
     assert isinstance(result, Resolved), (text, result)
     assert result.entity.dcid == dcid
     assert result.entity.name == name
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "dcid"),
+    [
+        ("ODA recipients", NotFound, None),
+        ("low and middle income countries", NotFound, None),
+        ("Developing countries unspecified", Resolved, "DACBilateralUnallocated"),
+        ("least developed countries", Group, "groups/UN.LDC"),
+        ("landlocked developing countries", Group, "groups/UN.LLDC"),
+        ("small island developing states", Group, "groups/UN.SIDS"),
+    ],
+)
+def test_a_developing_countries_neighbour_keeps_its_own_reading(
+    shared_resolver, text: str, kind: type, dcid: str | None
+):
+    """The developing countries' total takes only its own names. "ODA recipients" could be
+    either recipient total and "low and middle income countries" is the World Bank's list,
+    so both stay unresolved; the DAC's unallocated line and the UN's country groups keep
+    their own reading."""
+    graph = FakeGraphLookup(
+        nodes={
+            node: {"typeOf": ("DACGroup",), "name": _UNUSED_GRAPH_NAME}
+            for node in ("DACDevelopingCountries", "DACAllRecipients", "DACBilateralUnallocated")
+        }
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve([text]))
+
+    assert isinstance(result, kind), (text, result)
+    if isinstance(result, Resolved):
+        assert result.entity.dcid == dcid
+    if isinstance(result, Group):
+        assert result.dcid == dcid
 
 
 def test_gate_invariant_no_listed_survivor_falls_to_fallback_ladder(shared_resolver):
@@ -760,7 +799,7 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 @pytest.mark.parametrize(
     "text",
     [
-        "developing countries (DAC)",
+        "recipient countries (DAC)",
         "African countries (G20)",
         "G7 countries (excluding Canada)",
         "OECD countries in the DAC",

@@ -1,5 +1,10 @@
 {
-  "DACAllRecipients": ["all recipients"],
+  "DACAllRecipients": ["all recipients", "total recipients"],
+  "DACDevelopingCountries": [
+    "developing countries",
+    "all developing countries",
+    "developing countries, total"
+  ],
   "DACMultilaterals": [
     "multilaterals",
     "multilateral organisations",

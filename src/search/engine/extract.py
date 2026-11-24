@@ -23,7 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
-from entity_resolution.pack import is_organisation_name
+from entity_resolution.pack import (
+    is_organisation_name,
+    is_stored_name,
+    longest_stored_name_tokens,
+)
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
@@ -854,6 +858,61 @@ def _bound_entities(extraction: Extraction) -> Extraction:
             code="request_invalid",
         )
     return extraction
+
+
+def _widen_to_stored_names(query: str, extraction: Extraction) -> Extraction:
+    """`extraction` with each entity whose own occurrence in `query` runs on into a longer
+    name the entity pack stores (`entity_resolution.pack.is_stored_name`) read as that name,
+    the longest one winning, and with each dropped qualifier that is exactly the words the
+    longer name took removed. "aid to developing countries unspecified" read as "developing
+    countries" with "unspecified" dropped names the DAC's bilateral unallocated line, which
+    the pack stores as "developing countries unspecified", and not the total of every
+    developing country.
+
+    Entities sharing a span take its occurrences in query order, one each, so in "aid to
+    developing countries and to developing countries unspecified" only the second
+    widens."""
+    reach = longest_stored_name_tokens()
+    claimed: set[int] = set()
+    entities: list[ExtractedEntity] = []
+    taken: list[list[str]] = []
+    for entity in extraction.entities:
+        span = (entity.span or entity.text).strip()
+        occurrence = next(
+            (m for m in _span_occurrences(query, span) if m.start() not in claimed), None
+        )
+        if occurrence is None:
+            entities.append(entity)
+            continue
+        claimed.add(occurrence.start())
+        widened = _stored_name_from(query, occurrence, reach=reach)
+        if widened is None:
+            entities.append(entity)
+            continue
+        entities.append(entity.model_copy(update={"text": widened, "span": widened}))
+        taken.append(_words(query[occurrence.end() : occurrence.start() + len(widened)]))
+    if not taken:
+        return extraction
+    kept = [q for q in extraction.dropped_qualifiers if _words(q) not in taken]
+    return extraction.model_copy(update={"entities": entities, "dropped_qualifiers": kept})
+
+
+def _span_occurrences(query: str, span: str) -> list[re.Match[str]]:
+    """Each whole occurrence of `span` in `query`, casing aside, in query order."""
+    if not span:
+        return []
+    return list(re.finditer(rf"(?<!\w){re.escape(span)}(?!\w)", query, flags=re.IGNORECASE))
+
+
+def _stored_name_from(query: str, occurrence: re.Match[str], *, reach: int) -> str | None:
+    """The longest stretch of `query` that starts at `occurrence`, runs at most `reach`
+    word tokens past it and is a name the entity pack stores, `None` where none is."""
+    after = list(_WORD_RE.finditer(query, occurrence.end()))[:reach]
+    for word in reversed(after):
+        name = query[occurrence.start() : word.end()]
+        if is_stored_name(name):
+            return name
+    return None
 
 
 def _bound_extraction(
@@ -2043,6 +2102,7 @@ def _read_extraction(query: str, extraction: Extraction, *, year: int) -> Extrac
         _restore_query_word_order(query, _enforce_kind(extraction))
     )
     extraction = _bound_entities(extraction)
+    extraction = _widen_to_stored_names(query, extraction)
     extraction, operations = _admit_operations(query, extraction, today_year=year)
     operations = _target_forecasts(extraction, operations, today_year=year)
     extraction, dates_by_variable = _drop_forecast_years(extraction, operations, today_year=year)
