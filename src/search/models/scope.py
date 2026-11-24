@@ -165,8 +165,19 @@ class ProviderBinding(StrictModel):
     )
 
 
+class SideBinding(StrictModel):
+    """An option that sets what one flow side of the identity names: the parties as posted,
+    or the side's whole, its published total or, with no total, the side left open."""
+
+    kind: Literal["side"] = "side"
+    role: str = Field(description="the identity's role key on the side")
+    refs: list[str] = Field(
+        description="the dcids the side names, sorted; [] for the side left open"
+    )
+
+
 OptionBinding = Annotated[
-    SlotBinding | EntitiesBinding | ShapeBinding | ProviderBinding,
+    SlotBinding | EntitiesBinding | ShapeBinding | ProviderBinding | SideBinding,
     Field(discriminator="kind"),
 ]
 
@@ -286,6 +297,70 @@ class LedgerStep(StrictModel):
     revision: int = Field(ge=0, description="the plan revision the switch was made on")
 
 
+class DerivedSide(StrictModel):
+    """One figure of a derived pair: its spec_id, the option it holds on the derived axis
+    and on the provider axis, and the parties each flow side names."""
+
+    spec_id: str = Field(description="the figure's spec_id")
+    option_id: OptionId = Field(description="the option the figure holds on the derived axis")
+    provider: OptionId | None = Field(
+        default=None,
+        description="the provider option the figure counts; None where the part has no provider axis",
+    )
+    populations: dict[str, list[str]] = Field(
+        description="the dcids each flow side names, by role key; a side left open is absent"
+    )
+
+
+class DerivedWhole(StrictModel):
+    """A whole Search derived from a part (`scope.whole.derive_whole`): the part as its base
+    and entries compile, and the whole, every choice the part settled held and one axis
+    switched to the whole's option."""
+
+    axis: ScopeAxis = Field(description="the axis the whole opens")
+    kind: Literal["option", "published_total", "sum_of_members"] = Field(
+        description=(
+            "a provider option that counts every stream the part counts, a side's published "
+            "total, or a side left open and summed over its members"
+        )
+    )
+    part: DerivedSide = Field(description="the part, compiled from its base and entries")
+    whole: DerivedSide = Field(
+        description="the whole: the part's choices held and the axis switched to its option"
+    )
+    years: list[YearSpan] | None = Field(
+        default=None,
+        description=(
+            "the years both figures serve, where both compile to composites stating their "
+            "periods; None unless both state them"
+        ),
+    )
+    members: list[str] | None = Field(
+        default=None,
+        description=(
+            "for a sum_of_members whole, the dcids of the parties the open side sums: every "
+            "party and residual its dataset publishes there, its totals left out; None for "
+            "any other kind"
+        ),
+    )
+    alternatives: list[OptionId] = Field(
+        default_factory=list,
+        description=(
+            "the other options on the axis whose whole derives, which a client may post as "
+            "whole.option_id (DAC2a's provider:inclusive beside total ODA)"
+        ),
+    )
+    rebind: OptionId | None = Field(
+        default=None,
+        description=(
+            "the recipient side option the whole takes beside its provider option, where "
+            "the dataset declares that its provider whole reads another recipient total "
+            "(DAC2a's recipient:DACAllRecipients beside total ODA); None where the whole "
+            "keeps the part's recipients"
+        ),
+    )
+
+
 class PartScope(StrictModel):
     """Every scope choice of one part, the entries that settled them and the identity they
     compile to."""
@@ -310,4 +385,9 @@ class PartScope(StrictModel):
     ledger: list[LedgerStep] = Field(
         default_factory=list,
         description="the switches made, newest last; the server keeps none, so [] on the wire",
+    )
+    derived: DerivedWhole | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="the part this answer is the whole of, where the request asked for its whole",
     )
