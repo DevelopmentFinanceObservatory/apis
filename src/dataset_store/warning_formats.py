@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
+from dataset_store.bounds import TransactionBounds
 from dataset_store.store import DatasetStore, Transaction
 
 # The detection pattern of each code's format.
@@ -46,8 +48,14 @@ REWRITE_SQL = Path(__file__).with_name("warning_rewrite.sql")
 REWRITE_LOCK_TIMEOUT = "5s"
 """How long `rewrite_old_formats` waits on a row lock a running writer holds."""
 
-COUNT_TIMEOUT = "60s"
-"""How long `count_old_format_rows` may scan `version_record` before Postgres cancels it."""
+
+def count_timeout(bounds: TransactionBounds) -> timedelta:
+    """How long `count_old_format_rows` may scan `version_record` before Postgres cancels it:
+    five sixths of the store's socket bound (`TransactionBounds.round_trip`), 25 s at the
+    default 30 s. Postgres cancels the scan and replies before the socket read gives up, so a
+    slow count raises `query_canceled` (SQLSTATE 57014) and the connection stays usable."""
+    return bounds.round_trip * 5 / 6
+
 
 # The signature of each function `REWRITE_SQL` defines; an argument list holds no parenthesis.
 _DEFINED = re.compile(r"^CREATE OR REPLACE FUNCTION (pg_temp\.\w+\([^)]*\))", re.MULTILINE)
@@ -178,11 +186,14 @@ def _rewrite_page(
     return found, rewritten
 
 
-def count_old_format_rows(tx: Transaction) -> int:
+def count_old_format_rows(tx: Transaction, *, bounds: TransactionBounds) -> int:
     """The version rows holding a warning in its code's old format, in the `warnings` column
-    or in the `warnings` of `immutable_body`. The count scans the table, so it is cancelled
-    after `COUNT_TIMEOUT` and raises."""
-    tx.execute(f"SET LOCAL statement_timeout = '{COUNT_TIMEOUT}'")
+    or in the `warnings` of `immutable_body`. The count scans the table, so Postgres cancels
+    it after `count_timeout(bounds)` and it raises. `bounds` are those of the store `tx`
+    belongs to."""
+    # A statement_timeout of 0 turns the timeout off, so the bound is at least 1 ms.
+    timeout_ms = max(1, int(count_timeout(bounds) / timedelta(milliseconds=1)))
+    tx.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
     row = tx.fetch_one(_OLD_FORMAT_ROWS, _formats())
     # `count(*)` without `GROUP BY` returns exactly one row.
     assert row is not None

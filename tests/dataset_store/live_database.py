@@ -23,6 +23,7 @@ import pg8000.legacy
 import pytest
 
 from dataset_store import connect
+from dataset_store.bounds import CONNECT_TIMEOUT_SECONDS
 
 SERVER_DSN = os.environ.get("DFO_DATASET_STORE_LIVE_DSN")
 
@@ -46,8 +47,11 @@ def database_name() -> str:
     return _active
 
 
-def connect_to(database: str) -> Callable[[], pg8000.legacy.Connection]:
-    """A connect callable for `database` on the server `SERVER_DSN` names."""
+def connect_to(
+    database: str, *, timeout: float = CONNECT_TIMEOUT_SECONDS
+) -> Callable[[], pg8000.legacy.Connection]:
+    """A connect callable for `database` on the server `SERVER_DSN` names, whose dial and
+    socket reads give up after `timeout` seconds."""
     assert SERVER_DSN
     parts = urlsplit(SERVER_DSN)
     return lambda: cast(
@@ -60,6 +64,7 @@ def connect_to(database: str) -> Callable[[], pg8000.legacy.Connection]:
             database=database,
             user=cast(str, parts.username),
             password=parts.password,
+            timeout=timeout,
         ),
     )
 
