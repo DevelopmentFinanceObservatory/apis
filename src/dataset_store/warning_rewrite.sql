@@ -2,11 +2,15 @@
 -- message into the shape `materialise.finish` and `datasets_api.origin` write:
 -- a message that counts, and structured fields that carry the refs for a
 -- reader to label (`materialise.codes.CountedRefs`,
--- `materialise.codes.CountedEntityYears`).
--- These definitions write nothing. `python -m dataset_store.warning_formats`
--- executes them alone in a transaction it rolls back, and refuses a statement
--- that is not `CREATE OR REPLACE FUNCTION pg_temp.`; a migration that applies
--- the rewrite starts with these exact bytes.
+-- `materialise.codes.CountedEntityYears`). These definitions write nothing.
+-- `dataset_store.warning_formats.rewrite_old_formats` defines them in each
+-- transaction of `datasets-maintenance rewrite-warnings` that applies them,
+-- and drops them before it commits.
+--
+-- The old member sentence of `coverage_below_scope`
+-- (`dataset_store.warning_formats.MEMBER_SENTENCE`) is returned as stored: its
+-- split into off-cadence and out-of-window members needs graph reads, so
+-- `datasets-maintenance backfill-warnings` rewrites it.
 --
 -- `pg_temp.warning_counted_refs` rewrites one warning, and
 -- `pg_temp.warnings_counted_refs` every warning of a stored array. Each old
@@ -54,6 +58,11 @@
 -- is exact; a list of labels such as `Korea, Rep.` would be mis-split. A list
 -- holding a comma inside a name fails its pattern and stays as stored.
 --
+-- Each count a pattern reads as an `integer` holds at most nine digits. A
+-- longer one fails its pattern, so its warning stays as stored and is counted
+-- among the rows left in an old format; a cast past `integer` would raise and
+-- roll back the whole rewrite.
+--
 -- Each regular expression holding a backslash is an escape string (`E'...'`),
 -- so it reads the same whatever `standard_conforming_strings` is. A warning in
 -- none of these shapes is returned as stored, which covers every warning in
@@ -86,7 +95,7 @@ BEGIN
     WHEN 'coverage_below_scope' THEN
         parts := regexp_match(
             message,
-            E'^(.*) No observations were served for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]+) more)?\\.( .*)?$'
+            E'^(.*) No observations were served for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]{1,9}) more)?\\.( .*)?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -103,12 +112,15 @@ BEGIN
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[2], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs(string_to_array(parts[2], ', '))
             )
         );
     WHEN 'currency_unmapped_omitted' THEN
         parts := regexp_match(
-            message, E'^(.*) ([0-9]+) entities: ([^ ,]+(?:, [^ ,]+)*)(?: \\(truncated\\))?$'
+            message, E'^(.*) ([0-9]{1,9}) entities: ([^ ,]+(?:, [^ ,]+)*)(?: \\(truncated\\))?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -116,16 +128,24 @@ BEGIN
         counted := parts[2]::integer;
         RETURN warning || jsonb_build_object(
             'message',
-            format('%s It left out %s %s.', parts[1], counted, pg_temp.warning_entities(counted)),
+            format(
+                '%s It left out %s %s.',
+                parts[1],
+                counted,
+                pg_temp.warning_entities(counted)
+            ),
             'omitted_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[3], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs(string_to_array(parts[3], ', '))
             )
         );
     WHEN 'deflator_missing_omitted' THEN
         parts := regexp_match(
             message,
-            E'^(.*) ([0-9]+) entities: ([^ ,]+ \\([^)]*\\)(?:, [^ ,]+ \\([^)]*\\))*)(?: \\(truncated\\))?$'
+            E'^(.*) ([0-9]{1,9}) entities: ([^ ,]+ \\([^)]*\\)(?:, [^ ,]+ \\([^)]*\\))*)(?: \\(truncated\\))?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -160,7 +180,7 @@ BEGIN
     WHEN 'withheld_by_registry' THEN
         parts := regexp_match(
             message,
-            E'^(.*) ([^ ,]+) served no observations for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]+) more)?; withheld provenances holding data there: ([^ ,]+(?:, [^ ,]+)*)\\.$'
+            E'^(.*) ([^ ,]+) served no observations for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]{1,9}) more)?; withheld provenances holding data there: ([^ ,]+(?:, [^ ,]+)*)\\.$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -180,19 +200,25 @@ BEGIN
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[3], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs(string_to_array(parts[3], ', '))
             ),
             'withheld_members',
             jsonb_build_object('count', 1, 'refs', pg_temp.warning_refs(ARRAY[parts[2]])),
             'withheld_provenances',
             jsonb_build_object(
-                'count', cardinality(provenances), 'refs', pg_temp.warning_refs(provenances[1:5])
+                'count',
+                cardinality(provenances),
+                'refs',
+                pg_temp.warning_refs(provenances[1:5])
             )
         );
     WHEN 'un_system_unavailable' THEN
         parts := regexp_match(
             message,
-            E'^(.*) No UN data was read for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]+) more)?\\.$'
+            E'^(.*) No UN data was read for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]{1,9}) more)?\\.$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -208,11 +234,14 @@ BEGIN
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[2], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs(string_to_array(parts[2], ', '))
             )
         );
     WHEN 'deflator_projected' THEN
-        parts := regexp_match(message, E'^(.*) ([0-9]+) row\\(s\\), for example: .*$');
+        parts := regexp_match(message, E'^(.*) ([0-9]{1,9}) row\\(s\\), for example: .*$');
         IF parts IS NULL THEN
             RETURN warning;
         END IF;
@@ -238,7 +267,9 @@ LANGUAGE sql STABLE AS $rewrite_all$
     SELECT CASE
         WHEN jsonb_typeof(warnings) = 'array' THEN (
             SELECT coalesce(
-                jsonb_agg(pg_temp.warning_counted_refs(warning.value) ORDER BY warning.position),
+                jsonb_agg(
+                    pg_temp.warning_counted_refs(warning.value) ORDER BY warning.position
+                ),
                 '[]'::jsonb
             )
             FROM jsonb_array_elements(warnings) WITH ORDINALITY AS warning (value, position)
