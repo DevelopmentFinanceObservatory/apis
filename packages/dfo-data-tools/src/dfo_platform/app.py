@@ -10,7 +10,6 @@ import functools
 import logging
 import threading
 import time
-import weakref
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
 from contextlib import (
@@ -31,7 +30,7 @@ from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.routing import BaseRoute, Match
-from starlette.types import ASGIApp, Scope
+from starlette.types import ASGIApp, Receive, Scope, Send
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
@@ -512,14 +511,17 @@ def _install_trace_id_outermost_middleware_stack(
     CORS returns preflight responses before entering its inner stack. An
     outer trace layer sees those responses and all other paths. `commit` is
     bound once from `build_commit()`. `caller` names each request's delivery
-    identity. Install the override before the first request, while FastAPI's
-    middleware stack remains lazy.
+    identity. `InFlightMiddleware` wraps the trace layer, so a request counts in flight
+    for its whole ASGI call. Install the override before the first request, while
+    FastAPI's middleware stack remains lazy.
     """
     base_build_middleware_stack = app.build_middleware_stack
     dispatch = functools.partial(_trace_id_dispatch, commit=commit, caller=caller)
 
     def _build_middleware_stack() -> ASGIApp:
-        return BaseHTTPMiddleware(base_build_middleware_stack(), dispatch=dispatch)
+        return InFlightMiddleware(
+            BaseHTTPMiddleware(base_build_middleware_stack(), dispatch=dispatch)
+        )
 
     app.build_middleware_stack = _build_middleware_stack  # ty: ignore[invalid-assignment]
 
@@ -572,39 +574,29 @@ whole response)."""
 
 
 _in_flight = 0
-"""Requests in this process that `_trace_id_dispatch` has taken and whose response body
-has not finished sending (`_count_in_flight`). The event loop runs every update except a
-release by the `weakref.finalize` of a body dropped before its first chunk, which runs in
-whichever thread collects the body. The count takes no lock, since a lost update there
-needs a GIL switch inside one integer update."""
+"""HTTP requests in this process that `InFlightMiddleware` has taken and whose ASGI call
+has not returned. Only the event loop updates it, so it takes no lock."""
 
 
-def _count_in_flight() -> Callable[[], None]:
-    """Count one more request in `_in_flight`, and return the call that counts it out
-    again. The call counts out once, however often it runs."""
-    global _in_flight  # a process-wide count of requests in flight
-    _in_flight += 1
-    done = False
+class InFlightMiddleware:
+    """Count each HTTP request in `_in_flight` from the moment it enters the app until its
+    ASGI call returns or raises, so the count covers a streamed body's terminal send and
+    a send that fails when the client has gone. It wraps the trace-ID layer, which logs
+    the count on arrival."""
 
-    def release() -> None:
-        nonlocal done
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         global _in_flight  # a process-wide count of requests in flight
-        if not done:
-            done = True
+        _in_flight += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
             _in_flight -= 1
-
-    return release
-
-
-async def _released_after(
-    body: AsyncIterator[Any], release: Callable[[], None]
-) -> AsyncIterator[Any]:
-    """`body`, calling `release` once it ends, fails or is closed."""
-    try:
-        async for chunk in body:
-            yield chunk
-    finally:
-        release()
 
 
 async def _trace_id_dispatch(
@@ -629,9 +621,8 @@ async def _trace_id_dispatch(
 
     Logs a `request_received` line on entry, with the count of requests in flight, and
     stores the entry time on `request.state.received` (a `time.monotonic()` reading)
-    for a route to measure its own start against. `call_next` returns at response start,
-    so a request counts in flight until its response body finishes sending, as an event
-    stream's last event does, or until the dispatch fails or the body is dropped unsent.
+    for a route to measure its own start against. `InFlightMiddleware`, outside this
+    layer, has already counted the request.
     """
     trace_id = new_trace_id()
     request.state.trace_id = trace_id
@@ -641,10 +632,7 @@ async def _trace_id_dispatch(
     identity_token = set_delivery_identity(delivery_identity(request, caller))
     start = time.perf_counter()
     status: int | None = None
-    release: Callable[[], None] | None = None
-    handed_off = False
     try:
-        release = _count_in_flight()
         try:
             log_request_received(
                 trace_id=trace_id,
@@ -667,14 +655,6 @@ async def _trace_id_dispatch(
             and not _is_event_stream(response)
         ):
             response.headers[SERVER_TIMING_HEADER] = f"total;dur={elapsed_ms:.1f}"
-        # `call_next` returns a response streaming the route's body.
-        body = getattr(response, "body_iterator", None)
-        if body is not None:
-            counted = _released_after(body, release)
-            # A body the server drops before its first chunk never runs its own `finally`.
-            weakref.finalize(counted, release)
-            response.body_iterator = counted  # ty: ignore[unresolved-attribute]  # see above
-            handed_off = True
         return response
     finally:
         try:
@@ -689,8 +669,6 @@ async def _trace_id_dispatch(
             # out of the record, as it can carry a credential.
             logger.warning("request log line failed: %s", type(exc).__name__)
         finally:
-            if release is not None and not handed_off:
-                release()
             # The inner task retains its copied trace context after this outer task resets.
             reset_trace_id(token)
             reset_cloud_trace_id(cloud_token)

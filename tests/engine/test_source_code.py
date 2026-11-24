@@ -27,8 +27,10 @@ from search.engine.binders import (
     FallbackBinder,
     GeminiBinder,
     JevBinder,
+    jev_assemble,
 )
 from search.engine.binders.code_pinned import binds_on_code, code_pinned_bind
+from search.engine.binders.house_policy import PolicyPool
 from search.engine.config import SEARCH_MAX_CODE_PARTS, settings
 from search.engine.core import resolve_async
 from search.engine.entry import parsed as parsed_entry
@@ -776,12 +778,19 @@ def test_a_code_part_the_model_has_a_choice_on_still_asks_jev(part, llm, phrase,
     assert bind_state["variable_phrase"] == phrase
 
 
-def test_a_code_pinned_bind_answers_as_jev_electing_its_one_shape(monkeypatch):
-    """The bind a code alone names (`code_pinned.code_pinned_bind`) equals Jev's on
-    answers electing the menu's one shape, the house policies running once in each. This
-    pins the wiring only, as both run `jev_assemble.bind_result`."""
+def test_a_code_pinned_bind_drafts_as_jev_and_states_no_model_artefact(monkeypatch):
+    """Under the Gemini binder, the bind a code alone names (`code_pinned.code_pinned_bind`)
+    reaches none of Jev's assembly and states no election score of its own: its pool holds
+    the one shape with no `election`. Its drafts and the house policies' choice equal those
+    of Jev's bind on answers electing that shape, the policies running once in each."""
     requests: list[BindRequest] = []
     results: list[BindResult] = []
+    jev_calls: list[object] = []
+    jev_assemble_answers = jev_assemble.assemble
+
+    def counted(*args, **kwargs):
+        jev_calls.append(args)
+        return jev_assemble_answers(*args, **kwargs)
 
     def recorded(request: BindRequest) -> BindResult:
         result = code_pinned_bind(request)
@@ -790,22 +799,27 @@ def test_a_code_pinned_bind_answers_as_jev_electing_its_one_shape(monkeypatch):
         results.append(replace(result, output=result.output.model_copy(deep=True)))
         return result
 
+    monkeypatch.setattr(jev_assemble, "assemble", counted)
     monkeypatch.setattr(phase_rank_bind, "code_pinned_bind", recorded)
+    llm = _BindLLM()
     part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
-    assert _answer(part, monkeypatch).status == "definite"
+    assert _answer(part, monkeypatch, llm, binder=GeminiBinder()).status == "definite"
     (request,), (fast,) = requests, results
+    assert fast.binder == "code"
+    assert fast.policy_pool == PolicyPool(measuring=(0,))
+    assert (len(jev_calls), llm.prompts) == (0, [])
+    assert (fast.scores, fast.stated_words, fast.none_first) == ({}, {}, False)
+
     electing = FakeAsk(
         {
             "m|0": {"type": "noul", "noul": 1.0},
             "electq": {"type": "choice", "probabilities": {"Shape 0": 1.0}},
         }
     )
-
     jev, _usage = asyncio.run(JevBinder(ask=electing).bind(request, llm=None))
 
-    assert (fast.binder, jev.binder) == ("code", "jev")
     assert fast.output == jev.output
-    assert (fast.policy_pool, fast.policy_choice) == (jev.policy_pool, jev.policy_choice)
+    assert fast.policy_choice == jev.policy_choice
 
 
 @pytest.mark.parametrize(

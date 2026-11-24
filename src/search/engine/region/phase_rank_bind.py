@@ -5169,7 +5169,7 @@ async def _bind_on_code(
     state: ResolveState, request: BindRequest, *, policies: _HousePolicyStep
 ) -> tuple[BindResult, dict | None]:
     """`request` bound on its series code alone (`code_pinned.code_pinned_bind`), with no
-    model call and so no usage. An assembler that raises before the house policies run
+    model call and so no usage. A code-pinned bind that raises before the house policies run
     (`policies`) is logged at ERROR and the part's binder answers `request`
     (`ResolveState.binder`), as `FallbackBinder.bind` answers a raising Jev call from its
     fallback. One that raises after they ran breaks the house-policy contract
@@ -5240,9 +5240,11 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
 
     A code-pinned part (`ResolveState.code_pinned`), with no basis sibling beside the
     menu, binds without a model call when the request leaves the model nothing to decide
-    (`code_pinned.binds_on_code`). The one menu shape is elected, the house policies run
-    once, and the drafts are those Jev's assembler gives an answer electing it
-    (`code_pinned.code_pinned_bind`). Such a part asks the model nothing, unless that bind
+    (`code_pinned.binds_on_code`). The one menu shape is elected, its slots are drafted from
+    their fixed qualifier matches and one-member taxonomies, the house policies run once,
+    and the result is assembled as the model binders assemble theirs
+    (`code_pinned.code_pinned_bind`, `assembly.elected_result`). Such a part asks the model
+    nothing, unless that bind
     raises before the house policies run and the part's binder answers (`_bind_on_code`).
     A code-pinned part whose request fails that test calls the model without a quantity
     read (`_pins_on_code`).
