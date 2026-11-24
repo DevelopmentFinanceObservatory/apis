@@ -88,15 +88,23 @@ A run that fails at any step leaves the service in a state the next run's decisi
 
 ### Keeping a manual rollback
 
-Every push deploys its commit while the deploy workflow is enabled, whatever traffic someone set by hand. To keep a rollback (`gcloud run services update-traffic <service> --to-revisions=<revision>=100`), disable the caller first and re-enable it when a fix is ready to deploy:
+Every push deploys its commit while the environment's caller workflow is enabled, whatever traffic someone set by hand. The caller is `deploy-prod.yml` for `production` and `deploy-dev.yml` for `dev`. Disabling a workflow stops new runs from being triggered, but it does not cancel a run already queued or in progress, so cancel those too. To keep a rollback in `production`:
 
 ```sh
 gh workflow disable deploy-prod.yml -R DevelopmentFinanceObservatory/apis
-# roll back, fix, merge
+gh run list -R DevelopmentFinanceObservatory/apis --workflow deploy-prod.yml --status in_progress
+gh run list -R DevelopmentFinanceObservatory/apis --workflow deploy-prod.yml --status queued
+gh run cancel <run id> -R DevelopmentFinanceObservatory/apis
+gcloud run services update-traffic <service> --to-revisions=<revision>=100 --region=<region> --project=<project>
+```
+
+When a fix is ready to deploy, enable the caller again:
+
+```sh
 gh workflow enable deploy-prod.yml -R DevelopmentFinanceObservatory/apis
 ```
 
-`deploy-dev.yml` is the caller for `dev`. The callers hold the triggers, so they are the workflows to disable, and `deploy.yml` runs only when a caller calls it.
+For `dev`, use `deploy-dev.yml` in the same commands.
 
 ### Recipe migration after the services move
 
