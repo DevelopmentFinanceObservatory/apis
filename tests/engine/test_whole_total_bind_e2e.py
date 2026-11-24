@@ -1090,7 +1090,7 @@ def test_a_whole_population_directed_to_the_other_side_refuses(
     assert answer.no_data.entity_terms == [text]
     assert answer.no_data.message == (
         f'No data for "{_VARIABLE}" as a flow to or from any place named in this query. '
-        f'"{text}" names the donors of aid, so it cannot be the receiving side of this flow.'
+        f'"{text}" names providers, so it cannot be the receiving side of this flow.'
     )
 
 
@@ -4269,11 +4269,51 @@ def test_developing_countries_listed_read_the_bilateral_recipients(
     assert spec.spec_id == _spec(_resolve(opened, crs_first=sources is not None)).spec_id
 
 
+def test_developing_countries_listed_under_total_oda_list_off_dac2a(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A carried `provider:contributions` entry keeps DAC2a's total ODA, whose open recipient
+    side lists the multilateral agencies beside the developing countries, so "developing
+    countries" posted with `members: true` lists on no DAC2a shape and answers on the CRS,
+    which holds the DAC's recipient list."""
+    _developing_coverage(monkeypatch)
+    request = _parsed(
+        {
+            "entities": [
+                _FROM_FRANCE,
+                {"role": "to", "text": "developing countries", "members": True},
+            ],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    )
+    carried = Entry(
+        axis="provider",
+        option_id="provider:contributions",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="spec_earlier:provider"),
+    )
+    assert isinstance(request.input, ParsedInput)
+    request = ResolveRequest(input=request.input.model_copy(update={"carried_entries": [carried]}))
+
+    spec = _spec(
+        offline_resolve(
+            request,
+            graph=_graph(variable=_VARIABLE),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    assert spec.definition.identity.open_roles == ["destination"]
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [CRS_PROVENANCE]
+
+
 def test_developing_countries_as_the_donor_refuse_as_misdirected(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """ "Developing countries" names recipients alone, so "aid from developing countries to
-    Africa", a South-South question, directs it to the giving side and refuses
+    Africa", a South-South question, directs it to the providing side and refuses
     `role_incompatible`, naming it. The refusal says what it names and offers no swap, which
     would ask about aid to developing countries in its place."""
     _developing_coverage(monkeypatch)
@@ -4293,6 +4333,5 @@ def test_developing_countries_as_the_donor_refuse_as_misdirected(
     assert part.no_data.reason == "role_incompatible"
     assert part.no_data.entity_terms == ["developing countries"]
     assert part.no_data.message.endswith(
-        '"developing countries" names the recipients of aid, so it cannot be the giving side '
-        "of this flow."
+        '"developing countries" names recipients, so it cannot be the providing side of this flow.'
     )

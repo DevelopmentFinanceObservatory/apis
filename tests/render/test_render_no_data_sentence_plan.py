@@ -756,21 +756,20 @@ def test_ids_028_a_role_refusal_is_a_claim():
         pytest.param(
             ["all donors"],
             "origin",
-            ' "all donors" names the donors of aid, so it cannot be the receiving side of this '
-            "flow.",
+            ' "all donors" names providers, so it cannot be the receiving side of this flow.',
             id="donors-received",
         ),
         pytest.param(
             ["all donors", "official donors"],
             "origin",
-            ' "all donors" and "official donors" name the donors of aid, so they cannot be the '
+            ' "all donors" and "official donors" name providers, so they cannot be the '
             "receiving side of this flow.",
             id="two-donor-populations",
         ),
         pytest.param(
             ["developing countries"],
             "destination",
-            ' "developing countries" names the recipients of aid, so it cannot be the giving '
+            ' "developing countries" names recipients, so it cannot be the providing '
             "side of this flow.",
             id="recipients-giving",
         ),

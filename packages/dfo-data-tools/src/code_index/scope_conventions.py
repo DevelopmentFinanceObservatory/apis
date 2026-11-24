@@ -732,12 +732,13 @@ def reads_dac_recipient_list(datasets: Collection[str]) -> bool:
     return bool(datasets) and all(dataset in DAC_RECIPIENT_LIST_DATASETS for dataset in datasets)
 
 
-def lists_bilateral_destinations(datasets: Collection[str]) -> bool:
+def lists_bilateral_destinations(datasets: Collection[str], *, total_kept: bool) -> bool:
     """Whether every one of `datasets`, at least one, lists the bilateral destinations alone
     on an open recipient side: it holds the DAC's recipient list (`reads_dac_recipient_list`),
     or its bilateral composite reads the population of that side (`BILATERAL_SOURCES`), as
-    DAC2a's does."""
-    bilateral = {row.dataset for row in BILATERAL_SOURCES}
+    DAC2a's does, where the part does not keep the dataset's total itself (`total_kept`, a
+    `provider:contributions` entry), whose open side lists the multilateral agencies too."""
+    bilateral = set() if total_kept else {row.dataset for row in BILATERAL_SOURCES}
     return bool(datasets) and all(
         dataset in DAC_RECIPIENT_LIST_DATASETS or dataset in bilateral for dataset in datasets
     )

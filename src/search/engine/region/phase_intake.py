@@ -57,6 +57,7 @@ from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
 from search.render.no_data import UnlistedPopulation
 from search.scope.basis import entry_measure
+from search.scope.provider import CONTRIBUTIONS
 from search.scope.region import oecd_region_reading
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
@@ -619,7 +620,8 @@ def _prune_shapes_by_listing(
     `scope_conventions.bilateral_side_total`) covers no class: it lists on a shape whose datasets
     list the bilateral destinations alone (`scope_conventions.lists_bilateral_destinations`), the
     CRS, which holds the DAC's recipient list, and DAC2a, whose bilateral composite reads that
-    side's population, and fails with no class account elsewhere. A shape whose datasets hold no
+    side's population unless a `provider:contributions` entry keeps its total ODA, and fails
+    with no class account elsewhere. A shape whose datasets hold no
     class the index reads on the side, such as one no declared dataset publishes, lists no
     population, since nothing shows what its open side would hold.
 
@@ -648,10 +650,16 @@ def _prune_shapes_by_listing(
         for name, dcids in listed.items()
     }
 
+    # A first provider entry asking for total ODA keeps DAC2a's own table, whose open side
+    # lists the agencies (`provider.bilateral_default_reading`).
+    stated = state.scope_selection.entries_on("provider")
+    total_kept = bool(stated) and stated[0].option_id == CONTRIBUTIONS
+
     def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
         datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
         if all(bilateral_side_total(dcid) for dcid in listed[name]):
-            return set() if lists_bilateral_destinations(datasets) else None
+            lists = lists_bilateral_destinations(datasets, total_kept=total_kept)
+            return set() if lists else None
         classes = side_classes(state.whole_listed[name], datasets=datasets)
         return set(classes) - covered[name] if classes else None
 

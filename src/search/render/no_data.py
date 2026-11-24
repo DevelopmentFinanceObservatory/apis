@@ -300,9 +300,9 @@ def no_data_phrase(
     (`_no_observations_concept`). Up to three graph names take precedence, unquoted.
     Otherwise ``variable_term`` is quoted.
 
-    For no_observations, ``role_axis`` names an open origin or destination
-    axis (a role_incompatible refusal's side is read by `misdirected_sentence`). It combines with the concept term when both exist. Either alone is
-    used by itself, and neither returns the term-free phrase.
+    For no_observations, ``role_axis`` names an open origin or destination axis (a role_incompatible
+    refusal's side is read by `misdirected_sentence`). It combines with the concept term when both
+    exist. Either alone is used by itself, and neither returns the term-free phrase.
 
     For qualifier_not_bound, any ``unbound`` terms take precedence and
     identify categories the search could not apply, each dataset that records one of them
@@ -675,8 +675,8 @@ def no_data_message(
 
 # What a whole population on each flow side names, and the side the request put it on.
 _MISDIRECTED_SIDES: Mapping[str, tuple[str, str]] = {
-    "origin": ("the donors of aid", "receiving"),
-    "destination": ("the recipients of aid", "giving"),
+    "origin": ("providers", "receiving"),
+    "destination": ("recipients", "providing"),
 }
 
 
@@ -685,8 +685,9 @@ def misdirected_sentence(
 ) -> str | None:
     """The sentence a role_incompatible refusal closes on for the whole populations the
     request directs to the side other than their own (`entity_terms`), all on `side`: what
-    they name and the side they cannot be, '"developing countries" names the recipients of
-    aid, so it cannot be the giving side of this flow.' It gives no swap advice: "aid from
+    they name and the side they cannot be, worded from the side alone so it holds for any flow:
+    '"developing countries" names recipients, so it cannot be the providing side of this
+    flow.' It gives no swap advice: "aid from
     developing countries to Africa" asks about aid the developing countries give, which no
     swap answers. Populations on both sides (`side` `None`) are named as one side each.
     `None` for any other reason, or with no term."""
@@ -978,16 +979,15 @@ def no_data_sentence_plan(
     ``elected_stat_vars`` are added when the verdict would not repeat a
     variable already named by the match. ``qualifier_terms`` apply only to
     qualifier_not_bound, ``source_terms`` to the two source reasons, whose
-    ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the
-    source-code reasons (`no_data_phrase`). A role_incompatible verdict naming
-    ``entity_terms`` says what they name and the side they cannot be
-    (`misdirected_sentence`), as its own token, so a composed envelope keeps it. A part read under a source ``scope``
-    closes its verdict on the sources it was read under (`scope_sentence`). The part's
-    ``departures`` follow as departure-segment tokens. On the place-availability gate, a
-    ``direction_discarded`` departure leads in place of the checked heading and the verdict
-    follows it ("You named Bangladesh as a recipient, but this measure has no recipients, so
-    this checked Bangladesh itself. No data was found there."), since the heading's "No data
-    for Bangladesh's ..." would read as a gap in that place's data.
+    ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the source-code
+    reasons (`no_data_phrase`). A role_incompatible verdict naming ``entity_terms`` says what they
+    name and the side they cannot be (`misdirected_sentence`), as its own token, so a composed
+    envelope keeps it. A part read under a source ``scope`` closes its verdict on the sources it was
+    read under (`scope_sentence`). The part's ``departures`` follow as departure-segment tokens. On
+    the place-availability gate, a ``direction_discarded`` departure leads in place of the checked
+    heading and the verdict follows it ("You named Bangladesh as a recipient, but this measure has
+    no recipients, so this checked Bangladesh itself. No data was found there."), since the
+    heading's "No data for Bangladesh's ..." would read as a gap in that place's data.
     """
     discarded = next((d for d in departures if d.code == "direction_discarded"), None)
     if gate == "no_member_has_data_at_place" and flagged_match is not None and discarded:

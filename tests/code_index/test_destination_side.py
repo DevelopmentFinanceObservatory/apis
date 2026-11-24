@@ -225,7 +225,9 @@ def test_a_dataset_reads_and_lists_the_dac_recipient_list_where_declared(
     the UNFCCC reports the Convention's developing country Parties, so none reads or lists
     the DAC's developing countries, though every recipient each holds is a country."""
     assert reads_dac_recipient_list(datasets) is reads
-    assert lists_bilateral_destinations(datasets) is lists
+    assert lists_bilateral_destinations(datasets, total_kept=False) is lists
+    # Total ODA kept on DAC2a lists the agencies; the recipient list holds either way.
+    assert lists_bilateral_destinations(datasets, total_kept=True) is (lists and reads)
 
 
 def test_every_dataset_declared_to_hold_the_dac_recipient_list_holds_bilateral_recipients():

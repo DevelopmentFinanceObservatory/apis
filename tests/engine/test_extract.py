@@ -207,6 +207,28 @@ def test_extraction_retains_a_named_group_when_a_qualifier_is_dropped():
     assert _texts(obj.entities) == ["Least Developed Countries"]
 
 
+def test_each_entity_widens_at_its_own_occurrence():
+    """Two entities sharing a span take its occurrences in query order, so only the one
+    whose occurrence runs into "developing countries unspecified" reads as the unallocated
+    line, and only the words it took leave the dropped qualifiers."""
+    query = "aid to developing countries and to developing countries unspecified"
+    entity = ExtractedEntity(text="developing countries", span="developing countries", cue="to")
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid"],
+        entities=[entity, entity],
+        dropped_qualifiers=["unspecified", "countries unspecified"],
+    )
+
+    widened = _widen_to_stored_names(query, extraction)
+
+    assert [e.text for e in widened.entities] == [
+        "developing countries",
+        "developing countries unspecified",
+    ]
+    assert widened.dropped_qualifiers == ["countries unspecified"]
+
+
 @pytest.mark.parametrize(
     ("query", "span", "dropped", "text", "kept"),
     [
