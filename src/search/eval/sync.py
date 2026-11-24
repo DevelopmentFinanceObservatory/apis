@@ -280,7 +280,8 @@ def nightly(
         wanted = {item_id_for_case(case, name) for case in eligible}
         states.update({case.id: NightlyCase(case, stem) for case in eligible})
         # `DatasetClient.run_experiment` runs every item, archived and ineligible ones too.
-        # The client's form takes the chosen items and still links each to the dataset run.
+        # The client's form takes the chosen items, runs only those, and records each one under
+        # the experiment through trace attributes.
         items = [item for item in langfuse.get_dataset(name).items if item.id in wanted]
         result = langfuse.run_experiment(
             name="nightly",
@@ -293,7 +294,7 @@ def nightly(
         )
         if errors:
             raise errors[0]
-        run_urls[name] = result.dataset_run_url
+        run_urls[name] = result.experiment_url
     return list(states.values()), run_urls
 
 

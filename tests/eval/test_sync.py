@@ -132,7 +132,7 @@ class FakeLangfuse:
 
         scores = asyncio.run(every())
         self.experiments.append({"items": [i.metadata["id"] for i in data], "scores": scores})
-        return SimpleNamespace(dataset_run_url=f"run-{len(self.experiments)}")
+        return SimpleNamespace(experiment_url=f"run-{len(self.experiments)}")
 
 
 def _write(corpus: Path, files: dict[str, str]) -> dict:
