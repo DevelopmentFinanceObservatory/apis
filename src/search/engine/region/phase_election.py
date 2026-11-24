@@ -13,7 +13,9 @@ from dataclasses import dataclass, replace
 
 from code_index.scope_conventions import ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.shared import get_index, get_measure_index
+from code_index.tokens import word_tokens
 from code_index.types import MeasureAxis
+from entity_resolution import Group, Resolution, Resolved
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_broad_readings,
@@ -1231,8 +1233,10 @@ async def judge_coverage(state: ResolveState) -> None:
     The coverage rule reads the members the read served (`served_member_names`), so the
     lexical readers, the binder's rating and the answer describe one list.
 
-    The binder rates the words the rule leaves unrated (`_rate_unread_words`) and the query
-    records over both replace those binding repair kept (`requirements.record_reading`).
+    The binder rates the words the rule leaves unrated (`_rate_unread_words`), a word the
+    rule would leave uncovered that restates one of the part's entities reads as that entity
+    (`read_restated_entity_words`), and the query records over both replace those binding
+    repair kept (`requirements.record_reading`).
     In "refuse" coverage mode a word of the variable no reader covers is a record and the
     part refuses on it. In log mode the records are kept for the line the pass logs when it
     ends (`log_would_refuse`), and a word of a qualifier term the elected shape's own
@@ -1253,6 +1257,7 @@ async def judge_coverage(state: ResolveState) -> None:
         return
     state.coverage_judged = True
     await _rate_unread_words(state)
+    await read_restated_entity_words(state)
     record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
@@ -1288,6 +1293,54 @@ async def judge_coverage(state: ResolveState) -> None:
         )
     for phrase in _unread_qualifier_phrases(state, withheld):
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
+
+
+def _resolution_dcids(resolution: Resolution | None) -> frozenset[str]:
+    """The dcids a resolution names its entity by: a resolved entity's node, or a group's
+    registry id and node."""
+    if isinstance(resolution, Resolved):
+        return frozenset({resolution.entity.dcid})
+    if isinstance(resolution, Group):
+        node = resolution.entity
+        return frozenset(
+            dcid for dcid in (resolution.dcid, None if node is None else node.dcid) if dcid
+        )
+    return frozenset()
+
+
+async def read_restated_entity_words(state: ResolveState) -> None:
+    """Read as an entity of the part each stretch of the variable the coverage rule would
+    leave uncovered on the elected answer (`_coverage_reading`), or a word of one, that
+    resolves to an entity the part binds, on any role: its resolution names a dcid the
+    resolution of one of the part's entities names. "US" in "total US ODA" beside the donor
+    United States reads as that donor (`ResolveState.restated_entity_words`, read by
+    `ResolveState.entity_texts`), as "United States" in the phrase would, while "UK" beside
+    it names a party the part does not bind and stays uncovered. The resolver is asked once,
+    and only when the rule leaves a stretch uncovered."""
+    rcl = state.rcl
+    if rcl is None or state.shape_draft is None:
+        return
+    bound = frozenset().union(*map(_resolution_dcids, rcl.resolutions.values()))
+    if not bound:
+        return
+    records = _coverage_reading(state, _coverage_terms(state)).records
+    texts = list(
+        dict.fromkeys(
+            text
+            for record in records
+            if record.evidence == "uncovered"
+            for text in (record.text, *(word.text for word in word_tokens(record.text)))
+        )
+    )
+    if not texts:
+        return
+    found = await state.resolver.resolve(texts, deadline=state.deadline)
+    restated = tuple(
+        text
+        for text, resolution in zip(texts, found, strict=True)
+        if _resolution_dcids(resolution) & bound
+    )
+    state.restated_entity_words = (*state.restated_entity_words, *restated)
 
 
 async def judge_answer_coverage(

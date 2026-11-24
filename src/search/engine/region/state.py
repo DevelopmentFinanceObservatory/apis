@@ -903,6 +903,12 @@ class ResolveState:
     # The request's own words for each entity name (`RegionResult.entity_words`), which own
     # their tokens in the variable phrase as the name does (`entity_texts`).
     entity_words: dict[str, str] = field(default_factory=dict)
+    # The words of the variable phrase that restate an entity the part binds: each resolves
+    # to the node of one of the part's entities ("US" in "total US ODA" beside the donor
+    # United States), so it owns its tokens as the entity's name does (`entity_texts`).
+    # Coverage reads them from the words it would leave uncovered, before it judges the
+    # elected answer (`phase_election.read_restated_entity_words`).
+    restated_entity_words: tuple[str, ...] = ()
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -1554,9 +1560,10 @@ class ResolveState:
     @property
     def entity_texts(self) -> tuple[str, ...]:
         """The texts that name the part's entities in its variable phrase: each name, and
-        the request's own words for it (`entity_words`). Readers mask their tokens, so a
-        place named inside the phrase is read as the place."""
-        return (*self.entities, *self.entity_words.values())
+        the request's own words for it (`entity_words`) and the variable's words restating
+        it (`restated_entity_words`). Readers mask their tokens, so a place named inside the
+        phrase is read as the place."""
+        return (*self.entities, *self.entity_words.values(), *self.restated_entity_words)
 
     @property
     def standard_place_dcids(self) -> list[str]:
