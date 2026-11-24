@@ -284,7 +284,7 @@ def _resolve_ida(query: str, *, source: str | None = _CRS, door: EntryPath = "pa
         ((_CRS_HEALTH.dcid, 0.8),),
         rows=rows,
         nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
-        searched={"disbursements from": ((_CRS_HEALTH.dcid, 0.8),)},
+        searched={"disbursements": ((_CRS_HEALTH.dcid, 0.8),)},
     )
     with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
         return asyncio.run(
@@ -381,41 +381,50 @@ def test_a_term_naming_the_provider_elects_no_family_that_records_it():
 
 
 @pytest.mark.parametrize(
-    ("query", "door", "searched_whole"),
+    ("query", "door", "searched"),
     [
         pytest.param(
             "IDA disbursements from International Development Association",
             "parsed",
-            False,
+            ["disbursements"],
             id="provider",
         ),
         pytest.param(
             "IDA disbursements to International Development Association",
             "parsed",
-            True,
+            [],
             id="recipient",
         ),
         pytest.param(
             "IDA disbursements from International Development Association",
             "raw_text",
-            True,
+            [],
             id="raw-text-provider",
         ),
     ],
 )
-def test_recall_searches_the_graph_without_the_providers_words(query, door, searched_whole):
-    """The graph recalls the climate series recording "IDA" for the whole text and the CRS
-    series for the text less the provider's words ("disbursements from"). With IDA the provider
-    the graph is searched without them, so the climate series stays out of the pool; with
-    IDA the recipient, or on the raw-text door, the whole text is searched."""
+def test_recall_pools_the_search_without_the_providers_words(query, door, searched):
+    """The graph recalls the climate series for the whole text and the CRS series for
+    "disbursements", the text less the provider's words and the preposition before them.
+    With IDA the provider both searches run beside the names' resolution and the pool holds
+    both series. With IDA the recipient, or on the raw-text door, only the whole text is
+    searched."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
-        ((_CLIMATE_IDA.dcid, 0.9), (_CRS_HEALTH.dcid, 0.7)),
+        ((_CLIMATE_IDA.dcid, 0.9),),
         rows=rows,
         nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
-        searched={"disbursements from": ((_CRS_HEALTH.dcid, 0.8),)},
+        searched={"disbursements": ((_CRS_HEALTH.dcid, 0.8),)},
     )
+    texts: list[str] = []
+    detect = graph.detect_svs
+
+    def recorded(text: str):
+        texts.append(text)
+        return detect(text)
+
+    graph.detect_svs = recorded
     with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
         result = asyncio.run(
             recall(
@@ -430,8 +439,10 @@ def test_recall_searches_the_graph_without_the_providers_words(query, door, sear
             )
         )
 
-    assert _CRS_HEALTH.dcid in {c.dcid for c in result.candidates}
-    assert (_CLIMATE_IDA.dcid in {c.dcid for c in result.candidates}) is searched_whole
+    assert sorted(texts) == sorted([query, *searched])
+    recalled = {c.dcid for c in result.candidates}
+    assert _CLIMATE_IDA.dcid in recalled
+    assert (_CRS_HEALTH.dcid in recalled) is bool(searched)
 
 
 @pytest.mark.parametrize(

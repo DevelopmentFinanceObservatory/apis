@@ -289,25 +289,26 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
 class _OriginParty:
     """What one part reads once of the organisations it binds as the origin of its flow
     (`origin_words.origin_organisations`): their dcids by the request's name for each, the
-    `(dataset, axis)` pairs that publish them on the origin axis (`PartyRow.published`) of
-    a dataset giving the provider's account of its flows (`_provider_accounts`), and the
-    character ranges of the variable their own words take
-    (`origin_words.owned_ranges`), the ranges recall left out too. It remembers, per shape,
-    whether its family publishes one of them (`publishes`)."""
+    `(dataset, axis)` pairs that publish them on the origin axis (`PartyRow.published`),
+    those of a dataset giving the provider's account of its flows (`_provider_accounts`)
+    apart, and the character ranges of the variable their own words take
+    (`origin_words.owned_ranges`)."""
 
     organisations: Mapping[str, str]
     published: frozenset[tuple[str, RoleAxis]]
+    held: frozenset[tuple[str, RoleAxis]]
     owned: Ranges
-    _publishes: dict[int, tuple[ShapeDraft, bool]] = field(default_factory=dict)
 
     def publishes(self, shape: ShapeDraft) -> bool:
         """Whether a dataset publishing `shape`'s index family publishes one of the
-        organisations on the origin axis (`_family_publishes`)."""
-        held = self._publishes.get(id(shape))
-        if held is None or held[0] is not shape:
-            held = (shape, bool(self.published) and _family_publishes(shape, self.published))
-            self._publishes[id(shape)] = held
-        return held[1]
+        organisations on the origin axis in the provider's account (`_family_publishes`)."""
+        return bool(self.published) and _family_publishes(shape, self.published)
+
+    def holds(self, shape: ShapeDraft) -> bool:
+        """Whether `shape` may publish one of the organisations on the origin axis, in any
+        account: a dataset publishing its index family does (`_family_publishes`), or the
+        index groups it in no family and so states none of its parties."""
+        return shape_family(shape, get_index()) is None or _family_publishes(shape, self.held)
 
 
 def _origin_party(state: ResolveState) -> _OriginParty:
@@ -324,7 +325,7 @@ def _origin_party(state: ResolveState) -> _OriginParty:
         door=state.door,
     )
     index = get_index()
-    published = _provider_accounts(
+    held = frozenset(
         pair
         for dcid in organisations.values()
         if (party := index.parties.get(dcid)) is not None
@@ -333,7 +334,8 @@ def _origin_party(state: ResolveState) -> _OriginParty:
     )
     return _OriginParty(
         organisations=organisations,
-        published=published,
+        published=_provider_accounts(held),
+        held=held,
         owned=_owned(state, organisations, state.variable),
     )
 
@@ -434,20 +436,51 @@ def _family_publishes(shape: ShapeDraft, published: AbstractSet[tuple[str, RoleA
 
 
 def _from_origin_publishers(
-    party: _OriginParty, shapes: Sequence[ShapeDraft]
-) -> Sequence[ShapeDraft]:
-    """`shapes`, or, where one of them publishes an organisation the part names as the
-    origin of its flow (`_OriginParty.publishes`), those less every role-bearing shape that
-    publishes none. A part naming the provider asks for the provider's account of its
-    flows, so a table holding another party's account leaves before the family election
-    and the axis rule (`elect_five_tuple_family`, `without_unasked_axes`) weigh what
-    remains. "IDA disbursements" with IDA the provider recalls IDS's disbursements of IDA
-    grants above DAC2a's disbursements, and only DAC2a publishes IDA as a provider, so the
-    IDS shape leaves. Shapes with no flow role publish no party and stay."""
-    publishers = [shape for shape in shapes if party.publishes(shape)]
-    if not publishers:
-        return shapes
-    return [shape for shape in shapes if not is_role_bearing(shape) or party.publishes(shape)]
+    party: _OriginParty, shapes: Sequence[ShapeDraft], excluding: SourceScope | None
+) -> list[ShapeDraft]:
+    """`shapes` less the flows a table giving the provider's account replaces, where the
+    part names an organisation as the origin of its flow and one of `shapes` the part may
+    answer from under `excluding` publishes it in that account (`_OriginParty.publishes`).
+
+    A role-bearing shape that cannot publish the organisation on the origin axis
+    (`_OriginParty.holds`) leaves: DAC1 publishes no IDA. One that publishes it in another
+    party's account leaves where a provider-account publisher measures as it does
+    (`_measures_alike`): IDS lists IDA as a creditor of its debtors' reports, so IDS's
+    disbursements leave for DAC2a's, and IDS debt service, which no provider-account table
+    measures, stays. The family election and the axis rule (`elect_five_tuple_family`,
+    `without_unasked_axes`) then weigh what remains. Shapes with no flow role stay."""
+    index = get_index()
+    providers = [
+        shape
+        for shape in shapes
+        if party.publishes(shape) and (excluding is None or _in_scope(shape, excluding, index))
+    ]
+    if not providers:
+        return list(shapes)
+
+    def replaced(shape: ShapeDraft) -> bool:
+        if not is_role_bearing(shape) or party.publishes(shape):
+            return False
+        return not party.holds(shape) or any(_measures_alike(p, shape) for p in providers)
+
+    return [shape for shape in shapes if not replaced(shape)]
+
+
+def _measures_alike(shape: ShapeDraft, other: ShapeDraft) -> bool:
+    """Whether `shape` and `other` measure one thing: one five-tuple, and on each measure
+    axis a constraint property names (`financialFlowType`), a value in common where both
+    hold one. IDS's disbursements of IDA grants and DAC2a's disbursements measure alike;
+    IDS debt service and DAC2a disbursements do not."""
+    if shape_five_tuple(shape) != shape_five_tuple(other):
+        return False
+    values = shape_constraint_values(shape)
+    others = shape_constraint_values(other)
+    for axis in get_measure_index().axes:
+        own = {value for prop, value in values if prop == axis.axis}
+        theirs = {value for prop, value in others if prop == axis.axis}
+        if own and theirs and own.isdisjoint(theirs):
+            return False
+    return True
 
 
 def _country_breadth(shape: ShapeDraft) -> int:
@@ -861,6 +894,7 @@ def _read_offer(
     sources: _SourceReadings,
     reading_owned_phrases: frozenset[str],
     party: _OriginParty,
+    excluding: SourceScope | None,
 ) -> tuple[_Offer, Sequence[ShapeDraft]]:
     """What the phase reads for `eligible_shapes`, the readings it may offer, and those
     readings narrowed, ranked and collapsed, ready to seat. Nothing is written to the
@@ -881,12 +915,12 @@ def _read_offer(
     # at the named places leaves for one with a series there. On a part read with a word
     # naming a party, the shapes binding it are the pool first, or the reading is withdrawn
     # (`with_party_reading`). Where a table publishes the organisation the part names as
-    # the origin of its flow, the flows that do not publish it leave
+    # the origin of its flow in the provider's account, the flows it replaces leave
     # (`_from_origin_publishers`). Then a role-bearing shape publishing on an axis the query
     # does not ask for leaves for one reading as much without it (`without_unasked_axes`).
     phrases_read = _phrases_reader(state, query_qualifiers)
     eligible_shapes = with_party_reading(state, eligible_shapes, phrases_read)
-    eligible_shapes = _from_origin_publishers(party, eligible_shapes)
+    eligible_shapes = _from_origin_publishers(party, eligible_shapes, excluding)
     eligible_shapes = elect_five_tuple_family(
         eligible_shapes,
         phrases_read,
@@ -1056,8 +1090,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
     # "multilateral ODA" never hides "ODA" from a CRS shape.
     # The organisations the part names as the origin of its flow own their words in every
-    # reading (`_without_owned_terms`), and only their tables stay among the flows
-    # (`_from_origin_publishers`).
+    # reading (`_without_owned_terms`), and their provider-account tables replace the flows
+    # that cannot publish them or measure as they do (`_from_origin_publishers`).
     party = _origin_party(state)
     sources = _without_owned_terms(
         state,
@@ -1151,7 +1185,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admitted = [i.shape for i in judged if i.admissible]
     if not admitted and state.interpretations.refusal_reason() is not None:
         return await _refuse_without_a_menu(
-            state, _refused_on_pinned(judged, excluding), pinned_part_read
+            state, _refused_on_pinned(party, judged, excluding), pinned_part_read
         )
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
@@ -1175,9 +1209,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # part that offers none holds nothing they read.
     with timed_step(state, "shape_rank"):
         offer, ranked_shapes = _read_offer(
-            state, eligible_shapes, sources, reading_owned_phrases, party
+            state, eligible_shapes, sources, reading_owned_phrases, party, excluding
         )
-    refused_on_pinned = _refused_on_pinned(judged, excluding)
+    refused_on_pinned = _refused_on_pinned(party, judged, excluding)
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
     # leaf or none (`seat_menu`), which is the order the status rule offers alternatives in.
@@ -1209,6 +1243,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
                 sources,
                 reading_owned_phrases,
                 party,
+                excluding,
             )
         offer = replace(
             offer, eligible_shapes=_dataset_candidates(offer.eligible_shapes, excluding)
@@ -1356,18 +1391,20 @@ def _meets_score_floor(shape: ShapeDraft) -> bool:
 
 
 def _refused_on_pinned(
-    judged: Sequence[Interpretation], excluding: SourceScope | None
+    party: _OriginParty, judged: Sequence[Interpretation], excluding: SourceScope | None
 ) -> list[Interpretation]:
     """The not-electable list: the interpretations refused only on a pinned part, less
-    those an exclusion removes, seated as the menu is under the same seat count
-    (`seat_menu`), so a topic root is listed with every leaf or none and the leaves of one
-    large root do not fill the list ahead of a scored reading."""
+    those an exclusion removes and the flows a provider-account table replaces
+    (`_from_origin_publishers`), as on the menu, seated as the menu is under the same seat
+    count (`seat_menu`), so a topic root is listed with every leaf or none and the leaves
+    of one large root do not fill the list ahead of a scored reading."""
     ranked = sorted(
         (i for i in judged if i.pinned_failure is not None), key=lambda i: _rank_key(i.shape)
     )
     refused = ranked if excluding is None else _excluded_out(ranked, excluding)
     by_shape = {id(i.shape): i for i in refused}
-    seated = seat_menu([i.shape for i in refused], settings().bind_top_k)
+    kept = _from_origin_publishers(party, [i.shape for i in refused], excluding)
+    seated = seat_menu(kept, settings().bind_top_k)
     return [by_shape[id(shape)] for shape in seated]
 
 

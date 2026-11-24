@@ -45,7 +45,7 @@ from search.engine.origin_words import (
     origin_organisations,
     owned_ranges,
     owns,
-    without_owned,
+    without_owned_words,
 )
 from search.engine.qualifier_match import cross_vocabulary_codes, read_by_vocabulary
 from search.engine.retrieval.topics import is_topic_candidate
@@ -412,11 +412,13 @@ async def recall(
     each entity's role (`door`, `origin_words.origin_organisations`), the variable is read
     once the names resolve. The words an organisation the part binds as the origin of its
     flow owns, by its name, the request's words for it (`entity_words`) or its role spans
-    (`entity_roles`), are the provider's (`origin_words.owned_ranges`): the graph is searched
-    again on the text without them, and that search's pool stands for the first one, and a
-    code phrase they own pulls in no family. "IDA disbursements" with IDA the provider
-    recalls DAC2a's disbursements, not IDS's IDA grants or a DAC1 aid type 2103 family. The
-    raw-text door reads the variable while the graph searches.
+    (`entity_roles`), are the provider's (`origin_words.owned_ranges`). The graph is also
+    searched on the text without them (`origin_words.without_owned_words`), beside the whole
+    text and the names' resolution, for each name whose every role is on the origin axis;
+    once the names resolve as organisations, that search's series join the pool
+    (`_pooled`). A code phrase they own pulls in no family. "IDA disbursements" with IDA the
+    provider adds DAC2a's disbursements, which "disbursements" recalls, and no DAC1 aid
+    type 2103 family. The raw-text door reads the variable while the graph searches.
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
@@ -438,6 +440,8 @@ async def recall(
     # The graph's detection, joined by the families the variable reads once the names
     # resolve, where an organisation may own words of the variable.
     searched: Detection | None = None
+    found: list[Detection] = []
+    rest: str | None = None
     if members is not None:
         detection = _member_detection(members)
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
@@ -454,14 +458,31 @@ async def recall(
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     else:
-        searched, miss_resolutions = await asyncio.gather(
-            _search(graph, canonical, party_words),
+        # Each name whose every role is on the origin axis may resolve to an organisation
+        # owning words of the text, so the text without them is searched beside the whole.
+        roles = entity_roles
+        words = entity_words or {}
+        rest = without_owned_words(
+            canonical,
+            [
+                name
+                for name, held in roles.items()
+                if held and all(r.axis == "origin" for r in held)
+            ],
+            entity_words=words,
+            entity_roles=roles,
+        )
+        texts = [canonical] if rest is None else [canonical, rest]
+        found, miss_resolutions = await asyncio.gather(
+            asyncio.gather(*(_search(graph, text, party_words) for text in texts)),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
+        searched = found[0]
     resolutions: dict[str, Resolution] = dict(cache_hits)
     resolutions.update(zip(misses, miss_resolutions, strict=True))
     if searched is not None:
         roles = entity_roles or {}
+        words = entity_words or {}
         organisations = origin_organisations(
             {
                 name: (resolution.entity.dcid, resolution.entity.kind)
@@ -471,20 +492,15 @@ async def recall(
             roles,
             door=door,
         )
-        words = entity_words or {}
         owned = owned_ranges(variable, organisations, entity_words=words, entity_roles=roles)
-        rest = without_owned(
-            canonical,
-            owned_ranges(canonical, organisations, entity_words=words, entity_roles=roles),
-        )
+        # The second search joins the pool only where the names it left out are exactly the
+        # origin organisations the names resolved to.
+        if len(found) == 2 and rest == without_owned_words(
+            canonical, organisations, entity_words=words, entity_roles=roles
+        ):
+            searched = _pooled(found[0], found[1], lambda _dcid: True)
         index = get_index()
-        if rest and rest != canonical:
-            searched, phrases = await asyncio.gather(
-                _search(graph, rest, party_words),
-                asyncio.to_thread(_code_phrases, variable, index, owned),
-            )
-        else:
-            phrases = await asyncio.to_thread(_code_phrases, variable, index, owned)
+        phrases = await asyncio.to_thread(_code_phrases, variable, index, owned)
         detection = _with_reading_families(searched, phrases, index)
     candidates = _above_recall_floor(detection.candidates)
 

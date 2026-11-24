@@ -4,7 +4,8 @@ owns.
 "IDA disbursements" with IDA the provider holds "IDA", which the code index also reads as
 DAC1 aid type 2103 ("multilateral contribution to the International Development
 Association"). The word is the provider's, so no reader of the variable takes it as a code:
-recall neither searches the graph on it nor pulls in a family for it (`interpret.recall`), and the bind phase neither elects,
+recall searches the graph on the text without it too (`without_owned_words`) and pulls in no
+family for it (`interpret.recall`), and the bind phase neither elects,
 binds nor refuses on it (`phase_rank_bind._without_owned_terms`). Both read the owned words
 through `owned_ranges`, from the request's own words for the organisation. Only a
 door whose caller states each entity's role marks the owned words
@@ -17,7 +18,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from code_index.tokens import tokenize, word_tokens
 from entity_resolution.types import Kind
-from search.engine.qualifier_match import token_occurrences
+from search.engine.qualifier_match import token_occurrences, with_role_preposition
 from search.engine.role_text import DoorRole
 from search.models import EntryPath
 
@@ -85,11 +86,26 @@ def owns(text: str, owned: Ranges, start: int, end: int) -> bool:
     )
 
 
-def without_owned(text: str, owned: Ranges) -> str:
-    """`text` less the characters `owned` covers, its words joined by single spaces."""
+def without_owned_words(
+    text: str,
+    organisations: Iterable[str],
+    *,
+    entity_words: Mapping[str, str],
+    entity_roles: Mapping[str, Sequence[DoorRole]],
+) -> str | None:
+    """`text` less the words the named `organisations` own (`owned_ranges`), each with the
+    role preposition and article before it (`qualifier_match.with_role_preposition`), its
+    words joined by single spaces: "disbursements" for "IDA disbursements" or
+    "disbursements from IDA" with IDA the provider. `None` where they own no word of
+    `text` or leave it no word."""
+    owned = owned_ranges(text, organisations, entity_words=entity_words, entity_roles=entity_roles)
+    if not owned:
+        return None
+    widened = with_role_preposition(owned, tokenize(text))
     kept = "".join(
         char
         for position, char in enumerate(text)
-        if not any(low <= position < high for low, high in owned)
+        if not any(low <= position < high for low, high in widened)
     )
-    return " ".join(kept.split())
+    rest = " ".join(kept.split())
+    return rest if word_tokens(rest) else None
