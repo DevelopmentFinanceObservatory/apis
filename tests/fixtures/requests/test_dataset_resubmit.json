@@ -1552,6 +1552,7 @@
   "test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry[axis-not-settled]": [],
   "test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry[option-not-offered]": [],
   "test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry[two-options-on-one-axis]": [],
+  "test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry[whole-on-no-provider-axis]": [],
   "test_static_candidates_ceiling_check_outranks_a_lower_index_dynamic_refusal": [
     ["FakeGraph.node_arcs_many",{"dcids":["country/ETH"],"properties":["name","typeOf"],"deadline":null}],
     ["FakeGraph.detect_svs",{"query":"population"}],
