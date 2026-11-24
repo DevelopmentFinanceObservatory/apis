@@ -30,6 +30,7 @@ from search.engine.extract import (
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
+    _widen_to_stored_names,
     cue_grounded,
     dates_to_request,
     extract,
@@ -204,6 +205,55 @@ def test_extraction_retains_a_named_group_when_a_qualifier_is_dropped():
         }
     )
     assert _texts(obj.entities) == ["Least Developed Countries"]
+
+
+@pytest.mark.parametrize(
+    ("query", "span", "dropped", "text", "kept"),
+    [
+        pytest.param(
+            "aid to developing countries unspecified",
+            "developing countries",
+            ["unspecified"],
+            "developing countries unspecified",
+            [],
+            id="unallocated-line",
+        ),
+        pytest.param(
+            "aid to Developing Countries Unspecified in 2020",
+            "Developing Countries",
+            ["unspecified"],
+            "Developing Countries Unspecified",
+            [],
+            id="cased-and-followed",
+        ),
+        pytest.param(
+            "aid to developing countries for health",
+            "developing countries",
+            ["for health"],
+            "developing countries",
+            ["for health"],
+            id="no-longer-name",
+        ),
+    ],
+)
+def test_an_entity_reads_as_the_longer_stored_name_its_span_runs_into(
+    query: str, span: str, dropped: list[str], text: str, kept: list[str]
+):
+    """A span the query continues into a longer name the entity pack stores reads as that
+    name, and the words it takes leave the dropped qualifiers: "developing countries
+    unspecified" is the DAC's unallocated line, never the total of every developing
+    country."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid"],
+        entities=[ExtractedEntity(text=span, span=span, cue="to", role="recipient", members=True)],
+        dropped_qualifiers=dropped,
+    )
+
+    widened = _widen_to_stored_names(query, extraction)
+
+    assert [(e.text, e.span) for e in widened.entities] == [(text, text)]
+    assert widened.dropped_qualifiers == kept
 
 
 # ExtractedEntity: shape and defaults

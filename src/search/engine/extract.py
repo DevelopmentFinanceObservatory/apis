@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
-from entity_resolution.pack import is_organisation_name
+from entity_resolution.pack import is_organisation_name, is_stored_name, longest_name_words
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
@@ -854,6 +854,46 @@ def _bound_entities(extraction: Extraction) -> Extraction:
             code="request_invalid",
         )
     return extraction
+
+
+def _widen_to_stored_names(query: str, extraction: Extraction) -> Extraction:
+    """`extraction` with each entity whose span `query` continues into a longer name the
+    entity pack stores (`entity_resolution.pack.is_stored_name`) read as that name, the
+    longest one winning, and with each dropped qualifier the longer name now holds removed.
+    "aid to developing countries unspecified" read as "developing countries" with
+    "unspecified" dropped names the DAC's bilateral unallocated line, which the pack stores
+    as "developing countries unspecified", and not the total of every developing country."""
+    reach = longest_name_words()
+    entities: list[ExtractedEntity] = []
+    absorbed: list[str] = []
+    for entity in extraction.entities:
+        widened = _stored_name_from(query, entity.span or entity.text, reach=reach)
+        if widened is None:
+            entities.append(entity)
+            continue
+        entities.append(entity.model_copy(update={"text": widened, "span": widened}))
+        absorbed.append(widened)
+    if not absorbed:
+        return extraction
+    held = {word for name in absorbed for word in _words(name)}
+    kept = [q for q in extraction.dropped_qualifiers if not set(_words(q)) <= held]
+    return extraction.model_copy(update={"entities": entities, "dropped_qualifiers": kept})
+
+
+def _stored_name_from(query: str, span: str, *, reach: int) -> str | None:
+    """The longest stretch of `query` that starts at a whole occurrence of `span`, runs at
+    most `reach` words past it and is a name the entity pack stores, `None` where no
+    occurrence runs into one."""
+    span = span.strip()
+    if not span:
+        return None
+    for match in re.finditer(rf"(?<!\w){re.escape(span)}(?!\w)", query, flags=re.IGNORECASE):
+        after = list(_WORD_RE.finditer(query, match.end()))[:reach]
+        for word in reversed(after):
+            name = query[match.start() : word.end()]
+            if is_stored_name(name):
+                return name
+    return None
 
 
 def _bound_extraction(
@@ -2043,6 +2083,7 @@ def _read_extraction(query: str, extraction: Extraction, *, year: int) -> Extrac
         _restore_query_word_order(query, _enforce_kind(extraction))
     )
     extraction = _bound_entities(extraction)
+    extraction = _widen_to_stored_names(query, extraction)
     extraction, operations = _admit_operations(query, extraction, today_year=year)
     operations = _target_forecasts(extraction, operations, today_year=year)
     extraction, dates_by_variable = _drop_forecast_years(extraction, operations, today_year=year)

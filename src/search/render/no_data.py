@@ -301,7 +301,7 @@ def no_data_phrase(
     Otherwise ``variable_term`` is quoted.
 
     For no_observations, ``role_axis`` names an open origin or destination
-    axis. It combines with the concept term when both exist. Either alone is
+    axis (a role_incompatible refusal's side is read by `misdirected_sentence`). It combines with the concept term when both exist. Either alone is
     used by itself, and neither returns the term-free phrase.
 
     For qualifier_not_bound, any ``unbound`` terms take precedence and
@@ -646,7 +646,7 @@ def no_data_message(
     """The bare no-data sentence: `no_data_phrase` with every term given, plus the guidance
     a bare no_observations sentence adds, the denominators a denominator_not_available
     refusal compared (`denominator_sentence`), the side a role_incompatible refusal's
-    terms belong on (`misdirected_sentence`), and the sources a scoped part was read
+    terms cannot be (`misdirected_sentence`), and the sources a scoped part was read
     under (`scope_sentence`), as `no_data_sentence_plan` renders it when it names no near
     match."""
     phrase = no_data_phrase(
@@ -667,24 +667,45 @@ def no_data_message(
     text = _bare_no_data_text(phrase, reason)
     if denominator is not None:
         text += denominator_sentence(denominator)
-    if misdirected := misdirected_sentence(reason, entity_terms):
+    if misdirected := misdirected_sentence(reason, entity_terms, role_axis):
         text += f" {misdirected}"
     closing = scope_sentence(reason, scope, qualifier_terms)
     return f"{text} {closing}" if closing else text
 
 
-def misdirected_sentence(reason: NoDataReason, entity_terms: list[str] | None) -> str | None:
+# What a whole population on each flow side names, and the side the request put it on.
+_MISDIRECTED_SIDES: Mapping[str, tuple[str, str]] = {
+    "origin": ("the donors of aid", "receiving"),
+    "destination": ("the recipients of aid", "giving"),
+}
+
+
+def misdirected_sentence(
+    reason: NoDataReason, entity_terms: list[str] | None, side: EntityRoleKey | None = None
+) -> str | None:
     """The sentence a role_incompatible refusal closes on for the whole populations the
-    request directs to the side other than their own (`entity_terms`): '"all donors"
-    belongs on the other side of the flow. Swap its "from" or "to".' `None` for any other
-    reason, or with no term."""
+    request directs to the side other than their own (`entity_terms`), all on `side`: what
+    they name and the side they cannot be, '"developing countries" names the recipients of
+    aid, so it cannot be the giving side of this flow.' It gives no swap advice: "aid from
+    developing countries to Africa" asks about aid the developing countries give, which no
+    swap answers. Populations on both sides (`side` `None`) are named as one side each.
+    `None` for any other reason, or with no term."""
     terms = [t.strip() for t in entity_terms or () if t and t.strip()]
     if reason != "role_incompatible" or not terms:
         return None
     joined = join_labels([f'"{t}"' for t in terms])
-    if len(terms) == 1:
-        return f'{joined} belongs on the other side of the flow. Swap its "from" or "to".'
-    return f'{joined} belong on the other side of the flow. Swap their "from" or "to".'
+    one = len(terms) == 1
+    named = _MISDIRECTED_SIDES.get(side) if side is not None else None
+    if named is None:
+        names, it = ("names", "it") if one else ("each name", "them")
+        return (
+            f"{joined} {names} one side of the flow only, and the question puts {it} on the other."
+        )
+    population, refused = named
+    return (
+        f"{joined} {'names' if one else 'name'} {population}, so {'it' if one else 'they'} "
+        f"cannot be the {refused} side of this flow."
+    )
 
 
 def denominator_sentence(denominator: NoDataDenominator) -> str:
@@ -959,8 +980,8 @@ def no_data_sentence_plan(
     qualifier_not_bound, ``source_terms`` to the two source reasons, whose
     ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the
     source-code reasons (`no_data_phrase`). A role_incompatible verdict naming
-    ``entity_terms`` says they belong on the other side (`misdirected_sentence`), as its
-    own token, so a composed envelope keeps it. A part read under a source ``scope``
+    ``entity_terms`` says what they name and the side they cannot be
+    (`misdirected_sentence`), as its own token, so a composed envelope keeps it. A part read under a source ``scope``
     closes its verdict on the sources it was read under (`scope_sentence`). The part's
     ``departures`` follow as departure-segment tokens. On the place-availability gate, a
     ``direction_discarded`` departure leads in place of the checked heading and the verdict
@@ -995,7 +1016,7 @@ def no_data_sentence_plan(
             source_code_refusal=source_code_refusal,
         )
     for closing in (
-        misdirected_sentence(reason, entity_terms),
+        misdirected_sentence(reason, entity_terms, role_axis),
         scope_sentence(reason, scope, qualifier_terms),
     ):
         if closing:

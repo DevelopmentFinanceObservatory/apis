@@ -598,7 +598,8 @@ def build_no_data_part(
     ``entity_terms`` preserves the place wording seen by the engine, ``unlisted`` the
     populations among them no source lists exactly (`UnlistedPopulation`), and ``entity_groups``
     groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
-    open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
+    open origin or destination axis in ``no_observations`` copy, and the side the misdirected
+    populations of a ``role_incompatible`` refusal sit on (`misdirected_sentence`). ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording

@@ -127,7 +127,7 @@ def _base_arcs():
     }
 
 
-def test_export_entities_adds_origin_whole_and_side_dac_totals_and_lists_only_codes_of_grouped_ones():
+def test_export_entities_adds_origin_whole_and_side_totals_listing_codes_of_grouped_ones():
     """A destination total is exported where it carries a whole marker (`DACAllRecipients`)
     or totals the bilateral destinations (`DACDevelopingCountries`), which carries none; any
     other destination total (`DACAsia`) is left out."""

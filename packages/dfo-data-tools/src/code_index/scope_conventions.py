@@ -41,6 +41,7 @@ from code_index.declarations import (
     DAC2A_BILATERAL,
     DAC2A_INCLUSIVE,
     DAC2A_TOTAL_ODA,
+    DAC_RECIPIENT_LIST_DATASETS,
 )
 from code_index.multilaterals import ORGANIZATION_TYPE, party_facts
 from code_index.query import CodeIndex
@@ -718,34 +719,28 @@ def bilateral_side_total(dcid: str) -> bool:
     """Whether `dcid` is a published total of the bilateral destinations
     (`BilateralSource.rebound`, "Developing Countries, Total"): a population a request can
     name on the destination side. It holds the bilateral side alone, so it carries no whole
-    marker (`code_index.types.WholeMarker`), and a dataset that publishes no row of it reads
-    it as every destination it holds where each is on the bilateral side
-    (`holds_bilateral_destinations_only`)."""
+    marker (`code_index.types.WholeMarker`). A dataset that publishes no row of it reads it as
+    every recipient it holds where it holds the DAC's recipient list
+    (`reads_dac_recipient_list`), and lists it where it also reads the bilateral side of a
+    total (`lists_bilateral_destinations`)."""
     return any(row.rebound == dcid for row in BILATERAL_SOURCES)
 
 
-def holds_bilateral_destinations_only(index: CodeIndex, *, datasets: Collection[str]) -> bool:
-    """Whether `datasets` hold some destination, totals aside, and `destination_side` places
-    every one of them, in each dataset that publishes it, on the bilateral side. The CRS
-    holds countries, regions and the DAC's unallocated lines alone; DAC2a also lists the
-    multilateral agencies as recipients."""
-    by_dataset = _destination_sides(index)
-    sides = {side for dataset in datasets for side in by_dataset.get(dataset, ())}
-    return sides == {"bilateral"}
+def reads_dac_recipient_list(datasets: Collection[str]) -> bool:
+    """Whether every one of `datasets`, at least one, holds the DAC List of ODA Recipients
+    alone as its recipients (`DAC_RECIPIENT_LIST_DATASETS`), as the CRS does."""
+    return bool(datasets) and all(dataset in DAC_RECIPIENT_LIST_DATASETS for dataset in datasets)
 
 
-@per_index
-def _destination_sides(index: CodeIndex) -> dict[str, frozenset[DestinationSide | None]]:
-    """The sides of the destinations each dataset publishes, totals aside, by dataset, with
-    `None` for a destination `destination_side` cannot place."""
-    sides: dict[str, set[DestinationSide | None]] = {}
-    for row in index.parties.values():
-        for dataset, axis in row.published:
-            if axis != "destination" or row.kind_over("destination", (dataset,)) == "total":
-                continue
-            side = destination_side(row, datasets=(dataset,), index=index)
-            sides.setdefault(dataset, set()).add(side)
-    return {dataset: frozenset(held) for dataset, held in sides.items()}
+def lists_bilateral_destinations(datasets: Collection[str]) -> bool:
+    """Whether every one of `datasets`, at least one, lists the bilateral destinations alone
+    on an open recipient side: it holds the DAC's recipient list (`reads_dac_recipient_list`),
+    or its bilateral composite reads the population of that side (`BILATERAL_SOURCES`), as
+    DAC2a's does."""
+    bilateral = {row.dataset for row in BILATERAL_SOURCES}
+    return bool(datasets) and all(
+        dataset in DAC_RECIPIENT_LIST_DATASETS or dataset in bilateral for dataset in datasets
+    )
 
 
 @dataclass(frozen=True)

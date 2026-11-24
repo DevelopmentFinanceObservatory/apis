@@ -213,8 +213,10 @@ class RegionResult:
     # only for `entity_role_not_admitted`.
     role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = ()
     # Open wire role (`origin` or `destination`) on `no_observations` outcomes
-    # from role-bearing shapes, even when scope discovery found no members.
-    # The renderer names this axis. Subject-only shapes and other outcomes use `None`.
+    # from role-bearing shapes, even when scope discovery found no members, and on a
+    # `role_incompatible` refusal of misdirected whole populations the side they sit on
+    # (`phase_intake._misdirected_side`). The renderer names this axis. Subject-only shapes
+    # and other outcomes use `None`.
     no_data_role_axis: EntityRoleKey | None = None
     # Bound role -> entity DCIDs, used to ensure an alternate preserves the
     # query's directional binding when `only_alternate_has_data` fires.

@@ -52,6 +52,7 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (code_index_declarations, "COMPOSITES"),
     (code_index_declarations, "CONCEPT_GROUPS"),
     (code_index_declarations, "CONTAINING_TOTALS"),
+    (code_index_declarations, "DAC_RECIPIENT_LIST_DATASETS"),
     (code_index_declarations, "DECLARED_MEASURE_VALUES"),
     (code_index_declarations, "MEASURE_VALUE_TEXT"),
     (code_index_declarations, "MEASURE_WORD_SYNONYMS_KEPT"),
@@ -80,12 +81,13 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (scope_conventions, "REGION_READINGS"),
     (scope_conventions, "SECTOR_GROUPINGS"),
 )
-"""The tables read from their modules rather than passed as arguments, each with its module:
-the `code_index.declarations` tables `code_index.export` reads, the composites
-`code_index.loader.parse_index` serves (`COMPOSITES`), the totals `search` binds on an open
-flow side (`CONTAINING_TOTALS`), the graph type `code_index.multilaterals` reads a multilateral
-by, and the `code_index.scope_conventions` tables `search.scope` reads. Every name is unique
-across modules, since `declarations_json` keys each table by its name alone."""
+"""The tables read from their modules rather than passed as arguments, each with its module: the
+`code_index.declarations` tables `code_index.export` reads, the composites
+`code_index.loader.parse_index` serves (`COMPOSITES`), the totals `search` binds on an open flow
+side (`CONTAINING_TOTALS`), the datasets that read the DAC's developing countries as every recipient
+they hold (`DAC_RECIPIENT_LIST_DATASETS`), the graph type `code_index.multilaterals` reads a
+multilateral by, and the `code_index.scope_conventions` tables `search.scope` reads. Every name is
+unique across modules, since `declarations_json` keys each table by its name alone."""
 
 
 @dataclass(frozen=True)

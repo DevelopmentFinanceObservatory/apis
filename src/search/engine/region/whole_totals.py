@@ -32,7 +32,7 @@ from code_index.declarations import CONTAINING_TOTALS
 from code_index.scope_conventions import (
     RolePopulation,
     bilateral_side_total,
-    holds_bilateral_destinations_only,
+    reads_dac_recipient_list,
 )
 from code_index.shared import get_index
 from code_index.types import (
@@ -198,9 +198,10 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     never reads as every donor it holds; DAC1 holds official donors alone, so there it does.
 
     A total of the bilateral destinations (`scope_conventions.bilateral_side_total`,
-    "Developing Countries, Total") carries no marker: it reads so where every destination the
-    datasets hold, totals aside, is on the bilateral side
-    (`scope_conventions.holds_bilateral_destinations_only`), as the CRS's are."""
+    "Developing Countries, Total") carries no marker: it reads so where the datasets are
+    declared to hold the DAC's recipient list (`scope_conventions.reads_dac_recipient_list`),
+    as the CRS is. DAC1 and the World Bank's debt statistics are not, so there it binds as a
+    named party."""
     index = get_index()
     rows = [index.parties.get(dcid) for dcid in dcids]
     if not datasets or not rows or any(row is None for row in rows):
@@ -210,9 +211,9 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     if any(row.publishes(axis, datasets) for row in parties):
         return False
     if any(bilateral_side_total(row.dcid) for row in parties):
-        return all(
-            bilateral_side_total(row.dcid) for row in parties
-        ) and holds_bilateral_destinations_only(index, datasets=datasets)
+        return all(bilateral_side_total(row.dcid) for row in parties) and reads_dac_recipient_list(
+            datasets
+        )
     covers = {cls for row in parties for marker in row.whole for cls in marker.covers}
     classes = side_classes(axis, datasets=datasets)
     return bool(classes) and set(classes) <= covers

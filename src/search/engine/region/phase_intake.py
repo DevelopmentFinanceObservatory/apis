@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import Final, cast
 
 import dc_graph
-from code_index.scope_conventions import bilateral_side_total, holds_bilateral_destinations_only
+from code_index.scope_conventions import bilateral_side_total, lists_bilateral_destinations
 from code_index.shared import get_index
 from code_index.types import PartyClass
 from dfo_platform.timings import PhaseTimings, collecting
@@ -288,6 +288,22 @@ def oecd_reading(place_set: PlaceSet, *, membership: MembershipPolicy) -> PlaceS
     )
 
 
+def _misdirected_side(state: ResolveState) -> RoleAxis | None:
+    """The one side every whole population the request directs elsewhere
+    (`ResolveState.whole_misdirected`) sits on, which the refusal's sentence names
+    (`render.no_data.misdirected_sentence`), `None` where they sit on both. Each is a text
+    the request names as a whole population or lists (`ResolveState.whole_named`,
+    `ResolveState.whole_listed`)."""
+    parties = get_index().parties
+    sides = {
+        state.whole_listed[name]
+        if name in state.whole_listed
+        else parties[state.whole_named[name][0]].sole_axis()
+        for name in state.whole_misdirected
+    }
+    return sides.pop() if len(sides) == 1 else None
+
+
 def _whole_named(state: ResolveState, resolved: Mapping[str, Entity]) -> dict[str, tuple[str, ...]]:
     """Each text of the part naming a whole population, with the dcids it names
     (`whole_totals.named_whole`): the phrase of a whole total set, or a name resolving to a
@@ -421,9 +437,10 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     }
     if not reasons:
         if state.whole_misdirected:
-            return state.no_data(
+            refused = state.no_data(
                 "role_incompatible", unresolved_entity_names=state.whole_misdirected
             )
+            return replace(refused, no_data_role_axis=_misdirected_side(state))
         return None
     ambiguous = [name for name, name_reason in reasons.items() if name_reason == "entity_ambiguous"]
     # A pin on a group's own node cannot ask for its members, so a candidate of a wording
@@ -598,13 +615,13 @@ def _prune_shapes_by_listing(
     a subset of the ones the population's markers cover (`WholeMarker.covers`). An open side
     lists every party its dataset holds, and a Spec states no class it leaves out, so
     "official donors" asked member by member lists on no CRS shape, where private donors
-    stand beside official ones. A total of the bilateral destinations ("developing
-    countries", `scope_conventions.bilateral_side_total`) covers no class: it lists on a shape
-    whose datasets hold bilateral destinations alone
-    (`scope_conventions.holds_bilateral_destinations_only`), as the CRS does, and fails
-    with no class account elsewhere. A shape whose datasets hold no class the index reads on the
-    side, such as one no declared dataset publishes, lists no population, since nothing
-    shows what its open side would hold.
+    stand beside official ones. A total of the bilateral destinations ("developing countries",
+    `scope_conventions.bilateral_side_total`) covers no class: it lists on a shape whose datasets
+    list the bilateral destinations alone (`scope_conventions.lists_bilateral_destinations`), the
+    CRS, which holds the DAC's recipient list, and DAC2a, whose bilateral composite reads that
+    side's population, and fails with no class account elsewhere. A shape whose datasets hold no
+    class the index reads on the side, such as one no declared dataset publishes, lists no
+    population, since nothing shows what its open side would hold.
 
     Return the rejected populations, each named by its first party (`UnlistedPopulation`),
     only when every shape fails. Where some population fails on every shape, those are the
@@ -634,8 +651,7 @@ def _prune_shapes_by_listing(
     def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
         datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
         if all(bilateral_side_total(dcid) for dcid in listed[name]):
-            held = holds_bilateral_destinations_only(get_index(), datasets=datasets)
-            return set() if held else None
+            return set() if lists_bilateral_destinations(datasets) else None
         classes = side_classes(state.whole_listed[name], datasets=datasets)
         return set(classes) - covered[name] if classes else None
 

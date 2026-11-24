@@ -97,6 +97,7 @@ from tests.fixtures import FakeGraph
 
 _DAC1 = "provenance/OECDDAC1"
 _DAC2B = "provenance/OECDDAC2B"
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
 _ETH = "country/ETH"
 _FRA = "country/FRA"
 _DEU = "country/DEU"
@@ -1089,7 +1090,7 @@ def test_a_whole_population_directed_to_the_other_side_refuses(
     assert answer.no_data.entity_terms == [text]
     assert answer.no_data.message == (
         f'No data for "{_VARIABLE}" as a flow to or from any place named in this query. '
-        f'"{text}" belongs on the other side of the flow. Swap its "from" or "to".'
+        f'"{text}" names the donors of aid, so it cannot be the receiving side of this flow.'
     )
 
 
@@ -3208,6 +3209,8 @@ def test_a_side_reads_whole_where_every_dataset_marks_its_parties(dcids, dataset
             False,
             id="dac2b-publishes-the-developing-countries",
         ),
+        pytest.param([_DEVELOPING], [_DAC1], False, id="dac1-names-no-recipient-list"),
+        pytest.param([_DEVELOPING], [_IDS], False, id="ids-lists-its-debtors"),
         pytest.param([_ALL_RECIPIENTS], ["provenance/Unindexed"], False, id="no-party-held"),
         pytest.param([_ALL_RECIPIENTS], [], False, id="no-dataset"),
     ],
@@ -3218,8 +3221,9 @@ def test_a_population_covers_a_side_its_datasets_publish_no_total_of(dcids, data
     recipients are all countries or residuals, its donors official or private, and DAC1's
     donors official alone; DAC2a marks the recipients' total, and DAC2b publishes it
     unmarked; a dataset holding no party on the side covers nothing. The developing
-    countries' total carries no marker and covers the side where every recipient is on the
-    bilateral side, as the CRS's and the imputed table's are."""
+    countries' total carries no marker and covers the side only on a dataset declared to hold
+    the DAC's recipient list, as the CRS and the imputed table are; DAC1 and the World Bank's
+    debt statistics hold countries alone on the side and are not."""
     assert covers_unpublished(dcids, datasets=datasets) is covers
 
 
@@ -4207,27 +4211,88 @@ def test_aid_to_developing_countries_from_no_donor_named_reads_the_official_dono
     assert _whole_read(answer) == (role_ref("origin"), None)
 
 
-def test_developing_countries_asked_member_by_member_list_on_the_crs(
+@pytest.mark.parametrize(
+    "asked",
+    [
+        pytest.param(
+            {
+                "entities": [
+                    _FROM_FRANCE,
+                    {"role": "to", "text": "developing countries", "members": True},
+                ]
+            },
+            id="members",
+        ),
+        pytest.param(
+            {
+                "entities": [_FROM_FRANCE, {"role": "to", "text": "developing countries"}],
+                "operations": [
+                    {"over": "destination", "phrase": "top developing countries", "verb": "rank"}
+                ],
+            },
+            id="top-developing-countries-receiving-french-aid",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("sources", "source"),
+    [
+        pytest.param(None, DAC2A_BILATERAL, id="dac2a"),
+        pytest.param(_CRS_NAMED, CRS_PROVENANCE, id="crs"),
+    ],
+)
+def test_developing_countries_listed_read_the_bilateral_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    asked: dict[str, Any],
+    sources: list[dict[str, str]] | None,
+    source: str,
+):
+    """Posted with `members: true`, or under a ranking over the recipients, "developing
+    countries" opens the recipient side on a shape that lists the bilateral destinations
+    alone: DAC2a through its bilateral composite, which reads that side's population, and the
+    CRS, which holds the DAC's recipient list. Each answers the Spec `open_roles` answers
+    there."""
+    _developing_coverage(monkeypatch)
+    extra: dict[str, Any] = {"time": "2021", "variable": _VARIABLE}
+    if sources is not None:
+        request.getfixturevalue(source_catalogue.__name__)
+        extra["sources"] = sources
+    opened = {"entities": [_FROM_FRANCE], "open_roles": ["recipient"], **extra}
+
+    spec = _spec(_resolve({**asked, **extra}, crs_first=sources is not None))
+
+    identity = spec.definition.identity
+    assert identity.open_roles == ["destination"]
+    pin = (identity.facets or {}).get("provenance")
+    assert pin == IdentityBindingValue(ref=source)
+    assert spec.spec_id == _spec(_resolve(opened, crs_first=sources is not None)).spec_id
+
+
+def test_developing_countries_as_the_donor_refuse_as_misdirected(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Posted with `members: true`, "developing countries" opens the recipient side on a
-    shape whose datasets hold bilateral destinations alone: the CRS lists them and answers
-    the Spec `open_roles` answers there, while DAC2a, offered first, also lists the
-    multilateral agencies."""
+    """ "Developing countries" names recipients alone, so "aid from developing countries to
+    Africa", a South-South question, directs it to the giving side and refuses
+    `role_incompatible`, naming it. The refusal says what it names and offers no swap, which
+    would ask about aid to developing countries in its place."""
     _developing_coverage(monkeypatch)
-    part = {
-        "entities": [_FROM_FRANCE, {"role": "to", "text": "developing countries", "members": True}],
-        "time": "2021",
-        "variable": _VARIABLE,
-    }
-    opened = {
-        "entities": [_FROM_FRANCE],
-        "open_roles": ["recipient"],
-        "time": "2021",
-        "variable": _VARIABLE,
-    }
 
-    spec = _spec(_resolve(part))
+    (part,) = _resolve(
+        {
+            "entities": [
+                {"role": "from", "text": "developing countries"},
+                {"role": "to", "text": "Africa"},
+            ],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    ).parts
 
-    assert spec.definition.identity.open_roles == ["destination"]
-    assert spec.spec_id == _spec(_resolve(opened, crs_first=True)).spec_id
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "role_incompatible"
+    assert part.no_data.entity_terms == ["developing countries"]
+    assert part.no_data.message.endswith(
+        '"developing countries" names the recipients of aid, so it cannot be the giving side '
+        "of this flow."
+    )

@@ -3,11 +3,11 @@
 `entities` exports `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty`
 nodes, every declared origin total, every whole total (a `PartyRow.whole` marker, such as the
 recipient side's `DACAllRecipients`) and every total of the bilateral destinations
-(`scope_conventions.bilateral_side_total`, `DACDevelopingCountries`), sorted by dcid, then folds each `_MERGED_DCIDS` source
-record into its target. A record's `dac_code` is the node's numerically lowest `dacCode`; its other
-codes join its aliases, since a resolvekit entity holds one code per system and every code must
-resolve. A total that holds a resolver group lists only its codes, under its dcid as name: its
-names resolve to the group, and its DAC codes name the total itself.
+(`scope_conventions.bilateral_side_total`, `DACDevelopingCountries`), sorted by dcid, then folds
+each `_MERGED_DCIDS` source record into its target. A record's `dac_code` is the node's numerically
+lowest `dacCode`; its other codes join its aliases, since a resolvekit entity holds one code per
+system and every code must resolve. A total that holds a resolver group lists only its codes, under
+its dcid as name: its names resolve to the group, and its DAC codes name the total itself.
 `regions` maps resolvekit subregions and continents to graph dcids via `/v2/resolve`.
 `place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
 `entity_resolution.types.entity_kind` classes as places.
