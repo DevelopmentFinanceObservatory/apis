@@ -62,6 +62,7 @@ def repo(tmp_path: Path) -> Path:
 
 _SERVING = "dfo-dev-apis-00001-aaa"
 _STAGED = "dfo-dev-apis-00002-bbb"
+_NEWER = "dfo-dev-apis-00003-ccc"
 
 
 def _service(
@@ -69,12 +70,13 @@ def _service(
     *,
     serving: str | None = _STAGED,
     candidate: str | None = None,
-    ready: str = _STAGED,
+    latest: str = _STAGED,
+    ready: str | None = None,
 ) -> dict:
     """A `gcloud run services describe --format=json` document, trimmed to the fields Cloud Run
-    returns for the apis service: the template's image, the latest created revision
-    (`_STAGED`, built from that image), the latest ready one, and the traffic entries. `serving`
-    names the revision with 100 percent of traffic, or None for a split."""
+    returns for the apis service: the template's image, the latest created revision (built
+    from that image), the latest ready one (`latest` unless given), and the traffic entries.
+    `serving` names the revision with 100 percent of traffic, or None for a split."""
     traffic = (
         [{"percent": 100, "revisionName": serving, "latestRevision": serving == _STAGED}]
         if serving
@@ -88,8 +90,8 @@ def _service(
     return {
         "spec": {"template": {"spec": {"containers": [{"image": _image_for(commit)}]}}},
         "status": {
-            "latestCreatedRevisionName": _STAGED,
-            "latestReadyRevisionName": ready,
+            "latestCreatedRevisionName": latest,
+            "latestReadyRevisionName": ready or latest,
             "traffic": traffic,
         },
     }
@@ -257,22 +259,33 @@ def test_force_with_live_equal_to_target_still_deploys(repo: Path, tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("target_of", "ready", "force", "expected"),
+    ("target_of", "latest", "ready", "force", "expected"),
     [
         # A rerun releases the revision an earlier run staged for this commit, without building.
-        ("staged", _STAGED, "false", _outputs(False, True, _STAGED)),
+        ("staged", _STAGED, _STAGED, "false", _outputs(False, True, _STAGED)),
         # A staged revision that never became ready is built again.
-        ("staged", _SERVING, "false", _DEPLOY),
+        ("staged", _STAGED, _SERVING, "false", _DEPLOY),
         # A dispatch rebuilds even a ready staged revision.
-        ("staged", _STAGED, "true", _DEPLOY),
+        ("staged", _STAGED, _STAGED, "true", _DEPLOY),
         # The commit after a staged one deploys even with a docs-only diff from it, since the
         # previous revision still serves.
-        ("docs", _STAGED, "false", _DEPLOY),
+        ("docs", _STAGED, _STAGED, "false", _DEPLOY),
+        # A revision created after the stop (an `infra` apply) gets no traffic while the pin
+        # holds, so the next deploy builds and moves traffic, whatever the target.
+        ("staged", _NEWER, _NEWER, "false", _DEPLOY),
+        ("docs", _NEWER, _NEWER, "false", _DEPLOY),
     ],
-    ids=["rerun", "rerun-not-ready", "dispatch", "docs-only-after-staged"],
+    ids=[
+        "rerun",
+        "rerun-not-ready",
+        "dispatch",
+        "docs-only-after-staged",
+        "rerun-after-newer-revision",
+        "docs-only-after-newer-revision",
+    ],
 )
 def test_a_revision_staged_by_a_stopped_deploy(
-    repo: Path, tmp_path: Path, target_of, ready, force, expected
+    repo: Path, tmp_path: Path, target_of, latest, ready, force, expected
 ):
     """An earlier deploy staged revision `_STAGED` with the `candidate` tag and stopped before
     traffic moved, so `_SERVING` still serves, pinned by name."""
@@ -281,7 +294,8 @@ def test_a_revision_staged_by_a_stopped_deploy(
     docs = _commit(repo, "docs: tweak readme", {"README.md": "hello again\n"})
     bin_dir = tmp_path / "bin"
     _fake_gcloud(
-        bin_dir, service=_service(staged, serving=_SERVING, candidate=_STAGED, ready=ready)
+        bin_dir,
+        service=_service(staged, serving=_SERVING, candidate=_STAGED, latest=latest, ready=ready),
     )
     target = staged if target_of == "staged" else docs
 

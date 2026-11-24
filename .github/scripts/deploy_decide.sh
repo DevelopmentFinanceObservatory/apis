@@ -16,15 +16,19 @@
 #                    target equal to it, or one whose diff from it touches
 #                    none of the watched paths, needs nothing; any other
 #                    target deploys.
-#   staged           traffic serves an older revision and the latest created
-#                    revision carries the `candidate` tag: a deploy staged it
-#                    and stopped before traffic moved. When it is the target's
-#                    revision and ready, the deploy releases it (probe, move
-#                    traffic, settle, backfill) without building. Otherwise
-#                    the target deploys, since the serving commit is unknown.
-#   held             traffic serves an older revision and the latest created
-#                    revision carries no `candidate` tag, or traffic is split:
-#                    someone moved traffic by hand. A target with the image
+#   staged           traffic serves an older revision and a revision that
+#                    serves nothing carries the `candidate` tag: a deploy
+#                    staged it and stopped before traffic moved, leaving the
+#                    traffic pinned by name. When the tagged revision is the
+#                    latest created one, the target's, and ready, the deploy
+#                    releases it (probe, move traffic, settle, backfill)
+#                    without building. Otherwise the target deploys, since the
+#                    serving commit is unknown, and its traffic move ends the
+#                    pin, so a revision created after the stop (an `infra`
+#                    apply) does not stay without traffic.
+#   held             traffic serves an older revision and no other revision
+#                    carries the `candidate` tag, or traffic is split: someone
+#                    moved traffic by hand. A target with the image
 #                    inputs of the latest created revision would undo that, so
 #                    the script refuses it unless OVERRIDE is set. A target
 #                    with other inputs deploys.
@@ -134,9 +138,9 @@ if [ "$serving" = "$latest" ]; then
   elif [ "$inputs" = differs ]; then
     deploy=true
   fi
-elif [ "$serving" != - ] && [ "$candidate" = "$latest" ]; then
+elif [ "$serving" != - ] && [ "$candidate" != - ] && [ "$candidate" != "$serving" ]; then
   state=staged
-  if [ "$FORCE" != true ] && [ "$commit" = "$TARGET" ] && [ "$ready" = "$latest" ]; then
+  if [ "$FORCE" != true ] && [ "$candidate" = "$latest" ] && [ "$commit" = "$TARGET" ] && [ "$ready" = "$latest" ]; then
     echo "::notice::revision $latest of $TARGET was staged by an earlier run that stopped before traffic moved; releasing it."
     release=true
     revision="$latest"

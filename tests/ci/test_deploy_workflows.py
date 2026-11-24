@@ -473,14 +473,27 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
     return ran, log.read_text().splitlines()
 
 
-def test_the_stage_step_outputs_the_revision_carrying_the_candidate_tag(tmp_path: Path):
-    output = tmp_path / "github_output"
+@pytest.mark.parametrize(
+    ("tagged", "exit_code", "output"),
+    [
+        ("svc-00002-bbb", 0, "revision=svc-00002-bbb\n"),
+        # A tag left on an older revision is never probed in place of the new one.
+        ("svc-00001-aaa", 1, ""),
+    ],
+    ids=["tag-on-new-revision", "tag-left-on-older-revision"],
+)
+def test_the_stage_step_outputs_the_created_revision_only_when_it_carries_the_tag(
+    tmp_path: Path, tagged: str, exit_code: int, output: str
+):
+    output_file = tmp_path / "github_output"
+    output_file.touch()
     described = {
         "status": {
+            "latestCreatedRevisionName": "svc-00002-bbb",
             "traffic": [
                 {"percent": 100, "revisionName": "svc-00001-aaa"},
-                {"revisionName": "svc-00002-bbb", "tag": "candidate"},
-            ]
+                {"revisionName": tagged, "tag": "candidate"},
+            ],
         }
     }
 
@@ -488,11 +501,11 @@ def test_the_stage_step_outputs_the_revision_carrying_the_candidate_tag(tmp_path
         "Stage the new revision with no traffic",
         tmp_path,
         DESCRIBED=json.dumps(described),
-        GITHUB_OUTPUT=str(output),
+        GITHUB_OUTPUT=str(output_file),
     )
 
-    assert ran.returncode == 0, ran.stderr
-    assert output.read_text() == "revision=svc-00002-bbb\n"
+    assert ran.returncode == exit_code, ran.stderr
+    assert output_file.read_text() == output
     assert calls[0].startswith("run services update svc --image=svc --no-traffic --tag=candidate")
 
 

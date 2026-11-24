@@ -493,8 +493,10 @@ jobs:
       # of the schema it expects. `--no-traffic` creates the revision with no
       # traffic and pins the traffic to the revision serving now, by name;
       # `--tag=candidate` gives the new revision a URL of its own. The step
-      # outputs the name of the revision that carries the tag, and the probe
-      # and the traffic move act on that revision alone.
+      # checks that the tag sits on the revision the update created, the latest
+      # created one, and fails otherwise, so a tag left on an older revision is
+      # never probed. It outputs that revision's name, and the probe and the
+      # traffic move act on that revision alone.
       - name: Stage the new revision with no traffic
         id: stage
         if: steps.decide.outputs.deploy == 'true'
@@ -511,9 +513,15 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --format=json |
-            python3 -c 'import json, sys; print(next((e["revisionName"] for e in json.load(sys.stdin)["status"].get("traffic", []) if e.get("tag") == "candidate"), ""))')"
+            python3 -c '
+          import json, sys
+          status = json.load(sys.stdin)["status"]
+          created = status.get("latestCreatedRevisionName")
+          tagged = [e.get("revisionName") for e in status.get("traffic", []) if e.get("tag") == "candidate"]
+          print(created if created and tagged == [created] else "")
+          ')"
           if [ -z "$revision" ]; then
-            echo "::error::No revision of the apis service carries the candidate tag after the update."
+            echo "::error::The candidate tag is not on the revision this update created, so the deploy stops before probing."
             exit 1
           fi
           echo "Staged revision $revision with no traffic."
