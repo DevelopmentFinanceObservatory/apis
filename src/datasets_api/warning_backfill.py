@@ -35,9 +35,12 @@ member as zero (`generation.reads_absent_as_zero`), as a mint drops them. A warn
 member sentences all drop keeps its other sentences (`emptied`), and is dropped when a mint
 would not write it (`finish.writes_coverage_below_scope`, `dropped`).
 
-A row is refused for good (`permanent`) when it cannot be rewritten from what it stores: a
-warning that is no object or a `coverage_below_scope` warning that is no `WarningModel`
-(`malformed_warning`), no definition or trace, a named member the trace says served
+Each copy is read on its own. A copy holding a warning that is no object or a
+`coverage_below_scope` warning that is no `WarningModel` cannot be read, so it is left as stored
+and its row is refused for good (`malformed_warning`) with one failed line naming each such
+copy; the other copy is still rewritten when it holds the old sentence, and the row then counts
+as rewritten too. A row is refused for good (`permanent`) when it cannot be rewritten from what
+it stores: a copy that cannot be read, no definition or trace, a named member the trace says served
 observations, fewer zero-count members after the last named one than K counts, a composite, an identity
 the adapter refuses,
 a probe over its pair ceiling or refusing its requests, a graph or SDMX read a later read would
@@ -457,13 +460,21 @@ def run_backfill_warnings(
             # Rows come by subject, so no later row reads an earlier subject's probes.
             readers.probes.clear()
             subject = row.subject_id
-        # A row whose warnings cannot be read is refused as one to rewrite.
+        # A row whose copy cannot be read is refused as one to rewrite, once, and its other
+        # copy is still rewritten when it holds the old sentence.
         task = True
         outage = False
+        unreadable: list[_Refused] = []
         try:
-            copies = _read_copies(row)
-            task = any(_member_sentence(warning) for read in copies.values() for warning, _ in read)
-            if task:
+            copies, unreadable = _read_copies(row)
+            if unreadable:
+                counts.permanent += 1
+                _emit_unreadable(row, unreadable)
+            rewrites = any(
+                _member_sentence(warning) for read in copies.values() for warning, _ in read
+            )
+            task = rewrites or bool(unreadable)
+            if rewrites:
                 _backfill_row(
                     row,
                     copies,
@@ -473,7 +484,7 @@ def run_backfill_warnings(
                     counts=counts,
                     clears_on_retry=clears_on_retry,
                 )
-            else:
+            elif not unreadable:
                 counts.new_format_rows += 1
                 counts.new_format_agreed += _new_format_row(
                     row, copies.get(_COLUMN, []), readers=readers
@@ -492,7 +503,8 @@ def run_backfill_warnings(
                 counts.new_format_failed += 1
             elif transient:
                 counts.transient += 1
-            else:
+            elif not unreadable:
+                # A row refused for an unreadable copy is counted in `permanent` once.
                 counts.permanent += 1
             emit(
                 "datasets_warning_backfill_failed",
@@ -581,20 +593,43 @@ _COLUMN = "column"
 _BODY = "body"
 
 
-def _read_copies(row: WarningRow) -> dict[str, list[_Read]]:
-    """Each copy of `row`'s warnings that is a list, by `_COLUMN` and `_BODY`, as
-    `_read_warnings` reads it."""
-    return {
-        copy: _read_warnings(cast("list[object]", stored), copy=copy)
-        for copy, stored in ((_COLUMN, row.warnings), (_BODY, row.body_warnings))
-        if isinstance(stored, list)
-    }
+def _read_copies(row: WarningRow) -> tuple[dict[str, list[_Read]], list[_Refused]]:
+    """Each copy of `row`'s warnings that is a list, by `_COLUMN` and `_BODY`, read on its own
+    by `_read_warnings`: the copies it reads, and the refusal of each it cannot, which the
+    run leaves as stored."""
+    copies: dict[str, list[_Read]] = {}
+    unreadable: list[_Refused] = []
+    for copy, stored in ((_COLUMN, row.warnings), (_BODY, row.body_warnings)):
+        if not isinstance(stored, list):
+            continue
+        try:
+            copies[copy] = _read_warnings(cast("list[object]", stored), copy=copy)
+        except _Refused as exc:
+            unreadable.append(exc)
+    return copies, unreadable
+
+
+def _emit_unreadable(row: WarningRow, unreadable: Sequence[_Refused]) -> None:
+    """The one `datasets_warning_backfill_failed` line refusing `row` for its copies that
+    cannot be read (`unreadable`), each named by its message."""
+    emit(
+        "datasets_warning_backfill_failed",
+        severity="WARNING",
+        subject_id=row.subject_id,
+        content_version=row.content_version,
+        new_format=False,
+        reason="malformed_warning",
+        refused=True,
+        transient=False,
+        conflict=False,
+        error="; ".join(f"{type(exc).__name__}: {exc}" for exc in unreadable),
+    )
 
 
 def _read_warnings(warnings: list[object], *, copy: str) -> list[_Read]:
     """The warnings of one copy, each a mapping kept as stored, beside its `WarningModel` when
     it is of `MEMBER_SENTENCE_CODE` (`None` otherwise). Raises `_Refused` for a copy holding
-    any other, which every run would read alike."""
+    any other, which every run would read alike; the other copy is read apart."""
     read: list[_Read] = []
     for position, warning in enumerate(warnings):
         if not isinstance(warning, Mapping):

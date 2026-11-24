@@ -63,13 +63,13 @@ rewrites the stored warnings that name refs in an old format
 (`dataset_store.warning_formats.rewrite_old_formats`), in the column and the body, each from its
 own value. It scans `datasets.version_record` on every run, a page of rows per transaction, so
 a failure keeps the pages committed before it, and the next run, which scans from the start,
-finds only the rows still holding an old format. It writes one `datasets_warnings_rewritten`
-line once its last page has committed, counting the rows it rewrote (`rewritten_warning_rows`)
-and the version rows the scan left holding a warning in an old format (`legacy_warning_refs`):
-the member sentences, which `backfill-warnings` rewrites, and any list the rewrite cannot
-parse, which stays as stored. Neither count sets the exit code. When a page fails, the line is at `ERROR` with the
-rows its committed pages rewrote and a null `legacy_warning_refs`, and the task fails. It reads
-only the runtime database settings.
+finds only the rows still holding an old format. It leaves the member sentences, which
+`backfill-warnings` rewrites, and any list the rewrite cannot parse, which stays as stored. It
+writes one `datasets_warnings_rewritten` line once its last page has committed, counting the
+rows it rewrote (`rewritten_warning_rows`), which sets no exit code; the rows still holding an
+old format are counted by `backfill-warnings`, which runs after it (`legacy_warning_refs`).
+When a page fails, the line is at `ERROR` with the rows its committed pages rewrote, and the
+task fails. It reads only the runtime database settings.
 
 `backfill-descriptions` runs on every deploy, after the services move and the code index they
 run is recorded. It first fills the `continuations` of every published frame's version row
@@ -728,30 +728,17 @@ def run_settle(*, store: DatasetStore) -> int:
 
 def run_rewrite_warnings(*, store: DatasetStore) -> None:
     """Rewrite the stored warnings in an old format (`warning_formats.rewrite_old_formats`) and
-    emit one `datasets_warnings_rewritten` line counting the rows its committed pages rewrote
-    and the rows its scan left in an old format. Each count is added once its page has
-    committed. When a page raises, the line is at `ERROR`, counts only the committed pages and
-    has a null `legacy_warning_refs`, and the exception propagates."""
+    emit one `datasets_warnings_rewritten` line counting the rows its committed pages rewrote,
+    each page's count added once it has committed. When a page raises, the line is at `ERROR`
+    and counts only the committed pages, and the exception propagates."""
     rewritten = 0
-    left_over: int | None = None
     try:
         for page in rewrite_old_formats(store):
-            rewritten += page.rewritten
-            left_over = page.left_over
+            rewritten += page
     except Exception:
-        emit(
-            "datasets_warnings_rewritten",
-            severity="ERROR",
-            rewritten_warning_rows=rewritten,
-            legacy_warning_refs=None,
-        )
+        emit("datasets_warnings_rewritten", severity="ERROR", rewritten_warning_rows=rewritten)
         raise
-    emit(
-        "datasets_warnings_rewritten",
-        severity="INFO",
-        rewritten_warning_rows=rewritten,
-        legacy_warning_refs=left_over,
-    )
+    emit("datasets_warnings_rewritten", severity="INFO", rewritten_warning_rows=rewritten)
 
 
 def _count(tx: Transaction, sql: str) -> int:

@@ -662,10 +662,9 @@ jobs:
       # from its own value (`dataset_store.warning_formats`). It scans
       # `version_record` on every run, 500 rows by key to a transaction, so a
       # failed run keeps the pages it committed, and the next run, which scans
-      # from the start, finds only the rows still in an old shape. It logs the
-      # rows the scan left in an old shape as `legacy_warning_refs`, including
-      # any warning it cannot parse, which stays as stored; that count sets no
-      # exit code.
+      # from the start, finds only the rows still in an old shape. A warning it
+      # cannot parse stays as stored. It logs the rows it rewrote; the next
+      # step's summary counts the rows still in an old shape.
       - name: Rewrite warnings in an old format
         if: steps.decide.outputs.deploy == 'true'
         run: |

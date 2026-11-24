@@ -14,7 +14,7 @@ import pytest
 
 from dataset_store import LiveDatasetStore, warning_formats
 from dataset_store.snapshot import ManifestFacts
-from dataset_store.warning_formats import OLD_FORMATS
+from dataset_store.warning_formats import OLD_FORMATS, count_old_format_rows
 from datasets_api.maintenance import run_rewrite_warnings
 from datasets_api.version_store import _fill_year_coverage
 from tests.dataset_store._warning_refs import (
@@ -119,6 +119,12 @@ def _rewritten(capsys, store: LiveDatasetStore) -> dict[str, object]:
     return _line(capsys)
 
 
+def _left(store: LiveDatasetStore) -> int:
+    """The version rows still holding an old format, counted in a fresh transaction."""
+    with store.transaction() as tx:
+        return count_old_format_rows(tx)
+
+
 def _line(capsys) -> dict[str, object]:
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (rewritten,) = [line for line in lines if line["event"] == "datasets_warnings_rewritten"]
@@ -141,8 +147,8 @@ def test_the_rewrite_rewrites_each_old_shape_in_the_column_and_the_body(
     the body's `warnings`, each rewritten from its own stored value, whatever
     `standard_conforming_strings` the session runs under. A row whose warnings are already in
     the new shape, hold a member sentence alone or a name with a comma, or that holds no
-    warnings at all, is not updated. The rewrite counts the rows it rewrote and the rows still
-    holding an old shape, neither of which fails it, across pages of two rows, drops the
+    warnings at all, is not updated. The rewrite counts the rows it rewrote, which does not fail
+    it, across pages of two rows, leaves the rows holding a shape it cannot rewrite, drops the
     rewrite's functions before each page commits, and on a rerun updates no row."""
     monkeypatch.setattr(warning_formats, "REWRITE_BATCH_ROWS", 2)
     with live_store.transaction() as tx:
@@ -170,6 +176,7 @@ def test_the_rewrite_rewrites_each_old_shape_in_the_column_and_the_body(
             setting = tx.fetch_one("SHOW standard_conforming_strings")
         first = _rewritten(capsys, rewriting)
         after = _rows(live_store, every)
+        left_after_first = _left(live_store)
         rerun = _rewritten(capsys, rewriting)
         with rewriting.transaction() as tx:
             functions = tx.fetch_one(
@@ -195,16 +202,17 @@ def test_the_rewrite_rewrites_each_old_shape_in_the_column_and_the_body(
     changed = sum(stored != rewritten for stored, rewritten in cases.values()) + 1
     left = sum(_holds_old_format(rewritten) for _stored, rewritten in cases.values())
     assert left > 0
-    assert (first["rewritten_warning_rows"], first["legacy_warning_refs"]) == (changed, left)
-    assert first["severity"] == "INFO"
-    assert (rerun["rewritten_warning_rows"], rerun["legacy_warning_refs"]) == (0, left)
+    assert (first["rewritten_warning_rows"], first["severity"]) == (changed, "INFO")
+    assert left_after_first == left
+    assert rerun["rewritten_warning_rows"] == 0
     assert _rows(live_store, every) == after
+    assert _left(live_store) == left
     assert functions == {"count": 0}
 
 
 def test_the_rewrite_rewrites_a_row_holding_an_old_warning_once(live_store, capsys):
     """A row holding an old shape in its column, and one holding it in its body alone, are each
-    rewritten by the first rewrite and counted as left by neither; a row in the new shape is
+    rewritten by the first rewrite and holds no old shape after it; a row in the new shape is
     left as it is."""
     suffix = uuid4().hex
     _insert(live_store, f"spec_rewrite_withheld_{suffix}", warnings=[_OLD_WITHHELD])
@@ -217,10 +225,11 @@ def test_the_rewrite_rewrites_a_row_holding_an_old_warning_once(live_store, caps
     _insert(live_store, f"spec_rewrite_new_{suffix}", warnings=[new_withheld("Rate", ONE_WITHHELD)])
 
     first = _rewritten(capsys, live_store)
+    left = _left(live_store)
     second = _rewritten(capsys, live_store)
 
-    assert (first["rewritten_warning_rows"], first["legacy_warning_refs"]) == (2, 0)
-    assert (second["rewritten_warning_rows"], second["legacy_warning_refs"]) == (0, 0)
+    assert (first["rewritten_warning_rows"], left) == (2, 0)
+    assert second["rewritten_warning_rows"] == 0
 
 
 class _RewriteAfterRead:
@@ -286,8 +295,8 @@ def test_a_coverage_fill_keeps_a_warning_rewrite_committed_after_its_read(live_s
 
 def test_a_lock_timeout_on_a_late_page_keeps_the_pages_before_it(live_store, capsys, monkeypatch):
     """With pages of one row, a row lock held on the last row fails its page after
-    `REWRITE_LOCK_TIMEOUT`. The pages before it stay committed, the line is at `ERROR` counting
-    their rows and no left-over count. The next run scans from the start, finds only the row
+    `REWRITE_LOCK_TIMEOUT`. The pages before it stay committed, and the line is at `ERROR`
+    counting their rows. The next run scans from the start, finds only the row
     left in an old format, rewrites it and leaves the committed rows as they are."""
     monkeypatch.setattr(warning_formats, "REWRITE_BATCH_ROWS", 1)
     monkeypatch.setattr(warning_formats, "REWRITE_LOCK_TIMEOUT", "200ms")
@@ -318,15 +327,14 @@ def test_a_lock_timeout_on_a_late_page_keeps_the_pages_before_it(live_store, cap
         False,
     ]
     assert (failed["severity"], failed["rewritten_warning_rows"]) == ("ERROR", 2)
-    assert failed["legacy_warning_refs"] is None
-    assert (resumed["rewritten_warning_rows"], resumed["legacy_warning_refs"]) == (1, 0)
+    assert (resumed["rewritten_warning_rows"], _left(live_store)) == (1, 0)
     assert _rows(live_store, subjects[:2]) == {subject: after[subject] for subject in subjects[:2]}
     assert _rows(live_store, subjects[2:])[subjects[2]][0] != before[subjects[2]][0]
 
 
 def test_a_page_whose_commit_fails_logs_no_rewrite(live_store, capsys):
     """A constraint trigger refuses the page's commit. The line is at `ERROR`, counts no row
-    rewritten and no left-over count, and the row keeps its old warning."""
+    rewritten, and the row keeps its old warning."""
     subject = f"spec_commit_{uuid4().hex}"
     _insert(live_store, subject, warnings=[_OLD_WITHHELD])
     before = _rows(live_store, [subject])
@@ -346,5 +354,4 @@ def test_a_page_whose_commit_fails_logs_no_rewrite(live_store, capsys):
 
     failed = _line(capsys)
     assert (failed["severity"], failed["rewritten_warning_rows"]) == ("ERROR", 0)
-    assert failed["legacy_warning_refs"] is None
     assert _rows(live_store, [subject]) == before

@@ -921,10 +921,17 @@ def test_a_failed_page_read_reports_the_rows_left_and_raises(failing, rewritten,
     ],
     ids=["not-an-object", "no-message", "non-integer-count"],
 )
-def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malformed, capsys):
+@pytest.mark.parametrize("body_only", [False, True], ids=["both-copies", "body-only"])
+def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(
+    malformed, body_only, capsys
+):
+    """A copy holding a warning that cannot be read is left as stored and refuses its row once;
+    the other copy is still rewritten from its own warnings."""
     bad = _row(_warning([_IN]), zero=[_IN], subject_id="spec_b")
-    bad["warnings"] = [malformed, *bad["warnings"]]
-    bad["immutable_body"] = {**bad["immutable_body"], "warnings": bad["warnings"]}
+    body = [malformed, *bad["warnings"]]
+    if not body_only:
+        bad["warnings"] = body
+    bad["immutable_body"] = {**bad["immutable_body"], "warnings": body}
     store = _Store(
         [
             _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
@@ -936,8 +943,16 @@ def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malf
 
     assert _run(store) == 0
 
-    assert store.updates == 2
-    assert json.loads(json.dumps(store.rows[("spec_b", "cv_a")], default=str)) == before
+    stored = json.loads(json.dumps(store.rows[("spec_b", "cv_a")], default=str))
+    if body_only:
+        assert store.updates == 3
+        assert (
+            stored["warnings"] == store.rows[("spec_a", "cv_a")]["warnings"] != before["warnings"]
+        )
+        assert stored == {**before, "warnings": stored["warnings"]}
+    else:
+        assert store.updates == 2
+        assert stored == before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
     assert (failed["subject_id"], failed["reason"], failed["severity"]) == (
@@ -947,7 +962,11 @@ def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malf
     )
     assert (failed["refused"], failed["transient"]) == (True, False)
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
-    assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (2, 1, 0)
+    assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (
+        3 if body_only else 2,
+        1,
+        0,
+    )
 
 
 def test_a_warning_the_run_does_not_rewrite_is_written_back_as_stored():

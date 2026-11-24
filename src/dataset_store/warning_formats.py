@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -93,8 +92,7 @@ larger or a far slower disk."""
 # Of the found rows keyed by the two arrays, each is updated only where the rewrite changes its
 # column or its body's `warnings`, each rewritten from its own value as it stands once the row
 # is locked; a row holding only a member sentence, or a list the rewrite cannot parse, is
-# neither updated nor locked. Each key is probed through the primary key. `cleared` counts the
-# rows updated that hold no old format afterwards.
+# neither updated nor locked. Each key is probed through the primary key.
 _REWRITE = (
     "WITH rewritten AS ("
     "UPDATE datasets.version_record AS v SET "
@@ -108,9 +106,8 @@ _REWRITE = (
     "AND (pg_temp.warnings_counted_refs(v.warnings) IS DISTINCT FROM v.warnings "
     "OR pg_temp.warnings_counted_refs(v.immutable_body -> 'warnings') "
     "IS DISTINCT FROM v.immutable_body -> 'warnings') "
-    f"RETURNING {_HOLDS_OLD_FORMAT} AS left_over) "
-    "SELECT count(*) AS rewritten, count(*) FILTER (WHERE NOT left_over) AS cleared "
-    "FROM rewritten"
+    "RETURNING 1) "
+    "SELECT count(*) AS rewritten FROM rewritten"
 )
 
 
@@ -118,27 +115,19 @@ def _formats() -> tuple[list[str], list[str]]:
     return list(OLD_FORMATS), list(OLD_FORMATS.values())
 
 
-@dataclass(frozen=True)
-class RewrittenPage:
-    """One committed transaction of `rewrite_old_formats`."""
-
-    # The rows it rewrote.
-    rewritten: int
-    # The rows the scan left in an old format, once this is its last page.
-    left_over: int | None
-
-
-def rewrite_old_formats(store: DatasetStore) -> Iterator[RewrittenPage]:
+def rewrite_old_formats(store: DatasetStore) -> Iterator[int]:
     """Rewrite every old format but the member sentence in the version rows holding one, in
     the `warnings` column and in the `warnings` of `immutable_body`, each from its own value,
-    and yield each page once its transaction has committed.
+    and yield the rows each page rewrote once its transaction has committed.
 
     The scan runs a page at a time: each page finds, after the last key the page before it
     reached, up to `REWRITE_BATCH_ROWS` rows holding an old format in primary key order (a
     keyset), and rewrites them by key, in one transaction of its own. A failure loses only its
     own page. A later run scans from the start, and the rows earlier pages rewrote no longer
     hold an old format, so it rewrites only what is left. The page that finds fewer rows than a
-    full page is the last, and carries the count of the rows the scan left in an old format.
+    full page is the last. `count_old_format_rows` counts the rows left in an old format: a row
+    a concurrent rewrite cleared between a page's find and its update is found but not
+    rewritten, so the pages cannot state that count.
 
     Each page defines the functions of `REWRITE_SQL` and drops them before it commits. The file
     is sent without parameters, so through the simple query protocol, which accepts its several
@@ -146,23 +135,19 @@ def rewrite_old_formats(store: DatasetStore) -> Iterator[RewrittenPage]:
     the same whatever `standard_conforming_strings` is. A row lock a running writer holds for
     more than `REWRITE_LOCK_TIMEOUT` fails the page, which a later run retries."""
     after: tuple[str, str] | None = None
-    left_over = 0
     while True:
         with store.transaction() as tx:
-            found, rewritten, cleared = _rewrite_page(tx, after)
-        left_over += len(found) - cleared
-        last = len(found) < REWRITE_BATCH_ROWS
-        yield RewrittenPage(rewritten=rewritten, left_over=left_over if last else None)
-        if last:
+            found, rewritten = _rewrite_page(tx, after)
+        yield rewritten
+        if len(found) < REWRITE_BATCH_ROWS:
             return
         after = found[-1]
 
 
 def _rewrite_page(
     tx: Transaction, after: tuple[str, str] | None
-) -> tuple[list[tuple[str, str]], int, int]:
-    """The keys one page found after `after`, the rows it rewrote and the rows it rewrote that
-    hold no old format afterwards."""
+) -> tuple[list[tuple[str, str]], int]:
+    """The keys one page found after `after` and the rows it rewrote."""
     tx.execute(f"SET LOCAL lock_timeout = '{REWRITE_LOCK_TIMEOUT}'")
     tx.execute(REWRITE_SQL.read_text())
     keyset = "" if after is None else " AND (v.subject_id, v.content_version) > (%s, %s)"
@@ -173,23 +158,21 @@ def _rewrite_page(
             (*_formats(), *(after or ()), REWRITE_BATCH_ROWS),
         )
     ]
-    rewritten = cleared = 0
+    rewritten = 0
     if found:
         row = tx.fetch_one(
             _REWRITE,
             (
                 [subject_id for subject_id, _ in found],
                 [content_version for _, content_version in found],
-                *_formats(),
             ),
         )
         # A `SELECT` of aggregates without `GROUP BY` returns exactly one row.
         assert row is not None
         rewritten = int(cast(int, row["rewritten"]))
-        cleared = int(cast(int, row["cleared"]))
     for statement in _drop_functions():
         tx.execute(statement)
-    return found, rewritten, cleared
+    return found, rewritten
 
 
 def count_old_format_rows(tx: Transaction) -> int:

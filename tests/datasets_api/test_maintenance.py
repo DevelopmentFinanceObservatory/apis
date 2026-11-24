@@ -21,7 +21,6 @@ from artifact_store import ExistsRead, LiveArtifactInventory, LiveArtifactStore,
 from artifact_store.errors import ArtifactWriteError
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.snapshot import WORKING_TIER_RETENTION, FrameLineage, LiveSnapshotReader
-from dataset_store.warning_formats import RewrittenPage
 from datasets_api import maintenance
 from datasets_api.allowance import (
     BUDGET_KEY,
@@ -498,10 +497,7 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
 def test_rewrite_warnings_runs_from_the_job_environment_alone(monkeypatch, capsys):
     """`rewrite-warnings` counts each page once it has committed and closes the pool. A page
     that raises fails the task after an `ERROR` line counting only the pages before it."""
-    committed = [
-        RewrittenPage(rewritten=2, left_over=None),
-        RewrittenPage(rewritten=1, left_over=3),
-    ]
+    committed = [2, 1]
     failure = RuntimeError("lock timeout")
 
     def pages(store, *, fail: bool):
@@ -523,10 +519,10 @@ def test_rewrite_warnings_runs_from_the_job_environment_alone(monkeypatch, capsy
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [
-        (line["severity"], line["rewritten_warning_rows"], line["legacy_warning_refs"])
+        (line["severity"], line["rewritten_warning_rows"])
         for line in lines
         if line["event"] == "datasets_warnings_rewritten"
-    ] == [("INFO", 3, 3), ("ERROR", 2, None)]
+    ] == [("INFO", 3), ("ERROR", 2)]
     assert closed == [True, True]
 
 
