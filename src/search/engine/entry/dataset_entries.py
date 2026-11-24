@@ -211,6 +211,7 @@ def _build_candidates_region(
             timing_by_step=timing_by_step,
             earliest_index=index,
             separate=entry.separate,
+            posted_identity=True,
         )
     # Zero survivors. CandidateSet.specs has min_length=2, so there is no
     # "unsupported candidates" wire shape to fall back to either -- this

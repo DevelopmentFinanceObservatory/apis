@@ -13,7 +13,6 @@ read, as the deployed service reads them.
 from __future__ import annotations
 
 import dataclasses
-import itertools
 import logging
 from collections.abc import Sequence
 from typing import cast
@@ -33,6 +32,7 @@ from code_index.shared import get_index
 from origin_catalogue import bound_catalogue, scoped_reads
 from search.engine import departures
 from search.engine.assemble import ScopeNotServedError, with_scope_choices
+from search.engine.entry import dataset_resubmit
 from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.region import pipeline
 from search.engine.region.result import RegionResult
@@ -1416,7 +1416,8 @@ def test_a_dac1_provider_line_beside_its_total_answers_apart_with_its_own_choice
 @pytest.mark.parametrize("with_entries", [False, True], ids=["no-scope-entries", "scope-entries"])
 def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, with_entries: bool):
     """A dataset_resubmit of the bilateral ODA and total ODA identities answers each its own
-    Spec, with or without the scope entries the fresh answers applied."""
+    Spec, with or without the scope entries the fresh answers applied: a posted Spec answers
+    the figure its identity names, so total ODA, which holds bilateral ODA, absorbs nothing."""
     texts = ("bilateral ODA net disbursements", "total ODA net disbursements")
     fresh = _ask_dac1_parts(monkeypatch, texts)
     entries = [
@@ -1439,29 +1440,11 @@ def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, 
 
     assert [part.spec.spec_id for part in resubmitted] == [part.spec.spec_id for part in fresh]
     assert [_aid_type(part) for part in resubmitted] == [_DAC1_BILATERAL_ODA, _DAC1_TOTAL_ODA]
-
-
-@pytest.mark.parametrize(
-    "order", list(itertools.permutations(("bilateral", "multilateral", "total")))
-)
-def test_dac1_bilateral_multilateral_and_total_parts_fold_the_lines_beside_the_total(
-    monkeypatch, order: tuple[str, ...]
-):
-    """Bilateral, multilateral and total ODA asked together, in any order: the total answers
-    its own Spec, and the two lines, which do not nest, fold into one answer binding both."""
-    texts = [f"{line} ODA net disbursements" for line in order]
-    by_line = dict(zip(order, _ask_dac1_parts(monkeypatch, texts), strict=True))
-
-    lines = [by_line["bilateral"], by_line["multilateral"]]
-    assert _aid_type(by_line["total"]) == _DAC1_TOTAL_ODA
-    assert {part.spec.spec_id for part in lines} == {lines[0].spec.spec_id}
-    assert lines[0].spec.spec_id != by_line["total"].spec.spec_id
-    assert _aid_type(lines[0]) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
-    assert "binding_folded" not in {w.code for w in by_line["total"].warnings}
+    assert not any("binding_folded" in {w.code for w in part.warnings} for part in resubmitted)
 
 
 def test_bilateral_and_multilateral_dac1_parts_fold_into_their_set(monkeypatch):
-    """A guard on the fold's grouping: DAC1's bilateral and multilateral ODA do not nest, so
+    """A guard on the fold: DAC1's bilateral and multilateral ODA do not nest, so
     the two parts fold into one answer binding both aid types, which states no provider
     choice."""
     first, second = _ask_dac1_parts(
@@ -1490,28 +1473,50 @@ def test_a_scope_compiling_another_identity_is_refused_by_with_scope_choices(mon
 
 
 @pytest.mark.parametrize("mismatched", [True, False], ids=["mismatched", "control"])
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
 def test_a_part_whose_scope_compiles_another_identity_fails_closed(
-    monkeypatch, caplog, mismatched: bool
+    monkeypatch, caplog, door: str, mismatched: bool
 ):
     """A definite answer whose scope compiles to an identity other than its Spec answers
-    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg, stores no
-    response and streams no event under its spec_id. The control states its own scope."""
+    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg and streams
+    no event under its spec_id, its trailing tasks cancelled; a fresh search stores no
+    response. Each door's producer refuses it: a fresh search's terminal and a resubmit's
+    entry. The control states its own scope."""
     texts = ("total ODA net disbursements",)
     (bilateral,) = _ask_dac1_parts(monkeypatch, ("bilateral ODA net disbursements",))
     (total,) = _ask_dac1_parts(monkeypatch, texts)
-    if mismatched:
+    if mismatched and door == "fresh":
         stated = pipeline._with_scope_choices
 
         def other_scope(result: RegionResult) -> RegionResult:
             return dataclasses.replace(stated(result), scope_choices=_scope(bilateral.spec))
 
         monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
+    if mismatched and door == "resubmit":
+        monkeypatch.setattr(
+            dataset_resubmit, "_served_scope", lambda _served, _region: _scope(bilateral.spec)
+        )
+    request = (
+        _dac1_lines_request(texts)
+        if door == "fresh"
+        else ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=texts[0],
+                        identity=total.spec.definition.identity,
+                        scope_entries=list(_scope(total.spec).entries),
+                    )
+                ]
+            )
+        )
+    )
     cache = ResponseCache()
 
     with caplog.at_level(logging.ERROR, logger="search.engine.region.result"):
         events = offline_events(
-            _dac1_lines_request(texts),
-            graph=_dac1_lines_graph(texts),
+            request,
+            graph=_dac1_lines_graph(texts if door == "fresh" else ()),
             llm=_PickingLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             stream_slot_options=True,
@@ -1531,17 +1536,19 @@ def test_a_part_whose_scope_compiles_another_identity_fails_closed(
         assert isinstance(part, NoDataPart), part
         assert part.no_data.reason == "facet_not_available"
         assert done.degraded_leg
-        assert cache.stats().entries == 0
         assert carrying == []
         assert logged == [(total.spec.spec_id, bilateral.spec.spec_id)]
-        assert part.entity_refs == total.entity_refs
-        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
     else:
         assert isinstance(part, DefinitePart) and part.spec.spec_id == total.spec.spec_id
         assert not done.degraded_leg
-        assert cache.stats().entries > 0
         assert len(carrying) > 1
         assert logged == []
+    if door == "fresh":
+        # The resubmit door stores no response, whatever its answer.
+        assert (cache.stats().entries > 0) is not mismatched
+    if door == "fresh" and mismatched:
+        assert part.entity_refs == total.entity_refs
+        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
 
 
 def _dac1_identity(

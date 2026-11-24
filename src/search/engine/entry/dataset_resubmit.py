@@ -559,7 +559,8 @@ async def handle(
             region = await asyncio.to_thread(
                 _with_withheld_reading, region, entry, coverage=params.coverage
             )
-        if promoted.read is not promoted.identity and region.status == "definite":
+        composite = promoted.read is not promoted.identity and region.status == "definite"
+        if composite:
             started = now_ms()
             # The components read to the deadline the entry's own reads ran to, the
             # full-read bound where its member walk ran the full read.
@@ -570,10 +571,6 @@ async def handle(
             )
             region = _as_composite(region, promoted.identity, reads=reads)
             steps["as_composite"] = now_ms() - started
-            if params.include_observations and not params.stream_observations:
-                region = await with_composite_observations(region, semaphore=sem)
-            elif not params.stream_observations:
-                region = await with_composite_continuation(region, semaphore=sem)
         answered = dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
@@ -582,10 +579,16 @@ async def handle(
             earliest_index=index,
             separate=entry.separate,
             scope_choices=_served_scope(scope, region),
+            posted_identity=True,
         )
+        # Refused before a composite's components are read.
         if (refused := unserved_scope_refusal(answered)) is not None:
             await _cancel_trailing_tasks([answered])
             return refused
+        if composite and params.include_observations and not params.stream_observations:
+            return await with_composite_observations(answered, semaphore=sem)
+        if composite and not params.stream_observations:
+            return await with_composite_continuation(answered, semaphore=sem)
         return answered
 
     def _memo_hit(stored: RegionResult) -> RegionResult:

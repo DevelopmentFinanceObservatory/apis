@@ -228,8 +228,10 @@ def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
     """Attach how the part was counted under ``resolved.scope_choices``. The scope's compiled
     record is ``spec`` itself, a composite's stating the years each component serves. A
     scope compiling any other identity raises `ScopeNotServedError`: its choices describe
-    that identity's rows. Each producer of a scope refuses such an answer before assembly
-    (`region.result.unserved_scope_refusal`). Its
+    that identity's rows. Such a scope never reaches assembly: the producers of a single
+    answer refuse it (`region.result.unserved_scope_refusal`), and a same-shape merge whose
+    scope compiles elsewhere refuses to merge (`same_shape._collapse_group`, `_RefuseMerge`).
+    Its
     measure-basis labels name whose prices deflate the answer as ``spec``'s conversion states
     it (`scope.basis.with_deflation_basis`). An
     alternative measure on a basis the measure-basis choice offers

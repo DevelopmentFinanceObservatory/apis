@@ -37,7 +37,7 @@ from search.engine.same_shape import (
     FacetOptionsReader,
     ScopeReader,
     collapse_same_shape,
-    fold_groups,
+    fold_key,
 )
 from search.engine.source_scope import compile_part_sources
 from search.engine.unit.bind import unit_text_naming
@@ -138,14 +138,18 @@ def _group_definite_regions(
 ) -> tuple[dict[int, RegionResult], set[int]]:
     """Map each definite part to its representative and mark folded indices.
 
-    Group by ``fold_groups``, as ``collapse_same_shape`` does, so a region compared with the
+    Group by ``fold_key``, as ``collapse_same_shape`` does, so a region compared with the
     others (``RegionResult.separate``) is its own group and carries no fold. A residual
     group keeps each original result, warning, and task. Merged members use the earliest
     region's representative, and later members are marked folded.
     """
+    groups: dict[tuple, list[RegionResult]] = {}
+    for r in definite:
+        groups.setdefault(fold_key(r), []).append(r)
+
     representative_by_index: dict[int, RegionResult] = {}
     folded_indices: set[int] = set()
-    for group in fold_groups(definite):
+    for group in groups.values():
         if any(r.earliest_index in residual_indices for r in group):
             for r in group:
                 representative_by_index[r.earliest_index] = r
@@ -662,8 +666,7 @@ def _build_part(
             skills_index=skills_index,
             departure_facts=(
                 *surviving_facts(
-                    raised,
-                    [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings],
+                    raised, [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings]
                 ),
                 *(
                     ()
