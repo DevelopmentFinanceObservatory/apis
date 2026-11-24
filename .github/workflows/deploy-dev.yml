@@ -27,12 +27,7 @@ on:
     # The branch the triggering run ran on. CI runs on pull requests too, but
     # those runs report the PR's head branch, so only a run on dev matches.
     branches: [dev]
-  workflow_dispatch:
-    inputs:
-      override_manual_traffic:
-        description: Deploy even when traffic was moved by hand off the revision of a commit with the target's image inputs
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -70,7 +65,5 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
-      # A push or workflow_run has no inputs, so this is false there.
-      override_manual_traffic: ${{ inputs.override_manual_traffic == true }}
     # deploy.yml reads WIF_PROVIDER and WIF_SA from its own environment.
     secrets: inherit

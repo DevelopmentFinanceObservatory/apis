@@ -1,52 +1,23 @@
 #!/usr/bin/env bash
-# Decides what a deploy of the resolved target commit does, from the traffic
-# the apis service asks for. Runs inside a checkout with full history
-# (deploy.yml's `deploy` job checks that out with fetch-depth: 0 before this
-# step), after gcloud is authenticated against the GCP project the service
-# lives in.
+# Decides whether the resolved target commit needs a deploy, by asking whether
+# the revision serving the apis service runs that commit's code. Runs inside a
+# checkout with full history (deploy.yml's `deploy` job checks that out with
+# fetch-depth: 0 before this step), after gcloud is authenticated against the
+# GCP project the service lives in.
 #
 # A revision records its image by digest, and the build pushes an image index
-# whose digest differs from the one Cloud Run records, so a revision's commit
-# is read from the service template. The template describes the latest created
-# revision, whose image tag is its commit.
+# whose digest differs from the one Cloud Run records, so the serving commit is
+# read from the service template, which describes the latest created revision.
+# That commit is the serving one only in the state a finished deploy leaves:
+# `spec.traffic` sends 100 percent to the latest revision, the latest created
+# revision is ready, and no revision carries the `candidate` tag.
+# Any other state is unknown (a deploy stopped part-way, a revision that never
+# started, or traffic moved by hand), and the target deploys.
 #
-# The script reads one `gcloud run services describe`. `spec.traffic` records
-# the traffic asked for: an entry with `latestRevision: true` and 100 percent
-# follows the latest ready revision; an entry naming a revision with 100
-# percent pins traffic to it. The `candidate` tag marks a release that has not
-# finished: the stage step puts it on the revision it creates, and the last
-# step of a release removes it. The `previous` tag marks the revision the stage
-# step pinned traffic to. The script classifies the service:
-#
-#   unfinished      the revision tagged `candidate` serves: a release moved
-#                   traffic and stopped before settle, backfill or the tag
-#                   removal finished. When that revision is the latest created
-#                   one and the target's, the deploy finishes it (traffic
-#                   follows the latest revision again, settle, backfill)
-#                   without probing; otherwise the target deploys.
-#   staged          traffic is pinned to an older revision that carries the
-#                   `previous` tag: the stage step tags the serving revision
-#                   `previous` before its update pins traffic there, so a
-#                   deploy staged a revision and stopped before traffic moved.
-#                   When the `candidate` tag sits on the latest created
-#                   revision, ready, the target's, and the datasets
-#                   maintenance job still runs the target's image, the deploy
-#                   releases it (probe, move traffic, settle, backfill)
-#                   without building. Otherwise the target deploys, and its
-#                   traffic move ends the pin.
-#   serving-latest  traffic follows the latest ready revision, or is pinned to
-#                   the latest created revision. A target equal to its commit,
-#                   or one whose diff from it touches none of the watched
-#                   paths, needs nothing, except that a pin is finished like an
-#                   unfinished release; any other target deploys. When the
-#                   latest created revision never became ready, an older one
-#                   serves with an unknown commit, and the target deploys.
-#   held            traffic is pinned to an older revision without the
-#                   `previous` tag, or split: someone moved traffic by hand,
-#                   whatever tag a stopped deploy left. A target with the
-#                   image inputs of the latest created revision would undo
-#                   that, so the script refuses it unless OVERRIDE is set. Any
-#                   other target deploys.
+# In the known state, a target equal to the serving commit, or one whose diff
+# from it touches none of the watched paths, needs no deploy. A serving tag
+# that isn't a commit this checkout knows (a placeholder image, or a
+# since-deleted branch) can't be compared, so the target deploys.
 #
 # Env:
 #   SERVICE      Cloud Run service name (vars.SERVICE_APIS) -- required
@@ -54,28 +25,13 @@
 #   PROJECT_ID   GCP project id (vars.PROJECT_ID) -- required
 #   TARGET       the commit deploy.yml resolved as the deploy target --
 #                required
-#   MAINTENANCE_JOB
-#                the datasets maintenance job (vars.JOB_DATASETS_MAINTENANCE),
-#                whose image a staged release must match -- required
-#   FORCE        "true" on workflow_dispatch: deploys the target even when it
-#                already serves or has the serving commit's inputs, for
-#                example to re-run the migration jobs. A held service still
-#                refuses without OVERRIDE. Optional, defaults to false.
-#   OVERRIDE     "true" deploys a held service's target anyway, moving the
-#                traffic someone set by hand. Optional, defaults to false.
+#   FORCE        "true" on workflow_dispatch: deploys whatever the service
+#                state, since dispatch exists to force a redeploy of exactly
+#                the dispatched commit. Optional, defaults to false.
 #
-# Writes to $GITHUB_OUTPUT (or stdout, when $GITHUB_OUTPUT is unset, so this
-# runs the same way under a test):
-#
-#   deploy=true|false    build the image, run the jobs, stage a new revision
-#   probe=true|false     probe the candidate revision before traffic moves
-#   release=true|false   move traffic, settle, backfill, remove the tag
-#   revision=<name>      the revision to release or finish without building;
-#                        empty when deploy=true, where the stage step names
-#                        the new revision
-#
-# Exits non-zero when the service can't be read, and when it refuses a held
-# service.
+# Writes `deploy=true` or `deploy=false` to $GITHUB_OUTPUT (or stdout, when
+# $GITHUB_OUTPUT is unset, so this runs the same way under a test). Exits
+# non-zero only when the service can't be read.
 
 set -euo pipefail
 
@@ -83,9 +39,7 @@ set -euo pipefail
 : "${REGION:?REGION is required}"
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${TARGET:?TARGET is required}"
-: "${MAINTENANCE_JOB:?MAINTENANCE_JOB is required}"
 FORCE="${FORCE:-false}"
-OVERRIDE="${OVERRIDE:-false}"
 
 described="$(gcloud run services describe "$SERVICE" \
   --region="$REGION" \
@@ -95,10 +49,9 @@ described="$(gcloud run services describe "$SERVICE" \
   exit 1
 }
 
-# Seven fields: the template's image, the latest created and latest ready
-# revisions, how traffic is asked for (`latest`, `pinned` or `split`), the
-# revision a pin names, and the revisions tagged `candidate` and `previous`. A
-# missing field prints as `-`.
+# Two fields: the template's image, and `known` or `unknown` for whether the
+# service is in the state a finished deploy leaves. A missing image prints as
+# `-`.
 fields="$(python3 -c '
 import json, sys
 service = json.loads(sys.argv[1])
@@ -106,138 +59,43 @@ spec = service.get("spec") or {}
 status = service.get("status") or {}
 containers = ((spec.get("template") or {}).get("spec") or {}).get("containers") or [{}]
 traffic = spec.get("traffic") or []
-whole = [e for e in traffic if e.get("percent") == 100]
-if whole and whole[0].get("latestRevision"):
-    mode, pinned = "latest", None
-elif whole:
-    mode, pinned = "pinned", whole[0].get("revisionName")
-else:
-    mode, pinned = "split", None
-tags = {e.get("tag"): e.get("revisionName") for e in traffic if e.get("tag")}
-fields = [
-    containers[0].get("image"),
-    status.get("latestCreatedRevisionName"),
-    status.get("latestReadyRevisionName"),
-    mode,
-    pinned,
-    tags.get("candidate"),
-    tags.get("previous"),
-]
-print(" ".join(field or "-" for field in fields))
+follows = any(e.get("latestRevision") and e.get("percent") == 100 for e in traffic)
+tagged = any(e.get("tag") == "candidate" for e in traffic)
+latest = status.get("latestCreatedRevisionName")
+known = follows and not tagged and latest and latest == status.get("latestReadyRevisionName")
+print(containers[0].get("image") or "-", "known" if known else "unknown")
 ' "$described" 2>/dev/null)" || fields=""
-read -r image latest ready mode pinned candidate previous <<<"${fields:-- - - - - - -}"
+read -r image state <<<"${fields:-- unknown}"
 
-if [ "$image" = - ] || [ "$latest" = - ]; then
-  echo "::error::gcloud run services describe returned no image or latest revision for service '$SERVICE'."
+if [ "$image" = - ]; then
+  echo "::error::gcloud run services describe returned no image for service '$SERVICE'."
   exit 1
 fi
 
-# The latest created revision's commit: its image tag.
-commit="${image##*:}"
-
-case "$mode" in
-  latest) serving="$ready" ;;
-  pinned) serving="$pinned" ;;
-  *) serving=- ;;
-esac
-
-# Prints `same` when the target has the image inputs of the given commit,
-# `differs` when it does not, and `unknown` when the checkout doesn't know the
-# commit.
-inputs_of() {
-  if [ "$1" = "$TARGET" ]; then
-    echo same
-  elif ! git cat-file -e "${1}^{commit}" 2>/dev/null; then
-    echo unknown
-  elif git diff --quiet "$1" "$TARGET" -- \
-    src packages pyproject.toml uv.lock .python-version Dockerfile \
-    .github/workflows/deploy.yml .github/workflows/deploy-dev.yml .github/workflows/deploy-prod.yml; then
-    echo same
-  else
-    echo differs
-  fi
-}
-
-# The commit the datasets maintenance job runs: its image tag.
-job_commit() {
-  local job_image
-  job_image="$(gcloud run jobs describe "$MAINTENANCE_JOB" \
-    --region="$REGION" \
-    --project="$PROJECT_ID" \
-    --format='value(spec.template.spec.template.spec.containers[0].image)')" || job_image=""
-  echo "${job_image##*:}"
-}
-
-deploy=false
-probe=false
-release=false
-revision=
-
-if [ "$candidate" != - ] && [ "$candidate" = "$serving" ]; then
-  state=unfinished
-  if [ "$FORCE" != true ] && [ "$candidate" = "$latest" ] && [ "$commit" = "$TARGET" ]; then
-    echo "::notice::revision $candidate of $TARGET serves, and its release stopped before it finished; finishing it."
-    release=true
-    revision="$candidate"
-  else
-    deploy=true
-  fi
-elif [ "$mode" = latest ] && [ "$ready" != "$latest" ]; then
-  state="latest-not-ready"
-  echo "::notice::the latest revision $latest of '$SERVICE' never became ready, so $ready serves with a commit this script can't read. Deploying."
+live="${image##*:}"
+if [ "$FORCE" = true ]; then
+  echo "::notice::deploy forced by workflow_dispatch: deploying $TARGET."
   deploy=true
-elif [ "$serving" = "$latest" ]; then
-  state="serving-latest"
-  inputs="$(inputs_of "$commit")"
-  if [ "$FORCE" = true ]; then
-    echo "::notice::deploy forced by workflow_dispatch: deploying $TARGET over the serving commit $commit."
-    deploy=true
-  elif [ "$inputs" = unknown ]; then
-    echo "::warning::the serving image tag '$commit' on '$SERVICE' is not a commit this checkout knows, so its inputs can't be compared against target $TARGET. Deploying."
-    deploy=true
-  elif [ "$inputs" = differs ]; then
-    deploy=true
-  elif [ "$mode" = pinned ]; then
-    echo "::notice::traffic is pinned by name to the latest revision $latest, as a release that stopped after moving traffic leaves it; finishing that release."
-    release=true
-    revision="$latest"
-  fi
-elif [ "$mode" = pinned ] && [ "$previous" = "$serving" ]; then
-  state=staged
-  if [ "$FORCE" != true ] && [ "$candidate" = "$latest" ] && [ "$ready" = "$latest" ] &&
-    [ "$commit" = "$TARGET" ] && [ "$(job_commit)" = "$TARGET" ]; then
-    echo "::notice::revision $candidate of $TARGET was staged by an earlier run that stopped before traffic moved; releasing it."
-    probe=true
-    release=true
-    revision="$candidate"
-  else
-    deploy=true
-  fi
+elif [ "$state" = unknown ]; then
+  echo "::notice::'$SERVICE' is not in the state a finished deploy leaves (traffic following a ready latest revision, no candidate tag), so the serving commit is unknown. Deploying $TARGET."
+  deploy=true
+elif [ "$live" = "$TARGET" ]; then
+  deploy=false
+elif ! git cat-file -e "${live}^{commit}" 2>/dev/null; then
+  echo "::warning::the serving image tag '$live' on '$SERVICE' is not a commit this checkout knows, so its inputs can't be compared against target $TARGET. Deploying."
+  deploy=true
+elif git diff --quiet "$live" "$TARGET" -- \
+  src packages pyproject.toml uv.lock .python-version Dockerfile \
+  .github/workflows/deploy.yml .github/workflows/deploy-dev.yml .github/workflows/deploy-prod.yml; then
+  deploy=false
 else
-  state=held
-  inputs="$(inputs_of "$commit")"
-  if [ "$inputs" = same ] && [ "$OVERRIDE" != true ]; then
-    if [ "$serving" = - ]; then
-      held="traffic is split across revisions"
-    else
-      held="revision $serving serves"
-    fi
-    echo "::error::Traffic on '$SERVICE' was moved by hand: $held, and the latest revision $latest (commit $commit) serves none. Target $TARGET has the image inputs of $commit, so deploying it would undo that move. Dispatch the deploy with override_manual_traffic to deploy it anyway."
-    exit 1
-  fi
   deploy=true
 fi
 
-if [ "$deploy" = true ]; then
-  probe=true
-  release=true
-fi
+echo "target=$TARGET live=$live state=$state deploy=$deploy"
 
-echo "target=$TARGET state=$state mode=$mode serving=$serving latest=$latest ready=$ready commit=$commit candidate=$candidate deploy=$deploy probe=$probe release=$release revision=${revision:--}"
-
-outputs="$(printf 'deploy=%s\nprobe=%s\nrelease=%s\nrevision=%s' "$deploy" "$probe" "$release" "$revision")"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "$outputs" >>"$GITHUB_OUTPUT"
+  echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
 else
-  echo "$outputs"
+  echo "deploy=$deploy"
 fi

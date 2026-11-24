@@ -23,7 +23,7 @@
 # budget.
 #
 # The revision is reached at the URL of the traffic entry that carries
-# PROBE_TAG and names REVISION, the revision this run staged or released, which
+# PROBE_TAG and names REVISION, the revision this run staged, which
 # is the one the traffic step moves traffic to. Without that entry, for example
 # when the tag sits on another revision, the script ends as `error` and probes
 # nothing, since any other URL reaches a different revision. The

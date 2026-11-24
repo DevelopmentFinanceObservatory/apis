@@ -72,19 +72,11 @@ def test_prod_deploys_on_a_push_to_main_or_a_dispatch():
     [("deploy-dev.yml", "dev"), ("deploy-prod.yml", "production")],
 )
 def test_each_caller_names_its_environment(caller: str, environment: str):
-    """The branch and the trigger pick the environment. Only a dispatch can set the override,
-    which a push or workflow_run passes as false."""
-    workflow = _workflow(caller)
-    job = workflow["jobs"]["deploy"]
+    """The branch and the trigger pick the environment."""
+    job = _workflow(caller)["jobs"]["deploy"]
 
     assert job["uses"] == "./.github/workflows/deploy.yml"
-    assert job["with"] == {
-        "environment": environment,
-        "override_manual_traffic": "${{ inputs.override_manual_traffic == true }}",
-    }
-    override = _triggers(workflow)["workflow_dispatch"]["inputs"]["override_manual_traffic"]
-    assert override["type"] == "boolean"
-    assert override["default"] is False
+    assert job["with"] == {"environment": environment}
     assert job["permissions"] == _CALLER_PERMISSIONS
     assert job["secrets"] == "inherit"
 
@@ -201,8 +193,8 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, two service updates, three reads of the apis
-    # service, and five traffic updates.
+    # Six job updates, ten job executions, two service updates, two reads of the apis
+    # service, and three traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
@@ -213,7 +205,7 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
-            "SERVICE_APIS": 9,
+            "SERVICE_APIS": 6,
         }.items()
     }
 
@@ -419,15 +411,16 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
-_REVISION = "${{ steps.stage.outputs.revision || steps.decide.outputs.revision }}"
+_REVISION = "${{ steps.stage.outputs.revision }}"
 
 
-def test_one_named_revision_is_staged_probed_and_given_traffic():
-    """The stage step names the revision it created, or a rerun takes the one decide found, and
-    the probe and the traffic move both act on that name."""
+def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
+    """Every deploy runs one order, and each step after the stage acts on the revision it
+    named: probe the tag URL, move traffic to it by name, settle and backfill, follow the
+    latest revision again without the tag, then check the released revision serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-8:] == [
+    assert names[-9:] == [
         "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
@@ -435,14 +428,15 @@ def test_one_named_revision_is_staged_probed_and_given_traffic():
         "Move traffic to the candidate revision",
         "Settle rows the previous image wrote",
         "Backfill description records",
-        "Finish the release",
+        "Follow the latest revision again",
+        "Check the released revision serves",
     ]
-    stage = _step("stage")
-    assert stage["name"] == "Stage the new revision with no traffic"
-    assert "--no-traffic" in stage["run"] and '--update-tags="candidate=$revision"' in stage["run"]
-    assert _step("warm")["env"]["REVISION"] == _REVISION
-    shift = _named("Move traffic to the candidate revision")
-    assert shift["env"]["REVISION"] == _REVISION
+    for name in (
+        "Warm the candidate revision",
+        "Move traffic to the candidate revision",
+        "Check the released revision serves",
+    ):
+        assert _named(name)["env"]["REVISION"] == _REVISION
 
 
 _RECORDING_GCLOUD = """#!/bin/bash
@@ -456,7 +450,7 @@ esac
 
 def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, list]:
     """Runs a step's script with workflow expressions filled in as Actions would, against a
-    gcloud that records each call."""
+    gcloud that records each call, and returns the calls without their region and project."""
     gcloud = tmp_path / "bin" / "gcloud"
     gcloud.parent.mkdir()
     gcloud.write_text(_RECORDING_GCLOUD)
@@ -471,59 +465,33 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
         text=True,
         check=False,
     )
-    return ran, log.read_text().splitlines()
+    return ran, [call.split(" --region")[0] for call in log.read_text().splitlines()]
 
 
 @pytest.mark.parametrize(
-    ("traffic", "latest", "exit_code", "output", "previous"),
-    [
-        (
-            [{"percent": 100, "latestRevision": True}],
-            "svc-00002-bbb",
-            0,
-            "revision=svc-00002-bbb\n",
-            "svc-00001-aaa",
-        ),
-        # A stopped deploy left traffic pinned; that pin is what the new stage keeps.
-        (
-            [{"percent": 100, "revisionName": "svc-00000-zzz"}],
-            "svc-00002-bbb",
-            0,
-            "revision=svc-00002-bbb\n",
-            "svc-00000-zzz",
-        ),
-        ([{"percent": 100, "latestRevision": True}], "", 1, "", "svc-00001-aaa"),
-    ],
-    ids=["following", "pinned", "unreadable"],
+    ("latest", "exit_code", "output"),
+    [("svc-00002-bbb", 0, "revision=svc-00002-bbb\n"), ("", 1, "")],
+    ids=["created", "unreadable"],
 )
-def test_the_stage_step_tags_the_pinned_revision_and_the_revision_it_created(
-    tmp_path: Path, traffic: list, latest: str, exit_code: int, output: str, previous: str
+def test_the_stage_step_tags_and_outputs_the_revision_it_created(
+    tmp_path: Path, latest: str, exit_code: int, output: str
 ):
-    """The serving revision is tagged `previous` before the update pins traffic to it. The
-    update leaves the template revision unnamed, since `--tag` would name it, and the
-    `candidate` tag goes on the revision the update created."""
+    """The update leaves the template revision unnamed, since `--tag` would name it, and the
+    tag goes on the revision the update created."""
     output_file = tmp_path / "github_output"
     output_file.touch()
-    described = {
-        "spec": {"traffic": traffic},
-        "status": {"latestReadyRevisionName": "svc-00001-aaa"},
-    }
 
     ran, calls = _run_step(
         "Stage the new revision with no traffic",
         tmp_path,
-        DESCRIBED=json.dumps(described),
         LATEST=latest,
         GITHUB_OUTPUT=str(output_file),
     )
 
     assert ran.returncode == exit_code, ran.stderr
     assert output_file.read_text() == output
-    made = [call.split(" --region")[0] for call in calls]
     tagged = ["run services update-traffic svc --update-tags=candidate=svc-00002-bbb"]
-    assert made == [
-        "run services describe svc",
-        f"run services update-traffic svc --update-tags=previous={previous}",
+    assert calls == [
         "run services update svc --image=svc --no-traffic",
         "run services describe svc",
         *(tagged if latest else []),
@@ -531,73 +499,57 @@ def test_the_stage_step_tags_the_pinned_revision_and_the_revision_it_created(
 
 
 @pytest.mark.parametrize(
-    ("latest", "call", "newer"),
+    ("step", "call"),
     [
-        # Traffic follows the latest revision once the probed one is the latest.
-        ("svc-00002-bbb", "run services update-traffic svc --to-latest", ""),
-        # A revision created during the probe gets the tag in the same update that pins
-        # traffic to the probed revision, so the move happens whole or not at all.
         (
-            "svc-00003-ccc",
-            "run services update-traffic svc --to-revisions=svc-00002-bbb=100"
-            " --update-tags=candidate=svc-00003-ccc,previous=svc-00002-bbb",
-            "newer=svc-00003-ccc\n",
+            "Move traffic to the candidate revision",
+            "run services update-traffic svc --to-revisions=svc-00002-bbb=100",
+        ),
+        (
+            "Follow the latest revision again",
+            "run services update-traffic svc --to-latest --remove-tags=candidate",
         ),
     ],
-    ids=["latest", "newer-revision"],
 )
-def test_traffic_moves_to_the_probed_revision_in_one_update(
-    tmp_path: Path, latest: str, call: str, newer: str
+def test_traffic_moves_by_name_then_follows_the_latest_revision_without_the_tag(
+    tmp_path: Path, step: str, call: str
 ):
-    output = tmp_path / "github_output"
-    output.touch()
-
-    ran, calls = _run_step(
-        "Move traffic to the candidate revision",
-        tmp_path,
-        REVISION="svc-00002-bbb",
-        LATEST=latest,
-        GITHUB_OUTPUT=str(output),
-    )
+    ran, calls = _run_step(step, tmp_path, REVISION="svc-00002-bbb")
 
     assert ran.returncode == 0, ran.stderr
-    assert calls[0].startswith("run services describe svc")
-    assert calls[1].startswith(call)
-    assert len(calls) == 2
-    assert output.read_text() == newer
+    assert calls == [call]
 
 
 @pytest.mark.parametrize(
-    ("newer", "exit_code", "calls"),
+    ("serving", "exit_code"),
     [
-        ("", 0, ["run services update-traffic svc --remove-tags=candidate,previous"]),
-        # The newer revision keeps the tag for the rerun that probes it.
-        ("svc-00003-ccc", 1, []),
+        ("svc-00002-bbb", 0),
+        # An `infra` apply that overlapped the deploy put the previous traffic back.
+        ("svc-00001-aaa", 1),
     ],
-    ids=["finished", "newer-revision"],
+    ids=["released", "previous"],
 )
-def test_the_release_ends_by_removing_the_candidate_tag(
-    tmp_path: Path, newer: str, exit_code: int, calls: list[str]
+def test_the_run_fails_unless_the_released_revision_serves(
+    tmp_path: Path, serving: str, exit_code: int
 ):
-    ran, made = _run_step("Finish the release", tmp_path, NEWER=newer)
+    described = {
+        "status": {
+            "traffic": [
+                {"percent": 100, "revisionName": serving},
+                {"percent": 0, "revisionName": "svc-00002-bbb"},
+            ]
+        }
+    }
+
+    ran, calls = _run_step(
+        "Check the released revision serves",
+        tmp_path,
+        REVISION="svc-00002-bbb",
+        DESCRIBED=json.dumps(described),
+    )
 
     assert ran.returncode == exit_code, ran.stderr
-    assert [call.split(" --region")[0] for call in made] == calls
-
-
-def test_settle_and_backfill_follow_the_traffic_move_and_precede_the_tag_removal():
-    """A failure in settle or backfill leaves the tag on the serving revision, which a rerun
-    reads as a release to finish, and no later step can skip them once traffic moved."""
-    names = [step.get("name") for step in _steps()]
-    finish = _named("Finish the release")
-
-    assert (
-        names.index("Move traffic to the candidate revision")
-        < names.index("Settle rows the previous image wrote")
-        < names.index("Backfill description records")
-        < names.index("Finish the release")
-    )
-    assert finish["env"]["NEWER"] == "${{ steps.move.outputs.newer }}"
+    assert calls == ["run services describe svc"]
 
 
 @pytest.mark.parametrize(("status", "exit_code"), [("error", 1), ("warm", 0), ("forbidden", 0)])
@@ -626,14 +578,12 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit
 
 
 def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_step():
-    """The decide step reads the service and gates every build, migration, and staging step on
-    `deploy=true`, the probe on `probe=true`, and the traffic move, settle, backfill and the tag
-    removal on `release=true`, which a rerun releasing or finishing a revision also sets."""
+    """The decide step reads the service and gates every later step on `deploy=true`, so a
+    run that deploys runs every step in order and a run that stopped part-way is recovered by
+    the next one from the start."""
     decide = _step("decide")
     assert decide["run"].strip() == ".github/scripts/deploy_decide.sh"
     assert decide["env"]["TARGET"] == "${{ steps.target.outputs.sha }}"
-    assert decide["env"]["OVERRIDE"] == "${{ inputs.override_manual_traffic }}"
-    assert decide["env"]["MAINTENANCE_JOB"] == "${{ vars.JOB_DATASETS_MAINTENANCE }}"
 
     script = _SCRIPT.read_text()
     assert "gcloud run services describe" in script
@@ -641,27 +591,10 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     assert "exit 1" in script, "an empty or failed describe call is a hard failure"
 
     steps = _steps()
-    decide_index = steps.index(decide)
-    later = steps[decide_index + 1 :]
-    assert len(later) == 22
-    gates = dict.fromkeys(
-        (
-            "Warm the candidate revision",
-            "Fail on errors the candidate revision answered while warming",
-        ),
-        "probe",
-    ) | dict.fromkeys(
-        (
-            "Move traffic to the candidate revision",
-            "Settle rows the previous image wrote",
-            "Backfill description records",
-            "Finish the release",
-        ),
-        "release",
-    )
+    later = steps[steps.index(decide) + 1 :]
+    assert len(later) == 23
     for step in later:
-        gate = gates.get(step.get("name"), "deploy")
-        assert step["if"] == f"steps.decide.outputs.{gate} == 'true'", step
+        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():
