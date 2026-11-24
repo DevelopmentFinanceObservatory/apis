@@ -41,6 +41,7 @@ from code_index.declarations import (
     DAC2A_BILATERAL,
     DAC2A_INCLUSIVE,
     DAC2A_TOTAL_ODA,
+    DAC_RECIPIENT_LIST_DATASETS,
 )
 from code_index.multilaterals import ORGANIZATION_TYPE, party_facts
 from code_index.query import CodeIndex
@@ -758,6 +759,35 @@ def _total_side(total: PartyRow) -> DestinationSide:
     if total.dcid == DAC_ALL_MULTILATERAL_RECIPIENTS or ORGANIZATION_TYPE in total.types:
         return "multilateral"
     return "bilateral"
+
+
+def bilateral_side_total(dcid: str) -> bool:
+    """Whether `dcid` is a published total of the bilateral destinations
+    (`BilateralSource.rebound`, "Developing Countries, Total"): a population a request can
+    name on the destination side. It holds the bilateral side alone, so it carries no whole
+    marker (`code_index.types.WholeMarker`). A dataset that publishes no row of it reads it as
+    every recipient it holds where it holds the DAC's recipient list
+    (`reads_dac_recipient_list`), and lists it where it also reads the bilateral side of a
+    total (`lists_bilateral_destinations`)."""
+    return any(row.rebound == dcid for row in BILATERAL_SOURCES)
+
+
+def reads_dac_recipient_list(datasets: Collection[str]) -> bool:
+    """Whether every one of `datasets`, at least one, holds the DAC List of ODA Recipients
+    alone as its recipients (`DAC_RECIPIENT_LIST_DATASETS`), as the CRS does."""
+    return bool(datasets) and all(dataset in DAC_RECIPIENT_LIST_DATASETS for dataset in datasets)
+
+
+def lists_bilateral_destinations(datasets: Collection[str], *, total_kept: bool) -> bool:
+    """Whether every one of `datasets`, at least one, lists the bilateral destinations alone
+    on an open recipient side: it holds the DAC's recipient list (`reads_dac_recipient_list`),
+    or its bilateral composite reads the population of that side (`BILATERAL_SOURCES`), as
+    DAC2a's does, where the part does not keep the dataset's total itself (`total_kept`, a
+    `provider:contributions` entry), whose open side lists the multilateral agencies too."""
+    bilateral = set() if total_kept else {row.dataset for row in BILATERAL_SOURCES}
+    return bool(datasets) and all(
+        dataset in DAC_RECIPIENT_LIST_DATASETS or dataset in bilateral for dataset in datasets
+    )
 
 
 @dataclass(frozen=True)

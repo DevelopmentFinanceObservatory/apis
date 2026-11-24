@@ -97,6 +97,7 @@ from tests.fixtures import FakeGraph
 
 _DAC1 = "provenance/OECDDAC1"
 _DAC2B = "provenance/OECDDAC2B"
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
 _ETH = "country/ETH"
 _FRA = "country/FRA"
 _DEU = "country/DEU"
@@ -118,8 +119,8 @@ def _graph(
 ) -> FakeGraph:
     """A graph whose search finds `members` for `variable`, by default DAC2a's member and
     the CRS's, DAC2a first unless `crs_first`. It holds Ethiopia, France, Germany, India,
-    Korea, Turkey and the three whole totals, which the resolver reads "all donors", "all recipients" and "private
-    donors" as."""
+    Korea, Turkey, the three whole totals, which the resolver reads "all donors", "all
+    recipients" and "private donors" as, and the developing countries' total."""
     if members is None:
         members = (_CRS_MEMBER, _DAC2A_MEMBER) if crs_first else (_DAC2A_MEMBER, _CRS_MEMBER)
     return FakeGraph(
@@ -132,7 +133,7 @@ def _graph(
             _TUR: {"label": "Turkey", "type": "Country"},
             **{
                 dcid: {"label": dcid, "type": "Organization"}
-                for dcid in (_OFFICIAL, _PRIVATE, _ALL_RECIPIENTS)
+                for dcid in (_OFFICIAL, _PRIVATE, _ALL_RECIPIENTS, _DEVELOPING)
             },
             _DAC2A: {"label": "OECD DAC2a"},
             _DAC1: {"label": "OECD DAC1"},
@@ -659,6 +660,27 @@ _CRS_DONORS_COVERED = (
             "includes aid not allocated to a country.",
             id="all-recipients-crs-named",
         ),
+        *(
+            pytest.param(
+                {
+                    "entities": [_FROM_FRANCE, {"role": "to", "text": text}],
+                    "sources": _CRS_NAMED,
+                    "time": "2021",
+                    "variable": _VARIABLE,
+                },
+                "destination",
+                f"You asked for {text}. OECD Creditor Reporting System (CRS) publishes no "
+                "total of every recipient, so this covers every recipient it holds with data, "
+                "which includes aid not allocated to a country.",
+                id=f"{text}-crs-named",
+            )
+            for text in (
+                "Total Recipients",
+                "developing countries",
+                "all developing countries",
+                "Developing Countries, Total",
+            )
+        ),
     ],
 )
 def test_a_population_covering_its_side_on_the_crs_reads_as_every_party_it_holds(
@@ -670,8 +692,9 @@ def test_a_population_covering_its_side_on_the_crs_reads_as_every_party_it_holds
 ):
     """The CRS marks no whole total. Every donor it holds is an official or a private one,
     the classes "all donors" covers, and every recipient a country or an unallocated residual,
-    the classes "all recipients" covers, so the side reads as unnamed and the answer covers
-    every party the CRS holds there. It departs `whole_total_unpublished` in the request's
+    the classes "all recipients" covers, and each on the bilateral side, which "developing
+    countries" totals, so the side reads as unnamed and the answer covers every party the
+    CRS holds there. It departs `whole_total_unpublished` in the request's
     words, and no `role_scope_defaulted` says that nothing was named there."""
     if "sources" in part:
         request.getfixturevalue(source_catalogue.__name__)
@@ -1067,7 +1090,7 @@ def test_a_whole_population_directed_to_the_other_side_refuses(
     assert answer.no_data.entity_terms == [text]
     assert answer.no_data.message == (
         f'No data for "{_VARIABLE}" as a flow to or from any place named in this query. '
-        f'"{text}" belongs on the other side of the flow. Swap its "from" or "to".'
+        f'"{text}" names providers, so it cannot be the receiving side of this flow.'
     )
 
 
@@ -3177,6 +3200,17 @@ def test_a_side_reads_whole_where_every_dataset_marks_its_parties(dcids, dataset
         pytest.param(
             [_ALL_RECIPIENTS], [_DAC2B], False, id="dac2b-publishes-the-recipients-unmarked"
         ),
+        pytest.param([_DEVELOPING], [CRS_PROVENANCE], True, id="crs-developing-countries"),
+        pytest.param([_DEVELOPING], [IMPUTED_PROVENANCE], True, id="imputed-developing-countries"),
+        pytest.param([_DEVELOPING], [_DAC2A], False, id="dac2a-publishes-the-developing-countries"),
+        pytest.param(
+            [_DEVELOPING],
+            [CRS_PROVENANCE, _DAC2B],
+            False,
+            id="dac2b-publishes-the-developing-countries",
+        ),
+        pytest.param([_DEVELOPING], [_DAC1], False, id="dac1-names-no-recipient-list"),
+        pytest.param([_DEVELOPING], [_IDS], False, id="ids-lists-its-debtors"),
         pytest.param([_ALL_RECIPIENTS], ["provenance/Unindexed"], False, id="no-party-held"),
         pytest.param([_ALL_RECIPIENTS], [], False, id="no-dataset"),
     ],
@@ -3186,7 +3220,10 @@ def test_a_population_covers_a_side_its_datasets_publish_no_total_of(dcids, data
     it and every party they hold there, totals aside, is of a class it covers. The CRS's
     recipients are all countries or residuals, its donors official or private, and DAC1's
     donors official alone; DAC2a marks the recipients' total, and DAC2b publishes it
-    unmarked; a dataset holding no party on the side covers nothing."""
+    unmarked; a dataset holding no party on the side covers nothing. The developing
+    countries' total carries no marker and covers the side only on a dataset declared to hold
+    the DAC's recipient list, as the CRS and the imputed table are; DAC1 and the World Bank's
+    debt statistics hold countries alone on the side and are not."""
     assert covers_unpublished(dcids, datasets=datasets) is covers
 
 
@@ -4070,3 +4107,231 @@ def test_a_resubmit_reads_a_posted_role_whole_only_where_its_group_and_identity_
         None if whole is None else (whole, True)
     )
     assert (_whole_read(answer) is not None) is (whole is not None)
+
+
+_DEVELOPING_TEXTS = (
+    "developing countries",
+    "all developing countries",
+    "Developing Countries, Total",
+)
+
+
+def _developing_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DAC2a holds series from France and from the official donors' total to the developing
+    countries' total and to Ethiopia; the CRS holds France's series to Ethiopia."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_DAC2A_MEMBER, "dac2a", donor, recipient, [2021])
+            for donor in (_FRA, _OFFICIAL)
+            for recipient in (_ETH, _DEVELOPING)
+        ]
+        + [(_CRS_MEMBER, "crs", _FRA, _ETH, [2021])],
+        role_names=dict.fromkeys((_DAC2A_MEMBER, _CRS_MEMBER), names),
+        facet_metadata={
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+        },
+    )
+
+
+@pytest.mark.parametrize("text", _DEVELOPING_TEXTS)
+def test_developing_countries_bind_dac2a_s_own_total_and_leave_the_crs_unnamed(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, text: str
+):
+    """ "Developing countries" names DAC2a's total of the bilateral destinations, which
+    carries no whole marker. DAC2a publishes it, so a DAC2a shape binds it as a named party;
+    the CRS publishes none and holds bilateral destinations alone, so a CRS shape leaves the
+    recipient side unnamed."""
+    request.getfixturevalue(source_catalogue.__name__)
+    _developing_coverage(monkeypatch)
+    destinations: dict[tuple[str, ...], list[str] | None] = {}
+    named = place_roles._named_wholes
+
+    def recording(state: Any, shape: Any, assignment: Any) -> Any:
+        result = named(state, shape, assignment)
+        datasets = tuple(row.provenance for row in declared_datasets(shape, get_index()))
+        sets = result.sets.get("destination")
+        destinations[datasets] = None if sets is None else sorted(s.node.dcid for s in sets)
+        return result
+
+    monkeypatch.setattr(place_roles, "_named_wholes", recording)
+    entities = [_FROM_FRANCE, {"role": "to", "text": text}]
+
+    _resolve({"entities": entities, "time": "2021", "variable": _VARIABLE})
+    _resolve(
+        {"entities": entities, "sources": _CRS_NAMED, "time": "2021", "variable": _VARIABLE},
+        crs_first=True,
+    )
+
+    assert destinations[(_DAC2A,)] == [_DEVELOPING]
+    assert destinations[(CRS_PROVENANCE,)] is None
+
+
+@pytest.mark.parametrize("text", ["ODA recipients", "low and middle income countries"])
+def test_a_recipient_phrase_naming_no_dac_total_stays_unresolved(
+    monkeypatch: pytest.MonkeyPatch, text: str
+):
+    """ "ODA recipients" could be either recipient total and "low and middle income
+    countries" is the World Bank's list, so neither names a DAC total."""
+    _developing_coverage(monkeypatch)
+
+    (part,) = _resolve(
+        {
+            "entities": [_FROM_FRANCE, {"role": "to", "text": text}],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    ).parts
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "entity_not_resolved"
+
+
+def test_aid_to_developing_countries_from_no_donor_named_reads_the_official_donors_total(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The developing countries' total holds the bilateral side alone and DAC2a publishes the
+    official donors' total to it, so the donor side the part totals still binds that total
+    beside it, as beside any recipient named."""
+    _developing_coverage(monkeypatch)
+
+    answer = _part(
+        _resolve(
+            {
+                "entities": [{"role": "to", "text": "developing countries"}],
+                "time": "2021",
+                "variable": _VARIABLE,
+            }
+        )
+    )
+
+    assert _origin(answer.spec) == [_OFFICIAL]
+    assert _whole_read(answer) == (role_ref("origin"), None)
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        pytest.param(
+            {
+                "entities": [
+                    _FROM_FRANCE,
+                    {"role": "to", "text": "developing countries", "members": True},
+                ]
+            },
+            id="members",
+        ),
+        pytest.param(
+            {
+                "entities": [_FROM_FRANCE, {"role": "to", "text": "developing countries"}],
+                "operations": [
+                    {"over": "destination", "phrase": "top developing countries", "verb": "rank"}
+                ],
+            },
+            id="top-developing-countries-receiving-french-aid",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("sources", "source"),
+    [
+        pytest.param(None, DAC2A_BILATERAL, id="dac2a"),
+        pytest.param(_CRS_NAMED, CRS_PROVENANCE, id="crs"),
+    ],
+)
+def test_developing_countries_listed_read_the_bilateral_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    asked: dict[str, Any],
+    sources: list[dict[str, str]] | None,
+    source: str,
+):
+    """Posted with `members: true`, or under a ranking over the recipients, "developing
+    countries" opens the recipient side on a shape that lists the bilateral destinations
+    alone: DAC2a through its bilateral composite, which reads that side's population, and the
+    CRS, which holds the DAC's recipient list. Each answers the Spec `open_roles` answers
+    there."""
+    _developing_coverage(monkeypatch)
+    extra: dict[str, Any] = {"time": "2021", "variable": _VARIABLE}
+    if sources is not None:
+        request.getfixturevalue(source_catalogue.__name__)
+        extra["sources"] = sources
+    opened = {"entities": [_FROM_FRANCE], "open_roles": ["recipient"], **extra}
+
+    spec = _spec(_resolve({**asked, **extra}, crs_first=sources is not None))
+
+    identity = spec.definition.identity
+    assert identity.open_roles == ["destination"]
+    pin = (identity.facets or {}).get("provenance")
+    assert pin == IdentityBindingValue(ref=source)
+    assert spec.spec_id == _spec(_resolve(opened, crs_first=sources is not None)).spec_id
+
+
+def test_developing_countries_listed_under_total_oda_list_off_dac2a(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A carried `provider:contributions` entry keeps DAC2a's total ODA, whose open recipient
+    side lists the multilateral agencies beside the developing countries, so "developing
+    countries" posted with `members: true` lists on no DAC2a shape and answers on the CRS,
+    which holds the DAC's recipient list."""
+    _developing_coverage(monkeypatch)
+    request = _parsed(
+        {
+            "entities": [
+                _FROM_FRANCE,
+                {"role": "to", "text": "developing countries", "members": True},
+            ],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    )
+    carried = Entry(
+        axis="provider",
+        option_id="provider:contributions",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="spec_earlier:provider"),
+    )
+    assert isinstance(request.input, ParsedInput)
+    request = ResolveRequest(input=request.input.model_copy(update={"carried_entries": [carried]}))
+
+    spec = _spec(
+        offline_resolve(
+            request,
+            graph=_graph(variable=_VARIABLE),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    assert spec.definition.identity.open_roles == ["destination"]
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [CRS_PROVENANCE]
+
+
+def test_developing_countries_as_the_donor_refuse_as_misdirected(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "Developing countries" names recipients alone, so "aid from developing countries to
+    Africa", a South-South question, directs it to the providing side and refuses
+    `role_incompatible`, naming it. The refusal says what it names and offers no swap, which
+    would ask about aid to developing countries in its place."""
+    _developing_coverage(monkeypatch)
+
+    (part,) = _resolve(
+        {
+            "entities": [
+                {"role": "from", "text": "developing countries"},
+                {"role": "to", "text": "Africa"},
+            ],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    ).parts
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "role_incompatible"
+    assert part.no_data.entity_terms == ["developing countries"]
+    assert part.no_data.message.endswith(
+        '"developing countries" names recipients, so it cannot be the providing side of this flow.'
+    )

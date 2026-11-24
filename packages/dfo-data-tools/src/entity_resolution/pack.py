@@ -252,6 +252,27 @@ def organisations_named(text: str) -> frozenset[str]:
     )
 
 
+def is_stored_name(text: str) -> bool:
+    """Whether the pack stores `text` as the name or an alias of any of its records, an
+    organisation, a DAC aggregate or a residual: "developing countries unspecified" for the
+    DAC's bilateral unallocated line."""
+    return bool(_committed_alias_index().owners_of(text))
+
+
+@functools.cache
+def longest_stored_name_tokens() -> int:
+    """The most word tokens any name or alias the pack stores has, as written in the
+    committed records and curated aliases, so a reader stepping a text by those tokens
+    reaches every stored name."""
+    curated = _load_curated(curated_path())
+    names = [
+        name
+        for record in _load_records(records_path())
+        for name in (record["name"], *(record.get("aliases") or ()))
+    ] + [alias for aliases in curated.values() for alias in aliases]
+    return max((len(re.findall(r"\w+", name)) for name in names), default=0)
+
+
 def is_organisation_name(text: str) -> bool:
     """Whether `text` is a name the pack stores for an organisation (`organisations_named`)."""
     return bool(organisations_named(text))
