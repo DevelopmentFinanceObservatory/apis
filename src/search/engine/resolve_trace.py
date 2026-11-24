@@ -327,7 +327,9 @@ class _Tracing(NamedTuple):
 def _client() -> _Tracing:
     """The process's Langfuse client, on a tracer provider of its own, exporting through an OTLP
     exporter wrapped in `_ExportResults`. Langfuse wires neither host, auth nor timeout into an
-    exporter it is given, so this builds the endpoint and headers its default exporter sends."""
+    exporter it is given, so this builds the endpoint and headers its default exporter sends,
+    `LANGFUSE_OTEL_TRACES_EXPORT_PATH` included. A test posts through both to one local host and
+    asserts the same path and headers, so a Langfuse upgrade that changes either fails it."""
     from langfuse import Langfuse
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
@@ -337,8 +339,9 @@ def _client() -> _Tracing:
         os.environ.get("LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_HOST") or DEFAULT_BASE_URL
     ).rstrip("/")
     auth = b64encode(f"{public_key}:{secret_key}".encode()).decode("ascii")
+    export_path = os.environ.get("LANGFUSE_OTEL_TRACES_EXPORT_PATH")
     exporter = OTLPSpanExporter(
-        endpoint=f"{base_url}{OTLP_PATH}",
+        endpoint=f"{base_url}/{export_path}" if export_path else f"{base_url}{OTLP_PATH}",
         headers={
             "Authorization": f"Basic {auth}",
             "x-langfuse-sdk-name": "python",

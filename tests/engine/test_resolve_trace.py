@@ -291,17 +291,23 @@ def test_the_line_reads_the_exporter_s_own_result(monkeypatch, answer, outcome):
 
 
 @pytest.mark.parametrize(("status", "outcome"), [(200, "sent"), (401, "failed")])
-def test_the_process_client_posts_to_the_langfuse_otlp_path_and_reads_its_status(
-    monkeypatch, status, outcome
+@pytest.mark.parametrize("export_path", [None, "custom/otel/v1/traces"])
+def test_the_process_client_posts_as_the_default_langfuse_exporter_and_reads_its_status(
+    monkeypatch, status, outcome, export_path
 ):
-    """The client `_client` builds, against a local host answering every OTLP post with
-    `status`, as Langfuse answers keys it rejects with 401."""
-    posts: list[tuple[str, str | None]] = []
+    """The client `_client` builds and a Langfuse client left to build its own exporter post to
+    one local host, which answers every OTLP post with `status`, as Langfuse answers keys it
+    rejects with 401. Both posts carry the same path and headers, the keys apart, so a Langfuse
+    upgrade that changes what its exporter sends fails here."""
+    posts: list[tuple[str, dict[str, str]]] = []
 
     class _Host(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            posts.append((self.path, self.headers.get("Authorization")))
+            headers = {
+                k.lower(): v for k, v in self.headers.items() if k.lower() != "content-length"
+            }
+            posts.append((self.path, headers))
             self.send_response(status)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -311,25 +317,48 @@ def test_the_process_client_posts_to_the_langfuse_otlp_path_and_reads_its_status
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Host)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    public_key = f"pk-{uuid.uuid4().hex}"
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    ours, theirs = f"pk-{uuid.uuid4().hex}", f"pk-{uuid.uuid4().hex}"
     for name, value in _ON.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", public_key)
-    monkeypatch.setenv("LANGFUSE_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}/")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", ours)
+    monkeypatch.setenv("LANGFUSE_BASE_URL", f"{base_url}/")
+    if export_path is None:
+        monkeypatch.delenv("LANGFUSE_OTEL_TRACES_EXPORT_PATH", raising=False)
+    else:
+        monkeypatch.setenv("LANGFUSE_OTEL_TRACES_EXPORT_PATH", export_path)
     resolve_trace._client.cache_clear()
+    default = Langfuse(
+        public_key=theirs, secret_key="sk-test", base_url=base_url, tracer_provider=TracerProvider()
+    )
     try:
         logged = _run_line(
             make_request("aid to Kenya"), ResolveRecord(), surface=DeliverySurface.mcp
         )
+        with default.start_as_current_observation(name="default", as_type="span"):
+            pass
+        default.flush()
     finally:
         _drain()
         resolve_trace._client().client.shutdown()
         resolve_trace._client.cache_clear()
+        default.shutdown()
         server.shutdown()
 
     assert logged["trace"] == outcome
-    auth = "Basic " + base64.b64encode(f"{public_key}:sk-test".encode()).decode()
-    assert (resolve_trace.OTLP_PATH, auth) in posts
+
+    def keyed(public_key: str) -> tuple[str, dict[str, str]]:
+        """The one post carrying `public_key`, with its key-bound headers taken out."""
+        (post,) = [p for p in posts if p[1].get("x-langfuse-public-key") == public_key]
+        path, headers = post
+        auth = "Basic " + base64.b64encode(f"{public_key}:sk-test".encode()).decode()
+        assert headers.pop("authorization") == auth
+        headers.pop("x-langfuse-public-key")
+        return path, headers
+
+    expected_path = f"/{export_path}" if export_path else resolve_trace.OTLP_PATH
+    assert {path for path, _ in posts} == {expected_path}
+    assert keyed(ours) == keyed(theirs)
 
 
 def test_a_drain_past_its_deadline_cancels_the_queued_traces(monkeypatch, held_worker):
