@@ -980,6 +980,22 @@ CONTAINING_TOTALS: Mapping[tuple[str, RoleAxis], ContainingTotal] = {
     ),
 }
 
+# The datasets whose recipients are the DAC List of ODA Recipients alone: its countries, its
+# regions and the DAC's lines of aid allocated to no country. A question naming the DAC's total
+# of developing countries reads the recipient side unnamed on these where they publish no row of
+# that total (`search.engine.region.whole_totals.covers_unpublished`). The CRS and ONE's
+# imputed multilateral sectors table report against the List, and the OECD's climate-related
+# development finance and ONE Data Climate Finance, built from the CRS and that table, keep its
+# recipients. The UNFCCC reports name the developing country Parties of the Convention, a
+# different list, DAC1 names no recipient but the one it publishes, and the World Bank's debt
+# statistics list its debtor countries, so none of them reads so.
+DAC_RECIPIENT_LIST_DATASETS: tuple[str, ...] = (
+    CRS,
+    _IMPUTED_MULTILATERAL_SECTORS,
+    _OECD_CRDF,
+    _ONE_CLIMATE_FINANCE,
+)
+
 # Whole totals read as one population under a phrase. The members cover disjoint classes of party
 # and are published together in one dataset (`code_index.loader._check_whole_totals`). Official
 # plus private donors is 4,578.4m for Ethiopia 2021 (4,267.6m and 310.8m). "All donors" and

@@ -6,9 +6,15 @@ from __future__ import annotations
 
 import pytest
 
-from code_index.declarations import DAC2A
+from code_index.declarations import DAC2A, DAC_RECIPIENT_LIST_DATASETS
 from code_index.query import CodeIndex
-from code_index.scope_conventions import DestinationSide, destination_side
+from code_index.scope_conventions import (
+    DestinationSide,
+    bilateral_side_total,
+    destination_side,
+    lists_bilateral_destinations,
+    reads_dac_recipient_list,
+)
 from code_index.types import IndexStamp, PartyKind, PartyRow
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
@@ -188,3 +194,69 @@ def test_every_dac2a_destination_of_the_recorded_index_is_classified():
         "DACOtherWorldBank",
     ]
     assert sides["DACMekongDeltaProject"] == "bilateral"
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_IMPUTED = "provenance/ONEImputedMultilateralSectors"
+_DAC1 = "provenance/OECDDAC1"
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+_BTR = "provenance/UNFCCCBiennialTransparencyReports"
+
+
+@pytest.mark.parametrize(
+    ("datasets", "reads", "lists"),
+    [
+        pytest.param((_CRS,), True, True, id="crs"),
+        pytest.param((_IMPUTED,), True, True, id="imputed"),
+        pytest.param((DAC2A,), False, True, id="dac2a-bilateral-composite"),
+        pytest.param((_CRS, DAC2A), False, True, id="crs-and-dac2a"),
+        pytest.param((_DAC1,), False, False, id="dac1"),
+        pytest.param((_IDS,), False, False, id="ids"),
+        pytest.param((_BTR,), False, False, id="unfccc-reports"),
+        pytest.param((), False, False, id="no-dataset"),
+    ],
+)
+def test_a_dataset_reads_and_lists_the_dac_recipient_list_where_declared(
+    datasets: tuple[str, ...], reads: bool, lists: bool
+):
+    """The CRS and the imputed table hold the DAC's recipient list; DAC2a lists the agencies
+    too, so it reads the developing countries only through its bilateral composite. DAC1
+    names the one recipient it publishes, the World Bank's debt statistics its debtors and
+    the UNFCCC reports the Convention's developing country Parties, so none reads or lists
+    the DAC's developing countries, though every recipient each holds is a country."""
+    assert reads_dac_recipient_list(datasets) is reads
+    assert lists_bilateral_destinations(datasets, total_kept=False) is lists
+    # Total ODA kept on DAC2a lists the agencies; the recipient list holds either way.
+    assert lists_bilateral_destinations(datasets, total_kept=True) is (lists and reads)
+
+
+def test_every_dataset_declared_to_hold_the_dac_recipient_list_holds_bilateral_recipients():
+    """A dataset `DAC_RECIPIENT_LIST_DATASETS` names lists no recipient off the bilateral
+    side in the recorded index."""
+    index = load_index(INDEX_FIXTURE)
+    off_side = {
+        (dataset, row.dcid)
+        for row in index.parties.values()
+        for dataset in DAC_RECIPIENT_LIST_DATASETS
+        if row.publishes("destination", (dataset,))
+        and row.kind_over("destination", (dataset,)) != "total"
+        and destination_side(row, datasets=(dataset,), index=index) != "bilateral"
+    }
+    held = [
+        dataset
+        for dataset in DAC_RECIPIENT_LIST_DATASETS
+        if any(row.publishes("destination", (dataset,)) for row in index.parties.values())
+    ]
+
+    assert off_side == set()
+    assert held
+
+
+def test_the_developing_countries_total_is_the_one_bilateral_side_total():
+    """`DACDevelopingCountries` totals the bilateral destinations; the total of both sides
+    and a region's total do not."""
+    index = load_index(INDEX_FIXTURE)
+
+    assert [dcid for dcid in index.parties if bilateral_side_total(dcid)] == [
+        "DACDevelopingCountries"
+    ]

@@ -548,3 +548,51 @@
       measure: {family: [dac2a.oda_net_received, dac2a.oda_gross_received]}
       entities: [{dcid: country/KOR, role: destination}]
       operations: [{verb: rank, over: origin}]
+
+- id: dq-dac-055
+  query: 'parsed: net ODA including imputed multilateral from the G7 to developing countries, 2022'
+  door: parsed
+  parsed:
+    - variable_text: Net disbursements including imputed multilateral ODA
+      entities: [{text: G7, role_text: from}, {text: 'developing countries', role_text: to}]
+      time_text: '2022'
+  why: '"developing countries" names DAC2a''s developing countries total, which the inclusive composite reads as the total of the bilateral recipients it holds.'
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateralAndImputedMultilateral}
+      entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACDevelopingCountries, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-dac-056
+  query: 'parsed: net ODA including imputed multilateral from the G7 to all developing countries, 2022'
+  door: parsed
+  parsed:
+    - variable_text: Net disbursements including imputed multilateral ODA
+      entities: [{text: G7, role_text: from}, {text: 'all developing countries', role_text: to}]
+      time_text: '2022'
+  why: '"all developing countries" is a curated name of DAC2a''s developing countries total, so it binds as "developing countries" does.'
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateralAndImputedMultilateral}
+      entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACDevelopingCountries, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-dac-057
+  query: 'parsed: net ODA including imputed multilateral from the G7 to Developing Countries, Total, 2022'
+  door: parsed
+  parsed:
+    - variable_text: Net disbursements including imputed multilateral ODA
+      entities: [{text: G7, role_text: from}, {text: 'Developing Countries, Total', role_text: to}]
+      time_text: '2022'
+  why: '"Developing Countries, Total" is the graph''s name for DAC2a''s developing countries total, so it binds as "developing countries" does.'
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateralAndImputedMultilateral}
+      entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACDevelopingCountries, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}

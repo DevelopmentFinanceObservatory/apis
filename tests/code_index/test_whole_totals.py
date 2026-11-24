@@ -157,6 +157,10 @@ def test_the_fixture_index_holds_only_whole_totals_that_are_totals_of_known_clas
         for dcid, party in index.parties.items()
         if any("official" in marker.covers for marker in party.whole)
     } == {"DACAllRecipients", "DACOfficialDonors"}
+    # The developing countries' total is the bilateral side's total and carries no marker, so
+    # no unnamed side binds it as its side's whole population.
+    assert index.parties["DACDevelopingCountries"].whole == ()
+    assert "DACDevelopingCountries" not in index.population_totals_by_axis.get("destination", ())
 
 
 @pytest.mark.parametrize(

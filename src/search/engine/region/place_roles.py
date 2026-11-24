@@ -1205,10 +1205,19 @@ def whole_total_candidates(
     total, then the recipients' total, one at a time, since the source publishes no figure
     between two whole totals. For the same reason a side a text names a whole population on
     ("official donors") offers none, and once that population binds there (`_named_wholes`)
-    neither side does. Whether a candidate binds is `holds_whole_total`'s question, asked
-    under the bindings settled for its role keys; the first that holds binds."""
+    neither side does. A total of the bilateral destinations ("developing countries",
+    `scope_conventions.bilateral_side_total`) carries no whole marker, and the source
+    publishes the donors' total to it, so bound there it leaves the donor side's total on
+    offer. Whether a candidate binds is `holds_whole_total`'s question, asked under the
+    bindings settled for its role keys; the first that holds binds."""
     named_axes = named_whole_axes(state)
-    if not state.whole_sets or not is_role_bearing(shape) or named_axes & assignment.sets.keys():
+    parties = get_index().parties
+    marked_axes = frozenset(
+        parties[dcids[0]].sole_axis()
+        for dcids in state.whole_named.values()
+        if any(parties[dcid].whole for dcid in dcids)
+    )
+    if not state.whole_sets or not is_role_bearing(shape) or marked_axes & assignment.sets.keys():
         return ()
     datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
     declared = role_names_by_axis(shape)
@@ -1934,8 +1943,11 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     whose members some end not bound whole holds states its own ref first, so a client
     matches the set it named (`_own_ref`, as read on the first such end), then those
     members in `place_order`. A text naming a whole population ("all donors",
-    `ResolveState.whole_named`) binds the parties it names that the binding holds. A text
-    no end binds, ambiguous or unresolved, is left out.
+    `ResolveState.whole_named`) binds the parties it names that the binding holds, and one
+    asked member by member (`ResolveState.whole_listed_parties`) states the parties it names,
+    whose side the answer lists open, so "developing countries" states
+    `DACDevelopingCountries` read whole or listed. A text no end binds, ambiguous or
+    unresolved, is left out.
 
     A part refused before a shape's places are installed (`ResolveState.places_bound`),
     whether before election or after it, states the node each text names alone
@@ -1971,6 +1983,7 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):
             refs[text] = tuple(held)
+    refs.update(state.whole_listed_parties)
     return refs
 
 
