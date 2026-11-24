@@ -63,8 +63,8 @@ name: Deploy
 # The deploy stages the new revision with no traffic, probes that revision by
 # name at its tagged URL, and moves traffic to it by name, so its background
 # builds finish before readers arrive and an erroring revision never serves
-# (see the warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE;
-# the upfront variable check refuses the deploy when it is missing.
+# (see the warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE,
+# and the upfront variable check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
 # format (see its steps below). The graph release job is pointed at the new
@@ -488,7 +488,7 @@ jobs:
       # URL of its own and moves the tag off any older revision. `--tag` on the
       # update would make gcloud name the template revision, which the infra
       # repository's Terraform does not ignore, so every later apply would
-      # clear the name and create a revision; the cost is a second call. The
+      # clear the name and create a revision. The cost is a second call. The
       # step outputs the revision's name, and every later step acts on it.
       - name: Stage the new revision with no traffic
         id: stage

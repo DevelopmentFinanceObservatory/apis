@@ -70,22 +70,23 @@
 #
 #   warm         every route answered 200
 #   slow         a route still answered 502, 503, 504 or 429 at its
-#                deadline; a warning, since the builds run on for the next
+#                deadline. A warning, since the builds run on for the next
 #                request, or `error` under REQUIRE_PROBE
 #   forbidden    the token mint or the revision answered 401 or 403, as it
-#                does until the infra grants apply; a warning, or `error`
+#                does until the infra grants apply. A warning, or `error`
 #                under REQUIRE_PROBE. Probing stops at the first 401 or 403,
 #                and the status is `error` when an earlier route answered an
 #                error.
 #   unavailable  the service URL or the access token could not be read, or
-#                the token mint failed for 4 attempts; a warning, or `error`
+#                the token mint failed for 4 attempts. A warning, or `error`
 #                under REQUIRE_PROBE
 #   error        the revision answered a route with any other status, a
 #                route never answered at all within its deadline (probing
 #                stops there), no traffic entry carries PROBE_TAG on
 #                REVISION, or the token's audience is not the service URL
 #
-# Exits 0 for every outcome; deploy.yml's next step fails the job on `error`.
+# Exits 0 for every outcome, and deploy.yml's next step fails the job on
+# `error`.
 # Exits non-zero only on a missing required variable.
 
 set -euo pipefail
