@@ -58,6 +58,8 @@ from search.engine.retrieval.bound_values import (
     five_tuple_families,
     five_tuple_member_facts,
     member_family,
+    role_total,
+    role_twins,
     walked_family_label,
 )
 from search.engine.retrieval.facts import (
@@ -938,14 +940,84 @@ def _build_group_shape(
     return shape, False, False
 
 
-def _held_role_arcs(five_tuple: FiveTuple, role_bearing: bool) -> dict[str, dict] | None:
-    """The arcs of each member of a held role-bearing family whose declared roles read
-    (`bound_values._held_members`), None for a subject-only family, whose members all
-    declare ``observationAbout``. Reads the family's arcs, once a request."""
+def _held_role_arcs(
+    five_tuple: FiveTuple, role_bearing: bool, twins: tuple[FamilyKey, ...] = ()
+) -> dict[str, dict] | None:
+    """The arcs of each member of a held role-bearing family, and of each family of its ratio
+    twins (`twins`), whose declared roles read (`bound_values._held_members`), None for a
+    subject-only family, whose members all declare ``observationAbout``. Reads each family's
+    arcs, once a request."""
     if not role_bearing:
         return None
-    held = _held_members(FamilyKey(*five_tuple, role_bearing))
-    return {sv: arcs for sv, arcs in held.arcs.items() if held.roles[sv] is not None}
+    arcs: dict[str, dict] = {}
+    for key in (FamilyKey(*five_tuple, role_bearing), *twins):
+        held = _held_members(key)
+        arcs.update(
+            (sv, found)
+            for sv, found in held.arcs.items()
+            if sv not in arcs and held.roles[sv] is not None
+        )
+    return arcs
+
+
+def _role_total_five_tuple(five_tuple: FiveTuple) -> FiveTuple:
+    """`five_tuple` with its denominator replaced by the denominator's role total
+    (`bound_values.role_total`), the key a role-bearing walked member groups on."""
+    if five_tuple.meas_denom_dcid is None or five_tuple.meas_denom_unresolved:
+        return five_tuple
+    return five_tuple._replace(meas_denom_dcid=role_total(five_tuple.meas_denom_dcid))
+
+
+def _spans_denominators(
+    five_tuple: FiveTuple, role_bearing: bool, family: IndexFamily | None
+) -> bool:
+    """Whether a member of `five_tuple` groups on its denominator's role total: it is
+    role-bearing, and the graph walk decides its family (no index family decides it and the
+    index carries no family of its five-tuple)."""
+    return role_bearing and family is None and not five_tuple_families(five_tuple)
+
+
+def _denominators_order_alike(group_svs: list[str], sv_facts: Mapping[str, dict]) -> bool:
+    """Whether the members of a group keyed on one role total, which divide by more than one
+    denominator, order as their denominators do: each denominator's members declare one role
+    set, and one denominator's index roles nest in another's exactly when its members' roles
+    nest in the other's members', by the same extra roles."""
+    member_roles: dict[str, set[frozenset[str]]] = defaultdict(set)
+    try:
+        for sv in group_svs:
+            denominator = sv_facts[sv]["five_tuple"].meas_denom_dcid
+            member_roles[denominator].add(frozenset(read_declared_roles(sv_facts[sv]["arcs"])))
+    except DegenerateObservationProperties:
+        return False
+    index = get_index()
+    roles: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    for denominator, role_sets in member_roles.items():
+        row = index.statvar_by_dcid(denominator)
+        if row is None or len(role_sets) != 1:
+            return False
+        (members,) = role_sets
+        roles[denominator] = (frozenset(row.observation_properties), members)
+    for base_roles, base_members in roles.values():
+        for split_roles, split_members in roles.values():
+            nests = base_roles < split_roles
+            if nests != (base_members < split_members):
+                return False
+            if nests and split_roles - base_roles != split_members - base_members:
+                return False
+    return True
+
+
+def _twin_families(five_tuple: FiveTuple) -> tuple[FamilyKey, ...]:
+    """The role-bearing families the catalogue holds of `five_tuple` divided by each role
+    twin of its denominator (`bound_values.role_twins`) in place of it."""
+    if five_tuple.meas_denom_dcid is None or five_tuple.meas_denom_unresolved:
+        return ()
+    catalogue = current_catalogue()
+    keys = (
+        FamilyKey(*five_tuple._replace(meas_denom_dcid=twin), True)
+        for twin in role_twins(five_tuple.meas_denom_dcid)
+    )
+    return tuple(key for key in keys if catalogue.held_family(key) is not None)
 
 
 def derive_shapes(
@@ -1005,6 +1077,15 @@ def derive_shapes(
     (`bound_values.member_family`). A role-bearing shape declares every role its
     members declare (`facts.group_roles`), and marks optional the roles some member does
     not declare. Its label, slot keys and family all come from that one group.
+
+    A role-bearing member whose family the graph walk decides groups on its five-tuple with
+    the denominator replaced by the denominator's role total (`bound_values.role_total`), so
+    a ratio and its by-creditor twin, whose denominators are a stock and its by-creditor
+    twin, derive one shape with the total's five-tuple, the union of their roles and the
+    extra roles optional, as a stock and its by-creditor twin do. Such a shape carries the
+    catalogue families of the twins' five-tuples (`ShapeDraft.twin_families`) whether or not
+    recall returned a twin. Members whose roles order unlike their denominators' stay one
+    shape per denominator (`_denominators_order_alike`).
     Groups without schema fields are skipped. A group whose roles put two names on one
     flow axis, or hold a degenerate arc, is skipped; raise `RoleSignatureError` only when
     every group with a schema field has unusable roles.
@@ -1056,14 +1137,41 @@ def derive_shapes(
 
     with phase("shape_groups"):
         # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
+        # A role-bearing member the graph walk decides groups on its denominator's role
+        # total, so a ratio and its by-creditor twin, which divides by the by-creditor
+        # denominator, are one shape, as a stock and its by-creditor twin are.
         groups: dict[_GroupKey, list[str]] = defaultdict(list)
         group_families: dict[_GroupKey, IndexFamily | None] = {}
+        spanning: set[_GroupKey] = set()
         for sv_dcid, facts in sv_facts.items():
             five_tuple = facts["five_tuple"]
             role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
+            if _spans_denominators(five_tuple, role_bearing, family):
+                total = _role_total_five_tuple(five_tuple)
+                if not five_tuple_families(total):
+                    five_tuple = total
+                    spanning.add((five_tuple, role_bearing, None))
             key = (five_tuple, role_bearing, family.properties if family is not None else None)
             groups[key].append(sv_dcid)
             group_families[key] = family
+        for key in list(spanning):
+            group_svs = groups[key]
+            denominators = {sv_facts[sv]["five_tuple"].meas_denom_dcid for sv in group_svs}
+            if len(denominators) < 2 or _denominators_order_alike(group_svs, sv_facts):
+                continue
+            logger.info(
+                "derive_shapes: members dividing by %s and its role twins order unlike their "
+                "denominators; they stay one shape per denominator",
+                key[0].meas_denom_dcid,
+                extra={"role_total": key[0].meas_denom_dcid, "denominators": sorted(denominators)},
+            )
+            spanning.discard(key)
+            del groups[key]
+            for sv in group_svs:
+                raw = (sv_facts[sv]["five_tuple"], key[1], None)
+                groups[raw].append(sv)
+                group_families[raw] = None
+                spanning.discard(raw)
 
         # A five-tuple the code index carries reads its slot values from the index.
         walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
@@ -1105,6 +1213,7 @@ def derive_shapes(
         zero_member_groups = 0
         for key, group_svs in groups.items():
             five_tuple, role_bearing, _properties = key
+            twins = _twin_families(five_tuple) if key in spanning else ()
             shape_id = group_shape_id(
                 five_tuple, role_bearing=role_bearing, family=group_families[key]
             )
@@ -1123,8 +1232,8 @@ def derive_shapes(
                 prop_labels_raw=prop_labels_raw,
                 value_labels=value_labels,
                 held=held_families.get(key),
-                held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
-                if key in held_families
+                held_role_arcs=_held_role_arcs(five_tuple, role_bearing, twins)
+                if key in held_families or twins
                 else None,
             )
             if zero_member:
@@ -1136,6 +1245,8 @@ def derive_shapes(
             assert shape is not None
             if key in held_families:
                 shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
+            if twins:
+                shape = dataclasses.replace(shape, twin_families=twins)
             if rival_svs.issuperset(group_svs):
                 sources = basis_of or {}
                 shape = dataclasses.replace(

@@ -8,15 +8,19 @@ IDS general-government debt service aggregate and its by-creditor twin."""
 from __future__ import annotations
 
 import asyncio
+import copy
+import sys
 from collections.abc import Sequence
 
 import pytest
 
+from code_index import shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
+from origin_catalogue.families import FamilyKey
 from search.engine import fanout
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
@@ -28,9 +32,15 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import ResolveState
-from search.engine.retrieval.bound_values import bind_member_values, served_members
+from search.engine.retrieval.bound_values import (
+    bind_member_values,
+    served_members,
+    shape_five_tuple,
+    shape_population_arcs,
+)
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.retrieve import NoDataDraft
+from search.engine.shape import role_class
 from search.engine.source_code import (
     SeriesCodeMembers,
     SourceCodeRefusal,
@@ -1162,3 +1172,76 @@ def test_a_ratio_code_elects_its_aggregate_unless_the_creditor_is_open(
 
     assert answer.status == "definite", answer
     assert _minted_members(answer.spec) == {elected}
+
+
+def _holding(*dcids: str) -> FakeCatalogue:
+    """A catalogue whose tables hold `dcids` with the fake graph's arcs, so each of their
+    families is held."""
+    graph = _graph()
+    return FakeCatalogue(
+        arcs=build_arc_tables(
+            dfo={}, base={dcid: graph.node_arcs(dcid) for dcid in dcids}, schema={}
+        )
+    )
+
+
+_STOCKS_AND_SHARES = (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _USD_SHARE, _USD_SHARE_BY_CREDITOR)
+
+
+@pytest.mark.parametrize(
+    ("recalled", "population", "twin_denominators"),
+    [
+        (
+            (_USD_SHARE, _USD_SHARE_BY_CREDITOR),
+            {_USD_SHARE, _USD_SHARE_BY_CREDITOR},
+            [_PPG_STOCK_BY_CREDITOR],
+        ),
+        ((_USD_SHARE,), {_USD_SHARE, _USD_SHARE_BY_CREDITOR}, [_PPG_STOCK_BY_CREDITOR]),
+        ((_USD_SHARE_BY_CREDITOR,), {_USD_SHARE_BY_CREDITOR, _USD_SHARE}, [_PPG_STOCK_BY_CREDITOR]),
+        ((_PPG_STOCK, _PPG_STOCK_BY_CREDITOR), {_PPG_STOCK, _PPG_STOCK_BY_CREDITOR}, []),
+    ],
+    ids=["ratio-pair", "ratio-aggregate", "ratio-twin", "stock-pair"],
+)
+def test_a_ratio_and_its_denominator_twin_derive_one_shape_as_a_stock_does(
+    recalled, population, twin_denominators, bind_catalogue
+):
+    """DT.CUR.USDL.ZS's by-creditor share divides by the by-creditor PPG stock, the role twin
+    of the aggregate share's denominator, so the two derive one shape with the aggregate's
+    denominator, both roles and the creditor optional, as DT.DOD.DPPG.CD's stock and its
+    by-creditor twin do. It stands for both families however many recall returned."""
+    bind_catalogue(_holding(*_STOCKS_AND_SHARES))
+
+    (shape,) = derive_shapes(confirmed_svs=list(recalled), graph=_graph())
+
+    five_tuple = shape_five_tuple(shape)
+    assert five_tuple.meas_denom_dcid == (_PPG_STOCK if twin_denominators else None)
+    assert role_class(shape) == frozenset(_PROVIDER_RECIPIENT)
+    assert shape.optional_roles == frozenset({"financingProvider"})
+    assert shape.held_family == FamilyKey(*five_tuple, True)
+    assert shape.twin_families == tuple(
+        FamilyKey(*five_tuple._replace(meas_denom_dcid=twin), True) for twin in twin_denominators
+    )
+    assert set(shape_population_arcs(shape)) == population
+
+
+def test_a_ratio_whose_twin_denominator_the_index_lacks_derives_a_shape_per_denominator(
+    bind_catalogue, monkeypatch
+):
+    """Without an index row of the by-creditor PPG stock, its share has no role total to
+    group on, so the shares derive one shape per denominator."""
+    packaged = code_index_shared.get_index
+    index = copy.copy(packaged())
+    index.listed_statvars = tuple(
+        row for row in index.listed_statvars if row.dcid != _PPG_STOCK_BY_CREDITOR
+    )
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
+    bind_catalogue(_holding(*_STOCKS_AND_SHARES))
+
+    shapes = derive_shapes(confirmed_svs=[_USD_SHARE, _USD_SHARE_BY_CREDITOR], graph=_graph())
+
+    assert sorted(shape.meas_denom_dcid for shape in shapes) == sorted(
+        (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR)
+    )
+    assert all(shape.twin_families == () for shape in shapes)

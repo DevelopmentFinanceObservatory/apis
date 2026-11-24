@@ -99,6 +99,13 @@ class ShapeDraft:
     # `bound_values.shape_member_facts`, beside sv_arc_facts. None on every other shape and
     # on one narrowed to some of its members.
     held_family: FamilyKey | None = field(default=None, compare=False)
+    # The catalogue families of the ratios that divide by a breakdown of this shape's
+    # denominator over more roles (`bound_values.role_twins`), stamped by derive_shapes on a
+    # role-bearing group whose membership the graph walk decides. The shape stands for their
+    # members too (`bound_values.shape_population_arcs`), so a ratio and its by-creditor
+    # twin are one shape, as a stock and its by-creditor twin are. Empty on every other
+    # shape and on one narrowed to some of its members.
+    twin_families: tuple[FamilyKey, ...] = field(default=(), compare=False)
     # The role set the role-class election narrowed a held shape to
     # (`bound_values._recalled_role_class_shape`): its population holds the members of
     # held_family that declare that set alone. None on a shape no election narrowed.

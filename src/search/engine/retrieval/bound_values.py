@@ -156,6 +156,7 @@ from statvar_members import (
     elect_role_class,
     group_of_arcs,
     member_family_of,
+    role_class_facts,
     shared_enumerator,
 )
 
@@ -548,7 +549,8 @@ def _member_reading(arcs: dict) -> tuple[object, ...]:
 def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
     """`shape` without the `removed` members, its taxonomy read over the rest as
     `derive_shapes` reads it: over the members with data at a probed place, else all. It
-    stands for those members alone, so it holds no family (`ShapeDraft.held_family`)."""
+    stands for those members alone, so it holds no family (`ShapeDraft.held_family`,
+    `ShapeDraft.twin_families`)."""
     arcs = {sv: a for sv, a in (shape.sv_arc_facts or {}).items() if sv not in removed}
     coverage = shape.member_coverage
     if coverage is not None:
@@ -571,6 +573,7 @@ def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
         slot_taxonomy=taxonomy,
         place_available=bool(available) if coverage is not None else shape.place_available,
         held_family=None,
+        twin_families=(),
     )
 
 
@@ -2763,51 +2766,56 @@ def held_family_memo() -> Iterator[None]:
 def shape_population_arcs(shape: ShapeDraft) -> dict[str, dict]:
     """The arcs of the members `shape` stands for: its own members (`sv_arc_facts`), then,
     for a shape stamped with a family the catalogue holds (`ShapeDraft.held_family`), every
-    other member of that family, of the role set the role-class election narrowed it to
-    when one did (`ShapeDraft.held_roles`). Every reader of a shape's members reads them
+    other member of that family, then those of each family of a ratio twin it spans
+    (`ShapeDraft.twin_families`), each of the role set the role-class election narrowed it
+    to when one did (`ShapeDraft.held_roles`). Every reader of a shape's members reads them
     here, so the members agree with the slot taxonomy derive read from the same family."""
-    own = shape.sv_arc_facts or {}
-    if shape.held_family is None:
-        return dict(own)
-    held = _held_members(shape.held_family)
-    return {
-        **own,
-        **{
-            sv: arcs
-            for sv, arcs in held.arcs.items()
-            if sv not in own and (shape.held_roles is None or held.roles[sv] == shape.held_roles)
-        },
-    }
+    population = dict(shape.sv_arc_facts or {})
+    for key in _held_keys(shape):
+        held = _held_members(key)
+        for sv, arcs in held.arcs.items():
+            if sv not in population and (
+                shape.held_roles is None or held.roles[sv] == shape.held_roles
+            ):
+                population[sv] = arcs
+    return population
+
+
+def _held_keys(shape: ShapeDraft) -> tuple[FamilyKey, ...]:
+    """The catalogue families `shape` stands for the members of: its held family, then its
+    ratio twins' (`ShapeDraft.twin_families`)."""
+    held = () if shape.held_family is None else (shape.held_family,)
+    return (*held, *shape.twin_families)
 
 
 def held_family_arcs(shape: ShapeDraft) -> dict[str, dict]:
     """The arcs of every member of the family the catalogue holds for `shape`
     (`ShapeDraft.held_family`) beside the shape's own members, of every role class: unlike
     `shape_population_arcs`, no role-class election narrows them (`ShapeDraft.held_roles`).
-    The shape's own members alone for a shape holding no family. Reads no graph."""
-    own = shape.sv_arc_facts or {}
-    if shape.held_family is None:
-        return dict(own)
-    return {
-        **own,
-        **{sv: arcs for sv, arcs in _held_members(shape.held_family).arcs.items() if sv not in own},
-    }
+    The families of the ratio twins it spans (`ShapeDraft.twin_families`) follow. The
+    shape's own members alone for a shape holding no family. Reads no graph."""
+    population = dict(shape.sv_arc_facts or {})
+    for key in _held_keys(shape):
+        for sv, arcs in _held_members(key).arcs.items():
+            population.setdefault(sv, arcs)
+    return population
 
 
 def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
     """`shape` standing for `members` alone, some of the members it stands for
-    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`). A
-    shape narrowed from a held family's members is seeded, when walked, with the members
-    among them it held before (`ShapeDraft.walk_seeds`), so the family widens what it
-    stands for and never what a walk reads. A shape that held no family stood for its own
-    members alone, and keeps its seeds."""
-    if shape.held_family is None:
+    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`,
+    `ShapeDraft.twin_families`). A shape narrowed from a held family's members is seeded,
+    when walked, with the members among them it held before (`ShapeDraft.walk_seeds`), so
+    the family widens what it stands for and never what a walk reads. A shape that held no
+    family stood for its own members alone, and keeps its seeds."""
+    if not _held_keys(shape):
         return replace(shape, sv_arc_facts=members)
     own = shape.sv_arc_facts or {}
     return replace(
         shape,
         sv_arc_facts=members,
         held_family=None,
+        twin_families=(),
         walk_seeds=frozenset(
             sv
             for sv in members
@@ -2856,13 +2864,13 @@ def held_family_exact(shape: ShapeDraft) -> bool:
 
 
 async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
-    """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
-    request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
-    finds the family read. The phases call it before their first on-loop reader: the bind
-    reads the menu's, the elected shape's among them, before the words it nominates read
-    their members' names, and settling the election reads any the bind did not, which
-    candidate admission, the alternates' walks and refusals read after it. Reads nothing with no
-    memo bound or every family already read."""
+    """Read the families each of `shapes` stands for (`ShapeDraft.held_family`,
+    `ShapeDraft.twin_families`) into the request's memo (`held_family_memo`) off the event
+    loop, so a reader that runs on it finds the family read. The phases call it before their
+    first on-loop reader: the bind reads the menu's, the elected shape's among them, before
+    the words it nominates read their members' names, and settling the election reads any
+    the bind did not, which candidate admission, the alternates' walks and refusals read
+    after it. Reads nothing with no memo bound or every family already read."""
     memo = _held_family_memo.get()
     if memo is None:
         return
@@ -2870,9 +2878,10 @@ async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     origin = served_origin_key()
     keys = list(
         dict.fromkeys(
-            shape.held_family
+            key
             for shape in shapes
-            if shape.held_family is not None and (build_id, origin, shape.held_family) not in memo
+            for key in _held_keys(shape)
+            if (build_id, origin, key) not in memo
         )
     )
     if keys:
@@ -3887,6 +3896,71 @@ def five_tuple_families(
     """The index families of `five_tuple` (`CodeIndex.families_by_five_tuple`), in serving
     order. Empty for a five-tuple the index does not carry."""
     return (index or get_index()).families_by_five_tuple.get(_member_five_tuple(five_tuple), ())
+
+
+@dataclass(frozen=True, slots=True)
+class _RoleTotals:
+    """The role-total relation of one code index's rows (`role_total`)."""
+
+    total_of: Mapping[str, str]
+    """Each row with a role total other than itself, mapped to that total."""
+    twins_of: Mapping[str, tuple[str, ...]]
+    """Each such total, mapped to the rows whose total it is, in index order."""
+
+
+@per_index
+def _role_totals(index: CodeIndex) -> _RoleTotals:
+    """The role totals of `index`'s rows, `statvars` and `listed_statvars` alike: within
+    each five-tuple, the role-class facts of its rows (`statvar_members.role_class_facts`)
+    pair rows that hold one constraint map under nested role sets."""
+    rows_by_five_tuple: dict[MemberFiveTuple, list[StatVarRow]] = defaultdict(list)
+    for row in (*index.statvars, *index.listed_statvars):
+        if row.observation_properties:
+            rows_by_five_tuple[row_five_tuple(row)].append(row)
+    total_of: dict[str, str] = {}
+    for rows in rows_by_five_tuple.values():
+        if len(rows) < 2:
+            continue
+        facts = role_class_facts(
+            {row.dcid: row.constraint_properties for row in rows},
+            {row.dcid: row.observation_properties for row in rows},
+        )
+        holders: dict[tuple[frozenset[tuple[str, str]], frozenset[str]], list[str]] = defaultdict(
+            list
+        )
+        for dcid, twin in facts.twin_of.items():
+            holders[twin].append(dcid)
+        for dcid, (constraint_map, role_set) in facts.twin_of.items():
+            nested = facts.smaller.get((constraint_map, role_set), ())
+            smallest = [s for s in nested if not any(other < s for other in nested)]
+            if len(smallest) != 1:
+                continue
+            (total,) = smallest
+            if len(owners := holders[constraint_map, total]) == 1:
+                total_of[dcid] = owners[0]
+    twins_of: dict[str, list[str]] = defaultdict(list)
+    for dcid, total in total_of.items():
+        twins_of[total].append(dcid)
+    return _RoleTotals(
+        total_of=total_of, twins_of={total: tuple(twins) for total, twins in twins_of.items()}
+    )
+
+
+def role_total(dcid: str, index: CodeIndex | None = None) -> str:
+    """The role total of StatVar `dcid`: the index row with its five-tuple and constraint
+    map whose role set is the smallest of those nested inside its own, `dcid` itself when
+    none is, when two are, or when the index holds no row of `dcid`.
+
+    The by-creditor PPG debt stock (creditor and debtor roles) totals to the PPG debt stock
+    (debtor role alone). Derive keys a role-bearing ratio on its denominator's role total, so
+    a ratio and its by-creditor twin, which divides by the by-creditor stock, are one shape."""
+    return _role_totals(index or get_index()).total_of.get(dcid, dcid)
+
+
+def role_twins(dcid: str, index: CodeIndex | None = None) -> tuple[str, ...]:
+    """The index rows whose role total (`role_total`) is StatVar `dcid` and not themselves,
+    in index order. Empty for a row no other row totals to."""
+    return _role_totals(index or get_index()).twins_of.get(dcid, ())
 
 
 def prepare_index_views() -> None:
