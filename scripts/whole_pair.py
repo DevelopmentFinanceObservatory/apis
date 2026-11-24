@@ -1,25 +1,15 @@
-"""Ask Search for a part and its whole over one axis, and print the pair.
-
-    uv run python scripts/whole_pair.py URL "United States bilateral ODA 2015-2023" provider
-
-Posts the query, then each definite part's own base and entries plus one entry,
-`<axis>:whole`, back as a dataset_resubmit, and prints the `derived` block and each
-figure's values by year. The client edits no identity.
-"""
+"""Post a query, then each part's base and entries plus `<axis>:whole`; print the pairs."""
 
 import json
 import sys
 import urllib.error
 import urllib.request
 
-OPTIONS = {"include_observations": True}
-
 
 def post(url: str, body: dict) -> dict:
-    data = json.dumps({"schema_version": 1, "response_options": OPTIONS, **body}).encode()
-    request = urllib.request.Request(
-        f"{url}/api/search/resolve", data, {"content-type": "application/json"}
-    )
+    data = json.dumps({"schema_version": 1, **body}).encode()
+    headers = {"content-type": "application/json"}
+    request = urllib.request.Request(f"{url}/api/search/resolve", data, headers)
     try:
         with urllib.request.urlopen(request, timeout=600) as response:
             return json.load(response)
@@ -29,54 +19,31 @@ def post(url: str, body: dict) -> dict:
 
 def values(spec: dict) -> dict:
     totals: dict = {}
-    for series in ((spec.get("resolved") or {}).get("observations") or {}).get("series", []):
-        for point in series["points"]:
-            if point.get("value") is not None:
-                totals[point["date"]] = totals.get(point["date"], 0) + point["value"]
+    for series in (spec["resolved"].get("observations") or {}).get("series", []):
+        for point in (p for p in series["points"] if p.get("value") is not None):
+            totals[point["date"]] = totals.get(point["date"], 0) + point["value"]
     return dict(sorted(totals.items()))
 
 
 def whole_pair(url: str, query: str, axis: str) -> list[dict]:
+    options = {"response_options": {"include_observations": True}}
     pairs = []
-    for part in post(url, {"input": {"kind": "raw_text", "query": query}})["parts"]:
-        if part.get("status") != "definite":
-            continue
+    for part in post(url, {"input": {"kind": "raw_text", "query": query}, **options})["parts"]:
         scope = part["spec"]["resolved"]["scope_choices"]
-        entry = {
-            "axis": axis,
-            "option_id": f"{axis}:whole",
-            "provenance": "explicit",
-            "origin": {"kind": "choice", "choice_id": f"{scope['id']}:{axis}"},
-        }
-        whole = post(
-            url,
-            {
-                "input": {
-                    "kind": "dataset_resubmit",
-                    "entries": [
-                        {
-                            "entry_kind": "identity",
-                            "variable_text": f"{axis} whole of {query}",
-                            "identity": scope["base"]["identity"],
-                            "scope_entries": [*scope["entries"], entry],
-                        }
-                    ],
-                }
-            },
+        origin = {"kind": "choice", "choice_id": f"{scope['id']}:{axis}"}
+        entry = {"axis": axis, "option_id": f"{axis}:whole", "provenance": "explicit"}
+        resubmit = {"entry_kind": "identity", "variable_text": f"the whole of {query}"}
+        resubmit |= {"identity": scope["base"]["identity"]}
+        resubmit |= {"scope_entries": [*scope["entries"], {**entry, "origin": origin}]}
+        answer = post(
+            url, {"input": {"kind": "dataset_resubmit", "entries": [resubmit]}, **options}
         )
-        if "refused" in whole:
-            pairs.append({"part": part["spec"]["spec_id"], "refused": whole["refused"]})
-            continue
-        spec = whole["parts"][0]["spec"]
-        pairs.append(
-            {
-                "part": part["spec"]["spec_id"],
-                "whole": spec["spec_id"],
-                "derived": spec["resolved"]["scope_choices"].get("derived"),
-                "part_values": values(part["spec"]),
-                "whole_values": values(spec),
-            }
-        )
+        pair = {"part": part["spec"]["spec_id"], "part_values": values(part["spec"])}
+        if "refused" not in answer:
+            whole = answer["parts"][0]["spec"]
+            pair |= {"whole": whole["spec_id"], "whole_values": values(whole)}
+            pair["derived"] = whole["resolved"]["scope_choices"].get("derived")
+        pairs.append(pair | {"refused": answer.get("refused")})
     return pairs
 
 
