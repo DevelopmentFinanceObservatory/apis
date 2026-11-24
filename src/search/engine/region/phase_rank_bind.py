@@ -203,7 +203,6 @@ from search.engine.retrieval.bound_values import (
     price_basis_order,
     query_phrases_read,
     read_held_families,
-    role_total,
     shape_constraint_values,
     shape_datasets,
     shape_family,
@@ -351,11 +350,7 @@ async def _read_denominators(state: ResolveState, shapes: list[ShapeDraft]) -> N
 
 
 def _kinds_of(reads: Mapping[str, DenominatorRead]) -> dict[str, DenominatorKind]:
-    """The kind of each read denominator, keyed by its role total
-    (`bound_values.role_total`) as `quantity.normalisation_class` looks it up. A
-    denominator and its role twins share a five-tuple and constraints, so they are one
-    kind."""
-    return {role_total(denominator): read.kind for denominator, read in reads.items()}
+    return {denominator: read.kind for denominator, read in reads.items()}
 
 
 def _quantity_denominators(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[GraphRef]:

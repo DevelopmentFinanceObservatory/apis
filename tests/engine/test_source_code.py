@@ -8,8 +8,6 @@ IDS general-government debt service aggregate and its by-creditor twin."""
 from __future__ import annotations
 
 import asyncio
-import copy
-import itertools
 import sys
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
@@ -17,7 +15,8 @@ from dataclasses import replace
 import pytest
 
 from code_index import shared as code_index_shared
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, row_five_tuple
+from code_index.ratio_twins import ratio_twins
 from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow, StatVarRow
 from datasets_api.adapter import resolve_definition_members
@@ -36,11 +35,13 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     bind_member_values,
+    ratio_twins_of,
     served_members,
     shape_five_tuple,
     shape_population_arcs,
 )
 from search.engine.retrieval.derive import derive_shapes
+from search.engine.retrieval.facts import read_five_tuple
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import role_class
 from search.engine.source_code import (
@@ -1219,10 +1220,10 @@ def test_a_ratio_code_elects_its_aggregate_unless_the_creditor_is_open(
     assert _minted_members(resubmitted.spec) == {elected}
 
 
-def _holding(*dcids: str) -> FakeCatalogue:
-    """A catalogue whose tables hold `dcids` with the fake graph's arcs, so each of their
-    families is held."""
-    graph = _graph()
+def _holding(*dcids: str, graph: FakeGraph | None = None) -> FakeCatalogue:
+    """A catalogue whose tables hold `dcids` with `graph`'s arcs, the fake graph's by
+    default, so each of their families is held."""
+    graph = graph or _graph()
     return FakeCatalogue(
         arcs=build_arc_tables(
             dfo={}, base={dcid: graph.node_arcs(dcid) for dcid in dcids}, schema={}
@@ -1287,39 +1288,120 @@ def _share(roles: list[str], denominator: str) -> dict:
     }
 
 
-@pytest.mark.parametrize(
-    "split",
-    ["index-lacks-twin", "roles-order-unlike"],
+def _listing(*dcids_or_rows: str | StatVarRow) -> CodeIndex:
+    """An index listing the packaged rows of each dcid and each row given, built by the
+    constructor so every view it derives, the ratio families among them, reads them."""
+    packaged = code_index_shared.get_index()
+    rows = [
+        item if isinstance(item, StatVarRow) else packaged.statvar_by_dcid(item)
+        for item in dcids_or_rows
+    ]
+    assert None not in rows
+    return CodeIndex(stamp=_STAMP, declarations=(), codes=(), statvars=(), listed_statvars=rows)
+
+
+def _row(packaged_dcid: str, **changes) -> StatVarRow:
+    """The packaged row of `packaged_dcid` with `changes`."""
+    row = code_index_shared.get_index().statvar_by_dcid(packaged_dcid)
+    assert row is not None
+    return replace(row, **changes)
+
+
+# Each recall of a ratio and its by-creditor twin: both, the aggregate alone, the twin alone.
+_RATIO_RECALLS = pytest.mark.parametrize(
+    "recalled",
+    [(_USD_SHARE, _USD_SHARE_BY_CREDITOR), (_USD_SHARE,), (_USD_SHARE_BY_CREDITOR,)],
+    ids=["both", "aggregate", "twin"],
 )
-def test_ratio_members_their_denominators_do_not_order_derive_a_shape_per_denominator(
-    split, bind_catalogue, monkeypatch
+
+
+@_RATIO_RECALLS
+@pytest.mark.parametrize("split", ["index-lacks-twin", "roles-order-unlike"])
+def test_ratios_of_no_family_derive_a_shape_per_denominator_whatever_recall_returns(
+    split, recalled, bind_catalogue, monkeypatch
 ):
-    """The shares derive one shape per denominator when the index holds no row of the
-    by-creditor PPG stock, so its share has no role total to group on, and when the share
-    dividing by the by-creditor stock declares fewer roles than the one dividing by the
-    stock, so the members order unlike their denominators."""
+    """The shares form no ratio family when the index holds no row of the by-creditor PPG
+    stock, and when the share dividing by the by-creditor stock declares fewer roles than
+    the one dividing by the stock, so the classes order unlike their denominators. Each
+    derives its own shape on its own denominator, standing for no member of the other,
+    whichever of them recall returned, while the catalogue holds both."""
     nodes = None
     if split == "index-lacks-twin":
-        index = copy.copy(code_index_shared.get_index())
-        index.listed_statvars = tuple(
-            row for row in index.listed_statvars if row.dcid != _PPG_STOCK_BY_CREDITOR
-        )
-        _serving_index(monkeypatch, index)
+        index = _listing(_PPG_STOCK, _USD_SHARE, _USD_SHARE_BY_CREDITOR)
     else:
+        index = _listing(
+            _PPG_STOCK,
+            _PPG_STOCK_BY_CREDITOR,
+            _row(_USD_SHARE, observation_properties=tuple(_PROVIDER_RECIPIENT)),
+            _row(_USD_SHARE_BY_CREDITOR, observation_properties=tuple(_RECIPIENT)),
+        )
         nodes = {
             _USD_SHARE: _share(_PROVIDER_RECIPIENT, _PPG_STOCK),
             _USD_SHARE_BY_CREDITOR: _share(_RECIPIENT, _PPG_STOCK_BY_CREDITOR),
         }
-    bind_catalogue(_holding(*_STOCKS_AND_SHARES))
+    _serving_index(monkeypatch, index)
+    graph = _graph(nodes=nodes)
+    bind_catalogue(_holding(*_STOCKS_AND_SHARES, graph=graph))
 
-    shapes = derive_shapes(
-        confirmed_svs=[_USD_SHARE, _USD_SHARE_BY_CREDITOR], graph=_graph(nodes=nodes)
-    )
+    shapes = derive_shapes(confirmed_svs=list(recalled), graph=graph)
 
     assert sorted(shape.meas_denom_dcid for shape in shapes) == sorted(
-        (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR)
+        _PPG_STOCK if sv == _USD_SHARE else _PPG_STOCK_BY_CREDITOR for sv in recalled
     )
-    assert all(shape.twin_families == () for shape in shapes)
+    for shape in shapes:
+        assert shape.twin_families == ()
+        assert {
+            read_five_tuple(arcs).meas_denom_dcid for arcs in shape_population_arcs(shape).values()
+        } == {shape.meas_denom_dcid}
+
+
+_EUR_SHARE_BY_CREDITOR = _USD_SHARE_BY_CREDITOR.replace("CurrencyUSD", "CurrencyEUR")
+
+
+@_RATIO_RECALLS
+def test_a_ratio_family_offers_the_same_slots_and_roles_whatever_recall_returns(
+    recalled, bind_catalogue, monkeypatch
+):
+    """DT.CUR.USDL.ZS's by-creditor class holds a creditor-type property and a euro share
+    the aggregate share lacks. The shape the family derives offers both, with the same slot
+    keys, taxonomy, roles, id and twin families, whichever share recall returned and with
+    no family held in the catalogue."""
+    by_creditor = _row(
+        _USD_SHARE_BY_CREDITOR, constraint_properties={**_USD, "creditorType": "Official"}
+    )
+    euro = _row(
+        _USD_SHARE_BY_CREDITOR,
+        dcid=_EUR_SHARE_BY_CREDITOR,
+        constraint_properties={**_USD, "currencyOfDenomination": "CurrencyEUR"},
+    )
+    _serving_index(
+        monkeypatch,
+        _listing(_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _USD_SHARE, by_creditor, euro),
+    )
+    graph = _graph(
+        nodes={
+            row.dcid: {"label": row.dcid, "arcs": _row_arcs(row)}
+            for row in (_row(_USD_SHARE), by_creditor)
+        }
+    )
+    bind_catalogue(_holding())
+
+    def offered(svs: Sequence[str]) -> tuple[object, ...]:
+        (shape,) = derive_shapes(confirmed_svs=list(svs), graph=graph)
+        return (
+            shape.slot_keys,
+            shape.slot_taxonomy,
+            shape.declared_roles,
+            shape.optional_roles,
+            shape.shape_id,
+            shape.twin_families,
+        )
+
+    slot_keys, taxonomy, *_ = both = offered((_USD_SHARE, _USD_SHARE_BY_CREDITOR))
+
+    assert offered(recalled) == both
+    assert "creditorType" in {slot.property_dcid for slot in slot_keys}
+    assert "CurrencyEUR" in {value for values in taxonomy.values() for value in values}
 
 
 # A share by creditor and channel: a third role set over the by-creditor share's, dividing
@@ -1332,22 +1414,30 @@ _USD_SHARE_BY_CHANNEL = f"Amount_FinancialPosition_AmountOutstanding_CurrencyUSD
 def test_a_ratio_over_a_chain_of_three_role_sets_derives_one_shape(bind_catalogue, monkeypatch):
     """Three shares whose denominators are the PPG stock, its breakdown by creditor and its
     breakdown by creditor and channel, nested role sets of one five-tuple and constraint
-    map, derive one shape over the stock with every role and the two extra ones optional."""
+    map, are one ratio family and derive one shape over the stock with every role and the
+    two extra ones optional, standing for the other two classes."""
     packaged = code_index_shared.get_index()
     by_creditor = packaged.statvar_by_dcid(_PPG_STOCK_BY_CREDITOR)
     assert by_creditor is not None
-    rows = [
-        packaged.statvar_by_dcid(_PPG_STOCK),
-        by_creditor,
-        replace(
-            by_creditor,
-            dcid=_PPG_STOCK_BY_CHANNEL,
-            observation_properties=(*by_creditor.observation_properties, _CHANNEL),
-        ),
-    ]
     _serving_index(
         monkeypatch,
-        CodeIndex(stamp=_STAMP, declarations=(), codes=(), statvars=(), listed_statvars=rows),
+        _listing(
+            _PPG_STOCK,
+            _PPG_STOCK_BY_CREDITOR,
+            _USD_SHARE,
+            _USD_SHARE_BY_CREDITOR,
+            replace(
+                by_creditor,
+                dcid=_PPG_STOCK_BY_CHANNEL,
+                observation_properties=(*by_creditor.observation_properties, _CHANNEL),
+            ),
+            _row(
+                _USD_SHARE_BY_CREDITOR,
+                dcid=_USD_SHARE_BY_CHANNEL,
+                measurement_denominator=_PPG_STOCK_BY_CHANNEL,
+                observation_properties=(*_PROVIDER_RECIPIENT, _CHANNEL),
+            ),
+        ),
     )
     nodes = {_USD_SHARE_BY_CHANNEL: _share([*_PROVIDER_RECIPIENT, _CHANNEL], _PPG_STOCK_BY_CHANNEL)}
     bind_catalogue(_holding(*_STOCKS_AND_SHARES))
@@ -1360,6 +1450,10 @@ def test_a_ratio_over_a_chain_of_three_role_sets_derives_one_shape(bind_catalogu
     assert shape.meas_denom_dcid == _PPG_STOCK
     assert role_class(shape) == frozenset({*_PROVIDER_RECIPIENT, _CHANNEL})
     assert shape.optional_roles == frozenset({"financingProvider", _CHANNEL})
+    assert [key.measurement_denominator for key in shape.twin_families] == [
+        _PPG_STOCK_BY_CREDITOR,
+        _PPG_STOCK_BY_CHANNEL,
+    ]
 
 
 # DAC2a's net ODA disbursements to a recipient as a share of its GNI: a role-bearing ratio
@@ -1370,8 +1464,8 @@ _DAC2A_SHARE = f"Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_A
 
 def test_a_ratio_over_a_subject_only_denominator_keeps_its_own(bind_catalogue):
     """DAC2a's share of the recipient's GNI divides by a denominator that declares no
-    roles and so has no role twins: it derives its own shape over GNI with no twin
-    families."""
+    roles, so its share is of no ratio family (`bound_values.ratio_twins_of`): it derives
+    its own shape over GNI with no twin families."""
     nodes = {
         _DAC2A_SHARE: {
             "label": "Net ODA as a share of GNI",
@@ -1388,6 +1482,7 @@ def test_a_ratio_over_a_subject_only_denominator_keeps_its_own(bind_catalogue):
 
     (shape,) = derive_shapes(confirmed_svs=[_DAC2A_SHARE], graph=_graph(nodes=nodes))
 
+    assert ratio_twins_of(shape_five_tuple(shape)) is None
     assert shape.meas_denom_dcid == _GNI
     assert shape.twin_families == ()
     assert role_class(shape) == frozenset(_PROVIDER_RECIPIENT)
@@ -1416,46 +1511,25 @@ def _row_arcs(row: StatVarRow) -> dict:
     }
 
 
-def _row_measure(row: StatVarRow) -> tuple[object, ...]:
-    """What an index row measures, its denominator and roles aside."""
-    return (
-        row.population_type,
-        row.measured_property,
-        row.stat_type,
-        row.measurement_qualifier,
-        tuple(sorted(row.constraint_properties.items())),
-    )
-
-
-def _differ_by_role_twin_denominators(index: CodeIndex, rows: Sequence[StatVarRow]) -> bool:
-    """Whether StatVar `rows` measure one thing over two or more denominators that are
-    index rows of one measure and denominator, apart in their roles alone, each role set
-    nested in the next."""
-    denominators = {row.measurement_denominator for row in rows}
-    if len(denominators) < 2 or None in denominators:
-        return False
-    if len({_row_measure(row) for row in rows}) != 1:
-        return False
-    bases = [index.statvar_by_dcid(d) for d in denominators if d is not None]
-    if any(base is None for base in bases):
-        return False
-    held = [base for base in bases if base is not None]
-    if len({(*_row_measure(b), b.measurement_denominator) for b in held}) != 1:
-        return False
-    role_sets = sorted((frozenset(b.observation_properties) for b in held), key=len)
-    return all(a < b for a, b in itertools.pairwise(role_sets))
+def _family_id(families: Mapping, row: StatVarRow | None) -> int | None:
+    """The identity of the ratio family holding `row`'s five-tuple, None for none."""
+    family = families.get(row_five_tuple(row)) if row is not None else None
+    return id(family) if family is not None else None
 
 
 def test_every_code_over_role_twin_denominators_derives_one_shape(bind_catalogue):
-    """Every source code of the packaged index whose StatVars measure one thing over a
-    denominator and its role twins (IDS's currency and creditor-type shares of the PPG
-    stock) derives one shape, as a stock code and its by-creditor StatVar do."""
+    """Every source code of the packaged index whose StatVars are classes of one ratio
+    family (`code_index.ratio_twins`: IDS's currency and creditor-type shares of the PPG and
+    total debt stocks) derives one shape, as a stock code and its by-creditor StatVar do."""
     index = load_index(INDEX_FIXTURE)
+    families = ratio_twins(index)
     codes = {
         source.code: rows
         for source in index.source_codes
         if None not in (rows := [index.statvar_by_dcid(dcid) for dcid in source.dcids])
-        and _differ_by_role_twin_denominators(index, rows)
+        and len({_family_id(families, row) for row in rows}) == 1
+        and _family_id(families, rows[0]) is not None
+        and len({row.measurement_denominator for row in rows}) > 1
     }
     assert len(codes) >= 13
     bind_catalogue(_holding())

@@ -75,6 +75,7 @@ from code_index.members import (
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
+from code_index.ratio_twins import RatioTwins, ratio_twins
 from code_index.scope_conventions import BASIS_MEASURES, NETTING_BASIS_SLOT, BasisMeasure
 from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import (
@@ -157,7 +158,6 @@ from statvar_members import (
     elect_role_class,
     group_of_arcs,
     member_family_of,
-    role_class_facts,
     shared_enumerator,
 )
 
@@ -3664,8 +3664,8 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         return on_denominator(shape, _unelected_denominator(shape, recall, query))
     role_set, least_constrained = elected
     if spans:
-        # Derive merges only denominators whose members order alike
-        # (`derive._denominators_order_alike`), so the elected role set divides by one.
+        # Each class of a ratio family declares one role set (`ratio_twins_of`), so the
+        # elected role set divides by one denominator.
         shape = on_denominator(shape, _member_denominator(recall[least_constrained[0]]))
         members = shape.sv_arc_facts or {}
     kept = {
@@ -3696,14 +3696,10 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
 
 
 def spans_ratio_twins(shape: ShapeDraft) -> bool:
-    """Whether `shape` stands for a ratio and its denominator twins, which derive groups on
-    their denominator's role total: it carries the twins' catalogue families
-    (`ShapeDraft.twin_families`), or one of its members divides by a denominator other
-    than its own."""
-    return bool(shape.twin_families) or any(
-        read_five_tuple(arcs).meas_denom_dcid != shape.meas_denom_dcid
-        for arcs in (shape.sv_arc_facts or {}).values()
-    )
+    """Whether `shape` stands for every role class of a ratio family
+    (`ratio_twins_of`), which derive merges into one shape over the base class: it carries
+    the other classes' families (`ShapeDraft.twin_families`)."""
+    return bool(shape.twin_families)
 
 
 def _member_denominator(member: MemberFacts) -> str | None:
@@ -3751,7 +3747,12 @@ def on_denominator(shape: ShapeDraft, denominator: str | None) -> ShapeDraft:
 
     five_tuple = shape_five_tuple(shape)._replace(meas_denom_dcid=denominator)
     key = FamilyKey(*five_tuple, True)
-    held_family = key if key in (shape.held_family, *shape.twin_families) else None
+    held_family = (
+        key
+        if key == shape.held_family
+        or (key in shape.twin_families and current_catalogue().held_family(key) is not None)
+        else None
+    )
     population = shape_population_arcs(shape)
     members = {
         sv: arcs
@@ -4017,79 +4018,22 @@ def five_tuple_families(
     return (index or get_index()).families_by_five_tuple.get(_member_five_tuple(five_tuple), ())
 
 
-@dataclass(frozen=True, slots=True)
-class _RoleTotals:
-    """The role-total relation of one code index's rows (`role_total`)."""
-
-    total_of: Mapping[str, str]
-    """Each row with a role total other than itself, mapped to that total."""
-    twins_of: Mapping[str, tuple[str, ...]]
-    """Each such total, mapped to the rows whose total it is, in index order."""
-
-
-@per_index
-def _role_totals(index: CodeIndex) -> _RoleTotals:
-    """The role totals of `index`'s rows, `statvars` and `listed_statvars` alike: within
-    each five-tuple, the role-class facts of its rows (`statvar_members.role_class_facts`)
-    pair rows that hold one constraint map under nested role sets."""
-    rows_by_five_tuple: dict[MemberFiveTuple, list[StatVarRow]] = defaultdict(list)
-    for row in (*index.statvars, *index.listed_statvars):
-        if row.observation_properties:
-            rows_by_five_tuple[row_five_tuple(row)].append(row)
-    total_of: dict[str, str] = {}
-    for rows in rows_by_five_tuple.values():
-        if len(rows) < 2:
-            continue
-        facts = role_class_facts(
-            {row.dcid: row.constraint_properties for row in rows},
-            {row.dcid: row.observation_properties for row in rows},
-        )
-        holders: dict[tuple[frozenset[tuple[str, str]], frozenset[str]], list[str]] = defaultdict(
-            list
-        )
-        for dcid, twin in facts.twin_of.items():
-            holders[twin].append(dcid)
-        for dcid, (constraint_map, role_set) in facts.twin_of.items():
-            nested = facts.smaller.get((constraint_map, role_set), ())
-            smallest = [s for s in nested if not any(other < s for other in nested)]
-            if len(smallest) != 1:
-                continue
-            (total,) = smallest
-            if len(owners := holders[constraint_map, total]) == 1:
-                total_of[dcid] = owners[0]
-    twins_of: dict[str, list[str]] = defaultdict(list)
-    for dcid, total in total_of.items():
-        twins_of[total].append(dcid)
-    return _RoleTotals(
-        total_of=total_of, twins_of={total: tuple(twins) for total, twins in twins_of.items()}
-    )
-
-
-def role_total(dcid: str, index: CodeIndex | None = None) -> str:
-    """The role total of StatVar `dcid`: the index row with its five-tuple and constraint
-    map whose role set is the smallest of those nested inside its own, `dcid` itself when
-    none is, when two are, or when the index holds no row of `dcid`.
-
-    The by-creditor PPG debt stock (creditor and debtor roles) totals to the PPG debt stock
-    (debtor role alone). Derive keys a role-bearing ratio on its denominator's role total, so
-    a ratio and its by-creditor twin, which divides by the by-creditor stock, are one shape."""
-    return _role_totals(index or get_index()).total_of.get(dcid, dcid)
-
-
-def role_twins(dcid: str, index: CodeIndex | None = None) -> tuple[str, ...]:
-    """The index rows whose role total (`role_total`) is StatVar `dcid` and not themselves,
-    in index order. Empty for a row no other row totals to."""
-    return _role_totals(index or get_index()).twins_of.get(dcid, ())
+def ratio_twins_of(five_tuple: FiveTuple, index: CodeIndex | None = None) -> RatioTwins | None:
+    """The ratio family (`code_index.ratio_twins.RatioTwins`) one of whose role classes is
+    `five_tuple`, or None. The ratio's aggregate and its by-creditor twin, which divides by
+    the by-creditor stock, are two classes of one family."""
+    return ratio_twins(index or get_index()).get(_member_five_tuple(five_tuple))
 
 
 def prepare_index_views() -> None:
     """Loads the release's code index and measure index and builds the views of the index
-    that search reads on every resolve: its five-tuples (`index_carries_five_tuple`) and
-    the member views (`code_index.members.prepare_member_views`). Each is otherwise built
+    that search reads on every resolve: its five-tuples (`index_carries_five_tuple`), its
+    ratio families (`ratio_twins_of`) and the member views (`code_index.members.prepare_member_views`). Each is otherwise built
     by the first request that reads it, about 135 ms on the dev release's code index."""
     index = get_index()
     get_measure_index()
     _index_five_tuples(index)
+    ratio_twins(index)
     prepare_member_views(index)
 
 
