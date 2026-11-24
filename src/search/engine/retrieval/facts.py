@@ -64,6 +64,15 @@ def read_name(arcs: dict, dcid: str) -> str | None:
     return label_or_self_name(names, dcid)
 
 
+def read_description(arcs: dict) -> str | None:
+    """Return the first non-empty `->description` value in a node's already-fetched arcs,
+    or None when it has none."""
+    return next(
+        (value for n in arcs.get("description", {}).get("nodes", []) if (value := n.get("value"))),
+        None,
+    )
+
+
 def _value_for(arcs: dict, prop: str) -> str | None:
     """Extract a single string value from an arcs entry (for literal props)."""
     nodes = arcs.get(prop, {}).get("nodes", [])

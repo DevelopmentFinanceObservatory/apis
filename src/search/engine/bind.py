@@ -9,6 +9,7 @@ inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
@@ -38,6 +39,7 @@ from search.engine.retrieval.bound_values import (
     shape_invariants,
     shape_partly_stated,
 )
+from search.engine.retrieval.facts import read_description, read_name
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
 from search.models import Axis, RoleAxis
 from search.render.labels import _humanize_ref
@@ -484,6 +486,13 @@ _MAX_TAXONOMY_VALUES_SHOWN = 20
 # Limit sample member dcids shown per shape.
 _MAX_SAMPLE_DCIDS_SHOWN = 5
 
+# The longest description a menu shape states, before its trailing ellipsis.
+_MAX_DESCRIPTION_CHARS = 150
+
+# A sentence ends at a stop followed by space and a capital or an opening bracket, so
+# "U.S. dollars" and "e.g. driving" stay inside one sentence.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
+
 # Render an alternatives group only when at least two rows survive filtering.
 _MIN_TIE_ROWS_TO_RENDER = 2
 
@@ -531,6 +540,7 @@ class StatedReading(NamedTuple):
     field as the prompt prints it (`stated_reading`)."""
 
     label: str
+    description: str | None
     origin: str
     family: str
     population_type: str | None
@@ -540,8 +550,36 @@ class StatedReading(NamedTuple):
     denominator: str | None
 
 
+def _label_description(shape: ShapeDraft) -> str | None:
+    """The first sentence of the graph description of the member `shape` is named after,
+    the first of its members whose name is its label, whitespace collapsed and cut at a
+    word boundary to `_MAX_DESCRIPTION_CHARS` with an ellipsis. None when no member carries
+    the label as its name, the member has no description, or the sentence only repeats the
+    label."""
+    arcs = next(
+        (
+            arcs
+            for dcid, arcs in (shape.sv_arc_facts or {}).items()
+            if read_name(arcs, dcid) == shape.label
+        ),
+        None,
+    )
+    description = read_description(arcs) if arcs is not None else None
+    if description is None:
+        return None
+    text = " ".join(description.split())
+    sentence = _SENTENCE_END.split(text, maxsplit=1)[0]
+    if sentence.rstrip(".").casefold() == shape.label.casefold():
+        return None
+    if len(sentence) <= _MAX_DESCRIPTION_CHARS:
+        return sentence
+    cut = sentence[: _MAX_DESCRIPTION_CHARS + 1].rsplit(" ", 1)[0]
+    return f"{cut.rstrip(' ,;:')}..."
+
+
 def stated_reading(shape: ShapeDraft) -> StatedReading:
-    """The reading the bind menu states for `shape`: its label, its origin, its family
+    """The reading the bind menu states for `shape`: its label, the description of the
+    member it is named after (`_label_description`), its origin, its family
     (standard, or the roles its series declare), its five-tuple, and its denominator by
     meaning and the party whose total it is (`menu_denominator`). The prompt prints these
     fields and `rank_elected` compares them, so two shapes the menu states alike are equal here. The sample member
@@ -549,6 +587,7 @@ def stated_reading(shape: ShapeDraft) -> StatedReading:
     roles = _declared_role_names(shape)
     return StatedReading(
         label=shape.label,
+        description=_label_description(shape),
         origin=_UN_ORIGIN if is_un_shape(shape) else _OUR_ORIGIN,
         family=f"flow with roles {', '.join(roles)}" if roles else STANDARD_SHAPE_LABEL,
         population_type=shape.pop_type_dcid,
@@ -930,6 +969,8 @@ def _build_universal_bind_prompt(
         lines.append(f"Shape {idx}:")
         stated = stated_reading(shape)
         lines.append(f"  label: {stated.label}")
+        if stated.description:
+            lines.append(f"  description: {stated.description}")
         lines.append(f"  origin: {stated.origin}")
         if availability:
             lines.append(f"  {AVAILABILITY_LABEL}: {_AVAILABILITY_TEXT[availability[idx]]}")

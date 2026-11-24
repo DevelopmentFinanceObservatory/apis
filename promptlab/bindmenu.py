@@ -1,8 +1,8 @@
 """Parse and truncate the candidate-shape menu in bind prompts.
 
 `parse_menu` accepts the builder's exact format and skips the frame, fixed-context, dropped-
-qualifier, availability, taxonomy-label and not-electable blocks. `truncate_menu` keeps the
-original text and limits the shape count and header.
+qualifier, description, availability, taxonomy-label and not-electable blocks.
+`truncate_menu` keeps the original text and limits the shape count and header.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ _VARIABLE_RE = re.compile(r"Variable phrase: (?P<variable>.*)")
 _HEADER_RE = re.compile(r"CANDIDATE SHAPES \((?P<count>\d+) total\):")
 _SHAPE_RE = re.compile(r"Shape (?P<index>\d+):")
 _LABEL_RE = re.compile(r"  label: (?P<label>.*)")
+_DESCRIPTION_RE = re.compile(r"  description: .*")
 _ORIGIN_RE = re.compile(r"  origin: .*")
 _AVAILABILITY_RE = re.compile(rf"  {re.escape(AVAILABILITY_LABEL)}: (yes|no|unknown)")
 _FAMILY_RE = re.compile(r"  family: .*")
@@ -126,6 +127,11 @@ def _parse_shape(lines: list[str], pos: int, idx: int) -> tuple[MenuEntry, int]:
 
     match, pos = _match(lines, pos, _LABEL_RE, "a 'label:' line")
     label = match.group("label")
+
+    # A shape whose label member has no graph description, and captures made before the
+    # menu stated descriptions, have no description line.
+    if pos < len(lines) and _DESCRIPTION_RE.fullmatch(lines[pos]):
+        pos += 1
 
     # Captures made before the menu stated each shape's origin have no origin line.
     if pos < len(lines) and _ORIGIN_RE.fullmatch(lines[pos]):

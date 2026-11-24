@@ -908,6 +908,75 @@ def test_each_menu_shape_states_whether_it_has_data_at_the_named_places():
     assert "data at the named places" not in _build_universal_bind_prompt("widget", shapes)
 
 
+_MARKET_CAP = "Amount_Stock_AsFractionOf_Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+# The market-cap StatVar's `name` and `description` arcs as the dev graph's `->*` read gives
+# them.
+_MARKET_CAP_ARCS = {
+    "name": {
+        "nodes": [
+            {
+                "provenanceId": "dc/base/Schema",
+                "value": "Stock Value as a Percentage of Nominal GDP",
+            }
+        ]
+    },
+    "description": {
+        "nodes": [
+            {
+                "provenanceId": "dc/base/Schema",
+                "value": (
+                    "Market capitalization (also known as market value) is the share price "
+                    "times the number of shares outstanding (including their several classes) "
+                    "for listed domestic companies. Investment funds, unit trusts, and "
+                    "companies whose only business goal is to hold shares of other listed "
+                    "companies are excluded. Data are end of year values. World Federation "
+                    "of Exchanges database."
+                ),
+            }
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("description", "line"),
+    [
+        (
+            None,
+            "  description: Market capitalization (also known as market value) is the share "
+            "price times the number of shares outstanding (including their several classes) "
+            "for...",
+        ),
+        (
+            "Market capitalization of listed domestic companies.  Data are\nend of year values.",
+            "  description: Market capitalization of listed domestic companies.",
+        ),
+        ("Stock Value as a Percentage of Nominal GDP.", None),
+        ("", None),
+    ],
+    ids=["cut", "first-sentence", "repeats-label", "absent"],
+)
+def test_a_menu_shape_states_its_label_members_description(description, line):
+    """The line under `label:` is the first sentence of the description of the member the
+    shape is named after, whitespace collapsed and cut at a word boundary with an ellipsis.
+    A description that only repeats the label, or none, adds no line."""
+    arcs = dict(_MARKET_CAP_ARCS)
+    if description is not None:
+        arcs["description"] = {"nodes": [{"value": description}] if description else []}
+    shape = dataclasses.replace(
+        _shape("market_cap"),
+        label="Stock Value as a Percentage of Nominal GDP",
+        sv_arc_facts={"Amount_Stock_Unnamed": {}, _MARKET_CAP: arcs},
+    )
+    lines = _build_universal_bind_prompt("government debt", [shape]).splitlines()
+
+    described = [ln for ln in lines if ln.startswith("  description:")]
+    assert described == ([line] if line else [])
+    if line:
+        label = lines.index("  label: Stock Value as a Percentage of Nominal GDP")
+        assert lines[label + 1] == line
+
+
 _GNI = "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
 
 

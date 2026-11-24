@@ -82,7 +82,8 @@ _INDEX_SOURCED_SHAPE = ShapeDraft(
 )
 
 SHAPES: list[ShapeDraft] = [
-    # 0: denominator-only; 25 taxonomy values exceed the 20-value cap, and 6 samples exceed 5.
+    # 0: denominator-only; 25 taxonomy values exceed the 20-value cap, 6 samples exceed 5,
+    # and the member named "GDP per capita" states a description line.
     ShapeDraft(
         shape_id="s0",
         label="GDP per capita",
@@ -93,7 +94,13 @@ SHAPES: list[ShapeDraft] = [
         meas_denom_dcid="Count_Person",
         slot_keys=(SlotKeyDraft(axis="what", property_dcid="p:unit", label="unit"),),
         slot_taxonomy={"what:p:unit": [f"unit{i}" for i in range(25)]},
-        sv_arc_facts={f"dc/sv{i}": {} for i in range(6)},
+        sv_arc_facts={
+            "dc/sv0": {
+                "name": {"nodes": [{"value": "GDP per capita"}]},
+                "description": {"nodes": [{"value": "Output per person."}]},
+            },
+            **{f"dc/sv{i}": {} for i in range(1, 6)},
+        },
         representative_score=0.9123,
     ),
     # 1: unresolved denominator, no slots, and no sample DCIDs.

@@ -11,7 +11,7 @@ Query -> Extract -> Recall -> Shape -> Bind -> Materialise -> Ground -> Spec
 1. **Extract**: Parses natural-language input into structured components, identifying target variable phrases, geographic entities, temporal constraints, and role axes.
 2. **Recall**: Queries the indicator resolver on our Data Commons and on the UN System Data Commons in parallel, keeps the candidates the origin catalogue admits, and ranks each Data Commons' candidates by cosine similarity score.
 3. **Shape**: Maps recalled variables into structural sentence shapes, defining required slots across dimensions (`what`, `how`, `where`, `when`, `source`).
-4. **Bind**: Grounds identified entities, geographic areas, dates, units, and facet coordinates against knowledge graph nodes and SDMX dimensions.
+4. **Bind**: Grounds identified entities, geographic areas, dates, units, and facet coordinates against knowledge graph nodes and SDMX dimensions. The bind menu states each shape by its label and the first sentence of the graph description of the member it is named after (`bind._label_description`), then its origin, family, five-tuple, constraint slots and sample members.
 5. **Materialise**: Evaluates observation availability across candidate slices and selects valid series coordinates using `materialise` graph and SDMX readers.
 6. **Ground**: Assembles the canonical `Spec` definition, computes the deterministic content hash (`spec_id`), and returns the typed `ResolveResponse`.
 
