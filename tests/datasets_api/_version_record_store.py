@@ -226,6 +226,10 @@ def _role_columns(output_profile: str | None) -> str | None:
 _JSONB_REPLACE = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb, false\)")
 """A `jsonb_set` that sets one existing top-level key and adds none (`create_missing` false),
 SQLite's `json_replace`."""
+_JSONB_SET = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb\)")
+"""A `jsonb_set` that sets one top-level key, adding it when missing, SQLite's `json_set`."""
+_JSONB_TYPEOF = re.compile(r"jsonb_typeof\((\w+)\)")
+"""The JSON type of a JSONB column, SQLite's `json_type`."""
 _JSONB_EQUALS = re.compile(r"(\w+(?: -> '\w+')?) = %s::jsonb")
 """A JSONB column, or one key of it, compared with a parameter in a `WHERE` clause."""
 
@@ -239,6 +243,8 @@ def _to_sqlite(sql: str) -> str:
     # SQLite runs one writer at a time, so a row lock has nothing to add.
     sql = sql.removesuffix(" FOR UPDATE")
     sql = _JSONB_REPLACE.sub(r"json_replace(\1, '$.\2', json(%s))", sql)
+    sql = _JSONB_SET.sub(r"json_set(\1, '$.\2', json(%s))", sql)
+    sql = _JSONB_TYPEOF.sub(r"json_type(\1)", sql)
     # A JSONB comparison compares values; `json` minifies both texts alike.
     head, where, condition = sql.partition(" WHERE ")
     sql = head + where + _JSONB_EQUALS.sub(r"json(\1) = json(%s)", condition)
