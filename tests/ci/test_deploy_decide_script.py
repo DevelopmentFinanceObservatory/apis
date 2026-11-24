@@ -99,9 +99,7 @@ def _fake_gcloud(bin_dir: Path, *, service: dict | None = None, exit_code: int =
     """A PATH shim standing in for `gcloud run services describe`: prints the service as JSON
     under `--format=json`, and the template's image under the value format that reads it."""
     bin_dir.mkdir(exist_ok=True)
-    image = (
-        service["spec"]["template"]["spec"]["containers"][0].get("image", "") if service else ""
-    )
+    image = service["spec"]["template"]["spec"]["containers"][0].get("image", "") if service else ""
     script = bin_dir / "gcloud"
     script.write_text(
         f"""#!/usr/bin/env bash

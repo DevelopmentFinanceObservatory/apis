@@ -358,9 +358,7 @@ def test_require_probe_turns_an_unprobed_revision_into_an_error(
     """Production requires every route to answer 200."""
     server = serve(_ok() | replies)
 
-    result, output = _run_warm(
-        server, tmp_path, deadline=1, extra_env={"REQUIRE_PROBE": required}
-    )
+    result, output = _run_warm(server, tmp_path, deadline=1, extra_env={"REQUIRE_PROBE": required})
 
     assert result.returncode == 0, result.stderr
     assert output == f"status={status}\n"
