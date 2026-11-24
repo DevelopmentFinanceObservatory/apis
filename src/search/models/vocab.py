@@ -178,10 +178,15 @@ ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headli
 """What one component of a compiled scope holds: the whole answer of a plain Spec, the
 bilateral or imputed multilateral part of a composite, or the net or grant-equivalent
 years of the OECD headline basis."""
-SCOPE_OPTION_ID_PATTERN = r"^(sector|region|measure_basis|provider|donor|recipient):[A-Za-z0-9_+]+$"
+SCOPE_OPTION_ID_PATTERN = (
+    r"^(sector|region|measure_basis|provider|donor|recipient):(whole:)?[A-Za-z0-9_+]+$"
+)
 """An option id: its axis, a colon and the option's declared value (`sector:120+130`,
 `region:members_and_residuals`, `measure_basis:gross`, `provider:inclusive`). One option
-has one id on every part, so carried entries and calculations compare ids."""
+has one id on every part, so carried entries and calculations compare ids. An entry asks
+for a part's whole with `<axis>:whole`, or for an option offered in its place with
+`<axis>:whole:<value>` (`provider:whole:inclusive`), which a plain switch to `<value>` is
+not."""
 AssumptionKind = Literal["name_corrected", "declared_default", "open_role", "place_scope"]
 """Every kind of value an answer fills that its request did not ask for (see
 `models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed

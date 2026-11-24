@@ -24,7 +24,8 @@ holds a series of the part's variables at it beside the other side's places
 (`series_held`), so its availability is stated in the same build as every other option's;
 unavailable (`option_not_covered`) where it holds none or no variable is elected there, and
 (`coverage_unknown`) where the snapshot cannot say. A side the part leaves open or names
-only by its whole already is whole, and the axis is absent.
+only by its whole already is whole, and an entry asking for its whole refuses
+`part_is_whole`; a side the dataset publishes no party on is absent.
 
 A donor side summed over its members counts every reporting donor, the multilateral
 agencies among them, so it conflicts (`agencies_counted_twice`) with the provider options
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from datetime import date
 
 from code_index.composites import (
     DECLARED_COMPOSITES,
@@ -51,7 +53,7 @@ from code_index.scope_conventions import BILATERAL_SOURCES
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.catalogue.counts import COUNTRY_PREFIX
-from search.engine.region.coverage_series import series_held
+from search.engine.region.coverage_series import series_held, series_span
 from search.engine.retrieval.bound_values import identity_dataset, served_members
 from search.engine.retrieval.whole_reading import identity_years, whole_reading
 from search.models import (
@@ -92,13 +94,17 @@ def side_rule(axis: ScopeAxis):
 def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
     flow = _SIDE_AXIS[axis]
     keys = [key for key in base.entities if role_key_axis(key) == flow]
-    if len(keys) != 1 or flow in (base.open_roles or ()):
+    if len(keys) > 1:
         return None
-    (key,) = keys
-    named = sorted(base.entities[key])
     table_identity, dataset, rebound = _table_of(base, flow)
     if dataset is None:
         return None
+    if not keys or flow in (base.open_roles or ()):
+        # A side left open, or totalled where the dataset publishes parties on it, is whole.
+        published = (flow, dataset) in get_index().side_classes
+        return _whole_already(axis, flow, []) if published else None
+    (key,) = keys
+    named = sorted(base.entities[key])
     containing = _containing(dataset, flow)
     marked = () if rebound or containing else _marked(dataset, flow, base.requested_window)
     total = rebound or containing or (marked[0] if len(marked) == 1 else None)
@@ -108,7 +114,7 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
     if named == [total] or (len(marked) > 1 and len(named) == 1 and named[0] in marked):
         return _whole_already(axis, key, named)
     outside = (
-        _outside(named, containing, base.requested_window)
+        _outside(named, containing, base.requested_window, _years(table_identity, facts))
         if rebound is None and containing is not None
         else ()
     )
@@ -196,15 +202,15 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
 
 
 def _whole_already(axis: ScopeAxis, key: str, named: list[str]) -> AxisTable:
-    """The table of a side the part names by its whole: one option, held, which is the
-    whole, so an entry asking for it refuses `part_is_whole`."""
+    """The table of a side the part names by its whole, or leaves open: one option, held,
+    which is the whole, so an entry asking for it refuses `part_is_whole`."""
     whole = f"{axis}:whole"
     return AxisTable(
         axis=axis,
         options=(
             Option(
                 option_id=whole,
-                label=_label(named[0]),
+                label=_label(named[0]) if named else "every member",
                 binding=SideBinding(role=key, refs=named),
                 availability=OptionAvailability(status="available"),
             ),
@@ -265,12 +271,20 @@ def _containing(dataset: str, flow: RoleAxis) -> str | None:
     return None if held is None else held.total
 
 
-def _outside(named: Sequence[str], total: str, window: IdentityWindow) -> tuple[str, ...]:
+def _outside(
+    named: Sequence[str], total: str, window: IdentityWindow, years: tuple[int, int] | None
+) -> tuple[str, ...]:
     """The parties of `named` a containing total does not hold over `window`: those whose
     members (a country itself, or the members of the group it totals on any day of the
     window) are not all members of the group `total` totals on every day of it
-    (`region.policy_members_throughout`), as Korea is not of the DAC's before 2010."""
+    (`region.policy_members_throughout`), as Korea is not of the DAC's before 2010. A window
+    open at either end reads the part's own data `years` there, where the snapshot holds
+    them."""
     first, last = _window_days(window)
+    if years is not None and first == date.min:
+        first = date(years[0], 1, 1)
+    if years is not None and last == date.max:
+        last = date(years[1], 12, 31)
     index = get_index()
     held = _group_members(total, index, lambda group: policy_members_throughout(group, first, last))
     return tuple(
@@ -283,6 +297,20 @@ def _outside(named: Sequence[str], total: str, window: IdentityWindow) -> tuple[
         )
         or not members <= held
     )
+
+
+def _years(identity: BaseIdentity, facts: ScopeFacts) -> tuple[int, int] | None:
+    """The first and last year the snapshot holds a series of `identity`'s variables at the
+    places it names (`series_span`), None where it holds none."""
+    bound = {
+        axis: dcids
+        for role, dcids in identity.entities.items()
+        if (axis := role_key_axis(role)) is not None
+    }
+    variables = served_members(identity)
+    if not variables:
+        return None
+    return series_span(facts.coverage.index, variables=variables, bound=bound)
 
 
 def _group_members(

@@ -32,12 +32,15 @@ class AxisTable:
     where the axis declares none, with `whole_cause` why. `whole_alternatives` are the options
     a client may ask for in place of the whole: beside a declared whole, the other options
     that also hold the part (DAC2a's inclusive scope beside total ODA); without one, or where
-    the whole is unavailable, the options that can stand for it. `whole_base` is the identity the whole
-    is compiled over where the part's identity cannot serve the whole's option: DAC2a's total
-    ODA to all recipients, the whole of a composite over the whole recipient population,
-    whose own identity would read total ODA over the open side and count its regional totals
-    beside their members.
-    """
+    the whole is unavailable, the options that can stand for it. `whole_base` is the identity
+    the whole is compiled over where the part's identity cannot serve the whole's option:
+    DAC2a's total ODA to all recipients, the whole of a composite over the whole recipient
+    population, whose own identity would read total ODA over the open side and count its
+    regional totals beside their members.
+
+    Raises `ScopeTableError` for an empty table, a repeated option, an option of another
+    axis or binding kind, a `preference`, `held` or `rules` naming no option, `rules`
+    naming no rule for `held`, or a `whole` or `whole_alternatives` naming no option."""
 
     axis: ScopeAxis
     options: tuple[Option, ...]

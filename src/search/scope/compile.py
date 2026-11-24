@@ -79,13 +79,15 @@ class Compiled:
 class Refusal:
     """A selection compile refuses. `entry` is the index of the refused entry among those
     posted, `blocker` the index of the entry it conflicts with, None when none does, and
-    `cause` names what refused it."""
+    `cause` names what refused it. `alternatives` are the options a client may post in
+    place of the entry, and `labels` each one's label, by option id."""
 
     code: RefusalCode
     entry: int
     cause: str
     blocker: int | None = None
     alternatives: tuple[str, ...] = ()
+    labels: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

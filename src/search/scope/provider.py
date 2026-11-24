@@ -338,7 +338,7 @@ def _with_whole(
         option_id
         for alternative in (() if named else row.alternatives)
         if (option := table.option(option_id := provider_option_id(alternative))) is not None
-        and option.availability.status != "unavailable"
+        and option.availability.status == "available"
         and option_id != table.held
     )
     whole = provider_option_id(scope)

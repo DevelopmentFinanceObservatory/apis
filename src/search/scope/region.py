@@ -125,18 +125,33 @@ def policy_members(ref: str) -> frozenset[str]:
 
 def policy_members_throughout(ref: str, first: date, last: date) -> frozenset[str]:
     """The countries the membership policy holds for group or region `ref` on every day from
-    `first` to `last`, empty when it holds none. An undated membership holds its members on
-    every day."""
+    `first` to `last`, empty when it holds none. A member's rows are merged, so one that left
+    and rejoined the next day holds throughout, and an undated membership holds its members
+    on every day."""
     policy = shared_membership_policy()
     if ref not in policy:
         return frozenset()
-    return frozenset(
-        row.member
-        for row in policy.get(ref).rows
-        if row.member_class == COUNTRY_CLASS
-        and (row.valid_from is None or row.valid_from <= first)
-        and (row.valid_until is None or last < row.valid_until)
-    )
+    spans: dict[str, list[tuple[date, date]]] = {}
+    for row in policy.get(ref).rows:
+        if row.member_class == COUNTRY_CLASS:
+            spans.setdefault(row.member, []).append(
+                (row.valid_from or date.min, row.valid_until or date.max)
+            )
+    return frozenset(member for member, held in spans.items() if _covers(held, first, last))
+
+
+def _covers(spans: list[tuple[date, date]], first: date, last: date) -> bool:
+    """Whether `spans`, each from its first day to the day it ends (exclusive, `date.max`
+    for none), together hold every day from `first` to `last`."""
+    reached = first
+    for start, until in sorted(spans):
+        if start > reached:
+            return False
+        if until > reached:
+            reached = until
+        if reached > last or reached == date.max:
+            return True
+    return False
 
 
 def policy_members_between(ref: str, first: date, last: date) -> frozenset[str]:
