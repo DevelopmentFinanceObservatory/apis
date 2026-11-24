@@ -327,10 +327,21 @@ class _Tracing(NamedTuple):
 def _client() -> _Tracing:
     """The process's Langfuse client, on a tracer provider of its own, exporting through an OTLP
     exporter wrapped in `_ExportResults`. Langfuse wires neither host, auth nor timeout into an
-    exporter it is given, so this builds the endpoint and headers its default exporter sends,
-    `LANGFUSE_OTEL_TRACES_EXPORT_PATH` included. A test posts through both to one local host and
-    asserts the same path and headers, so a Langfuse upgrade that changes either fails it."""
+    exporter it is given, so this builds the endpoint (`LANGFUSE_OTEL_TRACES_EXPORT_PATH` included),
+    headers (including `x-langfuse-ingestion-version: 4`), compression and request size limit its
+    default exporter sends. Compression comes from the SDK's own resolver, gzip unless
+    `LANGFUSE_OTEL_COMPRESSION` or the OTLP compression variables say otherwise. A test posts
+    through both to one local host and asserts the same path, headers (`Content-Encoding` among
+    them) and request size limit (`LANGFUSE_OTEL_MAX_BATCH_SIZE_BYTES`), so a Langfuse upgrade that
+    changes any of them fails it."""
     from langfuse import Langfuse
+
+    # Private SDK helpers, the ones its default exporter calls; the parity test in
+    # tests/engine/test_resolve_trace.py fails if a Langfuse upgrade renames or moves them.
+    from langfuse._client.span_processor import (
+        _resolve_compression,
+        _resolve_max_batch_size_bytes,
+    )
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
 
@@ -347,8 +358,11 @@ def _client() -> _Tracing:
             "x-langfuse-sdk-name": "python",
             "x-langfuse-sdk-version": version("langfuse"),
             "x-langfuse-public-key": public_key,
+            "x-langfuse-ingestion-version": "4",
         },
         timeout=EXPORT_TIMEOUT_S,
+        compression=_resolve_compression(None),
+        max_request_size=_resolve_max_batch_size_bytes(),
     )
     results = _ExportResults(exporter)
     client = Langfuse(

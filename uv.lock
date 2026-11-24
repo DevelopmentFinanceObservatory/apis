@@ -1541,7 +1541,7 @@ wheels = [
 
 [[package]]
 name = "langfuse"
-version = "4.9.1"
+version = "5.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -1551,11 +1551,12 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "packaging" },
     { name = "pydantic" },
+    { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/9a/c2e4b5c33a225a0158de0e774396823612a6c5beea21cde42e95b196c398/langfuse-4.9.1.tar.gz", hash = "sha256:e3d7162a8004f71abd6ad90fba2f3a7d0088cbdce1c77deea521837d49580ab4", size = 339957, upload-time = "2026-06-19T09:30:49.841Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/b3/65dbc94d809676053b65e89fda729ef7d8a1d13bbb89f2ab407639f631f2/langfuse-5.2.0.tar.gz", hash = "sha256:8cde9e91b44b53444906af9b37efa9c29c647a9f45f9f8435a638026cb3d4693", size = 383092, upload-time = "2026-11-05T09:53:48.439Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/9e/2b21989730ebb613118a667e59f652aebb5a1ca07de10984bf28a02a888f/langfuse-4.9.1-py3-none-any.whl", hash = "sha256:3feb00679aff2ff45b0e786574c748d7c40d23768452e17e3a02e8706b7cbce3", size = 599839, upload-time = "2026-06-19T09:30:48.4Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/48/715e2b612d5d20989e4a338c27d78bef43de327f2192c9b20421f5648868/langfuse-5.2.0-py3-none-any.whl", hash = "sha256:4763cbad358960f1036078a4c6e9f86f04690ea566541709c2c40aa1998e2b0f", size = 660151, upload-time = "2026-11-05T09:53:49.817Z" },
 ]
 
 [[package]]
@@ -3072,8 +3073,8 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'engine'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'eval'" },
     { name = "jsonschema", marker = "extra == 'eval'" },
-    { name = "langfuse", marker = "extra == 'engine'", specifier = ">=4.9,<5" },
-    { name = "langfuse", marker = "extra == 'eval'", specifier = ">=4.6.1" },
+    { name = "langfuse", marker = "extra == 'engine'", specifier = ">=5.2,<6.0" },
+    { name = "langfuse", marker = "extra == 'eval'", specifier = ">=5.2,<6.0" },
     { name = "pg8000", marker = "extra == 'datasets'", specifier = ">=1.31" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "pydantic", marker = "extra == 'engine'", specifier = ">=2.13" },
