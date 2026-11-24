@@ -165,8 +165,19 @@ class ProviderBinding(StrictModel):
     )
 
 
+class SideBinding(StrictModel):
+    """An option that sets what one flow side of the identity names: the parties as posted,
+    or the side's whole, its published total or, with no total, the side left open."""
+
+    kind: Literal["side"] = "side"
+    role: str = Field(description="the identity's role key on the side")
+    refs: list[str] = Field(
+        description="the dcids the side names, sorted; [] for the side left open"
+    )
+
+
 OptionBinding = Annotated[
-    SlotBinding | EntitiesBinding | ShapeBinding | ProviderBinding,
+    SlotBinding | EntitiesBinding | ShapeBinding | ProviderBinding | SideBinding,
     Field(discriminator="kind"),
 ]
 
@@ -286,6 +297,41 @@ class LedgerStep(StrictModel):
     revision: int = Field(ge=0, description="the plan revision the switch was made on")
 
 
+class DerivedSide(StrictModel):
+    """One figure of a derived pair: its spec_id, the option it holds on the derived axis
+    and on the provider axis, and the parties each flow side names."""
+
+    spec_id: str = Field(description="the figure's spec_id")
+    option_id: OptionId = Field(description="the option the figure holds on the derived axis")
+    provider: OptionId | None = Field(
+        description="the provider option the figure counts; None where the part has no provider axis"
+    )
+    populations: dict[str, list[str]] = Field(
+        description="the dcids each flow side names, by role key; a side left open is absent"
+    )
+
+
+class DerivedWhole(StrictModel):
+    """A whole Search derived from a part: the part as its base and entries compile without
+    the whole entry, the whole as they compile with it, every other axis held."""
+
+    axis: ScopeAxis = Field(description="the axis the whole opens")
+    kind: Literal["option", "published_total", "sum_of_members"] = Field(
+        description=(
+            "a provider option that counts every stream the part counts, a side's published "
+            "total, or a side left open and summed over its members"
+        )
+    )
+    part: DerivedSide = Field(description="the part, compiled without the whole entry")
+    whole: DerivedSide = Field(description="the whole, compiled with it")
+    years: list[YearSpan] | None = Field(
+        description=(
+            "the years both figures serve, where both compile to composites stating their "
+            "periods; None where neither states them"
+        )
+    )
+
+
 class PartScope(StrictModel):
     """Every scope choice of one part, the entries that settled them and the identity they
     compile to."""
@@ -310,4 +356,9 @@ class PartScope(StrictModel):
     ledger: list[LedgerStep] = Field(
         default_factory=list,
         description="the switches made, newest last; the server keeps none, so [] on the wire",
+    )
+    derived: DerivedWhole | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="the part this answer is the whole of, where an entry asked for a whole",
     )

@@ -27,7 +27,10 @@ class AxisTable:
     `published` says the part counts a published total, whose options may also bind the code
     of another total (`PUBLISHED_BINDING`). `conflicts` are the pairs of one of the axis's
     options and an option of another axis that cannot hold together on this part, beside the
-    ones every part declares (`rules.CONFLICTS`).
+    ones every part declares (`rules.CONFLICTS`). `whole` is the option that holds the
+    axis's whole, the one an entry asking for `<axis>:whole` applies (`build.WHOLE`); None
+    where the axis declares none, with `whole_alternatives` the options a client may ask for
+    in its place and `whole_cause` why none is declared.
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
     axis or binding kind, a `preference`, `held` or `rules` naming no option, or `rules`
@@ -41,6 +44,9 @@ class AxisTable:
     concept: str | None = None
     published: bool = False
     conflicts: tuple[Conflict, ...] = ()
+    whole: str | None = None
+    whole_alternatives: tuple[str, ...] = ()
+    whole_cause: str = "whole_undeclared"
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]
@@ -62,6 +68,8 @@ class AxisTable:
             raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
         if self.held not in self.rules:
             raise ScopeTableError(f"{self.axis!r} names no rule for {self.held!r}")
+        if self.whole is not None and self.whole not in ids:
+            raise ScopeTableError(f"{self.axis!r} whole {self.whole!r} names no option")
 
     @property
     def rule(self) -> str:

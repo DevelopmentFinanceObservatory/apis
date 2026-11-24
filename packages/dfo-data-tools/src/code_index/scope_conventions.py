@@ -558,6 +558,52 @@ PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
     ),
 )
 
+
+@dataclass(frozen=True)
+class ProviderWhole:
+    """The provider option that holds the whole of a part's provider axis on `dataset`: the
+    scope counting every stream each other scope the dataset offers counts. `scope` is None
+    where no scope holds every other, and `alternatives` are then the scopes that each hold
+    the part's streams, among which only the client can choose. `note` says why."""
+
+    dataset: str
+    scope: ProviderScope | None
+    alternatives: tuple[ProviderScope, ...]
+    note: str
+
+
+# The whole of each table's provider axis. DAC1's total ODA counts the bilateral flows and the
+# core contributions, every stream its bilateral and multilateral ODA count; its inclusive
+# option is never offered there. On the CRS the inclusive scope adds the imputed share to the
+# bilateral flows, the only other option. DAC2a offers both: the inclusive scope counts the
+# donor's multilateral money as its imputed share of the agencies' spending, and total ODA
+# counts it as core contributions in the year paid, so each holds the bilateral flows and
+# neither holds the other.
+PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
+    ProviderWhole(
+        dataset=DAC1,
+        scope="contributions",
+        alternatives=(),
+        note="DAC1 total ODA counts bilateral flows plus core contributions",
+    ),
+    ProviderWhole(
+        dataset=CRS,
+        scope="inclusive",
+        alternatives=(),
+        note="the CRS inclusive scope counts bilateral flows plus the imputed share",
+    ),
+    ProviderWhole(
+        dataset=DAC2A,
+        scope=None,
+        alternatives=("inclusive", "contributions"),
+        note=(
+            "DAC2a counts multilateral money two ways, as an imputed share or as core "
+            "contributions, and neither holds the other"
+        ),
+    ),
+)
+
+
 # The composite each table's inclusive scope binds. The CRS stacks on ONE's imputed
 # multilateral sectors table, which publishes gross disbursements alone. DAC2a stacks its total
 # ODA on its own imputed multilateral ODA, published gross alone and added to total ODA on

@@ -32,11 +32,12 @@ from search.models import (
     ProviderBinding,
     ScopeAxis,
     ShapeBinding,
+    SideBinding,
     SlotBinding,
     YearSpan,
 )
 
-BindingKind = Literal["slot", "entities", "shape", "provider"]
+BindingKind = Literal["slot", "entities", "shape", "provider", "side"]
 IdentityMember = Literal["slots", "entities", "shape", "facets", "requested_window"]
 
 HEADLINE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "spliced")
@@ -63,6 +64,8 @@ AXIS_BINDING: Mapping[ScopeAxis, BindingKind] = {
     "region": "entities",
     "measure_basis": "shape",
     "provider": "provider",
+    "donor": "side",
+    "recipient": "side",
 }
 """The binding kind every option of an axis carries."""
 PUBLISHED_BINDING: Mapping[ScopeAxis, BindingKind] = {"provider": "slot"}
@@ -153,6 +156,18 @@ def _edit_provider(
         return _with_source(identity, None, kind="stacked")
     edited = _with_source(identity, binding.provenance, kind="stacked")
     return _with_window(rebound_destinations(edited, binding.provenance), binding.window)
+
+
+def _edit_side(
+    identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
+) -> BaseIdentity:
+    """Set the option's role to the parties it names, or remove the role for an option that
+    leaves the side open."""
+    assert isinstance(binding, SideBinding)
+    entities = {key: dcids for key, dcids in identity.entities.items() if key != binding.role}
+    if binding.refs:
+        entities[binding.role] = list(binding.refs)
+    return identity.model_copy(update={"entities": dict(sorted(entities.items()))})
 
 
 def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentity:
@@ -251,6 +266,7 @@ EDITS: Mapping[BindingKind, Edit] = {
     "provider": Edit(
         members=frozenset({"facets", "entities", "requested_window"}), apply=_edit_provider
     ),
+    "side": Edit(members=frozenset({"entities"}), apply=_edit_side),
 }
 """The edit of each binding kind."""
 

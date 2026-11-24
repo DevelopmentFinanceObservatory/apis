@@ -74,6 +74,7 @@ from code_index.scope_conventions import (
     OPTION_LABELS,
     PROVIDER_CONVENTIONS,
     PROVIDER_SCOPE_RULES,
+    PROVIDER_WHOLES,
     PUBLISHED_PROVIDER_SCOPES,
     REDISTRIBUTED_PROVIDERS,
     BilateralSource,
@@ -301,13 +302,35 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
         _inclusive_option(bilateral, source, facts, held=held == INCLUSIVE),
     )
     rules = {BILATERAL: _SCOPE_RULES["bilateral"], INCLUSIVE: _SCOPE_RULES["inclusive"]}
-    return AxisTable(
+    table = AxisTable(
         axis="provider",
         options=options,
         preference=(held, BILATERAL if held == INCLUSIVE else INCLUSIVE),
         held=held,
         rules=rules,
         conflicts=_basis_conflicts(source),
+    )
+    return _with_whole(table, dataset)
+
+
+_WHOLES = {row.dataset: row for row in PROVIDER_WHOLES}
+
+
+def _with_whole(table: AxisTable, dataset: str | None) -> AxisTable:
+    """`table`, a provider table on `dataset`, with the whole its dataset declares
+    (`PROVIDER_WHOLES`), else the alternatives it offers in its place."""
+    row = _WHOLES.get(dataset) if dataset is not None else None
+    if row is None:
+        return table
+    if row.scope is not None and table.option(provider_option_id(row.scope)) is not None:
+        return dataclasses.replace(table, whole=provider_option_id(row.scope))
+    alternatives = tuple(
+        option_id
+        for scope in row.alternatives
+        if table.option(option_id := provider_option_id(scope)) is not None
+    )
+    return dataclasses.replace(
+        table, whole_alternatives=alternatives, whole_cause="whole_ambiguous"
     )
 
 
@@ -430,7 +453,7 @@ def _published_table(
         if bilateral_held
         else provider_option_id(row.scope)
     )
-    return AxisTable(
+    table = AxisTable(
         axis="provider",
         options=tuple(options),
         preference=(held,),
@@ -439,6 +462,7 @@ def _published_table(
         published=True,
         conflicts=_basis_conflicts(source) if source is not None else (),
     )
+    return _with_whole(table, row.dataset)
 
 
 @dataclass(frozen=True, slots=True)

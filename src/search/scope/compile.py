@@ -82,6 +82,7 @@ class Refusal:
     entry: int
     cause: str
     blocker: int | None = None
+    alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
