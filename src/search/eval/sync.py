@@ -334,13 +334,25 @@ def nightly_exit_code(states: Sequence[NightlyCase]) -> int:
 
 
 def _client() -> Langfuse:
-    """A Langfuse client, raising clearly when the credentials are unset."""
-    from langfuse import get_client
+    """A Langfuse client with a tracer provider of its own, raising when it cannot export.
+
+    ``run_experiment`` records each item through exported spans. The SDK's global provider
+    samples at ``LANGFUSE_SAMPLE_RATE``, so at a rate below 1 the nightly would report an
+    experiment URL for an empty or partial experiment. A provider built here has no sampler,
+    so every span is exported. ``LANGFUSE_TRACING_ENABLED=false`` disables the client whatever
+    provider it holds, so that setting raises.
+    """
+    from langfuse import Langfuse
+    from opentelemetry.sdk.trace import TracerProvider
 
     missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY") if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Langfuse credentials missing: {', '.join(missing)}")
-    return get_client()
+    if os.environ.get("LANGFUSE_TRACING_ENABLED", "true").lower() == "false":
+        raise RuntimeError(
+            "LANGFUSE_TRACING_ENABLED is false, so the nightly results would not reach Langfuse"
+        )
+    return Langfuse(tracer_provider=TracerProvider())
 
 
 class _InfraError(Exception):
