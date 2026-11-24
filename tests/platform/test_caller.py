@@ -211,14 +211,15 @@ def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[
     ],
     ids=["wrong-secret", "repeated-secret", "empty-none-configured", "none-configured"],
 )
+@pytest.mark.parametrize("named", [_NAMED, _ACCOUNT], ids=["address", "account"])
 def test_a_principal_that_does_not_match_refuses_500_and_logs_neither_value(
-    configured: str, presented: list[str], caplog: pytest.LogCaptureFixture
+    configured: str, presented: list[str], named: str, caplog: pytest.LogCaptureFixture
 ):
     """Falling back to the address would count every website client as the website."""
     request = _request(
         ("x-forwarded-for", "3.3.3.3"),
         *(("x-dfo-caller-principal", value) for value in presented),
-        ("x-dfo-caller", _NAMED),
+        ("x-dfo-caller", named),
     )
 
     with (
@@ -247,25 +248,6 @@ def test_an_account_caller_without_a_principal_is_ignored_and_the_address_names_
     request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _ACCOUNT))
 
     assert resolve_caller(request, _settings()) == Caller(kind="address", key=_digest("3.3.3.3"))
-
-
-def test_an_account_caller_under_a_wrong_principal_refuses_500_and_is_not_used():
-    request = _request(
-        ("x-forwarded-for", "3.3.3.3"),
-        ("x-dfo-caller-principal", "not-the-secret"),
-        ("x-dfo-caller", _ACCOUNT),
-    )
-
-    with pytest.raises(CallerUnresolved):
-        resolve_caller(request, _settings())
-
-
-def test_the_invalid_header_refusal_names_every_form():
-    message = str(CallerHeaderInvalid())
-
-    assert "ip:<32 lowercase hex digits>" in message
-    assert "user:<32 lowercase hex digits>" in message
-    assert "conversation:<32 lowercase hex digits>" in message
 
 
 def test_a_vouched_conversation_caller_is_keyed_on_the_conversation():

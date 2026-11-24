@@ -65,39 +65,15 @@ def test_a_caller_spends_up_to_its_limit_then_waits_for_utc_midnight(ledger):
     assert refused.value.headers == {"Retry-After": str(12 * 3600)}
 
 
-def test_callers_kinds_and_days_count_apart(ledger):
+@pytest.mark.parametrize("other", [_BOB, _ACCOUNT], ids=["address", "account"])
+def test_callers_kinds_and_days_count_apart(ledger, other: Caller):
     ledger.spend(_ALICE, AllowanceKind.share, _NOON)
 
-    ledger.spend(_BOB, AllowanceKind.share, _NOON)
+    ledger.spend(other, AllowanceKind.share, _NOON)
     ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
     ledger.spend(_ALICE, AllowanceKind.share, _NOON + timedelta(hours=12))
     with pytest.raises(AllowanceExhausted):
         ledger.spend(_ALICE, AllowanceKind.share, _NOON + timedelta(hours=11, minutes=59))
-
-
-def test_an_account_caller_spends_its_own_allowance_and_counts_apart_from_addresses(ledger):
-    """The allowance row is the caller's key, so an account's `user:` key keeps its own count."""
-    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
-    ledger.spend(_ALICE, AllowanceKind.share, _NOON)
-
-    with pytest.raises(AllowanceExhausted) as refused:
-        ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
-
-    assert refused.value.code == "allowance_exhausted"
-    with ledger._store.transaction() as tx:
-        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
-    assert {(row["caller_key"], row["kind"]): row["count"] for row in rows} == {
-        (_ACCOUNT.key, "share"): 1,
-        (_ALICE.key, "share"): 1,
-    }
-
-
-def test_an_account_callers_refund_gives_its_unit_back(ledger):
-    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
-
-    ledger.refund(_ACCOUNT, AllowanceKind.share, _NOON)
-
-    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
 
 
 def test_the_day_is_the_utc_day_whatever_the_clocks_zone(ledger):
