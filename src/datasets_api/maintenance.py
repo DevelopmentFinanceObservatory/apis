@@ -120,14 +120,15 @@ past the failure and at `WARNING` when the row is refused for good, and one
 warning in any old format (`legacy_warning_refs`). It stops at a store outage
 (`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare, was left or
 failed with a defect, which the next run selects again until the code is fixed.
-A row refused for good is refused again on every run from what it stores, so it is reported
-each time and sets no exit code, as `legacy_warning_refs` does. A count of those rows that fails
-or runs past 60 s leaves `legacy_warning_refs` null, puts the line at `ERROR` with
-`count_error`, and sets no exit code, since the rows are already written. `--dry-run` writes nothing, adds
-one `datasets_warning_backfill_row` line per row, and compares its split with the stored
-one on rows a mint already split. When no row matches it opens no release and builds no
-client. It reads the runtime database settings, `DatasetsSettings`, `DATASETS_GRAPH_TOKEN`,
-`DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph release and `ORIGIN_CATALOGUE_URI`.
+A row refused for good is refused again on every run from what it stores, so it is reported each
+time and sets no exit code, as `legacy_warning_refs` does. A count of those rows that fails or
+runs past five sixths of the store's socket bound, 25 s by default, leaves `legacy_warning_refs`
+null, puts the line at `ERROR` with `count_error`, and sets no exit code, since the rows are
+already written. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line per
+row, and compares its split with the stored one on rows a mint already split. When no row
+matches it opens no release and builds no client. It reads the runtime database settings,
+`DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
+release and `ORIGIN_CATALOGUE_URI`.
 
 `backfill-frame-summed` runs by hand once the deploy that applies migration 0038 has moved the
 services to the new image, since the previous image records derived rows without `frame_summed`

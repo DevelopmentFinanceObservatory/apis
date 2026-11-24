@@ -12,11 +12,12 @@ from uuid import uuid4
 
 import pytest
 
-from dataset_store import LiveDatasetStore, warning_formats
+from dataset_store import ConnectionPool, LiveDatasetStore, warning_formats
 from dataset_store.snapshot import ManifestFacts
 from dataset_store.warning_formats import OLD_FORMATS, count_old_format_rows
 from datasets_api.maintenance import run_rewrite_warnings
 from datasets_api.version_store import _fill_year_coverage
+from dfo_platform.store_errors import extract_sqlstate
 from tests.dataset_store._warning_refs import (
     COVERAGE_DETAIL,
     ONE_WITHHELD,
@@ -30,6 +31,7 @@ from tests.dataset_store._warning_refs import (
     trace_for,
 )
 from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
+    connect_to,
     database_name,
     live_database,
 )
@@ -122,7 +124,7 @@ def _rewritten(capsys, store: LiveDatasetStore) -> dict[str, object]:
 def _left(store: LiveDatasetStore) -> int:
     """The version rows still holding an old format, counted in a fresh transaction."""
     with store.transaction() as tx:
-        return count_old_format_rows(tx)
+        return count_old_format_rows(tx, bounds=store.bounds)
 
 
 def _line(capsys) -> dict[str, object]:
@@ -355,3 +357,30 @@ def test_a_page_whose_commit_fails_logs_no_rewrite(live_store, capsys):
     failed = _line(capsys)
     assert (failed["severity"], failed["rewritten_warning_rows"]) == ("ERROR", 0)
     assert _rows(live_store, [subject]) == before
+
+
+def test_a_count_past_its_timeout_is_cancelled_before_the_socket_gives_up(live_store):
+    """Postgres cancels a count that runs past `count_timeout`, below the store's socket bound,
+    so the count raises `query_canceled` (57014) and the connection serves the next count. A
+    table lock held by another transaction stalls the count; the store's 3 s socket bound
+    gives the count 2.5 s, which is this test's wait."""
+    subject = f"spec_count_{uuid4().hex}"
+    _insert(live_store, subject, warnings=[_OLD_WITHHELD])
+    bound = 3.0
+    counting = ConnectionPool(
+        connect=connect_to(database_name(), timeout=bound), size=1, connect_timeout=bound
+    )
+    holder = _pool(size=1)
+    try:
+        store = LiveDatasetStore(connections=counting)
+        with LiveDatasetStore(connections=holder).transaction() as held:
+            held.execute("LOCK TABLE datasets.version_record IN ACCESS EXCLUSIVE MODE")
+            with pytest.raises(Exception) as cancelled:
+                _left(store)
+        counted = _left(store)
+    finally:
+        holder.close_all()
+        counting.close_all()
+
+    assert extract_sqlstate(cancelled.value) == "57014"
+    assert counted == 1
