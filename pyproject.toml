@@ -58,6 +58,10 @@ engine = [
     # releases broke its API. `zstd` brings backports-zstd, without which the SDK sends
     # request bodies uncompressed below Python 3.14.
     "typesafe-sdk[zstd]==0.7.5",
+    # search.engine.resolve_trace sends one trace per resolve. Capped at the major
+    # verified here, as dfo-ai caps it. Brings opentelemetry-sdk, whose TracerProvider
+    # keeps the client's spans off the global provider.
+    "langfuse>=4.9,<5",
     "search[api]",
     "pydantic>=2.13",
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the

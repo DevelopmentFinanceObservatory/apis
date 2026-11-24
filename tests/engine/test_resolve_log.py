@@ -11,11 +11,18 @@ import logging
 import time
 import unicodedata
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from dfo_platform.caller import (
+    UNRESOLVED_IDENTITY,
+    DeliverySurface,
+    reset_delivery_identity,
+    set_delivery_identity,
+)
 from dfo_platform.cloud_logging import TRACE_FIELD, JsonFormatter
 from dfo_platform.trace import (
     reset_cloud_trace_id,
@@ -40,6 +47,8 @@ from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_keys import normalise_query
 from search.models import (
     RESOLVE_RESPONSE_ADAPTER,
+    CandidateSet,
+    CandidatesPart,
     CatalogueAnswer,
     DatasetResubmitInput,
     DeclinedAnswer,
@@ -65,6 +74,10 @@ _TRACE_ID = "abc123"
 _USAGE = {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 0, "uncounted_calls": 1}
 # The response echoes this word on every row, and the line must not.
 _ECHOED_WORD = "fertility"
+_MCP = DeliverySurface.mcp
+_CALLER_KEY = "ip:" + "0" * 32
+_TURN_ID = "tr_" + "0" * 16
+_IDENTITY = replace(UNRESOLVED_IDENTITY, surface=_MCP, caller=_CALLER_KEY, mcp_client="claude-code")
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +101,7 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
 def _logged(request: ResolveRequest, record: ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
-        _log_resolve(request, record, caller=None, transport="buffered")
+        _log_resolve(request, record, caller=None, transport="buffered", identity=_IDENTITY)
     [line] = lines
     return line
 
@@ -114,6 +127,15 @@ def _diagnostics():
 
 def _echo():
     return make_query_echo(f"{_ECHOED_WORD} rate in Kenya", extract_skipped=False)
+
+
+def _candidates_part(specs: list) -> CandidatesPart:
+    return CandidatesPart(
+        status="candidates",
+        candidates=CandidateSet(
+            ordering="intent_rank", max_candidates=len(specs), specs=specs, truncated=False
+        ),
+    )
 
 
 def _resolution(parts: list) -> Resolution:
@@ -179,6 +201,7 @@ def _row(
     ),
     [
         _row("definite", "definite", "definite", part_statuses=("definite",), done=_done()),
+        _row("candidates", "candidates", "candidates", part_statuses=("candidates",)),
         _row(
             "mixed",
             "mixed",
@@ -261,8 +284,10 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
 ):
     search_settings(query_hmac_key=SecretStr(key))
     definite = _definite_part(worked_example_response)
+    ranked = [definite.spec.model_copy(update={"spec_id": f"spec-{n}"}) for n in range(12)]
     response = {
         "definite": _resolution([definite]),
+        "candidates": _resolution([_candidates_part(ranked)]),
         "mixed": _resolution([definite, _NO_DATA, _UNSUPPORTED]),
         "no_data": _resolution([_NO_DATA]),
         "declined": DeclinedAnswer(
@@ -288,6 +313,20 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
     assert logged["timed_out"] == (done.timed_out if done is not None else None)
     assert logged["degraded_leg"] == (done.degraded_leg if done is not None else None)
     assert logged["query_hmac"] == query_hmac
+    spec_ids = {
+        "definite": [[definite.spec.spec_id]],
+        "candidates": [[f"spec-{n}" for n in range(10)]],
+        "mixed": [[definite.spec.spec_id], [], []],
+        "no_data": [[]],
+    }.get(family, [])
+    assert logged["parts"] == [
+        {"status": status, "spec_ids": ids}
+        for status, ids in zip(part_statuses, spec_ids, strict=True)
+    ]
+    assert logged["surface"] == "mcp"
+    assert logged["caller_key"] == _CALLER_KEY
+    assert logged["mcp_client"] == "claude-code"
+    assert logged["turn_id"] is None
     assert _ECHOED_WORD not in json.dumps(logged).casefold()
     bare_text = normalise_query(getattr(request_.input, "query", "")).casefold()
     assert hashlib.sha256(bare_text.encode()).hexdigest() not in json.dumps(logged)
@@ -551,7 +590,13 @@ def test_a_client_gone_before_done_left_reads_cancelled_under_the_request_trace_
             record=record,
             line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
         )
-        await anext(body)
+        identity_token = set_delivery_identity(
+            replace(UNRESOLVED_IDENTITY, surface=DeliverySurface.studio, turn_id=_TURN_ID)
+        )
+        try:
+            await anext(body)
+        finally:
+            reset_delivery_identity(identity_token)
         await anext(body)
         token = set_trace_id("another-request")
         cloud_token = set_cloud_trace_id(None)
@@ -574,6 +619,8 @@ def test_a_client_gone_before_done_left_reads_cancelled_under_the_request_trace_
     [logged] = lines
     assert logged["error_code"] == "cancelled"
     assert logged["trace_id"] == _TRACE_ID
+    assert logged["surface"] == "studio"
+    assert logged["turn_id"] == _TURN_ID
     assert json.loads(formatted.getvalue())[TRACE_FIELD] == "projects/p/traces/cloud-trace"
 
 
