@@ -28,7 +28,7 @@ You need `curl`, `jq`, and `unzip`. The Python version also needs [uv](https://d
 export DFO_API=https://developmentfinance.org
 ```
 
-An API key is optional. Anonymous calls work, with a limit for each address, and every call on this page runs without a key. A key from your account on developmentfinance.org raises the limit. Send it as `Authorization: Bearer <key>` or `X-API-Key`. [Use an API key](../hub/build/api-keys.md) covers creating and sending one.
+An API key is optional. Anonymous calls work, with a per-minute limit for each address, and every call on this page runs without a key. Calls made with a key from your account on developmentfinance.org count against the account instead of your address: the per-minute call limit rises to the account's, a daily call quota applies, and the daily pin, share and card allowances become the account's, shared by every key and address you call from, so a key does not raise them. Send it as `Authorization: Bearer <key>` or `X-API-Key`. [Use an API key](../hub/build/api-keys.md) covers creating and sending one.
 
 ## Resolve the question
 
