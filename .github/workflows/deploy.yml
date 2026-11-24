@@ -19,23 +19,25 @@ name: Deploy
 # same tip and reconciles the service to it, so an older commit's run never
 # ships an older commit over a newer one.
 #
-# Whether the target needs a deploy is decided against the live service:
-# after authenticating to GCP, the job reads the image Cloud Run is currently
-# serving with `gcloud run services describe`, takes its commit tag as the
-# live commit, and diffs that commit against the target over the paths
-# `.github/scripts/deploy_decide.sh` watches. A target identical to the live
-# commit, or one whose diff since the live commit touches none of those
-# paths, skips the build and the service update entirely. A live tag that
-# isn't a commit this checkout knows (a placeholder image, or a since-deleted
-# branch) can't be compared, so the job deploys rather than risk skipping a
-# real change.
+# Whether the target needs a deploy is decided by
+# `.github/scripts/deploy_decide.sh`, which asks whether the revision serving
+# the apis service runs the target's code. When the service is in the state a
+# finished deploy leaves (traffic follows a ready latest revision, no
+# `candidate` tag), the serving commit is the template's image tag, and a
+# target equal to it, or one whose diff from it touches none of the watched
+# paths, skips every later step. Any other state is unknown, and the target
+# deploys: a deploy that stopped part-way is recovered by the next run, which
+# starts again from the build. A serving tag that isn't a commit this checkout
+# knows (a placeholder image, or a since-deleted branch) can't be compared, so
+# the job deploys rather than risk skipping a real change. A manual rollback
+# holds only while the calling workflow is disabled (deploy/README.md).
 #
-# On workflow_dispatch the decide step still reads the live image, so an
-# unreadable service fails loudly, but skips the comparison and forces
-# deploy=true regardless of the diff. Dispatch exists to force a redeploy of
-# exactly the dispatched commit, for example to re-run the migration jobs or
-# roll back, and a dispatch of the commit already live, or of one differing
-# only outside the watched paths, still has to deploy.
+# On workflow_dispatch the decide step still reads the service, so an
+# unreadable service fails loudly, but deploys regardless of the diff.
+# Dispatch exists to force a redeploy of exactly the dispatched commit, for
+# example to re-run the migration jobs or roll back, and a dispatch of the
+# commit already serving, or of one differing only outside the watched paths,
+# still has to deploy.
 #
 # This workflow only swaps the image on Cloud Run services and jobs that
 # already exist. `infra` owns creating and configuring them; see
@@ -58,10 +60,12 @@ name: Deploy
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
 # service has moved and `backfill-descriptions` after it (see those steps).
-# Between the apis service's move and the settle, the deploy calls the new
-# revision so its background builds finish before readers arrive (see the
-# warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
-# variable check refuses the deploy when it is missing.
+# The deploy stages the new revision with no traffic, probes that revision by
+# name at its tagged URL, and moves traffic to it by name, so its background
+# builds finish before readers arrive and, in production, a revision that
+# answers an error or does not answer never serves (see the warm step). The
+# environment must set vars.JOB_DATASETS_MAINTENANCE, and the upfront variable
+# check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
 # format (see its steps below). The graph release job is pointed at the new
@@ -69,9 +73,10 @@ name: Deploy
 # opens the published release and builds one when it does not (see its step).
 # The search catalogue job is pointed at the new image and run once on it,
 # waiting for it, then verified to have a build published, before the worker
-# and the apis service move (see its steps). A failed step stops the job before any step after it
-# runs, so a failed migration or artifact build leaves both services on their
-# current image.
+# and the apis service move (see its steps). A failed step stops the job
+# before any step after it runs, so a failed migration or artifact build leaves
+# both services on their current image. The one exception is the last step,
+# which runs after a failure once traffic has moved (see that step).
 
 on:
   workflow_call:
@@ -191,11 +196,9 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v3
         if: steps.target.outputs.sha != ''
 
-      # Reads the commit Cloud Run is currently serving and diffs it against
-      # the target over the image's inputs. See the script for the full
-      # decision: identical commits, or a diff confined to non-image paths,
-      # both skip the build; an unrecognised live tag deploys rather than risk
-      # skipping a real change it can't compare.
+      # Asks whether the revision serving the apis service runs the target's
+      # code, and gates every later step on `deploy=true`. See the script for
+      # the full decision.
       - name: Decide whether to deploy
         id: decide
         if: steps.target.outputs.sha != ''
@@ -223,13 +226,38 @@ jobs:
       # The tag and DFO_BUILD_COMMIT both name the resolved target, so the
       # x-dfo-commit header the service answers with identifies the code
       # actually running.
-      - if: steps.decide.outputs.deploy == 'true'
+      - id: build
+        if: steps.decide.outputs.deploy == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           tags: ${{ steps.image.outputs.image }}
           build-args: DFO_BUILD_COMMIT=${{ steps.target.outputs.sha }}
+
+      # A revision records its image by digest, and the build pushes an image
+      # index, so the stage step below compares a revision's digest with the
+      # index's digest and its linux/amd64 manifest's. This step reads the
+      # index now, while the registry login from the auth step is fresh: the
+      # access token expires an hour after that step, and the jobs between
+      # here and the stage step can run longer.
+      - name: Read the pushed image's digests
+        id: pushed
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          digests="$(docker buildx imagetools inspect --raw "${{ steps.image.outputs.image }}" |
+            python3 -c '
+          import json, sys
+          digests = [sys.argv[1]]
+          for entry in json.load(sys.stdin).get("manifests", []):
+              platform = entry.get("platform", {})
+              if platform.get("os") == "linux" and platform.get("architecture") == "amd64":
+                  digests.append(entry["digest"])
+          print(" ".join(digests))
+          ' "${{ steps.build.outputs.digest }}")"
+          echo "Pushed digests: $digests"
+          echo "digests=$digests" >> "$GITHUB_OUTPUT"
 
       # Both migration Cloud Run Jobs carry lifecycle.ignore_changes on their
       # container image in Terraform, so the deploy pipeline is what moves
@@ -459,7 +487,7 @@ jobs:
       # onto the new one before the apis step below does, because an
       # in-flight or newly-enqueued operation must run against the schema and
       # graph release this deploy just brought current. Image-only
-      # update, same shape as the apis service step below. `infra` owns the
+      # update, with traffic following the new revision at once. `infra` owns the
       # service's own scaling/secrets/runtime-service-account config via
       # lifecycle.ignore_changes on the container image.
       - name: Point the datasets worker at the new image
@@ -480,58 +508,142 @@ jobs:
       # image in Terraform for the same reason, and replacing the manifest
       # here would fight that too. This step runs only once both migration
       # jobs above have exited 0, so the service never serves an image ahead
-      # of the schema it expects.
-      - name: Point Cloud Run at the new image
+      # of the schema it expects. `--no-traffic` creates the revision with no
+      # traffic and pins the traffic to the revision serving now, by name. The
+      # step then reads the revision the update created, the latest created
+      # one, and fails unless it runs one of the digests the build pushed: an
+      # `infra` apply that lands during the update can create a revision from
+      # the image its plan refreshed. It then tags the revision
+      # `candidate` with `update-traffic`, which gives it a URL of its own and
+      # moves the tag off any older revision. `--tag` on the
+      # update would make gcloud name the template revision, which the infra
+      # repository's Terraform does not ignore, so every later apply would
+      # clear the name and create a revision. The cost is a second call. The
+      # step outputs the revision's name, and every later step acts on it.
+      - name: Stage the new revision with no traffic
+        id: stage
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
           gcloud run services update "${{ vars.SERVICE_APIS }}" \
             --image="${{ steps.image.outputs.image }}" \
+            --no-traffic \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
+          revision="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format='value(status.latestCreatedRevisionName)')"
+          if [ -z "$revision" ]; then
+            echo "::error::The apis service reported no latest created revision after the update."
+            exit 1
+          fi
+          image="$(gcloud run revisions describe "$revision" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format='value(spec.containers[0].image)')"
+          case " ${{ steps.pushed.outputs.digests }} " in
+            *" ${image##*@} "*) ;;
+            *)
+              echo "::error::Revision $revision runs ${image##*/}, not one of the digests the build pushed (${{ steps.pushed.outputs.digests }}), so it is not probed."
+              exit 1
+              ;;
+          esac
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --update-tags="candidate=$revision" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+          echo "Staged revision $revision, running ${image##*/}, with no traffic and the candidate tag."
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
-      # The new revision builds the skills index, the Graph schema document
-      # and the UN terms body beside serving, and Cloud Run throttles the CPU
-      # of an instance with no request in flight, so a revision nobody calls
-      # stalls those builds until its first readers pay for them. This step
-      # calls the paths whose handlers wait on those builds, as the deployer
-      # with an ID token for the service URL, retrying a 503, 504 or 429 for
-      # up to 600 seconds. A 401 or 403 (the deployer's run.invoker grant
-      # and its token-creator grant on itself are not applied yet), slowness
-      # past the bound, or an unreadable URL or token warns and the deploy
-      # goes on. Any other status is an error the step records without
-      # failing, so the maintenance steps below still run, and the job's last
-      # step fails the deploy on it. See .github/scripts/deploy_warm.sh.
-      # The step and that last check also run when the decide step finds the
-      # target image already serving, so a rerun of a deploy whose warm step
-      # failed after traffic moved probes the live revision again and fails
-      # on the same error.
-      - name: Warm the new revision
+      # The candidate revision builds the skills index, the Graph schema
+      # document and the UN terms body beside serving, and Cloud Run throttles
+      # the CPU of an instance with no request in flight, so a revision nobody
+      # calls stalls those builds until its first readers pay for them. This
+      # step calls the candidate's tagged URL before traffic moves, as the
+      # deployer with an ID token for the service URL: the routes whose
+      # handlers wait on those builds, and `POST /api/search/stated-scope`.
+      # Each route retries a 502, 503, 504 or 429, or no answer, for up to 300
+      # seconds. A route that never answers at all within its deadline is an
+      # error everywhere and ends the probe, since a revision that answers no
+      # request within its deadline has hung. On dev, a route still slow at
+      # its deadline, an answer of 401 or 403, or an unreadable URL or token
+      # warns and the deploy goes on. In production (REQUIRE_PROBE) each of
+      # those is an error, so every route must answer 200. Any other status is
+      # an error everywhere, except a 404 `origin_not_served` from the UN
+      # terms route, which a deployment with the UN origin off answers and
+      # which skips that route. A candidate without its tagged URL is an
+      # error, since no other URL reaches it. See
+      # .github/scripts/deploy_warm.sh.
+      - name: Warm the candidate revision
         id: warm
-        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
+        if: steps.decide.outputs.deploy == 'true'
         env:
           SERVICE: ${{ vars.SERVICE_APIS }}
           REGION: ${{ vars.REGION }}
           PROJECT_ID: ${{ vars.PROJECT_ID }}
           DEPLOYER: ${{ secrets.WIF_SA }}
+          REVISION: ${{ steps.stage.outputs.revision }}
+          PROBE_TAG: candidate
+          REQUIRE_PROBE: ${{ inputs.environment == 'production' }}
         run: .github/scripts/deploy_warm.sh
+
+      # Traffic moves on `warm`, and on dev also on `slow`, `forbidden` or
+      # `unavailable`. Any other status, an empty one included, fails the run
+      # with the previous revision still serving.
+      - name: Fail on errors the candidate revision answered while warming
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          WARM_STATUS: ${{ steps.warm.outputs.status }}
+          REQUIRE_PROBE: ${{ inputs.environment == 'production' }}
+        run: |
+          set -euo pipefail
+          echo "warm status: $WARM_STATUS"
+          case "$WARM_STATUS" in
+            warm) exit 0 ;;
+            slow | forbidden | unavailable)
+              if [ "$REQUIRE_PROBE" != true ]; then
+                exit 0
+              fi
+              ;;
+          esac
+          echo "::error::The candidate revision answered a probe with an error, or could not be probed where the probe is required. Traffic stays on the previous revision. See the 'Warm the candidate revision' step."
+          exit 1
+
+      # Moves all traffic to the probed revision by name, so no other
+      # revision can take it while settle and backfill run.
+      - name: Move traffic to the candidate revision
+        id: move
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          REVISION: ${{ steps.stage.outputs.revision }}
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --to-revisions="$REVISION=100" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
 
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
       # statements for a pin principal that is neither a label nor an open
       # caller's `ip:` key, under a table lock that holds pins back until it
-      # commits, so a repeat run changes nothing. A version row the previous image writes needs no
-      # repair, also for a request an old revision finishes after this step:
-      # the insert trigger of migration 0030 fills the facts of a row written
-      # with only immutable_body, and that of migration 0033 renames the
-      # party-kind enrichment `kind` to `party_kind`. settle counts the version
-      # rows holding no facts, those still naming `kind` and the pin references
-      # still raw, and fails the step when any count is above 0. It runs as an execution of the maintenance job, whose
-      # container command is `datasets-maintenance`, with the task as its
-      # args. The step must run on every deploy: a raw pin reference matches
-      # no caller's label.
+      # commits, so a repeat run changes nothing. A version row the previous
+      # image writes needs no repair, also for a request an old revision
+      # finishes after this step: the insert trigger of migration 0030 fills
+      # the facts of a row written with only immutable_body, and that of
+      # migration 0033 renames the party-kind enrichment `kind` to
+      # `party_kind`. settle counts the version rows holding no facts, those
+      # still naming `kind` and the pin references still raw, and fails the
+      # step when any count is above 0. It runs as an execution of the
+      # maintenance job, whose container command is `datasets-maintenance`,
+      # with the task as its args. The step must run on every deploy: a raw
+      # pin reference matches no caller's label.
       - name: Settle rows the previous image wrote
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -552,14 +664,13 @@ jobs:
       # insert is ON CONFLICT DO NOTHING, so a record a mint or publish wrote
       # first stands and a repeat run writes nothing. A version it cannot
       # backfill is logged by id with its traceback and skipped, and is tried
-      # again on the next deploy. The step fails when the store is unreachable,
-      # or when the task read no version and at least one failed because the
-      # store or artifact store was unreachable, timed out or was overloaded,
-      # so versions that can never be described never fail a deploy. The
-      # task starts no version after 45 minutes, within the Job's
+      # again on the next deploy. The step fails when the store is
+      # unreachable, or when the task read no version and at least one failed
+      # because the store or artifact store was unreachable, timed out or was
+      # overloaded, so versions that can never be described never fail a
+      # deploy. The task starts no version after 45 minutes, within the Job's
       # 3600-second timeout, and the next deploy carries on from the versions
-      # still without a record. It runs last, so no failure of it holds back
-      # an earlier step.
+      # still without a record.
       - name: Backfill description records
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -570,16 +681,70 @@ jobs:
             --wait \
             --args=backfill-descriptions
 
-      # The warm step records an error answer without failing, so the settle
-      # and the backfill run first; this step then fails the deploy on it.
-      - name: Fail on errors the new revision answered while warming
-        if: steps.decide.outputs.deploy == 'true' || steps.decide.outputs.target_live == 'true'
-        env:
-          WARM_STATUS: ${{ steps.warm.outputs.status }}
+      # Traffic follows the latest revision again, so a revision `infra`
+      # creates for a configuration change serves at once, as before this
+      # deploy, and the `candidate` tag goes in the same update. A tag left by
+      # a failed run makes the next run deploy (see the decide step).
+      - name: Follow the latest revision again
+        id: follow
+        if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
-          echo "warm status: $WARM_STATUS"
-          if [ "$WARM_STATUS" = error ]; then
-            echo "::error::The new revision answered a warm path with an error; see the 'Warm the new revision' step."
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --to-latest \
+            --remove-tags=candidate \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # An `infra` apply that updates the apis service sends the traffic and the
+      # image its plan refreshed, so one that overlaps this deploy can put the
+      # previous traffic or the previous image back. This step fails the run
+      # unless traffic follows the latest revision at 100 percent and that
+      # revision runs the released image, which a revision `infra` creates for
+      # a configuration change after the move also does. A failure leaves
+      # traffic as the step found it, pinned or on another image, and the next
+      # run deploys.
+      - name: Check the released image serves
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          IMAGE: ${{ steps.stage.outputs.image }}
+        run: |
+          set -euo pipefail
+          serving="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format=json |
+            python3 -c '
+          import json, sys
+          traffic = json.load(sys.stdin).get("status", {}).get("traffic", [])
+          whole = [e for e in traffic if e.get("percent") == 100 and e.get("latestRevision")]
+          print(whole[0].get("revisionName", "") if whole else "")
+          ')"
+          image=""
+          if [ -n "$serving" ]; then
+            image="$(gcloud run revisions describe "$serving" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --format='value(spec.containers[0].image)')"
+          fi
+          if [ "$image" != "$IMAGE" ]; then
+            echo "::error::Traffic on the apis service does not follow the latest revision at 100 percent running the released image $IMAGE (serving: ${serving:-none following the latest revision}, image: ${image:-unread}). The next run deploys again."
             exit 1
           fi
+          echo "Revision $serving serves all traffic as the latest revision and runs the released image."
+
+      # A failure after the move, in settle, backfill or the step after them,
+      # would leave traffic pinned by name, so a revision `infra` creates for a
+      # configuration change would serve nothing until a deploy succeeds. This
+      # step makes traffic follow the latest revision again and keeps the
+      # `candidate` tag, so the next run still deploys.
+      - name: Follow the latest revision after a failure
+        if: failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --to-latest \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
