@@ -46,6 +46,7 @@ from search.engine.bind_repair import (
 )
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
+from search.engine.binders.code_pinned import binds_on_code, code_pinned_bind
 from search.engine.binders.election import holds_mentioned_values, reelect
 from search.engine.binders.house_policy import (
     POLICY_ORDER,
@@ -222,7 +223,7 @@ from search.engine.shape import (
     measures_count,
     role_names_by_axis,
 )
-from search.engine.source_code import names_only_code
+from search.engine.source_code import SeriesCodeMembers, names_only_code
 from search.engine.source_scope import SourceScope
 from search.engine.time_bind import parse_time_text
 from search.heading.measure_noun import denominator_noun
@@ -375,7 +376,12 @@ async def _read_stated_quantity(
     The read runs after the measure and role rules and before the form rule, so a form
     only the model reads refuses a shape as one a wording pattern names does
     (`admissibility.judge_pinned_parts`), and the bind call elects among what is left. Its
-    usage opens the part's LLM usage (`ResolveState.var_usage`)."""
+    usage opens the part's LLM usage (`ResolveState.var_usage`).
+
+    A code-pinned part (`ResolveState.code_pinned`) reads nothing. The code fixes the
+    measure, and the one shape is the only reading a form could keep or refuse."""
+    if state.code_pinned:
+        return None
     denominators = _quantity_denominators(state, shapes)
     request = QuantityRequest(
         variable=_quantity_phrase(state),
@@ -919,6 +925,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # quantity read lists them by name to read the form and base the phrase states.
     with timed_step(state, "shape_denominators"):
         await _read_denominators(state, admissible)
+    state.code_pinned = _pins_on_code(state, admissible)
     with timed_step(state, "shape_quantity"):
         malformed = await _read_stated_quantity(state, admissible) if admissible else None
     if malformed is not None:
@@ -4811,6 +4818,35 @@ def _has_word(word: str, words: AbstractSet[str]) -> bool:
     return any(word in plural_forms(name) for name in words)
 
 
+def _only_code(state: ResolveState) -> SeriesCodeMembers | None:
+    """The part's series code (`ResolveState.source_code`) when its variable text writes
+    nothing beside the code (`source_code.names_only_code`), else None."""
+    code = state.source_code
+    if code is None or not names_only_code(state.variable, code.code):
+        return None
+    return code
+
+
+def _pins_on_code(state: ResolveState, admissible: Sequence[ShapeDraft]) -> bool:
+    """Whether the part is code-pinned (`ResolveState.code_pinned`): its variable text writes
+    only its series code (`_only_code`), `admissible`, the shapes the measure and role
+    rules admit before the quantity read, is one shape, the part drops no qualifier
+    phrase (`BindRequest.dropped_qualifier_phrases`), which Jev reads in the bind, and the
+    raw-text query leaves no stretch unclaimed (`ResolveState.unclaimed`), since Jev reads
+    the whole query there (`BindRequest.query_text`) and may decline on those words.
+
+    Jev's bind reads the stated form only to choose among menu shapes
+    (`jev_assemble._pool`, `jev_assemble._alternates`). The bind of a code-pinned part that
+    calls the model (`_phase_bind`) sees one shape, or the empty menu of a refused reading,
+    so skipping the read leaves its answer as it would be after the read."""
+    return (
+        len(admissible) == 1
+        and _only_code(state) is not None
+        and not state.dropped_qualifier_phrases
+        and not state.unclaimed
+    )
+
+
 def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
     """The variable phrase the bind model reads: the part's own, or the graph name of its
     series code's StatVars when the code is all the part's variable text writes
@@ -4819,8 +4855,8 @@ def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
     code's aggregate: the admissible shapes for the quantity read, which runs before the
     menu is seated, and the seated menu for the bind call. A part none of whose members has
     a name reads its own phrase."""
-    code = state.source_code
-    if code is None or not names_only_code(state.variable, code.code):
+    code = _only_code(state)
+    if code is None:
         return state.variable
     named = [
         (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
@@ -5129,6 +5165,28 @@ def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
     ]
 
 
+async def _bind_on_code(
+    state: ResolveState, request: BindRequest, *, policies: _HousePolicyStep
+) -> tuple[BindResult, dict | None]:
+    """`request` bound on its series code alone (`code_pinned.code_pinned_bind`), with no
+    model call and so no usage. A code-pinned bind that raises before the house policies run
+    (`policies`) is logged at ERROR and the part's binder answers `request`
+    (`ResolveState.binder`), as `FallbackBinder.bind` answers a raising Jev call from its
+    fallback. One that raises after they ran breaks the house-policy contract
+    (`PolicyContractError`)."""
+    try:
+        return code_pinned_bind(request), None
+    except Exception as exc:
+        if policies.calls:
+            raise PolicyContractError(
+                "the code-pinned bind raised after the house policies ran"
+            ) from exc
+        logger.error(
+            "code-pinned bind raised for %r; asking the binder", state.variable, exc_info=exc
+        )
+    return await state.binder.bind(request, llm=state.llm)
+
+
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
     """Run one choose-and-bind call through the part's binder (`ResolveState.binder`).
     Return a terminal result for an ask that names no nearest reading, or an invalid index.
@@ -5179,6 +5237,17 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
 
     The quantity read ran before admissibility (`_read_stated_quantity`), so the election
     never carries it, and the call's usage adds to the read's.
+
+    A code-pinned part (`ResolveState.code_pinned`), with no basis sibling beside the
+    menu, binds without a model call when the request leaves the model nothing to decide
+    (`code_pinned.binds_on_code`). The one menu shape is elected, its slots are drafted from
+    their fixed qualifier matches and one-member taxonomies, the house policies run once,
+    and the result is assembled as the model binders assemble theirs
+    (`code_pinned.code_pinned_bind`, `assembly.elected_result`). Such a part asks the model
+    nothing, unless that bind
+    raises before the house policies run and the part's binder answers (`_bind_on_code`).
+    A code-pinned part whose request fails that test calls the model without a quantity
+    read (`_pins_on_code`).
     """
     menu = state.capped_shapes
     state.basis_seat = None
@@ -5241,7 +5310,16 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     t0 = now_ms()
     bind_result: _UniversalBindOutput
     _bind_usage: dict | None = None
-    bind_task = asyncio.create_task(state.binder.bind(request, llm=state.llm))
+    code = state.source_code
+    bind_call = (
+        _bind_on_code(state, request, policies=policies)
+        if state.code_pinned
+        and code is not None
+        and not state.basis_siblings
+        and binds_on_code(request, members=code.dcids)
+        else state.binder.bind(request, llm=state.llm)
+    )
+    bind_task = asyncio.create_task(bind_call)
     refusal: LLMOutputRefused | None = None
     breach: str | None = None
     try:

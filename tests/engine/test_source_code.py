@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -18,14 +19,26 @@ from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine import fanout
-from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import Binder, GeminiBinder
+from search.engine.bind import CandidateMenu, ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import (
+    Binder,
+    BindRequest,
+    BindResult,
+    FallbackBinder,
+    GeminiBinder,
+    JevBinder,
+    jev_assemble,
+)
+from search.engine.binders.code_pinned import binds_on_code, code_pinned_bind
+from search.engine.binders.house_policy import PolicyPool
 from search.engine.config import SEARCH_MAX_CODE_PARTS, settings
 from search.engine.core import resolve_async
 from search.engine.entry import parsed as parsed_entry
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.interpretation import Interpretation
+from search.engine.qualifier_match import QualifierTie
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_place_materialise, pipeline
+from search.engine.region import phase_place_materialise, phase_rank_bind, pipeline
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import bind_member_values, served_members
@@ -53,7 +66,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import RatingBinder
+from tests.engine._binders import FakeAsk, RatingBinder
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
@@ -113,6 +126,19 @@ _PPG = {
     "financialPositionType": "AmountOutstanding",
     "guaranteeStatus": "PublicOrPubliclyGuaranteed",
 }
+# DT.CUR.USDL.ZS's StatVars are the US-dollar share of the PPG debt stock and its by-creditor
+# twin, a share of the by-creditor stock. They divide by different denominators, so they
+# derive two shapes, and the bind model elects between them.
+_USDL = "DT.CUR.USDL.ZS"
+_USD_SHARE = (
+    "Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_AsAFractionOf_"
+    "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal"
+)
+_USD_SHARE_BY_CREDITOR = (
+    "Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_ByCreditor_AsAFractionOf_"
+    "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_ByCreditor_Nominal"
+)
+_USD = {"currencyOfDenomination": "CurrencyUSD", "financialPositionType": "AmountOutstanding"}
 
 
 def _arcs(
@@ -121,8 +147,14 @@ def _arcs(
     constraints: dict[str, str],
     code: str,
     population: str = "FinancialFlow",
+    denominator: str | None = None,
 ) -> dict:
     return {
+        **(
+            {"measurementDenominator": {"nodes": [{"dcid": denominator}]}}
+            if denominator is not None
+            else {}
+        ),
         "name": {"nodes": [{"value": name}]},
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
         "populationType": {"nodes": [{"dcid": population}]},
@@ -203,6 +235,28 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
                     "DT.NFL.MIDA.CD",
                 ),
             },
+            _USD_SHARE: {
+                "label": "PPG debt stock in US dollars, share",
+                "arcs": _arcs(
+                    "PPG debt stock in US dollars, share",
+                    _RECIPIENT,
+                    _USD,
+                    _USDL,
+                    "FinancialPosition",
+                    denominator=_PPG_STOCK,
+                ),
+            },
+            _USD_SHARE_BY_CREDITOR: {
+                "label": "PPG debt stock in US dollars by creditor, share",
+                "arcs": _arcs(
+                    "PPG debt stock in US dollars by creditor, share",
+                    _PROVIDER_RECIPIENT,
+                    _USD,
+                    _USDL,
+                    "FinancialPosition",
+                    denominator=_PPG_STOCK_BY_CREDITOR,
+                ),
+            },
             _KEN: {"label": "Kenya", "type": "Country"},
             _BRA: {"label": "Brazil", "type": "Country"},
             _GHA: {"label": "Ghana", "type": "Country"},
@@ -223,6 +277,8 @@ _COVERAGE_ROWS = [
     (_PPG_STOCK, "f_ppg", "", _KEN, _YEARS),
     (_PPG_STOCK_BY_CREDITOR, "f_ppg_cr", "country/CHN", _KEN, _YEARS),
     (_VARIABLE_PPG_STOCK, "f_vppg", "", _KEN, _YEARS),
+    (_USD_SHARE, "f_usd", "", _KEN, _YEARS),
+    (_USD_SHARE_BY_CREDITOR, "f_usd_cr", "country/CHN", _KEN, _YEARS),
 ]
 _ROLE_NAMES = {
     _AGGREGATE: RoleNames(donor=None, recipient="financingRecipient"),
@@ -234,6 +290,8 @@ _ROLE_NAMES = {
     _PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
     _PPG_STOCK_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
     _VARIABLE_PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
+    _USD_SHARE: RoleNames(donor=None, recipient="financingRecipient"),
+    _USD_SHARE_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
 }
 
 
@@ -243,7 +301,7 @@ def _coverage():
     ).snapshot()
 
 
-def _answer(
+def _respond(
     part: ParsedPart | RawTextInput,
     monkeypatch: pytest.MonkeyPatch,
     llm: _BindLLM | None = None,
@@ -252,17 +310,17 @@ def _answer(
     read: str = _IDS,
     binder: Binder | None = None,
 ):
-    """`part`'s answer through the parsed door, or a query's through the raw-text door,
-    over a graph recalling `recalled` and coverage holding every StatVar's observations
-    under the provenance `read`, IDS as the graph holds them, bound by `binder`, the
-    configured one by default."""
+    """The response to `part` through the parsed door, or to a query through the raw-text
+    door, over a graph recalling `recalled` and coverage holding every StatVar's
+    observations under the provenance `read`, IDS as the graph holds them, bound by
+    `binder`, the configured one by default."""
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in _COVERAGE_ROWS
     }
     patch_coverage(monkeypatch, _COVERAGE_ROWS, role_names=_ROLE_NAMES, facet_metadata=metadata)
     graph = _graph(recalled)
-    response = asyncio.run(
+    return asyncio.run(
         resolve_async(
             ResolveRequest(
                 input=part if isinstance(part, RawTextInput) else ParsedInput(parts=[part])
@@ -274,7 +332,19 @@ def _answer(
             binder=binder,
         )
     )
-    (answer,) = response.parts
+
+
+def _answer(
+    part: ParsedPart | RawTextInput,
+    monkeypatch: pytest.MonkeyPatch,
+    llm: _BindLLM | None = None,
+    *,
+    recalled: Sequence[str] = (),
+    read: str = _IDS,
+    binder: Binder | None = None,
+):
+    """The one part answer of `_respond`."""
+    (answer,) = _respond(part, monkeypatch, llm, recalled=recalled, read=read, binder=binder).parts
     return answer
 
 
@@ -612,14 +682,12 @@ def test_a_part_naming_its_series_by_the_code_alone_answers_as_one_naming_its_wo
     assert [d.code for d in code.departures] == [d.code for d in words.departures]
 
 
-@pytest.mark.parametrize("variable_text", ["debt service", _DEGG], ids=["words", "code-only"])
-def test_a_code_part_the_bind_model_cannot_place_refuses_not_held(variable_text, monkeypatch):
+def test_a_code_part_the_bind_model_cannot_place_refuses_not_held(monkeypatch):
     """A bind model that asks leaves the part unanswered, and the code fixes its variable,
-    so it refuses `source_code_not_held` caused `unanswerable`. A part whose variable text is
-    only the code shows the bind model its StatVars' graph name in place of the code."""
+    so it refuses `source_code_not_held` caused `unanswerable`."""
     llm = _BindLLM(ask="Variable does not match any candidate shape.")
     part = ParsedPart(
-        variable_text=variable_text, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG
+        variable_text="debt service", entities=[ParsedEntity(text="Kenya")], source_code=_DEGG
     )
 
     answer = _answer(part, monkeypatch, llm)
@@ -629,8 +697,247 @@ def test_a_code_part_the_bind_model_cannot_place_refuses_not_held(variable_text,
         [_DEGG],
     )
     (prompt,) = llm.prompts
-    phrase = prompt.split("Variable phrase: ", 1)[1].split("\n", 1)[0]
-    assert phrase == ("debt service" if variable_text == "debt service" else "GG debt service")
+    assert prompt.split("Variable phrase: ", 1)[1].split("\n", 1)[0] == "debt service"
+
+
+@pytest.mark.parametrize("open_roles", [None, ["creditor"]], ids=["aggregate", "by-creditor"])
+def test_a_part_naming_only_its_code_answers_on_its_statvars_without_a_model_call(
+    open_roles, monkeypatch
+):
+    """A part whose variable text is only a code with one shape reads no quantity and
+    binds with no model call (`binders.code_pinned`), so a bind model that would ask is
+    never reached, Jev answers no question and the response counts no Jev token. The part
+    answers on the code's StatVars, the open role electing between them."""
+    ask = FakeAsk()
+    llm = _BindLLM(ask="Variable does not match any candidate shape.")
+    part = ParsedPart(
+        variable_text=_DEGG,
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_DEGG,
+        open_roles=open_roles,
+    )
+
+    response = _respond(
+        part,
+        monkeypatch,
+        llm,
+        binder=FallbackBinder(primary=JevBinder(ask=ask), fallback=GeminiBinder()),
+    )
+
+    (answer,) = response.parts
+    assert answer.status == "definite", answer
+    assert _minted_members(answer.spec) == {_BY_CREDITOR if open_roles else _AGGREGATE}
+    assert (ask.requests, llm.prompts) == ([], [])
+    usage = response.diagnostics.llm_usage or {}
+    assert (usage.get("jev_input_tokens", 0), usage.get("jev_output_tokens", 0)) == (0, 0)
+
+
+def _code_part(variable_text: str, source_code: str) -> ParsedPart:
+    return ParsedPart(
+        variable_text=variable_text, entities=[ParsedEntity(text="Kenya")], source_code=source_code
+    )
+
+
+@pytest.mark.parametrize(
+    ("part", "llm", "phrase"),
+    [
+        (_code_part(f"debt service {_DEGG}", _DEGG), None, "debt service"),
+        (_code_part(_USDL, _USDL), None, "PPG debt stock in US dollars, share"),
+        (
+            RawTextInput(query=f"{_DEGG} for Kenya, provisional estimates"),
+            _ExtractLLM(_DEGG, "Kenya"),
+            "GG debt service",
+        ),
+    ],
+    ids=["words-beside-the-code", "two-shape-code", "raw-text-unclaimed-words"],
+)
+def test_a_code_part_the_model_has_a_choice_on_still_asks_jev(part, llm, phrase, monkeypatch):
+    """Words beside the code, a code whose StatVars derive two shapes (DT.CUR.USDL.ZS
+    divides its aggregate and by-creditor members by different stocks), or a raw-text query
+    with words no extraction reader claims (`ResolveState.unclaimed`), which Jev reads in
+    the query, leave the bind a choice, so the part asks Jev. A part whose variable text is
+    only the code shows Jev its aggregate StatVar's graph name in place of the code
+    (`phase_rank_bind._bind_variable`)."""
+    # Jev reads no stated quantity, so no form refuses a shape before the bind, and
+    # measures and elects the first shape.
+    ask = FakeAsk(
+        {
+            "q|gate": {"type": "noul", "noul": 0.0},
+            **{f"m|{i}": {"type": "noul", "noul": 0.9} for i in range(2)},
+            "electq": {"type": "choice", "probabilities": {"Shape 0": 0.9, "Shape 1": 0.1}},
+        }
+    )
+    _respond(
+        part,
+        monkeypatch,
+        llm,
+        binder=FallbackBinder(primary=JevBinder(ask=ask), fallback=GeminiBinder()),
+    )
+
+    (bind_state,) = [state for state, questions in ask.requests if "electq" in questions]
+    assert bind_state["variable_phrase"] == phrase
+
+
+def test_a_code_pinned_bind_drafts_as_jev_and_states_no_model_artefact(monkeypatch):
+    """Under the Gemini binder, the bind a code alone names (`code_pinned.code_pinned_bind`)
+    reaches none of Jev's assembly and states no election score of its own: its pool holds
+    the one shape with no `election`. Its drafts and the house policies' choice equal those
+    of Jev's bind on answers electing that shape, the policies running once in each."""
+    requests: list[BindRequest] = []
+    results: list[BindResult] = []
+    jev_calls: list[object] = []
+    jev_assemble_answers = jev_assemble.assemble
+
+    def counted(*args, **kwargs):
+        jev_calls.append(args)
+        return jev_assemble_answers(*args, **kwargs)
+
+    def recorded(request: BindRequest) -> BindResult:
+        result = code_pinned_bind(request)
+        requests.append(request)
+        # Later phases judge the drafts in place, so the record keeps them as bound.
+        results.append(replace(result, output=result.output.model_copy(deep=True)))
+        return result
+
+    monkeypatch.setattr(jev_assemble, "assemble", counted)
+    monkeypatch.setattr(phase_rank_bind, "code_pinned_bind", recorded)
+    llm = _BindLLM()
+    part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
+    assert _answer(part, monkeypatch, llm, binder=GeminiBinder()).status == "definite"
+    (request,), (fast,) = requests, results
+    assert fast.binder == "code"
+    assert fast.policy_pool == PolicyPool(measuring=(0,))
+    assert (len(jev_calls), llm.prompts) == (0, [])
+    assert (fast.scores, fast.stated_words, fast.none_first) == ({}, {}, False)
+
+    electing = FakeAsk(
+        {
+            "m|0": {"type": "noul", "noul": 1.0},
+            "electq": {"type": "choice", "probabilities": {"Shape 0": 1.0}},
+        }
+    )
+    jev, _usage = asyncio.run(JevBinder(ask=electing).bind(request, llm=None))
+
+    assert fast.output == jev.output
+    assert fast.policy_choice == jev.policy_choice
+
+
+@pytest.mark.parametrize(
+    ("after_policies", "status", "prompts"),
+    [(False, "definite", 1), (True, "no_data", 0)],
+    ids=["before-the-policies", "after-the-policies"],
+)
+def test_a_code_pinned_bind_that_raises_falls_back_to_the_binder(
+    after_policies, status, prompts, monkeypatch
+):
+    """A code-pinned bind that raises before the house policies run hands the request to
+    the part's binder, as `FallbackBinder` hands a raising Jev call to its fallback. One
+    that raises after they ran breaks the house-policy contract, and the part refuses as a
+    code part whose variable does not resolve does (`source_code_not_held`)."""
+
+    def raising(request: BindRequest) -> BindResult:
+        if after_policies:
+            code_pinned_bind(request)
+        raise KeyError("slot")
+
+    monkeypatch.setattr(phase_rank_bind, "code_pinned_bind", raising)
+    llm = _BindLLM()
+    part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
+
+    answer = _answer(part, monkeypatch, llm, binder=GeminiBinder())
+
+    assert answer.status == status, answer
+    if status == "no_data":
+        assert answer.no_data.reason == "source_code_not_held"
+    assert len(llm.prompts) == prompts
+
+
+def _code_pinned_request(monkeypatch: pytest.MonkeyPatch) -> BindRequest:
+    """The bind request of the DT.TDS.DEGG.CD part at Kenya, which binds on its code."""
+    requests: list[BindRequest] = []
+
+    def recorded(request: BindRequest) -> BindResult:
+        requests.append(request)
+        return code_pinned_bind(request)
+
+    monkeypatch.setattr(phase_rank_bind, "code_pinned_bind", recorded)
+    part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
+    assert _answer(part, monkeypatch).status == "definite"
+    (request,) = requests
+    return request
+
+
+_GG_TIE = QualifierTie(matched_text="general government", rows=())
+_DEBTOR_MENU = CandidateMenu(text="general government", start=0, end=18, candidates=())
+
+
+@pytest.mark.parametrize(
+    ("change", "members", "binds"),
+    [
+        ({}, (_AGGREGATE, _BY_CREDITOR), True),
+        ({"refused": "the one shape"}, (_AGGREGATE, _BY_CREDITOR), False),
+        ({"admitted_ties": [(_GG_TIE,)]}, (_AGGREGATE, _BY_CREDITOR), False),
+        ({"candidate_menus": [(_DEBTOR_MENU,)]}, (_AGGREGATE, _BY_CREDITOR), False),
+        ({"nominated_words": [("government",)]}, (_AGGREGATE, _BY_CREDITOR), False),
+        (
+            {"dropped_qualifier_phrases": ("across all debtor types",)},
+            (_AGGREGATE, _BY_CREDITOR),
+            False,
+        ),
+        ({}, (_AGGREGATE, _TOTAL), False),
+        ({}, (_TOTAL,), True),
+        ({}, (_AGGREGATE, "sv_the_index_lacks"), False),
+        ({"shapes": "the one shape twice"}, (_AGGREGATE, _BY_CREDITOR), False),
+    ],
+    ids=[
+        "passes",
+        "refused",
+        "ties",
+        "candidate-menus",
+        "nominated-words",
+        "dropped-qualifier-phrases",
+        "members-disagreeing",
+        "members-silent-on-a-slot",
+        "member-the-index-lacks",
+        "two-shapes",
+    ],
+)
+def test_a_code_part_binds_on_its_code_only_when_the_model_has_nothing_to_decide(
+    change, members, binds, monkeypatch
+):
+    """Each premise of `code_pinned.binds_on_code` alone keeps the part on the model: a
+    refused reading, a tie, a candidate menu or a nominated word Jev answers on, a dropped
+    qualifier phrase Jev reads as a request for every value of a slot, members that differ
+    on a constraint value, a member the index lacks, and more than one shape. Members that
+    agree in leaving a slot open bind on the code, as DT.TDS.DECT.CD's one StatVar leaves
+    the debtor type open. The code names the series over every debtor type."""
+    request = _code_pinned_request(monkeypatch)
+    (shape,) = request.shapes
+    if change.get("refused"):
+        change = {"refused": (Interpretation(shape=shape, reason="variable_not_resolved"),)}
+    if change.get("shapes"):
+        change = {"shapes": [shape, shape]}
+
+    assert binds_on_code(replace(request, **change), members=members) is binds
+
+
+def test_a_code_part_with_a_basis_sibling_beside_its_menu_asks_the_model(monkeypatch):
+    """A basis sibling joins the house policies' pool (`phase_rank_bind._answer_on_basis_sibling`),
+    which could move the election, so a code part with one beside its menu calls the bind
+    model."""
+    seat = phase_rank_bind._seat_menu_and_siblings
+
+    def with_sibling(shapes, seats):
+        menu, siblings = seat(shapes, seats)
+        return menu, [*siblings, *(replace(s, shape_id=f"{s.shape_id}-basis") for s in menu)]
+
+    monkeypatch.setattr(phase_rank_bind, "_seat_menu_and_siblings", with_sibling)
+    llm = _BindLLM()
+    part = ParsedPart(variable_text=_DEGG, entities=[ParsedEntity(text="Kenya")], source_code=_DEGG)
+
+    _answer(part, monkeypatch, llm)
+
+    assert len(llm.prompts) == 1
 
 
 def test_a_code_part_materialise_finds_no_variable_for_refuses_not_held(monkeypatch):
@@ -786,15 +1093,16 @@ def _resolve_degg(
     *,
     ask: str | None = None,
     scope: SourceScope | None = None,
+    variable: str = "debt service",
 ):
-    """The DT.TDS.DEGG.CD part's result under the source scope `scope` when the bind model
-    drafts `bindings`, or asks with `ask`."""
+    """The DT.TDS.DEGG.CD part's result, its variable text `variable`, under the source
+    scope `scope` when the bind model drafts `bindings`, or asks with `ask`."""
     members = compile_part_code(_DEGG, scope=scope, index=get_index())
     assert isinstance(members, SeriesCodeMembers)
     graph = _graph()
     return asyncio.run(
         resolve_variable(
-            "debt service",
+            variable,
             entities=["Kenya"],
             date_request=None,
             detect_query="debt service",
@@ -848,10 +1156,12 @@ def test_a_code_part_under_an_exclusion_refuses_not_held_as_one_under_no_scope_d
     assert skips == ["source_code", "source_code"]
 
 
-def test_a_code_part_asking_every_value_of_a_slot_its_code_fixes_refuses_not_held():
+@pytest.mark.parametrize("variable", ["debt service", _DEGG], ids=["words", "code-only"])
+def test_a_code_part_asking_every_value_of_a_slot_its_code_fixes_refuses_not_held(variable):
     """Every StatVar of DT.TDS.DEGG.CD is general government debt, so the code cannot answer
-    a part that asks for all debtor types."""
-    result = _resolve_degg([_asked_in_full("idsDebtorType")])
+    a part that asks for all debtor types, whether its variable text is words or only the
+    code. The dropped phrase keeps the bind on the model."""
+    result = _resolve_degg([_asked_in_full("idsDebtorType")], variable=variable)
 
     assert result.no_data_reason == "source_code_not_held"
     assert result.source_code_refusal is not None

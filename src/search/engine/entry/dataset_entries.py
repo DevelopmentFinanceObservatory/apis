@@ -27,11 +27,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.deadline import _cancel_trailing_tasks, _gather_cancelling_siblings
-from search.engine.entry.parsed import (
-    confirm_part_pins,
-    interpret_parts,
-    per_part_pre_resolved,
-)
+from search.engine.entry.parsed import confirm_and_interpret, resolve_entities
 from search.engine.errors import EngineInputError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.identity_edit import composite_table_identity
@@ -376,16 +372,12 @@ async def resolve_parsed_entries(
     # Confirm pins per part, then resolve unpinned names once and overlay each part's
     # pins. Identity and candidate entries resolve their own dcids.
     pointer_prefixes = [f"/input/entries/{entry_index}/part" for entry_index, _ in entries]
-    pins = await confirm_part_pins(
+    confirmed = await confirm_and_interpret(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
-    interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
-    per_variable_pre_resolved = await per_part_pre_resolved(
-        parts,
-        pins,
-        surfaces=interpretation.entity_surfaces,
-        resolver=resolver,
-        deadline=deadline,
+    interpretation = confirmed.interpretation
+    per_variable_pre_resolved = await resolve_entities(
+        parts, confirmed, resolver=resolver, deadline=deadline
     )
 
     out = _FanOutResult()
@@ -406,7 +398,7 @@ async def resolve_parsed_entries(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_timing={},
+        base_timing=confirmed.timing,
         pre_resolved=None,
         deadline=deadline,
         degrade_on_error=True,
