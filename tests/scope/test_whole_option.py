@@ -72,6 +72,20 @@ def test_a_dac1_provider_lines_whole_is_total_oda_for_the_same_donor(monkeypatch
     assert derived.part.populations == derived.whole.populations == {"origin": [_USA]}
 
 
+def test_a_donor_outside_the_containing_total_has_no_donor_whole(monkeypatch):
+    """B2: DAC1's DAC countries' total holds no multilateral, so a part naming the DAC's
+    multilaterals is refused a donor whole naming the parties outside it."""
+    total, _ = _total_base(monkeypatch)
+    base = total.model_copy(update={"entities": {"origin": [provider_fixture._DAC_MULTILATERALS]}})
+
+    refused = build_part_scope(
+        base=base, entries=[switch("donor:whole")], records={}, facts=_facts()
+    )
+
+    assert isinstance(refused, Refusal)
+    assert (refused.code, refused.cause) == ("requested_option_unavailable", "part_outside_whole")
+
+
 def test_total_odas_provider_whole_refuses_as_the_part_itself(monkeypatch):
     """C12: a whole posted again asks for the whole of a whole, which refuses once."""
     total, _ = _total_base(monkeypatch)

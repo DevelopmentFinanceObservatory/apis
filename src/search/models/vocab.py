@@ -166,6 +166,7 @@ ScopeReasonCode = Literal[
     "option_not_covered",
     "contributions_counted",
     "multilateral_destination",
+    "part_outside_whole",
 ]
 """Every reason a scope option is partial or unavailable, or a carried or stated entry is
 not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary

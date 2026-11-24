@@ -13,7 +13,9 @@ the first of these the part's table publishes:
   (`whole_reading`, DAC2a's "All Recipients, Total");
 - else the side left open, summed over its members.
 
-A published total is available where the coverage snapshot the table is read from holds a
+A containing total holds only the members of its group, so it is unavailable
+(`part_outside_whole`) where the part names a party outside that group: DAC1's DAC countries'
+total holds no non-DAC donor and no multilateral. A published total is otherwise available where the coverage snapshot the table is read from holds a
 series of the part's variables at it beside the other side's places (`series_held`), so its
 availability is stated in the same build as every other option's. A side the part leaves open
 or names only by its whole already is whole, and the axis is absent.
@@ -29,6 +31,7 @@ from collections.abc import Sequence
 from code_index.composites import DECLARED_COMPOSITES, CompositeNotServable, composite_ref
 from code_index.declarations import CONTAINING_TOTALS
 from code_index.scope_conventions import BILATERAL_SOURCES
+from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.engine.region.coverage_series import series_held
 from search.engine.retrieval.bound_values import identity_dataset, served_members
@@ -69,13 +72,23 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
     table_identity, dataset, rebound = _table_of(base, flow)
     if dataset is None:
         return None
-    total = rebound or _containing(dataset, flow) or _marked(dataset, flow, base.requested_window)
+    containing = _containing(dataset, flow)
+    total = rebound or containing or _marked(dataset, flow, base.requested_window)
     if total is not None and named == [total]:
         return None
     whole_refs = [] if total is None else [total]
     held = f"{axis}:named"
     whole = f"{axis}:whole"
-    availability = _availability(table_identity, key, whole_refs, facts)
+    outside = _outside(named, containing) if rebound is None and containing is not None else ()
+    availability = (
+        OptionAvailability(
+            status="unavailable",
+            code="part_outside_whole",
+            detail={"total": containing or "", "outside": ",".join(outside)},
+        )
+        if outside
+        else _availability(table_identity, key, whole_refs, facts)
+    )
     options = (
         Option(
             option_id=held,
@@ -122,6 +135,19 @@ def _table_of(base: BaseIdentity, flow: RoleAxis) -> tuple[BaseIdentity, str | N
 def _containing(dataset: str, flow: RoleAxis) -> str | None:
     held = CONTAINING_TOTALS.get((dataset, flow))
     return None if held is None else held.total
+
+
+def _outside(named: Sequence[str], total: str) -> tuple[str, ...]:
+    """The parties of `named` a containing total does not hold: those whose members
+    (`provider._members`, a country itself or the members of the group it totals) are not
+    all members of the group `total` totals in the membership policy."""
+    from search.scope.provider import _members
+
+    index = get_index()
+    held = _members(total, index)
+    return tuple(
+        party for party in named if not (members := _members(party, index)) or not members <= held
+    )
 
 
 def _marked(dataset: str, flow: RoleAxis, window: IdentityWindow) -> str | None:
