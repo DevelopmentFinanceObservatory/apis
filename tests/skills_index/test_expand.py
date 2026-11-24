@@ -168,3 +168,17 @@ def test_budget_exhausted_page_excludes_the_whole_skill():
         and "specializationOf" in issue.message
         for issue in issues
     )
+
+
+def test_a_read_after_an_exhausted_page_is_never_made():
+    """`isPartOf` sorts first and exhausts its page budget, which excludes the skill, so the
+    walk stops before `subClassOf`, whose read would have raised."""
+    graph = FakeSkillsGraph(
+        budget_exhausted={("A", "isPartOf")}, failing_subject_reads={("A", "subClassOf")}
+    )
+
+    reach, issues = expand_skill("skill-1", ["A"], graph=graph)
+
+    assert reach.excluded is True
+    assert [issue.code for issue in issues] == ["skill_build_unconfirmed"]
+    assert [(dcids, prop) for dcids, prop, _ in graph.calls] == [(("A",), "isPartOf")]

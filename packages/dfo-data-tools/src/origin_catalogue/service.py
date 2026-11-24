@@ -263,6 +263,12 @@ def get_catalogue_service() -> CatalogueService:
     return _singleton.acquire()
 
 
+def release_catalogue_service(service: CatalogueService) -> None:
+    """Gives back one hold `get_catalogue_service()` took. Raises `RuntimeError` for a service
+    it never returned or one released more often than acquired."""
+    _singleton.release(service)
+
+
 def reset_catalogue_service() -> None:
     """Test-only: clears the singleton so the next access rebuilds it."""
     _singleton.force_reset()
@@ -275,5 +281,6 @@ __all__ = [
     "CatalogueSettings",
     "CatalogueUriMissingError",
     "get_catalogue_service",
+    "release_catalogue_service",
     "reset_catalogue_service",
 ]

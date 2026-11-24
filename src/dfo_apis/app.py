@@ -22,6 +22,8 @@ ASGI app.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -32,6 +34,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
+from dfo_platform.cloud_logging import log_event
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.flags import lenient_bool
 from materialise.rate_tables import RateTableCache
@@ -41,6 +44,8 @@ if TYPE_CHECKING:
     from datasets_api.config import DatasetsBuildSettings
     from datasets_api.deps import DepsCell
     from datasets_api.doors.analysis import RunningAnalyses
+
+logger = logging.getLogger(__name__)
 
 _TRUTHY_VALUES = frozenset({"1", "true"})
 
@@ -218,22 +223,35 @@ def create_app() -> FastAPI:
     share the platform's RFC 9457 envelope, code registry, and trace id. When Datasets mounts,
     the platform names each request's delivery identity under the caller settings the Datasets
     surface resolves callers under, read once.
+
+    Logs `apis_startup_begin` as the process starts building the app and `apis_app_built`
+    with the build's duration. The surfaces' startup loads take most of that time.
     """
+    started = time.monotonic()
+    log_event(logger, logging.INFO, "apis_startup_begin")
     flags = _SurfaceFlags()
     if flags.worker_surface:
         from datasets_api.operations.worker_app import build_worker_app
 
-        return build_worker_app()
-    settings: DatasetsBuildSettings | None = None
-    if flags.datasets_surface:
-        from datasets_api.config import DatasetsBuildSettings
+        app = build_worker_app()
+    else:
+        settings: DatasetsBuildSettings | None = None
+        if flags.datasets_surface:
+            from datasets_api.config import DatasetsBuildSettings
 
-        settings = DatasetsBuildSettings.from_env()
-    return platform_create_app(
-        deployed_surfaces(datasets_settings=settings),
-        caller_settings=settings.caller if settings is not None else None,
-        # One `DFO_CORS_ORIGINS` allowlist applies to every mounted surface.
-        cors_origins=parse_cors_origins(),
-        title="DFO APIs",
-        version="1.0",
+            settings = DatasetsBuildSettings.from_env()
+        app = platform_create_app(
+            deployed_surfaces(datasets_settings=settings),
+            caller_settings=settings.caller if settings is not None else None,
+            # One `DFO_CORS_ORIGINS` allowlist applies to every mounted surface.
+            cors_origins=parse_cors_origins(),
+            title="DFO APIs",
+            version="1.0",
+        )
+    log_event(
+        logger,
+        logging.INFO,
+        "apis_app_built",
+        duration_ms=round((time.monotonic() - started) * 1000),
     )
+    return app

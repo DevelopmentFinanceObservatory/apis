@@ -17,6 +17,9 @@
     "datasets_api": {
       "level": "INFO"
     },
+    "dfo_apis": {
+      "level": "INFO"
+    },
     "graph_api": {
       "level": "INFO"
     },
@@ -24,6 +27,9 @@
       "level": "INFO"
     },
     "materialise.facet_collapse": {
+      "level": "INFO"
+    },
+    "origin_catalogue": {
       "level": "INFO"
     },
     "search": {

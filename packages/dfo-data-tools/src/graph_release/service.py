@@ -73,7 +73,7 @@ import pyarrow as pa
 from code_index.composites import population_check
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
-from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.cloud_logging import log_event
 from dfo_platform.singleton import RefCountedSingleton
 from graph_release.context import URI_ENV_VAR, release_uri
 from graph_release.format import (
@@ -140,11 +140,6 @@ def _peak_rss_bytes() -> int:
     return peak if sys.platform == "darwin" else peak * 1024
 
 
-def _event(level: int, event: str, **fields: object) -> None:
-    """One log line whose JSON entry carries `event` and `fields` as top-level fields."""
-    logger.log(level, event, extra={JSON_FIELDS_ATTR: {"event": event, **fields}})
-
-
 @contextmanager
 def _warn_while_draining(*, served: str, pointer: str) -> Iterator[None]:
     """Logs `graph_release_drain_slow` each `_DRAIN_WARNING_SECONDS` the block runs."""
@@ -154,7 +149,8 @@ def _warn_while_draining(*, served: str, pointer: str) -> Iterator[None]:
 
     def watch() -> None:
         while not done.wait(interval):
-            _event(
+            log_event(
+                logger,
                 logging.WARNING,
                 "graph_release_drain_slow",
                 served_release_id=served,
@@ -202,7 +198,8 @@ def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
     code_index, measure_index = release_code_indexes(loaded)
     coverage = release_coverage_index(loaded)
     for unclassified in population_check(code_index, coverage).unclassified.values():
-        _event(
+        log_event(
+            logger,
             logging.ERROR,
             "destination_population_unavailable",
             release_id=loaded.manifest.release_id,
@@ -502,7 +499,8 @@ class ReleaseService:
                     self._refused = None
                     del served
                 _return_freed_memory()
-                _event(
+                log_event(
+                    logger,
                     logging.INFO,
                     "graph_release_swapped",
                     from_release_id=replaced,
@@ -538,7 +536,8 @@ class ReleaseService:
         with self._load_lock:
             if deterministic and pointer_id is not None:
                 self._refused = _Refusal(release_id=pointer_id, exception_type=type(exc).__name__)
-                _event(
+                log_event(
+                    logger,
                     logging.ERROR,
                     "graph_release_refused",
                     release_id=pointer_id,
@@ -557,7 +556,8 @@ class ReleaseService:
         skipped: bool,
         detail: str | None = None,
     ) -> None:
-        _event(
+        log_event(
+            logger,
             logging.WARNING,
             "graph_release_recheck_failed",
             uri=self._uri,
@@ -583,8 +583,16 @@ def _build() -> ReleaseService:
     return service
 
 
+def _close(service: ReleaseService) -> None:
+    """Ends the subscription `_build` took out, so the last lease's release leaves nothing
+    holding `service`."""
+    from statvar_members import shared_enumerator
+
+    shared_enumerator().unfollow(service)
+
+
 _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
-    build=_build, label="graph release service"
+    build=_build, close=_close, label="graph release service"
 )
 
 
@@ -597,6 +605,14 @@ def get_release_service() -> ReleaseService:
     asks for it fails at startup.
     """
     return _singleton.acquire()
+
+
+def release_release_service(service: ReleaseService) -> None:
+    """Gives back one hold `get_release_service()` took. The last one also stops the shared
+    member enumerator following the service's swaps, so nothing the process keeps holds it.
+    Raises `RuntimeError` for a service it never returned or one released more often than
+    acquired."""
+    _singleton.release(service)
 
 
 def reset_release_service() -> None:
@@ -613,5 +629,6 @@ __all__ = [
     "ReleaseViews",
     "build_release_views",
     "get_release_service",
+    "release_release_service",
     "reset_release_service",
 ]
