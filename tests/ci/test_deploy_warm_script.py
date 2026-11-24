@@ -334,7 +334,7 @@ def test_a_token_for_another_audience_is_an_error(serve, tmp_path: Path):
 
 
 def test_a_route_that_never_answers_ends_the_probe_as_an_error(serve, tmp_path: Path):
-    """A hung revision is broken, not building, so dev does not move traffic to it after
+    """A revision that answers no request within its deadline has hung, so dev does not move traffic to it after
     waiting out every route."""
     server = serve(_ok() | {"/api/skills": [(0, {})]})
 

@@ -62,8 +62,8 @@ name: Deploy
 # service has moved and `backfill-descriptions` after it (see those steps).
 # The deploy stages the new revision with no traffic, probes that revision by
 # name at its tagged URL, and moves traffic to it by name, so its background
-# builds finish before readers arrive and an erroring revision never serves
-# (see the warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE,
+# builds finish before readers arrive and, in production, a revision that
+# answers an error or does not answer never serves (see the warm step). The environment must set vars.JOB_DATASETS_MAINTENANCE,
 # and the upfront variable check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
@@ -224,7 +224,8 @@ jobs:
       # The tag and DFO_BUILD_COMMIT both name the resolved target, so the
       # x-dfo-commit header the service answers with identifies the code
       # actually running.
-      - if: steps.decide.outputs.deploy == 'true'
+      - id: build
+        if: steps.decide.outputs.deploy == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -484,8 +485,13 @@ jobs:
       # of the schema it expects. `--no-traffic` creates the revision with no
       # traffic and pins the traffic to the revision serving now, by name. The
       # step then reads the revision the update created, the latest created
-      # one, and tags it `candidate` with `update-traffic`, which gives it a
-      # URL of its own and moves the tag off any older revision. `--tag` on the
+      # one, and fails unless it runs the image the build pushed: an `infra`
+      # apply that lands during the update can create a revision from the
+      # image its plan refreshed. A revision records its image by digest, and
+      # the build pushes an image index, so the step accepts the index's
+      # digest or its linux/amd64 manifest's. It then tags the revision
+      # `candidate` with `update-traffic`, which gives it a URL of its own and
+      # moves the tag off any older revision. `--tag` on the
       # update would make gcloud name the template revision, which the infra
       # repository's Terraform does not ignore, so every later apply would
       # clear the name and create a revision. The cost is a second call. The
@@ -509,13 +515,31 @@ jobs:
             echo "::error::The apis service reported no latest created revision after the update."
             exit 1
           fi
+          image="$(gcloud run revisions describe "$revision" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format='value(spec.containers[0].image)')"
+          pushed="$(docker buildx imagetools inspect --raw "${{ steps.image.outputs.image }}" |
+            python3 -c '
+          import json, sys
+          print(sys.argv[1])
+          for entry in json.load(sys.stdin).get("manifests", []):
+              platform = entry.get("platform", {})
+              if platform.get("os") == "linux" and platform.get("architecture") == "amd64":
+                  print(entry["digest"])
+          ' "${{ steps.build.outputs.digest }}")"
+          if [ "$image" != "${{ steps.image.outputs.image }}" ] && ! grep -qxF -- "${image##*@}" <<<"$pushed"; then
+            echo "::error::Revision $revision runs ${image##*/}, not the image the build pushed (${{ steps.build.outputs.digest }}), so it is not probed."
+            exit 1
+          fi
           gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
             --update-tags="candidate=$revision" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
-          echo "Staged revision $revision with no traffic and the candidate tag."
+          echo "Staged revision $revision, running ${image##*/}, with no traffic and the candidate tag."
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
       # The candidate revision builds the skills index, the Graph schema
       # document and the UN terms body beside serving, and Cloud Run throttles
@@ -526,8 +550,8 @@ jobs:
       # handlers wait on those builds, and `POST /api/search/stated-scope`.
       # Each route retries a 502, 503, 504 or 429, or no answer, for up to 300
       # seconds. A route that never answers at all within its deadline is an
-      # error everywhere and ends the probe, since a hung revision is broken,
-      # not building. On dev, a route still slow at its deadline, an answer of
+      # error everywhere and ends the probe, since a revision that answers no
+      # request within its deadline has hung. On dev, a route still slow at its deadline, an answer of
       # 401 or 403, or an unreadable URL or token warns and the deploy goes
       # on. In production (REQUIRE_PROBE) each of those is an error, so every
       # route must answer 200. Any other status is an error everywhere, except
@@ -548,21 +572,32 @@ jobs:
           REQUIRE_PROBE: ${{ inputs.environment == 'production' }}
         run: .github/scripts/deploy_warm.sh
 
+      # Traffic moves on `warm`, and on dev also on `slow`, `forbidden` or
+      # `unavailable`. Any other status, an empty one included, fails the run
+      # with the previous revision still serving.
       - name: Fail on errors the candidate revision answered while warming
         if: steps.decide.outputs.deploy == 'true'
         env:
           WARM_STATUS: ${{ steps.warm.outputs.status }}
+          REQUIRE_PROBE: ${{ inputs.environment == 'production' }}
         run: |
           set -euo pipefail
           echo "warm status: $WARM_STATUS"
-          if [ "$WARM_STATUS" = error ]; then
-            echo "::error::The candidate revision answered a probe with an error, or could not be probed where the probe is required; traffic stays on the previous revision. See the 'Warm the candidate revision' step."
-            exit 1
-          fi
+          case "$WARM_STATUS" in
+            warm) exit 0 ;;
+            slow | forbidden | unavailable)
+              if [ "$REQUIRE_PROBE" != true ]; then
+                exit 0
+              fi
+              ;;
+          esac
+          echo "::error::The candidate revision answered a probe with an error, or could not be probed where the probe is required. Traffic stays on the previous revision. See the 'Warm the candidate revision' step."
+          exit 1
 
       # Moves all traffic to the probed revision by name, so no other
       # revision can take it while settle and backfill run.
       - name: Move traffic to the candidate revision
+        id: move
         if: steps.decide.outputs.deploy == 'true'
         env:
           REVISION: ${{ steps.stage.outputs.revision }}
@@ -632,6 +667,7 @@ jobs:
       # deploy, and the `candidate` tag goes in the same update. A tag left by
       # a failed run makes the next run deploy (see the decide step).
       - name: Follow the latest revision again
+        id: follow
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
@@ -642,16 +678,17 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # An `infra` apply that updates the apis service sends the traffic its
-      # plan refreshed, so one that overlaps this deploy can put the previous
-      # traffic back, and a revision `infra` created since the move takes the
-      # traffic once it follows the latest revision. This step fails the run
-      # unless the revision it released serves 100 percent; the next run then
-      # finds the service in an unknown state and deploys.
-      - name: Check the released revision serves
+      # An `infra` apply that updates the apis service sends the traffic and the
+      # image its plan refreshed, so one that overlaps this deploy can put the
+      # previous traffic or the previous image back. This step fails the run
+      # unless the revision serving 100 percent runs the released image, which
+      # a revision `infra` creates for a configuration change after the move
+      # also does. A failure leaves traffic pinned to another revision or the
+      # previous commit in the template, so the next run deploys.
+      - name: Check the released image serves
         if: steps.decide.outputs.deploy == 'true'
         env:
-          REVISION: ${{ steps.stage.outputs.revision }}
+          IMAGE: ${{ steps.stage.outputs.image }}
         run: |
           set -euo pipefail
           serving="$(gcloud run services describe "${{ vars.SERVICE_APIS }}" \
@@ -663,8 +700,30 @@ jobs:
           traffic = json.load(sys.stdin).get("status", {}).get("traffic", [])
           print(next((e.get("revisionName", "") for e in traffic if e.get("percent") == 100), ""))
           ')"
-          if [ "$serving" != "$REVISION" ]; then
-            echo "::error::Revision ${serving:-(none)} serves 100 percent of the apis service, not the released revision $REVISION."
+          image=""
+          if [ -n "$serving" ]; then
+            image="$(gcloud run revisions describe "$serving" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --format='value(spec.containers[0].image)')"
+          fi
+          if [ "$image" != "$IMAGE" ]; then
+            echo "::error::Revision ${serving:-(none)} serves 100 percent of the apis service and runs ${image:-no readable image}, not the released image $IMAGE."
             exit 1
           fi
-          echo "Revision $REVISION serves all traffic."
+          echo "Revision $serving serves all traffic and runs the released image."
+
+      # A failure after the move, in settle, backfill or the step after them,
+      # would leave traffic pinned by name, so a revision `infra` creates for a
+      # configuration change would serve nothing until a deploy succeeds. This
+      # step makes traffic follow the latest revision again and keeps the
+      # `candidate` tag, so the next run still deploys.
+      - name: Follow the latest revision after a failure
+        if: failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
+            --to-latest \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet

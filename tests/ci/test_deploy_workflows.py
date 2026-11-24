@@ -194,7 +194,7 @@ def test_every_name_comes_from_the_environment_variables():
         )
     ]
     # Six job updates, ten job executions, two service updates, two reads of the apis
-    # service, and three traffic updates.
+    # service, and four traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
@@ -205,7 +205,7 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
-            "SERVICE_APIS": 6,
+            "SERVICE_APIS": 7,
         }.items()
     }
 
@@ -412,15 +412,24 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 
 
 _REVISION = "${{ steps.stage.outputs.revision }}"
+_PUSHED = "host/repo/dfo-apis@sha256:aaa"
+_INDEX = json.dumps(
+    {
+        "manifests": [
+            {"digest": "sha256:aaa", "platform": {"architecture": "amd64", "os": "linux"}},
+            {"digest": "sha256:bbb", "platform": {"architecture": "unknown", "os": "unknown"}},
+        ]
+    }
+)
 
 
 def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     """Every deploy runs one order, and each step after the stage acts on the revision it
     named: probe the tag URL, move traffic to it by name, settle and backfill, follow the
-    latest revision again without the tag, then check the released revision serves."""
+    latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-9:] == [
+    assert names[-10:] == [
         "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
@@ -429,38 +438,46 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
         "Settle rows the previous image wrote",
         "Backfill description records",
         "Follow the latest revision again",
-        "Check the released revision serves",
+        "Check the released image serves",
+        "Follow the latest revision after a failure",
     ]
-    for name in (
-        "Warm the candidate revision",
-        "Move traffic to the candidate revision",
-        "Check the released revision serves",
-    ):
+    for name in ("Warm the candidate revision", "Move traffic to the candidate revision"):
         assert _named(name)["env"]["REVISION"] == _REVISION
+    assert _named("Check the released image serves")["env"]["IMAGE"] == (
+        "${{ steps.stage.outputs.image }}"
+    )
 
 
 _RECORDING_GCLOUD = """#!/bin/bash
 echo "$*" >> "$GCLOUD_LOG"
 case "$*" in
+  *"revisions describe"*) echo "$REVISION_IMAGE" ;;
   *--format=json*) echo "$DESCRIBED" ;;
   *latestCreatedRevisionName*) echo "$LATEST" ;;
 esac
 """
 
+# `docker buildx imagetools inspect --raw` prints the pushed image index.
+_DOCKER = """#!/bin/bash
+echo "$INDEX"
+"""
+
 
 def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, list]:
     """Runs a step's script with workflow expressions filled in as Actions would, against a
-    gcloud that records each call, and returns the calls without their region and project."""
-    gcloud = tmp_path / "bin" / "gcloud"
-    gcloud.parent.mkdir()
-    gcloud.write_text(_RECORDING_GCLOUD)
-    gcloud.chmod(0o755)
+    gcloud that records each call and a docker that prints `INDEX`, and returns the gcloud
+    calls without their region and project."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool, body in (("gcloud", _RECORDING_GCLOUD), ("docker", _DOCKER)):
+        (bin_dir / tool).write_text(body)
+        (bin_dir / tool).chmod(0o755)
     log = tmp_path / "gcloud.log"
     log.touch()
     script = re.sub(r"\$\{\{[^}]*\}\}", "svc", _named(name)["run"])
     ran = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": f"{gcloud.parent}:{os.environ['PATH']}", "GCLOUD_LOG": str(log), **env},
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "GCLOUD_LOG": str(log), **env},
         capture_output=True,
         text=True,
         check=False,
@@ -469,15 +486,22 @@ def _run_step(name: str, tmp_path: Path, **env: str) -> tuple[subprocess.Complet
 
 
 @pytest.mark.parametrize(
-    ("latest", "exit_code", "output"),
-    [("svc-00002-bbb", 0, "revision=svc-00002-bbb\n"), ("", 1, "")],
-    ids=["created", "unreadable"],
+    ("latest", "image", "exit_code"),
+    [
+        ("svc-00002-bbb", _PUSHED, 0),
+        # An `infra` apply during the update created the latest revision from the previous
+        # image, so it is not probed.
+        ("svc-00002-bbb", "host/repo/dfo-apis@sha256:old", 1),
+        ("", _PUSHED, 1),
+    ],
+    ids=["pushed-image", "previous-image", "unreadable"],
 )
-def test_the_stage_step_tags_and_outputs_the_revision_it_created(
-    tmp_path: Path, latest: str, exit_code: int, output: str
+def test_the_stage_step_tags_and_outputs_the_created_revision_only_when_it_runs_the_pushed_image(
+    tmp_path: Path, latest: str, image: str, exit_code: int
 ):
     """The update leaves the template revision unnamed, since `--tag` would name it, and the
-    tag goes on the revision the update created."""
+    tag goes on the revision the update created once its image is the index's linux/amd64
+    manifest."""
     output_file = tmp_path / "github_output"
     output_file.touch()
 
@@ -485,16 +509,25 @@ def test_the_stage_step_tags_and_outputs_the_revision_it_created(
         "Stage the new revision with no traffic",
         tmp_path,
         LATEST=latest,
+        REVISION_IMAGE=image,
+        INDEX=_INDEX,
         GITHUB_OUTPUT=str(output_file),
     )
 
     assert ran.returncode == exit_code, ran.stderr
-    assert output_file.read_text() == output
-    tagged = ["run services update-traffic svc --update-tags=candidate=svc-00002-bbb"]
+    released = exit_code == 0
+    assert output_file.read_text() == (
+        f"revision=svc-00002-bbb\nimage={image}\n" if released else ""
+    )
     assert calls == [
         "run services update svc --image=svc --no-traffic",
         "run services describe svc",
-        *(tagged if latest else []),
+        *(["run revisions describe svc-00002-bbb"] if latest else []),
+        *(
+            ["run services update-traffic svc --update-tags=candidate=svc-00002-bbb"]
+            if released
+            else []
+        ),
     ]
 
 
@@ -509,9 +542,14 @@ def test_the_stage_step_tags_and_outputs_the_revision_it_created(
             "Follow the latest revision again",
             "run services update-traffic svc --to-latest --remove-tags=candidate",
         ),
+        # The tag stays, so the next run deploys.
+        (
+            "Follow the latest revision after a failure",
+            "run services update-traffic svc --to-latest",
+        ),
     ],
 )
-def test_traffic_moves_by_name_then_follows_the_latest_revision_without_the_tag(
+def test_traffic_moves_by_name_then_follows_the_latest_revision(
     tmp_path: Path, step: str, call: str
 ):
     ran, calls = _run_step(step, tmp_path, REVISION="svc-00002-bbb")
@@ -520,43 +558,65 @@ def test_traffic_moves_by_name_then_follows_the_latest_revision_without_the_tag(
     assert calls == [call]
 
 
-@pytest.mark.parametrize(
-    ("serving", "exit_code"),
-    [
-        ("svc-00002-bbb", 0),
-        # An `infra` apply that overlapped the deploy put the previous traffic back.
-        ("svc-00001-aaa", 1),
-    ],
-    ids=["released", "previous"],
-)
-def test_the_run_fails_unless_the_released_revision_serves(
-    tmp_path: Path, serving: str, exit_code: int
-):
-    described = {
-        "status": {
-            "traffic": [
-                {"percent": 100, "revisionName": serving},
-                {"percent": 0, "revisionName": "svc-00002-bbb"},
-            ]
-        }
-    }
+def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
+    """Settle or backfill can fail after traffic is pinned by name, and an `infra` revision
+    must still take traffic until the next deploy."""
+    step = _named("Follow the latest revision after a failure")
 
+    assert step["if"] == (
+        "failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'"
+    )
+    assert _named("Move traffic to the candidate revision")["id"] == "move"
+    assert _named("Follow the latest revision again")["id"] == "follow"
+
+
+@pytest.mark.parametrize(
+    ("entry", "image", "exit_code"),
+    [
+        ({"percent": 100, "revisionName": "svc-00002-bbb"}, _PUSHED, 0),
+        # Traffic follows the latest revision, which `infra` created after the move from the
+        # released image.
+        ({"percent": 100, "latestRevision": True, "revisionName": "svc-00003-ccc"}, _PUSHED, 0),
+        # An `infra` apply that overlapped the deploy put the previous image back.
+        ({"percent": 100, "revisionName": "svc-00001-aaa"}, "host/repo/dfo-apis@sha256:old", 1),
+        ({"percent": 50, "revisionName": "svc-00002-bbb"}, _PUSHED, 1),
+    ],
+    ids=["released", "infra-revision", "previous-image", "split"],
+)
+def test_the_run_fails_unless_the_released_image_serves(
+    tmp_path: Path, entry: dict, image: str, exit_code: int
+):
     ran, calls = _run_step(
-        "Check the released revision serves",
+        "Check the released image serves",
         tmp_path,
-        REVISION="svc-00002-bbb",
-        DESCRIBED=json.dumps(described),
+        IMAGE=_PUSHED,
+        REVISION_IMAGE=image,
+        DESCRIBED=json.dumps({"status": {"traffic": [entry]}}),
     )
 
     assert ran.returncode == exit_code, ran.stderr
-    assert calls == ["run services describe svc"]
+    assert calls[0] == "run services describe svc"
 
 
-@pytest.mark.parametrize(("status", "exit_code"), [("error", 1), ("warm", 0), ("forbidden", 0)])
-def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit_code: int):
+@pytest.mark.parametrize(
+    ("status", "required", "exit_code"),
+    [
+        ("error", "false", 1),
+        ("warm", "true", 0),
+        ("forbidden", "false", 0),
+        ("slow", "false", 0),
+        # Production moves traffic only on `warm`.
+        ("forbidden", "true", 1),
+        # A missing status is not a pass.
+        ("", "false", 1),
+    ],
+)
+def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(
+    status: str, required: str, exit_code: int
+):
     """The warm step calls the candidate revision as the deployer and records its outcome
-    without failing; the next step fails the deploy on an error answer alone, ahead of the
-    traffic step."""
+    without failing; the next step fails the deploy unless the outcome lets traffic move,
+    ahead of the traffic step."""
     warm = _step("warm")
     assert warm["run"].strip() == ".github/scripts/deploy_warm.sh"
     assert warm["env"]["SERVICE"] == "${{ vars.SERVICE_APIS }}"
@@ -567,9 +627,10 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit
 
     last = _named("Fail on errors the candidate revision answered while warming")
     assert last["env"]["WARM_STATUS"] == "${{ steps.warm.outputs.status }}"
+    assert last["env"]["REQUIRE_PROBE"] == warm["env"]["REQUIRE_PROBE"]
     check = subprocess.run(
         ["bash", "-c", last["run"]],
-        env={"PATH": "/usr/bin:/bin", "WARM_STATUS": status},
+        env={"PATH": "/usr/bin:/bin", "WARM_STATUS": status, "REQUIRE_PROBE": required},
         capture_output=True,
         text=True,
         check=False,
@@ -580,7 +641,8 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(status: str, exit
 def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_step():
     """The decide step reads the service and gates every later step on `deploy=true`, so a
     run that deploys runs every step in order and a run that stopped part-way is recovered by
-    the next one from the start."""
+    the next one from the start. Only the recovery step after a failure runs on another
+    condition."""
     decide = _step("decide")
     assert decide["run"].strip() == ".github/scripts/deploy_decide.sh"
     assert decide["env"]["TARGET"] == "${{ steps.target.outputs.sha }}"
@@ -592,9 +654,10 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 23
+    assert len(later) == 24
     for step in later:
-        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+        if step.get("name") != "Follow the latest revision after a failure":
+            assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():

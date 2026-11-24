@@ -78,7 +78,9 @@
 #                and the status is `error` when an earlier route answered an
 #                error.
 #   unavailable  the service URL or the access token could not be read, or
-#                the token mint failed for 4 attempts. A warning, or `error`
+#                the token mint answered another status than 200, 401 or
+#                403, after up to 4 attempts for a 429, a 5xx or no answer.
+#                A warning, or `error`
 #                under REQUIRE_PROBE
 #   error        the revision answered a route with any other status, a
 #                route never answered at all within its deadline (probing
