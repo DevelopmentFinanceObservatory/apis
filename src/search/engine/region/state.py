@@ -1140,6 +1140,12 @@ class ResolveState:
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.
     source_code: SeriesCodeMembers | None = None
+    # Whether the part reads no stated quantity and may bind on its series code alone,
+    # decided once before the quantity read (`phase_rank_bind._pins_on_code`): its variable
+    # text writes only the code, one shape is admissible and it drops no qualifier phrase.
+    # The bind then calls no model when its request leaves the model nothing to decide
+    # (`binders.code_pinned.binds_on_code`).
+    code_pinned: bool = False
     # A detection of `detect_query` the door made under the part's scope, which recall takes
     # in place of its own (`interpret.recall`), or `None`.
     detected: Detected | None = None
