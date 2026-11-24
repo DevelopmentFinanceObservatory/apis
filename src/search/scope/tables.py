@@ -9,7 +9,7 @@ from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
 from origin_catalogue.context import current_source_scope
-from search.models import BaseIdentity, EntityGroup, Operation, Option, ScopeAxis
+from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
 
@@ -28,15 +28,12 @@ class AxisTable:
     of another total (`PUBLISHED_BINDING`). `conflicts` are the pairs of one of the axis's
     options and an option of another axis that cannot hold together on this part, beside the
     ones every part declares (`rules.CONFLICTS`). `whole` is the option that holds the
-    axis's whole, the one an entry asking for `<axis>:whole` applies (`build.WHOLE`); None
-    where the axis declares none, with `whole_cause` why. `whole_alternatives` are the options
-    a client may ask for in place of the whole: beside a declared whole, the other options
-    that also hold the part (DAC2a's inclusive scope beside total ODA); without one, or where
-    the whole is unavailable, the options that can stand for it. `whole_base` is the identity
-    the whole is compiled over where the part's identity cannot serve the whole's option:
-    DAC2a's total ODA to all recipients, the whole of a composite over the whole recipient
-    population, whose own identity would read total ODA over the open side and count its
-    regional totals beside their members.
+    axis's whole, the one a whole request with no option asks for (`whole.derive_whole`);
+    None where the axis declares none, with `whole_cause` why. `whole_alternatives` are the
+    other options a client may ask for as the whole (DAC2a's inclusive scope beside total
+    ODA, a side summed over its members beside its total). `whole_rebind` is the side option
+    the declared whole takes beside `whole` (DAC2a's total ODA to all recipients,
+    `ProviderWhole.recipient`), None where the whole keeps the part's sides.
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
     axis or binding kind, a `preference`, `held` or `rules` naming no option, `rules`
@@ -53,7 +50,7 @@ class AxisTable:
     whole: str | None = None
     whole_alternatives: tuple[str, ...] = ()
     whole_cause: str = "whole_undeclared"
-    whole_base: BaseIdentity | None = None
+    whole_rebind: str | None = None
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]

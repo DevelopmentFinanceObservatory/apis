@@ -568,13 +568,16 @@ class ProviderWhole:
     recipient named, or the population's own total), and `alternatives` the other scopes
     that also hold such a part's streams, which a client may ask for in its place.
     `named_scope` is the whole of a part naming recipients below the population's total (a
-    country or a region), None where it is `scope`. `note` says why."""
+    country or a region), None where it is `scope`. `recipient` is the recipient total the
+    whole reads beside `scope`, rebinding the recipient side, None where `scope` keeps the
+    part's recipients. `note` says why."""
 
     dataset: str
     scope: ProviderScope
     alternatives: tuple[ProviderScope, ...]
     note: str
     named_scope: ProviderScope | None = None
+    recipient: str | None = None
 
 
 # The whole of each table's provider axis. DAC1's total ODA counts the bilateral flows and the
@@ -584,9 +587,12 @@ class ProviderWhole:
 # donor's multilateral money as its imputed share of the agencies' spending, and total ODA
 # counts it as core contributions in the year paid, which go to the agencies and so to no
 # country or region. Over a named country or region total ODA counts the bilateral flows
-# alone, so the inclusive scope is the whole there. Over the whole population total ODA is
-# the OECD's denominator of a donor's bilateral share, the figure DAC1 serves for the same
-# donor, and the inclusive scope is the alternative.
+# alone, so the inclusive scope is the whole there. Over the whole population, a part listing
+# every recipient, naming the developing countries' total or a multilateral agency, or holding
+# total ODA, the whole is total ODA to all recipients, the OECD's denominator of a donor's
+# bilateral share and the figure DAC1 serves for the same donor: the provider and the
+# recipient side both move, so a listing's every recipient divides by one figure. The
+# inclusive scope is the alternative.
 PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
     ProviderWhole(
         dataset=DAC1,
@@ -605,6 +611,7 @@ PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
         scope="contributions",
         alternatives=("inclusive",),
         named_scope="inclusive",
+        recipient="DACAllRecipients",
         note=(
             "DAC2a total ODA counts core contributions to the agencies and the inclusive "
             "scope an imputed share of their spending; over a named country or region total "

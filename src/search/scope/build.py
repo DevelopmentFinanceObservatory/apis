@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
-from dfo_platform.problem import Alternative
 from search.engine.errors import EngineInputError
 from search.engine.spec_id import identity_spec_id
 from search.models import (
@@ -14,8 +13,6 @@ from search.models import (
     BaseIdentity,
     CompiledScope,
     Component,
-    DerivedSide,
-    DerivedWhole,
     DroppedEntry,
     Entry,
     EntryProvenance,
@@ -24,29 +21,17 @@ from search.models import (
     PartScope,
     ProviderBinding,
     ScopeAxis,
-    SideBinding,
     SpecDefinition,
 )
 from search.scope import rules as scope_rules
 from search.scope.basis import SERVED_DIFFERS_RULE
 from search.scope.compile import Compiled, Refusal, compile
 from search.scope.composite import composite_components
-from search.scope.edits import AXIS_BINDING, applies_in_pass, apply_binding
+from search.scope.edits import applies_in_pass, apply_binding
 from search.scope.provider import elect_latest_window
 from search.scope.rules import AxisRule
-from search.scope.side import side_rule, summed_members
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, CompileFacts, Conflict, ScopeFacts
-from search.scope.vocabulary import option_axis
-
-WHOLE = "whole"
-"""The option value an entry posts to ask for its axis's whole (`AxisTable.whole`)."""
-
-SIDE_RULES: Mapping[ScopeAxis, AxisRule] = {
-    "donor": side_rule("donor"),
-    "recipient": side_rule("recipient"),
-}
-"""The side axes, read only where an entry posts their axis (`side`)."""
 
 
 def build_part_scope(
@@ -87,38 +72,8 @@ def build_part_scope(
     scope's base is the identity the answer serves.
     A composite asking for the latest year compiles to the one year its tables both cover
     (`provider.elect_latest_window`), while the base keeps the `latest` window. The scope's
-    id is the base identity's spec_id. The server keeps no ledger, so the scope's is [].
-
-    An explicit entry asking for a whole (`_whole_requests`: `<axis>:whole`, an option on a
-    side axis other than the parties named, or an option offered in place of the whole) compiles the whole with every other axis held:
-    the part's own entry on that axis is left out, and the scope states the pair in
-    `PartScope.derived`. A whole compiled over another identity (`AxisTable.whole_base`)
-    states that identity as the scope's base, so its base and entries posted again compile
-    to the whole. It refuses where the axis declares no whole the part can take
-    (`_whole_entry`), where the part's entries refuse without it, and, with
-    `conflicting_requested_options`, where the whole moves another axis's option
-    (`_held_axes`). A refusal points at the entry's place among `entries` (`_posted`). With
-    `refuse` false the whole entries are dropped with the refusal's cause and the rest
-    compile (`_without_wholes`)."""
-    posted_base, posted_records, posted_rules, posted_conflicts = base, records, rules, conflicts
-
-    def without(kept: list[Entry]) -> PartScope | Refusal:
-        return build_part_scope(
-            base=posted_base,
-            entries=kept,
-            records=posted_records,
-            facts=facts,
-            read=read,
-            rules=posted_rules,
-            conflicts=posted_conflicts,
-            refuse=False,
-        )
-
+    id is the base identity's spec_id. The server keeps no ledger, so the scope's is []."""
     rules = scope_rules.AXIS_RULES if rules is None else rules
-    version_rules = rules
-    asked = {entry.axis for entry in entries if entry.axis in SIDE_RULES}
-    if asked:
-        rules = {**rules, **{axis: SIDE_RULES[axis] for axis in asked}}
     conflicts = scope_rules.CONFLICTS if conflicts is None else conflicts
     tables = _tables(base, records, facts, rules)
     composed, settled = _with_recorded_composites(base, records, tables)
@@ -143,361 +98,30 @@ def build_part_scope(
         for n, entry in enumerate(read)
         if entry not in applied and entry not in read[:n]
     ]
-    asked_whole: Entry | None = None
-    whole_table: AxisTable | None = None
-    part_entries: list[Entry] = []
-    part_positions: list[int] = []
-    positions = list(range(len(compiling)))
-    whole_base, whole_tables = base, tables
-    asking = _whole_requests(compiling, tables)
-    whole_at = asking[0] if len(asking) == 1 else None
-    failed: Refusal | None = (
-        Refusal(
-            code="conflicting_requested_options",
-            entry=asking[1],
-            cause="two_wholes",
-            blocker=asking[0],
-        )
-        if len(asking) > 1
-        else None
-    )
-    if whole_at is not None:
-        held_facts = _compile_facts(base, compiling, tables, records, facts, rules, conflicts)
-        axes = held_facts.axes
-        resolved = _whole_entry(
-            compiling[whole_at], whole_at, axes, _unblocked(compiling, held_facts)
-        )
-        if isinstance(resolved, Refusal):
-            failed = resolved
-        else:
-            whole_table = next(table for table in axes if table.axis == resolved.axis)
-            compiling[whole_at] = asked_whole = resolved
-            # The whole holds every axis but its own: the part's entry on that axis is the
-            # part's, which the whole entry replaces.
-            part_positions = [n for n, entry in enumerate(compiling) if entry is not resolved]
-            part_entries = [compiling[n] for n in part_positions]
-            positions = [
-                n
-                for n, entry in enumerate(compiling)
-                if entry is resolved or entry.axis != resolved.axis
-            ]
-            compiling = [compiling[n] for n in positions]
-            if whole_table.whole_base is not None and resolved.option_id == whole_table.whole:
-                whole_base = whole_table.whole_base
-                whole_tables = _tables(whole_base, records, facts, rules)
-    if failed is not None:
-        if refuse:
-            return failed
-        return _without_wholes(entries, asking, failed.cause, without)
     while isinstance(
         compiled := compile(
-            whole_base,
+            base,
             compiling,
-            _compile_facts(whole_base, compiling, whole_tables, records, facts, rules, conflicts),
+            _compile_facts(base, compiling, tables, records, facts, rules, conflicts),
         ),
         Refusal,
     ):
         if refuse:
-            return _posted(compiled, positions)
+            return compiled
         entry = compiling.pop(compiled.entry)
-        positions.pop(compiled.entry)
         refused.append(
             DroppedEntry(entry=entry, code=_NOT_APPLIED[entry.provenance], cause=compiled.cause)
         )
-    compiled = _served(compiled, facts)
-    scope = _part_scope(
-        whole_base,
+    served = elect_latest_window(compiled.identity, facts)
+    if served is not compiled.identity:
+        compiled = dataclasses.replace(compiled, identity=served, spec_id=identity_spec_id(served))
+    return _part_scope(
+        base,
         compiled,
         refused,
-        rule_version=scope_rules.rule_version(version_rules, conflicts),
+        rule_version=scope_rules.rule_version(rules, conflicts),
         facts=facts,
     )
-    if asked_whole is None or whole_table is None or asked_whole not in compiled.entries:
-        return scope
-    part = compile(
-        base,
-        part_entries,
-        _compile_facts(base, part_entries, tables, records, facts, rules, conflicts),
-    )
-    if isinstance(part, Refusal):
-        return _posted(part, part_positions) if refuse else scope
-    held = _held_axes(
-        part,
-        compiled,
-        asked_whole.axis,
-        _compile_facts(whole_base, compiling, whole_tables, records, facts, rules, conflicts),
-    )
-    if held is not None:
-        at = positions[compiling.index(asked_whole)]
-        if not refuse:
-            return _without_wholes(entries, [at], held, without)
-        return Refusal(code="conflicting_requested_options", entry=at, cause=held)
-    alternatives = _other_wholes(whole_table, asked_whole.option_id)
-    derived = _derived(
-        _served(part, facts), compiled, asked_whole, alternatives=alternatives, facts=facts
-    )
-    return scope.model_copy(update={"derived": derived})
-
-
-def _whole_requests(entries: Sequence[Entry], tables: Mapping[ScopeAxis, AxisTable]) -> list[int]:
-    """The indexes of the explicit entries asking for a whole: one posting `<axis>:whole`
-    or `<axis>:whole:<value>`, an option offered in place of the whole
-    (`AxisTable.whole_alternatives`), and one on a side axis (`SIDE_RULES`) asking for an
-    option other than the parties the part names, which stands for the side's whole. A
-    plain `<axis>:<value>` on any other axis is a switch."""
-    asking: list[int] = []
-    for n, entry in enumerate(entries):
-        if entry.provenance != "explicit":
-            continue
-        table = tables.get(entry.axis)
-        if _asks_whole(entry.option_id) or (
-            entry.axis in SIDE_RULES and (table is None or entry.option_id != table.held)
-        ):
-            asking.append(n)
-    return asking
-
-
-def _asks_whole(option_id: str) -> bool:
-    """Whether `option_id` is `<axis>:whole` or `<axis>:whole:<value>`."""
-    value = option_id.partition(":")[2]
-    return value == WHOLE or value.startswith(f"{WHOLE}:")
-
-
-def _whole_id(table: AxisTable, option_id: str) -> str:
-    """The id a client posts to ask for `option_id` as `table`'s whole: `<axis>:whole` for
-    the declared whole, `<axis>:whole:<value>` for an option offered in its place, and the
-    option's own id on a side axis, whose entries all ask for a whole."""
-    if table.axis in SIDE_RULES:
-        return option_id
-    if option_id == table.whole:
-        return f"{table.axis}:{WHOLE}"
-    return f"{table.axis}:{WHOLE}:{option_id.partition(':')[2]}"
-
-
-def _without_wholes(
-    entries: Sequence[Entry],
-    asking: Sequence[int],
-    cause: str,
-    without: Callable[[list[Entry]], PartScope | Refusal],
-) -> PartScope | Refusal:
-    """The scope `entries` compile to without the whole entries at `asking` (`without`),
-    each reported as dropped with `cause`: the scope of a build that does not refuse
-    (`refuse` false)."""
-    dropped = [entries[n] for n in asking if n < len(entries)]
-    kept = [entry for n, entry in enumerate(entries) if n not in asking]
-    scope = without(kept)
-    if isinstance(scope, Refusal):
-        return scope
-    reported = [
-        DroppedEntry(entry=entry, code=_NOT_APPLIED[entry.provenance], cause=cause)
-        for entry in dropped
-    ]
-    return scope.model_copy(update={"dropped_entries": [*reported, *scope.dropped_entries]})
-
-
-def _other_wholes(table: AxisTable, option_id: str) -> tuple[str, ...]:
-    """The ids that ask for the options that also hold the part beside `option_id`, the
-    whole asked for: the table's whole and its alternatives, less `option_id`
-    (`_whole_id`)."""
-    wholes = (*(() if table.whole is None else (table.whole,)), *table.whole_alternatives)
-    return tuple(_whole_id(table, option) for option in wholes if option != option_id)
-
-
-def _unblocked(entries: Sequence[Entry], facts: CompileFacts) -> Callable[[str], bool]:
-    """Whether an option conflicts with none the part holds on another axis: the option an
-    explicit entry posts there, else the one the axis's table holds."""
-    held = {table.axis: table.held for table in facts.axes}
-    held |= {e.axis: e.option_id for e in entries if e.provenance == "explicit"}
-    pairs = {frozenset((c.first, c.second)) for c in facts.conflicts}
-
-    def unblocked(option_id: str) -> bool:
-        axis = option_axis(option_id)
-        return not any(
-            frozenset((option_id, other)) in pairs
-            for other_axis, other in held.items()
-            if other_axis != axis
-        )
-
-    return unblocked
-
-
-def _posted(refusal: Refusal, positions: Sequence[int]) -> Refusal:
-    """`refusal` of the entries at `positions` of the entries compiled, pointing at the
-    entries as compiled before the whole's axis was left to it."""
-    blocker = None if refusal.blocker is None else positions[refusal.blocker]
-    return dataclasses.replace(refusal, entry=positions[refusal.entry], blocker=blocker)
-
-
-def _held_axes(part: Compiled, whole: Compiled, axis: ScopeAxis, facts: CompileFacts) -> str | None:
-    """Why `whole` does not hold `part`'s option on every axis but `axis`, None where it
-    does: the conflict between the whole's option on `axis` and the part's option it moved,
-    else `whole_moves_<axis>`, and `whole_drops_<axis>` for an axis the part settles that
-    the whole has none of. A side whole may drop an axis that edits that side's parties
-    (the region axis), since the whole replaces them."""
-    actives = {choice.axis: choice.active for choice in whole.choices}
-    pairs = {frozenset((c.first, c.second)): c.cause for c in facts.conflicts}
-    for choice in part.choices:
-        if choice.axis == axis:
-            continue
-        if choice.axis not in actives:
-            if axis in SIDE_RULES and AXIS_BINDING[choice.axis] == "entities":
-                continue
-            return f"whole_drops_{choice.axis}"
-        if actives[choice.axis] != choice.active:
-            moved = frozenset((actives[axis], choice.active))
-            return pairs.get(moved, f"whole_moves_{choice.axis}")
-    return None
-
-
-def _served(compiled: Compiled, facts: ScopeFacts) -> Compiled:
-    """`compiled` over the one year its tables both cover where it asks for the latest
-    (`provider.elect_latest_window`)."""
-    served = elect_latest_window(compiled.identity, facts)
-    if served is compiled.identity:
-        return compiled
-    return dataclasses.replace(compiled, identity=served, spec_id=identity_spec_id(served))
-
-
-def _whole_entry(
-    entry: Entry, index: int, axes: Sequence[AxisTable], unblocked: Callable[[str], bool]
-) -> Entry | Refusal:
-    """`entry`, asking for its axis's whole, as the entry of the option it asks for: the
-    declared whole (`AxisTable.whole`) for `<axis>:whole`, the offered option `<value>`
-    for `<axis>:whole:<value>`. Or the refusal of it: the axis is absent, it declares no
-    whole, it offers no such option in place of the whole, the part already holds it, or
-    the option is unavailable or serves fewer years than the part asks for, each but the
-    first with the options a client may ask for in its place that conflict with no option
-    the part holds (`unblocked`), under the ids that ask for them (`_whole_id`). An entry on
-    a side axis naming another option stands for the side's whole as posted, which compile
-    judges."""
-    table = next((t for t in axes if t.axis == entry.axis), None)
-    if table is None:
-        return Refusal(code="requested_option_unavailable", entry=index, cause="axis_absent")
-    if not _asks_whole(entry.option_id):
-        return entry
-    offered = tuple(filter(unblocked, table.whole_alternatives))
-    alternatives = tuple(_whole_id(table, option) for option in offered)
-    labels = tuple((_whole_id(table, o), label) for o, label in _labels(table, offered))
-    value = entry.option_id.partition(":")[2].partition(":")[2]
-    asked = table.whole if not value else f"{table.axis}:{value}"
-    if asked is None:
-        return Refusal(
-            code="requested_option_unavailable",
-            entry=index,
-            cause=table.whole_cause,
-            alternatives=alternatives,
-            labels=labels,
-        )
-    if value and asked not in table.whole_alternatives:
-        return Refusal(
-            code="requested_option_unavailable",
-            entry=index,
-            cause="not_a_whole",
-            alternatives=alternatives,
-            labels=labels,
-        )
-    if asked == table.held and (value or table.whole_base is None):
-        return Refusal(code="requested_option_unavailable", entry=index, cause="part_is_whole")
-    option = table.option(asked)
-    assert option is not None
-    if (option.availability.status == "unavailable" and (value or table.whole_base is None)) or (
-        option.availability.status == "partial"
-    ):
-        return Refusal(
-            code="requested_option_unavailable",
-            entry=index,
-            cause=option.availability.code or f"option_{option.availability.status}",
-            alternatives=alternatives,
-            labels=labels,
-        )
-    return entry.model_copy(update={"option_id": asked})
-
-
-def _labels(table: AxisTable, offered: Sequence[str]) -> tuple[tuple[str, str], ...]:
-    """The label `table` gives each option of `offered`, by option id."""
-    return tuple(
-        (option_id, option.label)
-        for option_id in offered
-        if (option := table.option(option_id)) is not None
-    )
-
-
-def _derived(
-    part: Compiled,
-    whole: Compiled,
-    entry: Entry,
-    *,
-    alternatives: Sequence[str],
-    facts: ScopeFacts,
-) -> DerivedWhole:
-    """What the part and its whole count: each one's spec_id, its option on the axis the
-    whole opens and on the provider axis, the parties each side names, the parties a summed
-    side adds (`side.summed_members`), the years both serve, and the `alternatives` a client
-    may post in place of the whole."""
-    option = next(
-        o
-        for c in whole.choices
-        if c.axis == entry.axis
-        for o in c.options
-        if o.option_id == entry.option_id
-    )
-    binding = option.binding
-    kind = (
-        "option"
-        if not isinstance(binding, SideBinding)
-        else "published_total"
-        if binding.refs
-        else "sum_of_members"
-    )
-    return DerivedWhole(
-        axis=entry.axis,
-        kind=kind,
-        part=_derived_side(part, entry.axis),
-        whole=_derived_side(whole, entry.axis),
-        years=_shared_years(
-            compiled_scope(part.spec_id, part.identity, facts=facts),
-            compiled_scope(whole.spec_id, whole.identity, facts=facts),
-        ),
-        members=summed_members(whole.identity, binding.role)
-        if kind == "sum_of_members" and isinstance(binding, SideBinding)
-        else None,
-        alternatives=list(alternatives),
-    )
-
-
-def _derived_side(compiled: Compiled, axis: ScopeAxis) -> DerivedSide:
-    actives = {choice.axis: choice.active for choice in compiled.choices}
-    return DerivedSide(
-        spec_id=compiled.spec_id,
-        option_id=actives[axis],
-        provider=actives.get("provider"),
-        populations={key: list(dcids) for key, dcids in compiled.identity.entities.items()},
-    )
-
-
-def _shared_years(part: CompiledScope, whole: CompiledScope) -> list[tuple[int, int]] | None:
-    """The runs of years both figures serve, each over the union of its components'
-    periods; None unless both state their periods."""
-    served = [
-        {
-            year
-            for component in scope.components
-            for first, last in component.periods or ()
-            for year in range(first, last + 1)
-        }
-        for scope in (part, whole)
-        if any(component.periods is not None for component in scope.components)
-    ]
-    if len(served) < 2:
-        return None
-    years = set.intersection(*served)
-    runs: list[tuple[int, int]] = []
-    for year in sorted(years):
-        if runs and runs[-1][1] == year - 1:
-            runs[-1] = (runs[-1][0], year)
-        else:
-            runs.append((year, year))
-    return runs
 
 
 def _compile_facts(
@@ -721,10 +345,4 @@ def refusal_error(refusal: Refusal, *, pointer: str | None) -> EngineInputError:
     """`refusal` as a 422 naming its cause and the entry blocking it, at `pointer`."""
     blocker = "" if refusal.blocker is None else f", blocked by scope entry {refusal.blocker}"
     message = f"Scope entry {refusal.entry} cannot apply to this part: {refusal.cause}{blocker}."
-    labels = dict(refusal.labels)
-    alternatives = [
-        Alternative(ref=ref, label=labels.get(ref, ref)) for ref in refusal.alternatives
-    ] or None
-    return EngineInputError(
-        message, code=refusal.code, status=422, pointer=pointer, alternatives=alternatives
-    )
+    return EngineInputError(message, code=refusal.code, status=422, pointer=pointer)

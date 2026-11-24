@@ -161,6 +161,7 @@ from .request import (
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     SourceMention,
+    WholeRequest,
     asked_open_axes,
 )
 from .response import (
@@ -530,6 +531,7 @@ __all__ = [
     "ValueKind",
     "Warning",
     "WarningSeverity",
+    "WholeRequest",
     "YearSpan",
     "asked_open_axes",
     "coverage_is_empty",

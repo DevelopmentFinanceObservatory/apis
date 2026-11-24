@@ -313,8 +313,9 @@ class DerivedSide(StrictModel):
 
 
 class DerivedWhole(StrictModel):
-    """A whole Search derived from a part: the part as its base and entries compile without
-    the whole entry, the whole as they compile with it, every other axis held."""
+    """A whole Search derived from a part (`scope.whole.derive_whole`): the part as its base
+    and entries compile, and the whole, every choice the part settled held and one axis
+    switched to the whole's option."""
 
     axis: ScopeAxis = Field(description="the axis the whole opens")
     kind: Literal["option", "published_total", "sum_of_members"] = Field(
@@ -323,13 +324,15 @@ class DerivedWhole(StrictModel):
             "total, or a side left open and summed over its members"
         )
     )
-    part: DerivedSide = Field(description="the part, compiled without the whole entry")
-    whole: DerivedSide = Field(description="the whole, compiled with it")
+    part: DerivedSide = Field(description="the part, compiled from its base and entries")
+    whole: DerivedSide = Field(
+        description="the whole: the part's choices held and the axis switched to its option"
+    )
     years: list[YearSpan] | None = Field(
         default=None,
         description=(
             "the years both figures serve, where both compile to composites stating their "
-            "periods; None where neither states them"
+            "periods; None unless both state them"
         ),
     )
     members: list[str] | None = Field(
@@ -343,8 +346,17 @@ class DerivedWhole(StrictModel):
     alternatives: list[OptionId] = Field(
         default_factory=list,
         description=(
-            "the other options on the axis that also hold the part, which a client may post "
-            "in place of the whole entry (DAC2a's provider:inclusive beside total ODA)"
+            "the other options on the axis whose whole derives, which a client may post as "
+            "whole.option_id (DAC2a's provider:inclusive beside total ODA)"
+        ),
+    )
+    rebind: OptionId | None = Field(
+        default=None,
+        description=(
+            "the recipient side option the whole takes beside its provider option, where "
+            "the dataset declares that its provider whole reads another recipient total "
+            "(DAC2a's recipient:DACAllRecipients beside total ODA); None where the whole "
+            "keeps the part's recipients"
         ),
     )
 
@@ -377,5 +389,5 @@ class PartScope(StrictModel):
     derived: DerivedWhole | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="the part this answer is the whole of, where an entry asked for a whole",
+        description="the part this answer is the whole of, where the request asked for its whole",
     )

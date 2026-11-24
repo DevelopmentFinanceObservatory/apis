@@ -164,13 +164,21 @@ def _edit_provider(
 def _edit_side(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
-    """Set the option's role to the parties it names, or remove the role for an option that
-    leaves the side open."""
+    """Set the option's role to the parties it names, or, for an option summing the side
+    over its members, state the side open (`open_roles`): a role neither named nor open
+    reads the dataset's default for the side, which a containing total may bind
+    (`whole_totals.with_containing_total`)."""
     assert isinstance(binding, SideBinding)
     entities = {key: dcids for key, dcids in identity.entities.items() if key != binding.role}
+    axis = role_key_axis(binding.role)
+    open_roles = [role for role in identity.open_roles or () if role != axis]
     if binding.refs:
         entities[binding.role] = list(binding.refs)
-    return identity.model_copy(update={"entities": dict(sorted(entities.items()))})
+    elif axis is not None:
+        open_roles = sorted({*open_roles, axis})
+    return identity.model_copy(
+        update={"entities": dict(sorted(entities.items())), "open_roles": open_roles or None}
+    )
 
 
 def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentity:

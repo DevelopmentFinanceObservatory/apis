@@ -316,19 +316,13 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
 _WHOLES = {row.dataset: row for row in PROVIDER_WHOLES}
 
 
-def _with_whole(
-    table: AxisTable,
-    dataset: str | None,
-    *,
-    below: bool = False,
-    whole_base: BaseIdentity | None = None,
-) -> AxisTable:
+def _with_whole(table: AxisTable, dataset: str | None, *, below: bool = False) -> AxisTable:
     """`table`, a provider table on `dataset`, with the whole its dataset declares
     (`PROVIDER_WHOLES`): `ProviderWhole.named_scope` where the part names recipients below
     the population's total (`below`), else `ProviderWhole.scope` with its alternatives, each
-    where the table offers it available and the part does not hold it. `whole_base` is the identity
-    the whole is compiled over (`AxisTable.whole_base`). A table offering no declared whole declares none
-    (`whole_not_offered`), with the alternatives it offers in its place."""
+    where the table offers it and the part does not hold it, and the recipient total it reads
+    beside it (`ProviderWhole.recipient`) as `whole_rebind`. A table offering no declared
+    whole declares none (`whole_not_offered`), with the alternatives it offers."""
     row = _WHOLES.get(dataset) if dataset is not None else None
     if row is None:
         return table
@@ -337,8 +331,7 @@ def _with_whole(
     alternatives = tuple(
         option_id
         for alternative in (() if named else row.alternatives)
-        if (option := table.option(option_id := provider_option_id(alternative))) is not None
-        and option.availability.status == "available"
+        if table.option(option_id := provider_option_id(alternative)) is not None
         and option_id != table.held
     )
     whole = provider_option_id(scope)
@@ -346,8 +339,9 @@ def _with_whole(
         return dataclasses.replace(
             table, whole_alternatives=alternatives, whole_cause="whole_not_offered"
         )
+    rebind = None if named or row.recipient is None else f"recipient:{row.recipient}"
     return dataclasses.replace(
-        table, whole=whole, whole_alternatives=alternatives, whole_base=whole_base
+        table, whole=whole, whole_alternatives=alternatives, whole_rebind=rebind
     )
 
 
@@ -484,14 +478,7 @@ def _published_table(
     # Below the population's total: countries and regions on the bilateral side. A part
     # naming a multilateral agency or the population's total takes the population's whole.
     below = bool(named) and rule is not None and rule.bilateral and not set(named) <= population
-    # Over the whole population the whole is total ODA to all recipients, the total of both
-    # sides, whatever option the part holds.
-    whole_base = (
-        _at_total(bilateral, split.spanning)
-        if split is not None and not below and named != [split.spanning]
-        else None
-    )
-    return _with_whole(table, row.dataset, below=below, whole_base=whole_base)
+    return _with_whole(table, row.dataset, below=below)
 
 
 def _destinations(identity: BaseIdentity) -> list[str]:
@@ -502,23 +489,6 @@ def _destinations(identity: BaseIdentity) -> list[str]:
         if role_key_axis(key) == "destination"
         for dcid in dcids
     ]
-
-
-def _at_total(identity: BaseIdentity, total: str) -> BaseIdentity:
-    """`identity` naming `total` as its one destination, with the destination side taken out
-    of its open roles."""
-    entities = {
-        key: dcids
-        for key, dcids in identity.entities.items()
-        if role_key_axis(key) != "destination"
-    }
-    open_roles = [role for role in identity.open_roles or () if role != "destination"]
-    return identity.model_copy(
-        update={
-            "entities": dict(sorted({**entities, "destination": [total]}.items())),
-            "open_roles": open_roles or None,
-        }
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1075,7 +1045,8 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
     whose code `identity` binds as a value and whose dataset the index elects for the table
     identity `identity` reads (`table_identity`, the net identity of the OECD headline), when
     every provider `identity` names counts as a donor (`_counts_as_donor`) and they do not
-    pool a redistributed provider with one of its funders (`_pools_funder`). None otherwise,
+    pool a redistributed provider with one of its funders (`_pools_funder`). A composite
+    naming its dataset's total of both sides is read as it reads it (`_as_composite_reads`). None otherwise,
     or when the composite `identity` binds cannot derive its components. The bound codes
     and the providers are read before the family lookup.
 
@@ -1095,14 +1066,28 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
     rows = [row for row in PUBLISHED_PROVIDER_SCOPES if (row.code_system, row.code) in bound]
     if not rows or not _names_donors_alone(identity, facts.index):
         return None
+    # A composite naming its dataset's total of both sides reads the bilateral side's total
+    # in its place (`DestinationRule.read`), so its table is that read's.
+    read = _as_composite_reads(identity)
     try:
         document = table_identity(
-            facts.index, identity.model_dump(mode="json", exclude_none=True)
+            facts.index, read.model_dump(mode="json", exclude_none=True)
         ).identity
     except CompositeNotServable:
         return None
     dataset = _dataset(BaseIdentity.model_validate(document), facts.index)
     return next((row for row in rows if row.dataset == dataset), None)
+
+
+def _as_composite_reads(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` as the composite it binds reads it (`edits.rebound_destinations`):
+    naming the bilateral side's total in place of the total of both sides. `identity`
+    itself where it binds no composite."""
+    try:
+        ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    except CompositeNotServable:
+        return identity
+    return identity if ref is None else rebound_destinations(identity, ref)
 
 
 def provider_total_code(code_system: str, code: str, index: CodeIndex) -> str | None:

@@ -1,8 +1,10 @@
-"""The donor and recipient axes: a flow side as the part names it, or its whole.
+"""The donor and recipient axes: a flow side as the part names it, its total, or its members.
 
 A part that names parties on a flow side offers `<axis>:named`, the parties as posted, which
-the part holds, and `<axis>:whole`, the side's whole. The whole is the first of these the
-part's table publishes:
+the part holds, each total that can stand for the side's whole as `<axis>:<dcid>`, and
+`<axis>:members`, the side summed over its members (`summed_members`), stated as an open
+role. The side's whole (`AxisTable.whole`) is the first of these the part's table
+publishes:
 
 - on a composite whose component reads the bilateral destinations of its table
   (`ComponentRecipe.destinations`), the recipient side's population total
@@ -11,28 +13,29 @@ part's table publishes:
   countries, total");
 - the one total the code index marks whole on the side for the part's years
   (`whole_reading`, DAC2a's "All Recipients, Total");
-- else the side left open, summed over its members (`summed_members`).
+- else the members' sum.
 
 Where the code index marks two totals whole, the side declares no whole
-(`whole_ambiguous`) and offers each total as `<axis>:<dcid>` and the side summed over its
-members as `<axis>:members`, which a client may ask for in its place. A containing total
-holds only the members of its group, so it is unavailable (`part_outside_whole`) where the
-part names a party outside that group: DAC1's DAC countries' total holds no non-DAC donor
-and no multilateral. The marked total and the members' sum are then offered in its place. A
-published total is otherwise available where the coverage snapshot the table is read from
-holds a series of the part's variables at it beside the other side's places
-(`series_held`), so its availability is stated in the same build as every other option's;
-unavailable (`option_not_covered`) where it holds none or no variable is elected there, and
+(`whole_ambiguous`). A containing total holds only the members of its group over the part's
+years, so it is unavailable (`part_outside_whole`) where the part names a party outside
+that group: DAC1's DAC countries' total holds no non-DAC donor and no multilateral. The
+totals the code index marks whole are then offered beside it. A published total is
+otherwise available where the coverage snapshot the table is read from holds a series of
+the part's variables at it beside the other side's places (`series_held`); unavailable
+(`option_not_covered`) where it holds none or no variable is elected there, and
 (`coverage_unknown`) where the snapshot cannot say. A side the part leaves open or names
-only by its whole already is whole, and an entry asking for its whole refuses
-`part_is_whole`; a side the dataset publishes no party on is absent.
+only by its whole already is whole: its one option is the one it holds, so a whole request
+refuses `part_is_whole`. A side the dataset publishes no party on is absent. The recipient
+side also offers its dataset's total of both sides (`BilateralSource.spanning`, DAC2a's "All
+Recipients, Total"), outside the whole's alternatives, for a provider whole that rebinds the
+side (`AxisTable.whole_rebind`).
 
 A donor side summed over its members counts every reporting donor, the multilateral
 agencies among them, so it conflicts (`agencies_counted_twice`) with the provider options
 that count a donor's money through those agencies, the inclusive scope and total ODA.
 
-These rules are not in `rules.AXIS_RULES`: a fresh answer does not show them, and a part
-reads them only where an entry posts their axis (`build.SIDE_RULES`).
+These rules are not in `rules.AXIS_RULES`: a fresh answer does not show them, and only a
+whole request reads them (`whole.derive_whole`).
 """
 
 from __future__ import annotations
@@ -74,6 +77,7 @@ from search.scope.tables import AxisTable, Conflict, ScopeFacts
 
 _SIDE_AXIS: dict[ScopeAxis, RoleAxis] = {"donor": "origin", "recipient": "destination"}
 _REBOUND = {row.dataset: row.rebound for row in BILATERAL_SOURCES}
+_SPANNING = {row.dataset: row.spanning for row in BILATERAL_SOURCES}
 _OPTION_ID = re.compile(SCOPE_OPTION_ID_PATTERN)
 _PER_DONOR_SCOPES = ("provider:inclusive", "provider:contributions")
 """The provider options that count a donor's money beyond its own bilateral flows, which a
@@ -102,81 +106,61 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
     if not keys or flow in (base.open_roles or ()):
         # A side left open, or totalled where the dataset publishes parties on it, is whole.
         published = (flow, dataset) in get_index().side_classes
-        return _whole_already(axis, flow, []) if published else None
+        spanning = _spanning(axis, flow, dataset, [], table_identity, facts)
+        return _whole_already(axis, flow, [], spanning) if published else None
     (key,) = keys
     named = sorted(base.entities[key])
+    spanning = _spanning(axis, key, dataset, named, table_identity, facts)
     containing = _containing(dataset, flow)
     marked = () if rebound or containing else _marked(dataset, flow, base.requested_window)
     total = rebound or containing or (marked[0] if len(marked) == 1 else None)
     held = f"{axis}:named"
-    whole = f"{axis}:whole"
     members = f"{axis}:members"
     if named == [total] or (len(marked) > 1 and len(named) == 1 and named[0] in marked):
-        return _whole_already(axis, key, named)
+        return _whole_already(axis, key, named, spanning)
     outside = (
         _outside(named, containing, base.requested_window, _years(table_identity, facts))
         if rebound is None and containing is not None
         else ()
     )
-    totals = (
-        marked
-        if len(marked) > 1
-        else _marked(dataset, flow, base.requested_window)
-        if outside
-        else ()
-    )
+    totals = [*marked] if len(marked) > 1 else [total] if total is not None else []
+    if outside:
+        totals += [dcid for dcid in _marked(dataset, flow, base.requested_window) if dcid != total]
     options = [
         Option(
             option_id=held,
             label="as named",
             binding=SideBinding(role=key, refs=named),
             availability=OptionAvailability(status="available"),
-        )
-    ]
-    if len(marked) <= 1:
-        options.append(
+        ),
+        *(
             Option(
-                option_id=whole,
-                label=_label(total) if total is not None else "every member",
-                binding=SideBinding(role=key, refs=[] if total is None else [total]),
+                option_id=f"{axis}:{dcid}",
+                label=_label(dcid),
+                binding=SideBinding(role=key, refs=[dcid]),
                 availability=OptionAvailability(
                     status="unavailable",
                     code="part_outside_whole",
-                    detail={"total": containing or "", "outside": ",".join(outside)},
+                    detail={"total": dcid, "outside": ",".join(outside)},
                 )
-                if outside
-                else _availability(table_identity, key, total, facts),
+                if outside and dcid == containing
+                else _availability(table_identity, key, dcid, facts),
             )
-        )
-    named_totals = [
+            for dcid in totals
+            if _OPTION_ID.fullmatch(f"{axis}:{dcid}")
+        ),
         Option(
-            option_id=f"{axis}:{dcid}",
-            label=_label(dcid),
-            binding=SideBinding(role=key, refs=[dcid]),
-            availability=_availability(table_identity, key, dcid, facts),
-        )
-        for dcid in totals
-        if dcid != total and _OPTION_ID.fullmatch(f"{axis}:{dcid}")
+            option_id=members,
+            label="every member",
+            binding=SideBinding(role=key, refs=[]),
+            availability=OptionAvailability(status="available"),
+        ),
     ]
-    options.extend(named_totals)
-    if total is not None or len(marked) > 1:
-        options.append(
-            Option(
-                option_id=members,
-                label="every member",
-                binding=SideBinding(role=key, refs=[]),
-                availability=OptionAvailability(status="available"),
-            )
-        )
-    stands_for = tuple(
-        option.option_id
-        for option in options
-        if option.option_id not in (held, whole) and option.availability.status == "available"
-    )
-    declared = next((o for o in options if o.option_id == whole), None)
-    summed = [
-        o.option_id for o in options if isinstance(o.binding, SideBinding) and not o.binding.refs
-    ]
+    if spanning is not None and spanning.option_id not in {o.option_id for o in options}:
+        options.append(spanning)
+    whole = None if len(marked) > 1 else members if total is None else f"{axis}:{total}"
+    if whole is not None and not any(option.option_id == whole for option in options):
+        whole = None
     return AxisTable(
         axis=axis,
         options=tuple(options),
@@ -186,39 +170,66 @@ def _table(axis: ScopeAxis, base: BaseIdentity, facts: ScopeFacts) -> AxisTable 
             option.option_id: "side_as_named" if option.option_id == held else "side_whole"
             for option in options
         },
-        whole=None if declared is None else whole,
-        whole_alternatives=stands_for
-        if declared is None or declared.availability.status == "unavailable"
-        else (),
+        whole=whole,
+        whole_alternatives=tuple(
+            option.option_id
+            for option in options
+            if option.option_id not in (held, whole) and option is not spanning
+        ),
         whole_cause="whole_ambiguous",
         conflicts=tuple(
-            Conflict(option_id, scope, AGENCIES_COUNTED_TWICE)
-            for option_id in summed
-            for scope in _PER_DONOR_SCOPES
+            Conflict(members, scope, AGENCIES_COUNTED_TWICE) for scope in _PER_DONOR_SCOPES
         )
         if axis == "donor"
         else (),
     )
 
 
-def _whole_already(axis: ScopeAxis, key: str, named: list[str]) -> AxisTable:
-    """The table of a side the part names by its whole, or leaves open: one option, held,
-    which is the whole, so an entry asking for it refuses `part_is_whole`."""
-    whole = f"{axis}:whole"
+def _whole_already(
+    axis: ScopeAxis, key: str, named: list[str], spanning: Option | None
+) -> AxisTable:
+    """The table of a side the part names by its whole, or leaves open: the option it holds,
+    which is the whole, so a whole request on the side refuses `part_is_whole`, and the
+    dataset's total of both sides (`_spanning`) where it is another, which a provider whole
+    rebinds the side to (`AxisTable.whole_rebind`)."""
+    whole = f"{axis}:{named[0]}" if named else f"{axis}:members"
+    held = Option(
+        option_id=whole,
+        label=_label(named[0]) if named else "every member",
+        binding=SideBinding(role=key, refs=named),
+        availability=OptionAvailability(status="available"),
+    )
+    extra = (spanning,) if spanning is not None and spanning.option_id != whole else ()
     return AxisTable(
         axis=axis,
-        options=(
-            Option(
-                option_id=whole,
-                label=_label(named[0]) if named else "every member",
-                binding=SideBinding(role=key, refs=named),
-                availability=OptionAvailability(status="available"),
-            ),
-        ),
+        options=(held, *extra),
         preference=(whole,),
         held=whole,
-        rules={whole: "side_whole"},
+        rules={whole: "side_whole", **{o.option_id: "side_whole" for o in extra}},
         whole=whole,
+    )
+
+
+def _spanning(
+    axis: ScopeAxis,
+    key: str,
+    dataset: str,
+    named: list[str],
+    table_identity: BaseIdentity,
+    facts: ScopeFacts,
+) -> Option | None:
+    """The option binding the recipient side to its dataset's total of both sides
+    (`BilateralSource.spanning`, DAC2a's "All Recipients, Total"), which a provider whole
+    rebinds the side to (`ProviderWhole.recipient`); None on the donor side, on a dataset
+    declaring none, or where the part names that total alone."""
+    dcid = _SPANNING.get(dataset) if axis == "recipient" else None
+    if dcid is None or named == [dcid] or not _OPTION_ID.fullmatch(f"{axis}:{dcid}"):
+        return None
+    return Option(
+        option_id=f"{axis}:{dcid}",
+        label=_label(dcid),
+        binding=SideBinding(role=key, refs=[dcid]),
+        availability=_availability(table_identity, key, dcid, facts),
     )
 
 
