@@ -410,9 +410,10 @@ def party_possible(
 def publishes_party(family: RecalledFamily, published: AbstractSet[tuple[str, RoleAxis]]) -> bool:
     """Whether a dataset publishing `family` publishes an organisation, whose
     `(dataset, axis)` pairs are `published` (`PartyRow.published`), on an axis the family
-    declares: DAC2a's disbursement family publishes IDA as a provider. A family the index
-    does not carry declares no axis (`_recalled`), so it publishes no party: IDS's
-    disbursements of IDA grants."""
+    declares: DAC2a's disbursement family publishes IDA as a provider, and IDS's
+    disbursements of IDA grants, which list IDA as a creditor, publish it on the origin
+    axis too. A series outside the index declares no axis (`_recalled`), so it publishes no
+    party."""
     return any((dataset, axis) in published for dataset in family.datasets for axis in family.axes)
 
 

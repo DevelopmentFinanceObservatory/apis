@@ -1,6 +1,6 @@
-"""A table publishing the organisation a part names as the origin of its flow in the
+"""A seated table publishing the organisation a part names as the origin of its flow in the
 provider's account replaces the flows that cannot publish it and those measuring as it does
-(`phase_rank_bind._from_origin_publishers`).
+(`phase_rank_bind._replaced`).
 
 The shapes are built from rows of the recorded dev code index, in the pool the dev graph
 recalls for "disbursements" with IDA the provider. IDA publishes on the origin axis in the
@@ -25,15 +25,16 @@ from code_index.types import MeasureIndex
 from entity_resolution import Admission, EntityResolver
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.config import settings
 from search.engine.interpretation import Interpretation
 from search.engine.origin_words import owns
 from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import (
-    _from_origin_publishers,
     _origin_party,
     _OriginParty,
     _phase_prune_and_rank,
     _refused_on_pinned,
+    _replaced,
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.state import ResolveState
@@ -149,12 +150,15 @@ def _state(
     axis: str = "origin",
     door: EntryPath = "parsed",
     scope: SourceScope | None = None,
+    providers: dict[str, str] | None = None,
 ) -> ResolveState:
     """A part posting "IDA disbursements" with IDA in the role `axis` on `door` under
-    `scope`, IDA resolving to a node of `kind`, its pool the dev graph's (`_pool`)."""
+    `scope`, IDA resolving to a node of `kind`, and each further organisation of `providers`
+    (name to dcid) the origin of its flow, its pool the dev graph's (`_pool`)."""
+    further = providers or {}
     return ResolveState(
         variable=_VARIABLE,
-        entities=["IDA"],
+        entities=["IDA", *further],
         date_request=None,
         detect_query=_VARIABLE,
         role_query=_VARIABLE,
@@ -187,10 +191,21 @@ def _state(
                 name="IDA",
                 kind="place",
                 node=PlaceNode(dcid=_IDA, graph_types=("Organization",), kind=kind),
-            )
+            ),
+            **{
+                name: PlaceSet(
+                    name=name,
+                    kind="place",
+                    node=PlaceNode(dcid=dcid, graph_types=("Organization",), kind="organisation"),
+                )
+                for name, dcid in further.items()
+            },
         },
-        entity_roles={"IDA": [DoorRole(axis=axis, span="IDA")]},
-        entity_words={"IDA": "IDA"},
+        entity_roles={
+            "IDA": [DoorRole(axis=axis, span="IDA")],
+            **{name: [DoorRole(axis="origin", span=name)] for name in further},
+        },
+        entity_words={"IDA": "IDA", **{name: name for name in further}},
     )
 
 
@@ -233,8 +248,8 @@ def test_the_flows_stand_without_an_origin_organisation(state, menu):
     """A part naming no organisation as the origin of its flow keeps every flow the family
     election and the axis rules keep, and its origin organisations own no word of its
     variable. With IDA the recipient, the DAC1 tables publish no recipient and leave
-    (`without_open_axis_gaps`). The raw-text door names none: its roles are the extraction's reading, not the
-    caller's."""
+    (`without_open_axis_gaps`). The raw-text door names none: its roles are the
+    extraction's reading of the request."""
     assert _menu(state) == menu
     assert _origin_party(state).owned == ()
 
@@ -247,8 +262,13 @@ def test_the_provider_owns_its_words_of_the_variable():
     assert not owns(_VARIABLE, owned, 4, len(_VARIABLE))
 
 
+def _providers(party: _OriginParty, shapes: list[ShapeDraft]) -> list[ShapeDraft]:
+    return [shape for shape in shapes if party.publishes(shape)]
+
+
 def _kept_on_the_menu(party: _OriginParty, shapes: list[ShapeDraft]) -> list[str]:
-    return [shape.shape_id for shape in _from_origin_publishers(party, shapes, None)]
+    gone = _replaced(party, shapes, _providers(party, shapes))
+    return [shape.shape_id for shape in shapes if shape.shape_id not in gone]
 
 
 def _listed_as_not_electable(party: _OriginParty, shapes: list[ShapeDraft]) -> list[str]:
@@ -256,7 +276,8 @@ def _listed_as_not_electable(party: _OriginParty, shapes: list[ShapeDraft]) -> l
         Interpretation(shape=shape, reason="denominator_not_available", pinned_failure="form")
         for shape in shapes
     ]
-    return [i.shape.shape_id for i in _refused_on_pinned(party, refused, None)]
+    listed = _refused_on_pinned(party, _providers(party, shapes), refused, None)
+    return [i.shape.shape_id for i in listed]
 
 
 @pytest.mark.parametrize(
@@ -307,15 +328,52 @@ def test_an_excluded_provider_account_table_replaces_no_flow():
     assert _menu(_state(scope=scope)) == ["ids_by_role"]
 
 
-class _LeafPublishes(_OriginParty):
-    """An origin party that the leaf publishes in the provider's account and every shape may
-    hold."""
+def test_the_only_table_publishing_a_second_provider_stays():
+    """The part names IDA and Afreximbank as providers. DAC2a publishes IDA in the
+    provider's account, and IDS alone lists Afreximbank, so the IDS flow stays for it."""
+    state = _state(providers={"Afreximbank": "AfricanExportImportBank"})
+    assert "ids_by_role" in _menu(state)
+
+
+def test_the_not_electable_list_drops_the_flows_the_menu_replaces(monkeypatch):
+    """DAC2a is seated, and the IDS flow it replaces is refused on a pinned part, so the
+    not-electable list leaves the IDS flow out as the menu does."""
+    judge = phase_rank_bind.judge_pinned_parts
+
+    def ids_refused(state, judged, *args, **kwargs):
+        return [
+            dataclasses.replace(i, reason="denominator_not_available", pinned_failure="form")
+            if i.shape.shape_id == "ids_by_role"
+            else i
+            for i in judge(state, judged, *args, **kwargs)
+        ]
+
+    monkeypatch.setattr(phase_rank_bind, "judge_pinned_parts", ids_refused)
+    state = _state()
+    assert _menu(state) == ["dac2a", "dac2b"]
+    assert [i.shape.shape_id for i in state.interpretations.refused_on_pinned] == []
+
+
+class _LeavesPublish:
+    """An origin party with one organisation, which every shape may hold and each leaf of a
+    topic root publishes in the provider's account."""
+
+    def __init__(self):
+        self.organisations = {"Org": "Org"}
+        self.owned = ()
 
     def publishes(self, shape):
-        return shape.shape_id == "leaf"
+        return frozenset({"Org"}) if shape.expansion_root is not None else frozenset()
 
     def holds(self, shape):
-        return True
+        return frozenset({"Org"})
+
+
+@pytest.fixture
+def leaves_publish(monkeypatch):
+    """The part's origin party is `_LeavesPublish`, and every two shapes measure alike."""
+    monkeypatch.setattr(phase_rank_bind, "_origin_party", lambda state: _LeavesPublish())
+    monkeypatch.setattr(phase_rank_bind, "_measures_alike", lambda shape, other: True)
 
 
 @pytest.mark.parametrize(
@@ -325,26 +383,29 @@ class _LeafPublishes(_OriginParty):
         pytest.param(("observationAbout",), ["scored", "leaf"], id="subject-only-shape"),
     ],
 )
-def test_a_publisher_reached_as_a_topic_leaf_replaces_the_flows_measuring_alike(
-    monkeypatch, scored_roles, menu
-):
+@pytest.mark.usefixtures("leaves_publish")
+def test_a_publisher_reached_as_a_topic_leaf_replaces_the_flows_measuring_alike(scored_roles, menu):
     """The publisher arrives as the leaf of a topic root, which seating stands behind every
     scored shape (`seat_menu`). A scored flow measuring as it does leaves for it, so the
-    leaf alone answers; a scored shape with no flow role keeps its rank ahead of the leaf.
-    The fakes say the leaf publishes the part's origin organisation and every shape
-    measures alike."""
+    leaf alone answers; a scored shape with no flow role keeps its rank ahead of the leaf."""
     scored = _prune_shape("scored", score=0.9, declared_roles=scored_roles)
     leaf = _prune_shape("leaf", score=None, rank=0.85, root=_ROOT, declared_roles=_ROLE_BEARING)
-    monkeypatch.setattr(
-        phase_rank_bind,
-        "_origin_party",
-        lambda state: _LeafPublishes(
-            organisations={}, published=frozenset(), held=frozenset(), owned=()
-        ),
-    )
-    monkeypatch.setattr(phase_rank_bind, "_measures_alike", lambda shape, other: True)
 
     assert [shape.shape_id for shape in _run_prune([scored, leaf])] == menu
+
+
+@pytest.mark.usefixtures("leaves_publish")
+def test_a_provider_the_menu_never_seats_replaces_no_flow():
+    """The publishers are the leaves of one topic root, more leaves than the menu seats
+    (`seat_menu`), so no provider-account table is seated, and the scored flow they would
+    replace answers."""
+    scored = _prune_shape("scored", score=0.9, declared_roles=_ROLE_BEARING)
+    leaves = [
+        _prune_shape(f"leaf{i}", score=None, rank=0.85, root=_ROOT, declared_roles=_ROLE_BEARING)
+        for i in range(settings().bind_top_k + 1)
+    ]
+
+    assert [shape.shape_id for shape in _run_prune([scored, *leaves])] == ["scored"]
 
 
 def test_a_dataset_declaring_no_account_publishes_no_origin_organisation():
@@ -352,9 +413,9 @@ def test_a_dataset_declaring_no_account_publishes_no_origin_organisation():
     of IDA's origin publishers the part keeps those giving the provider's account; IDS still
     holds IDA."""
     party = _origin_party(_state())
-    assert (_DAC2A, "origin") in party.published
-    assert (_IDS, "origin") not in party.published
-    assert (_IDS, "origin") in party.held
+    assert (_DAC2A, "origin") in party.published[_IDA]
+    assert (_IDS, "origin") not in party.published[_IDA]
+    assert (_IDS, "origin") in party.held[_IDA]
 
 
 @pytest.mark.parametrize(
