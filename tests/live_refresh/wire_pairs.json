@@ -15,7 +15,7 @@
         "body": {
           "component_id": "cmp_000000000000000000000001",
           "revision": 1,
-          "catalog_version": "2026.11.1",
+          "catalog_version": "2026.11.2",
           "composition_id": null,
           "composition_revision": null,
           "stored_intent": {
@@ -77,7 +77,7 @@
           },
           "resolved_payload": {
             "schema_version": 1,
-            "catalog_version": "2026.11.1",
+            "catalog_version": "2026.11.2",
             "component_id": "cmp_000000000000000000000001",
             "revision": 1,
             "provenance": {
@@ -679,7 +679,7 @@
         "body": {
           "component_id": "cmp_000000000000000000000001",
           "revision": 1,
-          "catalog_version": "2026.11.1",
+          "catalog_version": "2026.11.2",
           "composition_id": null,
           "composition_revision": null,
           "stored_intent": {
@@ -741,7 +741,7 @@
           },
           "resolved_payload": {
             "schema_version": 1,
-            "catalog_version": "2026.11.1",
+            "catalog_version": "2026.11.2",
             "component_id": "cmp_000000000000000000000001",
             "revision": 1,
             "provenance": {
@@ -1126,7 +1126,7 @@
         "body": {
           "component_id": "cmp_000000000000000000000002",
           "revision": 1,
-          "catalog_version": "2026.11.1",
+          "catalog_version": "2026.11.2",
           "composition_id": null,
           "composition_revision": null,
           "stored_intent": {
@@ -1213,7 +1213,7 @@
           },
           "resolved_payload": {
             "schema_version": 1,
-            "catalog_version": "2026.11.1",
+            "catalog_version": "2026.11.2",
             "component_id": "cmp_000000000000000000000002",
             "revision": 1,
             "provenance": {

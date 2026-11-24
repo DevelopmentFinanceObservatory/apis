@@ -290,7 +290,8 @@ dfo-analysis-engine = { workspace = true }
 # route serves, each at its status. Its frame grammar is 1.2.0, which adds `deflation_basis`,
 # and its steps schema's `simple_unit` and components catalogue's `structured_unit`
 # carry `deflation_basis` too, under components catalogue release 2026.11.0. It also adds the
-# `order` member, under catalogue release 2026.11.1.
+# `order` member, under catalogue release 2026.11.1. Its description schema adds
+# `freshness.partial_periods`, under catalogue release 2026.11.2.
 # It maps the share routes' refusals on presentation.shares at the statuses the
 # presentation write and components routes use, adds `payload_too_large` (413)
 # for a share body over the routes' limit, maps `timeout` (504) on
@@ -333,8 +334,8 @@ dfo-analysis-engine = { workspace = true }
 # `origin` and `destination` flow axes that `dfo_platform.roles.ROLE_AXES` reads.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6d53be1b5d236d10b6f3cda1928d988d15687495", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6d53be1b5d236d10b6f3cda1928d988d15687495", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]
