@@ -2148,6 +2148,7 @@ _FLOW_SHARE_BY_CREDITOR = (
 )
 
 
+@pytest.mark.parametrize("beside", [True, False], ids=["flow-share-beside", "ratio-shape-alone"])
 @pytest.mark.parametrize(
     ("named", "open_roles", "elected"),
     [
@@ -2158,19 +2159,23 @@ _FLOW_SHARE_BY_CREDITOR = (
     ids=["by-creditor-stock-aggregate-elected", "by-creditor-stock-creditor-open", "stock"],
 )
 def test_a_ratio_code_refuses_a_by_creditor_base_its_roles_do_not_elect(
-    named, open_roles, elected, monkeypatch
+    named, open_roles, elected, beside, monkeypatch
 ):
-    """A question naming the by-creditor PPG stock as the base of DT.CUR.USDL.ZS, where
-    another share on the menu divides by that stock, refuses denominator_not_available when
-    no open role elects the aggregate share, which divides by the PPG stock: an aggregate
-    never answers for a named by-creditor stock. With the creditor open the share by creditor
-    answers it, and the PPG stock named answers the aggregate."""
-    member_detection = interpret._member_detection
-    monkeypatch.setattr(
-        interpret,
-        "_member_detection",
-        lambda members: member_detection([*members, _FLOW_SHARE_BY_CREDITOR]),
-    )
+    """A question naming the by-creditor PPG stock as the base of DT.CUR.USDL.ZS refuses
+    denominator_not_available when no open role elects the aggregate share, which divides by
+    the PPG stock: an aggregate never answers for a named by-creditor stock. With the
+    creditor open the share by creditor answers it, and the PPG stock named answers the
+    aggregate, neither warning `denominator_unverified`. The quantity read lists the
+    by-creditor stock whether another share on the menu divides by it or the ratio's one
+    shape is the menu, which divides by each class's denominator, its base's first
+    (`quantity.statvar_denominators`)."""
+    if beside:
+        member_detection = interpret._member_detection
+        monkeypatch.setattr(
+            interpret,
+            "_member_detection",
+            lambda members: member_detection([*members, _FLOW_SHARE_BY_CREDITOR]),
+        )
     nodes = {
         _FLOW_SHARE_BY_CREDITOR: {
             "label": "Disbursements as a share of PPG debt by creditor",
@@ -2201,3 +2206,4 @@ def test_a_ratio_code_refuses_a_by_creditor_base_its_roles_do_not_elect(
     else:
         assert answer.status == "definite", answer
         assert _minted_members(answer.spec) == {elected}
+        assert "denominator_unverified" not in {warning.code for warning in answer.warnings}

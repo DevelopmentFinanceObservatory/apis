@@ -125,9 +125,20 @@ def denominator_kind_from_arcs(arcs: dict | None) -> DenominatorKind:
 
 
 def statvar_denominators(shapes: Iterable[ShapeDraft]) -> list[str]:
-    """The distinct StatVar denominators `shapes` divide by, in shape order. Schema-term
-    denominators (`schema_denominator_kind`) and unresolved arcs are left out."""
-    resolved = (shape.meas_denom_dcid for shape in shapes if not shape.meas_denom_unresolved)
+    """The distinct StatVar denominators `shapes` divide by, in shape order. A shape still
+    spanning its ratio family's classes (`ShapeDraft.twin_families`) divides by each
+    class's denominator, its base's first, so a question naming the by-creditor PPG stock
+    reads it on DT.CUR.USDL.ZS's one shape. Schema-term denominators
+    (`schema_denominator_kind`) and unresolved arcs are left out."""
+    resolved = (
+        denominator
+        for shape in shapes
+        if not shape.meas_denom_unresolved
+        for denominator in (
+            shape.meas_denom_dcid,
+            *(key.measurement_denominator for key in shape.twin_families),
+        )
+    )
     return [
         denominator
         for denominator in dict.fromkeys(resolved)
