@@ -76,7 +76,10 @@ transaction of its own, and the update holds each copy it writes, the column or 
 `warnings`, to what it read there, so a row changed meanwhile is left (`conflicts`). Once the
 run is done, its summary counts the version rows still holding a warning in any old format
 (`legacy_warning_refs`, `warning_formats.count_old_format_rows`), which sets no exit code.
-The summary is emitted once the transaction counting `legacy_warning_refs` has committed.
+The summary is emitted once the transaction counting `legacy_warning_refs` has committed. A
+count that fails or runs past `warning_formats.COUNT_TIMEOUT` leaves the count null, puts the
+summary at `ERROR` with the failure in `count_error`, and sets no exit code either: the rows
+are already written, and the next run counts again.
 
 With `dry_run` it does all but the update, writes one `datasets_warning_backfill_row` line per
 row with K and its split, and classifies the rows already in the new format, with member
@@ -533,17 +536,23 @@ def _emit_counted(
 ) -> int:
     """`_emit_backfilled` with the version rows of `store` still holding a warning in any old
     format, null when `store` is `None` or the count raises. The line is emitted once the
-    count's transaction has committed; a count or commit that raises is emitted at `ERROR` with
-    a null count and propagates, so the summary is written whatever the count does."""
+    count's transaction has committed. A count or commit that raises is emitted at `ERROR`
+    with a null count and the failure in `count_error`, and the exit code is the run's alone:
+    the rows are written, so a failed report does not fail the task."""
     left: int | None = None
     try:
         if store is not None:
             with store.transaction() as tx:
                 counted = count_old_format_rows(tx)
             left = counted
-    except Exception:
-        _emit_backfilled(counts, dry_run=dry_run, probes=probes, left=None, failed_count=True)
-        raise
+    except Exception as exc:
+        return _emit_backfilled(
+            counts,
+            dry_run=dry_run,
+            probes=probes,
+            left=None,
+            count_error=f"{type(exc).__name__}: {exc}",
+        )
     return _emit_backfilled(counts, dry_run=dry_run, probes=probes, left=left)
 
 
@@ -559,12 +568,17 @@ def emit_nothing_backfilled(store: DatasetStore, *, dry_run: bool) -> None:
 
 
 def _emit_backfilled(
-    counts: _Counts, *, dry_run: bool, probes: int, left: int | None, failed_count: bool = False
+    counts: _Counts,
+    *,
+    dry_run: bool,
+    probes: int,
+    left: int | None,
+    count_error: str | None = None,
 ) -> int:
     """Emit `counts`, the probes made, whether the run was dry and the version rows still
     holding an old format (`left`, `None` when the run stopped before counting them or the
     count failed), at `ERROR` when a row is left for a later run or failed unexpectedly or the
-    count failed (`failed_count`), at `WARNING` when a row was refused, a new-format row failed
+    count failed (`count_error`), at `WARNING` when a row was refused, a new-format row failed
     or disagreed or a row holds an old format, and return how many rows set the exit code."""
     unfinished = counts.transient + counts.conflicts + counts.remaining + counts.failed
     measured = counts.permanent or counts.new_format_failed or left
@@ -572,13 +586,14 @@ def _emit_backfilled(
     emit(
         "datasets_warnings_backfilled",
         severity="ERROR"
-        if unfinished or failed_count
+        if unfinished or count_error is not None
         else "WARNING"
         if measured or disagreed
         else "INFO",
         dry_run=dry_run,
         probes=probes,
         legacy_warning_refs=left,
+        count_error=count_error,
         **asdict(counts),
     )
     return unfinished

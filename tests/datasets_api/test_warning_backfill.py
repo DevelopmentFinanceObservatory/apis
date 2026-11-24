@@ -188,10 +188,14 @@ class _Store:
         self.rows = {(row["subject_id"], row["content_version"]): dict(row) for row in rows}
         self.page_rows = page_rows
         self.updates = 0
+        self.executed: list[str] = []
 
     @contextmanager
     def transaction(self) -> Iterator[_Store]:
         yield self
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self.executed.append(sql)
 
     def _selected(self, sql: str, params: Sequence[object]) -> list[Mapping[str, Any]]:
         code, pattern, new_format = params
@@ -697,6 +701,8 @@ def test_the_summary_counts_the_rows_left_in_an_old_format_without_failing(capsy
         1,
         "WARNING",
     )
+    # The count scans the table, so its transaction caps the statement's time.
+    assert any("statement_timeout" in sql for sql in store.executed)
 
 
 def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
@@ -862,16 +868,18 @@ class _CountOutageStore(_Store):
         return super().fetch_one(sql, params)
 
 
-def test_a_failed_count_after_a_run_reports_the_run_and_raises(capsys):
+def test_a_failed_count_after_a_run_reports_the_run_and_leaves_the_exit_code(capsys):
+    """The rows are written before the count, so a count that fails is reported at `ERROR`
+    with a null count and its error, and the exit code is the run's."""
     store = _CountOutageStore([_row(_warning([_IN]), zero=[_IN])])
 
-    with pytest.raises(PoolTimeoutError):
-        _run(store)
+    assert _run(store) == 0
 
     assert store.updates == 1
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["rewritten"], summary["legacy_warning_refs"]) == (1, None)
     assert summary["severity"] == "ERROR"
+    assert summary["count_error"].startswith("PoolTimeoutError")
 
 
 class _PageOutageStore(_Store):

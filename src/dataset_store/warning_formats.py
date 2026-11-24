@@ -46,6 +46,9 @@ REWRITE_SQL = Path(__file__).with_name("warning_rewrite.sql")
 REWRITE_LOCK_TIMEOUT = "5s"
 """How long `rewrite_old_formats` waits on a row lock a running writer holds."""
 
+COUNT_TIMEOUT = "60s"
+"""How long `count_old_format_rows` may scan `version_record` before Postgres cancels it."""
+
 # The signature of each function `REWRITE_SQL` defines; an argument list holds no parenthesis.
 _DEFINED = re.compile(r"^CREATE OR REPLACE FUNCTION (pg_temp\.\w+\([^)]*\))", re.MULTILINE)
 
@@ -177,7 +180,9 @@ def _rewrite_page(
 
 def count_old_format_rows(tx: Transaction) -> int:
     """The version rows holding a warning in its code's old format, in the `warnings` column
-    or in the `warnings` of `immutable_body`."""
+    or in the `warnings` of `immutable_body`. The count scans the table, so it is cancelled
+    after `COUNT_TIMEOUT` and raises."""
+    tx.execute(f"SET LOCAL statement_timeout = '{COUNT_TIMEOUT}'")
     row = tx.fetch_one(_OLD_FORMAT_ROWS, _formats())
     # `count(*)` without `GROUP BY` returns exactly one row.
     assert row is not None

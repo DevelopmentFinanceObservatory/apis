@@ -691,7 +691,8 @@ jobs:
       # code is fixed. A row it refuses for good is logged as one WARNING line
       # on every run and sets no exit code, and its summary counts the rows
       # still holding any old shape (`legacy_warning_refs`), which sets no exit
-      # code.
+      # code; a count that fails or runs past 60 s is logged at ERROR with a
+      # null count and sets no exit code either.
       - name: Backfill warning counts
         if: steps.decide.outputs.deploy == 'true'
         run: |
