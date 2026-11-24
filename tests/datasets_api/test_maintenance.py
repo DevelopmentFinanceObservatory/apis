@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -34,6 +35,7 @@ from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_cano
 from datasets_api.retention_admission import sweep_budget, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
+from dfo_platform.caller import CALLER_KEY_DIGEST_LENGTH, CALLER_KEY_PREFIXES, CallerKind
 from materialise.formats import (
     CANONICAL_FRAME_MEDIA_TYPE,
     FRAME1_MEDIA_TYPE,
@@ -518,6 +520,21 @@ def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
     lock, *statements = maintenance.SETTLE_STATEMENTS
     assert lock == "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE"
     assert [" ".join(statement.split()) for statement in statements] == expected
+
+
+def test_settle_labels_cover_every_caller_kind_and_only_its_well_formed_keys():
+    """`_LABELLED` is built from `dfo_platform.caller.CALLER_KEY_PREFIXES`, which names a prefix
+    for every `CallerKind`, so a pin keyed by a caller of any kind, one added later included, is
+    left alone by `settle`, and a raw secret is still rewritten."""
+    assert set(CALLER_KEY_PREFIXES) == set(get_args(CallerKind.__value__))
+    labelled = re.compile(maintenance._LABELLED.removeprefix("'").removesuffix("'"))
+    for prefix in CALLER_KEY_PREFIXES.values():
+        # Spliced into a SQL literal and a regular expression, so it must need no escaping.
+        assert re.fullmatch(r"[a-z]+:", prefix)
+        assert labelled.fullmatch(prefix + "0f" * (CALLER_KEY_DIGEST_LENGTH // 2))
+        assert not labelled.fullmatch(prefix + "0" * (CALLER_KEY_DIGEST_LENGTH - 1))
+        assert not labelled.fullmatch(prefix + "F" * CALLER_KEY_DIGEST_LENGTH)
+    assert not labelled.fullmatch("website-secret")
 
 
 def _frame(value: float):

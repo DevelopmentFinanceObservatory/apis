@@ -467,6 +467,7 @@ from dfo_analysis_engine.recipe import (
     replay_key,
     root_identity,
 )
+from dfo_platform.caller import CALLER_KEY_DIGEST_LENGTH, CALLER_KEY_PREFIXES
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -629,12 +630,21 @@ def _age_operations() -> int:
     return 0
 
 
-_LABELLED = (
-    "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32}|user:[0-9a-f]{32}|conversation:[0-9a-f]{32})$'"
+_LABELLED = "'^({})$'".format(
+    "|".join(
+        (
+            "secret-sha256:[0-9a-f]{16}",
+            *(
+                f"{prefix}[0-9a-f]{{{CALLER_KEY_DIGEST_LENGTH}}}"
+                for prefix in CALLER_KEY_PREFIXES.values()
+            ),
+        )
+    )
 )
 """Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
-(`dfo_platform.caller.address_key`, a vouched account's `user:` value, or a vouched
-`conversation:` value). A pin principal it does not match is the raw secret the image before
+of any kind in `dfo_platform.caller.CALLER_KEY_PREFIXES` (an address's `ip:` key, a vouched
+account's `user:` value or a vouched `conversation:` value), so a new caller kind is left alone
+without an edit here. A pin principal it does not match is the raw secret the image before
 migration 0026 stored."""
 
 SETTLE_STATEMENTS: tuple[str, ...] = (

@@ -74,6 +74,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -227,7 +228,22 @@ with an API key. Reference rows keyed by an account start with it."""
 CONVERSATION_KEY_PREFIX = "conversation:"
 """The prefix of the caller the Studio harness names for one conversation."""
 
-_DIGEST_LENGTH = 32
+type CallerKind = Literal["address", "account", "conversation"]
+"""The kinds of `Caller`."""
+CALLER_KEY_PREFIXES: Mapping[CallerKind, str] = MappingProxyType(
+    {
+        "address": ADDRESS_KEY_PREFIX,
+        "account": USER_KEY_PREFIX,
+        "conversation": CONVERSATION_KEY_PREFIX,
+    }
+)
+"""The key prefix of each `CallerKind`. A caller key is its prefix and `CALLER_KEY_DIGEST_LENGTH`
+lowercase hex digits, and a pin reference an open caller makes is keyed by it, so
+`datasets_api.maintenance` builds the principals `settle` leaves alone from this mapping."""
+CALLER_KEY_DIGEST_LENGTH = 32
+"""The number of lowercase hex digits after a caller key's prefix."""
+
+_DIGEST_LENGTH = CALLER_KEY_DIGEST_LENGTH
 _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 _USER_KEY = re.compile(rf"{USER_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 _CONVERSATION_KEY = re.compile(rf"{CONVERSATION_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
@@ -242,7 +258,7 @@ class Caller:
     `kind="account"` keys an account the website named for a request made with an API key, and
     `kind="conversation"` keys a Studio conversation by the vouched `conversation:` value."""
 
-    kind: Literal["address", "account", "conversation"]
+    kind: CallerKind
     key: str
 
 
