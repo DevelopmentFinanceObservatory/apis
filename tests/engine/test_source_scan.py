@@ -453,6 +453,14 @@ def test_an_uncued_organisation_the_pack_names_is_contested(
             ["World Bank IDA", "Kenya"],
             [],
         ),
+        # A run that overlaps a source key gives way to the shorter run inside it, so the
+        # lender a parent's name opens still reads.
+        (
+            "World Bank IDA concessional flows to Kenya",
+            ["IDA concessional flows"],
+            ["Kenya"],
+            [("IDA", (0,))],
+        ),
         # A name is written as one: capitalised at both ends, or an acronym in capitals. The
         # pack's generic aliases ("international finance", "multilateral fund") name nothing
         # in lower case.

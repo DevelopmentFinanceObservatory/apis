@@ -244,9 +244,12 @@ def _graph(
     series: dict[str, str] | None = None,
     *,
     rows: tuple[StatVarRow, ...] = _ROWS,
+    nodes: dict[str, dict] | None = None,
+    searched: dict[str, tuple[tuple[str, float], ...]] | None = None,
 ) -> FakeGraph:
-    """The test graph of index `rows`, recalling `recalled` for `query`, with `series`
-    (dcid to label) as further series outside the index."""
+    """The test graph of index `rows`, recalling `recalled` for `query` and what `searched`
+    gives for each further text, with `series` (dcid to label) as further series outside
+    the index, and `nodes` as further nodes."""
     return FakeGraph(
         nodes={
             **{row.dcid: _row_node(row) for row in rows},
@@ -255,12 +258,14 @@ def _graph(
             **{dcid: _series_node(label) for dcid, label in (series or {}).items()},
             _DEU: {"label": "Germany", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
+            **(nodes or {}),
         },
         detect={
-            query: {
-                "svs": [sv for sv, _score in recalled],
-                "cosine_scores": [score for _sv, score in recalled],
+            text: {
+                "svs": [sv for sv, _score in hits],
+                "cosine_scores": [score for _sv, score in hits],
             }
+            for text, hits in {**(searched or {}), query: recalled}.items()
         },
         resolve={"Germany": _DEU, "Kenya": _KEN},
         obs={},

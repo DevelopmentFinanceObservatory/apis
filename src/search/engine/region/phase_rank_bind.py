@@ -28,6 +28,7 @@ from code_index.types import (
     NotedWord,
     StatedWord,
 )
+from dfo_platform.roles import axis_for_role
 from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
@@ -79,6 +80,7 @@ from search.engine.function_words import (
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.measure_verdict import measure_verdicts
+from search.engine.origin_words import Ranges, origin_organisations, owned_ranges, owns
 from search.engine.qualifier_match import (
     BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
@@ -90,6 +92,7 @@ from search.engine.qualifier_match import (
     QualifierSpan,
     QualifierTie,
     TextReading,
+    VocabularyReading,
     _all_normalized_text_ranges,
     _match_source,
     _normalize,
@@ -166,7 +169,10 @@ from search.engine.region.result import RegionResult
 from search.engine.region.seating import is_expansion, seat_menu
 from search.engine.region.sentence_events import _build_shape_event
 from search.engine.region.source_choice import (
+    RecalledFamily,
     idle_exclusion_warnings,
+    publishes_party,
+    publishing_datasets,
     scope_records,
     source_record,
     with_idle_exclusions,
@@ -279,6 +285,213 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
     )
 
 
+@dataclass(slots=True)
+class _OriginParty:
+    """What one part reads once of the organisations it binds as the origin of its flow
+    (`origin_words.origin_organisations`): their dcids by the request's name for each; by
+    each dcid, the `(dataset, axis)` pairs that publish it on the origin axis
+    (`PartyRow.published`, `held`) and those of them whose dataset gives the provider's
+    account of its flows (`_provider_accounts`, `published`); and the character ranges of
+    the variable their own words take (`origin_words.owned_ranges`)."""
+
+    organisations: Mapping[str, str]
+    published: Mapping[str, frozenset[tuple[str, RoleAxis]]]
+    held: Mapping[str, frozenset[tuple[str, RoleAxis]]]
+    owned: Ranges
+
+    def publishes(self, shape: ShapeDraft) -> frozenset[str]:
+        """The organisations a dataset publishing `shape`'s index family publishes on the
+        origin axis in the provider's account (`_family_publishes`), by dcid."""
+        return frozenset(
+            dcid for dcid, pairs in self.published.items() if _family_publishes(shape, pairs)
+        )
+
+    def holds(self, shape: ShapeDraft) -> frozenset[str]:
+        """The organisations `shape` may publish on the origin axis in any account, by dcid:
+        those a dataset publishing its index family publishes (`_family_publishes`), or every
+        one where the index groups it in no family and so states none of its parties."""
+        if shape_family(shape, get_index()) is None:
+            return frozenset(self.held)
+        return frozenset(
+            dcid for dcid, pairs in self.held.items() if _family_publishes(shape, pairs)
+        )
+
+
+def _origin_party(state: ResolveState) -> _OriginParty:
+    """The part's `_OriginParty`, read once before its qualifier readings, from the place
+    each name resolved to, with the pairs publishing an organisation on the origin axis that
+    `_provider_accounts` keeps."""
+    organisations = origin_organisations(
+        {
+            name: (place_set.node.dcid, place_set.node.kind)
+            for name, place_set in state.place_sets.items()
+            if place_set.node is not None
+        },
+        state.entity_roles,
+        door=state.door,
+    )
+    index = get_index()
+    held = {
+        dcid: frozenset(pair for pair in _party_pairs(index, dcid) if pair[1] == "origin")
+        for dcid in organisations.values()
+    }
+    return _OriginParty(
+        organisations=organisations,
+        published={dcid: _provider_accounts(pairs) for dcid, pairs in held.items()},
+        held=held,
+        owned=_owned(state, organisations, state.variable),
+    )
+
+
+def _party_pairs(index: CodeIndex, dcid: str) -> frozenset[tuple[str, RoleAxis]]:
+    """The `(dataset, axis)` pairs that publish the party `dcid` (`PartyRow.published`), none
+    where the index lists no such party."""
+    party = index.parties.get(dcid)
+    return frozenset() if party is None else frozenset(party.published)
+
+
+def _provider_accounts(
+    published: Iterable[tuple[str, RoleAxis]],
+) -> frozenset[tuple[str, RoleAxis]]:
+    """The pairs of `published` whose dataset gives the provider's account of its flows
+    (`DatasetDeclaration.account`). A part naming an organisation as the origin of its flow
+    asks what the organisation disbursed, which the provider's account states. A dataset
+    the index declares no account for gives another party's: World Bank IDS lists IDA as
+    the creditor of the debts its debtors report, so its IDA grants count what the debtors
+    received of one instrument, and DAC2a, which states IDA's own disbursements to every
+    recipient, leads for "IDA disbursements"."""
+    datasets = get_index().datasets
+    return frozenset(
+        (dataset, axis)
+        for dataset, axis in published
+        if (declaration := datasets.get(dataset)) is not None and declaration.account == "provider"
+    )
+
+
+def _owned(state: ResolveState, organisations: Mapping[str, str], text: str) -> Ranges:
+    """The ranges of `text` the part's `organisations` own (`origin_words.owned_ranges`)."""
+    return owned_ranges(
+        text, organisations, entity_words=state.entity_words, entity_roles=state.entity_roles
+    )
+
+
+def _without_owned_terms(
+    state: ResolveState, sources: _SourceReadings, party: _OriginParty
+) -> _SourceReadings:
+    """`sources` with every span, match and tie the part's origin organisations own
+    (`origin_words.owned_ranges`) taken out of the reading of every text it holds, in
+    every code system and in each vocabulary, as recall left them out of the variable
+    (`interpret.recall`). The organisation reads those words, so no reader takes them as a
+    code: "IDA" in "IDA disbursements", DAC1 aid type 2103 ("multilateral contribution to
+    the International Development Association"), is the provider IDA, and neither elects a
+    DAC1 family, binds the aid type nor stands unapplied. With IDA the recipient,
+    "contributions to IDA" names aid type 2103 and every reader keeps it."""
+    if not party.organisations:
+        return sources
+    masked = list(sources.texts)
+    for position, text in enumerate(sources.sources):
+        owned = party.owned if position == 0 else _owned(state, party.organisations, text)
+        if owned:
+            masked[position] = _masked_text(masked[position], text, owned)
+    return replace(sources, texts=tuple(masked))
+
+
+def _masked_text(reading: TextReading, text: str, owned: Ranges) -> TextReading:
+    """`reading` of `text` less the spans, matches and ties `owned` covers
+    (`origin_words.owns`)."""
+
+    def kept(start: int | None, end: int | None) -> bool:
+        return start is None or end is None or not owns(text, owned, start, end)
+
+    def masked(vocabulary: VocabularyReading) -> VocabularyReading:
+        return replace(
+            vocabulary,
+            spans=tuple(span for span in vocabulary.spans if kept(span.start, span.end)),
+            matches=tuple(m for m in vocabulary.matches if kept(m.start, m.end)),
+            ties=tuple(
+                tie for tie in vocabulary.ties if any(kept(r.start, r.end) for r in tie.rows)
+            ),
+        )
+
+    return replace(
+        reading,
+        everywhere=masked(reading.everywhere),
+        by_vocabulary={key: masked(value) for key, value in reading.by_vocabulary.items()},
+    )
+
+
+def _family_publishes(shape: ShapeDraft, published: AbstractSet[tuple[str, RoleAxis]]) -> bool:
+    """Whether `shape`'s index family (`shape_family`) publishes a party of `published`
+    (`source_choice.publishes_party`): a dataset publishing the family
+    (`source_choice.publishing_datasets`), of those the part may answer the shape from where
+    candidacy stamped them (`ShapeDraft.datasets`), publishes it on an axis the family
+    declares. Where `source_choice._recalled` reads the axes of one recalled row, a shape
+    stands for its whole family, so the axes are those of every row's roles; a role naming
+    no flow axis adds none. A shape the index groups in no family, a row it lists without a
+    declared dataset, publishes none of `published`, whose datasets each declare an account
+    (`_provider_accounts`)."""
+    family = shape_family(shape, get_index())
+    if family is None:
+        return False
+    datasets = publishing_datasets(family, family.rows)
+    if shape.datasets is not None:
+        datasets &= frozenset(shape.datasets)
+    axes = frozenset(
+        axis
+        for row in family.rows
+        for role in row.observation_properties
+        if (axis := axis_for_role(role)) is not None
+    )
+    return publishes_party(RecalledFamily(datasets=datasets, axes=axes), published)
+
+
+def _replaced(
+    party: _OriginParty, shapes: Sequence[ShapeDraft], providers: Sequence[ShapeDraft]
+) -> frozenset[str]:
+    """The ids of the flows of `shapes` that the tables `providers`, each publishing an
+    organisation the part names as the origin of its flow in the provider's account
+    (`_OriginParty.publishes`), replace.
+
+    A role-bearing shape that publishes none of them in that account leaves when, for each
+    origin organisation it may publish in another account (`_OriginParty.holds`), a provider
+    publishing that same organisation measures as it does (`_measures_alike`). IDS lists IDA
+    as a creditor of its debtors' reports, so IDS's disbursements leave for DAC2a's, and IDS
+    debt service, which no provider measures, stays; with Afreximbank, which IDS alone
+    lists, named beside IDA, IDS's disbursements stay. A flow that can publish none of the
+    organisations leaves for any provider: DAC1 publishes no IDA. Shapes with no flow role
+    stay."""
+    if not providers:
+        return frozenset()
+    published = [(provider, party.publishes(provider)) for provider in providers]
+
+    def replaced(shape: ShapeDraft) -> bool:
+        if not is_role_bearing(shape) or party.publishes(shape):
+            return False
+        return all(
+            any(dcid in dcids and _measures_alike(p, shape) for p, dcids in published)
+            for dcid in party.holds(shape)
+        )
+
+    return frozenset(shape.shape_id for shape in shapes if replaced(shape))
+
+
+def _measures_alike(shape: ShapeDraft, other: ShapeDraft) -> bool:
+    """Whether `shape` and `other` measure one thing: one five-tuple, and on each measure
+    axis a constraint property names (`financialFlowType`), a value in common where both
+    hold one. IDS's disbursements of IDA grants and DAC2a's disbursements measure alike;
+    IDS debt service and DAC2a disbursements do not."""
+    if shape_five_tuple(shape) != shape_five_tuple(other):
+        return False
+    values = shape_constraint_values(shape)
+    others = shape_constraint_values(other)
+    for axis in get_measure_index().axes:
+        own = {value for prop, value in values if prop == axis.axis}
+        theirs = {value for prop, value in others if prop == axis.axis}
+        if own and theirs and own.isdisjoint(theirs):
+            return False
+    return True
+
+
 def _country_breadth(shape: ShapeDraft) -> int:
     """The most `country/` places the bound catalogue lists for one of `shape`'s
     members (`Catalogue.base_places`), 0 when it lists none of them. DFO and UN System
@@ -300,7 +513,9 @@ def _role_bearing_outranks(eligible_shapes: Sequence[ShapeDraft]) -> bool:
     measured score clears ``SEARCH_UNKNOWN_SCORE_THRESHOLD``. A role-bearing shape the index carries passes
     the floor whatever its score, so its presence alone says nothing of the query: two
     flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them. The
-    rule is `flow_governance.governs`, which the raw-text door's organisation reading shares."""
+    rule is `flow_governance.governs`, which the raw-text door's organisation reading shares.
+
+    The top is the shape first by recall rank."""
     if not eligible_shapes:
         return False
     top = min(eligible_shapes, key=_rank_key)
@@ -878,11 +1093,19 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # shape's slot properties, reads the text on its own: "ODA" binds the CRS flow type on a
     # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
     # "multilateral ODA" never hides "ODA" from a CRS shape.
-    sources = _read_sources(
-        state.variable,
-        state.dropped_qualifier_phrases,
-        query_text=state.query_text,
-        vocabularies=(shape_vocabulary(shape) for shape in candidates),
+    # The organisations the part names as the origin of its flow own their words in every
+    # reading (`_without_owned_terms`), and their seated provider-account tables replace
+    # the flows measuring as they do (`_replaced`).
+    party = _origin_party(state)
+    sources = _without_owned_terms(
+        state,
+        _read_sources(
+            state.variable,
+            state.dropped_qualifier_phrases,
+            query_text=state.query_text,
+            vocabularies=(shape_vocabulary(shape) for shape in candidates),
+        ),
+        party,
     )
     state.variable_spans_in_every_system = sources.variable.everywhere.spans
     state.variable_spans_by_vocabulary = {
@@ -966,7 +1189,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admitted = [i.shape for i in judged if i.admissible]
     if not admitted and state.interpretations.refusal_reason() is not None:
         return await _refuse_without_a_menu(
-            state, _refused_on_pinned(judged, excluding), pinned_part_read
+            state, _refused_on_pinned(party, (), judged, excluding), pinned_part_read
         )
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
@@ -988,10 +1211,39 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # From here to the seated menu the phase reads the readings it may offer apart from
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.
-    with timed_step(state, "shape_rank"):
-        offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
-    refused_on_pinned = _refused_on_pinned(judged, excluding)
     top_k = settings().bind_top_k
+    # The provider-account tables of the part's origin organisations replace the flows
+    # measuring as they do (`_replaced`) before the family election, which would otherwise
+    # keep IDS's disbursements over DAC2a's on recall score alone. A replacement stands only
+    # where a provider that publishes the same organisation is seated, so the offer is read
+    # again without each replacement the seated menu does not bear out; the replaced set
+    # only shrinks, so the reading ends.
+    index = get_index()
+    removed = _replaced(
+        party,
+        eligible_shapes,
+        [
+            shape
+            for shape in eligible_shapes
+            if party.publishes(shape) and (excluding is None or _in_scope(shape, excluding, index))
+        ],
+    )
+    with timed_step(state, "shape_rank"):
+        while True:
+            kept = [shape for shape in eligible_shapes if shape.shape_id not in removed]
+            offer, ranked_shapes = _read_offer(state, kept, sources, reading_owned_phrases)
+            seated, _ = _seat_menu_and_siblings(
+                ranked_shapes
+                if excluding is None
+                else _dataset_candidates(ranked_shapes, excluding),
+                top_k,
+            )
+            providers = [shape for shape in seated if party.publishes(shape)]
+            borne_out = removed & _replaced(party, eligible_shapes, providers)
+            if borne_out == removed:
+                break
+            removed = borne_out
+    refused_on_pinned = _refused_on_pinned(party, providers, judged, excluding)
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
     # leaf or none (`seat_menu`), which is the order the status rule offers alternatives in.
     menu, siblings = _seat_menu_and_siblings(ranked_shapes, top_k)
@@ -1016,7 +1268,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
                 state,
                 [
                     shape
-                    for shape in eligible_shapes
+                    for shape in kept
                     if not (is_expansion(shape) and shape.expansion_root in unseated)
                 ],
                 sources,
@@ -1168,10 +1420,14 @@ def _meets_score_floor(shape: ShapeDraft) -> bool:
 
 
 def _refused_on_pinned(
-    judged: Sequence[Interpretation], excluding: SourceScope | None
+    party: _OriginParty,
+    providers: Sequence[ShapeDraft],
+    judged: Sequence[Interpretation],
+    excluding: SourceScope | None,
 ) -> list[Interpretation]:
     """The not-electable list: the interpretations refused only on a pinned part, less
-    those an exclusion removes, seated as the menu is under the same seat count
+    those an exclusion removes and the flows the menu's seated provider-account tables
+    `providers` replace (`_replaced`), seated as the menu is under the same seat count
     (`seat_menu`), so a topic root is listed with every leaf or none and the leaves of one
     large root do not fill the list ahead of a scored reading."""
     ranked = sorted(
@@ -1179,7 +1435,10 @@ def _refused_on_pinned(
     )
     refused = ranked if excluding is None else _excluded_out(ranked, excluding)
     by_shape = {id(i.shape): i for i in refused}
-    seated = seat_menu([i.shape for i in refused], settings().bind_top_k)
+    gone = _replaced(party, [i.shape for i in refused], providers)
+    seated = seat_menu(
+        [i.shape for i in refused if i.shape.shape_id not in gone], settings().bind_top_k
+    )
     return [by_shape[id(shape)] for shape in seated]
 
 
@@ -2051,11 +2310,12 @@ def _measure_query_matches(
 class _SourceReadings:
     """Each text source read once in every code system and in each vocabulary
     (`qualifier_match.read_by_vocabulary`): the variable, then the query text when given,
-    then each dropped phrase. The region path owns the first `owned`; the raw-text path
-    owns the dropped phrases' warnings."""
+    then each dropped phrase, in the order of `sources`, the texts read. The region path
+    owns the first `owned`; the raw-text path owns the dropped phrases' warnings."""
 
     texts: tuple[TextReading, ...]
     owned: int
+    sources: tuple[str, ...]
 
     @property
     def variable(self) -> TextReading:
@@ -2077,6 +2337,7 @@ def _read_sources(
             texts, get_index(), get_measure_index(), vocabularies=vocabularies
         ),
         owned=1 + bool(query_text),
+        sources=tuple(texts),
     )
 
 

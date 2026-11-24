@@ -32,6 +32,7 @@ from entity_resolution import (
     pack,
 )
 from entity_resolution.membership import UnknownMembership
+from entity_resolution.pack import without_article_and_punctuation
 from entity_resolution.regions import identity_to_dcid
 from entity_resolution.resolver import (
     _QUERY_ALIASES,
@@ -39,7 +40,6 @@ from entity_resolution.resolver import (
     _normalize_key,
     _resolve_batch_job,
     _ttu,
-    _without_article_and_punctuation,
 )
 from entity_resolution.shared import SharedResolver
 from entity_resolution.types import KindIndex
@@ -956,7 +956,7 @@ def test_article_prefixed_or_punctuated_eu_phrasing_recovers_the_groups_membersh
 )
 def test_without_article_and_punctuation(text: str, expected: str):
     """Retry-after-miss preserves Gambia. Theodore has no article boundary."""
-    assert _without_article_and_punctuation(text) == expected
+    assert without_article_and_punctuation(text) == expected
 
 
 def test_the_sudan_region_does_not_resolve_to_the_country_it_names(shared_resolver):
