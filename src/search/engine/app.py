@@ -1205,7 +1205,7 @@ def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
     under the caller's context while the catalogue loads on this one, since each first load
     downloads its artifact.
 
-    A failing catalogue raises its error at once and abandons the release load, which process
+    A failing or interrupted catalogue load raises at once and abandons the release load, which process
     exit does not wait for. When an abandoned load finishes, it gives back the release service
     it acquired, or logs its own error as `search_startup_stage_failed`. A failing release
     load raises its error once the catalogue has loaded and gives back the catalogue service."""
@@ -1223,7 +1223,9 @@ def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
     threading.Thread(target=load_release, name="graph-release-load", daemon=True).start()
     try:
         catalogue = _timed_load("origin_catalogue", get_catalogue_service)
-    except Exception:
+    except BaseException:
+        # An interrupt abandons the load too, so a process that retries startup holds no
+        # second release lease.
         release.add_done_callback(_abandon_release_load)
         raise
     try:

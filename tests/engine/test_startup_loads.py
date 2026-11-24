@@ -120,6 +120,28 @@ def test_an_unset_catalogue_uri_raises_before_the_release_loads(
         assert (loaded, released) == (["graph_release"], [service])
 
 
+def test_an_interrupted_catalogue_load_gives_back_the_release_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `KeyboardInterrupt` in the catalogue load abandons the release load as an error
+    does, so a process that stays alive and retries startup holds no stray release lease."""
+    released: list[object] = []
+    service = object()
+
+    def interrupted() -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app_module, "get_catalogue_service", interrupted)
+    monkeypatch.setattr(app_module, "get_release_service", lambda: service)
+    monkeypatch.setattr(app_module, "release_release_service", released.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        app_module._load_catalogue_and_release()
+    _join_release_load()
+
+    assert released == [service]
+
+
 @pytest.mark.unbound_release
 def test_an_abandoned_release_load_frees_the_release_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
