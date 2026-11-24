@@ -28,7 +28,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import word_tokens
 from code_index.types import CodeRow
 from entity_resolution import EntityResolver, Resolution, Resolved
-from entity_resolution.pack import is_organisation_name
+from entity_resolution.pack import reads_as_organisation_name
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import (
     DetectedSV,
@@ -416,7 +416,8 @@ async def recall(
     (`entity_roles`), are the provider's (`origin_words.owned_ranges`). The graph is also
     searched on the text without them (`origin_words.without_owned_words`), beside the whole
     text and the names' resolution, for each name whose every role is on the origin axis and
-    which the entity pack stores as an organisation's (`entity_resolution.pack`);
+    which the resolver reads as an organisation the entity pack stores
+    (`entity_resolution.pack.reads_as_organisation_name`);
     once the names resolve as organisations, that search's series join the pool
     (`_pooled`). A code phrase they own pulls in no family. "IDA disbursements" with IDA the
     provider adds DAC2a's disbursements, which "disbursements" recalls, and no DAC1 aid
@@ -460,10 +461,12 @@ async def recall(
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     else:
-        # A name whose every role is on the origin axis and which the entity pack stores as
-        # an organisation's, by itself or by the request's words for it, may own words of
-        # the text, so the text without them is searched beside the whole. A place name is
-        # outside the pack, so a part naming only places searches once.
+        # A name whose every role is on the origin axis and which the resolver reads as a
+        # name the entity pack stores for an organisation, by itself or by the request's
+        # words for it (`reads_as_organisation_name`), may own words of the text, so the
+        # text without them is searched beside the whole. A place name is outside the pack,
+        # so a part naming only places searches once. The pack also stores some groups the
+        # resolver reads as groups, such as the EU; their second search joins no pool.
         roles = entity_roles
         words = entity_words or {}
         rest = without_owned_words(
@@ -473,7 +476,10 @@ async def recall(
                 for name, held in roles.items()
                 if held
                 and all(r.axis == "origin" for r in held)
-                and (is_organisation_name(name) or is_organisation_name(words.get(name, "")))
+                and (
+                    reads_as_organisation_name(name)
+                    or reads_as_organisation_name(words.get(name, ""))
+                )
             ],
             entity_words=words,
             entity_roles=roles,

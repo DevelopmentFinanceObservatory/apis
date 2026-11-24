@@ -278,6 +278,27 @@ def is_organisation_name(text: str) -> bool:
     return bool(organisations_named(text))
 
 
+_LEADING_ARTICLE_RE = re.compile(r"^\s*the\s+", re.IGNORECASE)
+_TRAILING_PUNCTUATION_RE = re.compile(r"[.,;:!?]+$")
+
+
+def without_article_and_punctuation(text: str) -> str:
+    """`text` without a leading "the" and trailing punctuation, as the resolver retries a
+    miss (`resolver._resolve_batch_job`). Names such as "the Gambia" reach the first pass
+    intact. Return `text` unchanged when neither pattern matches."""
+    stripped = _LEADING_ARTICLE_RE.sub("", text)
+    stripped = _TRAILING_PUNCTUATION_RE.sub("", stripped)
+    return stripped.strip()
+
+
+def reads_as_organisation_name(text: str) -> bool:
+    """Whether the resolver's two passes read `text` as a name the pack stores for an
+    organisation (`is_organisation_name`): as written, or without a leading article and
+    trailing punctuation (`without_article_and_punctuation`), so "the IDA" and "the Asian
+    Development Bank" do."""
+    return is_organisation_name(text) or is_organisation_name(without_article_and_punctuation(text))
+
+
 def written_as_stored(word: str) -> bool:
     """Whether `word` names an organisation (`organisations_named`) and is written as a word
     of a name or alias the pack stores for it, casing kept: "Gavi" of "Gavi, the Vaccine

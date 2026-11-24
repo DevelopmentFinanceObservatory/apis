@@ -582,12 +582,14 @@
     - variable_text: IDA disbursements
       entities: [{text: IDA, name: International Development Association, role_text: from}]
       time_text: '2022'
-  why: '"IDA" in the variable is the provider the part binds, so no DAC1 aid type 2103 is refused, and a table giving IDA''s own account, DAC2a or the CRS, answers.'
+  why: '"IDA" in the variable is the provider the part binds, so no DAC1 aid type 2103 is refused, and DAC2a answers IDA''s disbursements to all recipients, as in dq-dac-052.'
   tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, overlap: [ids], probe: [source_election]}
+  # The whole-text search recalls CRS gross disbursements, which the binder elects over DAC2a.
+  known_failure: {issue: 0, checks: [measure, entities]}
   expect:
     definite:
-      measure: {family: [dac2a.oda_gross_received, dac2a.oda_net_received, crs.disbursement_gross]}
-      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}]
+      measure: {family: [dac2a.oda_gross_received, dac2a.oda_net_received]}
+      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}, {dcid: DACAllRecipients, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
 
 - id: dq-dac-055

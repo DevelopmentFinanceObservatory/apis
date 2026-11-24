@@ -381,34 +381,48 @@ def test_a_term_naming_the_provider_elects_no_family_that_records_it():
 
 
 @pytest.mark.parametrize(
-    ("query", "door", "searched"),
+    ("query", "name", "door", "searched"),
     [
         pytest.param(
             "IDA disbursements from International Development Association",
+            _IDA_NAME,
             "parsed",
             ["disbursements"],
             id="provider",
         ),
         pytest.param(
+            "disbursements from the International Development Association",
+            "the International Development Association",
+            "parsed",
+            ["disbursements"],
+            id="provider-named-with-an-article",
+        ),
+        pytest.param(
             "IDA disbursements to International Development Association",
+            _IDA_NAME,
             "parsed",
             [],
             id="recipient",
         ),
         pytest.param(
             "IDA disbursements from International Development Association",
+            _IDA_NAME,
             "raw_text",
             [],
             id="raw-text-provider",
         ),
+        pytest.param(
+            "Kenya disbursements from Kenya", "Kenya", "parsed", [], id="place-as-provider"
+        ),
     ],
 )
-def test_recall_pools_the_search_without_the_providers_words(query, door, searched):
+def test_recall_pools_the_search_without_the_providers_words(query, name, door, searched):
     """The graph recalls the climate series for the whole text and the CRS series for
-    "disbursements", the text less the provider's words and the preposition before them.
-    With IDA the provider both searches run beside the names' resolution and the pool holds
-    both series. With IDA the recipient, or on the raw-text door, only the whole text is
-    searched."""
+    "disbursements", the text less the provider's words and the preposition and article
+    before them. With IDA the provider, named as the entity pack stores it or after a
+    leading article the resolver drops, both searches run beside the names' resolution and
+    the pool holds both series. With IDA the recipient, on the raw-text door, or with a
+    place the provider, only the whole text is searched."""
     rows = (*_ROWS, _CLIMATE_IDA)
     graph = _graph(
         query,
@@ -429,13 +443,13 @@ def test_recall_pools_the_search_without_the_providers_words(query, door, search
         result = asyncio.run(
             recall(
                 "IDA disbursements",
-                [_IDA_NAME],
+                [name],
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query=query,
                 door=door,
-                entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
-                entity_words={_IDA_NAME: "IDA"},
+                entity_roles=door_roles_for_test_query(query, [name]),
+                entity_words={_IDA_NAME: "IDA"} if name == _IDA_NAME else {},
             )
         )
 

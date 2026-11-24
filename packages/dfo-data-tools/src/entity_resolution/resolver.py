@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import re
 import threading
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -62,6 +61,7 @@ from entity_resolution.group_wordings import (
 from entity_resolution.group_wordings import normalize_key as _normalize_key
 from entity_resolution.kinds import classify
 from entity_resolution.membership import MembershipPolicy, NotRecorded, UnknownMembership
+from entity_resolution.pack import without_article_and_punctuation
 from entity_resolution.regions import identity_to_dcid
 from entity_resolution.shared import SharedResolver
 from entity_resolution.types import (
@@ -110,20 +110,6 @@ _ttu = ttu_from_stamp_key
 
 # A confirmed candidate with the listed text it matched.
 _Candidate = tuple[Entity, Matched | None]
-
-
-_LEADING_ARTICLE_RE = re.compile(r"^\s*the\s+", re.IGNORECASE)
-_TRAILING_PUNCTUATION_RE = re.compile(r"[.,;:!?]+$")
-
-
-def _without_article_and_punctuation(text: str) -> str:
-    """Strip a leading `the` and trailing punctuation for a retry after a miss.
-
-    Names such as `the Gambia` reach the primary pass intact. Return `text` unchanged when
-    neither pattern matches."""
-    stripped = _LEADING_ARTICLE_RE.sub("", text)
-    stripped = _TRAILING_PUNCTUATION_RE.sub("", stripped)
-    return stripped.strip()
 
 
 # Curated query aliases keyed by `_normalize_key`. Entries correct bundled pack name conflicts
@@ -288,7 +274,7 @@ def _resolve_batch_job(
     for text in texts:
         survivors, raw_candidates, reading = _resolve_text_survivors(shared, text, context)
         if not survivors:
-            retry_text = _without_article_and_punctuation(text)
+            retry_text = without_article_and_punctuation(text)
             if retry_text and retry_text != text:
                 survivors, _, reading = _resolve_text_survivors(shared, retry_text, context)
         candidates = tuple(candidate for candidate, _ in survivors)
