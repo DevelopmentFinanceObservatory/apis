@@ -2804,11 +2804,16 @@ def held_family_arcs(shape: ShapeDraft) -> dict[str, dict]:
 
 def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
     """`shape` standing for `members` alone, some of the members it stands for
-    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`,
-    `ShapeDraft.twin_families`). A shape narrowed from a held family's members is seeded,
-    when walked, with the members among them it held before (`ShapeDraft.walk_seeds`), so
-    the family widens what it stands for and never what a walk reads. A shape that held no
-    family stood for its own members alone, and keeps its seeds."""
+    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`).
+    A shape narrowed from a held family's members is seeded, when walked, with the members
+    among them it held before (`ShapeDraft.walk_seeds`), so the family widens what it
+    stands for and never what a walk reads. A shape that held no family stood for its own
+    members alone, and keeps its seeds.
+
+    `shape` spans no ratio family's classes (`spans_ratio_twins`): such a shape keeps its
+    base class's five-tuple over members of every class, so its class is elected first
+    (`on_elected_ratio_class`) and its members are narrowed within that class."""
+    assert not spans_ratio_twins(shape), "a ratio family's class is elected before narrowing"
     if not _held_keys(shape):
         return replace(shape, sv_arc_facts=members)
     own = shape.sv_arc_facts or {}
@@ -2816,7 +2821,6 @@ def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
         shape,
         sv_arc_facts=members,
         held_family=None,
-        twin_families=(),
         walk_seeds=frozenset(
             sv
             for sv in members
@@ -3654,7 +3658,7 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
     leaves on one class (`on_ratio_class`), the one `_elected_ratio_class` elects over the
     family's index rows, so recall plays no part in it."""
     if spans_ratio_twins(shape):
-        return on_ratio_class(shape, _elected_ratio_class(shape, query))
+        return on_elected_ratio_class(shape, query)
     members = shape.sv_arc_facts or {}
     if shape.sv_arc_facts_complete or index_decides(get_index(), query) or not members:
         return shape
@@ -3758,6 +3762,16 @@ def _unelected_ratio_class(shape: ShapeDraft, ratio: RatioTwins, query: FamilyQu
     return matching[0] if matching else ratio.base
 
 
+def on_elected_ratio_class(shape: ShapeDraft, query: FamilyQuery) -> ShapeDraft:
+    """`shape` on the class of its ratio family `query` elects (`_elected_ratio_class`,
+    `on_ratio_class`) when it spans the family's classes (`spans_ratio_twins`), else
+    `shape` itself. Raises `RoleSignatureError` when the asked roles cannot choose between
+    the ratio and its twin (`_unelected_ratio_class`)."""
+    if not spans_ratio_twins(shape):
+        return shape
+    return on_ratio_class(shape, _elected_ratio_class(shape, query))
+
+
 def on_ratio_class(shape: ShapeDraft, ratio_class: RatioClass) -> ShapeDraft:
     """`shape`, which spans the classes of a ratio family (`spans_ratio_twins`), standing
     for `ratio_class` alone: its five-tuple, denominator and roles are the class's, with no
@@ -3765,7 +3779,9 @@ def on_ratio_class(shape: ShapeDraft, ratio_class: RatioClass) -> ShapeDraft:
     (`derive.group_shape_id`). It keeps its own members of that five-tuple and spans no
     twin. Its catalogue family (`ShapeDraft.held_family`) is the class's when the
     catalogue holds it, else none. A class other than the base takes the label its family
-    reads as (`walked_family_label`). It records the id it leaves
+    reads as (`walked_family_label`) over the shape's own members of the class, else over
+    the members the catalogue holds for it, so it carries the base class's name only when
+    neither names it. It records the id it leaves
     (`ShapeDraft.menu_shape_id`), the menu reading's.
 
     A class with no member in recall or the catalogue leaves the shape with no member: the
@@ -3788,9 +3804,10 @@ def on_ratio_class(shape: ShapeDraft, ratio_class: RatioClass) -> ShapeDraft:
     }
     label = shape.label
     if denominator != shape.meas_denom_dcid:
+        named = members or (_held_members(key).arcs if held is not None else {})
         label = (
             walked_family_label(
-                members, held=held, population_type_label=None, prop_labels={}, value_labels={}
+                named, held=held, population_type_label=None, prop_labels={}, value_labels={}
             )
             or shape.label
         )

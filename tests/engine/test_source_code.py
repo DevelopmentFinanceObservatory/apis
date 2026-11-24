@@ -11,6 +11,8 @@ import asyncio
 import sys
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -33,6 +35,7 @@ from search.engine.quantity import NamedDenominator, check_denominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
+from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     bind_member_values,
@@ -1279,6 +1282,60 @@ def test_a_ratio_family_elects_one_class_whatever_recall_and_the_catalogue_hold(
     identity = answer.spec.definition.identity
     assert identity.shape.measurement_denominator.ref == _PPG_STOCK_BY_CREDITOR
     assert _minted_members(answer.spec) == {_USD_SHARE_BY_CREDITOR}
+
+
+@pytest.mark.parametrize(
+    ("held", "recalled"),
+    [
+        (_STOCKS_AND_SHARES, (_USD_SHARE,)),
+        (_STOCKS_AND_SHARES, (_USD_SHARE, _USD_SHARE_BY_CREDITOR)),
+        ((_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _USD_SHARE), (_USD_SHARE, _USD_SHARE_BY_CREDITOR)),
+    ],
+    ids=["catalogue-names-twin", "recall-names-twin", "recall-names-unheld-twin"],
+)
+def test_a_ratio_familys_by_creditor_class_reads_as_its_own_member(held, recalled, bind_catalogue):
+    """DT.CUR.USDL.ZS's shape put on its by-creditor class (`bound_values.on_ratio_class`)
+    reads as the share by creditor, named by its recalled member, else by the member the
+    catalogue holds for the class, so a by-creditor answer never carries the aggregate
+    share's name."""
+    bind_catalogue(_holding(*held))
+    (shape,) = derive_shapes(confirmed_svs=list(recalled), graph=_graph())
+    (by_creditor,) = (
+        c for c in shape_ratio_twins(shape).classes if c.denominator == _PPG_STOCK_BY_CREDITOR
+    )
+
+    assert on_ratio_class(shape, by_creditor).label == "US dollar share of PPG debt by creditor"
+
+
+@pytest.mark.parametrize(
+    ("open_axes", "denominator", "members"),
+    [
+        (frozenset(), _PPG_STOCK, {_USD_SHARE}),
+        (frozenset({"origin"}), _PPG_STOCK_BY_CREDITOR, {_USD_SHARE_BY_CREDITOR}),
+    ],
+    ids=["aggregate", "by-creditor"],
+)
+def test_a_re_election_sibling_spanning_a_ratio_family_stands_on_its_elected_class(
+    open_axes, denominator, members, bind_catalogue
+):
+    """A re-election sibling deriving from both of DT.CUR.USDL.ZS's shares is put on the
+    class its own place assignment elects before its members are narrowed
+    (`phase_place_materialise._sibling_shapes_of`), so it divides by that class's stock and
+    stands for that class's share alone, and its walk reads one five-tuple."""
+    bind_catalogue(_holding(*_STOCKS_AND_SHARES))
+    (shape,) = derive_shapes(confirmed_svs=[_USD_SHARE, _USD_SHARE_BY_CREDITOR], graph=_graph())
+    state = SimpleNamespace(
+        bindings=[],
+        capped_shapes=[shape],
+        reelection_siblings=[0],
+        alternate_place_roles={0: PlaceAssignment(open_axes=open_axes)},
+    )
+
+    (sibling,) = phase_place_materialise._sibling_shapes_of(cast("ResolveState", state)).values()
+
+    assert sibling.meas_denom_dcid == denominator
+    assert sibling.twin_families == ()
+    assert set(shape_population_arcs(sibling)) == members
 
 
 @pytest.mark.parametrize(

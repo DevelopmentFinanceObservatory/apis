@@ -162,10 +162,12 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     narrowed_to,
+    on_elected_ratio_class,
     shape_part_datasets,
     shape_population_arcs,
     shape_query,
     sole_shared_value,
+    spans_ratio_twins,
     without_values,
 )
 from search.engine.retrieval.facts import (
@@ -1957,13 +1959,27 @@ def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
     """Each re-election sibling (`state.reelection_siblings`) by capped-shape index, holding
     the members it is probed and answered through: those that keep the elected bindings
     among every member it stands for (`_stand_in_members`), and those alone
-    (`narrowed_to`)."""
-    return {
-        i: narrowed_to(
-            state.capped_shapes[i], _stand_in_members(state.capped_shapes[i], state.bindings)
-        )
-        for i in state.reelection_siblings
-    }
+    (`narrowed_to`).
+
+    A sibling spanning a ratio family's classes is first put on the class its query elects
+    (`on_elected_ratio_class`), the query of its five-tuple under the elected bindings and
+    the role keys of its own place assignment (`state.alternate_place_roles`), so it is
+    narrowed within one class and the class follows from the query and the index alone. A
+    sibling whose roles cannot choose between the ratio and its twin is left out, as its
+    walk would drop it (`candidates.walk_alternate`)."""
+    bindings = without_sampled_claims(state.bindings)
+    siblings: dict[int, ShapeDraft] = {}
+    for i in state.reelection_siblings:
+        shape = state.capped_shapes[i]
+        if spans_ratio_twins(shape):
+            role_keys = state.alternate_place_roles[i].role_keys
+            query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
+            try:
+                shape = on_elected_ratio_class(shape, query)
+            except RoleSignatureError:
+                continue
+        siblings[i] = narrowed_to(shape, _stand_in_members(shape, state.bindings))
+    return siblings
 
 
 async def _reelect_zero_observation_sibling(
