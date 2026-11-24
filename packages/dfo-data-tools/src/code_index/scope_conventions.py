@@ -293,9 +293,10 @@ class OptionLabels:
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
-    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral`,
-    `provider_inclusive`, `provider_contributions` and `provider_multilateral` name the four
-    provider scopes, `provider_inclusive_net` the inclusive scope on a part counted on net
+    basis or divides by something other than a head count. `oecd_headline` names the
+    OECD's headline basis per year. `provider_bilateral`, `provider_inclusive`,
+    `provider_contributions` and `provider_multilateral` name the four provider scopes,
+    `provider_inclusive_net` the inclusive scope on a part counted on net
     flows, which adds the imputed line as published, and `provider_years` a scope's `label`
     followed by the `years` its option serves ("2011 to 2024", "2023") where they set the
     part's window. `provider_rebound` names a scope's `label` read at the total of the
