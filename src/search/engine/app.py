@@ -30,7 +30,7 @@ import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
 from contextlib import (
-    AbstractContextManager,
+    AbstractAsyncContextManager,
     AsyncExitStack,
     ExitStack,
     aclosing,
@@ -134,6 +134,7 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import compute_options
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.resolve_trace import drain_resolve_traces
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
@@ -269,7 +270,7 @@ async def _event_source(
     *,
     hard_deadline: float,
     record: ResolveRecord,
-    line: AbstractContextManager[None],
+    line: AbstractAsyncContextManager[None],
 ) -> AsyncIterator[str]:
     """Merge events with 10-second heartbeat comments. Stop at the terminal frame and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
@@ -287,7 +288,8 @@ async def _event_source(
 
     `line` writes the request's `resolve` log line (`resolve_line`). It wraps the consumer,
     which resumes only once the server took its frame, so `record.delivered` is set when the
-    last frame has left. A terminal error is `record.error_code`.
+    last frame has left. A terminal error is `record.error_code`. The line's wait for the
+    resolve's trace export follows the last frame, so the client holds its answer first.
     """
     queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
@@ -326,7 +328,7 @@ async def _event_source(
 
     prod_task = asyncio.create_task(produce())
     hb_task = asyncio.create_task(heartbeat())
-    with line:
+    async with line:
         try:
             while True:
                 frame = await queue.get()
@@ -509,18 +511,18 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
     # later, ends a request whose unfinished work does not unwind in time.
-    with (
-        resolve_line(body, record, caller=caller, transport="buffered", served_code=_served_code),
-        request_deadline(budget.hard),
+    async with resolve_line(
+        body, record, caller=caller, transport="buffered", served_code=_served_code
     ):
-        async with asyncio.timeout(budget.hard - time.monotonic()):
-            result: ResolveResponse = await resolve_async(
-                body, budget=budget, record=record, **pipeline_deps
-            )
-        # The degraded-leg flag rides in a header so the body contract stays unchanged.
-        degraded = record.done is not None and record.done.degraded_leg
-        headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
-        return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
+        with request_deadline(budget.hard):
+            async with asyncio.timeout(budget.hard - time.monotonic()):
+                result: ResolveResponse = await resolve_async(
+                    body, budget=budget, record=record, **pipeline_deps
+                )
+            # The degraded-leg flag rides in a header so the body contract stays unchanged.
+            degraded = record.done is not None and record.done.degraded_leg
+            headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
+            return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
 async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
@@ -1267,6 +1269,7 @@ def search_surface(
                 finally:
                     variable_breadth = None
                     SEARCH_DEPS_SLOT.clear(app)
+                    await drain_resolve_traces()
 
     router = APIRouter()
     # The handler returns a pre-built Response, so response_model only
