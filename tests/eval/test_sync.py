@@ -132,7 +132,7 @@ class FakeLangfuse:
 
         scores = asyncio.run(every())
         self.experiments.append({"items": [i.metadata["id"] for i in data], "scores": scores})
-        return SimpleNamespace(dataset_run_url=f"run-{len(self.experiments)}")
+        return SimpleNamespace(experiment_url=f"run-{len(self.experiments)}")
 
 
 def _write(corpus: Path, files: dict[str, str]) -> dict:
@@ -367,6 +367,32 @@ def test_a_crash_exits_2(tmp_path, monkeypatch, corpus_text, client):
     monkeypatch.setattr(m, "_client", client)
 
     assert m.main([f"--corpus-dir={corpus}"]) == 2
+
+
+def test_client_samples_every_span_whatever_the_sample_rate(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0")
+    monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
+    client = m._client()
+    try:
+        with client.start_as_current_observation(name="probe") as span:
+            sampled = span._otel_span.get_span_context().trace_flags.sampled
+    finally:
+        client.shutdown()
+
+    assert sampled
+
+
+@pytest.mark.parametrize("value", ["false", "False"])
+def test_client_refuses_disabled_tracing(monkeypatch, value):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", value)
+
+    with pytest.raises(RuntimeError, match="LANGFUSE_TRACING_ENABLED"):
+        m._client()
 
 
 def _schema_response(status: int, url: str) -> httpx.Response:
