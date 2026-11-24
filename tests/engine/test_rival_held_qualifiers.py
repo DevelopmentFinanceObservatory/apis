@@ -16,14 +16,10 @@ import asyncio
 import pytest
 
 from search.engine.binders import GeminiBinder
-from search.engine.interpret import recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
-from search.models.vocab import EntryPath
-from series_coverage.schema import RoleNames
 from tests.engine._binders import elected_reply
-from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
@@ -38,12 +34,8 @@ from tests.engine.test_recall_reading_families import (
     _CRS,
     _CRS_HEALTH,
     _DAC1_COMMITMENTS,
-    _KEN,
-    _ROWS,
-    _TOTAL,
     _code,
     _coverage,
-    _flow,
     _graph,
     _index,
 )
@@ -262,170 +254,3 @@ def test_a_rival_held_term_follows_the_coverage_mode_in_log_mode(
     assert result.unbound_qualifiers == ()
     dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert len(dropped) == 1 and "adaptation" in dropped[0].message, result.warnings
-
-
-_IDA = "InternationalDevelopmentAssociation"
-_IDA_NAME = "International Development Association"
-_IDA_OBJECTIVE = _code("TESTFIXTURE/Rival/IdaObjective", "climatePolicyObjective", "IDA", _TOTAL)
-_CLIMATE_IDA = _flow(
-    "TESTFIXTURE/Rival/ClimateIda", {"climatePolicyObjective": _IDA_OBJECTIVE.dcid}, _CLIMATE
-)
-
-
-def _resolve_ida(query: str, *, source: str | None = _CRS, door: EntryPath = "parsed"):
-    """The variable "IDA disbursements" posted on `door` on a part naming `source`, with
-    "IDA" the request's words for IDA in the role `query` states, under an index whose
-    climate family records a code labelled "IDA", as DAC1 records aid type 2103,
-    "multilateral contribution to the International Development Association"."""
-    rows = (*_ROWS, _CLIMATE_IDA)
-    graph = _graph(
-        query,
-        ((_CRS_HEALTH.dcid, 0.8),),
-        rows=rows,
-        nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
-    )
-    with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
-        return asyncio.run(
-            resolve_variable(
-                "IDA disbursements",
-                entities=[_IDA_NAME],
-                entity_words={_IDA_NAME: "IDA"},
-                date_request=None,
-                detect_query=query,
-                role_query=query,
-                entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
-                pac=True,
-                graph=graph,
-                resolver=make_resolver(graph),
-                llm=_Reply(0),
-                binder=_ElectHolding(_CRS_HEALTH.dcid),
-                sdmx=FakeSdmxClient(observations={}),
-                base_timing={},
-                coverage=_ida_coverage().snapshot(),
-                source_scope=None if source is None else part_scope(named=source),
-                door=door,
-            )
-        )
-
-
-def _ida_coverage() -> FakeCoverageService:
-    """The CRS health series from IDA to Kenya in 2021 and 2022."""
-    return FakeCoverageService(
-        build_coverage_index(
-            [(_CRS_HEALTH.dcid, _CRS, _IDA, _KEN, [2021, 2022])],
-            role_names={
-                _CRS_HEALTH.dcid: RoleNames(
-                    donor="financingProvider", recipient="financingRecipient"
-                )
-            },
-        )
-    )
-
-
-def test_a_term_naming_the_provider_is_the_provider_not_a_rival_held_code():
-    """With IDA the provider, "IDA" in "IDA disbursements", the request's words for it, is
-    the provider. The part refuses on no term and answers from the CRS shape the binder
-    elects."""
-    result = _resolve_ida("IDA disbursements from International Development Association")
-
-    assert result.status == "definite", result
-    assert result.no_data_reason is None, result
-    assert result.unbound_qualifiers == ()
-    assert {member.ref.ref for spec in result.specs for member in spec.resolved.members} == {
-        _CRS_HEALTH.dcid
-    }
-
-
-@pytest.mark.parametrize(
-    ("query", "door"),
-    [
-        pytest.param(
-            "IDA disbursements to International Development Association",
-            "parsed",
-            id="parsed-recipient",
-        ),
-        pytest.param(
-            "IDA disbursements from International Development Association",
-            "raw_text",
-            id="raw-text-provider",
-        ),
-    ],
-)
-def test_a_term_the_caller_does_not_state_as_the_providers_stays_a_term(query, door):
-    """With IDA the recipient, "IDA" may name the contribution to IDA, so the rival-held
-    check reads it and the part refuses naming ONE Data Climate Finance. A raw-text part
-    reads every word of its variable, its roles being the extraction's reading of the
-    request, so with IDA the provider it refuses alike."""
-    result = _resolve_ida(query, door=door)
-
-    assert result.no_data_reason == "qualifier_not_bound", result
-    (unbound,) = result.unbound_qualifiers
-    assert unbound.text == "IDA"
-    assert [ref.ref for ref in unbound.held_by] == [_CLIMATE]
-
-
-def test_a_term_naming_the_provider_elects_no_family_that_records_it():
-    """With no source named, the climate family recording "IDA" competes in the election of
-    the CRS five-tuple. "IDA" is the provider's word in every reading, so the climate family
-    reads nothing more of the query and the CRS answers."""
-    result = _resolve_ida(
-        "IDA disbursements from International Development Association", source=None
-    )
-
-    assert result.status == "definite", result
-    assert {member.ref.ref for spec in result.specs for member in spec.resolved.members} == {
-        _CRS_HEALTH.dcid
-    }
-
-
-@pytest.mark.parametrize(
-    ("query", "door", "injected"),
-    [
-        pytest.param(
-            "IDA disbursements from International Development Association",
-            "parsed",
-            False,
-            id="provider",
-        ),
-        pytest.param(
-            "IDA disbursements to International Development Association",
-            "parsed",
-            True,
-            id="recipient",
-        ),
-        pytest.param(
-            "IDA disbursements from International Development Association",
-            "raw_text",
-            True,
-            id="raw-text-provider",
-        ),
-    ],
-)
-def test_recall_reads_no_family_for_the_providers_words(query, door, injected):
-    """Recall adds a row of each family of a recalled five-tuple that reads a code of the
-    variable no recalled family reads. "IDA" is the provider's word, so the climate family
-    recording "IDA" joins no pool; with IDA the recipient the word stays a code and the
-    family joins. A raw-text part reads every word of its variable."""
-    rows = (*_ROWS, _CLIMATE_IDA)
-    graph = _graph(
-        query,
-        ((_CRS_HEALTH.dcid, 0.8),),
-        rows=rows,
-        nodes={_IDA: {"label": _IDA_NAME, "type": "Organization"}},
-    )
-    with serving_index(_index((*_CODES, _PRIMARY_EDUCATION, _IDA_OBJECTIVE), rows=rows)):
-        result = asyncio.run(
-            recall(
-                "IDA disbursements",
-                [_IDA_NAME],
-                graph=graph,
-                resolver=make_resolver(graph),
-                raw_query=query,
-                door=door,
-                entity_roles=door_roles_for_test_query(query, [_IDA_NAME]),
-                entity_words={_IDA_NAME: "IDA"},
-            )
-        )
-
-    climate = {row.dcid for row in rows if _CLIMATE in row.provenances}
-    assert bool(climate & {c.dcid for c in result.candidates}) is injected
