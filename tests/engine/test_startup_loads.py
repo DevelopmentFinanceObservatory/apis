@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import contextvars
+import gc
 import logging
 import threading
+import weakref
+from pathlib import Path
 
 import pytest
 
+import graph_release.service as release_service
 import origin_catalogue.service as catalogue_service
 import search.engine.app as app_module
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from graph_release.service import ReleaseService
 from origin_catalogue.service import CatalogueUriMissingError
+from statvar_members import shared_enumerator
+from tests.graph_release.support import build_view_release
 
 _BOUND: contextvars.ContextVar[str | None] = contextvars.ContextVar("_BOUND", default=None)
 
@@ -111,3 +118,57 @@ def test_an_unset_catalogue_uri_raises_before_the_release_loads(
     else:
         assert failed == []
         assert (loaded, released) == (["graph_release"], [service])
+
+
+@pytest.mark.unbound_release
+def test_an_abandoned_release_load_frees_the_release_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release service a failed start abandoned dies once its load finishes: its last
+    lease gives back the shared member enumerator's swap subscription with it."""
+    root = (tmp_path / "releases").as_uri()
+    build_view_release(root)
+    loaded: list[weakref.ref[ReleaseService]] = []
+
+    def load_release() -> ReleaseService:
+        service = release_service.get_release_service()
+        loaded.append(weakref.ref(service))
+        return service
+
+    monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+    monkeypatch.delenv(catalogue_service._ARTIFACT_URI_ENV_VAR, raising=False)
+    monkeypatch.setattr(app_module, "get_release_service", load_release)
+    try:
+        with catalogue_service._singleton.isolated(), release_service._singleton.isolated():
+            with pytest.raises(CatalogueUriMissingError):
+                app_module._load_catalogue_and_release()
+            _join_release_load()
+        gc.collect()
+        assert len(loaded) == 1
+        assert loaded[0]() is None
+    finally:
+        shared_enumerator().close()
+
+
+def test_a_failed_release_load_gives_back_the_catalogue_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The release's error reaches the caller, and the catalogue service the start acquired
+    is given back, so the next start builds a fresh one."""
+    built: list[object] = []
+
+    def build() -> object:
+        built.append(object())
+        return built[-1]
+
+    def load_release() -> object:
+        raise FileNotFoundError("no release")
+
+    monkeypatch.setattr(catalogue_service._singleton, "_build", build)
+    monkeypatch.setattr(app_module, "get_release_service", load_release)
+    with catalogue_service._singleton.isolated():
+        for _ in range(2):
+            with pytest.raises(FileNotFoundError):
+                app_module._load_catalogue_and_release()
+
+    assert len(built) == 2

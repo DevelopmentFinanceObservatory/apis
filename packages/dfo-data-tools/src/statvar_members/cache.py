@@ -14,8 +14,9 @@ raises when none is bound. A family the release holds
 (`graph_release.origin.ReleaseOrigin.holds_family`) walks the release's graph reader in place
 of the caller's, and every entry's key also holds the release id, so a swap walks afresh.
 An enumerator following the process's release service (`MemberEnumerator.follow_swaps`, which
-`graph_release.service` sets up for `shared_enumerator`) drops the entries of every other
-release once a swap serves a new one, and stores none for a replaced release after it.
+`graph_release.service` sets up for `shared_enumerator` and ends when the service's last
+lease is given back) drops the entries of every other release once a swap serves a new one,
+and stores none for a replaced release after it.
 
 Each entry weighs one plus its family size, the dcids of every confirmed candidate
 before antichain reduction, since a deep root's family runs to about 14,000 dcids.
@@ -116,22 +117,29 @@ class MemberEnumerator:
         self._flights: dict[_CacheKey, _Flight] = {}
         # The release the followed service serves, `None` while following none.
         self._served_release: str | None = None
-        self._unfollow: Callable[[], None] | None = None
+        # The followed service and the function that unregisters its swap callback.
+        self._following: tuple[ReleaseService, Callable[[], None]] | None = None
 
     def follow_swaps(self, service: ReleaseService) -> None:
         """Drop every group keyed on a release `service` no longer serves once it swaps, and
-        store none for such a release after, in place of any service followed before. `close`
-        stops following."""
+        store none for such a release after, in place of any service followed before.
+        `unfollow` and `close` stop following, and drop the enumerator's reference to it."""
         self.close()
         with self._lock:
             self._served_release = service.snapshot().release_id
-        self._unfollow = service.on_swap(self._swapped)
+        self._following = (service, service.on_swap(self._swapped))
+
+    def unfollow(self, service: ReleaseService) -> None:
+        """Stop following `service` if `follow_swaps` named it last."""
+        if self._following is not None and self._following[0] is service:
+            self.close()
 
     def close(self) -> None:
         """Stop following the service `follow_swaps` named."""
-        if self._unfollow is not None:
-            self._unfollow()
-            self._unfollow = None
+        if self._following is not None:
+            _, unregister = self._following
+            self._following = None
+            unregister()
         with self._lock:
             self._served_release = None
 

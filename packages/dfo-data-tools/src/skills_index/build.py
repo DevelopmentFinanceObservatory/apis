@@ -59,9 +59,11 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from dfo_platform.executor import map_in_threads
 from materialise.graph import reject_unsafe_property_token
@@ -741,25 +743,38 @@ def _failed_targets(attachments: Sequence[Attachment], classified: _ClassifiedTa
 class _ReadCountingGraph:
     """A `SkillsGraph` that counts the reads that return and those that raise, and keeps
     the last error raised, so the build can tell a graph outage from a failure confined
-    to some reads. Safe to read through from several threads."""
+    to some reads. Safe to read through from several threads: a read asked for while an
+    identical one is in flight waits for that read and takes its result or error, so the
+    pair is one read and counts once."""
 
     def __init__(self, graph: SkillsGraph) -> None:
         self._graph = graph
         self._lock = threading.Lock()
+        self._in_flight: dict[Hashable, Future[Any]] = {}
         self.succeeded = 0
         self.failed = 0
         self.last_failure: Exception | None = None
 
-    def _counted[T](self, read: Callable[[], T]) -> T:
+    def _counted[T](self, key: Hashable, read: Callable[[], T]) -> T:
+        own: Future[T] = Future()
+        with self._lock:
+            flight = self._in_flight.setdefault(key, own)
+        if flight is not own:
+            return flight.result()
         try:
             result = read()
-        except Exception as exc:
+        except BaseException as exc:
             with self._lock:
-                self.failed += 1
-                self.last_failure = exc
+                del self._in_flight[key]
+                if isinstance(exc, Exception):
+                    self.failed += 1
+                    self.last_failure = exc
+            own.set_exception(exc)
             raise
         with self._lock:
+            del self._in_flight[key]
             self.succeeded += 1
+        own.set_result(result)
         return result
 
     def node_arcs_many(
@@ -770,16 +785,18 @@ class _ReadCountingGraph:
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         return self._counted(
-            lambda: self._graph.node_arcs_many(dcids, properties=properties, deadline=deadline)
+            ("arcs", tuple(dcids), tuple(properties), deadline),
+            lambda: self._graph.node_arcs_many(dcids, properties=properties, deadline=deadline),
         )
 
     def node_subjects_many(
         self, dcids: Sequence[str], *, property: str, max_results: int
     ) -> dict[str, SubjectsPage]:
         return self._counted(
+            ("subjects", tuple(dcids), property, max_results),
             lambda: self._graph.node_subjects_many(
                 dcids, property=property, max_results=max_results
-            )
+            ),
         )
 
 

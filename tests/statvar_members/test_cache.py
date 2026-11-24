@@ -688,8 +688,8 @@ class _SwappingService:
 
 def test_a_swap_drops_the_replaced_release_s_groups(recorded_slice, tmp_path: Path) -> None:
     """Following the service, a swap drops the groups keyed on the replaced release, a walk
-    still bound to it stores nothing, and the new release's groups are stored. `close` stops
-    following."""
+    still bound to it stores nothing, and the new release's groups are stored. `unfollow` stops
+    following that service and no other."""
     variables, catalogue = recorded_slice
     first = _origin_release(tmp_path / "a", revision="rev-a")
     second = _origin_release(tmp_path / "b", revision="rev-b")
@@ -708,5 +708,7 @@ def test_a_swap_drops_the_replaced_release_s_groups(recorded_slice, tmp_path: Pa
     assert [walks(first), walks(first)] == [2, 3]
     assert [walks(second), walks(second)] == [4, 4]
 
-    enumerator.close()
+    enumerator.unfollow(cast("ReleaseService", _SwappingService(second)))
+    assert service.callbacks == [enumerator._swapped]
+    enumerator.unfollow(cast("ReleaseService", service))
     assert service.callbacks == []

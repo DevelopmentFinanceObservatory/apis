@@ -2611,3 +2611,36 @@ def test_a_skill_excluded_by_an_exhausted_page_counts_no_failed_read():
     assert index.skills["skill-a"].reach.excluded is True
     assert "skill_build_unconfirmed" in {issue.code for issue in index.issues}
     assert index.failed_reads == 0
+
+
+def test_overlapping_identical_reads_share_one_read():
+    """skill-a and skill-b both apply to Person, so their reach reads are identical. The first
+    `isPartOf` read of Person holds for up to half a second for a second one to reach the
+    graph, which it does only when the two skills' reads are not coalesced."""
+    second_arrived = threading.Event()
+    arrivals: list[int] = []
+
+    class _Graph(FakeSkillsGraph):
+        def node_subjects_many(self, dcids, *, property, max_results):
+            if (tuple(dcids), property) == (("Person",), "isPartOf"):
+                arrivals.append(1)
+                if len(arrivals) == 1:
+                    second_arrived.wait(timeout=0.5)
+                else:
+                    second_arrived.set()
+            return super().node_subjects_many(dcids, property=property, max_results=max_results)
+
+    graph = _Graph(
+        subjects={**_roster("skill-a", "skill-b"), ("Person", "populationType"): ["sv-1"]},
+        arcs={
+            "skill/skill-a": skill_node("skill-a") | {"skillAppliesTo": ("Person",)},
+            "skill/skill-b": skill_node("skill-b") | {"skillAppliesTo": ("Person",)},
+        },
+    )
+
+    index = build_index(graph=graph)
+
+    assert len(arrivals) == 1
+    assert [node.dcid for node in index.skills["skill-a"].reach.nodes] == ["Person"]
+    assert [node.dcid for node in index.skills["skill-b"].reach.nodes] == ["Person"]
+    assert index.failed_reads == 0

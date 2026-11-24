@@ -86,7 +86,11 @@ from materialise.shared_profiles import (
     release_shared_profiles,
 )
 from origin_catalogue import bound_catalogue, current_catalogue
-from origin_catalogue.service import CatalogueService, get_catalogue_service
+from origin_catalogue.service import (
+    CatalogueService,
+    get_catalogue_service,
+    release_catalogue_service,
+)
 from search.catalogue.response import (
     CatalogueResponse,
     catalogue_response,
@@ -1203,7 +1207,8 @@ def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
 
     A failing catalogue raises its error at once and abandons the release load, which process
     exit does not wait for. When an abandoned load finishes, it gives back the release service
-    it acquired, or logs its own error as `search_startup_stage_failed`."""
+    it acquired, or logs its own error as `search_startup_stage_failed`. A failing release
+    load raises its error once the catalogue has loaded and gives back the catalogue service."""
     release: Future[ReleaseService] = Future()
     context = contextvars.copy_context()
 
@@ -1221,7 +1226,11 @@ def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
     except Exception:
         release.add_done_callback(_abandon_release_load)
         raise
-    return catalogue, release.result()
+    try:
+        return catalogue, release.result()
+    except BaseException:
+        release_catalogue_service(catalogue)
+        raise
 
 
 def _abandon_release_load(release: Future[ReleaseService]) -> None:

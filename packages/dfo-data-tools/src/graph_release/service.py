@@ -583,8 +583,16 @@ def _build() -> ReleaseService:
     return service
 
 
+def _close(service: ReleaseService) -> None:
+    """Ends the subscription `_build` took out, so the last lease's release leaves nothing
+    holding `service`."""
+    from statvar_members import shared_enumerator
+
+    shared_enumerator().unfollow(service)
+
+
 _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
-    build=_build, label="graph release service"
+    build=_build, close=_close, label="graph release service"
 )
 
 
@@ -600,8 +608,10 @@ def get_release_service() -> ReleaseService:
 
 
 def release_release_service(service: ReleaseService) -> None:
-    """Gives back one hold `get_release_service()` took. Raises `RuntimeError` for a service
-    it never returned or one released more often than acquired."""
+    """Gives back one hold `get_release_service()` took. The last one also stops the shared
+    member enumerator following the service's swaps, so nothing the process keeps holds it.
+    Raises `RuntimeError` for a service it never returned or one released more often than
+    acquired."""
     _singleton.release(service)
 
 
