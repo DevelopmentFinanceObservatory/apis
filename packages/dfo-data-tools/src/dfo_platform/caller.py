@@ -32,8 +32,8 @@ the client's address, folded (`fold_address`), under `DFO_CALLER_HMAC_KEY`. The 
 computes the same key for the callers it forwards (its `src/lib/proxy/caller.ts`), so a client
 has one key on either path and no raw address is stored. An account caller (`kind="account"`)
 has a key of `user:` and 32 lowercase hex digits, a digest of the account's id that the website
-computes for a request made with an API key, so its allowances count per account and not per
-address. This service never derives an account key, only accepts the website's. A request whose
+computes for a request made with an API key, so its allowances count per account. The
+website derives the account key, and this service accepts it as named. A request whose
 `x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from an upstream that holds the
 secret, such as the website or the Studio harness, which names its client in `x-dfo-caller`, as
 `ip:<digest>`, `user:<digest>` or `conversation:<digest>`. A request that carries

@@ -125,32 +125,17 @@ def test_the_website_names_its_caller_under_the_principal():
     assert resolve_caller(request, _settings(key="")) == Caller(kind="address", key=_NAMED)
 
 
-def test_the_website_names_an_account_caller_under_the_principal():
+@pytest.mark.parametrize("address", ["3.3.3.3", "4.4.4.4", "2001:db8::1"])
+def test_the_website_names_an_account_caller_under_the_principal(address: str):
     """A request made with an API key counts against its account, whatever address it came from."""
     request = _request(
-        ("x-forwarded-for", "3.3.3.3"),
+        ("x-forwarded-for", address),
         ("x-dfo-caller-principal", _PRINCIPAL),
         ("x-dfo-caller", _ACCOUNT),
     )
 
     # The named caller needs no key of this service's own.
     assert resolve_caller(request, _settings(key="")) == Caller(kind="account", key=_ACCOUNT)
-
-
-def test_an_account_caller_is_the_same_whichever_address_the_key_is_used_from():
-    callers = {
-        resolve_caller(
-            _request(
-                ("x-forwarded-for", address),
-                ("x-dfo-caller-principal", _PRINCIPAL),
-                ("x-dfo-caller", _ACCOUNT),
-            ),
-            _settings(),
-        )
-        for address in ("3.3.3.3", "4.4.4.4", "2001:db8::1")
-    }
-
-    assert callers == {Caller(kind="account", key=_ACCOUNT)}
 
 
 @pytest.mark.parametrize(
