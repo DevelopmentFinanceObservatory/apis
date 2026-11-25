@@ -21,9 +21,9 @@ from dfo_platform.cloud_logging import (
     JsonFormatter,
     replay_log_filter,
     stdout_handler,
+    suppress_replay_logs,
 )
 from dfo_platform.trace import cloud_trace_id_from_headers
-from search.engine.parser_replay import ParserReplay, bound_parser_replay
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -112,7 +112,7 @@ def test_a_traceback_is_folded_into_the_message():
     assert "ValueError: boom" in message
 
 
-def test_replay_filter_drops_legacy_query_logs_but_keeps_normal_and_final_safe_logs():
+def test_replay_filter_drops_only_records_inside_the_suppressed_block():
     output = io.StringIO()
     handler = logging.StreamHandler(output)
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -122,12 +122,10 @@ def test_replay_filter_drops_legacy_query_logs_but_keeps_normal_and_final_safe_l
     log.setLevel(logging.INFO)
     log.addHandler(handler)
     log.propagate = False
-    replay = ParserReplay(replay_id="canary_01", arm="flash-lite", cache="bypass", stream=True)
     try:
         log.warning("normal request log")
-        with bound_parser_replay(replay):
-            log.warning("legacy query log: production search words")
-        # The final resolve record is emitted after bound_parser_replay unwinds.
+        with suppress_replay_logs(enabled=True):
+            log.warning("pipeline log: production search words")
         log.info('resolve {"parser_replay":{"replay_id":"canary_01"}}')
     finally:
         log.handlers.clear()

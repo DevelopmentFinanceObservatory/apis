@@ -1,62 +1,59 @@
-"""Private, dev-only parser replay controls and provider-call telemetry."""
+"""The private, dev-only parser replay: its request gate, its extraction clients and the
+telemetry its `resolve` log line carries.
+
+An authenticated replay request names an arm. `app.resolve` builds that arm's extraction
+client (`replay_extraction_llm`) and passes it to the pipeline as `EntryParams.extract_llm`,
+so a request without replay headers runs as it does without this module. The client
+records each provider call it makes in the request's `ReplayRecord`.
+"""
 
 from __future__ import annotations
 
 import hmac
 import os
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from time import perf_counter
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from fastapi import Request
+from pydantic import Field
 
-from dfo_platform.cloud_logging import suppress_replay_logs
+from search.engine.clients.llm import LLM, MistralLLM, ReplayGeminiLLM, mistral_clients
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
+from search.engine.extract import ExtractedEntity, Extraction
 
 PARSER_REPLAY_HEADER = "X-DFO-Parser-Replay"
 PARSER_ARM_HEADER = "X-DFO-Parser-Arm"
 PARSER_KEY_HEADER = "X-DFO-Parser-Replay-Key"
 PARSER_CACHE_HEADER = "X-DFO-Parser-Cache"
 PARSER_STREAM_HEADER = "X-DFO-Parser-Stream"
-PARSER_RESPONSE_HEADER = "X-DFO-Parser-Arm"
+
+FLASH_LITE_MODEL = "gemini-3.5-flash-lite"
 
 _REPLAY_ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
-_Arm = Literal["flash-lite", "ministral"]
+
+type Arm = Literal["flash-lite", "ministral"]
+type ExtractionPhase = Literal["original", "blanked"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class ParserReplay:
-    """One authenticated parser replay request and its provider call records."""
+    """One authenticated parser replay request: its opaque id, its arm, and whether the
+    extraction client streams. The cache policy is always `bypass`."""
 
     replay_id: str
-    arm: _Arm
-    cache: Literal["bypass"]
+    arm: Arm
     stream: bool
-    calls: list[dict[str, object]] = field(default_factory=list)
-    extraction_started: float | None = None
-    extraction_validated_ms: float | None = None
-    extraction_agreed: bool | None = None
-    extraction_agreement: object | None = None
-    selected_extraction_phase: str | None = None
-    prompt_digest: str | None = None
-    schema_digest: str | None = None
-    fallback_reasons: list[str] = field(default_factory=list)
-
-
-_REPLAY: ContextVar[ParserReplay | None] = ContextVar("parser_replay", default=None)
-_PROVIDER_ATTEMPT: ContextVar[str | None] = ContextVar("parser_replay_attempt", default=None)
-_EXTRACTION_PHASE: ContextVar[str | None] = ContextVar(
-    "parser_replay_extraction_phase", default=None
-)
+    cache: Literal["bypass"] = "bypass"
 
 
 def parser_replay(request: Request) -> ParserReplay | None:
-    """Validate and return the request's private replay selection, if any."""
+    """The request's replay selection, None when it carries no replay header.
+
+    Raises `EngineInputError` with status 403 unless the replay switch is on, the process is
+    the `dfo-dev-apis` revision the settings name, and the key matches, and with status 422
+    for an invalid id, arm, cache policy or stream option."""
     replay_id = request.headers.get(PARSER_REPLAY_HEADER)
     arm = request.headers.get(PARSER_ARM_HEADER)
     key = request.headers.get(PARSER_KEY_HEADER)
@@ -90,103 +87,145 @@ def parser_replay(request: Request) -> ParserReplay | None:
         raise EngineInputError("This parser replay request is not authorised.", status=403)
     if replay_id is None or not _REPLAY_ID.fullmatch(replay_id):
         raise EngineInputError("The parser replay identifier is invalid.", status=422)
-    if arm not in ("flash-lite", "ministral"):
+    if arm != "flash-lite" and arm != "ministral":
         raise EngineInputError("The parser replay arm is invalid.", status=422)
-    cache = request.headers.get(PARSER_CACHE_HEADER, "bypass")
-    if cache != "bypass":
+    if request.headers.get(PARSER_CACHE_HEADER, "bypass") != "bypass":
         raise EngineInputError("The parser replay cache policy is invalid.", status=422)
     stream = request.headers.get(PARSER_STREAM_HEADER, "")
     if stream not in ("", "1"):
         raise EngineInputError("The parser replay stream option is invalid.", status=422)
-    return ParserReplay(replay_id=replay_id, arm=arm, cache=cache, stream=stream == "1")
+    return ParserReplay(replay_id=replay_id, arm=arm, stream=stream == "1")
 
 
-@contextmanager
-def bound_parser_replay(replay: ParserReplay | None) -> Iterator[None]:
-    """Make a verified replay available to extraction and provider clients."""
-    token = _REPLAY.set(replay)
-    try:
-        with suppress_replay_logs(enabled=replay is not None):
-            yield
-    finally:
-        _REPLAY.reset(token)
+@dataclass(frozen=True)
+class ProviderCall:
+    """One extraction call a replay client made, holding no query, answer or key.
+
+    `phase` is `original` for a parse of the query as sent and `blanked` for a parse of
+    the text the exclusion read left. `attempt` is `second` for the reseeded sample that
+    judges agreement. `usage` holds the provider's token counts, Gemini's thought tokens
+    included. `error` names the exception class, or `cancelled`, and `http_status` is the
+    provider's status when it refused the call."""
+
+    provider: Literal["gemini", "mistral"]
+    model: str
+    phase: ExtractionPhase
+    attempt: Literal["first", "second"]
+    duration_ms: float
+    first_content_ms: float | None
+    usage: dict[str, int] | None
+    finish_reason: str | None
+    error: str | None
+    http_status: int | None
 
 
-def current_parser_replay() -> ParserReplay | None:
-    """Return the active replay in this request task, if any."""
-    return _REPLAY.get()
+@dataclass
+class ReplayRecord:
+    """What one replay request's `resolve` log line reports (`log_fields`).
 
+    The extraction client fills `calls` and the digests. The pipeline sets
+    `extraction_agreed` from the served extraction's agreement and `fallback_reasons` from
+    the binder's fallbacks. `query` tells the two extraction phases apart and stays out of
+    the log."""
 
-@contextmanager
-def provider_attempt(attempt: str) -> Iterator[None]:
-    """Label one request's first or speculative second parser sample."""
-    token = _PROVIDER_ATTEMPT.set(attempt)
-    try:
-        yield
-    finally:
-        _PROVIDER_ATTEMPT.reset(token)
+    replay: ParserReplay
+    query: str = field(repr=False)
+    calls: list[ProviderCall] = field(default_factory=list)
+    prompt_digest: str | None = None
+    schema_digest: str | None = None
+    extraction_agreed: bool | None = None
+    fallback_reasons: list[str] = field(default_factory=list)
 
+    def note_call(
+        self,
+        *,
+        provider: Literal["gemini", "mistral"],
+        model: str,
+        prompt: str,
+        attempt: Literal["first", "second"],
+        prompt_digest: str,
+        schema_digest: str,
+        duration_ms: float,
+        first_content_ms: float | None,
+        usage: dict[str, int] | None,
+        finish_reason: str | None,
+        error: str | None,
+        http_status: int | None,
+    ) -> None:
+        """Record one provider call. A prompt other than the query is the blanked text
+        (`entry.raw_text._read_and_extract`)."""
+        self.prompt_digest = prompt_digest
+        self.schema_digest = schema_digest
+        self.calls.append(
+            ProviderCall(
+                provider=provider,
+                model=model,
+                phase="original" if prompt == self.query else "blanked",
+                attempt=attempt,
+                duration_ms=duration_ms,
+                first_content_ms=first_content_ms,
+                usage=usage,
+                finish_reason=finish_reason,
+                error=error,
+                http_status=http_status,
+            )
+        )
 
-@contextmanager
-def bound_extraction_phase(phase: Literal["original", "blanked"]) -> Iterator[None]:
-    """Tag a raw-text extraction branch without retaining its query text."""
-    token = _EXTRACTION_PHASE.set(phase)
-    try:
-        yield
-    finally:
-        _EXTRACTION_PHASE.reset(token)
+    @property
+    def served_phase(self) -> ExtractionPhase | None:
+        """The phase whose parse the answer used: `blanked` once a blanked parse ran, since
+        the door then discards the parse of the query, else `original`, and None before
+        any call."""
+        if not self.calls:
+            return None
+        return "blanked" if any(call.phase == "blanked" for call in self.calls) else "original"
 
-
-def note_selected_extraction_phase(phase: Literal["original", "blanked"]) -> None:
-    """Record the raw-text branch that supplied the served extraction."""
-    replay = current_parser_replay()
-    if replay is not None:
-        replay.selected_extraction_phase = phase
-
-
-def replay_log(replay: ParserReplay | None) -> dict[str, object] | None:
-    """Return the replay telemetry safe for the structured resolve log line."""
-    if replay is None:
-        return None
-    return {
-        "replay_id": replay.replay_id,
-        "arm": replay.arm,
-        "cache": replay.cache,
-        "stream": replay.stream,
-        "extraction_validated_ms": replay.extraction_validated_ms,
-        "extraction_agreed": replay.extraction_agreed,
-        "selected_extraction_phase": replay.selected_extraction_phase,
-        "prompt_digest": replay.prompt_digest,
-        "schema_digest": replay.schema_digest,
-        "fallback_reasons": replay.fallback_reasons,
-        "calls": replay.calls,
-    }
-
-
-def note_provider_call(
-    *,
-    provider: str,
-    model: str,
-    stage: str | None,
-    usage: dict | None,
-    started: float,
-    first_content_ms: float | None = None,
-    error: str | None = None,
-) -> None:
-    """Record one provider attempt without query, response, or secret material."""
-    replay = current_parser_replay()
-    if replay is None:
-        return
-    replay.calls.append(
-        {
-            "provider": provider,
-            "model": model,
-            "stage": stage,
-            "attempt": _PROVIDER_ATTEMPT.get(),
-            "extraction_phase": _EXTRACTION_PHASE.get(),
-            "duration_ms": round((perf_counter() - started) * 1000, 3),
-            "first_content_ms": first_content_ms,
-            "usage": usage,
-            "error": error,
+    def log_fields(self) -> dict[str, object]:
+        """The replay's fields of the `resolve` log line."""
+        return {
+            "replay_id": self.replay.replay_id,
+            "arm": self.replay.arm,
+            "cache": self.replay.cache,
+            "stream": self.replay.stream,
+            "served_phase": self.served_phase,
+            "extraction_agreed": self.extraction_agreed,
+            "prompt_digest": self.prompt_digest,
+            "schema_digest": self.schema_digest,
+            "fallback_reasons": self.fallback_reasons,
+            "calls": [asdict(call) for call in self.calls],
         }
+
+
+class MistralReplayExtraction(Extraction):
+    """The schema Ministral answers under: `Extraction` with `entities` required."""
+
+    entities: list[ExtractedEntity] = Field(
+        description=Extraction.model_fields["entities"].description
+    )
+
+
+MISTRAL_REPLAY_INSTRUCTION = """
+Output the entities key for every query. Before returning the JSON, check every named
+place or named geographic group in the query against entities. Each must have an
+object even if its name is already in a variable phrase. Use an empty array only
+when the query names no eligible scope. Each array item is an object with text,
+span, variables, cue, role, and members. A place with no role still gets an object.
+For donor or creditor direction, use only a cue present in the query.
+"""
+
+
+def replay_extraction_llm(record: ReplayRecord) -> LLM:
+    """The extraction client of `record`'s arm, recording into `record`: Gemini Flash-Lite,
+    or Ministral with `MistralReplayExtraction` and `MISTRAL_REPLAY_INSTRUCTION`. Neither
+    has a memo or an extraction store. Raises `LLMInfraError` for the Ministral arm when
+    `MISTRAL_API_KEY` is unset."""
+    replay = record.replay
+    if replay.arm == "flash-lite":
+        return ReplayGeminiLLM(model=FLASH_LITE_MODEL, recorder=record, stream=replay.stream)
+    return MistralLLM(
+        clients=mistral_clients(),
+        schema=MistralReplayExtraction,
+        instruction=MISTRAL_REPLAY_INSTRUCTION,
+        recorder=record,
+        stream=replay.stream,
     )

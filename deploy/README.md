@@ -45,65 +45,53 @@ Related guides:
 
 ## Dev parser replay
 
-`scripts/replay_parser_experiment.py` runs an authenticated paired comparison through the
-normal `/api/search/resolve` door of a tagged, no-traffic `dfo-dev-apis` revision. Tag the
-revision `parser-replay` after the normal dev deployment has completed. Each input
-runs once through `flash-lite` and once through `ministral` in a deterministic random order.
-It records an opaque request ID for Cloud Logging joins, the accepted arm header, time to the
-first interpretation event, terminal event, response status, spec IDs, and a narrow structured
-interpretation summary. Treat results as private data because interpretation fields can repeat
-words from the input. The application cache is bypassed for every replay request. Provider prefix
-caching remains enabled and is measured.
+`scripts/replay_parser_experiment.py` runs a paired comparison through the normal `/api/search/resolve` door of a tagged, no-traffic `dfo-dev-apis` revision. Each input runs once through `flash-lite` and once through `ministral`, back to back, in a deterministic random order. The runner records an opaque request ID for Cloud Logging joins, the HTTP status and problem code, the accepted arm header, time to the first interpretation event, time to the `response` event, the terminal event, response status, spec IDs, and a narrow structured interpretation summary. Treat results as private data because interpretation fields can repeat words from the input. Compare arms on `response_ms`, the time to the `response` event: `done_ms` also holds the wait for the served extraction's agreement, up to `SEARCH_LLM_SECOND_SAMPLE_SETTLE_S` after its first sample was read. The application cache is bypassed for every replay request. Provider prefix caching stays on and is measured.
 
-Infra must apply these dev-only settings before a replay:
+Set these dev-only settings on the tagged no-traffic revision before a replay:
 
-| Setting | Value |
-| --- | --- |
-| `SEARCH_PARSER_REPLAY_ENABLED` | `true` on the tagged no-traffic revision |
-| `SEARCH_PARSER_REPLAY_REVISION` | Exact revision name, such as `dfo-dev-apis-parser-replay-01` |
-| `SEARCH_PARSER_REPLAY_KEY` | Secret Manager value, supplied locally as `SEARCH_PARSER_REPLAY_KEY` |
-| `MISTRAL_API_KEY` | Secret Manager value for the candidate extractor |
+| Setting                         | Value                                                             |
+| ------------------------------- | ----------------------------------------------------------------- |
+| `SEARCH_PARSER_REPLAY_ENABLED`  | `true`                                                            |
+| `SEARCH_PARSER_REPLAY_REVISION` | The exact revision name, such as `dfo-dev-apis-parser-replay-01`  |
+| `SEARCH_PARSER_REPLAY_KEY`      | A Secret Manager value, also exported locally under the same name |
+| `MISTRAL_API_KEY`               | The `dfo-dev-mistral-api-key` secret                              |
 
-Choose the revision suffix when creating the no-traffic revision so its name matches
-`SEARCH_PARSER_REPLAY_REVISION`. The gate checks that name and the `dfo-dev-apis` service
-identity. A later dev revision that inherits the settings cannot accept replay requests.
-Remove the tag and replay settings after the study.
+Create the revision with `--no-traffic --tag parser-replay` and a suffix that matches `SEARCH_PARSER_REPLAY_REVISION`, for example `gcloud run deploy dfo-dev-apis --no-traffic --tag parser-replay --revision-suffix parser-replay-01 --region northamerica-northeast1` with the image of the current dev revision. The gate checks that revision name and the `dfo-dev-apis` service identity, so a later dev revision that inherits the settings cannot accept replay requests.
 
-Generate the 400 labelled synthetic cases, combine them locally with the screened production
-cohort, then use the private combined input file. The runner accepts JSONL or a JSON array with
-`id`, `query`, and optional `expected` fields. Input files stay outside source control.
+Generate the 400 labelled synthetic cases, combine them locally with the screened production cohort, then use the private combined input file. The runner accepts JSONL or a JSON array with `id`, `query`, and optional `expected` fields. Input files stay outside source control.
 
 ```bash
 uv run --extra engine --extra eval --extra datasets --extra graph \
   python scripts/replay_parser_experiment.py \
   --write-synthetic /private/tmp/dfo-parser-synthetic.jsonl
-
-export SEARCH_PARSER_REPLAY_KEY=...
-export DFO_APIS_ID_TOKEN=...
-uv run --extra engine --extra eval --extra datasets --extra graph \
-  python scripts/replay_parser_experiment.py \
-  --url https://parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app \
-  --cases /private/path/dfo-parser-1085.jsonl \
-  --output /private/path/dfo-parser-results.jsonl \
-  --replay-id parser-study-20261125 --concurrency 3
 ```
 
-For the tagged URL, set `DFO_APIS_ID_TOKEN` to a token whose audience is the underlying
-`dfo-dev-apis` service URL. The runner also accepts a loopback proxy. The main replay compares
-time to the first DFO `interpretation` and `done` SSE events. Use `--concurrency 1` and `--pace-ms`
-for a sparse pass. Result files are written mode `0600`.
+The runner accepts only `http` loopback URLs. Open a proxy to the tagged revision in one terminal. The proxy keeps the credentials fresh for the whole run.
 
-Join each result's `request_id` to `parser_replay.replay_id` in the `resolve` log. With
-`--stream-probe`, read `first_content_ms` from a call where `stage` is `extract`, `attempt`
-is `first`, and `extraction_phase` matches `selected_extraction_phase`. Other calls may be
-agreement samples or speculative parses discarded after DFO reads exclusions.
+```bash
+gcloud run services proxy dfo-dev-apis --tag parser-replay \
+  --region northamerica-northeast1 --port 8080
+```
 
-Compute cost from per-call logs, including both extraction agreement samples, Gemini thought
-tokens, downstream Gemini calls, Jev input, and fallbacks. Report interrupted calls with missing
-provider usage separately. Current list prices are Gemini Flash-Lite at $0.30/$0.03/$2.50 per million uncached
-input, cached input, and output tokens, Ministral 3B at $0.10/$0.01/$0.10, and Jev at $0.042
-per million input tokens. Report synthetic and production cohorts separately. Arm agreement
-identifies cases for blind review. Labelled synthetic cases provide the absolute quality score.
+Run the replay in another terminal.
+
+```bash
+export SEARCH_PARSER_REPLAY_KEY=...
+uv run --extra engine --extra eval --extra datasets --extra graph \
+  python scripts/replay_parser_experiment.py \
+  --url http://127.0.0.1:8080 \
+  --cases /private/path/dfo-parser-1085.jsonl \
+  --output /private/path/dfo-parser-results.jsonl \
+  --replay-id parser-study --concurrency 3
+```
+
+`--concurrency` bounds the pairs in flight; a pair's two arms share one slot. Use `--concurrency 1` and `--pace-ms` for a sparse pass. The output file is created with mode `0600` and gains one line per arm as each pair completes, so an interrupted run keeps the finished pairs. A gate refusal appears as `status_code` 403 with its `problem_code`.
+
+Join each result's `request_id` to `parser_replay.replay_id` in the `resolve` log. With `--stream-probe`, read `first_content_ms` from a call where `stage` is `extract`, `attempt` is `first`, and `extraction_phase` matches `selected_extraction_phase`. Other calls are agreement samples or speculative parses discarded after DFO reads exclusions.
+
+Compute cost from the per-call logs, including both extraction agreement samples, Gemini thought tokens, downstream Gemini calls, Jev input, and fallbacks. Report interrupted calls with missing provider usage separately, and report the synthetic and production cohorts separately. Arm agreement identifies cases for blind review. Labelled synthetic cases give the absolute quality score.
+
+After the study, remove the tag with `gcloud run services update-traffic dfo-dev-apis --remove-tags parser-replay --region northamerica-northeast1` and remove the replay settings from the service.
 
 ## Continuous Deployment (`deploy.yml`)
 

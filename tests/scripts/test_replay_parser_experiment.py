@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import httpx
 import pytest
 
 import scripts.replay_parser_experiment as m
+
+
+def _expected(case: dict[str, object]) -> dict[str, Any]:
+    expected = case["expected"]
+    assert isinstance(expected, dict)
+    return m._json_object(expected) or {}
 
 
 def test_synthetic_cases_are_labelled_unique_and_balanced():
@@ -17,7 +24,7 @@ def test_synthetic_cases_are_labelled_unique_and_balanced():
     assert len(cases) == 400
     assert len({case["id"] for case in cases}) == 400
     assert len({case["query"] for case in cases}) == 400
-    categories = [case["expected"]["category"] for case in cases]
+    categories = [_expected(case)["category"] for case in cases]
     assert {category: categories.count(category) for category in set(categories)} == {
         "place_measure": 50,
         "donor_recipient": 50,
@@ -28,9 +35,9 @@ def test_synthetic_cases_are_labelled_unique_and_balanced():
         "multilingual": 50,
         "no_place": 50,
     }
-    donor_case = next(case for case in cases if case["expected"]["category"] == "donor_recipient")
-    roles = donor_case["expected"]["roles"]
-    assert all(name in donor_case["query"] for name in roles)
+    donor_case = next(case for case in cases if _expected(case)["category"] == "donor_recipient")
+    roles = _expected(donor_case)["roles"]
+    assert all(name in str(donor_case["query"]) for name in roles)
 
 
 def test_load_cases_accepts_screened_json_array(tmp_path):
@@ -50,10 +57,10 @@ def test_run_arm_records_only_the_allowed_interpretation_fields():
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers[m.ARM_HEADER] == "ministral"
-        assert request.headers[m.CACHE_HEADER] == "bypass"
-        assert request.headers[m.REPLAY_HEADER].startswith("run-1-")
-        return httpx.Response(200, headers={m.ARM_HEADER: "ministral"}, text=body)
+        assert request.headers[m.PARSER_ARM_HEADER] == "ministral"
+        assert request.headers[m.PARSER_CACHE_HEADER] == "bypass"
+        assert request.headers[m.PARSER_REPLAY_HEADER].startswith("run-1-")
+        return httpx.Response(200, headers={m.PARSER_ARM_HEADER: "ministral"}, text=body)
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -78,6 +85,7 @@ def test_run_arm_records_only_the_allowed_interpretation_fields():
         "expected_results": 1,
     }
     assert result.response_status == "ok"
+    assert result.response_ms is not None
     assert result.spec_ids == ["spec-1"]
     assert "private input" not in json.dumps(result.__dict__)
     assert result.request_id.startswith("run-1-")
@@ -87,7 +95,7 @@ def test_run_arm_rejects_a_mislabelled_server_response():
     async def run():
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(
-                lambda _: httpx.Response(200, headers={m.ARM_HEADER: "flash-lite"})
+                lambda _: httpx.Response(200, headers={m.PARSER_ARM_HEADER: "flash-lite"})
             )
         ) as client:
             return await m._run_arm(
@@ -104,14 +112,15 @@ def test_run_arm_rejects_a_mislabelled_server_response():
     result = asyncio.run(run())
 
     assert result.error is not None
+    assert result.status_code == 200
     assert result.assigned_arm == "flash-lite"
 
 
-def test_run_arm_treats_sse_error_and_missing_done_as_failures():
-    async def run(body: str):
+def test_run_arm_records_a_gate_refusal_status_and_problem_code():
+    async def run():
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(
-                lambda _: httpx.Response(200, headers={m.ARM_HEADER: "ministral"}, text=body)
+                lambda _: httpx.Response(403, json={"code": "parser_replay_refused"})
             )
         ) as client:
             return await m._run_arm(
@@ -125,75 +134,161 @@ def test_run_arm_treats_sse_error_and_missing_done_as_failures():
                 stream_probe=False,
             )
 
-    assert "SSE error" in asyncio.run(run('event: error\ndata: {"kind":"error"}\n\n')).error
-    assert "without a terminal" in asyncio.run(run("")).error
+    result = asyncio.run(run())
+
+    assert result.error is not None
+    assert result.status_code == 403
+    assert result.problem_code == "parser_replay_refused"
+    assert result.assigned_arm is None
 
 
-def test_replay_runs_each_pair_in_order_while_other_pairs_can_progress(monkeypatch):
-    events: list[tuple[str, str, str]] = []
+def test_run_arm_treats_sse_error_and_missing_done_as_failures():
+    async def run(body: str):
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, headers={m.PARSER_ARM_HEADER: "ministral"}, text=body)
+            )
+        ) as client:
+            return await m._run_arm(
+                client,
+                url="http://localhost:8080",
+                case=m.Case(case_id="case-1", query="private input"),
+                arm="ministral",
+                order=1,
+                replay_id="run-1",
+                replay_key="key",
+                stream_probe=False,
+            )
+
+    error_event = asyncio.run(run('event: error\ndata: {"kind":"error"}\n\n'))
+    no_events = asyncio.run(run(""))
+
+    assert error_event.error is not None
+    assert error_event.outcome == "error"
+    assert no_events.error is not None
+    assert no_events.outcome is None
+
+
+def _result(case_id: str, arm: m.ARM, order: int, replay_id: str) -> m.Result:
+    return m.Result(
+        case_id=case_id,
+        replay_id=replay_id,
+        request_id=m._request_id(replay_id, case_id, arm),
+        arm=arm,
+        order=order,
+        status_code=200,
+        problem_code=None,
+        assigned_arm=arm,
+        first_byte_ms=1,
+        interpretation_ms=1,
+        response_ms=1,
+        done_ms=1,
+        wall_ms=1,
+        event_kinds=["done"],
+        outcome="done",
+        response_status="ok",
+        interpretation=None,
+        spec_ids=[],
+        error=None,
+    )
+
+
+def _replay(cases, *, concurrency, **kwargs):
+    return asyncio.run(
+        m.replay(
+            [m.Case(case_id=case, query=case) for case in cases],
+            url="http://localhost:8080",
+            replay_key="key",
+            replay_id="run-1",
+            concurrency=concurrency,
+            pace_ms=0,
+            stream_probe=False,
+            **kwargs,
+        )
+    )
+
+
+@pytest.mark.parametrize(("concurrency", "overlap"), [(1, False), (2, True)])
+def test_replay_pairs_hold_one_slot_for_both_arms(monkeypatch, concurrency, overlap):
+    events: list[tuple[str, str]] = []
 
     async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
-        events.append(("started", case.case_id, arm))
+        events.append(("started", case.case_id))
         await asyncio.sleep(0)
-        events.append(("finished", case.case_id, arm))
-        return m.Result(
-            case_id=case.case_id,
-            replay_id=replay_id,
-            request_id=m._request_id(replay_id, case.case_id, arm),
-            arm=arm,
-            order=order,
-            status_code=200,
-            assigned_arm=arm,
-            first_byte_ms=1,
-            interpretation_ms=1,
-            done_ms=1,
-            wall_ms=1,
-            event_kinds=["done"],
-            outcome="done",
-            response_status="ok",
-            interpretation=None,
-            spec_ids=[],
-            error=None,
-        )
+        events.append(("finished", case.case_id))
+        return _result(case.case_id, arm, order, replay_id)
 
     monkeypatch.setattr(m, "_run_arm", fake_run_arm)
     monkeypatch.setattr(m, "apis_auth", lambda: None)
 
-    results = asyncio.run(
-        m.replay(
-            [m.Case(case_id="one", query="one"), m.Case(case_id="two", query="two")],
-            url="http://localhost:8080",
-            replay_key="key",
-            replay_id="run-1",
-            concurrency=2,
-            pace_ms=0,
-            stream_probe=False,
-        )
+    results = _replay(["one", "two", "three"], concurrency=concurrency)
+
+    assert len(results) == 6
+    # Another case starting between a pair's first start and last finish means overlap.
+    interleaved = False
+    for case_id in ("one", "two", "three"):
+        indexes = [i for i, (_, c) in enumerate(events) if c == case_id]
+        window = events[indexes[0] : indexes[-1] + 1]
+        interleaved |= any(c != case_id for _, c in window)
+    assert interleaved is overlap
+
+
+def test_replay_records_a_pair_exception_and_keeps_the_other_pairs(monkeypatch):
+    streamed: list[m.Result] = []
+
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        if case.case_id == "bad":
+            raise ValueError("unexpected")
+        return _result(case.case_id, arm, order, replay_id)
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+
+    results = _replay(["bad", "good"], concurrency=2, on_result=streamed.append)
+
+    by_case = {case: [r for r in results if r.case_id == case] for case in ("bad", "good")}
+    assert all(r.error is not None for r in by_case["bad"])
+    assert all(r.error is None for r in by_case["good"])
+    assert len(streamed) == 4
+
+
+def test_main_writes_a_private_output_file(monkeypatch, tmp_path):
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text(json.dumps({"id": "one", "query": "private"}) + "\n")
+    output = tmp_path / "out.jsonl"
+
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        return _result(case.case_id, arm, order, replay_id)
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+    monkeypatch.setenv("SEARCH_PARSER_REPLAY_KEY", "key")
+
+    code = m.main(
+        ["--url", "http://127.0.0.1:8080", "--cases", str(cases), "--output", str(output)]
     )
 
-    assert len(results) == 4
-    for case_id in ("one", "two"):
-        starts = [index for index, value in enumerate(events) if value[:2] == ("started", case_id)]
-        finishes = [
-            index for index, value in enumerate(events) if value[:2] == ("finished", case_id)
-        ]
-        assert finishes[0] < starts[1]
+    assert code == 0
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert [json.loads(line)["case_id"] for line in output.read_text().splitlines()] == [
+        "one",
+        "one",
+    ]
 
 
 @pytest.mark.parametrize(
     ("url", "valid"),
     [
-        ("https://parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app", True),
         ("http://localhost:8080", True),
-        ("https://dfo-dev-apis-abc.run.app", False),
-        ("https://parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app:444", False),
+        ("http://127.0.0.1:8080", True),
+        ("https://localhost:8080", False),
         ("http://localhost:8080/unexpected", False),
-        ("https://dfo-dev-apis-evil.example.com", False),
+        ("https://parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app", False),
         ("https://dfo-prod-apis.run.app", False),
         ("https://example.com", False),
     ],
 )
-def test_validate_url_limits_the_runner_to_dev_or_loopback(url, valid):
+def test_validate_url_limits_the_runner_to_http_loopback(url, valid):
     if valid:
         assert m._validate_url(url) == url
     else:

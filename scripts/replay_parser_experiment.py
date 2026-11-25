@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Replay labelled parser cases against a tagged DFO dev revision.
 
-The runner sends each input once to each explicitly selected parser arm. Cloud Run
-authentication comes from ``search.eval.apis_auth`` and the additional replay key enables
-the dev-only parser switch. The result omits the original query field and retains a
+The runner sends each input once to each parser arm, back to back, through a loopback
+``gcloud run services proxy``, which keeps the Cloud Run credentials fresh. The replay key
+enables the dev-only parser switch. The result omits the original query field and retains a
 structured interpretation for local scoring. Treat both input and result as private data.
 """
 
@@ -19,25 +19,26 @@ import secrets
 import stat
 import tempfile
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 from urllib.parse import urlparse
 
 import httpx
 
+from search.engine.parser_replay import (
+    PARSER_ARM_HEADER,
+    PARSER_CACHE_HEADER,
+    PARSER_KEY_HEADER,
+    PARSER_REPLAY_HEADER,
+    PARSER_STREAM_HEADER,
+)
 from search.eval.apis_auth import apis_auth
 
 ARM = Literal["flash-lite", "ministral"]
 ARMS: tuple[ARM, ARM] = ("flash-lite", "ministral")
-REPLAY_HEADER = "X-DFO-Parser-Replay"
-ARM_HEADER = "X-DFO-Parser-Arm"
-KEY_HEADER = "X-DFO-Parser-Replay-Key"
-CACHE_HEADER = "X-DFO-Parser-Cache"
-STREAM_HEADER = "X-DFO-Parser-Stream"
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
-_DEV_REPLAY_HOST = "parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app"
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNTHETIC_COUNTRIES = (
     "Kenya",
@@ -73,9 +74,11 @@ class Result:
     arm: ARM
     order: int
     status_code: int | None
+    problem_code: str | None
     assigned_arm: str | None
     first_byte_ms: float | None
     interpretation_ms: float | None
+    response_ms: float | None
     done_ms: float | None
     wall_ms: float
     event_kinds: list[str]
@@ -97,16 +100,13 @@ def _validate_url(value: str) -> str:
         or parsed.fragment
     ):
         raise ValueError("URL must be a bare replay origin")
-    is_dev_cloud_run = parsed.hostname == _DEV_REPLAY_HOST and parsed.port in (None, 443)
-    if parsed.scheme == "https" and is_dev_cloud_run:
-        return value.rstrip("/")
     if parsed.scheme == "http" and parsed.hostname in _LOOPBACK:
         return value.rstrip("/")
-    raise ValueError("URL must be HTTPS for the parser-replay dev tag or HTTP loopback")
+    raise ValueError("URL must be an http loopback origin")
 
 
 def _json_object(value: object) -> dict[str, object] | None:
-    """Normalize an untyped JSON value to a string-keyed object."""
+    """Normalise an untyped JSON value to a string-keyed object."""
     if not isinstance(value, dict):
         return None
     result: dict[str, object] = {}
@@ -191,6 +191,43 @@ def _spec_ids(payload: dict[str, Any]) -> list[str]:
 
     visit(payload)
     return sorted(found)
+
+
+def _problem_code(body: bytes) -> str | None:
+    """Read the machine-readable ``code`` of a problem response body."""
+    try:
+        decoded = _json_object(json.loads(body))
+    except ValueError:
+        return None
+    code = decoded.get("code") if decoded is not None else None
+    return code if isinstance(code, str) else None
+
+
+def _error_result(
+    case: Case, *, arm: ARM, order: int, replay_id: str, exc: BaseException
+) -> Result:
+    """Record an unexpected failure as that arm's error."""
+    return Result(
+        case_id=case.case_id,
+        replay_id=replay_id,
+        request_id=_request_id(replay_id, case.case_id, arm),
+        arm=arm,
+        order=order,
+        status_code=None,
+        problem_code=None,
+        assigned_arm=None,
+        first_byte_ms=None,
+        interpretation_ms=None,
+        response_ms=None,
+        done_ms=None,
+        wall_ms=0.0,
+        event_kinds=[],
+        outcome=None,
+        response_status=None,
+        interpretation=None,
+        spec_ids=[],
+        error=f"{type(exc).__name__}: {exc}",
+    )
 
 
 def _request_id(replay_id: str, case_id: str, arm: ARM) -> str:
@@ -306,15 +343,15 @@ async def _run_arm(
     request_id = _request_id(replay_id, case.case_id, arm)
     headers = {
         "Accept": "text/event-stream",
-        REPLAY_HEADER: request_id,
-        ARM_HEADER: arm,
-        KEY_HEADER: replay_key,
-        CACHE_HEADER: "bypass",
+        PARSER_REPLAY_HEADER: request_id,
+        PARSER_ARM_HEADER: arm,
+        PARSER_KEY_HEADER: replay_key,
+        PARSER_CACHE_HEADER: "bypass",
     }
     if stream_probe:
-        headers[STREAM_HEADER] = "1"
+        headers[PARSER_STREAM_HEADER] = "1"
     started = time.perf_counter()
-    first_byte_ms = interpretation_ms = done_ms = None
+    first_byte_ms = interpretation_ms = response_ms = done_ms = None
     events: list[str] = []
     outcome = error = None
     response_status = None
@@ -322,6 +359,7 @@ async def _run_arm(
     spec_ids: set[str] = set()
     assigned_arm = None
     status_code = None
+    problem_code = None
     pending = ""
     terminal_event = None
     try:
@@ -332,10 +370,12 @@ async def _run_arm(
             json={"input": {"kind": "raw_text", "query": case.query}},
         ) as response:
             status_code = response.status_code
-            assigned_arm = response.headers.get(ARM_HEADER)
+            assigned_arm = response.headers.get(PARSER_ARM_HEADER)
+            if status_code != 200:
+                problem_code = _problem_code(await response.aread())
+                raise RuntimeError(f"HTTP {status_code} problem code {problem_code}")
             if assigned_arm != arm:
                 raise RuntimeError(f"server assigned {assigned_arm!r}, expected {arm!r}")
-            response.raise_for_status()
             async for chunk in response.aiter_text():
                 now_ms = (time.perf_counter() - started) * 1000
                 if first_byte_ms is None:
@@ -349,8 +389,9 @@ async def _run_arm(
                         interpretation_ms = now_ms
                         interpretation = _interpretation_summary(payload)
                     if event == "response":
-                        response = _json_object(payload.get("response"))
-                        status = response.get("status") if response is not None else None
+                        response_ms = now_ms
+                        reply = _json_object(payload.get("response"))
+                        status = reply.get("status") if reply is not None else None
                         response_status = status if isinstance(status, str) else None
                     if event in {"done", "error"}:
                         terminal_event = event
@@ -371,9 +412,11 @@ async def _run_arm(
         arm=arm,
         order=order,
         status_code=status_code,
+        problem_code=problem_code,
         assigned_arm=assigned_arm,
         first_byte_ms=first_byte_ms,
         interpretation_ms=interpretation_ms,
+        response_ms=response_ms,
         done_ms=done_ms,
         wall_ms=round((time.perf_counter() - started) * 1000, 3),
         event_kinds=events,
@@ -394,38 +437,46 @@ async def replay(
     concurrency: int,
     pace_ms: int,
     stream_probe: bool,
+    on_result: Callable[[Result], None] = lambda _result: None,
 ) -> list[Result]:
+    """Run each case's two arms back to back; ``concurrency`` bounds pairs in flight.
+
+    ``on_result`` receives each result as its pair completes.
+    """
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def one(case: Case, arm: ARM, order: int) -> Result:
-        async with semaphore:
-            if pace_ms:
-                await asyncio.sleep(pace_ms / 1000)
-            return await _run_arm(
-                client,
-                url=url,
-                case=case,
-                arm=arm,
-                order=order,
-                replay_id=replay_id,
-                replay_key=replay_key,
-                stream_probe=stream_probe,
-            )
-
-    async def run_pair(case: Case) -> tuple[Result, Result]:
+    async def run_pair(case: Case) -> list[Result]:
         arms = (
             ARMS
             if hashlib.sha256(f"{replay_id}:{case.case_id}".encode()).digest()[0] % 2 == 0
             else ARMS[::-1]
         )
-        first = await one(case, arms[0], 1)
-        second = await one(case, arms[1], 2)
-        return first, second
+        async with semaphore:
+            if pace_ms:
+                await asyncio.sleep(pace_ms / 1000)
+            results: list[Result] = []
+            for order, arm in enumerate(arms, start=1):
+                try:
+                    result = await _run_arm(
+                        client,
+                        url=url,
+                        case=case,
+                        arm=arm,
+                        order=order,
+                        replay_id=replay_id,
+                        replay_key=replay_key,
+                        stream_probe=stream_probe,
+                    )
+                except Exception as exc:
+                    result = _error_result(case, arm=arm, order=order, replay_id=replay_id, exc=exc)
+                results.append(result)
+        for result in results:
+            on_result(result)
+        return results
 
-    jobs = [run_pair(case) for case in cases]
     async with httpx.AsyncClient(timeout=90, follow_redirects=False, auth=apis_auth()) as client:
-        pairs = await asyncio.gather(*jobs)
-        return [result for pair_results in pairs for result in pair_results]
+        pairs = await asyncio.gather(*(run_pair(case) for case in cases))
+    return [result for pair in pairs for result in pair]
 
 
 def _write_private_lines(path: Path, lines: Iterable[str]) -> None:
@@ -445,15 +496,17 @@ def _write_private_lines(path: Path, lines: Iterable[str]) -> None:
         raise
 
 
-def _write_private_results(path: Path, results: Sequence[Result]) -> None:
-    _write_private_lines(
-        path, (json.dumps(asdict(result), sort_keys=True) + "\n" for result in results)
-    )
+def _open_private_output(path: Path) -> TextIO:
+    """Open ``path`` for writing with mode 0600, line-buffered so each result lands."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    return os.fdopen(descriptor, "w", encoding="utf-8", buffering=1)
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", help="Tagged dfo-dev-apis URL or local Cloud Run proxy URL")
+    parser.add_argument("--url", help="Loopback http URL of a gcloud run services proxy")
     parser.add_argument("--cases", type=Path, help="Private JSONL with id and query fields")
     parser.add_argument("--output", type=Path, help="Private JSONL result path")
     parser.add_argument("--replay-id", default=f"parser-{secrets.token_hex(8)}")
@@ -493,18 +546,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     url = _validate_url(options.url)
     if options.cases.resolve() == options.output.resolve():
         raise SystemExit("--output must not replace the private --cases input file")
-    results = asyncio.run(
-        replay(
-            _load_cases(options.cases),
-            url=url,
-            replay_key=replay_key,
-            replay_id=options.replay_id,
-            concurrency=options.concurrency,
-            pace_ms=options.pace_ms,
-            stream_probe=options.stream_probe,
+    cases = _load_cases(options.cases)
+    with _open_private_output(options.output) as output:
+
+        def write_result(result: Result) -> None:
+            output.write(json.dumps(asdict(result), sort_keys=True) + "\n")
+
+        results = asyncio.run(
+            replay(
+                cases,
+                url=url,
+                replay_key=replay_key,
+                replay_id=options.replay_id,
+                concurrency=options.concurrency,
+                pace_ms=options.pace_ms,
+                stream_probe=options.stream_probe,
+                on_result=write_result,
+            )
         )
-    )
-    _write_private_results(options.output, results)
     failures = sum(result.error is not None for result in results)
     print(f"wrote {len(results)} paired arm results with {failures} failures")
     return 1 if failures else 0

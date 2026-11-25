@@ -35,12 +35,11 @@ _SUPPRESS_REPLAY_LOGS: ContextVar[bool] = ContextVar("suppress_replay_logs", def
 
 
 class ReplayLogFilter(logging.Filter):
-    """Drop legacy records emitted while a private parser replay is running.
+    """Drop every record emitted inside ``suppress_replay_logs(enabled=True)``.
 
-    The replay route writes one safe, query-free ``resolve`` record after its
-    request context has unwound. Legacy component records can include a raw
-    production query or exception chain, so they do not reach Cloud Logging
-    while the authenticated replay context is active.
+    A parser replay runs production queries, and any record its pipeline writes can quote
+    the query or carry an exception chain that does. The replay's ``resolve`` record is
+    written after the suppressed block ends and holds no query.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -54,7 +53,8 @@ def replay_log_filter() -> ReplayLogFilter:
 
 @contextmanager
 def suppress_replay_logs(*, enabled: bool) -> Iterator[None]:
-    """Suppress handler output for the bounded private replay task only."""
+    """Drop the records the current context emits inside the block when ``enabled``
+    (``ReplayLogFilter``)."""
     token = _SUPPRESS_REPLAY_LOGS.set(enabled)
     try:
         yield

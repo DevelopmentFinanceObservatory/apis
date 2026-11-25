@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import re
-import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -37,12 +36,8 @@ from search.engine.clients.llm import (
     SupportsLLM,
     for_stage,
     generate_structured_async,
-    mistral_replay_llm,
     schema_digest,
     two_samples,
-    uncached,
-    with_replay_stage,
-    with_second_samples,
 )
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
@@ -54,7 +49,6 @@ from search.engine.function_words import (
     JOINING_WORDS,
     RESTRICTING_PREPOSITIONS,
 )
-from search.engine.parser_replay import current_parser_replay
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierMatch,
@@ -272,14 +266,6 @@ class Extraction(BaseModel):
             "Date references in the query. Leave empty when the query has no temporal "
             "reference — do not infer an implicit date for an otherwise timeless query."
         ),
-    )
-
-
-class MistralReplayExtraction(Extraction):
-    """The experiment schema makes named-place output mandatory for Ministral."""
-
-    entities: list[ExtractedEntity] = Field(
-        description=Extraction.model_fields["entities"].description
     )
 
 
@@ -602,16 +588,6 @@ EXTRACT_VERSION = _extract_version(_EXTRACTION_SYSTEM_PROMPT, Extraction)
 def _extraction_system(year: int) -> str:
     """The extraction system prompt sent in `year`: the template with `[[YEAR]]` filled."""
     return _EXTRACTION_SYSTEM_PROMPT.replace("[[YEAR]]", str(year))
-
-
-_MISTRAL_REPLAY_ENTITY_INSTRUCTION = """
-Output the entities key for every query. Before returning the JSON, check every named
-place or named geographic group in the query against entities. Each must have an
-object even if its name is already in a variable phrase. Use an empty array only
-when the query names no eligible scope. Each array item is an object with text,
-span, variables, cue, role, and members. A place with no role still gets an object.
-For donor or creditor direction, use only a cue present in the query.
-"""
 
 
 def _char_script(char: str) -> str | None:
@@ -2075,22 +2051,7 @@ async def _model_extraction(
     Memoising clients coalesce identical concurrent queries, and the seed keeps the two
     samples' memo keys apart.
     """
-    replay = current_parser_replay()
     system = _extraction_system(year)
-    schema: type[Extraction] = Extraction
-    if replay is not None:
-        # Replays do not reuse a served answer or alter a later ordinary request.
-        if replay.arm == "ministral":
-            llm = with_replay_stage(with_second_samples(mistral_replay_llm(), llm), "extract")
-            system += _MISTRAL_REPLAY_ENTITY_INSTRUCTION
-            schema = MistralReplayExtraction
-        elif isinstance(llm, LLM):
-            llm = uncached(with_replay_stage(llm, "extract"))
-        else:
-            raise RuntimeError("parser replay requires the service LLM implementation")
-        replay.prompt_digest = hashlib.sha256(system.encode()).hexdigest()
-        replay.schema_digest = schema_digest(schema)
-        replay.extraction_started = time.perf_counter()
     store = llm.extraction_store if isinstance(llm, LLM) else None
     key = None
     if store is not None:
@@ -2113,21 +2074,14 @@ async def _model_extraction(
 
     reading, usage, agreed = await two_samples(
         lambda sampler: generate_structured_async(
-            sampler, prompt=query, system=system, schema=schema
+            sampler, prompt=query, system=system, schema=Extraction
         ),
         llm,
         stage="extraction",
         read=lambda first: _read_extraction(query, first, year=year),
         judge=judge,
     )
-    result = replace(reading, agreed=agreed)
-    if replay is not None and replay.extraction_started is not None:
-        replay.extraction_validated_ms = round(
-            (time.perf_counter() - replay.extraction_started) * 1000, 3
-        )
-        replay.extraction_agreed = agreed.verdict if isinstance(agreed, FixedAgreement) else None
-        replay.extraction_agreement = agreed
-    return result, usage
+    return replace(reading, agreed=agreed), usage
 
 
 def _second_reading(query: str, second: Extraction, *, year: int) -> ExtractionResult | None:

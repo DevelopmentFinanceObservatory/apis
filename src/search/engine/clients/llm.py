@@ -25,7 +25,7 @@ from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeVar, override
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -34,7 +34,6 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from search.engine.clients.loop_local import LoopLocal
 from search.engine.errors import LLMInfraError, LLMOutputRefused
-from search.engine.parser_replay import current_parser_replay, note_provider_call, provider_attempt
 from search.engine.response_cache import Lease, ResponseCache
 
 if TYPE_CHECKING:
@@ -42,6 +41,7 @@ if TYPE_CHECKING:
     from google.genai.types import GenerateContentConfig, ThinkingConfig
 
     from search.engine.extraction_store import ExtractionStore
+    from search.engine.parser_replay import ReplayRecord
 
 _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 
@@ -274,18 +274,11 @@ def for_stage(
     copy pins the stage value without rerunning ``__init__``'s config fallback.
     It shares the original client, connection pool, and concurrency cap.
     """
-    if not isinstance(llm, LLM):
-        return llm
     level = _STAGE_THINKING_LEVELS.get(stage)
-    replay = current_parser_replay()
-    needs_stage = replay is not None and llm._stage != stage
-    if (level is None or llm._thinking_level is not None) and not needs_stage:
+    if level is None or not isinstance(llm, LLM) or llm._thinking_level is not None:
         return llm
     clone = copy.copy(llm)
-    if level is not None and clone._thinking_level is None:
-        clone._thinking_level = level
-    if needs_stage:
-        clone._stage = stage
+    clone._thinking_level = level
     return clone
 
 
@@ -616,7 +609,9 @@ async def settle(agreements: Sequence[AnyAgreement]) -> bool | None:
 
 
 def agreement_verdict(agreement: AnyAgreement) -> bool | None:
-    """Return a completed agreement's verdict without awaiting it."""
+    """The verdict of `agreement` as it stands, without awaiting it: True when agreed,
+    False when disagreed, and None while its second sample runs or when it was cut or
+    failed."""
     if isinstance(agreement, FixedAgreement):
         return agreement.verdict
     if not agreement.task.done():
@@ -654,19 +649,14 @@ async def two_samples[T, R](
     (`Ended.usage`). A defect in the second sample or the judge, logged where it happened,
     raises here.
     `stage` names the call in the lines a cut, failed or defective second logs."""
-
-    async def sample_as(sampler: SupportsLLM, attempt: Literal["first", "second"]) -> Sampled[T]:
-        with provider_attempt(attempt):
-            return await sample(sampler)
-
     held = held_by(llm)
     samples = held if held is not None else SecondSamples()
     try:
-        agreement = samples.start(lambda: sample_as(reseeded(llm), "second"), stage=stage)
+        agreement = samples.start(lambda: sample(reseeded(llm)), stage=stage)
         samples.count(agreement)
         started = asyncio.get_running_loop().time()
         try:
-            first = await sample_as(llm, "first")
+            first = await sample(llm)
             served = read(first.answer)
         except BaseException:
             agreement.task.cancel()
@@ -744,11 +734,7 @@ def _parse[SchemaT: BaseModel](
         return schema.model_validate_json(text)
     except ValidationError as exc:
         if all(error["type"] == SCHEMA_REFUSAL for error in exc.errors()):
-            if current_parser_replay() is not None:
-                raise LLMOutputRefused(detail, usage=usage) from None
             raise LLMOutputRefused(detail, usage=usage) from exc
-        if current_parser_replay() is not None:
-            raise LLMInfraError(detail) from None
         raise LLMInfraError(detail) from exc
 
 
@@ -815,30 +801,14 @@ def detached(llm: SupportsLLM) -> SupportsLLM:
 
 
 def uncached(llm: SupportsLLM) -> SupportsLLM:
-    """Clone an LLM without DFO memo or extraction-store reuse for a replay."""
+    """`llm` with every call live: a shallow copy with no memo and no extraction store,
+    sharing its client. A parser replay's other stages call it. Any other `SupportsLLM`
+    comes back as it is."""
     if not isinstance(llm, LLM):
         return llm
     clone = copy.copy(llm)
     clone._memo = None
     clone.extraction_store = None
-    return clone
-
-
-def with_second_samples(llm: SupportsLLM, source: SupportsLLM) -> SupportsLLM:
-    """Clone ``llm`` into the request holder that owns ``source``'s second samples."""
-    if not isinstance(llm, LLM):
-        return llm
-    clone = copy.copy(llm)
-    clone._second_samples = held_by(source)
-    return clone
-
-
-def with_replay_stage(llm: SupportsLLM, stage: str) -> SupportsLLM:
-    """Clone an LLM to label only an authenticated replay provider call's stage."""
-    if not isinstance(llm, LLM):
-        return llm
-    clone = copy.copy(llm)
-    clone._stage = stage
     return clone
 
 
@@ -1186,7 +1156,6 @@ class LLM:
     # read's agreement before it returns (`two_samples`).
     _second_samples: SecondSamples | None = None
     _detached = False
-    _stage: str | None = None
 
     def __init__(
         self,
@@ -1273,56 +1242,13 @@ class LLM:
         """One live generate_content call: the model's text, empty when it sent none, and
         its usage. `_parse` reads the text against the request's schema."""
         client = self._client()
-        started = time.perf_counter()
-        replay = current_parser_replay()
-        stream = replay is not None and replay.stream and self._stage == "extract"
-        first_content_ms: float | None = None
         try:
-            if stream:
-                chunks: list[str] = []
-                response = None
-                async for chunk in await client.aio.models.generate_content_stream(
-                    model=self._model,
-                    contents=prompt,
-                    config=config,
-                ):
-                    chunk_text = chunk.text or ""
-                    if chunk_text and first_content_ms is None:
-                        first_content_ms = round((time.perf_counter() - started) * 1000, 3)
-                    chunks.append(chunk_text)
-                    response = chunk
-                if response is None:
-                    raise LLMInfraError("Gemini streamed no response")
-                text = "".join(chunks)
-            else:
-                response = await client.aio.models.generate_content(
-                    model=self._model,
-                    contents=prompt,
-                    config=config,
-                )
-                text = response.text or ""
-        except asyncio.CancelledError:
-            note_provider_call(
-                provider="gemini",
+            response = await client.aio.models.generate_content(
                 model=self._model,
-                stage=self._stage,
-                usage=None,
-                started=started,
-                first_content_ms=first_content_ms,
-                error="cancelled",
+                contents=prompt,
+                config=config,
             )
-            raise
         except Exception as exc:
-            note_provider_call(
-                provider="gemini",
-                model=self._model,
-                stage=self._stage,
-                usage=None,
-                started=started,
-                error=type(exc).__name__,
-            )
-            if replay is not None:
-                raise LLMInfraError("Gemini API request failed") from None
             raise LLMInfraError(f"Gemini API error: {exc}") from exc
 
         usage: dict | None = None
@@ -1348,57 +1274,207 @@ class LLM:
                 cache_hit_pct,
             )
 
-        note_provider_call(
-            provider="gemini",
+        return response.text or "", usage
+
+
+class _ReplayLLM(LLM):
+    """An extraction client of a parser replay (`search.engine.parser_replay`): no memo,
+    no extraction store, and one `ReplayRecord` entry per provider call. Only `_fetch_text`
+    differs from `LLM`, so the request's second samples, reseeding and parsing stay the
+    service's. `reseeded` changes only `_seed`, so a call under another seed than
+    `_base_seed` is the second sample."""
+
+    def __init__(self, *, model: str, recorder: ReplayRecord, stream: bool) -> None:
+        super().__init__(model=model)
+        self._recorder = recorder
+        self._stream = stream
+        self._base_seed = self._seed
+
+    def _note(
+        self,
+        *,
+        provider: Literal["gemini", "mistral"],
+        prompt: str,
+        system: str,
+        schema: type[BaseModel],
+        started: float,
+        first_content_ms: float | None,
+        usage: dict | None = None,
+        finish_reason: str | None = None,
+        error: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        self._recorder.note_call(
+            provider=provider,
             model=self._model,
-            stage=self._stage,
-            usage=(
-                {
-                    **usage,
-                    "thought_tokens": getattr(usage_meta, "thoughts_token_count", 0) or 0,
-                }
-                if usage is not None and replay is not None
-                else usage
-            ),
-            started=started,
+            prompt=prompt,
+            attempt="first" if self._seed == self._base_seed else "second",
+            prompt_digest=hashlib.sha256(system.encode()).hexdigest(),
+            schema_digest=schema_digest(schema),
+            duration_ms=_elapsed_ms(started),
             first_content_ms=first_content_ms,
+            usage=usage,
+            finish_reason=finish_reason,
+            error=error,
+            http_status=http_status,
         )
 
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
+
+
+def _gemini_finish_reason(response: object) -> str | None:
+    candidates = getattr(response, "candidates", None) or []
+    reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    return None if reason is None else str(getattr(reason, "name", reason))
+
+
+class ReplayGeminiLLM(_ReplayLLM):
+    """A parser replay's Gemini extraction client. With `stream` it reads the answer
+    through `generate_content_stream` and records when the first text arrived."""
+
+    @override
+    async def _fetch_text(
+        self, *, prompt: str, config: GenerateContentConfig
+    ) -> tuple[str, dict | None]:
+        client = self._client()
+        system = str(config.system_instruction or "")
+        schema = config.response_schema
+        assert isinstance(schema, type) and issubclass(schema, BaseModel)
+        started = time.perf_counter()
+        first_content_ms: float | None = None
+        try:
+            if self._stream:
+                chunks: list[str] = []
+                response = None
+                async for chunk in await client.aio.models.generate_content_stream(
+                    model=self._model, contents=prompt, config=config
+                ):
+                    if chunk.text and first_content_ms is None:
+                        first_content_ms = _elapsed_ms(started)
+                    chunks.append(chunk.text or "")
+                    response = chunk
+                text = "".join(chunks)
+            else:
+                response = await client.aio.models.generate_content(
+                    model=self._model, contents=prompt, config=config
+                )
+                text = response.text or ""
+        except asyncio.CancelledError:
+            self._note(
+                provider="gemini",
+                prompt=prompt,
+                system=system,
+                schema=schema,
+                started=started,
+                first_content_ms=first_content_ms,
+                error="cancelled",
+            )
+            raise
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            self._note(
+                provider="gemini",
+                prompt=prompt,
+                system=system,
+                schema=schema,
+                started=started,
+                first_content_ms=first_content_ms,
+                error=type(exc).__name__,
+                http_status=code if isinstance(code, int) else None,
+            )
+            # The provider's message can quote the request, so the error names only the call.
+            raise LLMInfraError("Gemini API request failed") from None
+
+        usage_meta = getattr(response, "usage_metadata", None)
+        usage = (
+            None
+            if usage_meta is None
+            else {
+                "input_tokens": usage_meta.prompt_token_count or 0,
+                "output_tokens": usage_meta.candidates_token_count or 0,
+                "cached_tokens": usage_meta.cached_content_token_count or 0,
+            }
+        )
+        self._note(
+            provider="gemini",
+            prompt=prompt,
+            system=system,
+            schema=schema,
+            started=started,
+            first_content_ms=first_content_ms,
+            usage=(
+                None
+                if usage is None or usage_meta is None
+                else {**usage, "thought_tokens": usage_meta.thoughts_token_count or 0}
+            ),
+            finish_reason=_gemini_finish_reason(response),
+        )
         return text, usage
 
 
-class MistralLLM(LLM):
-    """Mistral structured-output client used only by the private parser replay."""
+MISTRAL_REPLAY_MODEL = "ministral-3b-2512"
 
-    def __init__(self, *, api_key: str) -> None:
-        super().__init__(model="ministral-3b-2512", memo=None, extraction_store=None)
-        self._mistral_api_key = api_key
-        self._mistral_clients: LoopLocal[httpx.AsyncClient] = LoopLocal()
 
-    def _mistral_client(self) -> httpx.AsyncClient:
-        return self._mistral_clients.get(
+class MistralClients:
+    """The Mistral API key and one HTTP client per event loop, shared by every replay
+    request of the process (`mistral_clients`)."""
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+        self._clients: LoopLocal[httpx.AsyncClient] = LoopLocal()
+
+    def get(self) -> httpx.AsyncClient:
+        return self._clients.get(
             lambda: httpx.AsyncClient(
                 base_url="https://api.mistral.ai",
-                headers={
-                    "Authorization": f"Bearer {self._mistral_api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=config.settings().llm_timeout_s,
             )
         )
 
-    async def generate_structured(
+
+_MISTRAL_CLIENTS: MistralClients | None = None
+
+
+def mistral_clients() -> MistralClients:
+    """The process's Mistral clients. Raises `LLMInfraError` when `MISTRAL_API_KEY` is
+    unset."""
+    global _MISTRAL_CLIENTS
+    if _MISTRAL_CLIENTS is None:
+        api_key = config.settings().mistral_api_key.get_secret_value()
+        if not api_key:
+            raise LLMInfraError("MISTRAL_API_KEY is required for parser replay requests")
+        _MISTRAL_CLIENTS = MistralClients(api_key)
+    return _MISTRAL_CLIENTS
+
+
+class MistralLLM(_ReplayLLM):
+    """A parser replay's Ministral extraction client on Mistral's chat completions API.
+
+    It sends the request's system instruction with `instruction` appended, its seed, and
+    `schema` as a strict JSON schema. The inherited parse validates the answer against the
+    request's own schema. With `stream` it reads server-sent chunks and records when the
+    first text arrived."""
+
+    def __init__(
         self,
         *,
-        prompt: str,
-        system: str,
-        schema: type[_SchemaT],
-    ) -> tuple[_SchemaT, dict | None]:
-        """Generate one schema-checked answer from Mistral's chat endpoint."""
-        started = time.perf_counter()
-        replay = current_parser_replay()
-        stream = replay is not None and replay.stream and self._stage == "extract"
-        response_schema = schema.model_json_schema()
+        clients: MistralClients,
+        schema: type[BaseModel],
+        instruction: str,
+        recorder: ReplayRecord,
+        stream: bool,
+    ) -> None:
+        super().__init__(model=MISTRAL_REPLAY_MODEL, recorder=recorder, stream=stream)
+        self._clients = clients
+        self._schema = schema
+        self._instruction = instruction
+
+    def payload(self, *, prompt: str, system: str, seed: int | None) -> dict[str, object]:
+        """The chat completions request body for one sample."""
+        response_schema = self._schema.model_json_schema()
         response_schema["title"] = "Extraction"
         payload: dict[str, object] = {
             "model": self._model,
@@ -1407,9 +1483,8 @@ class MistralLLM(LLM):
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0,
-            "random_seed": self._seed,
+            "random_seed": seed,
             "prompt_cache_key": "dfo-parser-replay-v1",
-            "max_tokens": 768,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -1419,40 +1494,47 @@ class MistralLLM(LLM):
                 },
             },
         }
-        if stream:
+        if self._stream:
             payload["stream"] = True
+        return payload
+
+    @override
+    async def _fetch_text(
+        self, *, prompt: str, config: GenerateContentConfig
+    ) -> tuple[str, dict | None]:
+        system = str(config.system_instruction or "") + self._instruction
+        payload = self.payload(prompt=prompt, system=system, seed=config.seed)
+        started = time.perf_counter()
         first_content_ms: float | None = None
-        usage: dict | None = None
+        finish_reason: str | None = None
         try:
-            if stream:
+            client = self._clients.get()
+            if self._stream:
                 chunks: list[str] = []
                 usage_data: dict[str, Any] = {}
-                async with self._mistral_client().stream(
-                    "POST", "/v1/chat/completions", json=payload
-                ) as response:
+                async with client.stream("POST", "/v1/chat/completions", json=payload) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
                         data = line.removeprefix("data: ")
-                        if data == "[DONE]":
+                        if data == line or data == "[DONE]":
                             continue
                         chunk = json.loads(data)
                         usage_data = chunk.get("usage") or usage_data
-                        content = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get(
-                            "content"
-                        )
-                        if content:
+                        choice = (chunk.get("choices") or [{}])[0]
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        if content := (choice.get("delta") or {}).get("content"):
                             if first_content_ms is None:
-                                first_content_ms = round((time.perf_counter() - started) * 1000, 3)
+                                first_content_ms = _elapsed_ms(started)
                             chunks.append(content)
                 text = "".join(chunks)
             else:
-                response = await self._mistral_client().post("/v1/chat/completions", json=payload)
+                response = await client.post("/v1/chat/completions", json=payload)
                 response.raise_for_status()
                 body = response.json()
-                text = body["choices"][0]["message"]["content"]
-                usage_data: dict[str, Any] = body.get("usage") or {}
+                choice = body["choices"][0]
+                text = choice["message"]["content"]
+                finish_reason = choice.get("finish_reason")
+                usage_data = body.get("usage") or {}
             usage = {
                 "mistral_input_tokens": usage_data.get("prompt_tokens", 0),
                 "mistral_output_tokens": usage_data.get("completion_tokens", 0),
@@ -1460,38 +1542,17 @@ class MistralLLM(LLM):
                     "cached_tokens", 0
                 ),
             }
-            parsed = _parse(text, schema, model=self._model, usage=usage)
-            note_provider_call(
-                provider="mistral",
-                model=self._model,
-                stage=self._stage,
-                usage=usage,
-                started=started,
-                first_content_ms=first_content_ms,
-            )
-            return parsed, usage
         except asyncio.CancelledError:
-            note_provider_call(
+            self._note(
                 provider="mistral",
-                model=self._model,
-                stage=self._stage,
-                usage=usage,
+                prompt=prompt,
+                system=system,
+                schema=self._schema,
                 started=started,
                 first_content_ms=first_content_ms,
                 error="cancelled",
             )
             raise
-        except LLMInfraError as exc:
-            note_provider_call(
-                provider="mistral",
-                model=self._model,
-                stage=self._stage,
-                usage=usage,
-                started=started,
-                first_content_ms=first_content_ms,
-                error=type(exc).__name__,
-            )
-            raise LLMInfraError("Mistral returned an invalid structured response") from None
         except (
             httpx.HTTPError,
             KeyError,
@@ -1500,27 +1561,29 @@ class MistralLLM(LLM):
             IndexError,
             AttributeError,
         ) as exc:
-            note_provider_call(
+            self._note(
                 provider="mistral",
-                model=self._model,
-                stage=self._stage,
-                usage=usage,
+                prompt=prompt,
+                system=system,
+                schema=self._schema,
                 started=started,
                 first_content_ms=first_content_ms,
+                finish_reason=finish_reason,
                 error=type(exc).__name__,
+                http_status=(
+                    exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                ),
             )
+            # A malformed body's error can quote the answer, so the error names only the call.
             raise LLMInfraError("Mistral API request failed") from None
-
-
-_MISTRAL_LLM: MistralLLM | None = None
-
-
-def mistral_replay_llm() -> MistralLLM:
-    """Return the process's Mistral replay client after checking its key."""
-    global _MISTRAL_LLM
-    if _MISTRAL_LLM is None:
-        api_key = config.settings().mistral_api_key.get_secret_value()
-        if not api_key:
-            raise LLMInfraError("MISTRAL_API_KEY is required for parser replay requests")
-        _MISTRAL_LLM = MistralLLM(api_key=api_key)
-    return _MISTRAL_LLM
+        self._note(
+            provider="mistral",
+            prompt=prompt,
+            system=system,
+            schema=self._schema,
+            started=started,
+            first_content_ms=first_content_ms,
+            usage=usage,
+            finish_reason=finish_reason,
+        )
+        return text, usage
