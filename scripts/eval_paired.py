@@ -49,6 +49,14 @@ its case's ``known_failure`` passed on no sample, else 3 on a failed graph or co
 read, else 0. A sample that fails on infrastructure fails ``task_outcome``, as at head in
 paired mode.
 
+Single mode runs the eligible cases as the corpus dataset through Pydantic Evals: each case's
+task samples and judges it as above, and returns its modal sample's scores, which
+``search.eval.evaluator.SearchChecks`` labels. With ``--records DIR`` it writes a
+``dfo-evals`` run record under ``DIR/apis-search/<run id>/``: one trial per case, its modal
+sample with every check's verdict, scored by ``answer`` and tagged with its case file. A
+case whose modal sample failed on infrastructure, or whose check could not read the graph
+or coverage, records an infra fault, which the results page leaves out of its scores.
+
 ``--shard K/N`` (1 <= K <= N) runs the cases whose id hashes to K - 1 modulo N (the sha256
 of the id, so a case stays in its shard across runs and machines), intersected with ``--case`` and
 ``--file``. The same rule picks the base corpus cases the case-set diff compares, so the N
@@ -77,10 +85,14 @@ import traceback
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
+from dfo_evals.records import FaultClass, Run, RunManifest, write_run
+from dfo_evals.report import AnyReportCase, AnyReportCaseFailure, run_from_report
+from pydantic_evals.reporting import EvaluationReport
 
 from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, get_release_service
@@ -107,6 +119,8 @@ from search.eval.checks import (
     answer_result,
     score_with_answer,
 )
+from search.eval.corpus_dataset import SUITE, CaseInputs, CorpusCase, corpus_dataset, corpus_digest
+from search.eval.evaluator import ScoredAnswer, SearchChecks
 from search.eval.gate import (
     CONTENT_CHECKS,
     NOT_JUDGED,
@@ -514,23 +528,38 @@ async def _run_head(
     concurrency: int,
     client: httpx.AsyncClient,
     ctx: ScoreContext,
+    gate: asyncio.Semaphore | None = None,
 ) -> None:
     """Run and judge every case once at head, then give each case that
-    ``wants_more_samples`` the rest of its ``samples`` and judge it on all of them."""
+    ``wants_more_samples`` the rest of its ``samples`` and judge it on all of them.
+
+    ``gate``, when given, bounds posts in flight across every call sharing it. Scoring runs
+    on a worker thread, so runs of other cases keep posting while one scores.
+    """
     first = await run_cases(
-        [s.case for s in states], url=url, samples=1, concurrency=concurrency, client=client
+        [s.case for s in states],
+        url=url,
+        samples=1,
+        concurrency=concurrency,
+        client=client,
+        gate=gate,
     )
-    _score_round(states, first, "head", ctx, workers=concurrency)
+    await asyncio.to_thread(_score_round, states, first, "head", ctx, workers=concurrency)
     for state in states:
         state.judge()
     more = [s for s in states if s.wants_more_samples()]
     if samples == 1 or not more:
         return
     rest = await run_cases(
-        [s.case for s in more], url=url, samples=samples - 1, concurrency=concurrency, client=client
+        [s.case for s in more],
+        url=url,
+        samples=samples - 1,
+        concurrency=concurrency,
+        client=client,
+        gate=gate,
     )
     runs = {s.case.id: extend_run(first[s.case.id], rest[s.case.id]) for s in more}
-    _score_round(more, runs, "head", ctx, workers=concurrency)
+    await asyncio.to_thread(_score_round, more, runs, "head", ctx, workers=concurrency)
     for state in more:
         state.judge()
 
@@ -561,6 +590,16 @@ async def _confirm_round(
     )
 
 
+@dataclass(frozen=True)
+class SingleRun:
+    """Single mode's judged cases, in corpus order, and the Pydantic Evals report of their
+    modal samples, with the digest of the cases it ran."""
+
+    states: list[CaseState]
+    report: EvaluationReport[CaseInputs, ScoredAnswer, CorpusCase]
+    dataset_digest: str
+
+
 async def run_single(
     cases: Mapping[str, list[Case]],
     *,
@@ -569,19 +608,102 @@ async def run_single(
     concurrency: int,
     client: httpx.AsyncClient,
     reads: Reads,
-) -> list[CaseState]:
-    """Run every eligible case on one app as head, sampling as the paired head does."""
-    states = [
-        CaseState(case, stem, new_case=True)
-        for stem, stem_cases in cases.items()
-        for case in stem_cases
-        if not ineligibility(case, implemented_checks=CHECKS)
-    ]
+) -> SingleRun:
+    """Run every eligible case on one app as head, sampling as the paired head does.
+
+    The eligible cases run as the corpus dataset (``search.eval.corpus_dataset``), at most
+    ``concurrency`` at a time and sharing one bound of ``concurrency`` posts. Each case's
+    task runs and judges it alone and returns its modal sample's scores, which
+    ``SearchChecks`` labels.
+
+    Raises:
+        RuntimeError: A task or the evaluator raised, a fault in the driver.
+    """
+    dataset = corpus_dataset(cases, implemented_checks=CHECKS)
+    dataset.add_evaluator(SearchChecks())
+    by_id = {case.id: (case, stem) for stem, stem_cases in cases.items() for case in stem_cases}
     ctx = reads.context(await fetch_schema(url, client=client), "head", url=url)
-    await _run_head(
-        states, url=url, samples=samples, concurrency=concurrency, client=client, ctx=ctx
+    gate = asyncio.Semaphore(concurrency)
+    states: dict[str, CaseState] = {}
+
+    async def task(inputs: CaseInputs) -> ScoredAnswer:
+        case, stem = by_id[inputs.case_id]
+        state = states[case.id] = CaseState(case, stem, new_case=True)
+        await _run_head(
+            [state], url=url, samples=samples, concurrency=1, client=client, ctx=ctx, gate=gate
+        )
+        return scored_answer(state)
+
+    report = await dataset.evaluate(task, name=SUITE, max_concurrency=concurrency, progress=False)
+    crashed = [f"{f.name}: {f.error_message}" for f in report.failures] + [
+        f"{case.name}: {failure.error_message}"
+        for case in report.cases
+        for failure in case.evaluator_failures
+    ]
+    if crashed:
+        raise RuntimeError(f"single mode crashed on {len(crashed)} case(s): {crashed}")
+    return SingleRun(
+        states=[states[eval_case.name] for eval_case in dataset.cases],
+        report=report,
+        dataset_digest=corpus_digest(dataset),
     )
-    return states
+
+
+def scored_answer(state: CaseState) -> ScoredAnswer:
+    """The case's modal head sample with every check's result on it.
+
+    The answer is infra when its run failed on infrastructure, leaving no sample to vote
+    for, or when a check's read of the graph or coverage failed.
+
+    Raises:
+        ValueError: The head round holds no single modal sample.
+    """
+    modal = [score for score in state.rounds.get("head", []) if score.modal]
+    if len(modal) != 1:
+        raise ValueError(f"case {state.case.id!r}: {len(modal)} modal head samples, not 1")
+    (score,) = modal
+    trace_id = None
+    if score.sample is not None:
+        diagnostics = score.sample.body.get("diagnostics")
+        if isinstance(diagnostics, dict) and isinstance(diagnostics.get("trace_id"), str):
+            trace_id = diagnostics["trace_id"]
+    return ScoredAnswer(
+        results=score.results,
+        infra=score.infra or any(result.infra for result in score.results.values()),
+        trace_id=trace_id,
+    )
+
+
+def single_run_record(single: SingleRun, *, manifest: RunManifest) -> Run:
+    """The run record of a single-mode run: one trial per case, its modal sample, tagged
+    with its case file and scored by ``answer``. A modal sample that is infra
+    (``scored_answer``) is an infra fault, which scores leave out."""
+    return run_from_report(
+        report=single.report,
+        manifest=manifest,
+        tags_of=_case_file_tag,
+        fault_of=_infra_fault,
+        trace_of=_trace_id,
+    )
+
+
+def _case_file_tag(case: AnyReportCase | AnyReportCaseFailure) -> tuple[str, ...]:
+    """Tag a case with its case file, such as ``corpus/dac.yaml``."""
+    if not isinstance(case.metadata, CorpusCase):
+        raise TypeError(f"case {case.name!r} has no corpus metadata")
+    return (case.metadata.source,)
+
+
+def _infra_fault(case: AnyReportCase | AnyReportCaseFailure) -> FaultClass | None:
+    """An infra fault for a case whose modal sample is infra; no fault otherwise."""
+    output = getattr(case, "output", None)
+    return FaultClass.INFRA if isinstance(output, ScoredAnswer) and output.infra else None
+
+
+def _trace_id(case: AnyReportCase | AnyReportCaseFailure) -> str | None:
+    """The trace id the modal sample's response carries."""
+    output = getattr(case, "output", None)
+    return output.trace_id if isinstance(output, ScoredAnswer) else None
 
 
 def case_set_changes(
@@ -736,6 +858,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path, help="write the JSON report here")
     parser.add_argument("--summary", type=Path, help="write the Markdown summary here")
     parser.add_argument("--responses", type=Path, help="write every response body here (JSONL)")
+    parser.add_argument(
+        "--records",
+        type=Path,
+        help="write the run record under this root, as <root>/apis-search/<run id>/ (single mode)",
+    )
+    parser.add_argument("--run-id", help="the run record's id (default: single-<UTC start time>)")
+    parser.add_argument(
+        "--revision", help="the revision the app runs, for the run record (default: git HEAD)"
+    )
     return parser
 
 
@@ -758,7 +889,8 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
     }
 
     if args.single_url:
-        states = await run_single(
+        started_at = datetime.now(UTC)
+        single = await run_single(
             picked,
             url=args.single_url,
             samples=args.samples,
@@ -766,6 +898,9 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
             client=client,
             reads=reads,
         )
+        states = single.states
+        if args.records:
+            _write_record(args, single, started_at=started_at)
         code = single_exit_code(states)
         report = build_report(states, mode="single", url=args.single_url, exit_code=code, **header)
         print(single_text(report))
@@ -806,11 +941,53 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
     return code
 
 
+def _write_record(args: argparse.Namespace, single: SingleRun, *, started_at: datetime) -> None:
+    """Write single mode's run record under ``args.records``.
+
+    Raises:
+        SetupError: ``--revision`` is absent and git cannot read HEAD.
+    """
+    revision = args.revision or _head_revision(args.corpus_dir)
+    environment = {"url": args.single_url, "samples": str(args.samples)}
+    if args.shard:
+        environment["shard"] = str(args.shard)
+    if args.case:
+        environment["cases"] = ",".join(args.case)
+    if args.file:
+        environment["files"] = ",".join(args.file)
+    manifest = RunManifest(
+        suite=SUITE,
+        run_id=args.run_id or started_at.strftime("single-%Y%m%dT%H%M%SZ"),
+        started_at=started_at,
+        finished_at=datetime.now(UTC),
+        revision=revision,
+        environment=environment,
+        dataset_digest=single.dataset_digest,
+        headline_check=ANSWER,
+    )
+    path = write_run(root=args.records, run=single_run_record(single, manifest=manifest))
+    print(f"run record: {path}", file=sys.stderr)
+
+
+def _head_revision(corpus_dir: Path) -> str:
+    """The commit the corpus checkout is at.
+
+    Raises:
+        SetupError: git cannot read HEAD.
+    """
+    try:
+        return _git(corpus_dir, "rev-parse", "HEAD").strip()
+    except subprocess.CalledProcessError as exc:
+        raise SetupError(f"cannot read HEAD for the run record: {exc.stderr.strip()}") from exc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.head_url and not (args.base_url and args.base_ref):
         parser.error("paired mode needs --base-url and --base-ref")
+    if args.head_url and (args.records or args.run_id or args.revision):
+        parser.error("--records, --run-id and --revision are single mode's")
     if args.samples < 1:
         parser.error("--samples must be at least 1")
     # A crash must not read as a blocking verdict (1) or infrastructure (3), which the

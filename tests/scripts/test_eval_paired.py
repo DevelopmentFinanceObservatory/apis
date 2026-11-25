@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from dfo_evals.records import FaultClass, read_run
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -325,6 +326,95 @@ def test_single_mode_prints_each_failing_check_per_case(corpus, tmp_path, capsys
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"eth-health (main) {REGRESSING}"
     assert lines[1].split()[:5] == ["FAIL", "entities", "F", "F", "F"]
+
+
+def single_record_args(corpus: Path, tmp_path: Path) -> list[str]:
+    return [
+        "--single-url=http://head",
+        f"--corpus-dir={corpus}",
+        f"--report={tmp_path / 'report.json'}",
+        f"--records={tmp_path / 'runs'}",
+        "--run-id=night-1",
+        "--revision=abc123",
+    ]
+
+
+def test_single_mode_records_each_case_as_its_modal_sample(corpus, tmp_path):
+    code, head_posts, _ = run_driver(single_record_args(corpus, tmp_path))
+
+    assert code == 1
+    assert head_posts == {REGRESSING: 3, STEADY: 1}
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    manifest = run.manifest
+    assert (manifest.headline_check, manifest.revision) == (ANSWER, "abc123")
+    assert manifest.environment == {"url": "http://head", "samples": "3"}
+    assert manifest.dataset_digest.startswith("sha256:")
+    assert [(r.case_id, r.trial) for r in run.results] == [("eth-health", 1), ("eth-steady", 1)]
+    report = json.loads((tmp_path / "report.json").read_text())
+    for result in run.results:
+        entry = report["cases"][result.case_id]
+        (modal,) = [i for i, s in enumerate(entry["samples"]["head"]) if s["modal"]]
+        assert {c.name: c.verdict.value for c in result.checks} == {
+            name: check["head"][modal]["verdict"] for name, check in entry["checks"].items()
+        }
+        assert result.tags == ("corpus/main.yaml",)
+        assert result.trace_id == "0" * 32
+        assert result.fault is None
+    verdicts = {r.case_id: {c.name: c.verdict.value for c in r.checks} for r in run.results}
+    assert (verdicts["eth-health"]["entities"], verdicts["eth-health"][ANSWER]) == ("fail", "fail")
+    assert verdicts["eth-steady"][ANSWER] == "pass"
+
+
+def test_a_case_whose_runs_all_fail_on_infrastructure_is_an_infra_fault(corpus, tmp_path):
+    down = for_regressing(lambda q, n: (503, problem(503, "service_unavailable")))
+
+    run_driver(single_record_args(corpus, tmp_path), head=down)
+
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    faults = {r.case_id: r.fault for r in run.results}
+    assert faults == {"eth-health": FaultClass.INFRA, "eth-steady": None}
+
+
+def test_single_mode_posts_at_most_concurrency_requests_at_once(corpus, tmp_path):
+    in_flight = Counter()
+
+    async def resolve(request: Request) -> JSONResponse:
+        in_flight["now"] += 1
+        in_flight["max"] = max(in_flight["max"], in_flight["now"])
+        await asyncio.sleep(0.01)
+        in_flight["now"] -= 1
+        query = (await request.json())["input"]["query"]
+        return JSONResponse(kenya() if query == REGRESSING else answer())
+
+    async def schema(request: Request) -> JSONResponse:
+        response = RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
+        return JSONResponse({"schema_version": 1, "request": {}, "response": response})
+
+    app = Starlette(
+        routes=[
+            Route("/api/search/json-schema", schema),
+            Route("/api/search/resolve", resolve, methods=["POST"]),
+        ]
+    )
+    args = m._parser().parse_args(
+        ["--single-url=http://head", f"--corpus-dir={corpus}", "--concurrency=1"]
+    )
+    reads = m.Reads(catalogue=CATALOGUE, release=get_release_service(), graph=AllExist())
+
+    async def go() -> int:
+        mounts = {"http://head": httpx.ASGITransport(app=app)}
+        async with httpx.AsyncClient(mounts=mounts) as client:
+            return await m.run(args, reads=reads, client=client)
+
+    assert asyncio.run(go()) == 1
+    assert in_flight["max"] == 1
+
+
+def test_paired_mode_refuses_the_run_record_options(corpus, tmp_path):
+    with pytest.raises(SystemExit) as raised:
+        m.main([*paired_args(corpus, tmp_path), f"--records={tmp_path / 'runs'}"])
+
+    assert raised.value.code == 2
 
 
 def _verdicts(tmp_path: Path, case_id: str) -> dict[str, str]:
