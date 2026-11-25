@@ -13,7 +13,7 @@ from graph_api.source_models import DatasetEntry, SourceCatalogue, SourceDocumen
 from materialise.graph import SubjectPage
 from materialise.provenance_doc import read_provenance_doc
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CardFacts, DatasetRef, load_registry
-from origin_catalogue.job import build_provenance_table
+from origin_catalogue.job import Refusal, _un_rows, build_provenance_table
 from origin_catalogue.registry import parse_registry
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
@@ -238,6 +238,9 @@ _SOLE = "dc/d/WorldBank_Sole"
 _PARTIAL = "dc/d/WorldBank_Partial"
 _ORPHAN = "provenance/ONE_Orphan"
 _WITHHELD = "dc/base/WorldBank_PartialUpstream"
+_WHO = "undata/p/WHO"
+_ILO = "undata/p/ILO"
+_UNSD = "undata/d/UNSD"
 _CC_BY = "CreativeCommonsAttributionLicense"
 
 
@@ -304,6 +307,28 @@ _CARD_GRAPH_ARCS: dict[str, dict[str, tuple[str, ...]]] = {
         years=("1973", "2024"),
         description="DFO's own import.",
     ),
+    # Two UN agencies, each `isPartOf` the UNSD Dataset and catalogued as its own entry.
+    "undata/s/UN": {"typeOf": ("Source",), "name": ("United Nations",)},
+    _UNSD: {"typeOf": ("Dataset",), "name": ("UNSD",), "isPartOf": ("undata/s/UN",)},
+    "undata/g/who": {"typeOf": ("StatVarGroup",)},
+    "undata/g/ilo": {"typeOf": ("StatVarGroup",)},
+    _WHO: {
+        "typeOf": ("Provenance",),
+        "source": ("undata/s/UN",),
+        "isPartOf": (_UNSD,),
+        "url": ("https://www.who.int/data",),
+        "description": ("WHO's health statistics.",),
+        "licenseType": (_CC_BY,),
+        "sourceReleaseFrequency": ("P1Y",),
+        "earliestObservationDate": ("2000",),
+        "latestObservationDate": ("2023",),
+    },
+    _ILO: {
+        "typeOf": ("Provenance",),
+        "source": ("undata/s/UN",),
+        "isPartOf": (_UNSD,),
+        "url": ("https://ilostat.ilo.org/",),
+    },
 }
 
 _CARD_REGISTRY = parse_registry(
@@ -314,9 +339,14 @@ label = "World Bank"
 exclusions = [{{ provenance = "{_WITHHELD}", reason = "superseded_by_dfo" }}]
 
 [[un_system]]
-provenance = "undata/p/WHO"
+provenance = "{_WHO}"
 segment = "who"
 label = "World Health Organization (WHO)"
+
+[[un_system]]
+provenance = "{_ILO}"
+segment = "ilo"
+label = "International Labour Organization (ILO)"
 """.encode()
 )
 
@@ -377,8 +407,12 @@ class TestCardFacts:
             registry=_CARD_REGISTRY, dfo_provenances=frozenset({_ORPHAN}), graph=graph
         )
         assert stage.refusals == ()
+        refusals: list[Refusal] = []
+        un_rows, un_facts, _ = _un_rows(_CARD_REGISTRY, un_graph=graph, refusals=refusals)
+        assert refusals == []
         catalogue = restrictive_catalogue(
-            provenances=stage.rows.values(), dataset_facts=stage.dataset_facts
+            provenances=[*stage.rows.values(), *un_rows.values()],
+            dataset_facts={**stage.dataset_facts, **un_facts},
         )
 
         cards = {
@@ -389,7 +423,7 @@ class TestCardFacts:
             for dataset in entry.datasets
         }
 
-        assert set(cards) == {_MULTI, _SOLE, _PARTIAL, _ORPHAN}
+        assert set(cards) == {_MULTI, _SOLE, _PARTIAL, _ORPHAN, _WHO, _ILO}
         for ref, card in cards.items():
             page = _to_wire(read_provenance_doc(graph, ref, catalogue=catalogue))
             assert _card(card) == _page(page), ref
@@ -422,8 +456,16 @@ class TestCardFacts:
             "1973-2024",
             "https://data.worldbank.org",
         )
+        # Each agency is its own sole child, whatever UNSD's other children.
+        assert _card(cards[_WHO]) == (
+            "WHO's health statistics.",
+            "Creative Commons Attribution License",
+            "Annual",
+            "2000-2023",
+            "https://www.who.int/data",
+        )
 
-    def test_un_entries_carry_no_facts(self):
+    def test_a_un_entry_whose_graph_states_no_facts_serves_none(self):
         catalogue = build_source_catalogue(
             registry=_REGISTRY, catalogue=restrictive_catalogue(provenances=_CATALOGUE_ROWS)
         )

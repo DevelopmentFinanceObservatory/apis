@@ -1729,6 +1729,32 @@ def test_carry_un_from_takes_a_format_3_build_s_un_stage_without_reading_the_un(
     assert note.reason == f"--carry-un-from build {build.name}, format 3"
 
 
+@pytest.mark.parametrize("format_version", [7, 6])
+def test_a_build_missing_a_un_entry_s_facts_is_refused_from_format_7(
+    tmp_path, capsys, format_version
+):
+    """Format 7 writes facts for every UN entry, so a format-7 build without
+    WHO's record is malformed; an earlier build reads WHO as undocumented."""
+    run(tmp_path)
+    capsys.readouterr()
+    [build_id] = builds(tmp_path)
+    build = root(tmp_path) / "versions" / build_id
+    manifest = json.loads((build / "manifest.json").read_text())
+    facts = build / manifest["files"]["dataset_facts"]
+    facts.write_text(json.dumps([e for e in json.loads(facts.read_text()) if e["ref"] != WHO]))
+    manifest["format_version"] = format_version
+    (build / "manifest.json").write_text(json.dumps(manifest))
+
+    if format_version >= 7:
+        with pytest.raises(artifact.CatalogueArtifactError, match="dataset_facts"):
+            artifact.read_build_un_tables(build.as_uri())
+        return
+    found = artifact.read_build_un_tables(build.as_uri())
+    assert WHO in found.rows
+    assert WHO not in found.dataset_facts
+    assert WHO in found.source_documentation
+
+
 def test_main_carries_the_un_stage_from_a_local_build(tmp_path, monkeypatch, capsys):
     build, tables = _old_build(tmp_path, capsys)
 

@@ -1006,6 +1006,11 @@ def _un_mirror_from(
     return mirror
 
 
+_UN_FACTS_FORMAT: Final[int] = 7
+"""The first format whose builds write card facts and documentation facts
+for UN entries."""
+
+
 @dataclass(frozen=True, slots=True)
 class BuildUnTables:
     """One build directory's UN rows, the card facts and documentation facts
@@ -1031,9 +1036,11 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
     the empty `licence` format 4 added to every row, which a UN row decodes
     to whether or not its build wrote one. The entries of
     `dataset_facts.json` and `source_documentation.json` keyed by a UN row's
-    entry ref are read too; a build before format 7 holds none, and a build
-    without either file reads as holding none. Refuses, with
-    `CatalogueArtifactError`, a missing or malformed file, UN tables breaking
+    entry ref are read too. A build before format 7 holds none for its UN
+    entries and may lack either file, so it reads as holding none. Refuses, with
+    `CatalogueArtifactError`, a missing or malformed file, a build of format
+    7 or later lacking either facts file or a record in it for a UN row's
+    entry, UN tables breaking
     `UnMirror`'s invariants or holding a variable no agency's id prefix
     starts, and UN tables whose row counts or agency counts disagree with the
     manifest's."""
@@ -1069,9 +1076,12 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
         )
         blocked = frozenset(_string(place) for place in json.loads(read("un"))["blocked_places"])
         refs = {entry_ref(row) for row in un_rows.values()}
-        dataset_facts = _decode_dataset_facts(_un_entries(read, "dataset_facts", files, refs))
+        required = format_version >= _UN_FACTS_FORMAT
+        dataset_facts = _decode_dataset_facts(
+            _un_entries(read, "dataset_facts", files, refs, required=required, label=label)
+        )
         documentation = _decode_source_documentation(
-            _un_entries(read, "source_documentation", files, refs)
+            _un_entries(read, "source_documentation", files, refs, required=required, label=label)
         )
     except (ValueError, KeyError, TypeError) as exc:
         raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
@@ -1100,14 +1110,27 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
 
 
 def _un_entries(
-    read: Callable[[str], bytes], logical: str, files: Mapping[str, str], refs: set[str]
+    read: Callable[[str], bytes],
+    logical: str,
+    files: Mapping[str, str],
+    refs: set[str],
+    *,
+    required: bool,
+    label: str,
 ) -> list[Any]:
     """The items of the JSON list file `logical` whose `ref` is in `refs`, so
     the current format's decoder reads them whatever the format of the
-    file's other items. Empty when the build has no such file."""
-    if logical not in files:
+    file's other items. When `required`, refuses a build without the file or
+    without an item for each ref; otherwise a missing file reads as empty."""
+    if logical not in files and not required:
         return []
-    return [item for item in json.loads(read(logical)) if item["ref"] in refs]
+    entries = [item for item in json.loads(read(logical)) if item["ref"] in refs]
+    if required and (missing := refs - {item["ref"] for item in entries}):
+        raise CatalogueArtifactError(
+            f"{label} is format 7 or later and its {logical!r} file holds no record for "
+            f"UN entries {sorted(missing)!r}"
+        )
+    return entries
 
 
 def read_arc_tables(base_uri: str, manifest: CatalogueManifest) -> ArcTables:
