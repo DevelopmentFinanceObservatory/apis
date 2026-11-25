@@ -3,10 +3,11 @@
 Every membership names its authority, whether that authority dates its rows, the entity classes
 it admits, and the projections it records. A projection splits the members by class:
 
-- `countries`, the default: countries that exist today, had come into being by the date asked
-  (where a start date is recorded: resolvekit's `valid_from` or the policy file's
-  `country_starts`), and whose United Nations membership has not ended by that date.
-  Resolvekit's curated, dated UN membership is the authority for this class.
+- `countries`, the default: countries that exist today whose United Nations membership has not
+  ended by the date asked and which were sovereign by then. A country is sovereign from
+  resolvekit's `valid_from` where it records one, else from the policy file's `sovereign_from`,
+  else from its UN entry. Resolvekit's curated, dated UN membership is the authority for this
+  class.
 - `other_states`: states outside the UN, from the declared list in `data/membership_policy.json`,
   which names the source of the class.
 - `territories`: every other country that exists today, which leaves dependent territories.
@@ -62,7 +63,7 @@ GEO_DOMAIN = "geo"
 MEMBERSHIP_INCOMPLETE = "membership_incomplete"
 _POLICY_FILE = "membership_policy.json"
 # Names the rule `Sovereignty.classify` applies; change it with the rule.
-CLASSING_RULE = "existed-and-un-unended"
+CLASSING_RULE = "sovereign-and-un-unended"
 
 
 class Projection(StrEnum):
@@ -139,7 +140,7 @@ class PolicyData:
     root: str
     compositions: Mapping[str, tuple[str, ...]]
     other_states: frozenset[str]
-    country_starts: Mapping[str, date]
+    sovereign_from: Mapping[str, date]
     incomplete_region_projections: frozenset[Projection]
 
 
@@ -154,9 +155,9 @@ def policy_data() -> PolicyData:
             row["region"]: tuple(row["members_from"]) for row in raw["region_compositions"]
         },
         other_states=frozenset(raw["other_states"]["members"]),
-        country_starts={
+        sovereign_from={
             member: date.fromisoformat(day)
-            for member, day in raw["country_starts"]["members"].items()
+            for member, day in raw["sovereign_from"]["members"].items()
         },
         incomplete_region_projections=frozenset(
             Projection(name) for name in raw["region_gaps"]["projections"]
@@ -188,14 +189,15 @@ class Row:
 class Sovereignty:
     """Classes a country member into exactly one of the four country projections.
 
-    A member is a country on a day when the country existed by then (`starts`) and its UN
-    membership had not ended by then: some UN row has no `valid_until` or one after the day.
-    A state that joined the UN later (Switzerland in 1995) is a country on that day. The rule
+    A member is a country on a day when its UN membership has not ended by then (some UN row has
+    no `valid_until` or one after the day) and the day is on or after its sovereign start. The
+    start is `starts[member]` where one is recorded, else the member's UN entry. Switzerland,
+    which joined in 2002, is a country in 1995 because `starts` dates it from 1945. The rule
     never reads today's date.
 
     `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, `other_states`
-    the declared states outside the UN, and `starts` the day each country with a recorded start
-    came into being."""
+    the declared states outside the UN, and `starts` the day each state became sovereign where
+    that is before its UN entry."""
 
     states: Mapping[str, tuple[Row, ...]]
     dissolved: frozenset[str]
@@ -206,8 +208,12 @@ class Sovereignty:
         """The country projection `member` falls in on `day`."""
         if member in self.dissolved:
             return Projection.FORMER_STATES
-        existed = member not in self.starts or self.starts[member] <= day
-        if existed and any(row.unended(day) for row in self.states.get(member, ())):
+        rows = self.states.get(member, ())
+        start = self.starts.get(member)
+        if start is None:
+            if any(row.active(day) for row in rows):
+                return Projection.COUNTRIES
+        elif start <= day and any(row.unended(day) for row in rows):
             return Projection.COUNTRIES
         if member in self.other_states:
             return Projection.OTHER_STATES
@@ -436,20 +442,23 @@ def authority(resolver: Resolver, name: str) -> Authority:
     """An authority read from the resolver's bundled data.
 
     The version names the resolvekit data, the classing rule (`CLASSING_RULE`), and a digest of
-    the policy file's `country_starts`, so it moves when any input to a member's class moves."""
+    the bytes of `data/membership_policy.json`, so it moves when any input to a member's class
+    moves."""
     return Authority(
         name=name,
         version=(
             f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}, "
-            f"classing {CLASSING_RULE} starts {_country_starts_digest()}"
+            f"classing {CLASSING_RULE} policy {_policy_digest()}"
         ),
     )
 
 
-def _country_starts_digest() -> str:
-    starts = {member: day.isoformat() for member, day in policy_data().country_starts.items()}
-    encoded = json.dumps(starts, sort_keys=True).encode()
-    return hashlib.sha256(encoded).hexdigest()[:8]
+def _policy_bytes() -> bytes:
+    return (importlib.resources.files("entity_resolution") / "data" / _POLICY_FILE).read_bytes()
+
+
+def _policy_digest() -> str:
+    return hashlib.sha256(_policy_bytes()).hexdigest()[:8]
 
 
 def to_dcid(entity_id: str) -> str:
