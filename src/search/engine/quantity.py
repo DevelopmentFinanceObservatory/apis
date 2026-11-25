@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from code_index.tokens import word_tokens
-from search.engine.function_words import FUNCTION_WORDS
+from search.engine.function_words import FUNCTION_WORDS, JOINING_WORDS
 from search.engine.measure_verdict import shape_pairs
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.bound_values import ratio_twins_of, shape_five_tuple
@@ -461,10 +461,12 @@ SHARE_FORMS: frozenset[NamedNormalisation] = frozenset({"share", "rate"})
 
 def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool:
     """Whether a `share_of` among `operations` has `variable` itself as its phrase, their
-    words equal once casing, spacing and function words (`FUNCTION_WORDS`) are set aside
+    words equal once casing, spacing and joining words (`JOINING_WORDS`) are set aside
     (`code_index.tokens.word_tokens`): "the share of bilateral ODA" spans "share of
-    bilateral ODA". The variable then names the share, and the part reads as the share's
-    numerator measure: "share of bilateral ODA" asks for bilateral ODA."""
+    bilateral ODA". Flow cues, conjunctions and "per" stay, so "share of aid to China" does
+    not span "share of aid from China". The variable then names the share, and the part
+    reads as the share's numerator measure: "share of bilateral ODA" asks for bilateral
+    ODA."""
     words = _content_words(variable)
     return any(
         operation.verb == "share_of" and _content_words(operation.phrase) == words
@@ -473,9 +475,9 @@ def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool
 
 
 def _content_words(text: str) -> list[str]:
-    """The casefolded words of `text` other than function words."""
+    """The casefolded words of `text` other than joining words."""
     return [
-        word for token in word_tokens(text) if (word := token.text.casefold()) not in FUNCTION_WORDS
+        word for token in word_tokens(text) if (word := token.text.casefold()) not in JOINING_WORDS
     ]
 
 

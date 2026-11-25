@@ -876,7 +876,7 @@ class ResolveState:
     # the elected shape (`phase_rank_bind._open_operation_slots`).
     operations: tuple[Operation, ...] = ()
     # The cut that took the words of the leg's sources, series code and scope phrases out
-    # of `variable` (`fanout.pass_variable`). A `share_of` phrase quotes the part's own
+    # of `variable` (`fanout.measure_text`). A `share_of` phrase quotes the part's own
     # words, so `share_spans_variable` reads it through the same cut.
     measure_words: Callable[[str], str] = str
     # The flow axes this leg asks every member of. `bind_place_roles` leaves open those no
@@ -1055,11 +1055,11 @@ class ResolveState:
     # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
     # Whether a `share_of` has the whole variable as its phrase, each read through
-    # `measure_words` (`quantity.share_spans_variable`). The variable then names the share and its whole,
-    # so the leg reads as the share's numerator measure: `quantity_requirement` drops the
-    # forms a share computes from the variable's own (`quantity.share_numerator_requirement`),
-    # and the quantity read's share, rate and base are ignored
-    # (`phase_rank_bind._read_quantity_answer`).
+    # `measure_words` (`quantity.share_spans_variable`). The variable then names the share
+    # and its whole, so the leg reads as the share's numerator measure:
+    # `quantity_requirement` drops the forms a share computes from the variable's own
+    # (`quantity.share_numerator_requirement`), and the quantity read's share, rate and base
+    # are ignored (`phase_rank_bind._read_quantity_answer`).
     share_spans_variable: bool = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule

@@ -382,7 +382,15 @@ def _share_of(phrase: str) -> tuple[Operation, ...]:
             _read("share"),
             set(),
             None,
-            id="function-words-aside",
+            id="joining-words-aside",
+        ),
+        pytest.param(
+            "share of aid from China",
+            _share_of("share of aid to China"),
+            _read("share"),
+            {"share"},
+            None,
+            id="flow-cue-kept",
         ),
         pytest.param(
             "share of bilateral ODA",
