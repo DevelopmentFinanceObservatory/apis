@@ -65,6 +65,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityShapeSchema,
     IdentityWindowRange,
+    NoDataPart,
     Operation,
     ParsedEntity,
     ParsedInput,
@@ -208,6 +209,11 @@ def _member_node(dcid: str) -> dict:
             "measuredProperty": _nodes(row.measured_property),
             "statType": _nodes(row.stat_type),
             "measurementQualifier": _nodes(row.measurement_qualifier),
+            **(
+                {"measurementDenominator": _nodes(row.measurement_denominator)}
+                if row.measurement_denominator
+                else {}
+            ),
             "observationProperties": _nodes(*row.observation_properties),
             "constraintProperties": _nodes(*row.constraint_properties),
             **{p: _nodes(v) for p, v in row.constraint_properties.items()},
@@ -215,7 +221,9 @@ def _member_node(dcid: str) -> dict:
     }
 
 
-def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
+def _graph(
+    variable: str, members: tuple[str, ...], scores: Sequence[float] | None = None
+) -> FakeGraph:
     """The United States, Kenya, the G7 and `members`, which recall returns for
     `variable`."""
     return FakeGraph(
@@ -225,7 +233,12 @@ def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
             _G7: {"label": "Group of Seven", "type": "Place"},
             **{dcid: _member_node(dcid) for dcid in members},
         },
-        detect={variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
+        detect={
+            variable: {
+                "svs": list(members),
+                "cosine_scores": list(scores) if scores is not None else [0.9] * len(members),
+            }
+        },
         resolve={"United States": _USA, "Kenya": _KEN, "G7": _G7},
     )
 
@@ -1883,6 +1896,57 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     assert [fact.code for fact in spec_departure_facts(spec, operations=operations)] == [
         "operation_not_applied"
     ]
+
+
+# DAC1's net ODA as a fraction of the donor's GNI.
+_ODA_PER_GNI = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+
+
+@pytest.mark.parametrize(
+    ("members", "elected"),
+    [
+        pytest.param((_ODA_PER_GNI, *_DAC1_MEMBERS), _NET_DAC1, id="ratio-ranked-first"),
+        pytest.param((_ODA_PER_GNI,), None, id="ratio-alone"),
+    ],
+)
+def test_a_share_of_spanning_the_variable_divides_a_level_alone(
+    monkeypatch: pytest.MonkeyPatch, members: tuple[str, ...], elected: _Basis | None
+):
+    """The operation divides the part by its whole, so a ratio series, divided already,
+    is no reading of it: the level answers though recall ranks the ratio first, and a part
+    whose recall holds the ratio alone refuses on the form."""
+    _cover(monkeypatch, members)
+    variable = "share of aid"
+    graph = _graph(variable, members, scores=[0.95, *[0.9] * (len(members) - 1)])
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2015-2023",
+                        operations=[Operation(verb="share_of", phrase=variable)],
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=_PickingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    if elected is None:
+        assert isinstance(part, NoDataPart), part
+        assert part.no_data.reason == "denominator_not_available"
+        return
+    assert isinstance(part, DefinitePart), part
+    assert _served_basis(part.spec) == elected
 
 
 @pytest.mark.parametrize(

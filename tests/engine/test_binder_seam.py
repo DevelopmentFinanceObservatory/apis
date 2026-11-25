@@ -38,7 +38,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import GraphInfraError
 from search.engine.interpret import Recall
 from search.engine.interpretation import Interpretation
-from search.engine.qualifier_match import declared_measures_named
+from search.engine.qualifier_match import CodedQualifier, declared_measures_named
 from search.engine.quantity import serves_every_form
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, phase_rank_bind
@@ -122,6 +122,7 @@ def _state(
     binder: Binder | None = None,
     variable: str = "female population",
     operations: tuple[Operation, ...] = (),
+    qualifiers: tuple[CodedQualifier, ...] | None = None,
 ) -> ResolveState:
     """A part whose seated menu is `_MENU`, asking for `variable` under `operations`. The
     services bind does not read are unset."""
@@ -132,6 +133,7 @@ def _state(
         detect_query=variable,
         role_query=variable,
         operations=operations,
+        qualifiers=qualifiers,
         pac=True,
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
@@ -390,7 +392,8 @@ def _share_of(phrase: str) -> tuple[Operation, ...]:
             None,
             id="stated-share-with-no-base",
         ),
-        # Any other phrase, and any growth, reads as on dev.
+        # A share_of over part of the variable, and a growth, keep the read's form and
+        # denominator.
         pytest.param(
             "ODA as a share of GNI",
             _share_of("share of GNI"),
@@ -426,6 +429,20 @@ def test_a_share_of_spanning_the_variable_reads_it_as_the_numerator_measure(
     assert set(state.quantity_requirement.named) == named
     named_denominator = state.named_denominator
     assert (named_denominator.ref if named_denominator is not None else None) == denominator
+
+
+def test_a_share_of_spanning_the_variable_keeps_the_forms_its_qualifiers_name():
+    """Only the variable's own share wording is the operation's: a qualifier phrase beside
+    it ("as a percentage of GNI") still names a share."""
+    variable = "share of bilateral ODA"
+    state = _state(
+        llm=_NoCallLLM(),
+        variable=variable,
+        operations=_share_of(variable),
+        qualifiers=(CodedQualifier(phrase="as a percentage of GNI", spans=(), matches=()),),
+    )
+
+    assert state.quantity_requirement.named == {"share"}
 
 
 def test_a_share_of_the_whole_variable_leaves_its_measure_nouns_judged():

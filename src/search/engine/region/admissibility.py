@@ -17,7 +17,9 @@ at the first that refuses it, so a shape refused on a pinned part passed every o
 3. form: every normalisation form the question names must be honoured, a form a wording
    pattern names or, where none does, the one the quantity read's model states
    (`phase_rank_bind._read_stated_quantity`; `quantity.serves_every_form`;
-   ``denominator_not_available``, pinned part `form`);
+   ``denominator_not_available``, pinned part `form`), and a part whose `share_of` spans
+   its variable takes a level alone, which the operation divides
+   (`quantity.serves_share_numerator`);
 4. named measure: a name of measure nouns the question holds, by a label, an
    `also_called` name or a declared acronym of one (`CodeIndex.variable_aliases`, so "GNI
    per capita" names gross national income) (`phase_rank_bind._named_measure_nouns`),
@@ -64,7 +66,7 @@ from search.engine.measure_verdict import (
     reading_evidence,
 )
 from search.engine.qualifier_match import NamedMeasure, QualifierMatch
-from search.engine.quantity import DenominatorRead, serves_every_form
+from search.engine.quantity import DenominatorRead, serves_every_form, serves_share_numerator
 from search.engine.region.alternate_guard import measure_class, shape_measure_class
 from search.engine.region.place_roles import lacks_query_axis, subject_shapes_refused
 from search.engine.region.state import ResolveState, for_shape, shape_vocabulary
@@ -111,7 +113,10 @@ def judge_pinned_parts(
         shape = interpretation.shape
         if not interpretation.admissible:
             return interpretation
-        if not serves_every_form(state.quantity_requirement, shape, state.denominator_kinds):
+        if not serves_every_form(state.quantity_requirement, shape, state.denominator_kinds) or (
+            state.share_spans_variable
+            and not serves_share_numerator(shape, state.denominator_kinds)
+        ):
             return Interpretation(
                 shape=shape, reason="denominator_not_available", pinned_failure="form"
             )

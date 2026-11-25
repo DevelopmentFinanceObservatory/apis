@@ -57,15 +57,14 @@ from search.engine.qualifier_match import (
     read_qualifiers,
 )
 from search.engine.quantity import (
-    SHARE_FORMS,
     DenominatorKind,
     DenominatorRead,
     NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
     quantity_requirement,
+    share_numerator_requirement,
     share_spans_variable,
-    without_forms,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.convertibility import UnitCoverage
@@ -1054,8 +1053,10 @@ class ResolveState:
     # Whether a `share_of` has the whole variable as its phrase
     # (`quantity.share_spans_variable`). The variable then names the share and its whole,
     # so the leg reads as the share's numerator measure: `quantity_requirement` drops the
-    # forms a share computes, and the quantity read's share, rate and base are ignored
-    # (`phase_rank_bind._read_quantity_answer`).
+    # forms a share computes from the variable's own (`quantity.share_numerator_requirement`),
+    # the quantity read's share, rate and base are ignored
+    # (`phase_rank_bind._read_quantity_answer`), and admissibility holds every shape to a
+    # level (`quantity.serves_share_numerator`).
     share_spans_variable: bool = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
@@ -1506,12 +1507,13 @@ class ResolveState:
     identity_entities: list[Entity] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.quantity_requirement = quantity_requirement(
-            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
-        )
+        qualifier_phrases = [coded.phrase for coded in self.qualifiers or ()]
         self.share_spans_variable = share_spans_variable(self.variable, self.operations)
-        if self.share_spans_variable:
-            self.quantity_requirement = without_forms(self.quantity_requirement, SHARE_FORMS)
+        self.quantity_requirement = (
+            share_numerator_requirement(self.variable, qualifier_phrases)
+            if self.share_spans_variable
+            else quantity_requirement([self.variable, *qualifier_phrases])
+        )
         self.frame = door_frame(
             door=self.door,
             variable=self.variable,

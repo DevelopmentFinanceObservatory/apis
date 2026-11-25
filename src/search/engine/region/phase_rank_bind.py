@@ -560,15 +560,17 @@ def _read_quantity_answer(
     index = quantity.denominator_index
     stated_form = quantity.stated_form
     if state.share_spans_variable:
-        if index is not None or stated_form in SHARE_FORMS:
-            logger.info(
-                "quantity read states %s on %r under a share_of spanning the variable; not read",
-                stated_form,
-                quantity.base_words,
-            )
-        index = None
+        set_aside: dict[str, object] = {}
+        if index is not None:
+            set_aside |= {"denominator_index": index, "base_words": quantity.base_words}
+            index = None
         if stated_form in SHARE_FORMS:
+            set_aside["stated_form"] = stated_form
             stated_form = None
+        if set_aside:
+            logger.info(
+                "quantity read set aside under a share_of spanning the variable: %s", set_aside
+            )
     if not _names_base(state, quantity.base_words, shapes):
         if index is not None:
             logger.info(

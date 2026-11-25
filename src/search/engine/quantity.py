@@ -472,11 +472,31 @@ def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool
     )
 
 
-def without_forms(
-    requirement: QuantityRequirement, forms: frozenset[NamedNormalisation]
+def share_numerator_requirement(
+    variable: str, qualifier_phrases: Iterable[str]
 ) -> QuantityRequirement:
-    """`requirement` without `forms`."""
-    return QuantityRequirement(named=requirement.named - forms, framing=requirement.framing - forms)
+    """The requirement of a part whose `share_of` spans its `variable`
+    (`share_spans_variable`): the variable's own forms less the share and rate the operation
+    computes (`SHARE_FORMS`), and every form its `qualifier_phrases` name, as
+    `quantity_requirement` reads them. "share of bilateral ODA" names none, and a qualifier
+    "as a percentage of GNI" beside it still names a share."""
+    own = quantity_requirement([variable])
+    beside = quantity_requirement(qualifier_phrases)
+    return QuantityRequirement(
+        named=(own.named - SHARE_FORMS) | beside.named,
+        framing=(own.framing - SHARE_FORMS) | beside.framing,
+    )
+
+
+def serves_share_numerator(
+    shape: ShapeDraft, kinds: Mapping[str, DenominatorKind] | None = None
+) -> bool:
+    """Whether `shape` can be the numerator a `share_of` spanning the part's variable
+    divides (`share_spans_variable`): a level, or a shape whose denominator arc did not
+    resolve, which contradicts nothing (`normalisation_class`). A ratio, a share or a
+    figure per person or per area is already divided, and the operation would divide it
+    again."""
+    return normalisation_class(shape, kinds=kinds) in ("level", "unknown")
 
 
 def with_stated_form(
