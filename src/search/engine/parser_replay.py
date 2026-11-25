@@ -29,11 +29,17 @@ PARSER_KEY_HEADER = "X-DFO-Parser-Replay-Key"
 PARSER_CACHE_HEADER = "X-DFO-Parser-Cache"
 PARSER_STREAM_HEADER = "X-DFO-Parser-Stream"
 
+type Arm = Literal["flash-lite", "ministral", "mistral-small"]
+
 FLASH_LITE_MODEL = "gemini-3.5-flash-lite"
+ARM_MODELS: dict[Arm, str] = {
+    "flash-lite": FLASH_LITE_MODEL,
+    "ministral": "ministral-3b-2512",
+    "mistral-small": "mistral-small-2603",
+}
 
 _REPLAY_ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
 
-type Arm = Literal["flash-lite", "ministral"]
 type ExtractionPhase = Literal["original", "blanked"]
 
 
@@ -87,7 +93,7 @@ def parser_replay(request: Request) -> ParserReplay | None:
         raise EngineInputError("This parser replay request is not authorised.", status=403)
     if replay_id is None or not _REPLAY_ID.fullmatch(replay_id):
         raise EngineInputError("The parser replay identifier is invalid.", status=422)
-    if arm != "flash-lite" and arm != "ministral":
+    if arm is None or arm not in ARM_MODELS:
         raise EngineInputError("The parser replay arm is invalid.", status=422)
     if request.headers.get(PARSER_CACHE_HEADER, "bypass") != "bypass":
         raise EngineInputError("The parser replay cache policy is invalid.", status=422)
@@ -197,7 +203,7 @@ class ReplayRecord:
 
 
 class MistralReplayExtraction(Extraction):
-    """The schema Ministral answers under: `Extraction` with `entities` required."""
+    """The schema the Mistral arms answer under: `Extraction` with `entities` required."""
 
     entities: list[ExtractedEntity] = Field(
         description=Extraction.model_fields["entities"].description
@@ -205,24 +211,65 @@ class MistralReplayExtraction(Extraction):
 
 
 MISTRAL_REPLAY_INSTRUCTION = """
-Output the entities key for every query. Before returning the JSON, check every named
-place or named geographic group in the query against entities. Each must have an
-object even if its name is already in a variable phrase. Use an empty array only
-when the query names no eligible scope. Each array item is an object with text,
-span, variables, cue, role, and members. A place with no role still gets an object.
-For donor or creditor direction, use only a cue present in the query.
+Checklist. These rules restate the instructions above in the exact JSON shape the schema needs. Apply every rule before you answer.
+
+kind
+- Take the first rule that applies, as the kind rules above say. "out_of_scope": no part asks for a statistic. "requires_analysis": the query asks for an argument or advice and names no data to show ("What should the next IDA replenishment prioritise?"). "catalogue": it asks what data exists and names no topic. Otherwise "resolution", including any query that names a measure, such as aid, GDP, debt or mortality, even when it starts with "show me", "what is", "data on" or "do you have".
+
+entities
+- One object for every place, country, city, region, group or organisation the query names, each listed once. A year, a measure or a bare word such as "countries" is never an entity.
+- A place named by an adjective is still an entity: "Italian aid" names Italy, "American loans" names United States, "Chinese investment" names China.
+- `text` is the English name. "X countries", "countries in X" and "X nations" name the region X with `members` true: "Latin American countries" has text "Latin America" and members true.
+- `span` copies the query's words for the place exactly.
+- `role` and `cue` come only from the query's words. "from A to B": A is "source" with cue "from", B is "recipient" with cue "to". "aid to B", "B received": B is "recipient". "A's aid", "Italian aid", "A gave": A is "source", cue the word that says so. Lending words (loans, lent, owes, debt owed to) use "creditor" and "debtor". In a flow of money, "for B" also makes B "recipient" with cue "for". A place that is only located ("literacy rate in A", "population of A") or listed side by side ("A and B") has role null and cue null.
+
+dates
+- "in 2019" or a bare "2019" is {"kind": "point", "start": "2019", "end": "2019"}.
+- "since 2010" or "from 2010" is {"kind": "range", "start": "2010", "end": null}. "2010 to 2015" and "between 2010 and 2015" are {"kind": "range", "start": "2010", "end": "2015"}.
+- "latest", "most recent" and "current" are {"kind": "latest", "start": null, "end": null}. With no time words, `dates` is [].
+- A future target year of a forecast belongs to the forecast operation, not to `dates`.
+
+operations
+- Most queries have no operation, so `operations` is []. Use the deletion test above: a phrase is an operation only when deleting it leaves the same measure. "top 5 donors" is rank; "total aid to the Sahel countries" is aggregate; "change in aid to Kenya since 2010" is growth; "share of health in total aid" is share_of; "why did aid fall" is explain; a future target year or "projected" is forecast; "an overview of" is report.
+- These are not operations: words in an indicator's own name ("GDP growth rate", "total population", "total fertility rate", "share of women in parliament"), "most recent" (a latest date), a change with no year named (a series over time), "compare A and B", and a single year.
+
+Examples in the schema's shape:
+
+"bilateral aid from Norway to Malawi in 2018"
+{"kind": "resolution", "variables": ["bilateral aid"], "entities": [{"text": "Norway", "span": "Norway", "variables": [], "cue": "from", "role": "source", "members": false}, {"text": "Malawi", "span": "Malawi", "variables": [], "cue": "to", "role": "recipient", "members": false}], "operations": [], "dropped_qualifiers": [], "dates": [{"kind": "point", "start": "2018", "end": "2018"}]}
+
+"child mortality in Latin American countries since 2005"
+{"kind": "resolution", "variables": ["child mortality"], "entities": [{"text": "Latin America", "span": "Latin American countries", "variables": [], "cue": null, "role": null, "members": true}], "operations": [], "dropped_qualifiers": [], "dates": [{"kind": "range", "start": "2005", "end": null}]}
+
+"compare electricity access in Bolivia and Indonesia"
+{"kind": "resolution", "variables": ["electricity access"], "entities": [{"text": "Bolivia", "span": "Bolivia", "variables": [], "cue": null, "role": null, "members": false}, {"text": "Indonesia", "span": "Indonesia", "variables": [], "cue": null, "role": null, "members": false}], "operations": [], "dropped_qualifiers": [], "dates": []}
+
+"Swedish humanitarian aid to Yemen"
+{"kind": "resolution", "variables": ["humanitarian aid"], "entities": [{"text": "Sweden", "span": "Swedish", "variables": [], "cue": "Swedish", "role": "source", "members": false}, {"text": "Yemen", "span": "Yemen", "variables": [], "cue": "to", "role": "recipient", "members": false}], "operations": [], "dropped_qualifiers": [], "dates": []}
+
+"projected population of Niger in 2050"
+{"kind": "resolution", "variables": ["population"], "entities": [{"text": "Niger", "span": "Niger", "variables": [], "cue": null, "role": null, "members": false}], "operations": [{"verb": "forecast", "variable": 0, "phrase": "projected in 2050", "over": null}], "dropped_qualifiers": [], "dates": []}
+
+"tasa de alfabetización en Bolivia en 2012"
+{"kind": "resolution", "variables": ["literacy rate"], "entities": [{"text": "Bolivia", "span": "Bolivia", "variables": [], "cue": null, "role": null, "members": false}], "operations": [], "dropped_qualifiers": [], "dates": [{"kind": "point", "start": "2012", "end": "2012"}]}
+
+Final check, after you draft the JSON and before you return it:
+1. Read the query again word by word. Every country, city, region, group, organisation or place adjective ("Kenyan", "Italian", "European") must have one object in `entities`, even when the name sits inside a measure ("Kenya's debt", "US aid", "Nigerian GDP"). If one is missing, add it. `entities` is [] only when the query names no place at all.
+2. For each entity, look for a flow of money (aid, ODA, finance, loans, grants, investment, disbursements, remittances) and a word that gives the place a side in it ("to", "from", "received", "gave", "by", "for", "Italian aid"). If both are there, set `role` and `cue`. A place that receives is "recipient", one that gives is "source", one that lends is "creditor", one that borrows or owes is "debtor".
+3. Remove any entity that is a year or a measure, and any entity listed twice.
 """
 
 
 def replay_extraction_llm(record: ReplayRecord) -> LLM:
-    """The extraction client of `record`'s arm, recording into `record`: Gemini Flash-Lite,
-    or Ministral with `MistralReplayExtraction` and `MISTRAL_REPLAY_INSTRUCTION`. Neither
-    has a memo or an extraction store. Raises `LLMInfraError` for the Ministral arm when
-    `MISTRAL_API_KEY` is unset."""
+    """The extraction client of `record`'s arm, recording into `record`: Gemini
+    Flash-Lite, or a Mistral model (`ARM_MODELS`) with `MistralReplayExtraction` and
+    `MISTRAL_REPLAY_INSTRUCTION`. Neither has a memo or an extraction store. Raises
+    `LLMInfraError` for a Mistral arm when `MISTRAL_API_KEY` is unset."""
     replay = record.replay
     if replay.arm == "flash-lite":
-        return ReplayGeminiLLM(model=FLASH_LITE_MODEL, recorder=record, stream=replay.stream)
+        return ReplayGeminiLLM(model=ARM_MODELS[replay.arm], recorder=record, stream=replay.stream)
     return MistralLLM(
+        model=ARM_MODELS[replay.arm],
         clients=mistral_clients(),
         schema=MistralReplayExtraction,
         instruction=MISTRAL_REPLAY_INSTRUCTION,

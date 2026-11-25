@@ -1414,9 +1414,6 @@ class ReplayGeminiLLM(_ReplayLLM):
         return text, usage
 
 
-MISTRAL_REPLAY_MODEL = "ministral-3b-2512"
-
-
 class MistralClients:
     """The Mistral API key and one HTTP client per event loop, shared by every replay
     request of the process (`mistral_clients`)."""
@@ -1451,7 +1448,7 @@ def mistral_clients() -> MistralClients:
 
 
 class MistralLLM(_ReplayLLM):
-    """A parser replay's Ministral extraction client on Mistral's chat completions API.
+    """A parser replay's Mistral extraction client on Mistral's chat completions API.
 
     It sends the request's system instruction with `instruction` appended, its seed, and
     `schema` as a strict JSON schema, and leaves sampling at the provider's defaults, as
@@ -1462,13 +1459,14 @@ class MistralLLM(_ReplayLLM):
     def __init__(
         self,
         *,
+        model: str,
         clients: MistralClients,
         schema: type[BaseModel],
         instruction: str,
         recorder: ReplayRecord,
         stream: bool,
     ) -> None:
-        super().__init__(model=MISTRAL_REPLAY_MODEL, recorder=recorder, stream=stream)
+        super().__init__(model=model, recorder=recorder, stream=stream)
         self._clients = clients
         self._schema = schema
         self._instruction = instruction

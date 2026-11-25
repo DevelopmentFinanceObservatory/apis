@@ -53,6 +53,7 @@ from search.engine.events import DoneEvent, DoneTelemetry, Event, StepEvent
 from search.engine.exclusion_read import Exclusion, ExclusionRead
 from search.engine.extract import Extraction
 from search.engine.parser_replay import (
+    ARM_MODELS,
     FLASH_LITE_MODEL,
     MISTRAL_REPLAY_INSTRUCTION,
     PARSER_ARM_HEADER,
@@ -159,7 +160,7 @@ def test_replay_headers_fail_closed_outside_the_pinned_dev_revision(
     assert (error.value.status, _served_code(error.value)) == (403, "request_invalid")
 
 
-@pytest.mark.parametrize("arm", ["flash-lite", "ministral"])
+@pytest.mark.parametrize("arm", ["flash-lite", "ministral", "mistral-small"])
 def test_verified_replay_selects_only_a_declared_arm(monkeypatch: pytest.MonkeyPatch, arm: Arm):
     _enable_replay(monkeypatch)
     headers = _headers(arm=arm)
@@ -261,7 +262,12 @@ def test_a_request_without_replay_headers_passes_the_service_clients_and_caches(
 
 
 @pytest.mark.parametrize(
-    ("arm", "client"), [("flash-lite", ReplayGeminiLLM), ("ministral", MistralLLM)]
+    ("arm", "client"),
+    [
+        ("flash-lite", ReplayGeminiLLM),
+        ("ministral", MistralLLM),
+        ("mistral-small", MistralLLM),
+    ],
 )
 def test_a_replay_passes_its_arms_extraction_client_and_no_cache(
     monkeypatch: pytest.MonkeyPatch, arm: Arm, client: type[LLM]
@@ -285,12 +291,20 @@ def test_a_replay_passes_its_arms_extraction_client_and_no_cache(
     assert kwargs["record"].parser_replay.replay.arm == arm
 
 
-def test_the_flash_lite_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("arm", list(ARM_MODELS))
+def test_each_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch, arm: Arm):
     _enable_replay(monkeypatch)
+    monkeypatch.setattr(
+        config,
+        "_SETTINGS",
+        config.settings().model_copy(update={"mistral_api_key": SecretStr("mistral")}),
+    )
 
-    kwargs = _route_kwargs(monkeypatch, _headers() | {"accept": "text/event-stream"}, _deps())
+    kwargs = _route_kwargs(
+        monkeypatch, _headers(arm=arm) | {"accept": "text/event-stream"}, _deps()
+    )
 
-    assert kwargs["extract_llm"]._model == FLASH_LITE_MODEL
+    assert kwargs["extract_llm"]._model == ARM_MODELS[arm]
 
 
 def test_a_replay_requires_sse(monkeypatch: pytest.MonkeyPatch):
@@ -443,6 +457,7 @@ def _mistral(
             )
 
     llm = MistralLLM(
+        model=ARM_MODELS["ministral"],
         clients=_Clients("test"),
         schema=MistralReplayExtraction,
         instruction=MISTRAL_REPLAY_INSTRUCTION,
