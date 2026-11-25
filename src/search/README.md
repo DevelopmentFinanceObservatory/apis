@@ -56,6 +56,7 @@ The eval case model, the checks that score a response against it, and the paired
 - **`cases.py`**: The `Case` model, the loader that expands measure families, the eligibility rules, and `expectation_hash`.
 - **`corpus_dataset.py`**: The eligible corpus as one Pydantic Evals dataset, each case's inputs the request its file authors, and the corpus digest a run's manifest records.
 - **`checks/`**: One module per check (`disposition`, `measure`, `entities`, `provenance`, `request`, `operations`, `refusal`, `warnings`, `assumptions`, `candidates`, `parts`, `skills`, `entry_path`, `structural`, `groundedness`, `materialisation`, `task_outcome`). `score` runs them over one raw resolve response and returns a verdict (`pass`, `fail`, `unverifiable`, `unreached` or `n/a`) per check. `unreached` marks a check the expectation asserts but that never ran, because the response's status or kind is one the case does not accept, or an expected part is missing.
+- **`evaluator.py`**: The check registry as one Pydantic Evals evaluator, `SearchChecks`, which labels each check's verdict and the derived `answer` on a response.
 - **`runner.py`**: Posts each case to a running app's `/api/search/resolve`, retries infrastructure failures and degraded answers, and picks the modal sample of several by vote.
 - **`gate.py`**: The paired regression rule that turns per-sample verdicts on head and base into one verdict per case and check.
 - **`summary.py`**: Renders the driver's report as Markdown or terminal text.
