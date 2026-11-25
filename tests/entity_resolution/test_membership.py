@@ -14,11 +14,15 @@ from entity_resolution.membership import (
     MEMBERSHIP_INCOMPLETE,
     AsOfNotRecorded,
     Authority,
+    DuplicateDatedGroup,
+    EmptySpan,
     Evidence,
     Gap,
     Membership,
     MembershipPolicy,
     NotRecorded,
+    OverlappingSpans,
+    PolicyData,
     Projection,
     Row,
     Sovereignty,
@@ -332,18 +336,27 @@ def _span(member: str, start: str | None, until: str | None) -> dict[str, str | 
     return {"member": member, "valid_from": start, "valid_until": until}
 
 
-def test_editing_the_dated_rows_changes_the_authority_version() -> None:
+def test_editing_the_dated_rows_changes_the_authority_version_and_no_other_edit_does() -> None:
     base = Authority(name="base", version="1")
+    group = "groups/OECD.DAC"
     one = parse_policy(_policy_text(rows=[_span("country/AAA", "2000-01-01", None)]))
     two = parse_policy(_policy_text(rows=[_span("country/AAA", "2001-01-01", None)]))
-    assert policy_authority(base, digest=one.digest) != policy_authority(base, digest=two.digest)
+    unrelated = json.loads(_policy_text(rows=[_span("country/AAA", "2000-01-01", None)]))
+    unrelated["other_states"]["source"] = "reworded"
+    same = parse_policy(json.dumps(unrelated))
+
+    def version(held: PolicyData) -> str:
+        return policy_authority(base, digest=held.digests[group]).version
+
+    assert version(one) != version(two)
+    assert version(one) == version(same)
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "message"),
+    ("kwargs", "error"),
     [
-        ({"twice": True}, "twice"),
-        ({"rows": [_span("country/AAA", "2000-01-01", "2000-01-01")]}, "starts at or after"),
+        ({"twice": True}, DuplicateDatedGroup),
+        ({"rows": [_span("country/AAA", "2000-01-01", "2000-01-01")]}, EmptySpan),
         (
             {
                 "rows": [
@@ -351,7 +364,7 @@ def test_editing_the_dated_rows_changes_the_authority_version() -> None:
                     _span("country/AAA", "2004-01-01", None),
                 ]
             },
-            "overlapping",
+            OverlappingSpans,
         ),
         (
             {
@@ -360,12 +373,21 @@ def test_editing_the_dated_rows_changes_the_authority_version() -> None:
                     _span("country/AAA", "2004-01-01", None),
                 ]
             },
-            "overlapping",
+            OverlappingSpans,
+        ),
+        (
+            {
+                "rows": [
+                    _span("country/AAA", None, "2005-01-01"),
+                    _span("country/AAA", None, "2003-01-01"),
+                ]
+            },
+            OverlappingSpans,
         ),
     ],
 )
-def test_the_policy_file_refuses_ill_formed_dated_rows(kwargs: dict, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
+def test_the_policy_file_refuses_ill_formed_dated_rows(kwargs: dict, error: type) -> None:
+    with pytest.raises(error):
         parse_policy(_policy_text(**kwargs))
 
 

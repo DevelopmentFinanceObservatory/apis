@@ -292,17 +292,25 @@ def _outside(
     window) are not all members of the group `total` totals on every day of it
     (`region.policy_members_throughout`), as Korea is not of the DAC's before 2010. A window
     open at either end reads the part's own data `years` there, where the snapshot holds
-    them; a window open at either end with no data `years` is no test, and the option falls to
-    `_availability`'s `coverage_unknown`."""
+    them. A window open at either end with no data `years` tests only whether a party is ever a
+    member, since no dated test can be made; a window ending before the group's first row does
+    the same in `policy_members_throughout`."""
     first, last = _window_days(window)
-    if years is None and (first == date.min or last == date.max):
-        return ()
+    index = get_index()
     if years is not None and first == date.min:
         first = date(years[0], 1, 1)
     if years is not None and last == date.max:
         last = date(years[1], 12, 31)
-    index = get_index()
-    held = _group_members(total, index, lambda group: policy_members_throughout(group, first, last))
+    ever = years is None and (first == date.min or last == date.max)
+    if ever:
+        first, last = date.min, date.max
+    held = _group_members(
+        total,
+        index,
+        lambda group: (policy_members_between if ever else policy_members_throughout)(
+            group, first, last
+        ),
+    )
     return tuple(
         party
         for party in named

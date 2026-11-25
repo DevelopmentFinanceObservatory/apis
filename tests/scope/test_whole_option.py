@@ -24,6 +24,7 @@ from search.engine.region import whole_totals
 from search.models import (
     BaseIdentity,
     Entry,
+    IdentityWindow,
     IdentityWindowAll,
     IdentityWindowRange,
     OptionAvailability,
@@ -733,6 +734,9 @@ def test_a_donor_outside_the_dac_over_the_part_s_years_has_no_dac_total_whole(mo
         def __contains__(self, ref: str) -> bool:
             return ref in policy
 
+        def members(self, ref: str, *args):
+            return policy.members(ref, *args)
+
         def get(self, ref: str):
             held = policy.get(ref)
             if ref != group:
@@ -784,37 +788,50 @@ def test_the_shipped_dac_dates_hold_korea_out_of_the_whole_before_it_joined(monk
     assert isinstance(asked(2016, 2020), PartScope)
 
 
-@pytest.mark.parametrize("known", [True, False])
-def test_a_window_before_the_dac_existed_holds_a_founding_member_in_the_whole(monkeypatch, known):
-    """France is a DAC member from the group's first day, so a window reaching back before
-    1960, or open with no snapshot years to bound it, is no `part_outside_whole`."""
+def _whole_cause(monkeypatch, party: str, window: IdentityWindow, *, snapshot: bool) -> str | None:
+    """The cause a donor whole of `party` over `window` refuses with, None where it is served."""
     total, _ = _total_base(monkeypatch)
     facts = provider_fixture._dac1_facts(_TOTAL)
-    if not known:
+    if not snapshot:
         facts = ScopeFacts(index=facts.index, coverage=empty_coverage_snapshot())
-    window = IdentityWindowRange(start_year=1950, end_year=2020) if known else IdentityWindowAll()
-    base = total.model_copy(
-        update={"entities": {"origin": [provider_fixture._FRA]}, "requested_window": window}
-    )
-
+    base = total.model_copy(update={"entities": {"origin": [party]}, "requested_window": window})
     scope = _whole(_part(base, facts=facts), "donor", facts=facts)
+    return scope.cause if isinstance(scope, WholeRefusal) else None
 
-    assert not (isinstance(scope, WholeRefusal) and scope.cause == "part_outside_whole")
+
+_CHINA = "country/CHN"
 
 
-def test_an_open_window_with_no_snapshot_years_leaves_the_whole_to_coverage_unknown(monkeypatch):
-    """With no series to read the part's years from, an open window tests no membership, so
-    Korea's DAC total refuses as an unread total, not as `part_outside_whole`."""
-    total, _ = _total_base(monkeypatch)
-    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
-    base = total.model_copy(
-        update={"entities": {"origin": [_KOR]}, "requested_window": IdentityWindowAll()}
-    )
+@pytest.mark.parametrize(
+    ("party", "window", "snapshot", "outside"),
+    [
+        # Reaching back before the DAC's first year, France still belongs throughout.
+        (provider_fixture._FRA, IdentityWindowRange(start_year=1950, end_year=2020), True, False),
+        # A window wholly before the DAC tests only ever-membership, for France and Korea alike.
+        (provider_fixture._FRA, IdentityWindowRange(start_year=1950, end_year=1955), True, False),
+        (_KOR, IdentityWindowRange(start_year=1950, end_year=1955), True, False),
+        (_CHINA, IdentityWindowRange(start_year=1950, end_year=1955), True, True),
+        # An open window with no snapshot years tests only ever-membership.
+        (provider_fixture._FRA, IdentityWindowAll(), False, False),
+        (_KOR, IdentityWindowAll(), False, False),
+        (_CHINA, IdentityWindowAll(), False, True),
+        (provider_fixture._DAC_MULTILATERALS, IdentityWindowAll(), False, True),
+    ],
+)
+def test_a_window_the_dac_dates_cannot_test_asks_only_whether_a_party_was_ever_a_member(
+    monkeypatch, party, window, snapshot, outside
+):
+    cause = _whole_cause(monkeypatch, party, window, snapshot=snapshot)
 
-    scope = _whole(_part(base, facts=facts), "donor", facts=facts)
+    assert (cause == "part_outside_whole") is outside
 
-    assert isinstance(scope, WholeRefusal)
-    assert scope.cause == "coverage_unknown"
+
+def test_an_open_window_with_no_snapshot_years_leaves_a_member_to_coverage_unknown(monkeypatch):
+    """Korea was a DAC member, so with no series to read the part's years from its DAC total
+    refuses as an unread total."""
+    cause = _whole_cause(monkeypatch, _KOR, IdentityWindowAll(), snapshot=False)
+
+    assert cause == "coverage_unknown"
 
 
 def test_a_whole_serving_fewer_years_than_the_part_refuses():

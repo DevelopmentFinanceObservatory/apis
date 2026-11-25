@@ -11,6 +11,9 @@ from entity_resolution.groups import GroupRegistry, _dated, build_group_registry
 from entity_resolution.membership import (
     COUNTRY_PROJECTIONS,
     AsOfNotRecorded,
+    DatedGroupAlreadyDated,
+    DatedGroupMembersDiffer,
+    DatedGroupNotHeld,
     NotRecorded,
     Projection,
     Row,
@@ -228,21 +231,19 @@ def test_a_policy_dated_group_names_the_policy_file_as_its_authority(
 ) -> None:
     dac = registry.get("groups/OECD.DAC").authority
     assert dac.name.startswith("membership_policy.json")
-    assert policy_data().digest in dac.version
+    assert policy_data().digests["groups/OECD.DAC"] in dac.version
     assert registry.get("EuropeanUnion").authority.name == "resolvekit curated membership"
 
 
-def test_dated_refuses_a_group_resolvekit_does_not_hold_or_already_dates_or_lists_differently() -> (
-    None
-):
+def test_dated_replaces_undated_rows_and_refuses_each_mismatch() -> None:
     undated = (Row(member="country/AAA", member_class="geo.country"),)
     spans = {"country/AAA": ((date(2000, 1, 1), None),)}
     assert _dated("g", undated, spans) == (
         Row(member="country/AAA", member_class="geo.country", valid_from=date(2000, 1, 1)),
     )
-    with pytest.raises(RuntimeError, match="does not hold"):
+    with pytest.raises(DatedGroupNotHeld):
         _dated("g", None, spans)
-    with pytest.raises(RuntimeError, match="already dates"):
+    with pytest.raises(DatedGroupAlreadyDated):
         _dated("g", (Row("country/AAA", "geo.country", valid_from=date(1990, 1, 1)),), spans)
-    with pytest.raises(RuntimeError, match="differently"):
+    with pytest.raises(DatedGroupMembersDiffer):
         _dated("g", undated, {"country/BBB": ((None, None),)})

@@ -19,6 +19,9 @@ from entity_resolution.membership import (
     COUNTRY_CLASS,
     GEO_DOMAIN,
     SOVEREIGNTY_GROUP,
+    DatedGroupAlreadyDated,
+    DatedGroupMembersDiffer,
+    DatedGroupNotHeld,
     Membership,
     Row,
     Sovereignty,
@@ -121,7 +124,7 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
             entity_id=group.entity_id,
             label=group.canonical_name,
             kind="group",
-            authority=policy_authority(group_authority, digest=policy.digest)
+            authority=policy_authority(group_authority, digest=policy.digests[group.entity_id])
             if group.entity_id in policy.dated_group_rows
             else group_authority,
             dated=any(
@@ -168,16 +171,21 @@ def _dated(
     spans for the same members.
 
     Raises:
-        RuntimeError: resolvekit does not hold the group, already dates its rows, or lists
-            different members than the policy file dates.
+        DatedGroupNotHeld: resolvekit does not hold the group.
+        DatedGroupAlreadyDated: resolvekit already dates its rows.
+        DatedGroupMembersDiffer: resolvekit lists different members than the policy file dates.
     """
     if held is None:
-        raise RuntimeError(f"policy file dates group {group_id!r}, which resolvekit does not hold")
+        raise DatedGroupNotHeld(
+            f"policy file dates group {group_id!r}, which resolvekit does not hold"
+        )
     if any(row.valid_from is not None or row.valid_until is not None for row in held):
-        raise RuntimeError(f"resolvekit already dates group {group_id!r}; drop the policy override")
+        raise DatedGroupAlreadyDated(
+            f"resolvekit already dates group {group_id!r}; drop the policy override"
+        )
     classes = {row.member: row.member_class for row in held}
     if classes.keys() != spans.keys():
-        raise RuntimeError(
+        raise DatedGroupMembersDiffer(
             f"policy file dates {sorted(spans.keys() ^ classes.keys())} differently from "
             f"resolvekit's members of group {group_id!r}"
         )

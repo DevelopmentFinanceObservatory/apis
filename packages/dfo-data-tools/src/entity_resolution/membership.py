@@ -18,7 +18,7 @@ it admits, and the projections it records. A projection splits the members by cl
 Groups take their rows from resolvekit's curated membership (`groups.py`). The policy file's
 `dated_group_rows` replaces the undated rows of a group resolvekit lists without dates (the OECD
 DAC, 14 of the 55 groups being dated); such a group names the policy file as its authority, with
-a hash of the file in its version. Regions take theirs
+a hash of its own entry in its version. Regions take theirs
 from resolvekit's UN M49 containment, which holds no dates, so a region refuses `as_of`. The
 policy file composes a region from several resolvekit containers where M49 and the continent a
 reader means differ (North America), and names the region projections resolvekit leaves
@@ -97,6 +97,38 @@ class UnknownMembership(LookupError):
         self.ref = ref
 
 
+class PolicyFileError(ValueError):
+    """The policy file declares dated rows that cannot hold."""
+
+
+class DuplicateDatedGroup(PolicyFileError):
+    """The policy file dates one group in two entries."""
+
+
+class EmptySpan(PolicyFileError):
+    """A dated span starts at or after its end."""
+
+
+class OverlappingSpans(PolicyFileError):
+    """One member's dated spans for a group overlap."""
+
+
+class DatedGroupMismatch(RuntimeError):
+    """The policy file's dated rows do not fit the group resolvekit holds."""
+
+
+class DatedGroupNotHeld(DatedGroupMismatch):
+    """The policy file dates a group resolvekit does not hold."""
+
+
+class DatedGroupAlreadyDated(DatedGroupMismatch):
+    """Resolvekit already dates the group the policy file dates."""
+
+
+class DatedGroupMembersDiffer(DatedGroupMismatch):
+    """The policy file dates different members than resolvekit lists for the group."""
+
+
 class AsOfNotRecorded(ValueError):
     """`as_of` was asked of a membership whose authority records no dates."""
 
@@ -138,14 +170,15 @@ class PolicyData:
     `root` is the resolvekit id of the World, which every region sits under and which is no
     region itself. `compositions` maps a region's resolvekit id to the containers whose
     countries it holds. `dated_group_rows` maps a group's resolvekit id to each member's
-    `(valid_from, valid_until)` spans, replacing the group's undated rows."""
+    `(valid_from, valid_until)` spans, replacing the group's undated rows; `digests` maps it to a
+    hash of that group's entry alone."""
 
     root: str
     compositions: Mapping[str, tuple[str, ...]]
     other_states: frozenset[str]
     incomplete_region_projections: frozenset[Projection]
     dated_group_rows: Mapping[str, Mapping[str, tuple[tuple[date | None, date | None], ...]]]
-    digest: str
+    digests: Mapping[str, str]
 
 
 @cache
@@ -156,16 +189,17 @@ def policy_data() -> PolicyData:
 
 
 def parse_policy(text: str) -> PolicyData:
-    """The policy file's `text` as declared data, with `digest` a hash of the text.
+    """The policy file's `text` as declared data, with a `digests` entry per dated group.
 
     Raises:
-        ValueError: a group's dated rows are declared twice, or a member's spans for one group
-            start at or after their end or overlap.
+        DuplicateDatedGroup: a group's dated rows are declared twice.
+        EmptySpan: a span starts at or after its end.
+        OverlappingSpans: a member's spans for one group overlap.
     """
     raw = json.loads(text)
     groups = [entry["group"] for entry in raw["dated_group_rows"]]
     if len(set(groups)) != len(groups):
-        raise ValueError(f"policy file dates a group twice: {sorted(groups)}")
+        raise DuplicateDatedGroup(f"policy file dates a group twice: {sorted(groups)}")
     return PolicyData(
         root=raw["root"]["region"],
         compositions={
@@ -179,7 +213,12 @@ def parse_policy(text: str) -> PolicyData:
             entry["group"]: _spans_by_member(entry["group"], entry["rows"])
             for entry in raw["dated_group_rows"]
         },
-        digest=hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
+        digests={
+            entry["group"]: hashlib.sha256(
+                json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:12]
+            for entry in raw["dated_group_rows"]
+        },
     )
 
 
@@ -195,10 +234,10 @@ def _spans_by_member(
         ordered = sorted(held, key=lambda span: span[0] or date.min)
         for start, until in ordered:
             if start is not None and until is not None and start >= until:
-                raise ValueError(f"{group}: {member} has a span that starts at or after its end")
+                raise EmptySpan(f"{group}: {member} has a span that starts at or after its end")
         for (_, until), (start, _) in pairwise(ordered):
-            if until is None or (start is not None and start < until):
-                raise ValueError(f"{group}: {member} has overlapping spans")
+            if until is None or (start or date.min) < until:
+                raise OverlappingSpans(f"{group}: {member} has overlapping spans")
     return {member: tuple(held) for member, held in spans.items()}
 
 
@@ -469,7 +508,7 @@ def authority(resolver: Resolver, name: str) -> Authority:
 
 def policy_authority(base: Authority, *, digest: str) -> Authority:
     """`base`, the authority of a group's members, with the policy file that dates its rows
-    named and `digest` of the file in the version."""
+    named and `digest` of the group's dated entry in the version."""
     return Authority(
         name=f"{_POLICY_FILE} over {base.name}",
         version=f"{_POLICY_FILE} sha256 {digest}; {base.version}",
