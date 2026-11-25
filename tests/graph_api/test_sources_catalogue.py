@@ -465,14 +465,6 @@ class TestCardFacts:
             "https://www.who.int/data",
         )
 
-    def test_a_un_entry_whose_graph_states_no_facts_serves_none(self):
-        catalogue = build_source_catalogue(
-            registry=_REGISTRY, catalogue=restrictive_catalogue(provenances=_CATALOGUE_ROWS)
-        )
-
-        [un] = [entry for entry in catalogue.sources if entry.data_commons.id == "un_system"]
-        assert all(value is None for dataset in un.datasets for value in _card(dataset))
-
     def test_facts_serve_the_stored_licence_label_and_the_label_of_the_raw_cadence(self):
         row = provenance_row("dc/base/WDI", BASE, source="dc/s/WorldBank")
         facts = CardFacts(

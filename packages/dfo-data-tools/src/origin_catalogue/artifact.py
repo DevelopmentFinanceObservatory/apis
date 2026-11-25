@@ -1040,8 +1040,8 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
     entries and may lack either file, so it reads as holding none. Refuses, with
     `CatalogueArtifactError`, a missing or malformed file, a build of format
     7 or later lacking either facts file or a record in it for a UN row's
-    entry or holding either facts file whose SHA-256 differs from the
-    manifest's, UN tables breaking
+    entry, and a build of format 7 or later holding any file it reads whose
+    SHA-256 differs from the manifest's, UN tables breaking
     `UnMirror`'s invariants or holding a variable no agency's id prefix
     starts, and UN tables whose row counts or agency counts disagree with the
     manifest's."""
@@ -1084,28 +1084,31 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
         return raw
 
     label = f"catalogue build {build_id!r} at {build_uri!r}"
+    required = format_version >= _UN_FACTS_FORMAT
+    read_files = read_checked if required else read
     try:
         un_rows = _provenance_rows(
             {**item, "licence": item.get("licence", _NO_LICENCE)}
-            for item in json.loads(read("provenances"))
+            for item in json.loads(read_files("provenances"))
             if item["data_commons"] == UN_SYSTEM.id
         )
-        blocked = frozenset(_string(place) for place in json.loads(read("un"))["blocked_places"])
+        blocked = frozenset(
+            _string(place) for place in json.loads(read_files("un"))["blocked_places"]
+        )
         refs = {entry_ref(row) for row in un_rows.values()}
-        required = format_version >= _UN_FACTS_FORMAT
-        read_facts = read_checked if required else read
         dataset_facts = _decode_dataset_facts(
-            _un_entries(read_facts, "dataset_facts", files, refs, required=required, label=label)
+            _un_entries(read_files, "dataset_facts", files, refs, required=required, label=label)
         )
         documentation = _decode_source_documentation(
             _un_entries(
-                read_facts, "source_documentation", files, refs, required=required, label=label
+                read_files, "source_documentation", files, refs, required=required, label=label
             )
         )
     except (ValueError, KeyError, TypeError) as exc:
         raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
     mirror = decode_un_mirror(
-        {name: read(logical) for logical, name in _UN_MIRROR_FILES.items()}, label=label
+        {name: read_files(logical) for logical, name in _UN_MIRROR_FILES.items()},
+        label=label,
     )
     if foreign := foreign_variables(mirror):
         raise CatalogueArtifactError(

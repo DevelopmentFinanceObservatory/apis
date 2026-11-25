@@ -1786,8 +1786,8 @@ def test_a_build_missing_a_un_entry_s_facts_is_refused_from_format_7(
     assert WHO in found.source_documentation
 
 
-@pytest.mark.parametrize("logical", ["dataset_facts", "source_documentation"])
-def test_a_format_7_build_whose_un_facts_differ_from_the_manifest_checksum_is_refused(
+@pytest.mark.parametrize("logical", ["dataset_facts", "source_documentation", "provenances"])
+def test_a_format_7_build_whose_un_files_differ_from_the_manifest_checksum_is_refused(
     tmp_path, capsys, logical
 ):
     run(tmp_path)
@@ -1797,9 +1797,12 @@ def test_a_format_7_build_whose_un_facts_differ_from_the_manifest_checksum_is_re
     manifest = json.loads((build / "manifest.json").read_text())
     facts = build / manifest["files"][logical]
     entries = json.loads(facts.read_text())
-    [who] = [e for e in entries if e["ref"] == WHO]
-    if logical == "dataset_facts":
-        who["source_url"] = "https://example.org/elsewhere"
+    if logical == "provenances":
+        [who] = [e for e in entries if e["data_commons"] == UN_SYSTEM.id]
+    else:
+        [who] = [e for e in entries if e["ref"] == WHO]
+    if logical in {"dataset_facts", "provenances"}:
+        who["source_url" if logical == "dataset_facts" else "url"] = "https://example.org/elsewhere"
     else:
         who["publisher"] = "Somebody else"
     facts.write_text(json.dumps(entries))
