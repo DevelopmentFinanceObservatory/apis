@@ -152,6 +152,26 @@ dispatched commit, whether or not it's already live, since dispatch exists to fo
 commit rather than by moving traffic in the Cloud Run console: dispatch also points the
 origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)). An image older than `4be674b7d` cannot open a graph release; [deploy/graph-release.md](graph-release.md) gives the rollback floor and the environment older images read.
 
+### Rollback floor for account callers
+
+An image older than the one that accepts account callers (`feat(caller): accept an account caller from the website`) breaks once the website names a caller made with an API key as `user:<digest>`, in two ways that start at different times:
+
+- From the moment the website sends `user:` callers, its caller check answers 400 `request_invalid` to every write that names its caller with `resolve_caller`: a pin, an export prepare that mints a new export, a share create, replace or snapshot conversion, and a card create or revise. Reads and repeat exports are served as before. Analysis calls are served, but every `user:` caller counts under one shared concurrency share (`_caller_share_key` maps the refused header to `unresolved`), so a few concurrent analyses can draw 429 `caller_over_share`.
+- Once a `user:` pin principal exists, its `settle`, which a dispatched rollback runs after the services move, rewrites every pin principal that is neither a `secret-sha256:` label, an `ip:` key nor a `conversation:` key into a hash label, as if it were a raw secret (an image older than `cf209a1e0` rewrites `conversation:` pins too). Each `user:` pin then stops matching its account's repeat pins, and the rewrite runs in one committed transaction with nothing to undo it from.
+
+So no dispatched rollback may reach such an image while the website sends `user:` callers or a `user:` pin exists. If an older image is needed anyway, first set `API_KEYS_ENABLED=false` on the website and roll it onto a new revision, so it names every caller `ip:` again. Then move the services and the scheduled jobs to the older commit's image by hand, without dispatching it, so its `settle` never runs:
+
+```sh
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:$OLDER_SHA"
+for job in "$JOB_ORIGIN_CATALOGUE" "$JOB_SEARCH_CATALOGUE" "$JOB_GRAPH_RELEASE"; do
+  gcloud run jobs update "$job" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
+done
+gcloud run services update "$SERVICE_WORKER" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
+gcloud run services update "$SERVICE_APIS" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
+```
+
+This keeps the dispatch's order (jobs, then the worker, then the apis service) and its invariant that the worker and the scheduled jobs run the apis service's image. The datasets maintenance job and the two migration jobs stay on the newer image: the maintenance job's scheduled tasks run there as they do between a deploy's steps, and leaving it there is what keeps the older `settle` from ever running. The recipe skips the dispatch's catalogue and graph-release steps and relies on the older format roots still holding their last build (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/graph-release.md](graph-release.md)). Dispatch the current commit again before turning keys back on.
+
 ## Workload Identity Federation & Authentication
 
 Deployments authenticate to Google Cloud using GitHub Actions OIDC tokens exchanged via a Workload Identity Pool.
