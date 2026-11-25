@@ -259,7 +259,8 @@ def test_replay_runs_each_arm_once_per_case_in_an_order_that_varies(monkeypatch)
     }
 
 
-def test_replay_stops_sending_after_consecutive_transport_errors(monkeypatch):
+@pytest.mark.parametrize("escapes", [False, True])
+def test_replay_stops_sending_after_consecutive_transport_errors(monkeypatch, escapes):
     calls: list[str] = []
     streamed: list[m.Result] = []
 
@@ -268,6 +269,8 @@ def test_replay_stops_sending_after_consecutive_transport_errors(monkeypatch):
         result = _result(case.case_id, arm, order, replay_id)
         if case.case_id == "ok":
             return result
+        if escapes:
+            raise ConnectionError("refused")
         return replace(result, status_code=None, error="ConnectError: refused")
 
     monkeypatch.setattr(m, "_run_arm", fake_run_arm)
@@ -279,7 +282,7 @@ def test_replay_stops_sending_after_consecutive_transport_errors(monkeypatch):
     assert len(calls) == 3 + m.TRANSPORT_FAILURE_LIMIT
     assert len(stopped.value.results) == len(calls)
     assert streamed == stopped.value.results
-    assert stopped.value.cause == "ConnectError: refused"
+    assert stopped.value.cause.endswith("refused")
 
 
 def test_an_http_status_failure_resets_the_transport_error_count(monkeypatch):
@@ -309,7 +312,16 @@ def test_main_exits_non_zero_when_the_run_stops(monkeypatch, tmp_path):
     monkeypatch.setenv("SEARCH_PARSER_REPLAY_KEY", "key")
 
     code = m.main(
-        ["--url", "http://127.0.0.1:8080", "--cases", str(cases), "--output", str(output)]
+        [
+            "--url",
+            "http://127.0.0.1:8080",
+            "--cases",
+            str(cases),
+            "--output",
+            str(output),
+            "--concurrency",
+            "1",
+        ]
     )
 
     assert code == 1

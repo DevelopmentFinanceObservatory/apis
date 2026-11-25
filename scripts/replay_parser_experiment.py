@@ -480,7 +480,11 @@ async def replay(
 
     async def run_case(case: Case) -> list[Result]:
         results: list[Result] = []
+        if stop_cause is not None:
+            return results
         async with semaphore:
+            if stop_cause is not None:
+                return results
             if pace_ms:
                 await asyncio.sleep(pace_ms / 1000)
             for order, arm in enumerate(arm_order(case), start=1):
@@ -499,8 +503,7 @@ async def replay(
                     )
                 except Exception as exc:
                     result = _error_result(case, arm=arm, order=order, replay_id=replay_id, exc=exc)
-                else:
-                    observe(result)
+                observe(result)
                 results.append(result)
         for result in results:
             on_result(result)

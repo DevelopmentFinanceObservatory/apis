@@ -291,11 +291,8 @@ def test_a_replay_passes_its_arms_extraction_client_and_no_cache(
     assert kwargs["record"].parser_replay.replay.arm == arm
 
 
-@pytest.mark.parametrize(
-    ("arm", "model"),
-    [("ministral", "ministral-3b-2512"), ("mistral-small", "mistral-small-2603")],
-)
-def test_a_mistral_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch, arm: Arm, model: str):
+@pytest.mark.parametrize("arm", list(ARM_MODELS))
+def test_each_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch, arm: Arm):
     _enable_replay(monkeypatch)
     monkeypatch.setattr(
         config,
@@ -307,15 +304,7 @@ def test_a_mistral_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch, arm: Arm,
         monkeypatch, _headers(arm=arm) | {"accept": "text/event-stream"}, _deps()
     )
 
-    assert kwargs["extract_llm"]._model == model
-
-
-def test_the_flash_lite_arm_pins_its_model(monkeypatch: pytest.MonkeyPatch):
-    _enable_replay(monkeypatch)
-
-    kwargs = _route_kwargs(monkeypatch, _headers() | {"accept": "text/event-stream"}, _deps())
-
-    assert kwargs["extract_llm"]._model == FLASH_LITE_MODEL
+    assert kwargs["extract_llm"]._model == ARM_MODELS[arm]
 
 
 def test_a_replay_requires_sse(monkeypatch: pytest.MonkeyPatch):

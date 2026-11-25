@@ -214,14 +214,14 @@ MISTRAL_REPLAY_INSTRUCTION = """
 Checklist. These rules restate the instructions above in the exact JSON shape the schema needs. Apply every rule before you answer.
 
 kind
-- A query that names any measure, such as aid, GDP, debt, mortality, trade or any statistic, is "resolution", even when it starts with "show me", "what is", "data on" or "do you have". Use "catalogue" only when it asks what data exists and names no topic. Use "out_of_scope" only when no part asks for a statistic.
+- Take the first rule that applies, as the kind rules above say. "out_of_scope": no part asks for a statistic. "requires_analysis": the query asks for an argument or advice and names no data to show ("What should the next IDA replenishment prioritise?"). "catalogue": it asks what data exists and names no topic. Otherwise "resolution", including any query that names a measure, such as aid, GDP, debt or mortality, even when it starts with "show me", "what is", "data on" or "do you have".
 
 entities
 - One object for every place, country, city, region, group or organisation the query names, each listed once. A year, a measure or a bare word such as "countries" is never an entity.
 - A place named by an adjective is still an entity: "Italian aid" names Italy, "American loans" names United States, "Chinese investment" names China.
 - `text` is the English name. "X countries", "countries in X" and "X nations" name the region X with `members` true: "Latin American countries" has text "Latin America" and members true.
 - `span` copies the query's words for the place exactly.
-- `role` and `cue` come only from the query's words. "from A to B": A is "source" with cue "from", B is "recipient" with cue "to". "aid to B", "B received": B is "recipient". "A's aid", "Italian aid", "A gave": A is "source", cue the word that says so. Lending words (loans, lent, owes, debt owed to) use "creditor" and "debtor". A place that is only located ("in A", "for A") or listed side by side ("A and B") has role null and cue null.
+- `role` and `cue` come only from the query's words. "from A to B": A is "source" with cue "from", B is "recipient" with cue "to". "aid to B", "B received": B is "recipient". "A's aid", "Italian aid", "A gave": A is "source", cue the word that says so. Lending words (loans, lent, owes, debt owed to) use "creditor" and "debtor". In a flow of money, "for B" also makes B "recipient" with cue "for". A place that is only located ("literacy rate in A", "population of A") or listed side by side ("A and B") has role null and cue null.
 
 dates
 - "in 2019" or a bare "2019" is {"kind": "point", "start": "2019", "end": "2019"}.
@@ -230,8 +230,8 @@ dates
 - A future target year of a forecast belongs to the forecast operation, not to `dates`.
 
 operations
-- Most queries have no operation, so `operations` is []. Add one only for these words: "top", "most", "largest", "ranked" (rank); "total", "combined", "sum of" (aggregate); "change", "growth", "increase since" (growth); "share of", "as a share of" (share_of); "why", "explain" (explain); "forecast", "projected", or a year after the current year (forecast); "overview", "report" (report).
-- "compare A and B", "in", "from", "to" and a single year are not operations.
+- Most queries have no operation, so `operations` is []. Use the deletion test above: a phrase is an operation only when deleting it leaves the same measure. "top 5 donors" is rank; "total aid to the Sahel countries" is aggregate; "change in aid to Kenya since 2010" is growth; "share of health in total aid" is share_of; "why did aid fall" is explain; a future target year or "projected" is forecast; "an overview of" is report.
+- These are not operations: words in an indicator's own name ("GDP growth rate", "total population", "total fertility rate", "share of women in parliament"), "most recent" (a latest date), a change with no year named (a series over time), "compare A and B", and a single year.
 
 Examples in the schema's shape:
 
