@@ -124,19 +124,23 @@ The Search API evaluation scores the engine's answers to a set of cases. Each ca
 - `corpus/families/` holds the measure families the cases name.
 - `src/search/eval/checks/` holds the checks, such as `disposition`, `measure`, `entities`, `structural`, and `groundedness`.
 - `scripts/eval_paired.py` posts each case to `/api/search/resolve` over HTTP and scores the responses.
+- `src/search/eval/corpus_dataset.py` holds the eligible cases as one Pydantic Evals dataset, which single mode and the nightly run, and `src/search/eval/run_record.py` turns a run into a [`dfo-evals`](https://github.com/DevelopmentFinanceObservatory/evals) run record.
 
 `corpus/README.md` describes the case format. Scoring needs a running app and live credentials (see `.env.example`).
+
+A run record holds one trial per case, its modal sample, with every check's verdict, scored by the derived `answer` check and tagged with its case file. A case whose modal sample failed on infrastructure, or whose check could not read the graph or coverage, records an infra fault, which scores leave out.
 
 ```bash
 just corpus-check                                  # validate cases, list those that cannot gate
 just eval-app 8100                                 # serve an app with the eval profile (no response cache, no LLM memo)
 just eval-run http://127.0.0.1:8100 --file crs     # score eligible cases; or --case <id>, repeatable
+just eval-run http://127.0.0.1:8100 --records runs  # also write a dfo-evals run record under runs/apis-search/
 just eval-paired http://127.0.0.1:8100 http://127.0.0.1:8101 <base-sha>   # head against base
 ```
 
 ### The paired gate
 
-A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), three samples per case, and compares them check by check. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
+A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case runs once at head and takes up to three samples (`--samples`) when a check did not pass; a case the verdict needs base for runs three samples there, and a case that sets `repeat` takes at least that many in every round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
 
 - the case is new or its expectation changed;
 - the check passes on all three base samples and again in a confirm round (a regression);
@@ -148,7 +152,7 @@ A check that fails at base too is reported as pre-existing and does not block. A
 
 The eval jobs need repository secrets, so they skip on pull requests from forks and on drafts.
 
-A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service, writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
+A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items whose case changed. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service, writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
 ## CI workflows
 
