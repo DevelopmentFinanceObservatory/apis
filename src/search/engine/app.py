@@ -40,7 +40,7 @@ from contextlib import (
     asynccontextmanager,
     contextmanager,
 )
-from typing import Annotated, NamedTuple, TypedDict
+from typing import Annotated, NamedTuple, NotRequired, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -439,7 +439,8 @@ class _PipelineDeps(TypedDict):
     resolver: EntityResolver
     admission: Admission | None
     llm: SupportsLLM
-    extract_llm: SupportsLLM | None
+    # Present only on a parser replay, so an ordinary request calls the pipeline as before.
+    extract_llm: NotRequired[SupportsLLM]
     sdmx: EngineSdmxClient
     materialise_graph: GraphReader | None
     materialise_sdmx: MaterialiseSdmxClient | None
@@ -495,9 +496,6 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         # A replay compares live calls, so no stage reads the LLM memo, the extraction store
         # or a cached response, and its arm's client parses the query.
         "llm": _llm_mod.uncached(deps.llm) if replay_record is not None else deps.llm,
-        "extract_llm": (
-            replay_extraction_llm(replay_record) if replay_record is not None else None
-        ),
         "sdmx": deps.sdmx,
         "materialise_graph": deps.materialise_graph,
         "materialise_sdmx": deps.materialise_sdmx,
@@ -509,6 +507,8 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "part_memo": None if replay_record is not None else deps.part_memo,
         "generation": deps.generation,
     }
+    if replay_record is not None:
+        pipeline_deps["extract_llm"] = replay_extraction_llm(replay_record)
 
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)

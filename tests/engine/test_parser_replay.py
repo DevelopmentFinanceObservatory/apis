@@ -254,7 +254,7 @@ def test_a_request_without_replay_headers_passes_the_service_clients_and_caches(
     kwargs = _route_kwargs(monkeypatch, headers, deps)
 
     assert kwargs["llm"] is deps.llm
-    assert kwargs["extract_llm"] is None
+    assert "extract_llm" not in kwargs
     assert kwargs["response_cache"] is deps.response_cache
     assert kwargs["part_memo"] is deps.part_memo
     assert kwargs["record"].parser_replay is None
