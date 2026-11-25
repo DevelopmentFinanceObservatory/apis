@@ -23,6 +23,7 @@ from dfo_platform.cloud_logging import (
     stdout_handler,
     suppress_replay_logs,
 )
+from dfo_platform.request_deadline import detached_context
 from dfo_platform.trace import cloud_trace_id_from_headers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -112,7 +113,7 @@ def test_a_traceback_is_folded_into_the_message():
     assert "ValueError: boom" in message
 
 
-def test_replay_filter_drops_only_records_inside_the_suppressed_block():
+def test_replay_filter_drops_only_records_inside_the_suppressed_block_less_shared_flights():
     output = io.StringIO()
     handler = logging.StreamHandler(output)
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -126,6 +127,7 @@ def test_replay_filter_drops_only_records_inside_the_suppressed_block():
         log.warning("normal request log")
         with suppress_replay_logs(enabled=True):
             log.warning("pipeline log: production search words")
+            detached_context().run(log.warning, "shared flight log")
         log.info('resolve {"parser_replay":{"replay_id":"canary_01"}}')
     finally:
         log.handlers.clear()
@@ -134,6 +136,7 @@ def test_replay_filter_drops_only_records_inside_the_suppressed_block():
 
     assert output.getvalue().splitlines() == [
         "normal request log",
+        "shared flight log",
         'resolve {"parser_replay":{"replay_id":"canary_01"}}',
     ]
 

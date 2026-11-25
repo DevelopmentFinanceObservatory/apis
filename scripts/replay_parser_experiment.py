@@ -27,14 +27,15 @@ from urllib.parse import urlparse
 
 import httpx
 
-from search.engine.parser_replay import (
-    PARSER_ARM_HEADER,
-    PARSER_CACHE_HEADER,
-    PARSER_KEY_HEADER,
-    PARSER_REPLAY_HEADER,
-    PARSER_STREAM_HEADER,
-)
 from search.eval.apis_auth import apis_auth
+
+# The replay headers `search.engine.parser_replay` reads. The runner names them itself, since
+# importing the engine loads its settings, which a shell without them cannot.
+PARSER_REPLAY_HEADER = "X-DFO-Parser-Replay"
+PARSER_ARM_HEADER = "X-DFO-Parser-Arm"
+PARSER_KEY_HEADER = "X-DFO-Parser-Replay-Key"
+PARSER_CACHE_HEADER = "X-DFO-Parser-Cache"
+PARSER_STREAM_HEADER = "X-DFO-Parser-Stream"
 
 ARM = Literal["flash-lite", "ministral"]
 ARMS: tuple[ARM, ARM] = ("flash-lite", "ministral")
@@ -170,7 +171,7 @@ def _interpretation_summary(payload: dict[str, Any]) -> dict[str, object]:
 
 
 def _spec_ids(payload: dict[str, Any]) -> list[str]:
-    """Extract only identifiers, never response text, from an SSE payload."""
+    """Collect the spec identifiers from an SSE payload and no response text."""
     found: set[str] = set()
 
     def visit(value: object) -> None:
@@ -497,9 +498,12 @@ def _write_private_lines(path: Path, lines: Iterable[str]) -> None:
 
 
 def _open_private_output(path: Path) -> TextIO:
-    """Open ``path`` for writing with mode 0600, line-buffered so each result lands."""
+    """Create ``path`` for writing with mode 0600, line-buffered so each result lands.
+
+    Raises ``FileExistsError`` when ``path`` exists, so a rerun keeps an earlier run's results.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return os.fdopen(descriptor, "w", encoding="utf-8", buffering=1)
 
@@ -547,7 +551,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if options.cases.resolve() == options.output.resolve():
         raise SystemExit("--output must not replace the private --cases input file")
     cases = _load_cases(options.cases)
-    with _open_private_output(options.output) as output:
+    try:
+        output_file = _open_private_output(options.output)
+    except FileExistsError:
+        raise SystemExit(
+            f"--output {options.output} exists; choose a new path to keep its results"
+        ) from None
+    with output_file as output:
 
         def write_result(result: Result) -> None:
             output.write(json.dumps(asdict(result), sort_keys=True) + "\n")

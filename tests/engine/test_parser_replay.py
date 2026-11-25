@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast, override
 
@@ -21,9 +21,11 @@ from fastapi import Request
 from pydantic import SecretStr
 
 import search.engine.app as app_module
+from dfo_platform.caller import UNRESOLVED_IDENTITY
 from dfo_platform.cloud_logging import ReplayLogFilter
 from search.engine import config
 from search.engine.app import _event_source, _served_code, resolve
+from search.engine.binders import Fallbacks
 from search.engine.clients.llm import (
     LLM,
     Agreement,
@@ -37,10 +39,17 @@ from search.engine.clients.llm import (
     held_by,
     reseeded,
 )
-from search.engine.core import ResolveRecord, _settle_replay_agreement, resolve_line
+from search.engine.core import (
+    ResolveRecord,
+    _log_resolve,
+    _resolve_pipeline_events,
+    _settle_replay_agreement,
+    resolve_line,
+)
+from search.engine.degraded_reads import DegradedReads
 from search.engine.entry import raw_text
 from search.engine.errors import EngineInfraError, EngineInputError, LLMInfraError
-from search.engine.events import Event, StepEvent
+from search.engine.events import DoneEvent, DoneTelemetry, Event, StepEvent
 from search.engine.exclusion_read import Exclusion, ExclusionRead
 from search.engine.extract import Extraction
 from search.engine.parser_replay import (
@@ -57,7 +66,9 @@ from search.engine.parser_replay import (
     ReplayRecord,
     parser_replay,
 )
+from search.engine.resolve_trace import TraceOutcome
 from search.models import ResolveRequest
+from tests.engine._harness import resolve_log_lines
 
 _QUERY = "ODA to Kenya excluding grants in 2022"
 _ANSWER = Extraction(kind="resolution", variables=["ODA"]).model_dump_json()
@@ -479,6 +490,7 @@ def test_mistral_sends_its_schema_instruction_and_seed_and_validates_as_extracti
     assert schema["strict"] is True
     assert "entities" in schema["schema"]["required"]
     assert "max_tokens" not in payload
+    assert "temperature" not in payload
     [call] = record.calls
     assert (call.provider, call.attempt, call.finish_reason) == ("mistral", "second", "stop")
 
@@ -516,6 +528,17 @@ def test_mistral_streams_and_records_first_content():
         (httpx.Response(200, json={}), "KeyError", None),
         (httpx.Response(200, json={"choices": []}), "IndexError", None),
         (httpx.Response(200, text="not json"), "JSONDecodeError", None),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": _ANSWER[:5]}, "finish_reason": "error"}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                },
+            ),
+            "provider_error",
+            None,
+        ),
     ],
 )
 def test_a_failed_mistral_call_is_one_record_with_its_class_and_status(
@@ -581,20 +604,105 @@ def test_a_finished_agreement_reads_its_verdict(judge: bool, expected: bool):
     assert asyncio.run(run()) is expected
 
 
-def test_a_replay_waits_for_its_served_extractions_agreement_before_done():
-    async def run() -> bool | None:
-        async def sample() -> Sampled[str]:
-            await asyncio.sleep(0.05)
-            return Sampled("second", None, None)
+def _agreement(*, second_s: float) -> Agreement:
+    """An extraction agreement whose second sample agrees after `second_s`."""
 
-        agreement = Agreement(sample, stage="extraction")
-        agreement.read_first(lambda _second: True, delay_s=5)
-        record = _record()
-        scope = SimpleNamespace(extraction_agreement=agreement)
-        await _settle_replay_agreement(cast(Any, scope), record, hard_deadline=time.monotonic() + 5)
-        return record.extraction_agreed
+    async def sample() -> Sampled[str]:
+        await asyncio.sleep(second_s)
+        return Sampled("second", None, None)
+
+    agreement = Agreement(sample, stage="extraction")
+    agreement.read_first(lambda _second: True, delay_s=30)
+    return agreement
+
+
+def test_the_pipeline_records_a_replays_agreement_before_it_yields_done(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The SSE consumer closes the stream once it holds `done`, so the verdict must be in
+    the replay record when `done` arrives."""
+
+    async def handle(*_args: object, scope: Any, **_kwargs: object) -> AsyncGenerator[Event]:
+        scope.note_extraction(_agreement(second_s=0.05))
+        yield DoneEvent(
+            elapsed_ms=5, degraded_leg=False, trace_id="abc123", telemetry=DoneTelemetry()
+        )
+
+    monkeypatch.setattr(raw_text, "handle", handle)
+    record = ResolveRecord(parser_replay=_record())
+    request = ResolveRequest.model_validate({"input": {"kind": "raw_text", "query": _QUERY}})
+
+    async def run() -> bool | None:
+        now = time.monotonic()
+        events = _resolve_pipeline_events(
+            request,
+            graph=cast(Any, None),
+            resolver=cast(Any, None),
+            admission=cast(Any, None),
+            llm=cast(Any, None),
+            sdmx=cast(Any, None),
+            binder=cast(Any, SimpleNamespace(reads_query_text=False)),
+            start_ms=0,
+            deadline=now + 30,
+            hard_deadline=now + 32,
+            response_cache=None,
+            coverage_snapshot=cast(Any, None),
+            warn_index_drift=False,
+            record=record,
+            fallbacks=Fallbacks(),
+            request_reads=DegradedReads(),
+        )
+        async with aclosing(events):
+            async for ev in events:
+                if isinstance(ev, DoneEvent):
+                    assert record.parser_replay is not None
+                    return record.parser_replay.extraction_agreed
+        raise AssertionError("the pipeline yielded no done event")
 
     assert asyncio.run(run()) is True
+
+
+def test_a_replay_stops_waiting_for_its_agreement_a_grace_before_the_hard_cap():
+    """The `done` frame needs `finalise_grace_s` to land before the hard cap ends the
+    stream, so an unfinished second sample reads as unjudged by then."""
+    grace = config.settings().finalise_grace_s
+
+    async def run() -> tuple[bool | None, float]:
+        agreement = _agreement(second_s=30)
+        record = _record()
+        scope = SimpleNamespace(extraction_agreement=agreement)
+        hard_deadline = time.monotonic() + grace + 0.1
+        try:
+            await _settle_replay_agreement(cast(Any, scope), record, hard_deadline=hard_deadline)
+            return record.extraction_agreed, hard_deadline - time.monotonic()
+        finally:
+            agreement.task.cancel()
+
+    verdict, left = asyncio.run(run())
+    assert verdict is None
+    assert left > grace / 2
+
+
+def test_a_replay_line_carries_the_replay_verdict_and_no_query_digest(search_settings):
+    search_settings(query_hmac_key=SecretStr("query-key"))
+    replay = _record()
+    replay.extraction_agreed = False
+    request = ResolveRequest.model_validate({"input": {"kind": "raw_text", "query": _QUERY}})
+
+    with resolve_log_lines() as lines:
+        _log_resolve(
+            request,
+            ResolveRecord(parser_replay=replay),
+            caller=None,
+            transport="sse",
+            identity=UNRESOLVED_IDENTITY,
+            trace=TraceOutcome.skipped,
+        )
+
+    [line] = lines
+    assert line["query_hmac"] is None
+    assert line["extraction_agreed"] is False
+    assert line["parser_replay"]["extraction_agreed"] is False
 
 
 # -- Log privacy ----------------------------------------------------------------------------

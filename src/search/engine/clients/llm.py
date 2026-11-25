@@ -1454,7 +1454,8 @@ class MistralLLM(_ReplayLLM):
     """A parser replay's Ministral extraction client on Mistral's chat completions API.
 
     It sends the request's system instruction with `instruction` appended, its seed, and
-    `schema` as a strict JSON schema. The inherited parse validates the answer against the
+    `schema` as a strict JSON schema, and leaves sampling at the provider's defaults, as
+    production Gemini does. The inherited parse validates the answer against the
     request's own schema. With `stream` it reads server-sent chunks and records when the
     first text arrived."""
 
@@ -1482,7 +1483,6 @@ class MistralLLM(_ReplayLLM):
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0,
             "random_seed": seed,
             "prompt_cache_key": "dfo-parser-replay-v1",
             "response_format": {
@@ -1576,6 +1576,21 @@ class MistralLLM(_ReplayLLM):
             )
             # A malformed body's error can quote the answer, so the error names only the call.
             raise LLMInfraError("Mistral API request failed") from None
+        if finish_reason == "error":
+            # Mistral reports a generation that failed mid-answer as a finish reason, with
+            # the tokens it billed, so the call is a failure that still carries usage.
+            self._note(
+                provider="mistral",
+                prompt=prompt,
+                system=system,
+                schema=self._schema,
+                started=started,
+                first_content_ms=first_content_ms,
+                usage=usage,
+                finish_reason=finish_reason,
+                error="provider_error",
+            )
+            raise LLMInfraError("Mistral API request failed")
         self._note(
             provider="mistral",
             prompt=prompt,

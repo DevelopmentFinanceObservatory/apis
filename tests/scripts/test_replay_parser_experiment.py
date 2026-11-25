@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 import scripts.replay_parser_experiment as m
+from search.engine import parser_replay
 
 
 def _expected(case: dict[str, object]) -> dict[str, Any]:
@@ -274,6 +275,33 @@ def test_main_writes_a_private_output_file(monkeypatch, tmp_path):
         "one",
         "one",
     ]
+
+
+def test_main_refuses_an_existing_output_file(monkeypatch, tmp_path):
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text(json.dumps({"id": "one", "query": "private"}) + "\n")
+    output = tmp_path / "out.jsonl"
+    output.write_text("earlier result\n")
+    monkeypatch.setenv("SEARCH_PARSER_REPLAY_KEY", "key")
+
+    with pytest.raises(SystemExit, match="exists"):
+        m.main(["--url", "http://127.0.0.1:8080", "--cases", str(cases), "--output", str(output)])
+
+    assert output.read_text() == "earlier result\n"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PARSER_REPLAY_HEADER",
+        "PARSER_ARM_HEADER",
+        "PARSER_KEY_HEADER",
+        "PARSER_CACHE_HEADER",
+        "PARSER_STREAM_HEADER",
+    ],
+)
+def test_the_runner_sends_the_headers_the_engine_reads(name):
+    assert getattr(m, name) == getattr(parser_replay, name)
 
 
 @pytest.mark.parametrize(

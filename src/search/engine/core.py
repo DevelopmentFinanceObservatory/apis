@@ -135,6 +135,8 @@ class ResolveRecord:
     line's `llm_usage` adds. `pre_ms` is the time from the platform middleware receiving the
     request to the route body having passed its input checks, and `refresh_ms` is the part of
     it spent in the generation refresh; both stay None when the route does not set them.
+    `parser_replay` is a dev parser replay's record (`search.engine.parser_replay`), None
+    for every other request.
     """
 
     cache: str = "inactive"
@@ -270,6 +272,11 @@ def _log_resolve(
     (`ResolveRecord.extraction_agreed`), the part memo's hits and misses, the envelope's
     `timing_ms` total and `by_step`, and each part's own `by_step`.
 
+    `parser_replay` is null on every request but a dev parser replay, which logs its
+    `ReplayRecord.log_fields` there. A replay's `extraction_agreed` is the served
+    extraction's verdict that `ReplayRecord.extraction_agreed` holds, since a replay keeps
+    no response cache and settles no agreement of its own, and its `query_hmac` is null.
+
     `outcome` is the response's `status` for a resolution and its `kind` otherwise.
     `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
     `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
@@ -287,10 +294,10 @@ def _log_resolve(
 
     `query_hmac` is the HMAC-SHA-256 hex of `normalise_query(query).casefold()` for a raw_text
     query, the text the response cache keys on with case folded, under `SEARCH_QUERY_HMAC_KEY`.
-    It is null for other input kinds and when the key is unset. It counts repeats within a
-    deployment: digests do not compare across deployments, guessing a query offline needs the
-    key, and rotating the key breaks repeat counts across the rotation. The line carries no
-    query text.
+    It is null for other input kinds, on a parser replay and when the key is unset. It counts
+    repeats within a deployment: digests do not compare across deployments, guessing a query
+    offline needs the key, and rotating the key breaks repeat counts across the rotation. The
+    line carries no query text.
 
     Every response-derived field is null, and every list empty, when the request ended before
     its response event.
@@ -337,7 +344,11 @@ def _log_resolve(
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
                 "cache": record.cache,
-                "extraction_agreed": record.extraction_agreed,
+                "extraction_agreed": (
+                    record.parser_replay.extraction_agreed
+                    if record.parser_replay is not None
+                    else record.extraction_agreed
+                ),
                 "memo_hits": record.memo_hits,
                 "memo_misses": record.memo_misses,
                 "pre_ms": record.pre_ms,
@@ -373,7 +384,7 @@ def _log_resolve(
                 "error_code": record.error_code,
                 "timed_out": timed_out,
                 "degraded_leg": done.degraded_leg if done is not None else None,
-                "query_hmac": _query_hmac(inp),
+                "query_hmac": _query_hmac(inp) if record.parser_replay is None else None,
                 "trace": trace,
             }
         ),
@@ -494,8 +505,8 @@ async def resolve_events(
 
     ``extract_llm`` is a parser replay's extraction client (``parser_replay``), which both
     raw-text parses call in place of ``llm`` (``EntryParams.extract_llm``). Before ``done``,
-    a replay waits for its served extraction's agreement until the hard deadline and
-    records the verdict in ``record.parser_replay``.
+    a replay waits for its served extraction's agreement until ``finalise_grace_s`` before
+    the hard deadline and records the verdict in ``record.parser_replay``.
     """
     if budget is None:
         budget = request_budget(kind=request.input.kind)
@@ -942,14 +953,17 @@ async def _settle_replay_agreement(
     scope: CacheScope, replay: ReplayRecord, *, hard_deadline: float
 ) -> None:
     """Record the served extraction's agreement in `replay`, waiting for its second sample
-    until `hard_deadline` at most. The wait leaves the sample running, so `scope.release`
-    still cancels one that has not ended. The sample's own bound,
-    `llm_second_sample_settle_s` after the first was read, usually ends it first."""
+    until `finalise_grace_s` before `hard_deadline` at most, so the `done` frame still lands
+    before the hard cap ends the stream. A sample still running then reads as None. The wait
+    leaves the sample running, so `scope.release` still cancels one that has not ended. The
+    sample's own bound, `llm_second_sample_settle_s` after the first was read, usually ends
+    it first."""
     agreement = scope.extraction_agreement
     if agreement is None:
         return
     if isinstance(agreement, Agreement):
-        await asyncio.wait([agreement.task], timeout=max(0.0, hard_deadline - time.monotonic()))
+        wait_until = hard_deadline - config.settings().finalise_grace_s
+        await asyncio.wait([agreement.task], timeout=max(0.0, wait_until - time.monotonic()))
     replay.extraction_agreed = agreement_verdict(agreement)
 
 

@@ -39,7 +39,8 @@ class ReplayLogFilter(logging.Filter):
 
     A parser replay runs production queries, and any record its pipeline writes can quote
     the query or carry an exception chain that does. The replay's ``resolve`` record is
-    written after the suppressed block ends and holds no query.
+    written after the suppressed block ends and holds no query. A shared flight the replay
+    starts logs as usual (``end_replay_log_suppression``).
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -49,6 +50,14 @@ class ReplayLogFilter(logging.Filter):
 def replay_log_filter() -> ReplayLogFilter:
     """Construct the replay privacy filter for ``logging.config.dictConfig``."""
     return ReplayLogFilter()
+
+
+def end_replay_log_suppression() -> None:
+    """Let the current context's records through ``ReplayLogFilter`` again.
+
+    A shared flight serves every request that joins it, so the context it runs in
+    (``request_deadline.detached_context``) logs whichever request started it."""
+    _SUPPRESS_REPLAY_LOGS.set(False)
 
 
 @contextmanager
