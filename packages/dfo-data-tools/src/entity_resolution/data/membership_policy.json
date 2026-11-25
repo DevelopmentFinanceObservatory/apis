@@ -14,6 +14,10 @@
     "members": ["country/PSE", "country/TWN", "country/VAT", "country/XKS"],
     "source": "States outside UN membership: the UN General Assembly's non-member observer states (Holy See, State of Palestine) and states with limited recognition (Kosovo, Taiwan)"
   },
+  "country_starts": {
+    "members": { "country/ARE": "1971-12-02" },
+    "source": "Start dates for countries whose resolvekit entity records none: the United Arab Emirates formed on 2 December 1971. A start date resolvekit records (Montenegro, South Sudan, Timor-Leste) takes precedence."
+  },
   "region_gaps": {
     "projections": ["territories", "former_states", "other_states"],
     "code": "membership_incomplete",

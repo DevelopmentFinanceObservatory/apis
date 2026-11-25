@@ -135,6 +135,7 @@ class PolicyData:
     root: str
     compositions: Mapping[str, tuple[str, ...]]
     other_states: frozenset[str]
+    country_starts: Mapping[str, date]
     incomplete_region_projections: frozenset[Projection]
 
 
@@ -149,6 +150,10 @@ def policy_data() -> PolicyData:
             row["region"]: tuple(row["members_from"]) for row in raw["region_compositions"]
         },
         other_states=frozenset(raw["other_states"]["members"]),
+        country_starts={
+            member: date.fromisoformat(day)
+            for member, day in raw["country_starts"]["members"].items()
+        },
         incomplete_region_projections=frozenset(
             Projection(name) for name in raw["region_gaps"]["projections"]
         ),
@@ -179,24 +184,26 @@ class Row:
 class Sovereignty:
     """Classes a country member into exactly one of the four country projections.
 
-    A member is a country on a day when its UN membership has not ended by then: some UN row has
-    no `valid_until` or one after the day. A state that joined the UN later (Switzerland in 1995)
-    or left the list since (Taiwan in 1965) is a country on that day, so a dated group read at a
-    past date classes its members by the standing they had since. The rule never reads today's
-    date.
+    A member is a country on a day when the country existed by then (`starts`) and its UN
+    membership had not ended by then: some UN row has no `valid_until` or one after the day.
+    A state that joined the UN later (Switzerland in 1995) is a country on that day. The rule
+    never reads today's date.
 
-    `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, and `other_states`
-    the declared states outside the UN."""
+    `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, `other_states`
+    the declared states outside the UN, and `starts` the day each country with a recorded start
+    came into being."""
 
     states: Mapping[str, tuple[Row, ...]]
     dissolved: frozenset[str]
     other_states: frozenset[str]
+    starts: Mapping[str, date] = field(default_factory=dict)
 
     def classify(self, member: str, day: date) -> Projection:
         """The country projection `member` falls in on `day`."""
         if member in self.dissolved:
             return Projection.FORMER_STATES
-        if any(row.unended(day) for row in self.states.get(member, ())):
+        existed = member not in self.starts or self.starts[member] <= day
+        if existed and any(row.unended(day) for row in self.states.get(member, ())):
             return Projection.COUNTRIES
         if member in self.other_states:
             return Projection.OTHER_STATES
@@ -422,7 +429,10 @@ class MembershipPolicy:
 
 
 def authority(resolver: Resolver, name: str) -> Authority:
-    """An authority read from the resolver's bundled data."""
+    """An authority read from the resolver's bundled data.
+
+    The version names the data. The rule that classes members by country standing ships with
+    this code, so it moves with the code and not with the version."""
     return Authority(
         name=name,
         version=f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}",

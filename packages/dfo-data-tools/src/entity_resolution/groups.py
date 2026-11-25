@@ -108,6 +108,14 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
             to_dcid(entity.entity_id) for entity in countries if entity.valid_until is not None
         ),
         other_states=policy_data().other_states,
+        starts={
+            **policy_data().country_starts,
+            **{
+                to_dcid(entity.entity_id): entity.valid_from
+                for entity in countries
+                if entity.valid_from is not None
+            },
+        },
     )
     groups = [
         Membership(
