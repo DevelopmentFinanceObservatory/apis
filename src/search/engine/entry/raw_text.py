@@ -18,6 +18,7 @@ import re
 from collections.abc import AsyncGenerator, Collection, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import aclosing
+from typing import Literal
 
 from code_index.shared import get_index
 from code_index.tokens import word_tokens
@@ -108,6 +109,7 @@ from search.engine.fanout import (
 )
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.parser_replay import bound_extraction_phase, note_selected_extraction_phase
 from search.engine.qualifier_match import (
     CodedQualifier,
     _all_normalized_text_ranges,
@@ -643,11 +645,14 @@ async def _empty_query_response(
 
 
 async def _run_extract_phase(
-    query: str, *, llm: SupportsLLM, deadline: float
+    query: str, *, llm: SupportsLLM, deadline: float, phase: Literal["original", "blanked"]
 ) -> tuple[ExtractionResult, dict | None, int]:
     """Run extraction under the request deadline and return its timing."""
     t0 = now_ms()
-    extract_result, extract_usage = await _await_bounded(extract(query, llm=llm), deadline=deadline)
+    with bound_extraction_phase(phase):
+        extract_result, extract_usage = await _await_bounded(
+            extract(query, llm=llm), deadline=deadline
+        )
     timing_extract = now_ms() - t0
     return extract_result, extract_usage, timing_extract
 
@@ -724,9 +729,11 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     """
     if (stored := stored_exclusion_read(query, llm=llm)) is not None:
         reading = admit_exclusions(query, stored)
+        phase = "original" if reading.text == query else "blanked"
         result, usage, timing_extract = await _run_extract_phase(
-            reading.text, llm=llm, deadline=deadline
+            reading.text, llm=llm, deadline=deadline, phase=phase
         )
+        note_selected_extraction_phase(phase)
         timing = {"extract": timing_extract, "exclusion_read": 0}
         return _DoorRead(result, usage, reading, timing, agreed=(result.agreed,))
 
@@ -735,7 +742,7 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     speculative_samples = SecondSamples() if holder is not None else None
     speculative_llm = speculative_samples.bind(llm) if speculative_samples is not None else llm
     speculative = asyncio.create_task(
-        _run_extract_phase(query, llm=speculative_llm, deadline=deadline)
+        _run_extract_phase(query, llm=speculative_llm, deadline=deadline, phase="original")
     )
     stands = False
     try:
@@ -747,11 +754,13 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         if reading.text == query:
             result, usage, timing_extract = await speculative
             stands = True
+            note_selected_extraction_phase("original")
         else:
             discarded = await _discarded_usage(speculative, speculative_samples)
             result, usage, timing_extract = await _run_extract_phase(
-                reading.text, llm=llm, deadline=deadline
+                reading.text, llm=llm, deadline=deadline, phase="blanked"
             )
+            note_selected_extraction_phase("blanked")
             usage = sum_usage(usage, discarded)
     finally:
         speculative.cancel()

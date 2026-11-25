@@ -21,6 +21,9 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from dfo_platform.trace import get_cloud_trace_id
@@ -28,6 +31,35 @@ from dfo_platform.trace import get_cloud_trace_id
 PROJECT_ENV = "GOOGLE_CLOUD_PROJECT"
 TRACE_FIELD = "logging.googleapis.com/trace"
 JSON_FIELDS_ATTR = "json_fields"
+_SUPPRESS_REPLAY_LOGS: ContextVar[bool] = ContextVar("suppress_replay_logs", default=False)
+
+
+class ReplayLogFilter(logging.Filter):
+    """Drop legacy records emitted while a private parser replay is running.
+
+    The replay route writes one safe, query-free ``resolve`` record after its
+    request context has unwound. Legacy component records can include a raw
+    production query or exception chain, so they do not reach Cloud Logging
+    while the authenticated replay context is active.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _SUPPRESS_REPLAY_LOGS.get()
+
+
+def replay_log_filter() -> ReplayLogFilter:
+    """Construct the replay privacy filter for ``logging.config.dictConfig``."""
+    return ReplayLogFilter()
+
+
+@contextmanager
+def suppress_replay_logs(*, enabled: bool) -> Iterator[None]:
+    """Suppress handler output for the bounded private replay task only."""
+    token = _SUPPRESS_REPLAY_LOGS.set(enabled)
+    try:
+        yield
+    finally:
+        _SUPPRESS_REPLAY_LOGS.reset(token)
 
 
 def log_event(

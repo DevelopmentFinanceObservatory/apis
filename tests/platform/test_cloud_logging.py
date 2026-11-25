@@ -15,8 +15,15 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 from dfo_platform.app import Surface, create_app
-from dfo_platform.cloud_logging import PROJECT_ENV, TRACE_FIELD, JsonFormatter, stdout_handler
+from dfo_platform.cloud_logging import (
+    PROJECT_ENV,
+    TRACE_FIELD,
+    JsonFormatter,
+    replay_log_filter,
+    stdout_handler,
+)
 from dfo_platform.trace import cloud_trace_id_from_headers
+from search.engine.parser_replay import ParserReplay, bound_parser_replay
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -103,6 +110,34 @@ def test_a_traceback_is_folded_into_the_message():
 
     assert message.startswith("failed\nTraceback")
     assert "ValueError: boom" in message
+
+
+def test_replay_filter_drops_legacy_query_logs_but_keeps_normal_and_final_safe_logs():
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.addFilter(replay_log_filter())
+    log = logging.getLogger("tests.platform.replay_filter")
+    previous_level = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(handler)
+    log.propagate = False
+    replay = ParserReplay(replay_id="canary_01", arm="flash-lite", cache="bypass", stream=True)
+    try:
+        log.warning("normal request log")
+        with bound_parser_replay(replay):
+            log.warning("legacy query log: production search words")
+        # The final resolve record is emitted after bound_parser_replay unwinds.
+        log.info('resolve {"parser_replay":{"replay_id":"canary_01"}}')
+    finally:
+        log.handlers.clear()
+        log.propagate = True
+        log.setLevel(previous_level)
+
+    assert output.getvalue().splitlines() == [
+        "normal request log",
+        'resolve {"parser_replay":{"replay_id":"canary_01"}}',
+    ]
 
 
 @pytest.mark.parametrize(

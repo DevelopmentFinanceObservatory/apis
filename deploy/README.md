@@ -43,6 +43,68 @@ Related guides:
 - [deploy/origin-catalogue.md](origin-catalogue.md) covers the origin catalogue: its layout, the job that builds it, its refusals, and the deploy-order dependency the services have on it.
 - [deploy/search-catalogue.md](search-catalogue.md) covers the search catalogue: its layout, the job that builds and checks it, its events, and how `GET /api/search/catalogue` reads it.
 
+## Dev parser replay
+
+`scripts/replay_parser_experiment.py` runs an authenticated paired comparison through the
+normal `/api/search/resolve` door of a tagged, no-traffic `dfo-dev-apis` revision. Tag the
+revision `parser-replay` after the normal dev deployment has completed. Each input
+runs once through `flash-lite` and once through `ministral` in a deterministic random order.
+It records an opaque request ID for Cloud Logging joins, the accepted arm header, time to the
+first interpretation event, terminal event, response status, spec IDs, and a narrow structured
+interpretation summary. Treat results as private data because interpretation fields can repeat
+words from the input. The application cache is bypassed for every replay request. Provider prefix
+caching remains enabled and is measured.
+
+Infra must apply these dev-only settings before a replay:
+
+| Setting | Value |
+| --- | --- |
+| `SEARCH_PARSER_REPLAY_ENABLED` | `true` on the tagged no-traffic revision |
+| `SEARCH_PARSER_REPLAY_REVISION` | Exact revision name, such as `dfo-dev-apis-parser-replay-01` |
+| `SEARCH_PARSER_REPLAY_KEY` | Secret Manager value, supplied locally as `SEARCH_PARSER_REPLAY_KEY` |
+| `MISTRAL_API_KEY` | Secret Manager value for the candidate extractor |
+
+Choose the revision suffix when creating the no-traffic revision so its name matches
+`SEARCH_PARSER_REPLAY_REVISION`. The gate checks that name and the `dfo-dev-apis` service
+identity. A later dev revision that inherits the settings cannot accept replay requests.
+Remove the tag and replay settings after the study.
+
+Generate the 400 labelled synthetic cases, combine them locally with the screened production
+cohort, then use the private combined input file. The runner accepts JSONL or a JSON array with
+`id`, `query`, and optional `expected` fields. Input files stay outside source control.
+
+```bash
+uv run --extra engine --extra eval --extra datasets --extra graph \
+  python scripts/replay_parser_experiment.py \
+  --write-synthetic /private/tmp/dfo-parser-synthetic.jsonl
+
+export SEARCH_PARSER_REPLAY_KEY=...
+export DFO_APIS_ID_TOKEN=...
+uv run --extra engine --extra eval --extra datasets --extra graph \
+  python scripts/replay_parser_experiment.py \
+  --url https://parser-replay---dfo-dev-apis-zms5lj4zhq-nn.a.run.app \
+  --cases /private/path/dfo-parser-1085.jsonl \
+  --output /private/path/dfo-parser-results.jsonl \
+  --replay-id parser-study-20261125 --concurrency 3
+```
+
+For the tagged URL, set `DFO_APIS_ID_TOKEN` to a token whose audience is the underlying
+`dfo-dev-apis` service URL. The runner also accepts a loopback proxy. The main replay compares
+time to the first DFO `interpretation` and `done` SSE events. Use `--concurrency 1` and `--pace-ms`
+for a sparse pass. Result files are written mode `0600`.
+
+Join each result's `request_id` to `parser_replay.replay_id` in the `resolve` log. With
+`--stream-probe`, read `first_content_ms` from a call where `stage` is `extract`, `attempt`
+is `first`, and `extraction_phase` matches `selected_extraction_phase`. Other calls may be
+agreement samples or speculative parses discarded after DFO reads exclusions.
+
+Compute cost from per-call logs, including both extraction agreement samples, Gemini thought
+tokens, downstream Gemini calls, Jev input, and fallbacks. Report interrupted calls with missing
+provider usage separately. Current list prices are Gemini Flash-Lite at $0.30/$0.03/$2.50 per million uncached
+input, cached input, and output tokens, Ministral 3B at $0.10/$0.01/$0.10, and Jev at $0.042
+per million input tokens. Report synthetic and production cohorts separately. Arm agreement
+identifies cases for blind review. Labelled synthetic cases provide the absolute quality score.
+
 ## Continuous Deployment (`deploy.yml`)
 
 `.github/workflows/deploy.yml` holds the deploy steps. Two callers choose the triggers and the GitHub Environment, so dev and production run the same steps against the names their environment's variables hold:

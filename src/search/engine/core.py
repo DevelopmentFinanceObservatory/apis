@@ -18,7 +18,7 @@ from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import Protocol
+from typing import Protocol, cast
 
 import search.engine.config as config  # module-attribute access: SEARCH_ENGINE_MODEL/SEARCH_LLM_SEED are runtime-resolved
 from code_index.shared import get_index
@@ -50,7 +50,7 @@ from search.engine.assemble import (
 from search.engine.binders import Binder, Fallbacks, configured_binder, recording_fallbacks
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
-from search.engine.clients.llm import LLM, SupportsLLM, sum_usage
+from search.engine.clients.llm import LLM, AnyAgreement, SupportsLLM, agreement_verdict, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
@@ -65,6 +65,7 @@ from search.engine.envelope import (
 )
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.parser_replay import ParserReplay, replay_log
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.resolve_trace import (
@@ -146,6 +147,7 @@ class ResolveRecord:
     refresh_ms: int | None = None
     extraction_agreed: bool | None = None
     second_sample_usage: dict | None = None
+    parser_replay: ParserReplay | None = None
 
 
 @asynccontextmanager
@@ -193,13 +195,18 @@ async def resolve_line(
         may_wait = isinstance(exc, Exception)
         raise
     finally:
-        trace, pending = queue_resolve_trace(
-            trace_id=trace_id,
-            inp=request.input,
-            response=record.response,
-            error_code=record.error_code,
-            surface=identity.surface.value,
-        )
+        if record.parser_replay is not None:
+            # Replay queries are production inputs selected for this private experiment.
+            # Keep the opaque replay id in Cloud Logging, never the raw input in Langfuse.
+            trace, pending = TraceOutcome.skipped, None
+        else:
+            trace, pending = queue_resolve_trace(
+                trace_id=trace_id,
+                inp=request.input,
+                response=record.response,
+                error_code=record.error_code,
+                surface=identity.surface.value,
+            )
         task = asyncio.current_task()
         try:
             if pending is not None and may_wait and task is not None and not task.cancelling():
@@ -359,6 +366,7 @@ def _log_resolve(
                     if response is not None
                     else None
                 ),
+                "parser_replay": replay_log(record.parser_replay),
                 "error_code": record.error_code,
                 "timed_out": timed_out,
                 "degraded_leg": done.degraded_leg if done is not None else None,
@@ -520,50 +528,56 @@ async def resolve_events(
                 recording_fallbacks() as fallbacks,
                 recording_degraded_reads() as request_reads,
             ):
-                pipeline = _resolve_pipeline_events(
-                    request,
-                    graph=_graph,
-                    resolver=_resolver,
-                    admission=_admission,
-                    llm=_llm,
-                    sdmx=_sdmx,
-                    binder=binder,
-                    start_ms=start_ms,
-                    deadline=budget.soft,
-                    stream_slot_options=stream_slot_options,
-                    materialise_graph=materialise_graph,
-                    materialise_sdmx=materialise_sdmx,
-                    rate_cache=request_rate_cache,
-                    population_memo=population_memo,
-                    place_options_pool=place_options_pool,
-                    shared_skills_index=shared_skills_index,
-                    response_cache=response_cache,
-                    part_memo=part_memo,
-                    generation=generation,
-                    coverage_snapshot=coverage,
-                    warn_index_drift=checks.warn_index_drift,
-                    record=record,
-                    fallbacks=fallbacks,
-                    request_reads=request_reads,
-                )
-                async with aclosing(pipeline):
-                    async for event in pipeline:
-                        event = _with_request_step(
-                            _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
-                        )
-                        if isinstance(event, ResponseEvent):
-                            event = _with_response_warning(
-                                event,
-                                pair_stale_warning(
-                                    current_catalogue(),
-                                    coverage.manifest,
-                                    warn=checks.warn_pair_stale,
-                                ),
+                try:
+                    pipeline = _resolve_pipeline_events(
+                        request,
+                        graph=_graph,
+                        resolver=_resolver,
+                        admission=_admission,
+                        llm=_llm,
+                        sdmx=_sdmx,
+                        binder=binder,
+                        start_ms=start_ms,
+                        deadline=budget.soft,
+                        stream_slot_options=stream_slot_options,
+                        materialise_graph=materialise_graph,
+                        materialise_sdmx=materialise_sdmx,
+                        rate_cache=request_rate_cache,
+                        population_memo=population_memo,
+                        place_options_pool=place_options_pool,
+                        shared_skills_index=shared_skills_index,
+                        response_cache=response_cache,
+                        part_memo=part_memo,
+                        generation=generation,
+                        coverage_snapshot=coverage,
+                        warn_index_drift=checks.warn_index_drift,
+                        record=record,
+                        fallbacks=fallbacks,
+                        request_reads=request_reads,
+                    )
+                    async with aclosing(pipeline):
+                        async for event in pipeline:
+                            event = _with_request_step(
+                                _with_stale_catalogue_warning(event),
+                                step="coverage",
+                                ms=coverage_ms,
                             )
-                            record.response = event.response
-                        elif isinstance(event, DoneEvent):
-                            record.done = event
-                        yield event
+                            if isinstance(event, ResponseEvent):
+                                event = _with_response_warning(
+                                    event,
+                                    pair_stale_warning(
+                                        current_catalogue(),
+                                        coverage.manifest,
+                                        warn=checks.warn_pair_stale,
+                                    ),
+                                )
+                                record.response = event.response
+                            elif isinstance(event, DoneEvent):
+                                record.done = event
+                            yield event
+                finally:
+                    if record.parser_replay is not None:
+                        record.parser_replay.fallback_reasons = list(fallbacks.reasons)
     finally:
         closers: list[Callable[[], object]] = []
         if owns_graph and hasattr(_graph, "close"):
@@ -903,10 +917,19 @@ async def _resolve_pipeline_events(
                 yield ev
     finally:
         record.cache = scope.outcome
-        record.extraction_agreed = scope.extraction_agreed
         try:
             await scope.release()
         finally:
+            # Release settles second samples. Reading the verdict before it would leave
+            # replay telemetry (and ordinary resolve logs) unjudged even when it finished.
+            record.extraction_agreed = scope.extraction_agreed
+            if record.parser_replay is not None:
+                agreement = record.parser_replay.extraction_agreement
+                if agreement is not None:
+                    record.parser_replay.extraction_agreed = agreement_verdict(
+                        cast(AnyAgreement, agreement)
+                    )
+                record.extraction_agreed = record.parser_replay.extraction_agreed
             record.second_sample_usage = scope.second_sample_usage()
 
 

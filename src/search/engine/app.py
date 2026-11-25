@@ -141,6 +141,11 @@ from search.engine.options.options_response_cache import (
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import compute_options
+from search.engine.parser_replay import (
+    PARSER_RESPONSE_HEADER,
+    bound_parser_replay,
+    parser_replay,
+)
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.resolve_trace import drain_resolve_traces
 from search.engine.response_cache import ResponseCache
@@ -301,7 +306,7 @@ async def _event_source(
     """
     queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
-    async def produce() -> None:
+    async def enqueue_frames() -> None:
         last_queued = False
         try:
             with request_deadline(hard_deadline):
@@ -328,6 +333,12 @@ async def _event_source(
                 record.error_code = refusal.UNHANDLED_DEFAULT.code
                 frame = f"event: error\ndata: {json.dumps({**problem, 'kind': 'error'})}\n\n"
                 queue.put_nowait(_Frame(frame, last=True))
+
+    async def produce() -> None:
+        # Classifying a terminal error can log an exception chain from the pipeline.
+        # Keep that classification in the private replay context with the pipeline.
+        with bound_parser_replay(record.parser_replay):
+            await enqueue_frames()
 
     async def heartbeat() -> None:
         while True:
@@ -440,6 +451,12 @@ class _PipelineDeps(TypedDict):
 
 async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
+    replay = parser_replay(request)
+    if replay is not None and body.input.kind != "raw_text":
+        raise EngineInputError("Parser replay accepts raw_text searches only.", status=422)
+    if replay is not None and not _accepts_sse(request):
+        raise EngineInputError("Parser replay requires an SSE request.", status=422)
+
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
         raise EngineInputError(
             f"This deployment does not serve the {body.input.kind!r} input door; consult "
@@ -469,7 +486,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "graph": deps.graph,
         "resolver": deps.resolver,
         "admission": deps.admission,
-        "llm": deps.llm,
+        # A replay compares live parser paths. Its Gemini stages therefore cannot reuse
+        # a served extraction or LLM memo; Mistral is selected later by extraction alone.
+        "llm": _llm_mod.uncached(deps.llm) if replay is not None else deps.llm,
         "sdmx": deps.sdmx,
         "materialise_graph": deps.materialise_graph,
         "materialise_sdmx": deps.materialise_sdmx,
@@ -477,8 +496,8 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "population_memo": deps.population_memo,
         "place_options_pool": deps.place_options_pool,
         "shared_skills_index": deps.skills_index,
-        "response_cache": deps.response_cache,
-        "part_memo": deps.part_memo,
+        "response_cache": None if replay is not None else deps.response_cache,
+        "part_memo": None if replay is not None else deps.part_memo,
         "generation": deps.generation,
     }
 
@@ -493,7 +512,7 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         and deps.skills_index is not None
     ):
         await deps.skills_index.ready(timeout_s=(budget.soft - time.monotonic()) / 2)
-    record = ResolveRecord()
+    record = ResolveRecord(parser_replay=replay)
     record.refresh_ms = refresh_ms
     received = getattr(request.state, "received", None)
     if received is not None:
@@ -502,6 +521,15 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
     if _accepts_sse(request):
+        headers = {
+            # `no-transform` prevents intermediaries such as the Next dev proxy from
+            # gzip-buffering progressive frames into one burst.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        if replay is not None:
+            headers[PARSER_RESPONSE_HEADER] = replay.arm
         return StreamingResponse(
             _event_source(
                 resolve_events(
@@ -514,13 +542,7 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
                 ),
             ),
             media_type="text/event-stream",
-            headers={
-                # `no-transform` prevents intermediaries such as the Next dev proxy from
-                # gzip-buffering progressive frames into one burst.
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
+            headers=headers,
         )
 
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
@@ -530,12 +552,15 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     ):
         with request_deadline(budget.hard):
             async with asyncio.timeout(budget.hard - time.monotonic()):
-                result: ResolveResponse = await resolve_async(
-                    body, budget=budget, record=record, **pipeline_deps
-                )
+                with bound_parser_replay(replay):
+                    result: ResolveResponse = await resolve_async(
+                        body, budget=budget, record=record, **pipeline_deps
+                    )
             # The degraded-leg flag rides in a header so the body contract stays unchanged.
             degraded = record.done is not None and record.done.degraded_leg
-            headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
+            headers = {DEGRADED_LEG_HEADER: "1"} if degraded else {}
+            if replay is not None:
+                headers[PARSER_RESPONSE_HEADER] = replay.arm
             return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
