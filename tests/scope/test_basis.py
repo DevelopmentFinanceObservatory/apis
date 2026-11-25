@@ -65,6 +65,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityShapeSchema,
     IdentityWindowRange,
+    Operation,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -112,6 +113,7 @@ from tests.materialise.conftest import FakeGraphReader
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _USA = "country/USA"
+_G7 = "GroupOfSeven"
 _KEN = "country/KEN"
 _DAC1 = "provenance/OECDDAC1"
 _DAC2A = "provenance/OECDDAC2A"
@@ -206,15 +208,17 @@ def _member_node(dcid: str) -> dict:
 
 
 def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
-    """The United States, Kenya and `members`, which recall returns for `variable`."""
+    """The United States, Kenya, the G7 and `members`, which recall returns for
+    `variable`."""
     return FakeGraph(
         nodes={
             _USA: {"label": "United States", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
+            _G7: {"label": "Group of Seven", "type": "Place"},
             **{dcid: _member_node(dcid) for dcid in members},
         },
         detect={variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
-        resolve={"United States": _USA, "Kenya": _KEN},
+        resolve={"United States": _USA, "Kenya": _KEN, "G7": _G7},
     )
 
 
@@ -223,16 +227,22 @@ _MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
 
 class _PickingLLM:
     """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
-    shape, so the whole menu is the house policies' pool; reads no quantity and rates no
-    word. It drafts `bindings` on its pick."""
+    shape, so the whole menu is the house policies' pool; reads `quantity`, no quantity by
+    default, and rates no word. It drafts `bindings` on its pick."""
 
-    def __init__(self, pick: int = 0, bindings: Sequence[SlotBindingDraft] = ()) -> None:
+    def __init__(
+        self,
+        pick: int = 0,
+        bindings: Sequence[SlotBindingDraft] = (),
+        quantity: QuantityOutput | None = None,
+    ) -> None:
         self.pick = pick
         self.bindings = bindings
+        self.quantity = quantity
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
-            return NO_QUANTITY
+            return NO_QUANTITY if self.quantity is None else (self.quantity, None)
         if schema is StatedWordsOutput:
             return NO_RATING
         match = _MENU_SIZE.search(prompt)
@@ -248,16 +258,22 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     _cover(monkeypatch, _DAC1_MEMBERS)
 
 
-def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...], *, unit: str = "USD") -> None:
-    """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
-    the DAC1 members `dac1`, which may hold members of other DAC1 aid types, all in
-    `unit`."""
+def _cover(
+    monkeypatch: pytest.MonkeyPatch,
+    dac1: tuple[str, ...],
+    *,
+    unit: str = "USD",
+    donors: tuple[str, ...] = (_USA,),
+) -> None:
+    """Series for the United States over 2005 to 2024 in every DAC2a and CRS member, and
+    for `donors` in the DAC1 members `dac1`, which may hold members of other DAC1 aid
+    types, all in `unit`."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
         [
-            *((dcid, "dac1", _USA, ABSENT_ENTITY, _YEARS) for dcid in dac1),
+            *((dcid, "dac1", donor, ABSENT_ENTITY, _YEARS) for dcid in dac1 for donor in donors),
             *((dcid, "dac2a", _USA, _KEN, _YEARS) for dcid in _DAC2A_MEMBERS),
             *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
         ],
@@ -282,11 +298,12 @@ def _resolve_part(
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
+    quantity: QuantityOutput | None = None,
 ) -> DefinitePart:
     response = offline_resolve(
         request,
         graph=_graph(variable, members),
-        llm=_PickingLLM(pick),
+        llm=_PickingLLM(pick, quantity=quantity),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     assert isinstance(response, Resolution), response
@@ -301,8 +318,9 @@ def _resolve(
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
+    quantity: QuantityOutput | None = None,
 ) -> Spec:
-    return _resolve_part(request, variable, pick=pick, members=members).spec
+    return _resolve_part(request, variable, pick=pick, members=members, quantity=quantity).spec
 
 
 def _ask(
@@ -314,14 +332,24 @@ def _ask(
     message: str | None = None,
     carried: list[Entry] | None = None,
     members: tuple[str, ...] = _ALL_MEMBERS,
+    donor: str = "United States",
+    operations: list[Operation] | None = None,
+    quantity: QuantityOutput | None = None,
 ) -> Spec:
-    entities = [ParsedEntity(text="United States", role_text="from")]
+    entities = [ParsedEntity(text=donor, role_text="from")]
     if recipient:
         entities.append(ParsedEntity(text="Kenya", role_text="to"))
     return _resolve(
         ResolveRequest(
             input=ParsedInput(
-                parts=[ParsedPart(variable_text=variable, entities=entities, time_text=time)],
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=entities,
+                        time_text=time,
+                        operations=operations or [],
+                    )
+                ],
                 user_message=message,
                 carried_entries=carried,
             )
@@ -329,6 +357,7 @@ def _ask(
         variable,
         pick=pick,
         members=members,
+        quantity=quantity,
     )
 
 
@@ -927,7 +956,7 @@ def test_the_options_are_the_bases_the_parts_dataset_publishes():
         ("measure_basis:net", "net disbursements, current USD", "available", None),
         (
             "measure_basis:grant_equivalent",
-            "grant equivalents (OECD headline), current USD",
+            "grant equivalents, current USD",
             "unavailable",
             "basis_not_published",
         ),
@@ -1736,6 +1765,75 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     assert "provenance" not in (spec.definition.identity.facets or {})
     assert _served_basis(spec) == _NET_DAC1
     assert scope.compiled.spec_id == spec.spec_id == scope.base.spec_id
+
+
+@pytest.mark.parametrize(
+    ("donor", "covered"),
+    [
+        pytest.param("United States", (_USA,), id="country"),
+        pytest.param("G7", (_G7,), id="group-total"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("carried", "option", "provenance"),
+    [
+        pytest.param(None, "measure_basis:oecd_headline", "default", id="convention"),
+        pytest.param("measure_basis:net", "measure_basis:net", "carried", id="carried-net"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("variable", "quantity"),
+    [
+        pytest.param("share of aid", None, id="worded-share"),
+        pytest.param(
+            "aid in total aid",
+            QuantityOutput(stated_form="share", base_words="total aid", denominator_index=0),
+            id="stated-share",
+        ),
+    ],
+)
+def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
+    monkeypatch: pytest.MonkeyPatch,
+    donor: str,
+    covered: tuple[str, ...],
+    carried: str | None,
+    option: str,
+    provenance: str,
+    variable: str,
+    quantity: QuantityOutput | None,
+):
+    """A part a `share_of` operation divides by its whole may name the share in its words
+    ("share of aid") or have the quantity read state it with the whole as its base, and the
+    share and its base are the operation's: the part's series is the aid, a level, so no
+    shape is refused for holding no share, and a donor's window crossing 2018 is counted on
+    the OECD headline per year, or on the basis a carried entry asks for."""
+    _cover(monkeypatch, _DAC1_MEMBERS, donors=covered)
+    entries = (
+        [
+            Entry(
+                axis="measure_basis",
+                option_id=carried,
+                provenance="carried",
+                origin=ChoiceOrigin(choice_id="earlier:measure_basis"),
+            )
+        ]
+        if carried is not None
+        else None
+    )
+
+    spec = _ask(
+        variable,
+        time="2015-2023",
+        recipient=False,
+        donor=donor,
+        carried=entries,
+        operations=[Operation(verb="share_of", phrase=variable)],
+        quantity=quantity,
+    )
+
+    assert _basis_choice(spec)[:2] == (option, provenance)
+    assert _served_basis(spec) == _NET_DAC1
+    assert [e.ref for e in spec.resolved.entities] == list(covered)
 
 
 @pytest.mark.parametrize(

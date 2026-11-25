@@ -546,9 +546,11 @@ def _read_quantity_answer(
     "debt service to private creditors" read as a rate on "private creditors", a
     qualifier, states no form. An unquoted rate or share stands, since a share of people
     quotes no base by design ("HIV prevalence among young women" reads as a share), as
-    does a per-person, per-head or per-area form. Return whether the output is well
-    formed: a grounded index outside the list is a malformed output, as an out-of-range
-    shape index is, and the part refuses ``variable_not_resolved``. When the denominator
+    does a per-person, per-head or per-area form. A form the part's operations compute
+    (`ResolveState.operation_forms`) drops with the base it names: under `share_of`, "share
+    of bilateral ODA in total ODA" asks for bilateral ODA, and the operation divides it by
+    its whole. Return whether the output is well formed: a grounded index outside the
+    list is a malformed output, as an out-of-range shape index is, and the part refuses ``variable_not_resolved``. When the denominator
     read failed (``state.denominator_read_failure``), a stated form or any grounded
     index, "none of these" included, would be judged on reads that are missing, so the
     read's error is raised.
@@ -570,6 +572,12 @@ def _read_quantity_answer(
                 quantity.base_words,
             )
             stated_form = None
+    if stated_form in state.operation_forms:
+        logger.info(
+            "quantity read states %s, which the part's operation computes; no form read",
+            stated_form,
+        )
+        stated_form, index = None, None
     failure = state.denominator_read_failure
     if failure is not None and (stated_form is not None or index is not None):
         raise failure

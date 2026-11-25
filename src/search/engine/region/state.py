@@ -62,7 +62,9 @@ from search.engine.quantity import (
     NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
+    operation_forms,
     quantity_requirement,
+    without_forms,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.convertibility import UnitCoverage
@@ -1040,6 +1042,8 @@ class ResolveState:
     # The normalisation this leg names, read from its variable and its sidecar qualifier
     # phrases (`quantity.quantity_requirement`), with the form the quantity read states
     # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
+    # A form one of its operations computes is the operation's (`operation_forms`), so
+    # neither reading holds it.
     quantity_requirement: QuantityRequirement = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
@@ -1490,8 +1494,11 @@ class ResolveState:
     identity_entities: list[Entity] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.quantity_requirement = quantity_requirement(
-            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
+        self.quantity_requirement = without_forms(
+            quantity_requirement(
+                [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
+            ),
+            self.operation_forms,
         )
         self.frame = door_frame(
             door=self.door,
@@ -1510,6 +1517,13 @@ class ResolveState:
             operations=self.operations,
             open_axes=self.open_axes,
         )
+
+    @property
+    def operation_forms(self) -> frozenset[NamedNormalisation]:
+        """The forms this leg's operations compute (`quantity.operation_forms`): a share
+        under `share_of`. The leg's series holds none of them, so its form readings drop
+        them."""
+        return operation_forms(operation.verb for operation in self.operations)
 
     @property
     def undirected_axis(self) -> RoleAxis | None:

@@ -39,7 +39,7 @@ from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.bound_values import ratio_twins_of, shape_five_tuple
 from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
 from search.engine.shape import ShapeDraft, counts_persons, is_role_bearing, measures_count
-from search.models import GraphRef, QuantityForm
+from search.models import GraphRef, OperationVerb, QuantityForm
 from unit_words.unit_class import is_per_head_denominator
 
 if TYPE_CHECKING:
@@ -452,6 +452,29 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
         named=frozenset().union(*(query_normalisation(p, strong=True) for p in phrases)),
         framing=frozenset().union(*(query_normalisation(p, strong=False) for p in phrases)),
     )
+
+
+# The form each operation verb computes over the part's data. A part carrying the verb
+# answers with the series the operation divides, so the form names the operation's result
+# and no series form: "share of bilateral ODA" under `share_of` asks for bilateral ODA,
+# which the share divides by its whole.
+_OPERATION_FORMS: Mapping[OperationVerb, NamedNormalisation] = {"share_of": "share"}
+
+
+def operation_forms(verbs: Iterable[OperationVerb]) -> frozenset[NamedNormalisation]:
+    """The forms the operations of `verbs` compute (`_OPERATION_FORMS`), which the part's
+    own series is not asked to hold."""
+    return frozenset(form for verb in verbs if (form := _OPERATION_FORMS.get(verb)) is not None)
+
+
+def without_forms(
+    requirement: QuantityRequirement, forms: frozenset[NamedNormalisation]
+) -> QuantityRequirement:
+    """`requirement` without `forms`, the forms the part's operations compute
+    (`operation_forms`)."""
+    if not forms:
+        return requirement
+    return QuantityRequirement(named=requirement.named - forms, framing=requirement.framing - forms)
 
 
 def with_stated_form(
