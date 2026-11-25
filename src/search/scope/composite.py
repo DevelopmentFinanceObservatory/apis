@@ -859,8 +859,8 @@ def _stat_vars(
     StatVars a mint of each component serves (None where the index does not settle some
     component's members), the served date
     range spans the years the components serve, and `sums_components` states whether a
-    groupby sum adds the components (`code_index.composites.components_sum`), the rule the
-    mint sums by."""
+    groupby sum collapses the components (`code_index.composites.components_sum`), the rule
+    the mint collapses by."""
     years = sorted({year for item in served for year in item.served})
     confirmed = sum(
         len(

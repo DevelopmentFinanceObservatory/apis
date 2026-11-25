@@ -62,13 +62,15 @@ old rows until `DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS`."""
 
 
 def components_sum(composite: CompositeDeclaration) -> bool:
-    """Whether a Datasets groupby whose `by` keeps no `stat_var` adds the members of
-    `composite`'s different components into one series per cell: true for a stacked
-    composite, whose components are parts of one total by declaration, and false for a
-    spliced one. The mint sums by it (`datasets_api.groupby.sums_components`) and Search
-    serves it (`ResolvedStatVars.sums_components`), so the two cannot disagree. A cell
-    holding one component's line serves that line."""
-    return composite.kind == "stacked"
+    """Whether a Datasets groupby whose `by` keeps no `stat_var` collapses the members of
+    `composite`'s different components into one series per cell: true for both kinds. A
+    stacked composite's components are parts of one total by declaration, so the collapse
+    adds them. A spliced composite's components each serve their own years, so a cell holds
+    one component's line and the collapse serves that line; the mint refuses a spliced frame
+    whose cell holds rows of two components (`datasets_api.groupby.SpliceCheck`) and never
+    adds them. The mint collapses by it (`datasets_api.groupby.sums_components`) and Search
+    serves it (`ResolvedStatVars.sums_components`), so the two cannot disagree."""
+    return composite.kind in ("stacked", "spliced")
 
 
 def _jsonable(value: object) -> object:

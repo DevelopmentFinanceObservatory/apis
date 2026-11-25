@@ -113,6 +113,7 @@ from datasets_api.decode import build_decode_plan
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.failures import FoldPermitWaitExpired
 from datasets_api.groupby import (
+    SpliceCheck,
     adds_stat_vars,
     collapse_axes,
     contributing_dcids,
@@ -125,6 +126,7 @@ from datasets_api.groupby import (
     refuse_unknown_by_axes,
     rekeys_stat_vars,
     roll_up_levels,
+    splices_components,
     sums_components,
     sums_stat_vars,
     unsummed_axes,
@@ -772,8 +774,9 @@ def _reshape_groupby_collapse(
     """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
     selection on axes the frame decodes, a sum checks the groups it sums. The checks before
     the folds read every row: provenance disagreement, decode gaps (which refuse a level
-    roll-up's missing ancestor) and StatVar collision, so they refuse as the same render
-    without a selection does. Then only the rows whose `stat_var_<axis>` cell is a selected
+    roll-up's missing ancestor), StatVar collision and, for a spliced composite's components,
+    a cell holding rows of two components (`groupby.SpliceCheck`), so they refuse as the same
+    render without a selection does. Then only the rows whose `stat_var_<axis>` cell is a selected
     code reach the folds (`_selected_mask`, `_selected_table_rows`), so a fold precondition
     (facet homogeneity, missing members, a finite total, the expected population, a unique
     grain) reads the selected groups alone, and a fault in a group the selection leaves out
@@ -795,6 +798,24 @@ def _reshape_groupby_collapse(
     dataset = next(iter(set(provenance_refs)), None)
     composite = _frame_composite(code_index, provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
+    missing_declared_as_zero = absent_member_reads_zero(code_index, dataset)
+    splice = (
+        SpliceCheck(
+            composite,
+            index=code_index,
+            cell_columns=(
+                *(column for column in entity_columns if column in table.columns),
+                TIME_PERIOD_COLUMN,
+            ),
+            members=decode_lookup.keys(),
+            lookup=decode_lookup,
+            decoded_code_systems=decoded_code_systems,
+            missing_reads_zero=missing_declared_as_zero,
+            selection=selection,
+        )
+        if composite is not None and splices_components(composite, components=components)
+        else None
+    )
     if frame_chunks is None:
         if decode_plan is not None:
             current, decode_warnings = apply_reshapes(current, plan=ReshapePlan(decode=decode_plan))
@@ -812,6 +833,9 @@ def _reshape_groupby_collapse(
             decoded_code_systems=decoded_code_systems,
             composite=composite,
         )
+        if splice is not None:
+            _note_splice_rows(splice, current)
+            splice.refuse()
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
         if selection is not None:
@@ -824,7 +848,6 @@ def _reshape_groupby_collapse(
             refs=decode_lookup.keys(),
             code_systems=decoded_code_systems,
         )
-    missing_declared_as_zero = absent_member_reads_zero(code_index, dataset)
     summable_columns = frozenset(
         f"{_STAT_VAR_COLUMN}_{code_system}"
         for code_system in summable_axes(code_index.declarations)
@@ -852,6 +875,11 @@ def _reshape_groupby_collapse(
             axis_population = ExpectedPopulation(
                 columns=remaining_columns, members=projected_members
             )
+            # A spliced cell holds one component's members, so the fold reads the others'
+            # absence there as no row, and `splice` checks the holding component's members.
+            missing_reads_zero = missing_declared_as_zero or (
+                splice is not None and axis == _STAT_VAR_COLUMN
+            )
             if axis_index == 0 and frame_chunks is not None:
                 # Fold the first axis with one output-group accumulator and the previous grain key.
                 # Later axes operate on the reduced, one-row-per-group table.
@@ -867,11 +895,11 @@ def _reshape_groupby_collapse(
                     (*table.columns, *decoded_column_names_before_collapse)
                 )
                 outcome, streaming_contributors, decode_warnings = _stream_first_axis_collapse(
-                    frame_chunks,
+                    frame_chunks if splice is None else _noting_splice(frame_chunks, splice),
                     axis=axis,
                     classification=classification,
                     summable_axes=summable_columns,
-                    missing_declared_as_zero=missing_declared_as_zero,
+                    missing_declared_as_zero=missing_reads_zero,
                     expected_population=axis_population,
                     decode_plan=decode_plan,
                     selection=selection,
@@ -890,6 +918,8 @@ def _reshape_groupby_collapse(
                     decoded_code_systems=decoded_code_systems,
                     composite=composite,
                 )
+                if splice is not None:
+                    splice.refuse()
                 if outcome.violation is not None:
                     raise outcome.violation
                 assert outcome.table is not None
@@ -900,7 +930,7 @@ def _reshape_groupby_collapse(
                     collapsed,
                     axis=axis,
                     summable_axes=summable_columns,
-                    missing_declared_as_zero=missing_declared_as_zero,
+                    missing_declared_as_zero=missing_reads_zero,
                     expected_population=axis_population,
                 )
             else:
@@ -910,7 +940,7 @@ def _reshape_groupby_collapse(
                         groupby=GroupbyPlan(
                             axis=axis,
                             summable_axes=summable_columns,
-                            missing_declared_as_zero=missing_declared_as_zero,
+                            missing_declared_as_zero=missing_reads_zero,
                             expected_population=axis_population,
                         )
                     ),
@@ -929,7 +959,12 @@ def _reshape_groupby_collapse(
             current = cast(Table, rows_table(collapsed))
 
     adds = adds_stat_vars(
-        contributors, index=code_index, kept=kept, levels=levels or {}, components=components
+        contributors,
+        index=code_index,
+        kept=kept,
+        levels=levels or {},
+        components=components,
+        composite=composite,
     )
     if not grammar_frame:
         return current, decode_plan, None
@@ -971,6 +1006,26 @@ def _reshape_groupby_collapse(
         adds=adds,
     )
     return current, decode_plan, collapse_info
+
+
+def _note_splice_rows(splice: SpliceCheck, table: Table) -> None:
+    """Note every row of `table` in `splice`."""
+    positions = [table.columns.index(column) for column in splice.cell_columns]
+    stat_var = table.columns.index(_STAT_VAR_COLUMN)
+    splice.note(
+        [row[stat_var] for row in table.rows],
+        (tuple(row[position] for position in positions) for row in table.rows),
+    )
+
+
+def _noting_splice(frame_chunks: Iterable[Table], splice: SpliceCheck) -> Iterator[Table]:
+    """`frame_chunks`, frame slices (`_FrameSlice`), each noted in `splice` from its Arrow
+    table as it passes."""
+    for chunk in frame_chunks:
+        arrow = cast(_FrameSlice, chunk).table
+        cells = [arrow.column(column).to_pylist() for column in splice.cell_columns]
+        splice.note(arrow.column(_STAT_VAR_COLUMN).to_pylist(), zip(*cells, strict=True))
+        yield chunk
 
 
 def _selected_mask(table: pa.Table, selection: Mapping[str, frozenset[str]]) -> pa.Array:
