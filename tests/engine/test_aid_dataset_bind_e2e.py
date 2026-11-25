@@ -32,7 +32,14 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from entity_resolution import Ambiguous, Entity, EntityResolutionError, EntityResolver, Resolution
+from entity_resolution import (
+    Ambiguous,
+    Entity,
+    EntityResolutionError,
+    EntityResolver,
+    Resolution,
+    Resolved,
+)
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
@@ -1156,7 +1163,7 @@ def _total_oda_resolve(
         resolve={"United States": _USA, "US": _USA, "United Kingdom": _GBR, "UK": _GBR},
         obs={},
     )
-    binder = RatingBinder(GeminiBinder(), {"US": 0.0, "UK": 0.0})
+    binder = RatingBinder(GeminiBinder(), dict(_RATED_UNSTATED))
     response = offline_resolve(
         ResolveRequest(input=ParsedInput(parts=[part])),
         graph=graph,
@@ -1169,6 +1176,9 @@ def _total_oda_resolve(
 
 
 _FROM_THE_US = {"text": "United States", "role_text": "donor"}
+# The words the binder rates unstated on DAC1's total ODA, as the deployed binder rates "US"
+# in "total US ODA".
+_RATED_UNSTATED: dict[str, float] = {"US": 0.0, "UK": 0.0}
 
 
 @pytest.mark.parametrize(
@@ -1257,13 +1267,13 @@ def test_a_failed_restatement_read_leaves_the_word_uncovered(monkeypatch: pytest
     """A resolver failure while reading "US" restates nothing: the part refuses on the word,
     as it does with no restatement rule, and the read is noted as lost."""
     noted: list[str] = []
-    note = election_module.note_degraded_read
+    note = election_module.note_lost_read
 
-    def noting(read: str) -> None:
+    def noting(read: str, exc: BaseException) -> None:
         noted.append(read)
-        note(read)
+        note(read, exc)
 
-    monkeypatch.setattr(election_module, "note_degraded_read", noting)
+    monkeypatch.setattr(election_module, "note_lost_read", noting)
     part, asked = _total_oda_resolve(
         monkeypatch,
         ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
@@ -1275,6 +1285,38 @@ def test_a_failed_restatement_read_leaves_the_word_uncovered(monkeypatch: pytest
     assert part.no_data.reason == "qualifier_not_bound"
     assert [term.text for term in part.no_data.unbound_qualifiers] == ["US"]
     assert "restated entity read" in noted
+
+
+def test_a_stretch_reaching_the_party_unlisted_restates_only_its_party_word(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "US government" resolves to the United States without being a name or alias the
+    resolver lists for it, so it is no restatement as a whole: "US" alone restates the donor
+    and "government", a restriction of its own, stays uncovered and the part refuses it."""
+    monkeypatch.setitem(_RATED_UNSTATED, "government", 0.0)
+    part, _asked = _total_oda_resolve(
+        monkeypatch,
+        ParsedPart(variable_text="total US government ODA", entities=[_FROM_THE_US]),
+        {"US government": Resolved(entity=_country(_USA, "United States"))},
+    )
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == ["government"]
+
+
+def test_log_mode_asks_the_resolver_no_restatement(
+    monkeypatch: pytest.MonkeyPatch, search_settings: Callable[..., object]
+):
+    """In log mode the coverage rule's records only feed the line the pass logs, so the
+    restatement read is not made."""
+    search_settings(qualifier_coverage="log")
+
+    _part, asked = _total_oda_resolve(
+        monkeypatch, ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US])
+    )
+
+    assert asked == {"United States"}
 
 
 def test_a_variable_word_naming_a_party_the_part_does_not_bind_stays_unbound(

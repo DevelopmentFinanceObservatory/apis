@@ -103,7 +103,12 @@ from search.engine.region.source_choice import (
     idle_inclusion_warnings,
     with_idle_inclusions,
 )
-from search.engine.region.state import EngineOptions, PartExclusions, ResolveState
+from search.engine.region.state import (
+    EngineOptions,
+    PartExclusions,
+    ResolveState,
+    RestatementOutcome,
+)
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.region.whole_totals import whole_total_unpublished_facts
@@ -298,6 +303,8 @@ async def resolve_variable(
     )
 
     exclusions = exclusions or PartExclusions()
+    # One record of the restatement read for every pass of the part (`restatement_reads`).
+    restatement_reads: dict[str, RestatementOutcome] = {}
 
     def new_state(
         *,
@@ -338,6 +345,7 @@ async def resolve_variable(
             pre_resolved=pre_resolved,
             entity_surfaces=entity_surfaces or {},
             entity_words=entity_words or {},
+            restatement_reads=restatement_reads,
             variable_index=variable_index,
             emit=emit,
             include_option_coverage=_options.include_option_coverage,

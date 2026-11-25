@@ -545,6 +545,10 @@ class MeasureRule:
 # apply ("posted"), a phrase the request asked to leave out ("exclusion"), or a value the
 # phrase names that the elected reading binds and a candidate's shape cannot hold
 # ("unheld").
+# What the coverage rule's restatement read made of a text of the variable phrase
+# (`ResolveState.restatement_reads`).
+type RestatementOutcome = Literal["restated", "unbound", "failed"]
+
 type RequirementOrigin = Literal[
     "tie",
     "bind",
@@ -903,12 +907,14 @@ class ResolveState:
     # The request's own words for each entity name (`RegionResult.entity_words`), which own
     # their tokens in the variable phrase as the name does (`entity_texts`).
     entity_words: dict[str, str] = field(default_factory=dict)
-    # The words of the variable phrase that restate an entity the part binds: each resolves
-    # to the node of one of the part's entities ("US" in "total US ODA" beside the donor
-    # United States), so it owns its tokens as the entity's name does (`entity_texts`).
-    # Coverage reads them from the words it would leave uncovered, before it judges the
-    # elected answer (`phase_election.read_restated_entity_words`).
-    restated_entity_words: tuple[str, ...] = ()
+    # Each text of the variable phrase the coverage rule has asked the resolver whether it
+    # restates an entity the part binds, with the answer: "restated" ("US" in "total US ODA"
+    # beside the donor United States), "unbound" (a text naming no bound party, "UK" beside
+    # it) or "failed" (a read lost to its failure). Each text is asked once per part: every
+    # pass of the part shares one record (`pipeline.resolve_variable`), and so does each
+    # view of a candidate answer (`phase_election.answer_view`), so every coverage
+    # judgement of the part applies the one answer (`phase_election.read_restated_entity_words`).
+    restatement_reads: dict[str, RestatementOutcome] = field(default_factory=dict)
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -1556,6 +1562,13 @@ class ResolveState:
         """The request's own words for the entity `name` (`entity_words`), else `name`: what
         a warning or departure quotes for it."""
         return self.entity_words.get(name, name)
+
+    @property
+    def restated_entity_words(self) -> tuple[str, ...]:
+        """The texts of the variable phrase the coverage rule read as restating an entity the
+        part binds (`restatement_reads`), which own their tokens as the entity's name does
+        (`entity_texts`)."""
+        return tuple(text for text, read in self.restatement_reads.items() if read == "restated")
 
     @property
     def entity_texts(self) -> tuple[str, ...]:
