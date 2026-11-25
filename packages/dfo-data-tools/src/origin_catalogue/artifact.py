@@ -1040,7 +1040,8 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
     entries and may lack either file, so it reads as holding none. Refuses, with
     `CatalogueArtifactError`, a missing or malformed file, a build of format
     7 or later lacking either facts file or a record in it for a UN row's
-    entry, UN tables breaking
+    entry or holding either facts file whose SHA-256 differs from the
+    manifest's, UN tables breaking
     `UnMirror`'s invariants or holding a variable no agency's id prefix
     starts, and UN tables whose row counts or agency counts disagree with the
     manifest's."""
@@ -1050,6 +1051,11 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
         build_id = _string(payload["build_id"])
         format_version = int(payload["format_version"])
         files = {str(logical): str(name) for logical, name in dict(payload["files"]).items()}
+        checksums = (
+            {str(k): str(v) for k, v in dict(payload["file_sha256"]).items()}
+            if format_version >= _UN_FACTS_FORMAT
+            else {}
+        )
         recorded = UnMirrorManifest(
             row_counts={
                 str(k): int(v) for k, v in dict(payload["un_mirror"]["row_counts"]).items()
@@ -1067,6 +1073,16 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
             raise CatalogueArtifactError(f"manifest at {uri!r} names no {logical!r} file")
         return _read(join_uri(build_uri, files[logical]))
 
+    def read_checked(logical: str) -> bytes:
+        raw = read(logical)
+        recorded = checksums.get(logical)
+        if recorded is None or hashlib.sha256(raw).hexdigest() != recorded:
+            raise CatalogueArtifactError(
+                f"{files[logical]!r} in build {build_id!r} does not match the SHA-256 "
+                f"its manifest records for {logical!r} ({recorded!r})"
+            )
+        return raw
+
     label = f"catalogue build {build_id!r} at {build_uri!r}"
     try:
         un_rows = _provenance_rows(
@@ -1077,11 +1093,14 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
         blocked = frozenset(_string(place) for place in json.loads(read("un"))["blocked_places"])
         refs = {entry_ref(row) for row in un_rows.values()}
         required = format_version >= _UN_FACTS_FORMAT
+        read_facts = read_checked if required else read
         dataset_facts = _decode_dataset_facts(
-            _un_entries(read, "dataset_facts", files, refs, required=required, label=label)
+            _un_entries(read_facts, "dataset_facts", files, refs, required=required, label=label)
         )
         documentation = _decode_source_documentation(
-            _un_entries(read, "source_documentation", files, refs, required=required, label=label)
+            _un_entries(
+                read_facts, "source_documentation", files, refs, required=required, label=label
+            )
         )
     except (ValueError, KeyError, TypeError) as exc:
         raise CatalogueArtifactError(f"{label}: {exc!r}") from exc

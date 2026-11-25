@@ -1253,7 +1253,10 @@ def _un_rows(
     from the UN deployment (`_citation_facts`). Each row has no `dataset`,
     so each agency is its own entry and its publisher is the `name` of its
     `source` arc on the UN deployment (`undata/s/UN`). An agency whose
-    root group `undata/g/<segment>` is absent is refused."""
+    root group `undata/g/<segment>` is absent is refused, and beside a
+    refusal the facts are not read, so a failed facts read cannot hide it:
+    the rows come back with empty facts."""
+    refused_before = len(refusals)
     groups = {agency.provenance: un_root_group(agency) for agency in registry.un_system}
     arcs = without_unresolved(
         un_graph.node_arcs_many([*groups, *groups.values()], properties=_PROVENANCE_PROPERTIES)
@@ -1280,6 +1283,8 @@ def _un_rows(
         )
         if row is not None:
             rows[agency.provenance] = row
+    if len(refusals) > refused_before:
+        return rows, {}, {}
     return _citation_facts(un_graph, rows, arcs, parents={})
 
 

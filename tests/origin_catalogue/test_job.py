@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import time
 import types
@@ -190,6 +191,22 @@ class FakeGraph:
             )
             for dcid in dcids
         }
+
+
+class _FailingFromSecondArcsRead(FakeGraph):
+    """The UN deployment whose first `node_arcs_many` read answers and whose
+    later ones, the facts reads, fail with HTTP 503."""
+
+    def __init__(self) -> None:
+        template = un_deployment()
+        super().__init__(arcs=template.arcs, refused=template.refused)
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        if any(call == "node_arcs_many" for call, _ in self.calls):
+            self.failing = frozenset({"node_arcs_many"})
+        return super().node_arcs_many(
+            dcids, properties=properties, individual_probe_budget=individual_probe_budget
+        )
 
 
 COUNT_HOUSEHOLD = "Count_Household"
@@ -903,6 +920,19 @@ def test_a_un_refusal_refuses_even_with_a_published_build(tmp_path, capsys):
 
     assert refused == [("un_agency_root_group_missing", WHO)]
     assert load_catalogue(f"file://{tmp_path}").build_id == first
+
+
+def test_a_un_refusal_wins_over_a_failed_facts_read(tmp_path, capsys):
+    run(tmp_path)
+    capsys.readouterr()
+    un_graph = _FailingFromSecondArcsRead()
+    del un_graph.arcs[WHO_GROUP]
+
+    refused = _refused(
+        tmp_path, capsys, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=un_graph
+    )
+
+    assert refused == [("un_agency_root_group_missing", WHO)]
 
 
 def test_a_carried_row_whose_segment_the_registry_changed_is_refused(tmp_path, capsys):
@@ -1742,6 +1772,7 @@ def test_a_build_missing_a_un_entry_s_facts_is_refused_from_format_7(
     manifest = json.loads((build / "manifest.json").read_text())
     facts = build / manifest["files"]["dataset_facts"]
     facts.write_text(json.dumps([e for e in json.loads(facts.read_text()) if e["ref"] != WHO]))
+    manifest["file_sha256"]["dataset_facts"] = hashlib.sha256(facts.read_bytes()).hexdigest()
     manifest["format_version"] = format_version
     (build / "manifest.json").write_text(json.dumps(manifest))
 
@@ -1753,6 +1784,28 @@ def test_a_build_missing_a_un_entry_s_facts_is_refused_from_format_7(
     assert WHO in found.rows
     assert WHO not in found.dataset_facts
     assert WHO in found.source_documentation
+
+
+@pytest.mark.parametrize("logical", ["dataset_facts", "source_documentation"])
+def test_a_format_7_build_whose_un_facts_differ_from_the_manifest_checksum_is_refused(
+    tmp_path, capsys, logical
+):
+    run(tmp_path)
+    capsys.readouterr()
+    [build_id] = builds(tmp_path)
+    build = root(tmp_path) / "versions" / build_id
+    manifest = json.loads((build / "manifest.json").read_text())
+    facts = build / manifest["files"][logical]
+    entries = json.loads(facts.read_text())
+    [who] = [e for e in entries if e["ref"] == WHO]
+    if logical == "dataset_facts":
+        who["source_url"] = "https://example.org/elsewhere"
+    else:
+        who["publisher"] = "Somebody else"
+    facts.write_text(json.dumps(entries))
+
+    with pytest.raises(artifact.CatalogueArtifactError, match="SHA-256"):
+        artifact.read_build_un_tables(build.as_uri())
 
 
 def test_main_carries_the_un_stage_from_a_local_build(tmp_path, monkeypatch, capsys):
