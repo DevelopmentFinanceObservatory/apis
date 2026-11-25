@@ -235,6 +235,30 @@ def test_replay_pairs_hold_one_slot_for_both_arms(monkeypatch, concurrency, over
     assert interleaved is overlap
 
 
+@pytest.mark.parametrize("arms", [("ministral",), ("ministral", "flash-lite")])
+def test_replay_runs_only_the_chosen_arms(monkeypatch, arms):
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        return _result(case.case_id, arm, order, replay_id)
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+
+    results = _replay(["one", "two"], concurrency=1, arms=arms)
+
+    assert sorted((r.case_id, r.arm) for r in results) == sorted(
+        (case, arm) for case in ("one", "two") for arm in arms
+    )
+
+
+@pytest.mark.parametrize("arms", ["", "ministral,ministral", "ministral,gpt"])
+def test_the_runner_refuses_an_unknown_or_repeated_arm(arms):
+    with pytest.raises(SystemExit) as raised:
+        m._parse_args(
+            ["--url", "http://127.0.0.1:1", "--cases", "c", "--output", "o", "--arms", arms]
+        )
+    assert raised.value.code == 2
+
+
 def test_replay_runs_each_arm_once_per_case_in_an_order_that_varies(monkeypatch):
     started: list[tuple[str, str]] = []
 

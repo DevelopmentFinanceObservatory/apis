@@ -96,7 +96,7 @@ uv run --extra engine --extra eval --extra datasets --extra graph \
   --concurrency 3
 ```
 
-`--concurrency` bounds the pairs in flight. A pair's two arms share one slot. Use `--concurrency 1` and `--pace-ms` for a sparse pass. The runner refuses an `--output` path that exists, so a rerun cannot overwrite earlier results. It creates the file with mode `0600` and adds one line per arm as each pair completes, so an interrupted run keeps the finished pairs. A gate refusal appears as `status_code` 403 with its `problem_code`.
+`--concurrency` bounds the pairs in flight. A pair's two arms share one slot. Use `--concurrency 1` and `--pace-ms` for a sparse pass. `--arms ministral` replays only the named arms, for a rerun that compares with earlier results for the others. The runner refuses an `--output` path that exists, so a rerun cannot overwrite earlier results. It creates the file with mode `0600` and adds one line per arm as each pair completes, so an interrupted run keeps the finished pairs. A gate refusal appears as `status_code` 403 with its `problem_code`.
 
 Join each result's `request_id` to `parser_replay.replay_id` in the `resolve` log. `parser_replay.calls` lists the replay's extraction calls only; the tokens of every other stage are in the line's `llm_usage`. With `--stream-probe`, read `first_content_ms` from the call whose `attempt` is `first` and whose `phase` equals `parser_replay.served_phase`. The other calls are agreement samples, or parses of the whole query that the door discards once the exclusion read blanks part of it. Cost an arm from its calls' `usage`, both agreement samples and Gemini's `thought_tokens` included, and report calls with an `error` and no `usage` separately.
 

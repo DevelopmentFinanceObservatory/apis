@@ -450,11 +450,12 @@ async def replay(
     concurrency: int,
     pace_ms: int,
     stream_probe: bool,
+    arms: Sequence[ARM] = ARMS,
     on_result: Callable[[Result], None] = lambda _result: None,
 ) -> list[Result]:
     """Run each case's arms back to back; ``concurrency`` bounds cases in flight.
 
-    The arm order is a permutation of ``ARMS`` drawn per case from a hash of the replay
+    The arm order is a permutation of ``arms`` drawn per case from a hash of the replay
     id and case id. ``on_result`` receives each result as its case completes. After
     ``TRANSPORT_FAILURE_LIMIT`` consecutive arms fail without an HTTP status, no further
     request is sent and ``ReplayStopped`` is raised with every finished result.
@@ -465,7 +466,7 @@ async def replay(
 
     def arm_order(case: Case) -> list[ARM]:
         return sorted(
-            ARMS,
+            arms,
             key=lambda arm: hashlib.sha256(f"{replay_id}:{case.case_id}:{arm}".encode()).digest(),
         )
 
@@ -558,7 +559,19 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--write-synthetic", type=Path, help="Write 400 labelled synthetic cases and exit"
     )
     parser.add_argument("--synthetic-count", type=int, default=400)
+    parser.add_argument(
+        "--arms",
+        default=",".join(ARMS),
+        help=f"Comma-separated arms to replay, from {', '.join(ARMS)} (default: all)",
+    )
     options = parser.parse_args(argv)
+    options.arms = tuple(arm.strip() for arm in options.arms.split(",") if arm.strip())
+    if (
+        not options.arms
+        or len(set(options.arms)) != len(options.arms)
+        or not set(options.arms) <= set(ARMS)
+    ):
+        parser.error(f"--arms takes distinct names from {', '.join(ARMS)}")
     if options.write_synthetic is None and (
         not options.url or not options.cases or not options.output
     ):
@@ -609,6 +622,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     concurrency=options.concurrency,
                     pace_ms=options.pace_ms,
                     stream_probe=options.stream_probe,
+                    arms=options.arms,
                     on_result=write_result,
                 )
             )
