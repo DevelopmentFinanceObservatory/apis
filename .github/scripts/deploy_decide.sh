@@ -29,8 +29,11 @@
 #                state, since dispatch exists to force a redeploy of exactly
 #                the dispatched commit. Optional, defaults to false.
 #
-# Writes `deploy=true` or `deploy=false` to $GITHUB_OUTPUT (or stdout, when
-# $GITHUB_OUTPUT is unset, so this runs the same way under a test). Exits
+# Writes `deploy=true` or `deploy=false`, and `serving_image=<the template's
+# image>`, to $GITHUB_OUTPUT (or stdout, when $GITHUB_OUTPUT is unset, so this
+# runs the same way under a test). The serving image is the one a failed
+# deploy points the origin catalogue job back at; in an unknown state it is
+# the latest created revision's image, which may not take traffic. Exits
 # non-zero only when the service can't be read.
 
 set -euo pipefail
@@ -95,7 +98,7 @@ fi
 echo "target=$TARGET live=$live state=$state deploy=$deploy"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+  printf 'deploy=%s\nserving_image=%s\n' "$deploy" "$image" >>"$GITHUB_OUTPUT"
 else
-  echo "deploy=$deploy"
+  printf 'deploy=%s\nserving_image=%s\n' "$deploy" "$image"
 fi

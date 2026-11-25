@@ -4,6 +4,7 @@ deploy.yml holds the steps. deploy-dev.yml and deploy-prod.yml call it and choos
 triggers and the GitHub Environment.
 """
 
+import itertools
 import json
 import os
 import re
@@ -13,6 +14,10 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from artifact_publication.jobs import LEASE_FILE
+from artifact_publication.uri import join_uri
+from origin_catalogue.artifact import format_root
 
 _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 _SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "deploy_decide.sh"
@@ -351,6 +356,12 @@ def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
 _FAKE_CLOCK_GCLOUD = """#!/bin/bash
 now=$(cat "$CLOCK")
 echo "$now $*" >> "$GCLOUD_LOG"
+case "$*" in
+  *"storage objects list"*)
+    [ "$now" -lt "$LEASE_UNTIL" ] && echo "format-6/lease.json"
+    exit 0 ;;
+  *"storage cat"*) echo "$LEASE_BODY"; exit 0 ;;
+esac
 echo $((now + 60)) > "$CLOCK"
 case "$*" in
   *origin_catalogue.verify*)
@@ -363,6 +374,9 @@ esac
 """
 _FAKE_DATE = '#!/bin/bash\ncat "$CLOCK"\n'
 _FAKE_SLEEP = '#!/bin/bash\necho $(($(cat "$CLOCK") + $1)) > "$CLOCK"\n'
+_LEASE = "gs://bucket/format-6/lease.json"
+_TASK_TIMEOUT = 7200
+_NEVER = 10**9
 
 
 @pytest.mark.parametrize(
@@ -371,35 +385,73 @@ _FAKE_SLEEP = '#!/bin/bash\necho $(($(cat "$CLOCK") + $1)) > "$CLOCK"\n'
         ("0", 0, 0, ["verify"]),
         ("1 0", 0, 0, ["verify", "build", "verify"]),
         ("1", 1, 1, ["verify", "build"]),
-        ("1 1 1 0", 0, 0, ["verify", "build", "verify", "verify", "verify"]),
     ],
-    ids=["loads", "builds-then-loads", "build-fails", "lease-holder-publishes-later"],
+    ids=["loads", "builds-then-loads", "build-fails"],
 )
-def test_the_origin_catalogue_step_builds_once_and_verifies_until_a_build_loads(
+def test_the_origin_catalogue_step_verifies_builds_once_and_verifies_again(
     tmp_path: Path, verify_statuses: str, build_status: int, status: int, executions: list[str]
 ):
-    """A build that exits 0 may have found a scheduled run holding the lease, so verify
-    repeats until that run's build loads; a build that exits non-zero stops the deploy."""
-    calls = _run_origin_catalogue_step(tmp_path, verify_statuses, build_status, status)
-    assert [kind for _, kind in calls] == executions
+    calls, _ = _run_origin_catalogue_step(tmp_path, verify_statuses, build_status, status)
+    assert [kind for _, kind in calls if kind != "lease"] == executions
 
 
-def test_the_origin_catalogue_step_gives_up_after_a_verify_started_past_the_job_timeout(
+@pytest.mark.parametrize(
+    ("lease_until", "expires_at", "body", "status", "earliest", "latest"),
+    [
+        # A skip or a discard: no lease, so the last verify runs at once and fails.
+        (0, 0, None, 1, 120, 120),
+        # A lease that does not parse is one the job reclaims.
+        (_NEVER, 0, "not json", 1, 120, 120),
+        # A scheduled run holds the lease, publishes and releases it.
+        (1000, 7000, None, 0, 1000, 1059),
+        # The holder was killed, so its lease stays until it lapses.
+        (_NEVER, 3000, None, 1, 3000, 3059),
+        # A lease held past one task timeout from the build's start stops the wait.
+        (_NEVER, _NEVER, None, 1, 60 + _TASK_TIMEOUT, 60 + _TASK_TIMEOUT + 59),
+    ],
+    ids=["no-lease", "unparsed-lease", "held-then-released", "held-until-expiry", "bound"],
+)
+def test_after_a_build_exits_0_the_origin_catalogue_step_waits_only_for_a_live_lease(
     tmp_path: Path,
+    lease_until: int,
+    expires_at: int,
+    body: str | None,
+    status: int,
+    earliest: int,
+    latest: int,
 ):
-    """A lease holder started before the deploy's build exited, and Cloud Run kills it after
-    the job's 7200-second timeout, so the last verify starts at or after that bound."""
-    calls = _run_origin_catalogue_step(tmp_path, "1", 0, 1)
-    build_done = next(start for start, kind in calls if kind == "build") + 60
-    verify_starts = [start for start, kind in calls if kind == "verify"][1:]
-    assert verify_starts[-1] >= build_done + 7200 > verify_starts[-2]
+    """The step reads the lease object and executes nothing while a run holds it, so no
+    failed execution raises the job's alert, and verifies once when the lease is gone,
+    lapsed or held past the bound."""
+    last_status = 0 if status == 0 else 1
+    calls, stdout = _run_origin_catalogue_step(
+        tmp_path,
+        f"1 {last_status}",
+        0,
+        status,
+        lease_until=lease_until,
+        lease_body=body or json.dumps({"build_id": "b", "expires_at": expires_at + 0.5}),
+    )
+    executions = [(start, kind) for start, kind in calls if kind != "lease"]
+    assert [kind for _, kind in executions] == ["verify", "build", "verify"]
+    assert earliest <= executions[-1][0] <= latest
+    reads = [start for start, kind in calls if kind == "lease"]
+    assert reads[0] == 120
+    assert all(later - earlier <= 60 for earlier, later in itertools.pairwise(reads))
+    assert stdout.startswith("Lease read 1 at 120: ")
 
 
 def _run_origin_catalogue_step(
-    tmp_path: Path, verify_statuses: str, build_status: int, status: int
-) -> list[tuple[int, str]]:
-    """Run the ensure step against a fake gcloud and clock; return each execution's start
-    time and kind."""
+    tmp_path: Path,
+    verify_statuses: str,
+    build_status: int,
+    status: int,
+    *,
+    lease_until: int = 0,
+    lease_body: str = "",
+) -> tuple[list[tuple[int, str]], str]:
+    """Run the ensure step against a fake gcloud, clock and sleep; return each gcloud
+    call's start time and kind (`verify`, `build` or `lease`) and the step's output."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (
@@ -413,11 +465,13 @@ def _run_origin_catalogue_step(
     clock.write_text("0")
     log = tmp_path / "gcloud.log"
     log.touch()
-    step = re.sub(
-        r"\$\{\{[^}]*\}\}",
-        "dev",
-        _named("Ensure a compatible origin catalogue is published")["run"],
+    point = _named("Point the origin catalogue job at the new image")["id"]
+    step = (
+        _named("Ensure a compatible origin catalogue is published")["run"]
+        .replace(f"${{{{ steps.{point}.outputs.lease }}}}", _LEASE)
+        .replace(f"${{{{ steps.{point}.outputs.task_timeout }}}}", str(_TASK_TIMEOUT))
     )
+    step = re.sub(r"\$\{\{[^}]*\}\}", "dev", step)
 
     ran = subprocess.run(
         ["bash", "-c", step],
@@ -427,6 +481,8 @@ def _run_origin_catalogue_step(
             "CLOCK": str(clock),
             "VERIFY_STATUSES": verify_statuses,
             "BUILD_STATUS": str(build_status),
+            "LEASE_UNTIL": str(lease_until),
+            "LEASE_BODY": lease_body,
         },
         capture_output=True,
         text=True,
@@ -434,64 +490,126 @@ def _run_origin_catalogue_step(
     )
 
     assert ran.returncode == status, ran.stderr
-    lines = [line.split(" ", 1) for line in log.read_text().splitlines()]
-    assert all(call.startswith("run jobs execute") and "--wait" in call for _, call in lines)
-    return [
-        (int(start), "verify" if "--args=-m,origin_catalogue.verify" in call else "build")
-        for start, call in lines
+    calls = []
+    for start, call in (line.split(" ", 1) for line in log.read_text().splitlines()):
+        if call.startswith("storage "):
+            assert call.endswith(_LEASE) or f"{_LEASE} " in call, call
+            calls.append((int(start), "lease"))
+            continue
+        assert call.startswith("run jobs execute") and "--wait" in call, call
+        kind = "verify" if "--args=-m,origin_catalogue.verify" in call else "build"
+        calls.append((int(start), kind))
+    return calls, ran.stdout
+
+
+def test_the_origin_catalogue_step_has_a_timeout_inside_the_jobs():
+    """The worst case, two verifies and one task timeout of build and wait, fits the step's
+    timeout, and the job's 360 minutes leave the steps after it their time."""
+    job = _workflow("deploy.yml")["jobs"]["deploy"]
+    step = _named("Ensure a compatible origin catalogue is published")
+    assert job["timeout-minutes"] == 360
+    assert _TASK_TIMEOUT / 60 < step["timeout-minutes"] <= 160
+
+
+_DESCRIBED_JOB = {
+    "spec": {
+        "template": {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "timeoutSeconds": "7200",
+                        "containers": [
+                            {
+                                "image": "svc-docker.pkg.dev/svc/svc/dfo-apis:old",
+                                "env": [
+                                    {"name": "OTHER", "value": "x"},
+                                    {
+                                        "name": "ORIGIN_CATALOGUE_URI",
+                                        "value": "gs://bucket/",
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@pytest.mark.parametrize("readable", [True, False], ids=["reads", "no-uri"])
+def test_the_origin_catalogue_point_step_outputs_the_lease_before_the_update(
+    tmp_path: Path, readable: bool
+):
+    """The lease object is the one `origin_catalogue.job` takes, under the job's own
+    ORIGIN_CATALOGUE_URI and the checked-out format root; a job with no URI is left
+    alone."""
+    job = json.loads(json.dumps(_DESCRIBED_JOB))
+    if not readable:
+        del job["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["env"][1]
+    output_file = tmp_path / "github_output"
+    output_file.touch()
+
+    ran, calls = _run_step(
+        "Point the origin catalogue job at the new image",
+        tmp_path,
+        DESCRIBED=json.dumps(job),
+        GITHUB_OUTPUT=str(output_file),
+    )
+
+    assert ran.returncode == (0 if readable else 1), ran.stderr
+    lease = join_uri(format_root("gs://bucket/"), LEASE_FILE)
+    assert output_file.read_text() == (f"lease={lease}\ntask_timeout=7200\n" if readable else "")
+    assert calls == [
+        "run jobs describe svc",
+        *(["run jobs update svc --image=svc"] if readable else []),
     ]
 
 
+_RESTORE = "Point the origin catalogue job back at the serving image"
+_SERVING = "svc-docker.pkg.dev/svc/svc/dfo-apis:old"
+
+
 @pytest.mark.parametrize(
-    ("previous", "status", "updates"),
+    ("serving", "status", "updates"),
     [
-        ("img:old", 0, ["run jobs update dev --image=img:old --region=dev --project=dev --quiet"]),
-        ("img:new", 0, []),
+        (_SERVING, 0, [f"run jobs update svc --image={_SERVING}"]),
+        ("svc-docker.pkg.dev/svc/svc/dfo-apis:new", 0, []),
+        ("us-docker.pkg.dev/cloudrun/container/hello", 1, []),
+        ("gcr.io/cloudrun/hello", 1, []),
         ("", 1, []),
     ],
-    ids=["restores", "same-image", "nothing-recorded"],
+    ids=["restores", "serves-the-new-image", "other-registry", "placeholder", "unread"],
 )
-def test_a_failed_origin_catalogue_step_points_the_job_back_at_its_recorded_image(
-    tmp_path: Path, previous: str, status: int, updates: list[str]
+def test_a_failure_before_the_worker_moves_points_the_origin_catalogue_job_at_the_serving_image(
+    tmp_path: Path, serving: str, status: int, updates: list[str]
 ):
     """A job on the new image writes only the new format root, which no service reads until
-    traffic moves, so a failed or cancelled ensure step puts the job back on its old image."""
+    the worker moves, so a failed or cancelled step from the job's update to the worker's
+    puts the job on the image the apis service serves, when that image is the project's."""
     names = [step.get("name") for step in _steps()]
     point = _named("Point the origin catalogue job at the new image")
-    ensure = _named("Ensure a compatible origin catalogue is published")
-    restore_name = "Point the origin catalogue job back at its previous image"
-    restore = _named(restore_name)
+    worker = _named("Point the datasets worker at the new image")
+    restore = _named(_RESTORE)
     assert restore["if"] == (
-        f"always() && (steps.{ensure['id']}.outcome == 'failure'"
-        f" || steps.{ensure['id']}.outcome == 'cancelled')"
+        f"always() && steps.{point['id']}.outcome == 'success'"
+        f" && steps.{worker['id']}.outcome != 'success' && (failure() || cancelled())"
     )
-    assert names.index(restore_name) == names.index(ensure["name"]) + 1
-    assert point["run"].index("jobs describe") < point["run"].index("jobs update")
-    assert 'echo "image=$previous" >> "$GITHUB_OUTPUT"' in point["run"]
+    assert names.index(_RESTORE) == names.index(worker["name"]) + 1
+    assert _step("decide")["run"].strip() == ".github/scripts/deploy_decide.sh"
 
-    gcloud = tmp_path / "bin" / "gcloud"
-    gcloud.parent.mkdir()
-    gcloud.write_text('#!/bin/bash\necho "$*" >> "$GCLOUD_LOG"\n')
-    gcloud.chmod(0o755)
-    log = tmp_path / "gcloud.log"
-    log.touch()
-    step = (
-        restore["run"]
-        .replace(f"${{{{ steps.{point['id']}.outputs.image }}}}", previous)
-        .replace("${{ steps.image.outputs.image }}", "img:new")
-    )
-    step = re.sub(r"\$\{\{[^}]*\}\}", "dev", step)
-
-    ran = subprocess.run(
-        ["bash", "-c", step],
-        env={"PATH": f"{gcloud.parent}:/usr/bin:/bin", "GCLOUD_LOG": str(log)},
-        capture_output=True,
-        text=True,
-        check=False,
+    ran, calls = _run_step(
+        _RESTORE,
+        tmp_path,
+        {
+            "steps.decide.outputs.serving_image": serving,
+            "steps.image.outputs.image": "svc-docker.pkg.dev/svc/svc/dfo-apis:new",
+        },
     )
 
     assert ran.returncode == status, ran.stderr
-    assert log.read_text().splitlines() == updates
+    assert calls == updates
 
 
 def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
@@ -581,8 +699,9 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-13:] == [
+    assert names[-14:] == [
         "Point the datasets worker at the new image",
+        _RESTORE,
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
         "Fail on errors the candidate revision answered while warming",
@@ -637,6 +756,8 @@ def _run_step(
     script = re.sub(r"\$\{\{[^}]*\}\}", "svc", script)
     ran = subprocess.run(
         ["bash", "-c", script],
+        # The checkout's root, where Actions runs each step.
+        cwd=_WORKFLOWS.parents[1],
         env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "GCLOUD_LOG": str(log), **env},
         capture_output=True,
         text=True,
@@ -740,12 +861,13 @@ def test_traffic_moves_by_name_then_follows_the_latest_revision(
 
 
 def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
-    """Settle or backfill can fail after traffic is pinned by name, and an `infra` revision
-    must still take traffic until the next deploy."""
+    """Settle or backfill can fail, or the run be cancelled, after traffic is pinned by name,
+    and an `infra` revision must still take traffic until the next deploy."""
     step = _named("Follow the latest revision after a failure")
 
     assert step["if"] == (
-        "failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'"
+        "(failure() || cancelled()) && steps.move.outcome == 'success'"
+        " && steps.follow.outcome != 'success'"
     )
     assert _named("Move traffic to the candidate revision")["id"] == "move"
     assert _named("Follow the latest revision again")["id"] == "follow"
@@ -887,7 +1009,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     assert len(later) == 29
     recovery = {
         "Follow the latest revision after a failure",
-        "Point the origin catalogue job back at its previous image",
+        "Point the origin catalogue job back at the serving image",
     }
     for step in later:
         if step.get("name") not in recovery:
