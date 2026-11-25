@@ -25,6 +25,7 @@ from entity_resolution.membership import (
     UnknownMembership,
     authority,
     parse_date,
+    policy_authority,
     policy_data,
     to_dcid,
 )
@@ -113,13 +114,16 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
         ),
         other_states=policy_data().other_states,
     )
+    policy = policy_data()
     groups = [
         Membership(
             ref=to_dcid(group.entity_id),
             entity_id=group.entity_id,
             label=group.canonical_name,
             kind="group",
-            authority=group_authority,
+            authority=policy_authority(group_authority, digest=policy.digest)
+            if group.entity_id in policy.dated_group_rows
+            else group_authority,
             dated=any(
                 row.valid_from is not None or row.valid_until is not None
                 for row in rows_by_group[group.entity_id]

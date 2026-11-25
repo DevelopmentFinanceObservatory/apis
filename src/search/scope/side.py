@@ -292,8 +292,11 @@ def _outside(
     window) are not all members of the group `total` totals on every day of it
     (`region.policy_members_throughout`), as Korea is not of the DAC's before 2010. A window
     open at either end reads the part's own data `years` there, where the snapshot holds
-    them."""
+    them; a window open at either end with no data `years` is no test, and the option falls to
+    `_availability`'s `coverage_unknown`."""
     first, last = _window_days(window)
+    if years is None and (first == date.min or last == date.max):
+        return ()
     if years is not None and first == date.min:
         first = date(years[0], 1, 1)
     if years is not None and last == date.max:

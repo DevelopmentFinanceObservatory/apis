@@ -3,8 +3,11 @@
 Every membership names its authority, whether that authority dates its rows, the entity classes
 it admits, and the projections it records. A projection splits the members by class:
 
-- `countries`, the default: countries that exist today and belong to the United Nations at the
-  date asked. Resolvekit's curated, dated UN membership is the authority for this class.
+- `countries`, the default: countries that exist today and belong to the United Nations. For the
+  UN group itself the UN membership is read at the date asked; for every other group a member
+  is classed by its standing today, so the dated DAC lists Switzerland under `countries` in 1995
+  though it joined the UN in 2002. Resolvekit's curated, dated UN membership is the authority
+  for this class.
 - `other_states`: states outside the UN, from the declared list in `data/membership_policy.json`,
   which names the source of the class.
 - `territories`: every other country that exists today, which leaves dependent territories.
@@ -12,7 +15,10 @@ it admits, and the projections it records. A projection splits the members by cl
 - `institutions`: members that are bodies, not countries (G20's EU and African Union). No
   authority DFO holds records them, so every membership answers `NotRecorded` for it.
 
-Groups take their rows from resolvekit's curated membership (`groups.py`). Regions take theirs
+Groups take their rows from resolvekit's curated membership (`groups.py`). The policy file's
+`dated_group_rows` replaces the undated rows of a group resolvekit lists without dates (the OECD
+DAC, 14 of the 55 groups being dated); such a group names the policy file as its authority, with
+a hash of the file in its version. Regions take theirs
 from resolvekit's UN M49 containment, which holds no dates, so a region refuses `as_of`. The
 policy file composes a region from several resolvekit containers where M49 and the continent a
 reader means differ (North America), and names the region projections resolvekit leaves
@@ -25,6 +31,7 @@ can read."""
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import json
 from collections.abc import Iterable, Iterator, Mapping
@@ -32,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 from functools import cache
+from itertools import pairwise
 from typing import TYPE_CHECKING, Literal, get_args
 
 import resolvekit
@@ -137,13 +145,27 @@ class PolicyData:
     other_states: frozenset[str]
     incomplete_region_projections: frozenset[Projection]
     dated_group_rows: Mapping[str, Mapping[str, tuple[tuple[date | None, date | None], ...]]]
+    digest: str
 
 
 @cache
 def policy_data() -> PolicyData:
     """The packaged `data/membership_policy.json`, read once."""
     path = importlib.resources.files("entity_resolution") / "data" / _POLICY_FILE
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    return parse_policy(path.read_text(encoding="utf-8"))
+
+
+def parse_policy(text: str) -> PolicyData:
+    """The policy file's `text` as declared data, with `digest` a hash of the text.
+
+    Raises:
+        ValueError: a group's dated rows are declared twice, or a member's spans for one group
+            start at or after their end or overlap.
+    """
+    raw = json.loads(text)
+    groups = [entry["group"] for entry in raw["dated_group_rows"]]
+    if len(set(groups)) != len(groups):
+        raise ValueError(f"policy file dates a group twice: {sorted(groups)}")
     return PolicyData(
         root=raw["root"]["region"],
         compositions={
@@ -154,19 +176,29 @@ def policy_data() -> PolicyData:
             Projection(name) for name in raw["region_gaps"]["projections"]
         ),
         dated_group_rows={
-            entry["group"]: _spans_by_member(entry["rows"]) for entry in raw["dated_group_rows"]
+            entry["group"]: _spans_by_member(entry["group"], entry["rows"])
+            for entry in raw["dated_group_rows"]
         },
+        digest=hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
     )
 
 
 def _spans_by_member(
-    rows: list[dict[str, str | None]],
+    group: str, rows: list[dict[str, str | None]]
 ) -> dict[str, tuple[tuple[date | None, date | None], ...]]:
     spans: dict[str, list[tuple[date | None, date | None]]] = {}
     for row in rows:
         spans.setdefault(str(row["member"]), []).append(
             (parse_date(row["valid_from"]), parse_date(row["valid_until"]))
         )
+    for member, held in spans.items():
+        ordered = sorted(held, key=lambda span: span[0] or date.min)
+        for start, until in ordered:
+            if start is not None and until is not None and start >= until:
+                raise ValueError(f"{group}: {member} has a span that starts at or after its end")
+        for (_, until), (start, _) in pairwise(ordered):
+            if until is None or (start is not None and start < until):
+                raise ValueError(f"{group}: {member} has overlapping spans")
     return {member: tuple(held) for member, held in spans.items()}
 
 
@@ -264,13 +296,14 @@ class Membership:
         if projection not in self.projections:
             return NotRecorded(ref=self.ref, projection=projection)
         active = {row.member: row.member_class for row in self.rows if row.active(day)}
+        standing = day if self.entity_id == SOVEREIGNTY_GROUP else date.today()
         if projection is Projection.INSTITUTIONS:
             return tuple(sorted(m for m, cls in active.items() if cls != COUNTRY_CLASS))
         return tuple(
             sorted(
                 m
                 for m, cls in active.items()
-                if cls == COUNTRY_CLASS and self.sovereignty.classify(m, day) is projection
+                if cls == COUNTRY_CLASS and self.sovereignty.classify(m, standing) is projection
             )
         )
 
@@ -431,6 +464,15 @@ def authority(resolver: Resolver, name: str) -> Authority:
     return Authority(
         name=name,
         version=f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}",
+    )
+
+
+def policy_authority(base: Authority, *, digest: str) -> Authority:
+    """`base`, the authority of a group's members, with the policy file that dates its rows
+    named and `digest` of the file in the version."""
+    return Authority(
+        name=f"{_POLICY_FILE} over {base.name}",
+        version=f"{_POLICY_FILE} sha256 {digest}; {base.version}",
     )
 
 

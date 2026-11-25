@@ -127,7 +127,8 @@ def policy_members_throughout(ref: str, first: date, last: date) -> frozenset[st
     """The countries the membership policy holds for group or region `ref` on every day from
     `first` to `last`, empty when it holds none. A member's rows are merged, so one that left
     and rejoined the next day holds throughout, and an undated membership holds its members
-    on every day."""
+    on every day. The days start no earlier than the group's first row: the DAC, dated from
+    1960, holds France throughout 1950-2020."""
     policy = shared_membership_policy()
     if ref not in policy:
         return frozenset()
@@ -137,6 +138,8 @@ def policy_members_throughout(ref: str, first: date, last: date) -> frozenset[st
             spans.setdefault(row.member, []).append(
                 (row.valid_from or date.min, row.valid_until or date.max)
             )
+    # A group holds no member before it exists, so days before its first row are no test of it.
+    first = max(first, min((start for held in spans.values() for start, _ in held), default=first))
     return frozenset(member for member, held in spans.items() if _covers(held, first, last))
 
 

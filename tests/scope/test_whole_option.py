@@ -39,7 +39,11 @@ from search.scope.rules import AXIS_RULES, AxisRule
 from search.scope.side import AGENCIES_COUNTED_TWICE
 from search.scope.tables import AxisTable, PartFacts, ScopeFacts
 from search.scope.whole import WholeRefusal, derive_whole
-from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.engine._fake_coverage import (
+    FakeCoverageService,
+    build_coverage_index,
+    empty_coverage_snapshot,
+)
 from tests.scope import test_provider as provider_fixture
 from tests.scope import test_region as region_fixture
 from tests.scope._axes import switch
@@ -778,6 +782,39 @@ def test_the_shipped_dac_dates_hold_korea_out_of_the_whole_before_it_joined(monk
     before = asked(2005, 2009)
     assert isinstance(before, WholeRefusal) and before.cause == "part_outside_whole"
     assert isinstance(asked(2016, 2020), PartScope)
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_a_window_before_the_dac_existed_holds_a_founding_member_in_the_whole(monkeypatch, known):
+    """France is a DAC member from the group's first day, so a window reaching back before
+    1960, or open with no snapshot years to bound it, is no `part_outside_whole`."""
+    total, _ = _total_base(monkeypatch)
+    facts = provider_fixture._dac1_facts(_TOTAL)
+    if not known:
+        facts = ScopeFacts(index=facts.index, coverage=empty_coverage_snapshot())
+    window = IdentityWindowRange(start_year=1950, end_year=2020) if known else IdentityWindowAll()
+    base = total.model_copy(
+        update={"entities": {"origin": [provider_fixture._FRA]}, "requested_window": window}
+    )
+
+    scope = _whole(_part(base, facts=facts), "donor", facts=facts)
+
+    assert not (isinstance(scope, WholeRefusal) and scope.cause == "part_outside_whole")
+
+
+def test_an_open_window_with_no_snapshot_years_leaves_the_whole_to_coverage_unknown(monkeypatch):
+    """With no series to read the part's years from, an open window tests no membership, so
+    Korea's DAC total refuses as an unread total, not as `part_outside_whole`."""
+    total, _ = _total_base(monkeypatch)
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    base = total.model_copy(
+        update={"entities": {"origin": [_KOR]}, "requested_window": IdentityWindowAll()}
+    )
+
+    scope = _whole(_part(base, facts=facts), "donor", facts=facts)
+
+    assert isinstance(scope, WholeRefusal)
+    assert scope.cause == "coverage_unknown"
 
 
 def test_a_whole_serving_fewer_years_than_the_part_refuses():

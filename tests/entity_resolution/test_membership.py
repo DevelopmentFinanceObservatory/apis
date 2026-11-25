@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.resources
+import json
 from datetime import date
 
 import pytest
@@ -22,6 +24,8 @@ from entity_resolution.membership import (
     Sovereignty,
     UnknownMembership,
     build_policy,
+    parse_policy,
+    policy_authority,
 )
 from entity_resolution.shared import SharedResolver
 
@@ -312,3 +316,66 @@ def test_a_membership_names_each_member_by_its_canonical_name(
     membership = policy.get(ref)
     assert membership.member_labels[member] == label
     assert set(_listed(membership.members())) <= set(membership.member_labels)
+
+
+def _policy_text(*, rows: list[dict[str, str | None]] | None = None, twice: bool = False) -> str:
+    path = importlib.resources.files("entity_resolution") / "data" / "membership_policy.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if rows is not None:
+        raw["dated_group_rows"][0]["rows"] = rows
+    if twice:
+        raw["dated_group_rows"].append(raw["dated_group_rows"][0])
+    return json.dumps(raw)
+
+
+def _span(member: str, start: str | None, until: str | None) -> dict[str, str | None]:
+    return {"member": member, "valid_from": start, "valid_until": until}
+
+
+def test_editing_the_dated_rows_changes_the_authority_version() -> None:
+    base = Authority(name="base", version="1")
+    one = parse_policy(_policy_text(rows=[_span("country/AAA", "2000-01-01", None)]))
+    two = parse_policy(_policy_text(rows=[_span("country/AAA", "2001-01-01", None)]))
+    assert policy_authority(base, digest=one.digest) != policy_authority(base, digest=two.digest)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"twice": True}, "twice"),
+        ({"rows": [_span("country/AAA", "2000-01-01", "2000-01-01")]}, "starts at or after"),
+        (
+            {
+                "rows": [
+                    _span("country/AAA", "2000-01-01", "2005-01-01"),
+                    _span("country/AAA", "2004-01-01", None),
+                ]
+            },
+            "overlapping",
+        ),
+        (
+            {
+                "rows": [
+                    _span("country/AAA", "2000-01-01", None),
+                    _span("country/AAA", "2004-01-01", None),
+                ]
+            },
+            "overlapping",
+        ),
+    ],
+)
+def test_the_policy_file_refuses_ill_formed_dated_rows(kwargs: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_policy(_policy_text(**kwargs))
+
+
+def test_spans_that_meet_are_no_overlap() -> None:
+    held = parse_policy(
+        _policy_text(
+            rows=[
+                _span("country/AAA", "2000-01-01", "2005-01-01"),
+                _span("country/AAA", "2005-01-01", None),
+            ]
+        )
+    )
+    assert len(held.dated_group_rows["groups/OECD.DAC"]["country/AAA"]) == 2

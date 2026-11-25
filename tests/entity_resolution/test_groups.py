@@ -7,12 +7,13 @@ from datetime import date
 import pytest
 
 from code_index.declarations import TOTAL_GROUPS
-from entity_resolution.groups import GroupRegistry, build_group_registry
+from entity_resolution.groups import GroupRegistry, _dated, build_group_registry
 from entity_resolution.membership import (
     COUNTRY_PROJECTIONS,
     AsOfNotRecorded,
     NotRecorded,
     Projection,
+    Row,
     UnknownMembership,
     policy_data,
 )
@@ -191,3 +192,57 @@ def test_every_dac_region_holds_a_total_or_is_listed_without_one(
             assert policy.holds_region(group.ref), group.entity_id
             assert group.members() == policy.get(group.ref).members(), group.entity_id
     assert {g.entity_id for g in dac_regions} - held == _DAC_REGIONS_WITHOUT_A_TOTAL
+
+
+def test_the_dac_is_dated_by_the_policy_file_over_resolvekits_members(
+    registry: GroupRegistry,
+) -> None:
+    dac = registry.get("groups/OECD.DAC")
+    spans = policy_data().dated_group_rows["groups/OECD.DAC"]
+    assert dac.dated
+    assert {(row.member, row.valid_from, row.valid_until) for row in dac.rows} == {
+        (member, start, until) for member, held in spans.items() for start, until in held
+    }
+    assert {row.member_class for row in dac.rows} == {"geo.country"}
+
+
+@pytest.mark.parametrize(
+    ("ref", "as_of", "member"),
+    [
+        ("groups/OECD.DAC", date(1995, 6, 1), "country/CHE"),
+        ("groups/OECD.DAC", date(1965, 6, 1), "country/DEU"),
+        ("undata-geo/G00406000", date(1995, 6, 1), "country/CHE"),
+        ("undata-geo/G00406000", date(1965, 6, 1), "country/DEU"),
+    ],
+)
+def test_a_group_other_than_the_un_classes_a_member_by_its_standing_today(
+    registry: GroupRegistry, ref: str, as_of: date, member: str
+) -> None:
+    group = registry.get(ref)
+    assert member in _listed(group.members(Projection.COUNTRIES, as_of))
+    assert member not in _listed(group.members(Projection.TERRITORIES, as_of))
+
+
+def test_a_policy_dated_group_names_the_policy_file_as_its_authority(
+    registry: GroupRegistry,
+) -> None:
+    dac = registry.get("groups/OECD.DAC").authority
+    assert dac.name.startswith("membership_policy.json")
+    assert policy_data().digest in dac.version
+    assert registry.get("EuropeanUnion").authority.name == "resolvekit curated membership"
+
+
+def test_dated_refuses_a_group_resolvekit_does_not_hold_or_already_dates_or_lists_differently() -> (
+    None
+):
+    undated = (Row(member="country/AAA", member_class="geo.country"),)
+    spans = {"country/AAA": ((date(2000, 1, 1), None),)}
+    assert _dated("g", undated, spans) == (
+        Row(member="country/AAA", member_class="geo.country", valid_from=date(2000, 1, 1)),
+    )
+    with pytest.raises(RuntimeError, match="does not hold"):
+        _dated("g", None, spans)
+    with pytest.raises(RuntimeError, match="already dates"):
+        _dated("g", (Row("country/AAA", "geo.country", valid_from=date(1990, 1, 1)),), spans)
+    with pytest.raises(RuntimeError, match="differently"):
+        _dated("g", undated, {"country/BBB": ((None, None),)})
