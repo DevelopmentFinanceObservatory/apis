@@ -1225,6 +1225,25 @@ def test_a_bound_partys_name_the_bind_lists_as_unplaced_reads_as_that_party(
     assert part.spec.definition.identity.entities == {"origin": [_USA]}
 
 
+def test_the_rest_of_an_unplaced_phrase_naming_a_bound_party_stays_unplaced(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A bind that lists "US military" in "US military ODA" as a phrase it could not place
+    leaves "military" unplaced: "US" names the donor the United States, and the rest of the
+    phrase is a restriction no vocabulary of the answer reads, so the part refuses on it."""
+    part, _asked = _total_oda_resolve(
+        monkeypatch,
+        ParsedPart(variable_text="US military ODA", entities=[_FROM_THE_US]),
+        unplaced=["US military"],
+    )
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [(term.text, term.disposition) for term in part.no_data.unbound_qualifiers] == [
+        ("military", "no_vocabulary")
+    ]
+
+
 @pytest.mark.parametrize(
     ("variable", "entity", "donor", "unbound"),
     [

@@ -166,8 +166,8 @@ def _inside_a_read_phrase(
 def _written_as(name: str, stretch: str) -> bool:
     """Whether `stretch`, an occurrence of `name` casing aside, writes each word `name`
     writes in capitals with no lowercase letter ("USA", "ASEAN", "G7") exactly as `name`
-    does, and writes a name of two letters or fewer, a code, in capitals: "EU" for the
-    European Union, never "eu". A stretch whose words do not pair with the name's, which the
+    does, and writes every letter of a name of two letters or fewer, a code, in capitals:
+    "EU" reads as the European Union. A stretch whose words do not pair with the name's, which the
     entity pack's normal form can make, is taken as written."""
     if sum(char.isalpha() for char in name) <= 2 and any(char.islower() for char in stretch):
         return False

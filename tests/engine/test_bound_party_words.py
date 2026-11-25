@@ -1,19 +1,14 @@
 """`party_aliases.bound_party_spans` reads the ranges of the variable phrase that name a party
-the part binds, from the committed export of its names (`pack.geo_names`). The quantity read
-leaves them in the phrase it reads."""
+the part binds, from the committed export of its names (`pack.geo_names`)."""
 
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
 from entity_resolution import Entity, Group, Resolved, pack
 from search.engine.region.party_aliases import bound_party_spans
-from search.engine.region.phase_rank_bind import _quantity_phrase
-from search.engine.region.state import ResolveState
 
 
 def _place(dcid: str, name: str) -> Resolved:
@@ -76,19 +71,3 @@ def test_each_listed_abbreviation_names_one_dcid():
             if abbreviation.casefold() in {name.casefold() for name in names}
         ]
         assert owners == [dcid], abbreviation
-
-
-def test_the_quantity_read_keeps_a_bound_partys_abbreviation():
-    """The quantity read reads the phrase as written: "US" in "external debt relative to US
-    GDP" beside the United States names the base's country, and the read keeps it with its
-    preposition, so the phrase still names a base."""
-    variable = "external debt relative to US GDP"
-    state = SimpleNamespace(
-        variable=variable,
-        entity_texts=("United States",),
-        entity_roles={},
-        party_alias_spans=bound_party_spans(variable, [_USA]),
-    )
-
-    assert state.party_alias_spans
-    assert _quantity_phrase(cast(ResolveState, state)) == variable

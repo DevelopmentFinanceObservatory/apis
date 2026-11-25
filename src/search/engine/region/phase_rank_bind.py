@@ -3055,7 +3055,8 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     unread, in query order. A menu lists what the bind model may read the phrase as.
 
     The phrase's unread words are a run beside a code span `_unread_runs` finds, read
-    before any bind output exists by the spans of the shape's own reading, the part's entity texts, the words
+    before any bind output exists by the spans of the shape's own reading, the part's entity
+    texts, the ranges naming a party the part binds (`ResolveState.party_alias_spans`), the words
     `_conversational_words` accepts for `shape`, a connective between two code spans and a
     date phrase. A code term read in every code system together that names a code another
     shape the part recalled binds (`ResolveState.shapes_found`, before a named dataset
@@ -3719,7 +3720,8 @@ def _free_readers(
 ) -> _FreeReaders:
     """The readers of the variable's words, `tokens`, that read neither a binding nor the
     bind's reply, on `shape`: the spans `spans` of its own reading, the part's entity
-    texts and the spans of their door roles, its operation phrases, its unit text, the
+    texts, the spans of their door roles and the ranges naming a party the part binds
+    (`ResolveState.party_alias_spans`), its operation phrases, its unit text, the
     series code it names, the form wording (`_form_ranges`), the question's words for the
     denominator the quantity read names, the words `_conversational_words` accepts for
     `shape`, on a shape measuring a count (`shape.measures_count`) the nouns for what it
@@ -4416,6 +4418,9 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        Nor may every word of it occur in the label of a dataset the elected shape answers
        from, or in the words its datasets state (`_names_answering_dataset`): "imputed" on the
        imputed table chose that table, and "bilateral" on the CRS states what every row is.
+       The words of a phrase naming a party the part binds (`ResolveState.party_alias_spans`)
+       are the party and leave first (`_without_party_words`): "US military" beside the
+       donor United States is judged as "military", and "US" alone records nothing.
        Surviving phrases get ``no_vocabulary`` with no named codes.
     5. Match the words each code system the shape declares has no vocabulary for
        (``CodeSystemDeclaration.no_vocabulary_terms``) in variable text and optional query
@@ -4460,6 +4465,31 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     return resolved
 
 
+def _without_party_words(phrase: str, state: ResolveState) -> str:
+    """`phrase` less the words of its first occurrence in the variable phrase that name a
+    party the part binds (`ResolveState.party_alias_spans`): "military" for "US military"
+    beside the donor United States, "" for "US" alone. A phrase the variable does not hold,
+    or one holding no such words, is returned as it is."""
+    ranges = _all_normalized_text_ranges(phrase, state.variable)
+    if not ranges:
+        return phrase
+    start, end = ranges[0]
+    inside = sorted(
+        (max(start, span_start), min(end, span_end))
+        for span_start, span_end in state.party_alias_spans
+        if span_start < end and start < span_end
+    )
+    if not inside:
+        return phrase
+    kept: list[str] = []
+    at = start
+    for cut_start, cut_end in inside:
+        kept.append(state.variable[at:cut_start])
+        at = max(at, cut_end)
+    kept.append(state.variable[at:end])
+    return " ".join(" ".join(kept).split())
+
+
 def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
     """The records of sources 1 to 8 of `_resolve_query_qualifiers`, those the coverage
     rule reads as recorded (`_coverage_terms`)."""
@@ -4480,9 +4510,6 @@ def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
         (start, end) for start, end in unavailable if start is not None and end is not None
     ]
     occupied_ranges += _chosen_ranges(state)
-    # A phrase the bind lists as unplaced that names a party the part binds ("US" beside the
-    # donor United States) is the party, as the field asks of a place.
-    occupied_ranges += state.party_alias_spans
     chosen = state.menu_choices
     combination = _combine_matches(state.variable, (*state.admitted_qualifiers, *chosen), index)
     for span in variable_spans:
@@ -4562,7 +4589,13 @@ def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
     slot_nouns = [
         index.declarations[prop].plain_name for prop in declared if prop in index.declarations
     ]
-    for phrase in state.bind_result.unplaced:
+    for listed in state.bind_result.unplaced:
+        # The words of a phrase that name a party the part binds ("US" in "US military"
+        # beside the donor United States) are the party, as the field asks of a place; the
+        # rest of the phrase is judged alone.
+        phrase = _without_party_words(listed, state)
+        if not phrase:
+            continue
         if _names_carried_per_head_rate(phrase, state.shape_draft, state.denominator_kinds):
             continue
         # A phrase as long as the noun that names it is the noun, singular or plural.
