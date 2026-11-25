@@ -140,7 +140,7 @@ def test_live_equal_to_target_does_not_deploy(repo: Path, tmp_path: Path):
     result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=false\nserving_image={_image_for(sha)}\n"
+    assert output == "deploy=false\n"
 
 
 def test_docs_only_diff_since_live_does_not_deploy(repo: Path, tmp_path: Path):
@@ -152,7 +152,7 @@ def test_docs_only_diff_since_live_does_not_deploy(repo: Path, tmp_path: Path):
     result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=false\nserving_image={_image_for(live)}\n"
+    assert output == "deploy=false\n"
 
 
 def test_src_change_several_commits_back_still_deploys(repo: Path, tmp_path: Path):
@@ -166,7 +166,7 @@ def test_src_change_several_commits_back_still_deploys(repo: Path, tmp_path: Pat
     result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=true\nserving_image={_image_for(live)}\n"
+    assert output == "deploy=true\n"
 
 
 def test_unknown_live_tag_deploys_with_a_warning(repo: Path, tmp_path: Path):
@@ -177,7 +177,7 @@ def test_unknown_live_tag_deploys_with_a_warning(repo: Path, tmp_path: Path):
     result, output = _run_decide(repo, bin_dir, tmp_path, target=target)
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=true\nserving_image={_image_for('not-a-real-commit-placeholder')}\n"
+    assert output == "deploy=true\n"
     assert "::warning::" in result.stdout
 
 
@@ -232,7 +232,7 @@ def test_a_service_not_in_the_state_a_finished_deploy_leaves_deploys(
     result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=true\nserving_image={_image_for(sha)}\n"
+    assert output == "deploy=true\n"
 
 
 @pytest.mark.parametrize("force", ["false", "true"])
@@ -275,7 +275,7 @@ def test_force_with_live_equal_to_target_still_deploys(repo: Path, tmp_path: Pat
     result, output = _run_decide(repo, bin_dir, tmp_path, target=sha, force="true")
 
     assert result.returncode == 0, result.stderr
-    assert output == f"deploy=true\nserving_image={_image_for(sha)}\n"
+    assert output == "deploy=true\n"
 
 
 def test_watched_paths_match_the_workflows_declared_image_inputs():
