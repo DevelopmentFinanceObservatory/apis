@@ -903,11 +903,11 @@ class ResolveState:
     # The request's own words for each entity name (`RegionResult.entity_words`), which own
     # their tokens in the variable phrase as the name does (`entity_texts`).
     entity_words: dict[str, str] = field(default_factory=dict)
-    # The variable phrase's own words that are a name or alias of a party the part binds
-    # ("US" in "total US ODA" beside the donor United States), set once at intake
-    # (`phase_intake.bound_party_words`). They own their tokens as the name does
-    # (`entity_texts`).
-    party_aliases: tuple[str, ...] = ()
+    # The character ranges of the variable phrase that name a party the part binds by a name
+    # Search reads it by ("US" in "total US ODA" beside the donor United States), set once at
+    # intake (`phase_intake.bound_party_spans`). Readers that mask the part's entity texts
+    # (`entity_texts`) mask these ranges too, and no other copy of their words.
+    party_alias_spans: tuple[tuple[int, int], ...] = ()
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -1565,10 +1565,9 @@ class ResolveState:
     @property
     def entity_texts(self) -> tuple[str, ...]:
         """The texts that name the part's entities in its variable phrase: each name, and
-        the request's own words for it (`entity_words`) and the phrase's words naming a party
-        the part binds (`party_aliases`). Readers mask their tokens, so a place named inside
-        the phrase is read as the place."""
-        return (*self.entities, *self.entity_words.values(), *self.party_aliases)
+        the request's own words for it (`entity_words`). Readers mask their tokens, so a
+        place named inside the phrase is read as the place."""
+        return (*self.entities, *self.entity_words.values())
 
     @property
     def standard_place_dcids(self) -> list[str]:

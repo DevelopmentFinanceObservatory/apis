@@ -48,6 +48,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_election import _vet_election
+from search.engine.region.phase_intake import bound_party_spans
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_matches_against_elected_shape,
@@ -2439,6 +2440,18 @@ def test_a_candidate_menu_is_offered_for_words_no_code_reads(variable, others, m
     """A CRS shape is offered a candidate menu only for a phrase whose words no other
     recalled shape reads as a code it binds."""
     state = _model_choice_state(variable, [], others)
+    assert [menu.text for menu in _candidate_menus(state, state.capped_shapes[0])] == menus
+
+
+@pytest.mark.parametrize(("bound", "menus"), [(False, ["EU"]), (True, [])])
+def test_a_bound_partys_abbreviation_is_offered_no_menu(bound, menus):
+    """ "EU" in "EU ODA" shares a word with CRS purpose 33130's label, so the CRS shape offers
+    it a menu, unless the part binds the European Union, which intake reads the word as
+    (`ResolveState.party_alias_spans`)."""
+    state = _model_choice_state("EU ODA", [])
+    if bound:
+        union = Entity(dcid="EuropeanUnion", name="European Union", kind="group", graph_types=())
+        state.party_alias_spans = bound_party_spans("EU ODA", [Resolved(entity=union)])
     assert [menu.text for menu in _candidate_menus(state, state.capped_shapes[0])] == menus
 
 

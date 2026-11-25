@@ -1111,6 +1111,10 @@ _DAC1_TOTAL_ODA = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal
 _RATED_UNSTATED: Mapping[str, float] = {"US": 0.0, "us": 0.0, "UK": 0.0, "uk": 0.0}
 
 
+# The resolver's own read, which each `_total_oda_resolve` records around afresh.
+_RESOLVE = EntityResolver.resolve
+
+
 def _total_oda_resolve(
     monkeypatch: pytest.MonkeyPatch, part: ParsedPart, *, donor: str = _USA
 ) -> tuple[Part, set[str]]:
@@ -1119,11 +1123,10 @@ def _total_oda_resolve(
     unstated, as the deployed binder rates "US" in "total US ODA", and every text the entity
     resolver was asked."""
     asked: set[str] = set()
-    resolve = EntityResolver.resolve
 
     async def recording(self, texts, **kwargs):
         asked.update(texts)
-        return await resolve(self, texts, **kwargs)
+        return await _RESOLVE(self, texts, **kwargs)
 
     monkeypatch.setattr(EntityResolver, "resolve", recording)
     patch_coverage(

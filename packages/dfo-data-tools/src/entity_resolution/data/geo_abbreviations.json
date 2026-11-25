@@ -1,0 +1,13 @@
+{
+  "DRC": "country/COD",
+  "EU": "EuropeanUnion",
+  "G20": "groups/G20",
+  "G7": "GroupOfSeven",
+  "LDC": "groups/UN.LDC",
+  "LDCs": "groups/UN.LDC",
+  "SIDS": "groups/UN.SIDS",
+  "UAE": "country/ARE",
+  "UK": "country/GBR",
+  "US": "country/USA",
+  "USA": "country/USA"
+}

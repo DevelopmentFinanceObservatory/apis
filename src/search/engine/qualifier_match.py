@@ -688,19 +688,24 @@ class BreakdownSpan:
     words: tuple[str, ...]
 
 
-def breakdown_spans(text: str, *, stops: Iterable[str] = ()) -> tuple[BreakdownSpan, ...]:
+def breakdown_spans(
+    text: str, *, stops: Iterable[str] = (), stop_ranges: Iterable[tuple[int, int]] = ()
+) -> tuple[BreakdownSpan, ...]:
     """Each breakdown span of `text`, in text order.
 
     A span starts after a breakdown connective (`BREAKDOWN_CONNECTIVES`) and runs to the
     next connective, a number (a year or a date), an occurrence of one of `stops` (the
-    request's entity names) or the end. Its content words are its words less function
+    request's entity names), one of the character ranges `stop_ranges` or the end. Its content words are its words less function
     words (`FUNCTION_WORDS`) and filler nouns (`BREAKDOWN_FILLER_NOUNS`). "under-five
     mortality by wealth quintile in Kenya" holds one span, "wealth quintile", when `stops`
     holds "Kenya". A connective with no content word after it holds no span ("by 2020").
     """
     tokens = word_tokens(text)
     folded = [token.text.casefold() for token in tokens]
-    stopped = [span for stop in stops for span in _all_normalized_text_ranges(stop, text)]
+    stopped = [
+        *(span for stop in stops for span in _all_normalized_text_ranges(stop, text)),
+        *stop_ranges,
+    ]
 
     def connective_at(i: int) -> int:
         """The length in words of the connective at token `i`, or 0."""

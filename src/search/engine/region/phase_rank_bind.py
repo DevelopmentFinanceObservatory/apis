@@ -403,15 +403,19 @@ def _entity_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[in
     entities name, by their names and the request's words for them
     (`ResolveState.entity_texts`), and by the spans their door roles carry
     (`role_text.DoorRole.span`, the query's own wording of the place): other readers own
-    them ("German" in "German aid" is the origin Germany). A role's cue word ("to" in "aid
-    to Kenya") stays in the phrase."""
+    them ("German" in "German aid" is the origin Germany), and the ranges naming a bound
+    party by a name Search reads it by (`ResolveState.party_alias_spans`). A role's cue word
+    ("to" in "aid to Kenya") stays in the phrase."""
     return [
-        occurrence
-        for text in (
-            *state.entity_texts,
-            *(role.span for roles in state.entity_roles.values() for role in roles),
-        )
-        for occurrence in token_occurrences(tokens, text)
+        *(
+            occurrence
+            for text in (
+                *state.entity_texts,
+                *(role.span for roles in state.entity_roles.values() for role in roles),
+            )
+            for occurrence in token_occurrences(tokens, text)
+        ),
+        *state.party_alias_spans,
     ]
 
 
@@ -3101,6 +3105,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     read += [
         occurrence for text in state.entity_texts for occurrence in token_occurrences(tokens, text)
     ]
+    read += state.party_alias_spans
     others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
 
     def bound_elsewhere(row: CodeRow) -> bool:
@@ -3738,14 +3743,17 @@ def _free_readers(
         reading=("reading", [(span.start, span.end) for span in spans]),
         entity=(
             "entity",
-            _occurrences(
-                tokens,
-                [
-                    *state.entity_texts,
-                    *(role.span for roles in state.entity_roles.values() for role in roles),
-                    *_resolved_name_words(state, index),
-                ],
-            ),
+            [
+                *_occurrences(
+                    tokens,
+                    [
+                        *state.entity_texts,
+                        *(role.span for roles in state.entity_roles.values() for role in roles),
+                        *_resolved_name_words(state, index),
+                    ],
+                ),
+                *state.party_alias_spans,
+            ],
         ),
         operation=(
             "operation",
@@ -4738,12 +4746,14 @@ def _open_breakdown_slots(
     shape_draft: ShapeDraft,
     *,
     entities: Iterable[str],
+    entity_spans: Sequence[tuple[int, int]] = (),
 ) -> list[SlotBindingDraft]:
     """Open each slot of `shape_draft` the variable phrase or a dropped phrase names as a
     breakdown, as a valid ``requested_all``.
 
     A breakdown span is the words after "by", "across" or "for each", up to the next such
-    connective, a number or one of `entities`, less function words and filler nouns
+    connective, a number, one of `entities` or, in the variable phrase, one of
+    `entity_spans` (`ResolveState.party_alias_spans`), less function words and filler nouns
     (`qualifier_match.breakdown_spans`). A span names a slot when one of its words is a
     word of the slot's name (`bind._slot_name`) and each other word is a word of that
     name or of the label of a value in the slot's taxonomy (`_slot_vocabulary`). "By
@@ -4762,8 +4772,11 @@ def _open_breakdown_slots(
     }
     axis_of = {slot.property_dcid: slot.axis for slot in shape_draft.slot_keys}
     opened: dict[str, SlotBindingDraft] = {}
-    for text in (variable_text, *dropped_phrases):
-        for span in breakdown_spans(text, stops=entities):
+    for text, stop_ranges in (
+        (variable_text, entity_spans),
+        *((phrase, ()) for phrase in dropped_phrases),
+    ):
+        for span in breakdown_spans(text, stops=entities, stop_ranges=stop_ranges):
             named = [
                 prop
                 for prop, (name, labels) in vocabularies.items()

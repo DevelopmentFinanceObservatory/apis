@@ -39,6 +39,7 @@ _CURATED_FILENAME = "curated_aliases.json"
 _REGION_IDS_FILENAME = "region_ids.json"
 _QUERY_ALIASES_FILENAME = "query_aliases.json"
 _GEO_NAMES_FILENAME = "geo_names.json"
+_GEO_ABBREVIATIONS_FILENAME = "geo_abbreviations.json"
 
 _CODE_SYSTEM = "dac"
 _ALIAS_COLUMN_PREFIX = "alias"
@@ -73,22 +74,36 @@ def geo_names_path() -> Traversable:
 
 
 @functools.cache
+def geo_abbreviations() -> dict[str, str]:
+    """The reviewed abbreviations clients write for a country, region or group ("US", "UK",
+    "G7", "LDCs"), each with the dcid it names (`geo_abbreviations.json`), which
+    `scripts/export_geo_names.py` adds to `geo_names`."""
+    path = importlib.resources.files(_PACKAGE) / _DATA_DIR / _GEO_ABBREVIATIONS_FILENAME
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@functools.cache
 def _geo_names() -> dict[str, tuple[str, ...]]:
     rows = json.loads(geo_names_path().read_text(encoding="utf-8"))
     return {dcid: tuple(names) for dcid, names in rows.items()}
 
 
 def geo_names(dcid: str) -> tuple[str, ...]:
-    """The names and aliases resolvekit's geo modules list for the country, region or group
-    `dcid` names ("US", "USA" and "United States" for `country/USA`; "G7" for
+    """The names Search reads the country, region or group `dcid` names by in a variable
+    phrase: its canonical names in resolvekit's geo modules and its reviewed abbreviations
+    ("United States", "US" and "USA" for `country/USA`; "Group of Seven" and "G7" for
     `GroupOfSeven`), read once from the committed export (`scripts/export_geo_names.py`).
     Empty for any other dcid."""
     return _geo_names().get(dcid, ())
 
 
 @functools.cache
-def _geo_name_keys() -> frozenset[str]:
-    return frozenset(_geo_key(name) for names in _geo_names().values() for name in names)
+def _geo_forms() -> dict[str, tuple[str, ...]]:
+    forms: dict[str, list[str]] = {}
+    for names in _geo_names().values():
+        for name in names:
+            forms.setdefault(_geo_key(name), []).append(name)
+    return {key: tuple(dict.fromkeys(written)) for key, written in forms.items()}
 
 
 def _geo_key(text: str) -> str:
@@ -104,10 +119,11 @@ def longest_geo_name_tokens() -> int:
     )
 
 
-def is_geo_name(text: str) -> bool:
-    """Whether `text`, casing and spacing aside, is a name or alias of any country, region or
-    group the committed export holds (`geo_names`): "South Africa", "Western Africa"."""
-    return _geo_key(text) in _geo_name_keys()
+def geo_name_forms(text: str) -> tuple[str, ...]:
+    """Each name of a country, region or group the committed export holds (`geo_names`) that
+    is `text` casing and spacing aside, as the export writes it: ("South Africa",) for
+    "south africa". Empty when `text` names none."""
+    return _geo_forms().get(_geo_key(text), ())
 
 
 class CuratedAliasError(ValueError):
@@ -282,6 +298,30 @@ def longest_stored_name_tokens() -> int:
         for name in (record["name"], *(record.get("aliases") or ()))
     ] + [alias for aliases in curated.values() for alias in aliases]
     return max((len(re.findall(r"\w+", name)) for name in names), default=0)
+
+
+def stored_name_forms(text: str) -> tuple[str, ...]:
+    """Each name or alias the pack stores that is `text` in its normal form
+    (`is_stored_name`), as the committed records and curated aliases write it: ("Africa
+    Finance Corporation",) for "africa finance corporation". Empty when the pack stores
+    none."""
+    return _stored_forms().get(_committed_alias_index().normalize(text), ())
+
+
+@functools.cache
+def _stored_forms() -> dict[str, tuple[str, ...]]:
+    normalize = _committed_alias_index().normalize
+    curated = _load_curated(curated_path())
+    forms: dict[str, list[str]] = {}
+    for record in _load_records(records_path()):
+        for name in (
+            record["name"],
+            *(record.get("aliases") or ()),
+            *curated.get(record["dcid"], ()),
+        ):
+            if key := normalize(name):
+                forms.setdefault(key, []).append(name)
+    return {key: tuple(dict.fromkeys(written)) for key, written in forms.items()}
 
 
 def is_organisation_name(text: str) -> bool:

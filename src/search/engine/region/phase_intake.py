@@ -18,11 +18,11 @@ from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolution, Resolved
 from entity_resolution.membership import MembershipPolicy
 from entity_resolution.pack import (
+    geo_name_forms,
     geo_names,
-    is_geo_name,
-    is_stored_name,
     longest_geo_name_tokens,
     longest_stored_name_tokens,
+    stored_name_forms,
 )
 from origin_catalogue import current_catalogue, note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets, with_entry_basis_siblings
@@ -157,8 +157,8 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     (`ResolveState.open_axes`) in place of naming a total there, on the shapes that list
     exactly its parties there (`_prune_shapes_by_listing`). Whether the request directs such
     a text to the other side is recorded too (`ResolveState.whole_misdirected`). The variable
-    phrase's words naming a party the part binds are read once, from the committed names
-    (`ResolveState.party_aliases`, `bound_party_words`).
+    phrase's stretches naming a party the part binds are read once, from the committed names
+    (`ResolveState.party_alias_spans`, `bound_party_spans`).
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -267,7 +267,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         )
         place_sets[name] = replace(place_set, oecd=oecd_reading(place_set, membership=membership))
     state.place_sets = place_sets
-    state.party_aliases = bound_party_words(state.variable, rcl.resolutions.values())
+    state.party_alias_spans = bound_party_spans(state.variable, rcl.resolutions.values())
     state.party_sets = await _party_word_sets(state)
     state.whole_named = whole_named
     state.whole_sets = _whole_total_sets(state)
@@ -287,21 +287,26 @@ def _bound_dcids(resolution: Resolution) -> tuple[str, ...]:
     return ()
 
 
-def bound_party_words(variable: str, resolutions: Iterable[Resolution]) -> tuple[str, ...]:
-    """Each stretch of `variable` that is a name or alias resolvekit lists for a party one of
-    `resolutions` binds (`pack.geo_names`), as `variable` writes it: "US" in "total US ODA"
-    beside the donor United States, "G7" in "G7 ODA" beside the Group of Seven.
+type CharSpan = tuple[int, int]
 
-    A stretch is a whole-word occurrence, casing aside (`extract._span_occurrences`), but
-    for each word of the name written in capitals, which the stretch must write in capitals
-    too, as it must a name of two letters or fewer (`_keeps_abbreviations`), so the pronoun
-    "us", the verb "can" or the word "so" never reads as the United States, Canada or
-    Somalia. Longer names take their stretch first, so "the US" holds its "US". A name that is a
-    function word ("and" for Andorra, "per" for Peru) is never read. A stretch inside a
-    longer stretch that names something else, an organisation or aggregate the entity pack
-    stores (`pack.is_stored_name`: "Africa Finance Corporation") or another country, region
-    or group (`pack.is_geo_name`: "South Africa"), is not read as the party. The names come
-    from a committed export, so no resolver or graph read is made."""
+
+def bound_party_spans(variable: str, resolutions: Iterable[Resolution]) -> tuple[CharSpan, ...]:
+    """The character range of each stretch of `variable` that names a party one of
+    `resolutions` binds by a name Search reads it by (`pack.geo_names`): "US" in "total US
+    ODA" beside the donor United States, "G7" in "G7 ODA" beside the Group of Seven. Readers
+    mask exactly these ranges (`ResolveState.party_alias_spans`), so another copy of the
+    same words ("Africa" in "Africa Finance Corporation") stays the phrase's own.
+
+    A stretch is a whole-word occurrence, casing aside (`extract._span_occurrences`), that
+    writes as the name does each word the name writes in capitals, and writes a name of two
+    letters or fewer, a code, in capitals (`_written_as`), so the pronoun "us", the verb
+    "can" or the word "so" never reads as the United States, Canada or Somalia. Longer names
+    take their stretch first. A name that is a function word is never read. A stretch inside
+    a longer stretch that names something else, an organisation or aggregate the entity pack
+    stores (`pack.stored_name_forms`: "Africa Finance Corporation") or another country,
+    region or group (`pack.geo_name_forms`: "South Africa"), written as that name is, is not
+    read as the party. The names come from a committed export, so no resolver or graph read
+    is made."""
     names = {
         name
         for resolution in resolutions
@@ -312,11 +317,10 @@ def bound_party_words(variable: str, resolutions: Iterable[Resolution]) -> tuple
     if not names:
         return ()
     words = list(_WORD_RE.finditer(variable))
-    taken: list[tuple[int, int]] = []
-    found: list[str] = []
+    taken: list[CharSpan] = []
     for name in sorted(names, key=lambda name: (-len(name), name)):
         for occurrence in _span_occurrences(variable, name):
-            if not _keeps_abbreviations(name, occurrence.group()):
+            if not _written_as(name, occurrence.group()):
                 continue
             start, end = occurrence.span()
             if any(start < other_end and other_start < end for other_start, other_end in taken):
@@ -324,20 +328,23 @@ def bound_party_words(variable: str, resolutions: Iterable[Resolution]) -> tuple
             if _inside_another_name(variable, words, start, end):
                 continue
             taken.append((start, end))
-            found.append(occurrence.group())
-    return tuple(dict.fromkeys(found))
+    return tuple(sorted(taken))
 
 
-def _keeps_abbreviations(name: str, stretch: str) -> bool:
+def _written_as(name: str, stretch: str) -> bool:
     """Whether `stretch`, an occurrence of `name` casing aside, writes each word `name`
     writes in capitals with no lowercase letter ("US", "CAN", "G7") exactly as `name` does,
     and writes a name of two letters or fewer, a code, in capitals: "SO" for Somalia's "so",
-    never the word "so"."""
+    never the word "so". A stretch whose words do not pair with the name's, which the
+    entity pack's normal form can make, is taken as written."""
     if sum(char.isalpha() for char in name) <= 2 and any(char.islower() for char in stretch):
         return False
+    name_words, written = _WORD_RE.findall(name), _WORD_RE.findall(stretch)
+    if len(name_words) != len(written):
+        return True
     return all(
-        word == written
-        for word, written in zip(_WORD_RE.findall(name), _WORD_RE.findall(stretch), strict=True)
+        word == stated
+        for word, stated in zip(name_words, written, strict=True)
         if any(char.isalpha() for char in word) and not any(char.islower() for char in word)
     )
 
@@ -346,8 +353,9 @@ def _inside_another_name(
     variable: str, words: Sequence[re.Match[str]], start: int, end: int
 ) -> bool:
     """Whether the stretch `start:end` of `variable` lies inside a longer stretch of its
-    words that the entity pack stores as a name (`pack.is_stored_name`) or that names a
-    country, region or group (`pack.is_geo_name`)."""
+    words that the entity pack stores as a name (`pack.stored_name_forms`) or that names a
+    country, region or group (`pack.geo_name_forms`), written as that name is
+    (`_written_as`)."""
     inside = [index for index, word in enumerate(words) if start <= word.start() < end]
     if not inside:
         return False
@@ -358,7 +366,8 @@ def _inside_another_name(
             if (begin, stop) == (first, last):
                 continue
             stretch = variable[words[begin].start() : words[stop].end()]
-            if is_stored_name(stretch) or is_geo_name(stretch):
+            forms = (*stored_name_forms(stretch), *geo_name_forms(stretch))
+            if any(_written_as(form, stretch) for form in forms):
                 return True
     return False
 
