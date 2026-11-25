@@ -9,7 +9,7 @@ reference and the logs name it by `Principal.label`, a fingerprint of the header
 secret is never stored or logged. Pinning is irreversible on this surface.
 
 Every other caller is an open caller, named by `dfo_platform.caller.resolve_caller` before the
-pin runs, and its reference names it by its caller key (`ip:<digest>`, or the vouched `conversation:<digest>` of a Studio conversation). A new pinned copy for an
+pin runs, and its reference names it by its caller key (`ip:<digest>`, the vouched `user:<digest>` of an account, or the vouched `conversation:<digest>` of a Studio conversation). A new pinned copy for an
 open caller also spends one unit of the open callers' budget (`DATASETS_PIN_OPEN_DAILY_MAX`,
 default 2,000 a UTC day), refusing the daily budget's 503 past it, so open callers
 cannot spend the budget the grant's holders draw on, and one unit of the caller's `pin`
