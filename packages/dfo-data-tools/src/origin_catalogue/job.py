@@ -1251,8 +1251,9 @@ def _un_rows(
     deployment is the UN Statistics Division for every agency, with each
     row's licence and its entry's card facts and documentation facts read
     from the UN deployment (`_citation_facts`). Each row has no `dataset`,
-    so each agency is its own entry and its publisher is its `source`. An
-    agency whose root group `undata/g/<segment>` is absent is refused."""
+    so each agency is its own entry and its publisher is the `name` of its
+    `source` arc on the UN deployment (`undata/s/UN`). An agency whose
+    root group `undata/g/<segment>` is absent is refused."""
     groups = {agency.provenance: un_root_group(agency) for agency in registry.un_system}
     arcs = without_unresolved(
         un_graph.node_arcs_many([*groups, *groups.values()], properties=_PROVENANCE_PROPERTIES)
@@ -1361,8 +1362,8 @@ class _CarriedUn:
         carried refused places and the carried UN tables, whole. An entry
         the source build holds no facts for gets empty `CardFacts` and a
         `SourceDocumentation` covering no provenance, so it reads as
-        undocumented. A carried row whose segment is not the registry's is refused, since no
-        UN read has checked the new segment's root group. Carried UN tables
+        undocumented. A carried row whose segment is not the registry's is
+        refused, since no UN read has checked the new segment's root group. Carried UN tables
         whose excluded series are not the registry's are refused, since
         their variables were admitted under other exclusions, and so are
         carried UN tables holding an agency segment the registry no longer

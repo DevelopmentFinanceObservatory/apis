@@ -595,7 +595,7 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
 
 def test_a_published_un_row_is_documented_as_a_base_row_is(tmp_path, capsys):
     """A UN citation carries its entry's documentation, and a UN source whose import marks no
-    partial period is judged complete, where both were undocumented before UN facts."""
+    partial period is judged complete."""
     run(tmp_path)
     snapshot = load_catalogue(f"file://{tmp_path}")
     graph = un_deployment()

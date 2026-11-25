@@ -197,8 +197,8 @@ def test_a_source_scope_changes_nothing_in_the_document(origin) -> None:
 
 
 def test_the_un_document_counts_each_agency_variable() -> None:
-    """The ILO row holds no variable, so it has no entry, and a UN row's description is its
-    entry's card facts', as a base row's is."""
+    """The ILO row holds no variable, so it has no entry, and a UN row's description comes
+    from its entry's card facts, as a base row's does."""
     entries = _entries(_catalogue(), "un_system")
 
     assert list(entries) == [_UN_WHO]

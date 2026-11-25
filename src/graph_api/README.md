@@ -661,7 +661,7 @@ The example keeps the first entry of each list. The response comes from the app 
 
 ### GET /api/graph/documentation/{dcid}
 
-Assembles one source's documentation document, in the field names below. `dcid` accepts either a `Dataset` dcid (the catalogue's own grain, see below) or a `Provenance` dcid: a Provenance with a parent Dataset climbs to it and rolls up across every one of that Dataset's own children, not just the given node alone; a Provenance with no parent (an orphan, e.g. the ONE-minted `provenance/OECDCreditorReportingSystem`) is treated as its own single child. A `Source` dcid (the publishing organisation, e.g. `dc/s/WorldBank`) is refused `400 request_invalid`: this door documents a publication, not a publisher. A UN System Data Commons agency provenance (`undata/p/SDG`) is read from the UN deployment and documented the same way.
+Assembles one source's documentation document, in the field names below. `dcid` accepts either a `Dataset` dcid (the catalogue's own grain, see below) or a `Provenance` dcid: a Provenance with a parent Dataset climbs to it and rolls up across every one of that Dataset's own children, not just the given node alone; a Provenance with no parent (an orphan, e.g. the ONE-minted `provenance/OECDCreditorReportingSystem`) is treated as its own single child. A `Source` dcid (the publishing organisation, e.g. `dc/s/WorldBank`) is refused `400 request_invalid`: this door documents a publication, not a publisher. A UN System Data Commons agency provenance (`undata/p/SDG`) is read from the UN deployment and documents that agency alone.
 
 The response answers `public, max-age=300` with an `ETag` over its body, or `no-store` when it asked for coverage facts while the coverage index was unreadable. An unreadable index can answer on a later read.
 
@@ -671,7 +671,7 @@ The graph's own three-level chain is **Source** (the publishing organisation) ->
 
 #### Roll-up rules
 
-- A Dataset's children are the `Provenance` nodes that name it in `isPartOf` and that the request's origin catalogue admits. A withheld or excluded child counts toward no member. A Dataset with no admitted child answers `404 node_not_held`, since the source index lists no entry for it. A Provenance's parent Dataset is its first `isPartOf` parent typed `Dataset`. A Provenance whose parents are all something else (a Source, a `ProvisionalNode`, a node the graph does not hold) is an orphan.
+- A Dataset's children are the `Provenance` nodes that name it in `isPartOf` and that the request's origin catalogue admits. A withheld or excluded child counts toward no member. A Dataset with no admitted child answers `404 node_not_held`, since the source index lists no entry for it. A Provenance's parent Dataset is its first `isPartOf` parent typed `Dataset`. A Provenance whose parents are all something else (a Source, a `ProvisionalNode`, a node the graph does not hold) is an orphan. A Provenance the origin catalogue lists as its own entry (its row names no Dataset, as for every UN agency) is documented as its own single child, whatever its `isPartOf` parents, so the page matches its card.
 - `details.description`, `details.source_url`, `license.type`, `license.update_cadence` and `scope_and_units.years_covered` come from `origin_catalogue.card_facts.card_facts_of`, the function the catalogue job computes the source index's card facts with (see `GET /api/graph/sources`).
 - `details.name_of_source`, `details.source_url`, `details.publisher` read from the Dataset node directly, no roll-up. `source_url` falls back to the sole child's own `url` when the Dataset has exactly one child and none of its own. `name_of_source` falls back to the given node's own `name` for an orphan, or when the resolved Dataset carries none; both reads apply the same self-referential-name guard `publisher` uses on the plain node door (above). A `name` value equal to its own dcid is never served, falling through to the next name in the chain instead.
 - `details.source` and `details.data_commons` come from the request's origin catalogue. `source` is the provenance table's source (`{ ref, label }`, the registry's name for the `Source` node; for a UN agency, the agency provenance itself) and `data_commons` its Data Commons (`{ id, label }`). A Provenance dcid uses its own catalogue row. A Dataset dcid uses its admitted children's rows and serves each when they share one value; otherwise it is `null` and gapped, so a Dataset whose children sit under two sources serves `details.source` `null`.
@@ -1361,7 +1361,14 @@ A leg that fails or runs out of time is named in `unavailable` (`dcid`, `names`,
 {
   "query": "Kenya",
   "hits": [
-    {"ref": "country/KEN", "label": "Kenya", "types": ["Country"], "declared_by": "base", "via": "name", "score": null}
+    {
+      "ref": "country/KEN",
+      "label": "Kenya",
+      "types": ["Country"],
+      "declared_by": "base",
+      "via": "name",
+      "score": null
+    }
   ],
   "unavailable": []
 }

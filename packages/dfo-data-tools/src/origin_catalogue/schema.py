@@ -99,8 +99,8 @@ class CataloguePointer:
 @dataclass(frozen=True, slots=True)
 class UnCarryForward:
     """Why a build serves an earlier build's UN rows and their entries'
-    facts, refused places and UN tables: `from_build` is the build that last read them from the UN
-    deployment, and `reason` is the UN stage failure that kept this build
+    facts, refused places and UN tables: `from_build` is the build that last
+    read them from the UN deployment, and `reason` is the UN stage failure that kept this build
     from reading them."""
 
     from_build: str
@@ -183,8 +183,8 @@ class CatalogueManifest:
     and `file_sha256` each logical name to the SHA-256 hex digest of that
     file's bytes, which the loader checks every file it reads against.
     `un_carried_forward` is set when the build carries its UN rows and their
-    entries' facts, refused places and UN tables from an earlier build, and `None` when it read them
-    from the UN. `un_mirror` describes the UN tables, `arc_tables` the arc
+    entries' facts, refused places and UN tables from an earlier build, and
+    `None` when it read them from the UN. `un_mirror` describes the UN tables, `arc_tables` the arc
     tables and `families` the family tables, which `row_counts` and
     `resident_bytes` leave out. `ingestion`
     is the successful `IngestionHistory` row the build's import key names, which
