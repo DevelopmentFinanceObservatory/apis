@@ -4,6 +4,7 @@ trips to the base spec_id."""
 
 from __future__ import annotations
 
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,12 @@ from search.engine.spec_id import identity_spec_id
 from search.models import BaseIdentity, EntityGroup, Operation, PartScope
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
-from search.scope.region import is_residual, published_residuals, without_residuals
+from search.scope.region import (
+    is_residual,
+    policy_members_throughout,
+    published_residuals,
+    without_residuals,
+)
 from search.scope.tables import PartFacts, ScopeFacts
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.scope._axes import explicit, switch
@@ -335,3 +341,20 @@ def test_every_region_reading_names_a_summing_dac_total_and_a_graph_region():
         assert total.totals in policy and policy.get(total.totals).kind == "group", row
         assert policy.holds_region(row.region), row
         assert row.region not in index.totals_by_group, row
+
+
+@pytest.mark.parametrize(
+    ("member", "first", "last", "held"),
+    [
+        ("country/KOR", date(2005, 1, 1), date(2009, 12, 31), False),
+        ("country/KOR", date(2010, 1, 1), date(2015, 12, 31), True),
+        ("country/SVK", date(2012, 1, 1), date(2012, 12, 31), False),
+        ("country/SVK", date(2013, 1, 1), date(2013, 12, 31), True),
+        ("country/PRT", date(1980, 1, 1), date(1985, 12, 31), False),
+        ("country/PRT", date(1995, 1, 1), date(2000, 12, 31), True),
+        ("country/PRT", date(1965, 1, 1), date(1970, 12, 31), True),
+        ("country/FRA", date(1960, 1, 1), date(2025, 12, 31), True),
+    ],
+)
+def test_the_dac_holds_each_member_only_over_the_years_it_belonged(member, first, last, held):
+    assert (member in policy_members_throughout("groups/OECD.DAC", first, last)) is held

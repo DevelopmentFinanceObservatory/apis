@@ -14,6 +14,7 @@ from entity_resolution.membership import (
     NotRecorded,
     Projection,
     UnknownMembership,
+    policy_data,
 )
 from entity_resolution.regions import identity_to_dcid, replacing_group_id
 from entity_resolution.shared import SharedResolver, shared_memberships
@@ -73,7 +74,12 @@ def test_a_group_takes_its_graph_node_id_where_the_node_holds_its_membership(
 def test_dated_groups_answer_as_resolvekit_does_at_every_date(
     registry: GroupRegistry, _shared_resolvekit_pack: SharedResolver
 ) -> None:
-    dated = [group for group in registry if group.dated]
+    # A group the policy file dates itself is undated in resolvekit, so it has nothing to match.
+    dated = [
+        group
+        for group in registry
+        if group.dated and group.entity_id not in policy_data().dated_group_rows
+    ]
     assert dated
     for group in dated:
         for as_of in _DATES:

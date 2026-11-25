@@ -2,7 +2,8 @@
 
 Each group's rows are read from the geo store's `member_of` relations, dated where the curated
 data dates them, so `members(projection, as_of)` answers any date without calling resolvekit
-again. 13 of the 55 groups date their rows; the rest are undated lists and refuse `as_of`.
+again. 14 of the 55 groups date their rows (the OECD DAC's from `membership_policy.json`, since
+resolvekit lists it undated); the rest are undated lists and refuse `as_of`.
 A group's id is its resolvekit entity id through `regions.identity_to_dcid`.
 
 Build with `build_group_registry` on the thread that opened its resolver, since resolvekit's
@@ -10,7 +11,8 @@ stores are thread-affine. The registry it returns is immutable."""
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from datetime import date
 from typing import TYPE_CHECKING
 
 from entity_resolution.membership import (
@@ -98,6 +100,8 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
         rows_by_group[group.entity_id], labels_by_group[group.entity_id] = _rows(
             store, group.entity_id
         )
+    for group_id, spans in policy_data().dated_group_rows.items():
+        rows_by_group[group_id] = _dated(group_id, rows_by_group.get(group_id), spans)
     sovereign_rows = rows_by_group.get(SOVEREIGNTY_GROUP)
     if not sovereign_rows:
         raise RuntimeError(f"resolvekit holds no {SOVEREIGNTY_GROUP} rows to class states by")
@@ -149,6 +153,35 @@ def _rows(store: EntityStore, group_id: str) -> tuple[tuple[Row, ...], dict[str,
             if relation.relation_type == _MEMBER_OF and relation.target_id == group_id
         )
     return tuple(rows), labels
+
+
+def _dated(
+    group_id: str,
+    held: tuple[Row, ...] | None,
+    spans: Mapping[str, tuple[tuple[date | None, date | None], ...]],
+) -> tuple[Row, ...]:
+    """`held`, resolvekit's undated rows for `group_id`, replaced by the policy file's dated
+    spans for the same members.
+
+    Raises:
+        RuntimeError: resolvekit does not hold the group, already dates its rows, or lists
+            different members than the policy file dates.
+    """
+    if held is None:
+        raise RuntimeError(f"policy file dates group {group_id!r}, which resolvekit does not hold")
+    if any(row.valid_from is not None or row.valid_until is not None for row in held):
+        raise RuntimeError(f"resolvekit already dates group {group_id!r}; drop the policy override")
+    classes = {row.member: row.member_class for row in held}
+    if classes.keys() != spans.keys():
+        raise RuntimeError(
+            f"policy file dates {sorted(spans.keys() ^ classes.keys())} differently from "
+            f"resolvekit's members of group {group_id!r}"
+        )
+    return tuple(
+        Row(member=member, member_class=classes[member], valid_from=start, valid_until=until)
+        for member in sorted(spans)
+        for start, until in spans[member]
+    )
 
 
 def _by_member(rows: tuple[Row, ...]) -> dict[str, tuple[Row, ...]]:

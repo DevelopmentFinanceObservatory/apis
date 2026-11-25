@@ -124,17 +124,19 @@ class Gap:
 
 @dataclass(frozen=True, slots=True)
 class PolicyData:
-    """The declared policy file: the root, region compositions, other states, and incomplete
-    projections.
+    """The declared policy file: the root, region compositions, other states, incomplete
+    projections, and dated rows for groups resolvekit holds undated.
 
     `root` is the resolvekit id of the World, which every region sits under and which is no
     region itself. `compositions` maps a region's resolvekit id to the containers whose
-    countries it holds."""
+    countries it holds. `dated_group_rows` maps a group's resolvekit id to each member's
+    `(valid_from, valid_until)` spans, replacing the group's undated rows."""
 
     root: str
     compositions: Mapping[str, tuple[str, ...]]
     other_states: frozenset[str]
     incomplete_region_projections: frozenset[Projection]
+    dated_group_rows: Mapping[str, Mapping[str, tuple[tuple[date | None, date | None], ...]]]
 
 
 @cache
@@ -151,7 +153,21 @@ def policy_data() -> PolicyData:
         incomplete_region_projections=frozenset(
             Projection(name) for name in raw["region_gaps"]["projections"]
         ),
+        dated_group_rows={
+            entry["group"]: _spans_by_member(entry["rows"]) for entry in raw["dated_group_rows"]
+        },
     )
+
+
+def _spans_by_member(
+    rows: list[dict[str, str | None]],
+) -> dict[str, tuple[tuple[date | None, date | None], ...]]:
+    spans: dict[str, list[tuple[date | None, date | None]]] = {}
+    for row in rows:
+        spans.setdefault(str(row["member"]), []).append(
+            (parse_date(row["valid_from"]), parse_date(row["valid_until"]))
+        )
+    return {member: tuple(held) for member, held in spans.items()}
 
 
 @dataclass(frozen=True, slots=True)

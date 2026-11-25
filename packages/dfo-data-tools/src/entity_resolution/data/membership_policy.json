@@ -18,5 +18,46 @@
     "projections": ["territories", "former_states", "other_states"],
     "code": "membership_incomplete",
     "reason": "resolvekit 0.1.12 holds 18 territories as no country, places almost no former state in a region, and places Kosovo (XKS) and the French Southern Territories (ATF) in no region"
-  }
+  },
+  "dated_group_rows": [
+    {
+      "group": "groups/OECD.DAC",
+      "source": "OECD DAC membership by year of joining (DAC 60 Highlights, https://mzv.gov.cz/file/4440613/DAC_60_Highlights.pdf, for the members to Greece; the OECD accession process page, https://www.oecd.org/en/about/legal/oecd-accession-process.html, and the OECD press releases for Korea, the Slovak Republic, Hungary, Lithuania, Estonia and Latvia). DAC figures are annual, so a member counts from 1 January of its joining year. Portugal withdrew in 1974 and rejoined in 1991. The European Union is no country row, and Romania is an associate, not a member",
+      "rows": [
+      {"member": "country/AUS", "valid_from": "1966-01-01", "valid_until": null},
+      {"member": "country/AUT", "valid_from": "1965-01-01", "valid_until": null},
+      {"member": "country/BEL", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/CAN", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/CHE", "valid_from": "1968-01-01", "valid_until": null},
+      {"member": "country/CZE", "valid_from": "2013-01-01", "valid_until": null},
+      {"member": "country/DEU", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/DNK", "valid_from": "1963-01-01", "valid_until": null},
+      {"member": "country/ESP", "valid_from": "1991-01-01", "valid_until": null},
+      {"member": "country/EST", "valid_from": "2023-01-01", "valid_until": null},
+      {"member": "country/FIN", "valid_from": "1975-01-01", "valid_until": null},
+      {"member": "country/FRA", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/GBR", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/GRC", "valid_from": "1999-01-01", "valid_until": null},
+      {"member": "country/HUN", "valid_from": "2016-01-01", "valid_until": null},
+      {"member": "country/IRL", "valid_from": "1985-01-01", "valid_until": null},
+      {"member": "country/ISL", "valid_from": "2013-01-01", "valid_until": null},
+      {"member": "country/ITA", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/JPN", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/KOR", "valid_from": "2010-01-01", "valid_until": null},
+      {"member": "country/LTU", "valid_from": "2022-01-01", "valid_until": null},
+      {"member": "country/LUX", "valid_from": "1992-01-01", "valid_until": null},
+      {"member": "country/LVA", "valid_from": "2025-01-01", "valid_until": null},
+      {"member": "country/NLD", "valid_from": "1960-01-01", "valid_until": null},
+      {"member": "country/NOR", "valid_from": "1962-01-01", "valid_until": null},
+      {"member": "country/NZL", "valid_from": "1973-01-01", "valid_until": null},
+      {"member": "country/POL", "valid_from": "2013-01-01", "valid_until": null},
+      {"member": "country/PRT", "valid_from": "1960-01-01", "valid_until": "1974-01-01"},
+      {"member": "country/PRT", "valid_from": "1991-01-01", "valid_until": null},
+      {"member": "country/SVK", "valid_from": "2013-01-01", "valid_until": null},
+      {"member": "country/SVN", "valid_from": "2013-01-01", "valid_until": null},
+      {"member": "country/SWE", "valid_from": "1965-01-01", "valid_until": null},
+      {"member": "country/USA", "valid_from": "1960-01-01", "valid_until": null}
+      ]
+    }
+  ]
 }

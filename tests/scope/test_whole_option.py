@@ -720,7 +720,7 @@ def test_a_donor_outside_the_dac_over_the_part_s_years_has_no_dac_total_whole(mo
     the DAC from 2010, in two rows that meet in 2015, over 2000-2005 Korea's donor whole
     refuses `part_outside_whole`; over 2012-2019 the merged rows hold it; and over every
     year the window reads the years Korea's own series hold (2016-2019), so the total holds
-    it. The membership policy dates no DAC membership, so the test dates Korea's."""
+    it. The test dates Korea's rows itself, in two rows that meet in 2015."""
     policy = region.shared_membership_policy()
     group = get_index().parties[provider_fixture._DAC_COUNTRIES].totals
     assert group is not None
@@ -760,6 +760,24 @@ def test_a_donor_outside_the_dac_over_the_part_s_years_has_no_dac_total_whole(mo
 
 
 _KOR = "country/KOR"
+
+
+def test_the_shipped_dac_dates_hold_korea_out_of_the_whole_before_it_joined(monkeypatch):
+    """Over the shipped membership policy, Korea joined the DAC in 2010: its donor whole over
+    2005-2009 refuses `part_outside_whole`, and over 2016-2020 the DAC total holds it."""
+    total, _ = _total_base(monkeypatch)
+    facts = provider_fixture._dac1_facts(
+        _TOTAL, extra=[(m, _KOR, range(2005, 2021)) for m in provider_fixture._DAC1_TOTAL_MEMBERS]
+    )
+
+    def asked(first: int, last: int) -> PartScope | WholeRefusal:
+        window = IdentityWindowRange(start_year=first, end_year=last)
+        base = total.model_copy(update={"entities": {"origin": [_KOR]}, "requested_window": window})
+        return _whole(_part(base, facts=facts), "donor", facts=facts)
+
+    before = asked(2005, 2009)
+    assert isinstance(before, WholeRefusal) and before.cause == "part_outside_whole"
+    assert isinstance(asked(2016, 2020), PartScope)
 
 
 def test_a_whole_serving_fewer_years_than_the_part_refuses():
