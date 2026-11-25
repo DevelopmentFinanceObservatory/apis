@@ -3114,7 +3114,8 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     unread, in query order. A menu lists what the bind model may read the phrase as.
 
     The phrase's unread words are a run beside a code span `_unread_runs` finds, read
-    before any bind output exists by the spans of the shape's own reading, the part's entity texts, the words
+    before any bind output exists by the spans of the shape's own reading, the part's entity
+    texts, the ranges naming a party the part binds (`ResolveState.party_alias_spans`), the words
     `_conversational_words` accepts for `shape`, a connective between two code spans and a
     date phrase. A code term read in every code system together that names a code another
     shape the part recalled binds (`ResolveState.shapes_found`, before a named dataset
@@ -3160,6 +3161,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     read += [
         occurrence for text in state.entity_texts for occurrence in token_occurrences(tokens, text)
     ]
+    read += state.party_alias_spans
     others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
 
     def bound_elsewhere(row: CodeRow) -> bool:
@@ -3778,7 +3780,8 @@ def _free_readers(
 ) -> _FreeReaders:
     """The readers of the variable's words, `tokens`, that read neither a binding nor the
     bind's reply, on `shape`: the spans `spans` of its own reading, the part's entity
-    texts and the spans of their door roles, its operation phrases, its unit text, the
+    texts, the spans of their door roles and the ranges naming a party the part binds
+    (`ResolveState.party_alias_spans`), its operation phrases, its unit text, the
     series code it names, the form wording (`_form_ranges`), the question's words for the
     base the quantity read quoted (`ResolveState.base_words`), the words
     `_conversational_words` accepts for
@@ -3798,14 +3801,17 @@ def _free_readers(
         reading=("reading", [(span.start, span.end) for span in spans]),
         entity=(
             "entity",
-            _occurrences(
-                tokens,
-                [
-                    *state.entity_texts,
-                    *(role.span for roles in state.entity_roles.values() for role in roles),
-                    *_resolved_name_words(state, index),
-                ],
-            ),
+            [
+                *_occurrences(
+                    tokens,
+                    [
+                        *state.entity_texts,
+                        *(role.span for roles in state.entity_roles.values() for role in roles),
+                        *_resolved_name_words(state, index),
+                    ],
+                ),
+                *state.party_alias_spans,
+            ],
         ),
         operation=(
             "operation",

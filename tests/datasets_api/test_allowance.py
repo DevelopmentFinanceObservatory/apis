@@ -39,6 +39,7 @@ from ._version_record_store import FakeVersionRecordDatasetStore
 _NOON = datetime(2026, 6, 1, 12, tzinfo=UTC)
 _ALICE = Caller(kind="address", key="ip:" + "a" * 32)
 _BOB = Caller(kind="address", key="ip:" + "b" * 32)
+_ACCOUNT = Caller(kind="account", key="user:" + "c" * 32)
 
 
 @pytest.fixture
@@ -64,10 +65,11 @@ def test_a_caller_spends_up_to_its_limit_then_waits_for_utc_midnight(ledger):
     assert refused.value.headers == {"Retry-After": str(12 * 3600)}
 
 
-def test_callers_kinds_and_days_count_apart(ledger):
+@pytest.mark.parametrize("other", [_BOB, _ACCOUNT], ids=["address", "account"])
+def test_callers_kinds_and_days_count_apart(ledger, other: Caller):
     ledger.spend(_ALICE, AllowanceKind.share, _NOON)
 
-    ledger.spend(_BOB, AllowanceKind.share, _NOON)
+    ledger.spend(other, AllowanceKind.share, _NOON)
     ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
     ledger.spend(_ALICE, AllowanceKind.share, _NOON + timedelta(hours=12))
     with pytest.raises(AllowanceExhausted):

@@ -46,8 +46,8 @@ failed, and reads the settings `sweep` reads.
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
 its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
-an open caller's `ip:` or `conversation:` key, so a repeat run changes nothing, and the table lock they run under
-holds concurrent pins back until they finish. It runs them in one transaction, then writes one
+an open caller's `ip:`, `user:` or `conversation:` key, so a repeat run changes nothing, and the
+table lock they run under holds concurrent pins back until they finish. It runs them in one transaction, then writes one
 `datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
 enrichment `kind`. Insert triggers repair the previous image's version rows, also for a request
@@ -488,6 +488,7 @@ from dfo_analysis_engine.recipe import (
     replay_key,
     root_identity,
 )
+from dfo_platform.caller import CALLER_KEY_DIGEST_LENGTH, CALLER_KEY_PREFIXES
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -650,10 +651,22 @@ def _age_operations() -> int:
     return 0
 
 
-_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32}|conversation:[0-9a-f]{32})$'"
+_LABELLED = "'^({})$'".format(
+    "|".join(
+        (
+            "secret-sha256:[0-9a-f]{16}",
+            *(
+                f"{prefix}[0-9a-f]{{{CALLER_KEY_DIGEST_LENGTH}}}"
+                for prefix in CALLER_KEY_PREFIXES.values()
+            ),
+        )
+    )
+)
 """Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
-(`dfo_platform.caller.address_key`, or a vouched `conversation:` value). A pin principal it
-does not match is the raw secret the image before migration 0026 stored."""
+of any kind in `dfo_platform.caller.CALLER_KEY_PREFIXES` (an address's `ip:` key, a vouched
+account's `user:` value or a vouched `conversation:` value), so a new caller kind is left alone
+without an edit here. A pin principal it does not match is the raw secret the image before
+migration 0026 stored."""
 
 SETTLE_STATEMENTS: tuple[str, ...] = (
     "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE",
@@ -688,8 +701,9 @@ WHERE reference_kind = 'pin'
   AND principal !~ {_LABELLED}""",
 )
 """The statements of `0026_artifact_reference_principal_label.sql`, which the migration
-explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` or `conversation:` key and a
-second run are left alone. The lock queues pins until the transaction ends: a pin landing between
+explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:`, `user:` or
+`conversation:` key and a second run are left alone. The lock queues pins until the transaction
+ends: a pin landing between
 the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
 row the count reports."""
 
