@@ -179,6 +179,7 @@ def test_every_name_comes_from_the_environment_variables():
         "JOB_DATASETS_MIGRATE",
         "JOB_PRESENTATION_MIGRATE",
         "JOB_ORIGIN_CATALOGUE",
+        "JOB_ORIGIN_CATALOGUE_CANDIDATE",
         "JOB_SEARCH_CATALOGUE",
         "JOB_DATASETS_MAINTENANCE",
         "JOB_GRAPH_RELEASE",
@@ -193,7 +194,7 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, twelve job executions, two service updates, two reads of the apis
+    # Seven job updates, twelve job executions, two service updates, two reads of the apis
     # service, and four traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
@@ -201,7 +202,8 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
             "JOB_DATASETS_MAINTENANCE": 5,
-            "JOB_ORIGIN_CATALOGUE": 3,
+            "JOB_ORIGIN_CATALOGUE": 1,
+            "JOB_ORIGIN_CATALOGUE_CANDIDATE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
@@ -222,7 +224,7 @@ def test_every_name_comes_from_the_environment_variables():
             "Run the presentation migration job",
         ),
         (
-            "Point the origin catalogue job at the new image",
+            "Point the origin catalogue candidate job at the new image",
             "Ensure a compatible origin catalogue is published",
         ),
         (
@@ -289,9 +291,37 @@ def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
         < names.index("Ensure a compatible graph release is published")
         < names.index(update)
         < names.index(build)
-        < names.index("Point the datasets worker at the new image")
         < names.index("Stage the new revision with no traffic")
     )
+
+
+def test_the_scheduled_origin_catalogue_job_moves_to_the_new_image_right_after_traffic():
+    """A job writes only its own image's format root, so the candidate job checks and builds
+    the new root before traffic moves, and the scheduled job, which keeps the root the serving
+    image reads fresh, moves only once traffic has."""
+    names = [step.get("name") for step in _steps()]
+    candidate = 'gcloud run jobs {} "${{{{ vars.JOB_ORIGIN_CATALOGUE_CANDIDATE }}}}"'
+    scheduled = 'gcloud run jobs {} "${{{{ vars.JOB_ORIGIN_CATALOGUE }}}}"'
+    point_candidate = "Point the origin catalogue candidate job at the new image"
+    ensure = "Ensure a compatible origin catalogue is published"
+    point_scheduled = "Point the scheduled origin catalogue job at the new image"
+    move = "Move traffic to the candidate revision"
+
+    assert candidate.format("update") in _named(point_candidate)["run"]
+    assert candidate.format("execute") in _named(ensure)["run"]
+    assert [
+        step.get("name")
+        for step in _steps()
+        if '"${{ vars.JOB_ORIGIN_CATALOGUE }}"' in step.get("run", "")
+    ] == [point_scheduled]
+    assert scheduled.format("update") in _named(point_scheduled)["run"]
+    # The staged revision's image by digest, the string the decide and reconcile steps compare
+    # with the serving revision's image.
+    assert "--image=${{ steps.stage.outputs.image }}" in _named(point_scheduled)["run"].replace(
+        '"', ""
+    )
+    assert names.index(point_candidate) < names.index(ensure) < names.index(move)
+    assert names.index(point_scheduled) == names.index(move) + 1
 
 
 _FAKE_GCLOUD = """#!/bin/bash
@@ -388,13 +418,35 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     assert names.index("Move traffic to the candidate revision") < names.index(settle)
 
 
-def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
-    """The settle step needs the maintenance job, so an environment that does not name it fails
-    the check before the build, and the maintenance steps carry no guard of their own."""
+@pytest.mark.parametrize(
+    ("name", "steps"),
+    [
+        (
+            "JOB_DATASETS_MAINTENANCE",
+            [
+                "Point the datasets maintenance job at the new image",
+                "Settle rows the previous image wrote",
+                "Rewrite warnings in an old format",
+                "Backfill warning counts",
+                "Backfill description records",
+            ],
+        ),
+        (
+            "JOB_ORIGIN_CATALOGUE_CANDIDATE",
+            ["Point the origin catalogue candidate job at the new image"],
+        ),
+    ],
+)
+def test_the_upfront_check_refuses_a_deploy_without_a_job_the_steps_need(
+    name: str, steps: list[str]
+):
+    """An environment that does not name the maintenance job or the origin catalogue candidate
+    job fails the check before the build, and the steps that use the job carry no guard of
+    their own."""
     image = _step("image")
     # The check, with workflow expressions filled in as Actions would.
     check = re.sub(r"\$\{\{[^}]*\}\}", "dev", image["run"])
-    env = dict.fromkeys(image["env"], "set") | {"JOB_DATASETS_MAINTENANCE": ""}
+    env = dict.fromkeys(image["env"], "set") | {name: ""}
     unset = subprocess.run(
         ["bash", "-c", check],
         env=env | {"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": "/dev/null"},
@@ -405,16 +457,10 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 
     assert unset.returncode == 1
     assert unset.stdout.splitlines() == [
-        "::error::Missing vars.JOB_DATASETS_MAINTENANCE in the 'dev' GitHub Environment."
+        f"::error::Missing vars.{name} in the 'dev' GitHub Environment."
     ]
-    for name in (
-        "Point the datasets maintenance job at the new image",
-        "Settle rows the previous image wrote",
-        "Rewrite warnings in an old format",
-        "Backfill warning counts",
-        "Backfill description records",
-    ):
-        assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
+    for step in steps:
+        assert _named(step)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
 _REVISION = "${{ steps.stage.outputs.revision }}"
@@ -435,12 +481,13 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-13:] == [
-        "Point the datasets worker at the new image",
+    assert names[-14:] == [
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
         "Fail on errors the candidate revision answered while warming",
+        "Point the datasets worker at the new image",
         "Move traffic to the candidate revision",
+        "Point the scheduled origin catalogue job at the new image",
         "Settle rows the previous image wrote",
         "Rewrite warnings in an old format",
         "Backfill warning counts",
@@ -595,7 +642,8 @@ def test_traffic_moves_by_name_then_follows_the_latest_revision(
 
 def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
     """Settle or backfill can fail after traffic is pinned by name, and an `infra` revision
-    must still take traffic until the next deploy."""
+    must still take traffic until the next deploy. A cancelled run leaves traffic as it is,
+    since the move may not have reached Cloud Run."""
     step = _named("Follow the latest revision after a failure")
 
     assert step["if"] == (
@@ -605,17 +653,26 @@ def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
     assert _named("Follow the latest revision again")["id"] == "follow"
 
 
+_SCHEDULED_JOB = "Point the scheduled origin catalogue job at the new image"
+
+
 @pytest.mark.parametrize(
-    ("rewrite", "backfill", "named"),
+    ("scheduled", "rewrite", "backfill", "named"),
     [
-        ("success", "success", []),
-        ("failure", "success", ["Rewrite warnings in an old format"]),
-        ("success", "failure", ["Backfill warning counts"]),
-        ("failure", "failure", ["Rewrite warnings in an old format", "Backfill warning counts"]),
+        ("success", "success", "success", []),
+        ("success", "failure", "success", ["Rewrite warnings in an old format"]),
+        ("success", "success", "failure", ["Backfill warning counts"]),
+        (
+            "success",
+            "failure",
+            "failure",
+            ["Rewrite warnings in an old format", "Backfill warning counts"],
+        ),
+        ("failure", "success", "success", [_SCHEDULED_JOB]),
     ],
 )
 def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
-    rewrite: str, backfill: str, named: list[str]
+    scheduled: str, rewrite: str, backfill: str, named: list[str]
 ):
     """A warning step that fails leaves the description backfill, the follow step and the
     release check to run, and the step after the release check fails the run naming it. The
@@ -624,7 +681,9 @@ def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
     backfill_step = _step("backfill_warnings")
     assert rewrite_step["name"] == "Rewrite warnings in an old format"
     assert backfill_step["name"] == "Backfill warning counts"
-    for step in (rewrite_step, backfill_step):
+    scheduled_step = _step("scheduled_job")
+    assert scheduled_step["name"] == _SCHEDULED_JOB
+    for step in (scheduled_step, rewrite_step, backfill_step):
         assert step["continue-on-error"] is True
     names = [step.get("name") for step in _steps()]
     last = _named("Fail on a failed warning step")
@@ -632,11 +691,17 @@ def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
     assert last["env"] == {
         "REWRITE_WARNINGS": "${{ steps.rewrite_warnings.outcome }}",
         "BACKFILL_WARNINGS": "${{ steps.backfill_warnings.outcome }}",
+        "SCHEDULED_JOB": "${{ steps.scheduled_job.outcome }}",
     }
 
     check = subprocess.run(
         ["bash", "-c", last["run"]],
-        env={"PATH": "/usr/bin:/bin", "REWRITE_WARNINGS": rewrite, "BACKFILL_WARNINGS": backfill},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "SCHEDULED_JOB": scheduled,
+            "REWRITE_WARNINGS": rewrite,
+            "BACKFILL_WARNINGS": backfill,
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -738,10 +803,42 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 28
+    assert len(later) == 30
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+
+
+def test_the_scheduled_origin_catalogue_job_follows_the_serving_image_before_anything_moves():
+    """A run that stopped or failed after the traffic move leaves the job behind, so the step
+    after the decide step points it at the serving image before the build, and the decide step
+    reads the same job to tell a finished deploy from one that left it behind."""
+    steps = _steps()
+    decide = _step("decide")
+    reconcile = _step("reconcile")
+
+    assert steps.index(reconcile) == steps.index(decide) + 1
+    assert reconcile["run"].strip() == ".github/scripts/deploy_reconcile.sh"
+    assert reconcile["env"] == {
+        "SERVICE": "${{ vars.SERVICE_APIS }}",
+        "JOB": "${{ vars.JOB_ORIGIN_CATALOGUE }}",
+        "REGION": "${{ vars.REGION }}",
+        "PROJECT_ID": "${{ vars.PROJECT_ID }}",
+    }
+    assert "continue-on-error" not in reconcile
+    assert decide["env"]["JOB"] == "${{ vars.JOB_ORIGIN_CATALOGUE }}"
+
+
+def test_the_datasets_worker_moves_after_the_probe_and_before_traffic():
+    """The probe calls no route that reaches the worker, so a failed probe leaves the worker on
+    the serving image."""
+    names = [step.get("name") for step in _steps()]
+
+    assert (
+        names.index("Fail on errors the candidate revision answered while warming") + 1
+        == names.index("Point the datasets worker at the new image")
+        == names.index("Move traffic to the candidate revision") - 1
+    )
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():

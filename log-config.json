@@ -1,9 +1,15 @@
 {
   "version": 1,
   "disable_existing_loggers": false,
+  "filters": {
+    "replay_privacy": {
+      "()": "dfo_platform.cloud_logging.replay_log_filter"
+    }
+  },
   "handlers": {
     "stdout": {
-      "()": "dfo_platform.cloud_logging.stdout_handler"
+      "()": "dfo_platform.cloud_logging.stdout_handler",
+      "filters": ["replay_privacy"]
     }
   },
   "root": {
