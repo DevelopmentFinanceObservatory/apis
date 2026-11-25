@@ -905,9 +905,11 @@ class ResolveState:
     entity_words: dict[str, str] = field(default_factory=dict)
     # The character ranges of the variable phrase that name a party the part binds by a name
     # Search reads it by ("US" in "total US ODA" beside the donor United States), set once at
-    # intake (`party_aliases.bound_party_spans`). Readers that mask the part's entity texts
-    # (`entity_texts`) mask these ranges too, and no other copy of their words; the breakdown
-    # read finds the same ranges in each dropped qualifier phrase as well.
+    # intake (`party_aliases.bound_party_spans`). The coverage rule and the nomination of
+    # unread words (`phase_rank_bind._free_readers`), the candidate menu
+    # (`phase_rank_bind._candidate_menus`) and the bind's unplaced phrases
+    # (`phase_rank_bind._query_records`) count these ranges as read, and no other copy of
+    # their words. The phrase a model reads is unchanged.
     party_alias_spans: tuple[tuple[int, int], ...] = ()
     variable_index: int
     emit: EventSink | None

@@ -8,7 +8,6 @@ import asyncio
 
 import pytest
 
-from entity_resolution import Entity, Resolved
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.quantity_read import QuantityOutput
@@ -166,30 +165,6 @@ def test_a_breakdown_phrase_opens_the_slot_it_names(variable, dropped, opened):
 
     assert _opened(bindings) == opened
     assert {b.property_dcid for b in bindings} == {b.property_dcid for b in _OPEN}
-
-
-_UK = Resolved(
-    entity=Entity(
-        dcid="country/GBR", name="United Kingdom", kind="country", graph_types=("Country",)
-    )
-)
-
-
-@pytest.mark.parametrize(
-    ("variable", "dropped"),
-    [
-        pytest.param("under-five mortality by sex in the UK", [], id="in_the_variable"),
-        pytest.param("under-five mortality", ["by sex in the UK"], id="in_a_dropped_phrase"),
-    ],
-)
-def test_a_bound_partys_abbreviation_ends_the_span(variable, dropped):
-    """ "UK" names the United Kingdom the part binds, so it ends the span in the variable and
-    in each dropped phrase alike, and "by sex" opens the sex slot."""
-    bindings = _open_breakdown_slots(
-        list(_OPEN), variable, dropped, _SHAPE, entities=["United Kingdom"], parties=[_UK]
-    )
-
-    assert _opened(bindings) == {_SEX: "by sex"}
 
 
 def test_a_slot_the_bindings_hold_a_value_on_stays_bound():

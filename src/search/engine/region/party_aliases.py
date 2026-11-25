@@ -1,9 +1,9 @@
 """The stretches of a phrase that name a party the part binds, by a name Search reads it by.
 
-Intake reads them in the variable phrase once (`ResolveState.party_alias_spans`), and the
-breakdown read in each dropped qualifier phrase (`phase_rank_bind._open_breakdown_slots`).
-The names come from a committed export (`pack.geo_names`), so no resolver or graph read is
-made."""
+Intake reads them in the variable phrase once (`ResolveState.party_alias_spans`). The
+coverage rule, the nomination of unread words, the candidate menu and the bind's unplaced
+phrases count them as read; the phrase a model reads is unchanged. The names come from a
+committed export (`pack.geo_names`), so no resolver or graph read is made."""
 
 from __future__ import annotations
 
@@ -55,9 +55,10 @@ def _bound_dcids(resolution: Resolution) -> tuple[str, ...]:
 def bound_party_spans(text: str, resolutions: Iterable[Resolution]) -> tuple[CharSpan, ...]:
     """The character range of each stretch of `text` that names a party one of `resolutions`
     binds by a name Search reads it by (`pack.geo_names`): "US" in "total US ODA" beside the
-    donor United States, "G7" in "G7 ODA" beside the Group of Seven. Readers mask exactly
-    these ranges, so another copy of the same words ("Africa" in "Africa Finance
-    Corporation") stays the phrase's own.
+    donor United States, "G7" in "G7 ODA" beside the Group of Seven. The readers that count
+    them as read (`ResolveState.party_alias_spans`) count exactly these ranges, so another
+    copy of the same words ("Africa" in "Africa Finance Corporation") stays the phrase's
+    own.
 
     A stretch is a whole-word occurrence, casing aside (`extract._span_occurrences`), that
     starts and ends where a token of `text` does (`code_index.tokens.tokenize`), so "US" in

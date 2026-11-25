@@ -21,7 +21,7 @@ import json
 import logging
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 import pytest
@@ -1116,7 +1116,11 @@ _RESOLVE = EntityResolver.resolve
 
 
 def _total_oda_resolve(
-    monkeypatch: pytest.MonkeyPatch, part: ParsedPart, *, donor: str = _USA
+    monkeypatch: pytest.MonkeyPatch,
+    part: ParsedPart,
+    *,
+    donor: str = _USA,
+    unplaced: Sequence[str] = (),
 ) -> tuple[Part, set[str]]:
     """`part` resolved over DAC1's total ODA from `donor`, recalled for the
     bare words "total ODA" and for `part`'s own variable, with the binder rating "US" and "UK"
@@ -1154,7 +1158,7 @@ def _total_oda_resolve(
     response = offline_resolve(
         ResolveRequest(input=ParsedInput(parts=[part])),
         graph=graph,
-        llm=_ScriptedLLM(part.variable_text),
+        llm=_ScriptedLLM(part.variable_text, unplaced=tuple(unplaced)),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         binder=RatingBinder(GeminiBinder(), _RATED_UNSTATED),
     )
@@ -1200,6 +1204,25 @@ def test_a_variable_word_naming_a_bound_party_reads_as_that_party(
     plain, restated = (part for part, _asked in answers.values())
     assert isinstance(plain, DefinitePart) and isinstance(restated, DefinitePart)
     assert restated.spec.spec_id == plain.spec.spec_id
+
+
+def test_a_bound_partys_name_the_bind_lists_as_unplaced_reads_as_that_party(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue: Callable[[Catalogue], None]
+):
+    """A bind that lists "US" in "total US ODA" as a phrase it could not place leaves no
+    unbound qualifier: the word names the donor the United States, so the part answers as
+    "total ODA" does."""
+    bind_catalogue(
+        FakeCatalogue(provenances={_DAC1: _catalogue_row(_DAC1, "OECD DAC1", "OECD DAC")})
+    )
+    part, _asked = _total_oda_resolve(
+        monkeypatch,
+        ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
+        unplaced=["US"],
+    )
+
+    assert isinstance(part, DefinitePart), part
+    assert part.spec.definition.identity.entities == {"origin": [_USA]}
 
 
 @pytest.mark.parametrize(
@@ -1347,8 +1370,9 @@ _TO_KENYA = ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="t
 class _ScriptedLLM:
     """Extract the given variables to Kenya, or among `entities`, and elect the first
     shape with every slot open but those `drafted` binds, nominating the shapes
-    `also_plausible` indexes beside it, or ask `ask` and elect none. What the question leaves
-    out is read from the recorded reads. Each bind prompt is kept in call order."""
+    `also_plausible` indexes beside it and listing `unplaced` as phrases it could not place,
+    or ask `ask` and elect none. What the question leaves out is read from the recorded
+    reads. Each bind prompt is kept in call order."""
 
     def __init__(
         self,
@@ -1359,6 +1383,7 @@ class _ScriptedLLM:
         ask: str | None = None,
         operations: tuple[ExtractedOperation, ...] = (),
         entities: tuple[ExtractedEntity, ...] = (_TO_KENYA,),
+        unplaced: tuple[str, ...] = (),
     ) -> None:
         self._variables = list(variables)
         self._entities = list(entities)
@@ -1367,6 +1392,7 @@ class _ScriptedLLM:
         self._also_plausible = also_plausible
         self._dropped = list(dropped)
         self._drafted = list(drafted)
+        self._unplaced = list(unplaced)
         self.bind_prompts: list[str] = []
         self.calls: Counter[str] = Counter()
 
@@ -1394,6 +1420,7 @@ class _ScriptedLLM:
             bindings=self._drafted,
             also_plausible=self._also_plausible,
             ask=self._ask,
+            unplaced=self._unplaced,
             measuring=[
                 ShapeRating(index=0, rating=1.0),
                 *nominee_ratings(self._also_plausible, rated=(0,)),

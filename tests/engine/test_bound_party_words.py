@@ -1,6 +1,6 @@
 """`party_aliases.bound_party_spans` reads the ranges of the variable phrase that name a party
-the part binds, from the committed export of its names (`pack.geo_names`), and the readers
-mask exactly those ranges."""
+the part binds, from the committed export of its names (`pack.geo_names`). The quantity read
+leaves them in the phrase it reads."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ from typing import cast
 
 import pytest
 
-from code_index.tokens import tokenize
 from entity_resolution import Entity, Group, Resolved, pack
 from search.engine.region.party_aliases import bound_party_spans
-from search.engine.region.phase_rank_bind import _entity_spans
+from search.engine.region.phase_rank_bind import _quantity_phrase
 from search.engine.region.state import ResolveState
 
 
@@ -57,26 +56,13 @@ _AU = Group(members=(), entity=None, dcid="groups/AU", label="African Union")
         ),
         pytest.param("South Africa ODA", _AFRICA, (), id="inside-another-place-name"),
         pytest.param("ODA of dac EU members", _EU, ("EU",), id="enclosing-name-written-otherwise"),
+        pytest.param("EU ODA through EU institutions", _EU, ("EU",), id="inside-a-stored-name"),
     ],
 )
 def test_bound_party_spans(variable, bound, read):
     spans = bound_party_spans(variable, [bound])
 
     assert tuple(variable[start:end] for start, end in spans) == read
-
-
-def test_a_copy_of_the_alias_inside_another_name_stays_unmasked():
-    """ "EU" names the European Union the part binds, and "EU institutions" a stored
-    organisation of its own, so the readers mask the first "EU" alone."""
-    variable = "EU ODA through EU institutions"
-    state = SimpleNamespace(
-        variable=variable,
-        entity_texts=("European Union",),
-        entity_roles={},
-        party_alias_spans=bound_party_spans(variable, [_EU]),
-    )
-
-    assert _entity_spans(cast(ResolveState, state), tokenize(variable)) == [(0, 2)]
 
 
 def test_each_listed_abbreviation_names_one_dcid():
@@ -90,3 +76,19 @@ def test_each_listed_abbreviation_names_one_dcid():
             if abbreviation.casefold() in {name.casefold() for name in names}
         ]
         assert owners == [dcid], abbreviation
+
+
+def test_the_quantity_read_keeps_a_bound_partys_abbreviation():
+    """The quantity read reads the phrase as written: "US" in "external debt relative to US
+    GDP" beside the United States names the base's country, and the read keeps it with its
+    preposition, so the phrase still names a base."""
+    variable = "external debt relative to US GDP"
+    state = SimpleNamespace(
+        variable=variable,
+        entity_texts=("United States",),
+        entity_roles={},
+        party_alias_spans=bound_party_spans(variable, [_USA]),
+    )
+
+    assert state.party_alias_spans
+    assert _quantity_phrase(cast(ResolveState, state)) == variable
