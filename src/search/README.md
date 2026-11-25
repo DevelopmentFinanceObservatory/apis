@@ -63,7 +63,7 @@ The eval case model, the checks that score a response against it, and the paired
 - **`live_clients.py`**, **`graph.py`**: The graph, SDMX and coverage readers the groundedness and materialisation checks use.
 - **`run_record.py`**: The `dfo-evals` run record of a run of the corpus dataset, one trial per case scored by `answer` and tagged with its case file, which single mode and the nightly write.
 - **`dataset.py`**: Builds a `dataset_resubmit` case's request identity and names a case's Langfuse dataset item.
-- **`sync.py`**: Mirrors each case file to a Langfuse dataset, each item's input the case's authored request. With `--nightly` it runs every eligible case once on a deployed app, writes the run record and pushes it to Langfuse as one experiment per case file.
+- **`sync.py`**: Mirrors each case file to a Langfuse dataset through `dfo-evals`' `upsert_items`, writing only changed items, each item's input the case's authored request. With `--nightly` it runs every eligible case once on a deployed app, writes the run record and pushes it to Langfuse as one experiment per case file.
 
 ## HTTP Endpoints
 

@@ -14,7 +14,7 @@ import pytest
 from dfo_evals.langfuse_sink import DatasetItemRef, PushIncompleteError, PushTimeoutError
 from dfo_evals.records import FaultClass, read_run
 from dfo_evals.report import input_digest
-from langfuse.api import DatasetStatus
+from langfuse.api import DatasetStatus, NotFoundError
 from pydantic_evals.reporting import EvaluationReport
 
 import graph_release.service as release_service
@@ -89,6 +89,7 @@ class FakeLangfuse:
     def __init__(self) -> None:
         self.datasets: dict[str, dict[str, Any]] = {}
         self.items: dict[str, dict[str, SimpleNamespace]] = {}
+        self.writes: list[str] = []
         self.api = SimpleNamespace(datasets=SimpleNamespace(list=self._list))
 
     def create_dataset(self, *, name: str, description: str, metadata: dict) -> None:
@@ -96,6 +97,7 @@ class FakeLangfuse:
         self.items.setdefault(name, {})
 
     def create_dataset_item(self, *, dataset_name: str, id: str, status, **fields) -> None:
+        self.writes.append(id)
         item = self.items[dataset_name].setdefault(id, SimpleNamespace(id=id))
         item.status = status
         for key, value in fields.items():
@@ -108,12 +110,20 @@ class FakeLangfuse:
         pass
 
     def get_dataset(self, name: str) -> SimpleNamespace:
-        return SimpleNamespace(items=list(self.items[name].values()))
+        if name not in self.items:
+            raise NotFoundError(body=name)
+        return SimpleNamespace(id=f"id-{name}", items=list(self.items[name].values()))
 
     def _list(self, *, page: int, limit: int) -> SimpleNamespace:
         rows = [SimpleNamespace(**d) for d in self.datasets.values()]
         pages = [rows[i : i + 1] for i in range(len(rows))] or [[]]
         return SimpleNamespace(data=pages[page - 1], meta=SimpleNamespace(total_pages=len(pages)))
+
+
+@pytest.fixture(autouse=True)
+def _project_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sync and the nightly read the Langfuse project id before they connect."""
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
 
 
 def _write(corpus: Path, files: dict[str, str]) -> dict:
@@ -149,7 +159,9 @@ def test_sync_keeps_one_dataset_per_file_and_archives_what_is_gone(tmp_path):
     # A dropped case and a deleted file are archived; a dataset sync did not create is left.
     fake.create_dataset(name="search-goldens-v1", description="", metadata={})
     fake.create_dataset_item(dataset_name="search-goldens-v1", id="old", status="ACTIVE")
-    archived = m.sync(_write(corpus, {"ken": KENYA.split("- id: ken-known")[0]}), langfuse=fake)
+    archived = m.sync(
+        _write(corpus, {"ken": KENYA.split("- id: ken-known")[0]}), langfuse=fake
+    ).archived
 
     assert archived == {
         "search-ken": ["search-ken:search-case-ken-known", "search-ken:search-case-ken-holdout"],
@@ -158,6 +170,33 @@ def test_sync_keeps_one_dataset_per_file_and_archives_what_is_gone(tmp_path):
     assert _active(fake, "search-ken") == {"search-ken:search-case-ken"}
     assert _active(fake, "search-eth") == set()
     assert _active(fake, "search-goldens-v1") == {"old"}
+
+
+def test_a_sync_writes_only_the_items_that_changed(tmp_path):
+    fake = FakeLangfuse()
+    corpus = tmp_path / "corpus"
+    first = m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    fake.writes.clear()
+
+    again = m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    unchanged_writes = list(fake.writes)
+    edited = m.sync(
+        _write(corpus, {"ken": KENYA.replace("query: aid to Kenya", "query: all aid to Kenya")}),
+        langfuse=fake,
+    )
+
+    assert len(first.written["search-ken"]) == 3
+    assert again.written == {"search-ken": []}
+    assert unchanged_writes == []
+    assert edited.written == {"search-ken": ["search-ken:search-case-ken-holdout"]}
+
+
+def test_a_sync_without_a_project_id_exits_2(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"eth": ETHIOPIA})
+    monkeypatch.delenv("LANGFUSE_PROJECT_ID")
+
+    assert m.main([f"--corpus-dir={corpus}"]) == 2
 
 
 class AllExist:
@@ -353,7 +392,7 @@ def test_a_plain_sync_opens_no_release(tmp_path, monkeypatch, corpus_text):
     corpus = tmp_path / "corpus"
     by_file = _write(corpus, {"main": corpus_text})
     fake = FakeLangfuse()
-    monkeypatch.setattr(m, "_client", lambda: fake)
+    monkeypatch.setattr(m, "_connect", lambda project_id: fake)
     monkeypatch.delenv(URI_ENV_VAR)
     monkeypatch.setattr(m, "get_release_service", _no_release_service)
 
@@ -376,35 +415,9 @@ def test_a_crash_exits_2(tmp_path, monkeypatch, corpus_text, client):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "eth.yaml").write_text(corpus_text)
-    monkeypatch.setattr(m, "_client", client)
+    monkeypatch.setattr(m, "_connect", lambda project_id: client())
 
     assert m.main([f"--corpus-dir={corpus}"]) == 2
-
-
-def test_client_samples_every_span_whatever_the_sample_rate(monkeypatch):
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0")
-    monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
-    client = m._client()
-    try:
-        with client.start_as_current_observation(name="probe") as span:
-            sampled = span._otel_span.get_span_context().trace_flags.sampled
-    finally:
-        client.shutdown()
-
-    assert sampled
-
-
-@pytest.mark.parametrize("value", ["false", "False"])
-def test_client_refuses_disabled_tracing(monkeypatch, value):
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", value)
-
-    with pytest.raises(RuntimeError, match="LANGFUSE_TRACING_ENABLED"):
-        m._client()
 
 
 def _schema_response(
@@ -439,7 +452,7 @@ def test_a_schema_that_does_not_load_exits_3(tmp_path, monkeypatch, get):
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": RESUBMIT})
     monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
-    monkeypatch.setattr(m, "_client", FakeLangfuse)
+    monkeypatch.setattr(m, "_connect", lambda project_id: FakeLangfuse())
     monkeypatch.setattr(m.httpx, "get", get)
     monkeypatch.setattr(m, "get_release_service", _no_release_service)
 
@@ -468,7 +481,6 @@ def test_the_nightly_runs_under_the_release_main_opened(
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": ETHIOPIA})
     monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
-    monkeypatch.setattr(m, "_client", FakeLangfuse)
     monkeypatch.setattr(m, "_connect", lambda project_id: FakeLangfuse())
     monkeypatch.setattr(m, "push_run", lambda **_: "exp")
     response = RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
@@ -511,7 +523,6 @@ def _stub_nightly(monkeypatch, *, run_cases, graph, push_run) -> FakeLangfuse:
     (``abc``), the posts, the live clients, and both Langfuse clients, one fake."""
     fake = FakeLangfuse()
     monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
-    monkeypatch.setattr(m, "_client", lambda: fake)
     monkeypatch.setattr(m, "_connect", lambda project_id: fake)
     monkeypatch.setattr(m, "run_cases", run_cases)
     monkeypatch.setattr(m, "push_run", push_run)

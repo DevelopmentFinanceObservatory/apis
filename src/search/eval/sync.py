@@ -1,11 +1,12 @@
 """Mirror the case files to Langfuse, and run the nightly against a deployed app.
 
-``python -m search.eval.sync`` keeps one Langfuse dataset per case file, ``search-<stem>``.
-It upserts one item per case, keyed by case id. The item's input is the case's request as
-its case file authors it, keyed by its case id (``corpus_dataset.CaseInputs``), and its
-expected output is the case's ``expect`` with families expanded. It archives every active
-item whose case is gone, including the items of a deleted case file. A plain sync opens no
-graph release.
+``python -m search.eval.sync`` keeps one Langfuse dataset per case file, ``search-<stem>``,
+whose metadata names the file. It writes one item per case, keyed by case id, through
+``dfo_evals.langfuse_sink.upsert_items``, which writes only the items Langfuse lacks or holds
+differently. The item's input is the case's request as its case file authors it, keyed by
+its case id (``corpus_dataset.CaseInputs``), and its expected output is the case's
+``expect`` with families expanded. It archives every active item whose case is gone,
+including the items of a deleted case file. A plain sync opens no graph release.
 
 ``python -m search.eval.sync --nightly URL`` syncs, then runs every eligible case once on
 the app at URL as the corpus dataset (``search.eval.corpus_dataset``), scoring each answer
@@ -27,9 +28,9 @@ or unreached. A push that Langfuse does not show in full before its timeout is
 infrastructure: the nightly then exits 1 when the checks gave 1, else 3. The record's
 revision is the commit the app's ``x-dfo-commit`` header names, or ``unknown``.
 
-Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also requires
-``LANGFUSE_PROJECT_ID``, the project the keys must name, and reads ``LANGFUSE_BASE_URL``
-(default ``https://cloud.langfuse.com``). A ``dataset_resubmit`` case's request reads the
+Requires ``LANGFUSE_PUBLIC_KEY``, ``LANGFUSE_SECRET_KEY`` and ``LANGFUSE_PROJECT_ID``, the
+project the keys must name (``dfo_evals.langfuse_sink.connect``), and reads
+``LANGFUSE_BASE_URL`` (default ``https://cloud.langfuse.com``). A ``dataset_resubmit`` case's request reads the
 code index of the served graph release, and the checks read that release, so the nightly
 reads ``GRAPH_RELEASE_URI`` and opens that release once, with Google credentials for a
 ``gs://`` URI. It also reads the graph settings and ``ORIGIN_CATALOGUE_URI`` the checks
@@ -52,11 +53,13 @@ from typing import TYPE_CHECKING, Any, Final
 import httpx
 from dfo_evals.langfuse_sink import (
     DatasetItemRef,
+    DatasetItemSpec,
     PushIncompleteError,
     PushTimeoutError,
     UnknownCaseError,
     connect,
     push_run,
+    upsert_items,
 )
 from dfo_evals.records import Run, write_run
 from google.api_core.exceptions import GoogleAPIError
@@ -138,20 +141,20 @@ def _source(stem: str) -> str:
     return f"corpus/{stem}.yaml"
 
 
-def case_item(case: Case, stem: str) -> dict[str, Any]:
+def case_item(case: Case, stem: str) -> DatasetItemSpec:
     """The dataset item for ``case``: its authored request keyed by its id, and its
     expectation.
 
     The input is ``case_inputs(case)`` as JSON, so its ``input_digest`` is the one a run
     record of the corpus dataset stores for the case.
     """
-    return {
-        "id": item_id_for_case(case, dataset_name(stem)),
-        "input": case_inputs(case).model_dump(mode="json"),
-        "expected_output": case.expect.model_dump(
+    return DatasetItemSpec(
+        item_id=item_id_for_case(case, dataset_name(stem)),
+        input=case_inputs(case).model_dump(mode="json"),
+        expected_output=case.expect.model_dump(
             mode="json", exclude_unset=True, context={"expand": True}
         ),
-        "metadata": {
+        metadata={
             "id": case.id,
             "file": stem,
             "door": case.door,
@@ -164,15 +167,26 @@ def case_item(case: Case, stem: str) -> dict[str, Any]:
             else None,
             "expectation_hash": expectation_hash(case),
         },
-    }
+    )
 
 
-def sync(by_file: Mapping[str, Sequence[Case]], *, langfuse: Langfuse) -> dict[str, list[str]]:
-    """Upsert every case into its file's dataset and archive the items whose case is gone.
+@dataclass(frozen=True)
+class Synced:
+    """The item ids a sync wrote and archived, per dataset it touched."""
 
-    A dataset whose metadata names a case file missing from ``by_file`` has every active
-    item archived. Returns the archived item ids per dataset, for every dataset touched.
+    written: dict[str, list[str]]
+    archived: dict[str, list[str]]
+
+
+def sync(by_file: Mapping[str, Sequence[Case]], *, langfuse: Langfuse) -> Synced:
+    """Write every case to its file's dataset and archive the items whose case is gone.
+
+    Each dataset is created or updated with metadata naming its case file, then its items
+    go through ``upsert_items``, which writes only those Langfuse lacks or holds
+    differently. A dataset whose metadata names a case file missing from ``by_file`` has
+    every active item archived.
     """
+    written: dict[str, list[str]] = {}
     archived: dict[str, list[str]] = {}
     for stem, cases in by_file.items():
         name = dataset_name(stem)
@@ -181,16 +195,13 @@ def sync(by_file: Mapping[str, Sequence[Case]], *, langfuse: Langfuse) -> dict[s
             description=f"Search eval cases from {_source(stem)}",
             metadata={_SOURCE_KEY: _source(stem)},
         )
-        kept = set()
-        for case in cases:
-            item = case_item(case, stem)
-            kept.add(item["id"])
-            langfuse.create_dataset_item(dataset_name=name, status=DatasetStatus.ACTIVE, **item)
-        archived[name] = _archive_absent(langfuse, name, kept)
+        items = [case_item(case, stem) for case in cases]
+        written[name] = upsert_items(client=langfuse, dataset=name, items=items)
+        archived[name] = _archive_absent(langfuse, name, {item.item_id for item in items})
     for name in _case_file_datasets(langfuse):
         if name not in archived:
             archived[name] = _archive_absent(langfuse, name, set())
-    return archived
+    return Synced(written=written, archived=archived)
 
 
 def _case_file_datasets(langfuse: Langfuse) -> list[str]:
@@ -444,38 +455,25 @@ def nightly_exit_code(states: Sequence[NightlyCase]) -> int:
     return exit_code(j.outcome for s in states for j in s.judgements().values())
 
 
-def _client() -> Langfuse:
-    """A Langfuse client for the dataset sync, raising when it cannot send.
-
-    The client has a tracer provider of its own, so the SDK's global provider and its
-    ``LANGFUSE_SAMPLE_RATE`` do not apply to it. ``LANGFUSE_TRACING_ENABLED=false``
-    disables the client whatever provider it holds, so that setting raises.
-    """
-    from langfuse import Langfuse
-    from opentelemetry.sdk.trace import TracerProvider
-
-    missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY") if not os.environ.get(k)]
-    if missing:
-        raise RuntimeError(f"Langfuse credentials missing: {', '.join(missing)}")
-    if os.environ.get("LANGFUSE_TRACING_ENABLED", "true").lower() == "false":
-        raise RuntimeError("LANGFUSE_TRACING_ENABLED is false, so nothing would reach Langfuse")
-    return Langfuse(tracer_provider=TracerProvider())
-
-
 def _project_id() -> str:
-    """The Langfuse project the nightly pushes to, from ``LANGFUSE_PROJECT_ID``.
+    """The Langfuse project the sync and the nightly write to, from ``LANGFUSE_PROJECT_ID``.
 
     Raises:
         RuntimeError: The variable is unset or empty.
     """
     project_id = os.environ.get(_PROJECT_ID_ENV, "")
     if not project_id:
-        raise RuntimeError(f"{_PROJECT_ID_ENV} is unset, so the nightly could not push its run")
+        raise RuntimeError(f"{_PROJECT_ID_ENV} is unset, so the keys' project cannot be checked")
     return project_id
 
 
 def _connect(project_id: str) -> Langfuse:
-    """A Langfuse client for ``project_id``, from the environment's keys and base URL."""
+    """A Langfuse client for ``project_id``, from the environment's keys and base URL.
+
+    The client sends on a tracer provider of its own, so ``LANGFUSE_SAMPLE_RATE`` does not
+    thin what it writes, and ``connect`` refuses keys of another project and
+    ``LANGFUSE_TRACING_ENABLED=false``.
+    """
     return connect(
         public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
@@ -522,10 +520,13 @@ def _open_release() -> Release:
 
 
 def _sync(by_file: Mapping[str, Sequence[Case]], langfuse: Langfuse) -> None:
-    """``sync``, printing the items it archived."""
-    archived = sync(by_file, langfuse=langfuse)
-    for name, ids in archived.items():
-        print(f"{name}: archived {len(ids)}" + (f" ({', '.join(ids)})" if ids else ""))
+    """``sync``, printing how many items it wrote and which it archived."""
+    synced = sync(by_file, langfuse=langfuse)
+    for name, ids in synced.archived.items():
+        wrote = len(synced.written.get(name, []))
+        print(
+            f"{name}: wrote {wrote}, archived {len(ids)}" + (f" ({', '.join(ids)})" if ids else "")
+        )
 
 
 def _run_nightly(
@@ -584,23 +585,34 @@ def _main(args: argparse.Namespace) -> int:
     by_file = load_case_files(args.corpus_dir)
     if args.nightly:
         return _main_nightly(args, by_file)
-    langfuse = _client()
+    langfuse = _connect(_project_id())
     try:
         _sync(by_file, langfuse)
     finally:
-        langfuse.flush()
+        langfuse.shutdown()
     return 0
 
 
 def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]]) -> int:
     """Sync, run the nightly, record and push it, and write its summary.
 
+    One Langfuse client, checked against ``LANGFUSE_PROJECT_ID`` before any case runs,
+    syncs the datasets and pushes the run.
+
     Returns:
         The nightly's exit code: 3 when the schema or the release does not load.
     """
-    # Read before any case runs, so a nightly that could not push its run stops first.
-    project_id = _project_id()
-    langfuse = _client()
+    langfuse = _connect(_project_id())
+    try:
+        return _nightly_with(args, by_file, langfuse)
+    finally:
+        langfuse.shutdown()
+
+
+def _nightly_with(
+    args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]], langfuse: Langfuse
+) -> int:
+    """``_main_nightly``'s body, on a connected client."""
     started_at = datetime.now(UTC)
     try:
         # The app's schema loads first, so an outage of the app reads as one.
@@ -611,8 +623,6 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
         return _EXIT_INFRA
-    finally:
-        langfuse.flush()
 
     manifest = record_manifest(
         run_id=args.run_id or started_at.strftime("nightly-%Y%m%dT%H%M%SZ"),
@@ -629,14 +639,11 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     # A push Langfuse did not show in full is infrastructure, which an unmarked failure
     # outranks. Any other push error is a crash.
     experiment, push_error = None, None
-    client = _connect(project_id)
     try:
-        experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=client)
+        experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=langfuse)
     except (PushIncompleteError, PushTimeoutError) as exc:
         push_error = f"{type(exc).__name__}: {exc}"
         code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
-    finally:
-        client.shutdown()
 
     markdown = nightly_markdown(
         run.states, experiment=experiment, record=path, push_error=push_error

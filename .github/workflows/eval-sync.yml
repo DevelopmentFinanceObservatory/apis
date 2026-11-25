@@ -2,9 +2,10 @@ name: Eval sync
 
 # Mirrors corpus/ to Langfuse after a push to dev: one dataset per case file,
 # search-<stem>, with one item per case and the items of removed cases archived
-# (python -m search.eval.sync). A dataset_resubmit case's request is built
-# against the served graph release, which the job opens as the eval reader
-# account.
+# (python -m search.eval.sync). Only the items Langfuse lacks or holds
+# differently are written. An item's input is the case's request as its file
+# authors it, so the sync reads no graph release and needs no Google Cloud
+# credentials.
 
 on:
   push:
@@ -30,7 +31,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,14 +45,6 @@ jobs:
       - name: Install dependencies
         run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
 
-      # A dataset_resubmit case's request is built against the deployed graph
-      # release bucket.
-      - name: Authenticate to Google Cloud as the eval reader
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
-          service_account: ${{ secrets.EVAL_WIF_SA }}
-
       # search.eval.sync loads the engine, whose settings require
       # SEARCH_GRAPH_BASE.
       - name: Sync the case files to Langfuse
@@ -61,5 +53,6 @@ jobs:
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
-          GRAPH_RELEASE_URI: ${{ vars.GRAPH_RELEASE_URI }}
+          # The project the Langfuse keys must name; the sync refuses any other.
+          LANGFUSE_PROJECT_ID: ${{ vars.LANGFUSE_PROJECT_ID }}
         run: uv run python -m search.eval.sync
