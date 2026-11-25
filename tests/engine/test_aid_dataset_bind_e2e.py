@@ -32,14 +32,7 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from entity_resolution import (
-    Ambiguous,
-    Entity,
-    EntityResolutionError,
-    EntityResolver,
-    Resolution,
-    Resolved,
-)
+from entity_resolution import EntityResolutionError, EntityResolver
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
@@ -57,7 +50,6 @@ from search.engine.errors import (
 from search.engine.exclusion_read import ExclusionRead
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_election as election_module
 from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -1114,36 +1106,29 @@ _GBR = "country/GBR"
 # DAC1 total official development assistance, net disbursements, from a donor to all
 # recipients.
 _DAC1_TOTAL_ODA = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"
+# The words the binder rates unstated on DAC1's total ODA, as the deployed binder rates "US"
+# in "total US ODA", in each casing the coverage rule asks them in.
+_RATED_UNSTATED: Mapping[str, float] = {"US": 0.0, "us": 0.0, "UK": 0.0, "uk": 0.0}
 
 
 def _total_oda_resolve(
-    monkeypatch: pytest.MonkeyPatch,
-    part: ParsedPart,
-    replies: Mapping[str, Resolution | Exception] | None = None,
+    monkeypatch: pytest.MonkeyPatch, part: ParsedPart, *, donor: str = _USA
 ) -> tuple[Part, set[str]]:
-    """`part` resolved over DAC1's total ODA from the United States, recalled for the bare
-    words "total ODA" and for `part`'s own variable, with the binder rating "US" and "UK"
-    unstated, as the deployed binder rates "US" in "total US ODA", and every text the
-    entity resolver was asked. The resolver answers a text `replies` holds with its
-    resolution there, or fails the call it is asked in with its exception there."""
+    """`part` resolved over DAC1's total ODA from `donor`, recalled for the
+    bare words "total ODA" and for `part`'s own variable, with the binder rating "US" and "UK"
+    unstated, as the deployed binder rates "US" in "total US ODA", and every text the entity
+    resolver was asked."""
     asked: set[str] = set()
     resolve = EntityResolver.resolve
-    replied = replies or {}
 
     async def recording(self, texts, **kwargs):
         asked.update(texts)
-        for text in texts:
-            if isinstance(replied.get(text), Exception):
-                raise replied[text]
-        found = await resolve(self, texts, **kwargs)
-        return [
-            replied.get(text, resolution) for text, resolution in zip(texts, found, strict=True)
-        ]
+        return await resolve(self, texts, **kwargs)
 
     monkeypatch.setattr(EntityResolver, "resolve", recording)
     patch_coverage(
         monkeypatch,
-        [(_DAC1_TOTAL_ODA, "dac1", _USA, ABSENT_ENTITY, [2015, 2016, 2017])],
+        [(_DAC1_TOTAL_ODA, "dac1", donor, ABSENT_ENTITY, [2015, 2016, 2017])],
         role_names={_DAC1_TOTAL_ODA: RoleNames(donor="financingProvider", recipient=None)},
         facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
     )
@@ -1163,175 +1148,83 @@ def _total_oda_resolve(
         resolve={"United States": _USA, "US": _USA, "United Kingdom": _GBR, "UK": _GBR},
         obs={},
     )
-    binder = RatingBinder(GeminiBinder(), dict(_RATED_UNSTATED))
     response = offline_resolve(
         ResolveRequest(input=ParsedInput(parts=[part])),
         graph=graph,
         llm=_ScriptedLLM(part.variable_text),
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        binder=binder,
+        binder=RatingBinder(GeminiBinder(), _RATED_UNSTATED),
     )
     (answered,) = response.parts
     return answered, asked
 
 
 _FROM_THE_US = {"text": "United States", "role_text": "donor"}
-# The words the binder rates unstated on DAC1's total ODA, as the deployed binder rates "US"
-# in "total US ODA".
-_RATED_UNSTATED: dict[str, float] = {"US": 0.0, "UK": 0.0}
 
 
 @pytest.mark.parametrize(
-    ("variable", "entities", "stated", "uncovered"),
+    "stated",
     [
-        pytest.param("total ODA", [_FROM_THE_US], {}, set(), id="no-restatement"),
-        pytest.param("total US ODA", [_FROM_THE_US], {}, {"US"}, id="restates-the-donor"),
+        pytest.param({}, id="variable-alone"),
         pytest.param(
-            "total US ODA",
-            [_FROM_THE_US],
-            {
-                "time_text": "2015 to 2023",
-                "sources": [{"text": "OECD DAC", "polarity": "include"}],
-            },
-            {"US"},
-            id="restates-the-donor-with-source-and-time",
+            {"time_text": "2015 to 2023", "sources": [{"text": "OECD DAC", "polarity": "include"}]},
+            id="with-source-and-time",
         ),
     ],
 )
-def test_a_variable_word_restating_a_bound_party_reads_as_that_party(
-    monkeypatch: pytest.MonkeyPatch,
-    bind_catalogue: Callable[[Catalogue], None],
-    variable,
-    entities,
-    stated,
-    uncovered,
+def test_a_variable_word_naming_a_bound_party_reads_as_that_party(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue: Callable[[Catalogue], None], stated
 ):
-    """ "US" in "total US ODA" resolves to the United States the part binds as its donor, so
-    it reads as that entity, as "United States" would: the part answers DAC1's total ODA
-    from the United States as "total ODA" does, and names no unbound qualifier. The
-    resolver is asked the word the coverage rule would leave uncovered and nothing more, so
-    "total ODA", which leaves none, asks it only the entity's name."""
+    """ "US" in "total US ODA" is a name resolvekit lists for the United States the part
+    binds as its donor, so intake reads it as that entity, as "United States" would: the part
+    answers the spec "total ODA" answers, and names no unbound qualifier. The name comes from
+    the committed export, so the resolver is asked the entity's name alone."""
     bind_catalogue(
         FakeCatalogue(provenances={_DAC1: _catalogue_row(_DAC1, "OECD DAC1", "OECD DAC")})
     )
-    part, asked = _total_oda_resolve(
-        monkeypatch, ParsedPart(variable_text=variable, entities=entities, **stated)
-    )
+    answers = {
+        variable: _total_oda_resolve(
+            monkeypatch, ParsedPart(variable_text=variable, entities=[_FROM_THE_US], **stated)
+        )
+        for variable in ("total ODA", "total US ODA")
+    }
 
-    assert asked == {"United States", *uncovered}
-    assert isinstance(part, DefinitePart), part
-    assert part.spec.definition.identity.entities == {"origin": [_USA]}
-    assert _sources(part.spec) == [_DAC1]
-
-
-def _country(dcid: str, name: str) -> Entity:
-    return Entity(dcid=dcid, name=name, kind="country", graph_types=("Country",))
+    for part, asked in answers.values():
+        assert asked == {"United States"}
+        assert isinstance(part, DefinitePart), part
+        assert part.spec.definition.identity.entities == {"origin": [_USA]}
+        assert _sources(part.spec) == [_DAC1]
+    plain, restated = (part for part, _asked in answers.values())
+    assert isinstance(plain, DefinitePart) and isinstance(restated, DefinitePart)
+    assert restated.spec.spec_id == plain.spec.spec_id
 
 
 @pytest.mark.parametrize(
-    ("candidates", "restates"),
+    ("variable", "entity", "donor", "unbound"),
     [
+        pytest.param("total UK ODA", _FROM_THE_US, _USA, "UK", id="uk-beside-the-us"),
         pytest.param(
-            (_country(_USA, "United States"), _country(_GBR, "United Kingdom")),
-            True,
-            id="one-bound-candidate",
-        ),
-        pytest.param(
-            (_country(_GBR, "United Kingdom"), _country("country/AUS", "Australia")),
-            False,
-            id="no-bound-candidate",
+            "US aid",
+            {"text": "United Kingdom", "role_text": "donor"},
+            _GBR,
+            "US",
+            id="us-beside-the-uk",
         ),
     ],
 )
-def test_an_ambiguous_word_restates_the_one_bound_party_among_its_candidates(
-    monkeypatch: pytest.MonkeyPatch, candidates, restates
-):
-    """A word the resolver reads as ambiguous restates the party the part binds when exactly
-    one of its candidates is that party, as intake settles an ambiguous surface on the name
-    beside it, and stays uncovered when none is."""
-    part, _asked = _total_oda_resolve(
-        monkeypatch,
-        ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
-        {"US": Ambiguous(candidates=candidates)},
-    )
-
-    if restates:
-        assert isinstance(part, DefinitePart), part
-        assert part.spec.definition.identity.entities == {"origin": [_USA]}
-    else:
-        assert isinstance(part, NoDataPart), part
-        assert part.no_data.reason == "qualifier_not_bound"
-
-
-def test_a_failed_restatement_read_leaves_the_word_uncovered(monkeypatch: pytest.MonkeyPatch):
-    """A resolver failure while reading "US" restates nothing: the part refuses on the word,
-    as it does with no restatement rule, and the read is noted as lost."""
-    noted: list[str] = []
-    note = election_module.note_lost_read
-
-    def noting(read: str, exc: BaseException) -> None:
-        noted.append(read)
-        note(read, exc)
-
-    monkeypatch.setattr(election_module, "note_lost_read", noting)
-    part, asked = _total_oda_resolve(
-        monkeypatch,
-        ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US]),
-        {"US": EntityResolutionError("resolver down")},
-    )
-
-    assert "US" in asked
-    assert isinstance(part, NoDataPart), part
-    assert part.no_data.reason == "qualifier_not_bound"
-    assert [term.text for term in part.no_data.unbound_qualifiers] == ["US"]
-    assert "restated entity read" in noted
-
-
-def test_a_stretch_reaching_the_party_unlisted_restates_only_its_party_word(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """ "US government" resolves to the United States without being a name or alias the
-    resolver lists for it, so it is no restatement as a whole: "US" alone restates the donor
-    and "government", a restriction of its own, stays uncovered and the part refuses it."""
-    monkeypatch.setitem(_RATED_UNSTATED, "government", 0.0)
-    part, _asked = _total_oda_resolve(
-        monkeypatch,
-        ParsedPart(variable_text="total US government ODA", entities=[_FROM_THE_US]),
-        {"US government": Resolved(entity=_country(_USA, "United States"))},
-    )
-
-    assert isinstance(part, NoDataPart), part
-    assert part.no_data.reason == "qualifier_not_bound"
-    assert [term.text for term in part.no_data.unbound_qualifiers] == ["government"]
-
-
-def test_log_mode_asks_the_resolver_no_restatement(
-    monkeypatch: pytest.MonkeyPatch, search_settings: Callable[..., object]
-):
-    """In log mode the coverage rule's records only feed the line the pass logs, so the
-    restatement read is not made."""
-    search_settings(qualifier_coverage="log")
-
-    _part, asked = _total_oda_resolve(
-        monkeypatch, ParsedPart(variable_text="total US ODA", entities=[_FROM_THE_US])
-    )
-
-    assert asked == {"United States"}
-
-
 def test_a_variable_word_naming_a_party_the_part_does_not_bind_stays_unbound(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, variable, entity, donor, unbound
 ):
-    """ "UK" in "total UK ODA" names the United Kingdom, which the part binds on no role
-    beside its donor the United States, so it stays a word the answer leaves unmet and the
-    part refuses it."""
+    """ "UK" in "total UK ODA" names the United Kingdom, which the part does not bind beside
+    its donor the United States, and "US" in "US aid" the United States beside the donor the
+    United Kingdom, so the word stays one the answer leaves unmet and the part refuses it."""
     part, _asked = _total_oda_resolve(
-        monkeypatch, ParsedPart(variable_text="total UK ODA", entities=[_FROM_THE_US])
+        monkeypatch, ParsedPart(variable_text=variable, entities=[entity]), donor=donor
     )
 
     assert isinstance(part, NoDataPart), part
     assert part.no_data.reason == "qualifier_not_bound"
-    assert [term.text for term in part.no_data.unbound_qualifiers] == ["UK"]
+    assert [term.text for term in part.no_data.unbound_qualifiers] == [unbound]
 
 
 @pytest.mark.parametrize(

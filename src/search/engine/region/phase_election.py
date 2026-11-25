@@ -7,17 +7,13 @@ import asyncio
 import copy
 import json
 import logging
-import time
 from collections.abc import Callable, Mapping, Sequence
-from collections.abc import Set as AbstractSet
 from contextlib import suppress
 from dataclasses import dataclass, replace
 
 from code_index.scope_conventions import ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.shared import get_index, get_measure_index
-from code_index.tokens import word_tokens
 from code_index.types import MeasureAxis
-from entity_resolution import Ambiguous, EntityResolutionError, Group, Resolution, Resolved
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_broad_readings,
@@ -31,12 +27,10 @@ from search.engine.binders import StatedWordsRequest
 from search.engine.binders.house_policy import slot_values
 from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
-from search.engine.deadline import _await_bounded
-from search.engine.degraded_reads import LOST_READ_ERRORS, note_degraded_read, note_lost_read
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import whole_total_ended_fact
 from search.engine.errors import LLMInfraError
 from search.engine.extract import slot_default_answers
-from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierReadings,
@@ -1237,10 +1231,8 @@ async def judge_coverage(state: ResolveState) -> None:
     The coverage rule reads the members the read served (`served_member_names`), so the
     lexical readers, the binder's rating and the answer describe one list.
 
-    The binder rates the words the rule leaves unrated (`_rate_unread_words`). In refuse
-    mode a word the rule would leave uncovered that restates one of the part's entities then
-    reads as that entity (`read_restated_entity_words`). The query records over both replace
-    those binding repair kept (`requirements.record_reading`).
+    The binder rates the words the rule leaves unrated (`_rate_unread_words`) and the query
+    records over both replace those binding repair kept (`requirements.record_reading`).
     In "refuse" coverage mode a word of the variable no reader covers is a record and the
     part refuses on it. In log mode the records are kept for the line the pass logs when it
     ends (`log_would_refuse`), and a word of a qualifier term the elected shape's own
@@ -1261,11 +1253,9 @@ async def judge_coverage(state: ResolveState) -> None:
         return
     state.coverage_judged = True
     await _rate_unread_words(state)
-    log_mode = settings().qualifier_coverage == "log"
-    if not log_mode:
-        await read_restated_entity_words(state, ((state, _coverage_terms(state)),))
     record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
+    log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
     coverage = _coverage_reading(state, _coverage_terms(state)) if log_mode else None
     values = value_requirements(state, (*recorded, *(coverage.records if coverage else ())))
@@ -1300,117 +1290,6 @@ async def judge_coverage(state: ResolveState) -> None:
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
 
-def _names_bound(resolution: Resolution, bound: AbstractSet[str]) -> bool:
-    """Whether `resolution` names one of the dcids `bound`: a resolved entity's node, a
-    group's registry id or node, or the one candidate of an ambiguous text that is bound,
-    which intake settles such a text on beside a name that resolves to it
-    (`surface_resolution._settle`)."""
-    if isinstance(resolution, Resolved):
-        return resolution.entity.dcid in bound
-    if isinstance(resolution, Group):
-        node = resolution.entity
-        return resolution.dcid in bound or (node is not None and node.dcid in bound)
-    if isinstance(resolution, Ambiguous):
-        return sum(candidate.dcid in bound for candidate in resolution.candidates) == 1
-    return False
-
-
-def _bound_dcids(resolution: Resolution) -> frozenset[str]:
-    """The dcids a resolution of one of the part's entities binds: a resolved entity's
-    node, or a group's registry id and node."""
-    if isinstance(resolution, Resolved):
-        return frozenset({resolution.entity.dcid})
-    if isinstance(resolution, Group):
-        node = resolution.entity
-        return frozenset(
-            dcid for dcid in (resolution.dcid, None if node is None else node.dcid) if dcid
-        )
-    return frozenset()
-
-
-def _restates(text: str, resolution: Resolution, bound: AbstractSet[str]) -> bool:
-    """Whether the read of `text` restates a party of `bound` (`_names_bound`). A text of
-    several words restates only as a listed name or alias of the party, read as the entity
-    itself, so a stretch the resolver reaches some other way ("US government") masks none of
-    its words; its words are read alone."""
-    if len(word_tokens(text)) == 1:
-        return _names_bound(resolution, bound)
-    listed = (
-        isinstance(resolution, Resolved | Group)
-        and resolution.reading == "entity"
-        and resolution.matched is not None
-        and resolution.matched.matched_as in ("name", "alias")
-    )
-    return listed and _names_bound(resolution, bound)
-
-
-async def read_restated_entity_words(
-    state: ResolveState,
-    answers: Sequence[tuple[ResolveState, Sequence[ResolvedQualifier]]],
-) -> None:
-    """Ask the resolver whether each stretch of the variable the coverage rule would leave
-    uncovered on any of `answers`, and each word of one other than a function word,
-    restates an entity the part binds, on any role, and record the answer in
-    `ResolveState.restatement_reads`. Each answer is the elected answer or a view of a
-    candidate (`answer_view`) with the terms the rule reads on it as recorded. A text read as
-    restating a party ("US" in "total US ODA" beside the donor United States) reads as that
-    party wherever the part reads its entities (`ResolveState.entity_texts`), as "United
-    States" in the phrase would, while "UK" beside it names a party the part does not bind
-    and stays uncovered (`_restates`).
-
-    A text the record holds is not asked again, so each text has one answer for every
-    coverage judgement of the part, and the resolver is asked at most once per call, only
-    for texts some answer leaves uncovered that the record does not hold. The read runs to
-    the part's deadline (`_await_bounded`), and one past it raises as the part's other reads
-    do. Any other lost read (`LOST_READ_ERRORS`, `EntityResolutionError`) records its texts
-    as failed, each word staying as the rule read it, and is noted (`note_lost_read`)."""
-    rcl = state.rcl
-    if rcl is None:
-        return
-    bound = frozenset().union(*map(_bound_dcids, rcl.resolutions.values()))
-    if not bound:
-        return
-    record = state.restatement_reads
-    texts = list(
-        dict.fromkeys(
-            text
-            for answer, terms in answers
-            if answer.shape_draft is not None
-            for uncovered in _coverage_reading(answer, terms).records
-            if uncovered.evidence == "uncovered"
-            for text in (
-                uncovered.text,
-                *(
-                    word.text
-                    for word in word_tokens(uncovered.text)
-                    if word.text.casefold() not in FUNCTION_WORDS
-                ),
-            )
-            if text not in record
-        )
-    )
-    if not texts:
-        return
-    read = state.resolver.resolve(texts, deadline=state.deadline)
-    try:
-        found = await (
-            read if state.deadline is None else _await_bounded(read, deadline=state.deadline)
-        )
-    except (EntityResolutionError, *LOST_READ_ERRORS) as exc:
-        if state.deadline is not None and time.monotonic() >= state.deadline:
-            raise
-        logger.warning("restated entity read lost for %s: %s", texts, exc, exc_info=True)
-        note_lost_read("restated entity read", exc)
-        record.update(dict.fromkeys(texts, "failed"))
-        return
-    record.update(
-        {
-            text: "restated" if _restates(text, resolution, bound) else "unbound"
-            for text, resolution in zip(texts, found, strict=True)
-        }
-    )
-
-
 async def judge_answer_coverage(
     state: ResolveState,
     answers: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft], Materialised]],
@@ -1421,10 +1300,7 @@ async def judge_answer_coverage(
     candidate's own read served (`answer_view`), so "refugee" in "refugee assistance" is
     unread on "Assistance received" and read on "Refugee assistance given", whichever of
     the two was elected. The binder rates the words the lexical readers leave on each
-    candidate, one call per candidate that leaves any, all at once (`_rated_words`), and a
-    word any candidate would leave uncovered that restates one of the part's entities reads
-    as that entity on every candidate, asked in at most one resolver call and only when the
-    part's record of the read does not hold it (`read_restated_entity_words`).
+    candidate, one call per candidate that leaves any, all at once (`_rated_words`).
 
     Each record no requirement of the part's ledger holds a phrase of is recorded as the
     elected reading's records are (`requirements.record_coverage`). Return each answer's
@@ -1436,11 +1312,9 @@ async def judge_answer_coverage(
         return tuple(() for _answer in answers)
     views = [answer_view(state, shape, bindings, read) for shape, bindings, read in answers]
     ratings = await asyncio.gather(*(_rated_words(state, view) for view in views))
+    uncovered: list[tuple[ResolvedQualifier, ...]] = []
     for view, rated in zip(views, ratings, strict=True):
         view.stated_word_ratings = rated
-    await read_restated_entity_words(state, [(view, _query_records(view)) for view in views])
-    uncovered: list[tuple[ResolvedQualifier, ...]] = []
-    for view in views:
         records = tuple(
             record
             for record in _coverage_records(view, _query_records(view))
@@ -1459,9 +1333,7 @@ def answer_view(
 ) -> ResolveState:
     """A copy of `state` whose elected answer is `shape` read under `bindings` and served
     by `read`, with no word rated, for the coverage rule, which reads the elected answer
-    from the state. Nothing writes to it but the ratings `judge_answer_coverage` keeps. It
-    shares the part's record of the restatement read (`ResolveState.restatement_reads`), so a
-    text read on any answer reads the same on every other."""
+    from the state. Nothing writes to it but the ratings `judge_answer_coverage` keeps."""
     view = copy.copy(state)
     view.shape_draft = shape
     view.bindings = list(bindings)

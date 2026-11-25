@@ -283,6 +283,11 @@ def main() -> None:
     _convert_byod_pack(cache_dir)
     _convert_composed_store(cache_dir)
 
+    # Search reads each bound party's names from the installed export at intake, so an image
+    # without it would fail every part at intake.
+    if not pack.geo_names("country/USA"):
+        raise SystemExit(f"the installed {pack.geo_names_path()} holds no names")
+
 
 if __name__ == "__main__":
     main()

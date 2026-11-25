@@ -38,6 +38,7 @@ _RECORDS_FILENAME = "graph_entities.json"
 _CURATED_FILENAME = "curated_aliases.json"
 _REGION_IDS_FILENAME = "region_ids.json"
 _QUERY_ALIASES_FILENAME = "query_aliases.json"
+_GEO_NAMES_FILENAME = "geo_names.json"
 
 _CODE_SYSTEM = "dac"
 _ALIAS_COLUMN_PREFIX = "alias"
@@ -64,6 +65,49 @@ def region_ids_path() -> Traversable:
 def query_aliases_path() -> Traversable:
     """The packaged `query_aliases.json` path."""
     return importlib.resources.files(_PACKAGE) / _DATA_DIR / _QUERY_ALIASES_FILENAME
+
+
+def geo_names_path() -> Traversable:
+    """The packaged `geo_names.json` path."""
+    return importlib.resources.files(_PACKAGE) / _DATA_DIR / _GEO_NAMES_FILENAME
+
+
+@functools.cache
+def _geo_names() -> dict[str, tuple[str, ...]]:
+    rows = json.loads(geo_names_path().read_text(encoding="utf-8"))
+    return {dcid: tuple(names) for dcid, names in rows.items()}
+
+
+def geo_names(dcid: str) -> tuple[str, ...]:
+    """The names and aliases resolvekit's geo modules list for the country, region or group
+    `dcid` names ("US", "USA" and "United States" for `country/USA`; "G7" for
+    `GroupOfSeven`), read once from the committed export (`scripts/export_geo_names.py`).
+    Empty for any other dcid."""
+    return _geo_names().get(dcid, ())
+
+
+@functools.cache
+def _geo_name_keys() -> frozenset[str]:
+    return frozenset(_geo_key(name) for names in _geo_names().values() for name in names)
+
+
+def _geo_key(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+@functools.cache
+def longest_geo_name_tokens() -> int:
+    """The most word tokens any name in the committed export (`geo_names`) has."""
+    return max(
+        (len(re.findall(r"\w+", name)) for names in _geo_names().values() for name in names),
+        default=0,
+    )
+
+
+def is_geo_name(text: str) -> bool:
+    """Whether `text`, casing and spacing aside, is a name or alias of any country, region or
+    group the committed export holds (`geo_names`): "South Africa", "Western Africa"."""
+    return _geo_key(text) in _geo_name_keys()
 
 
 class CuratedAliasError(ValueError):
