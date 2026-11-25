@@ -905,8 +905,9 @@ class ResolveState:
     entity_words: dict[str, str] = field(default_factory=dict)
     # The character ranges of the variable phrase that name a party the part binds by a name
     # Search reads it by ("US" in "total US ODA" beside the donor United States), set once at
-    # intake (`phase_intake.bound_party_spans`). Readers that mask the part's entity texts
-    # (`entity_texts`) mask these ranges too, and no other copy of their words.
+    # intake (`party_aliases.bound_party_spans`). Readers that mask the part's entity texts
+    # (`entity_texts`) mask these ranges too, and no other copy of their words; the breakdown
+    # read finds the same ranges in each dropped qualifier phrase as well.
     party_alias_spans: tuple[tuple[int, int], ...] = ()
     variable_index: int
     emit: EventSink | None

@@ -47,8 +47,8 @@ from search.engine.quantity import DenominatorRead
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.party_aliases import bound_party_spans
 from search.engine.region.phase_election import _vet_election
-from search.engine.region.phase_intake import bound_party_spans
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_matches_against_elected_shape,

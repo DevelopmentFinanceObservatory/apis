@@ -774,6 +774,7 @@
     "Uruguay"
   ],
   "country/USA": [
+    "U.S.",
     "US",
     "USA",
     "United States"
@@ -834,9 +835,11 @@
     "欧洲"
   ],
   "groups/ASEAN": [
+    "ASEAN",
     "Association of Southeast Asian Nations"
   ],
   "groups/AU": [
+    "AU",
     "African Union"
   ],
   "groups/BRIC": [
@@ -859,6 +862,7 @@
     "Group of Twenty"
   ],
   "groups/G8": [
+    "G8",
     "Group of Eight"
   ],
   "groups/MERCOSUR": [
@@ -919,6 +923,7 @@
     "OECD Non-DAC Countries"
   ],
   "groups/OPEC": [
+    "OPEC",
     "Organization of the Petroleum Exporting Countries"
   ],
   "groups/Schengen": [
@@ -933,6 +938,7 @@
     "Least Developed Countries"
   ],
   "groups/UN.LLDC": [
+    "LLDCs",
     "Landlocked Developing Countries"
   ],
   "groups/UN.SIDS": [

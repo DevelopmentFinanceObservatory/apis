@@ -12,7 +12,7 @@ import pytest
 
 from code_index.tokens import tokenize
 from entity_resolution import Entity, Group, Resolved, pack
-from search.engine.region.phase_intake import bound_party_spans
+from search.engine.region.party_aliases import bound_party_spans
 from search.engine.region.phase_rank_bind import _entity_spans
 from search.engine.region.state import ResolveState
 
@@ -35,11 +35,15 @@ _G7 = Group(members=(), entity=None, dcid="GroupOfSeven", label="Group of Seven"
     [
         pytest.param("total US ODA", _USA, ("US",), id="country-abbreviation"),
         pytest.param("total UK ODA", _USA, (), id="another-countrys-abbreviation"),
+        pytest.param("US-funded health ODA", _USA, (), id="inside-a-hyphenated-word"),
+        pytest.param("Africa-wide health spending", _AFRICA, (), id="hyphenated-place"),
+        pytest.param("the US's ODA", _USA, ("US's",), id="possessive"),
+        pytest.param("U.S. aid", _USA, ("U.S.",), id="dotted-abbreviation"),
         pytest.param("aid to us", _USA, (), id="pronoun-us"),
         pytest.param("ODA to the states of the Sahel", _USA, (), id="ordinary-phrase"),
         pytest.param("what can donors give", _CANADA, (), id="verb-can"),
         pytest.param("G7 ODA", _G7, ("G7",), id="group-abbreviation"),
-        pytest.param("Italy's ODA for IT", _ITALY, ("Italy",), id="fuzzy-code-unread"),
+        pytest.param("Italy's ODA for IT", _ITALY, ("Italy's",), id="fuzzy-code-unread"),
         pytest.param("ODA to +256", _UGANDA, (), id="dial-code-unread"),
         pytest.param(
             "African Development Bank ODA to Africa", _AFRICA, ("Africa",), id="adjective-unread"

@@ -366,7 +366,7 @@ def _settle_bindings(
         state.dropped_qualifier_phrases,
         shape_draft,
         entities=state.entity_texts,
-        entity_spans=state.party_alias_spans,
+        parties=() if state.rcl is None else tuple(state.rcl.resolutions.values()),
     )
 
     # The elected shape's own qualifiers: the matches its vocabulary reads and admits, and its

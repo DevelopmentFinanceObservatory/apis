@@ -28,6 +28,7 @@ from code_index.types import (
     NotedWord,
     StatedWord,
 )
+from entity_resolution import Resolution
 from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
@@ -147,6 +148,7 @@ from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BIN
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.flow_governance import governs
 from search.engine.region.grounding import _shape_with_taxonomy
+from search.engine.region.party_aliases import bound_party_spans
 from search.engine.region.phase_timing import timed_step
 from search.engine.region.place_roles import (
     bind_place_roles,
@@ -4746,14 +4748,14 @@ def _open_breakdown_slots(
     shape_draft: ShapeDraft,
     *,
     entities: Iterable[str],
-    entity_spans: Sequence[tuple[int, int]] = (),
+    parties: Iterable[Resolution] = (),
 ) -> list[SlotBindingDraft]:
     """Open each slot of `shape_draft` the variable phrase or a dropped phrase names as a
     breakdown, as a valid ``requested_all``.
 
     A breakdown span is the words after "by", "across" or "for each", up to the next such
-    connective, a number, one of `entities` or, in the variable phrase, one of
-    `entity_spans` (`ResolveState.party_alias_spans`), less function words and filler nouns
+    connective, a number, one of `entities` or a stretch naming one of `parties` by a name
+    Search reads it by (`party_aliases.bound_party_spans`), less function words and filler nouns
     (`qualifier_match.breakdown_spans`). A span names a slot when one of its words is a
     word of the slot's name (`bind._slot_name`) and each other word is a word of that
     name or of the label of a value in the slot's taxonomy (`_slot_vocabulary`). "By
@@ -4771,11 +4773,10 @@ def _open_breakdown_slots(
         if slot.property_dcid is not None
     }
     axis_of = {slot.property_dcid: slot.axis for slot in shape_draft.slot_keys}
+    parties = tuple(parties)
     opened: dict[str, SlotBindingDraft] = {}
-    for text, stop_ranges in (
-        (variable_text, entity_spans),
-        *((phrase, ()) for phrase in dropped_phrases),
-    ):
+    for text in (variable_text, *dropped_phrases):
+        stop_ranges = bound_party_spans(text, parties)
         for span in breakdown_spans(text, stops=entities, stop_ranges=stop_ranges):
             named = [
                 prop

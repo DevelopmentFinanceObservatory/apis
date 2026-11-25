@@ -285,8 +285,11 @@ def main() -> None:
 
     # Search reads each bound party's names from the installed export at intake, so an image
     # without it would fail every part at intake.
-    if not pack.geo_names("country/USA"):
-        raise SystemExit(f"the installed {pack.geo_names_path()} holds no names")
+    names_path = pack.geo_names_path()
+    if not names_path.is_file():
+        raise SystemExit(f"{names_path} is not installed")
+    if len(json.loads(names_path.read_text(encoding="utf-8"))) < 2:
+        raise SystemExit(f"the installed {names_path} names fewer than two parties")
 
 
 if __name__ == "__main__":

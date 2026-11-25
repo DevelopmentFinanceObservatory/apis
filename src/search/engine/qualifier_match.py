@@ -695,8 +695,9 @@ def breakdown_spans(
 
     A span starts after a breakdown connective (`BREAKDOWN_CONNECTIVES`) and runs to the
     next connective, a number (a year or a date), an occurrence of one of `stops` (the
-    request's entity names), one of the character ranges `stop_ranges` or the end. Its content words are its words less function
-    words (`FUNCTION_WORDS`) and filler nouns (`BREAKDOWN_FILLER_NOUNS`). "under-five
+    request's entity names), one of the character ranges `stop_ranges` or the end. Its
+    content words are its words less function words (`FUNCTION_WORDS`) and filler nouns
+    (`BREAKDOWN_FILLER_NOUNS`). "under-five
     mortality by wealth quintile in Kenya" holds one span, "wealth quintile", when `stops`
     holds "Kenya". A connective with no content word after it holds no span ("by 2020").
     """
