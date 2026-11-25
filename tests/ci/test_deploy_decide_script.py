@@ -321,3 +321,21 @@ def test_watched_paths_match_the_workflows_declared_image_inputs():
     script = _SCRIPT.read_text()
     for path in _WATCHED_PATHS:
         assert path in script
+
+
+def test_traffic_split_in_a_finished_looking_service_deploys(repo: Path, tmp_path: Path):
+    """Spec traffic follows the ready latest revision, but status.traffic splits across two
+    images: traffic moved by hand, so the target deploys rather than the script exiting."""
+    sha = _commit(repo, "init", {"src/app.py": "1\n"})
+    bin_dir = tmp_path / "bin"
+    service = _service(sha)
+    service["status"]["traffic"] = [
+        {"percent": 50, "revisionName": _SERVING},
+        {"percent": 50, "revisionName": _STAGED},
+    ]
+    _fake_gcloud(bin_dir, service=service)
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output == "deploy=true\n"

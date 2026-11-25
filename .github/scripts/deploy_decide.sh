@@ -39,9 +39,15 @@
 #                the dispatched commit. Optional, defaults to false.
 #
 # Writes `deploy=true` or `deploy=false` to $GITHUB_OUTPUT (or stdout, when
-# $GITHUB_OUTPUT is unset, so this runs the same way under a test). Exits
-# non-zero only when the service, its serving revision or the job can't be
-# read.
+# $GITHUB_OUTPUT is unset, so this runs the same way under a test). Traffic
+# split across revisions on different images, found when the service looks
+# finished, means traffic moved by hand, and the target deploys.
+#
+# Exits non-zero for these causes only:
+#   - `gcloud run services describe` fails, or reports no template image
+#   - serving_image.sh fails to read the service or a serving revision, finds
+#     no revision taking traffic, or gets JSON that does not parse
+#   - `gcloud run jobs describe` fails for JOB
 
 set -euo pipefail
 
@@ -104,7 +110,17 @@ else
 fi
 
 if [ "$deploy" = false ]; then
-  serving="$("$(dirname "$0")/serving_image.sh")"
+  rc=0
+  serving="$("$(dirname "$0")/serving_image.sh")" || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    echo "::notice::traffic on '$SERVICE' is split across revisions running different images, so it was moved by hand. Deploying $TARGET."
+    deploy=true
+  elif [ "$rc" -ne 0 ]; then
+    exit "$rc"
+  fi
+fi
+
+if [ "$deploy" = false ]; then
   job_image="$(gcloud run jobs describe "$JOB" \
     --region="$REGION" \
     --project="$PROJECT_ID" \

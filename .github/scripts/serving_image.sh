@@ -6,8 +6,10 @@
 # image, which the deploy sets to the same digest.
 #
 # Fails with `::error::` when the service or a serving revision can't be read,
-# when no revision takes traffic, and when the revisions taking traffic run
-# different images, since no one image then serves.
+# when its JSON does not parse, and when no revision takes traffic. Exits 1 for
+# each of those. When the revisions taking traffic run different images, no one
+# image serves, and the script exits 3 (SPLIT_EXIT) so a caller can tell that
+# state from a read failure.
 #
 # Env:
 #   SERVICE      Cloud Run service name (vars.SERVICE_APIS) -- required
@@ -17,6 +19,9 @@
 # Writes the image, and nothing else, to stdout. Messages go to stderr.
 
 set -euo pipefail
+
+# Exit status for traffic split across revisions on different images.
+SPLIT_EXIT=3
 
 : "${SERVICE:?SERVICE is required}"
 : "${REGION:?REGION is required}"
@@ -38,7 +43,10 @@ traffic = (json.loads(sys.argv[1]).get("status") or {}).get("traffic") or []
 for entry in traffic:
     if (entry.get("percent") or 0) > 0:
         print(entry.get("revisionName") or "-")
-' "$described" 2>/dev/null)" || revisions=""
+' "$described")" || {
+  echo "::error::gcloud run services describe returned JSON for service '$SERVICE' that does not parse." >&2
+  exit 1
+}
 
 if [ -z "$revisions" ]; then
   echo "::error::No revision of '$SERVICE' takes traffic in status.traffic." >&2
@@ -56,14 +64,14 @@ while read -r revision; do
   image="$(gcloud run revisions describe "$revision" \
     --region="$REGION" \
     --project="$PROJECT_ID" \
-    --format='value(spec.containers[0].image)')" || image=""
+    --format='value(spec.containers[0].image)' </dev/null)" || image=""
   if [ -z "$image" ]; then
     echo "::error::gcloud run revisions describe returned no image for revision '$revision'." >&2
     exit 1
   fi
   if [ -n "$serving" ] && [ "$image" != "$serving" ]; then
     echo "::error::Traffic on '$SERVICE' is split across revisions running different images ($serving and $image), so no one image serves." >&2
-    exit 1
+    exit "$SPLIT_EXIT"
   fi
   serving="$image"
 done <<<"$revisions"

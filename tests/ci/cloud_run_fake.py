@@ -24,7 +24,8 @@ if state.get("fail"):
     sys.exit(1)
 kind, verb, name = args[1], args[2], args[3]
 if (kind, verb) == ("services", "describe"):
-    print(json.dumps(state["service"]))
+    service = state["service"]
+    print(service if isinstance(service, str) else json.dumps(service))
 elif (kind, verb) == ("revisions", "describe"):
     print(state["revisions"].get(name, ""))
 elif (kind, verb) == ("jobs", "describe"):

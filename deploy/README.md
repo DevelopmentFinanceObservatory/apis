@@ -170,10 +170,11 @@ for job in "$JOB_SEARCH_CATALOGUE" "$JOB_GRAPH_RELEASE"; do
 done
 gcloud run services update "$SERVICE_WORKER" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
 gcloud run services update "$SERVICE_APIS" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
-gcloud run jobs update "$JOB_ORIGIN_CATALOGUE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
+SERVICE="$SERVICE_APIS" JOB="$JOB_ORIGIN_CATALOGUE" REGION="$REGION" PROJECT_ID="$PROJECT_ID" \
+  .github/scripts/deploy_reconcile.sh
 ```
 
-This keeps the dispatch's order (the search catalogue and graph release jobs, then the worker, then the apis service, then the scheduled origin catalogue job) and its invariant that the worker and the scheduled jobs run the apis service's image. The datasets maintenance job and the two migration jobs stay on the newer image: the maintenance job's scheduled tasks run there as they do between a deploy's steps, and leaving it there is what keeps the older `settle` from ever running. The recipe skips the dispatch's catalogue and graph-release steps and relies on the older format roots still holding their last build (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/graph-release.md](graph-release.md)). Dispatch the current commit again before turning keys back on.
+The last command points the scheduled origin catalogue job at the digest the older revision serves, which Cloud Run records for the service. Setting the job by tag (`dfo-apis:$OLDER_SHA`) would leave an image string that never equals the serving digest, so the next push to the branch would see the job behind, deploy, and undo the rollback. Run the script from a checkout of this repository after the traffic move, so the serving revision is the older one. This keeps the dispatch's order (the search catalogue and graph release jobs, then the worker, then the apis service, then the scheduled origin catalogue job) and its invariant that the worker and the scheduled jobs run the apis service's image. The datasets maintenance job and the two migration jobs stay on the newer image: the maintenance job's scheduled tasks run there as they do between a deploy's steps, and leaving it there is what keeps the older `settle` from ever running. The recipe skips the dispatch's catalogue and graph-release steps and relies on the older format roots still holding their last build (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/graph-release.md](graph-release.md)). Dispatch the current commit again before turning keys back on.
 
 ## Workload Identity Federation & Authentication
 

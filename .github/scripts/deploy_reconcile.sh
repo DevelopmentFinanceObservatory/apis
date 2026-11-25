@@ -9,8 +9,10 @@
 #
 # The serving image comes from serving_image.sh: the image of every revision
 # that `status.traffic` gives more than 0 percent. Traffic split across
-# revisions running different images has no one serving image, and the script
-# fails with `::error::` and moves nothing.
+# revisions running different images has no one serving image. The script then
+# prints `::warning::`, leaves the job alone and exits 0: traffic moved by hand
+# or a deploy mid-rollout, and the deploy moves the job after its own traffic
+# move.
 #
 # Env:
 #   SERVICE      Cloud Run service name (vars.SERVICE_APIS) -- required
@@ -20,7 +22,7 @@
 #   PROJECT_ID   GCP project id (vars.PROJECT_ID) -- required
 #
 # Exits non-zero when the service, a serving revision or the job can't be
-# read, when traffic splits across images, or when the update fails.
+# read, or when the update fails. Exits 0 when traffic splits across images.
 
 set -euo pipefail
 
@@ -29,7 +31,15 @@ set -euo pipefail
 : "${REGION:?REGION is required}"
 : "${PROJECT_ID:?PROJECT_ID is required}"
 
-serving="$("$(dirname "$0")/serving_image.sh")"
+# serving_image.sh exits 3 when traffic splits across images.
+rc=0
+serving="$("$(dirname "$0")/serving_image.sh")" || rc=$?
+if [ "$rc" -eq 3 ]; then
+  echo "::warning::Traffic on '$SERVICE' is split across revisions running different images, so no one image serves. Leaving job '$JOB' as it is."
+  exit 0
+elif [ "$rc" -ne 0 ]; then
+  exit "$rc"
+fi
 
 job_image="$(gcloud run jobs describe "$JOB" \
   --region="$REGION" \

@@ -97,7 +97,7 @@ def test_the_job_moves_to_the_serving_image_only_when_it_runs_another(
     )
 
 
-def test_traffic_split_across_images_refuses_and_moves_nothing(tmp_path: Path):
+def test_traffic_split_across_images_warns_and_leaves_the_job(tmp_path: Path):
     split = [
         {"percent": 50, "revisionName": _SERVING},
         {"percent": 50, "revisionName": _STAGED},
@@ -105,15 +105,26 @@ def test_traffic_split_across_images_refuses_and_moves_nothing(tmp_path: Path):
     state = _install(
         tmp_path / "bin",
         _service(spec_traffic=split, status_traffic=split),
-        job_image=_SERVING_DIGEST,
+        job_image="host/repo/dfo-apis@sha256:old",
     )
 
     ran = _run_reconcile(tmp_path / "bin")
 
-    assert ran.returncode != 0
-    assert "::error::" in ran.stderr
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert "::warning::" in ran.stdout
     assert _updates(state) == []
-    assert cloud_run_fake.read(state)["jobs"][_JOB] == _SERVING_DIGEST
+    assert cloud_run_fake.read(state)["jobs"][_JOB] == "host/repo/dfo-apis@sha256:old"
+
+
+def test_unparseable_service_json_exits_nonzero_with_its_own_error(tmp_path: Path):
+    state = _install(tmp_path / "bin", "{not json", job_image=_SERVING_DIGEST)  # type: ignore[arg-type]
+
+    ran = _run_reconcile(tmp_path / "bin")
+
+    assert ran.returncode == 1
+    assert "::error::" in ran.stderr
+    assert "JSONDecodeError" in ran.stderr
+    assert _updates(state) == []
 
 
 _PINNED_PREVIOUS = [

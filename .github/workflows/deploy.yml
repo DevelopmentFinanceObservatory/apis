@@ -96,9 +96,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     # GitHub's own limit, stated so the steps below are read against it. The
-    # longest is the origin catalogue build, bounded by its job's 7200-second
-    # task timeout. The job runs with no task retries (dfo-infra sets max
-    # retries 0 on both origin catalogue jobs), so one execution is one attempt.
+    # origin catalogue ensure step can run three job executions in a row
+    # (verify, build, verify), each bounded by its job's 7200-second task
+    # timeout, so it can take up to 21600 seconds, which is this limit. The job
+    # runs with no task retries (dfo-infra sets max retries 0 on both origin
+    # catalogue jobs), so one execution is one attempt.
     timeout-minutes: 360
     environment: ${{ inputs.environment }}
     permissions:
