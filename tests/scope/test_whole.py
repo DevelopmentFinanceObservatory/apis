@@ -22,16 +22,20 @@ from search.models import (
     DefinitePart,
     Entry,
     IdentityBindingSet,
+    IdentityWindowRange,
     PartScope,
     Resolution,
     ResolveRequest,
     ResubmitIdentityEntry,
     SlotBinding,
     Spec,
+    WholeRequest,
 )
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.fixtures import FakeGraph
 from tests.scope import test_basis as basis_fixture
 from tests.scope import test_provider as provider_fixture
 
@@ -227,3 +231,111 @@ def test_a_part_binding_no_sector_states_no_sector_choice(monkeypatch):
 
     assert served_datasets(part) == {basis_fixture._DAC1}
     assert "sector" not in _actives(part)
+
+
+def _donor_whole(part: Spec, *, graph, llm) -> Spec:
+    """The whole of `part` over every donor, asked as the harness asks it: the part's
+    scope base and entries resubmitted with `whole: {axis: "donor"}`."""
+    scope = _scope(part)
+    return _resolve_whole(
+        ResubmitIdentityEntry(
+            variable_text="aid",
+            identity=scope.base.identity,
+            scope_entries=scope.entries,
+            whole=WholeRequest(axis="donor"),
+        ),
+        graph=graph,
+        llm=llm,
+    )
+
+
+def _over_window(whole: Spec, start: int, end: int, *, graph, llm) -> Spec:
+    """`whole`'s scope base and entries resubmitted with no `whole`, over `start` to `end`:
+    a plain resubmit of the whole's identity over another window, as the harness copies a
+    pin over a requirement's period."""
+    scope = _scope(whole)
+    identity = scope.base.identity.model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=start, end_year=end)}
+    )
+    return _resolve_whole(
+        ResubmitIdentityEntry(variable_text="aid", identity=identity, scope_entries=scope.entries),
+        graph=graph,
+        llm=llm,
+    )
+
+
+def _open_roles(spec: Spec) -> set[str]:
+    """The role axes `spec`'s answer states it leaves open (`resolved.role_axis_facts`)."""
+    return {fact.role for fact in spec.resolved.role_axis_facts or ()}
+
+
+def _bound(spec: Spec, role: str) -> list[str]:
+    """The refs `spec`'s answer binds on `role` (`resolved.entities`)."""
+    return [entity.ref for entity in spec.resolved.entities if entity.role == role]
+
+
+def test_a_summed_donor_whole_states_its_open_donors_over_any_window(monkeypatch):
+    """US bilateral health aid's whole over every donor on the CRS is summed over its
+    members: its answer states the donor side open in `role_axis_facts` and binds no donor,
+    and so does a plain resubmit of the whole's identity over another window, which states
+    no derived whole. A reader of how the whole serves its donor side can read it off any
+    answer for the whole's identity."""
+    basis_fixture._cover(monkeypatch, basis_fixture._DAC1_MEMBERS)
+    part = basis_fixture._ask("health aid", time="2023", recipient=False)
+    graph = basis_fixture._graph("aid", basis_fixture._ALL_MEMBERS)
+    llm = basis_fixture._PickingLLM()
+
+    whole = _donor_whole(part, graph=graph, llm=llm)
+    again = _over_window(whole, 2015, 2018, graph=graph, llm=llm)
+
+    derived = _scope(whole).derived
+    assert derived is not None and derived.kind == "sum_of_members"
+    assert _scope(again).derived is None
+    for answer in (whole, again):
+        assert "origin" in _open_roles(answer)
+        assert _bound(answer, "origin") == []
+
+
+def test_a_published_donor_whole_binds_its_total_over_any_window(monkeypatch):
+    """US total ODA's whole over every donor on DAC1 is DAC countries' published total: its
+    answer binds that total on the donor side in `resolved.entities` and states the side
+    open nowhere, and so does a plain resubmit of the whole's identity over another
+    window."""
+    donor_only = RoleNames(donor="financingProvider", recipient=None)
+    patch_coverage(
+        monkeypatch,
+        [
+            (dcid, "dac1", donor, ABSENT_ENTITY, basis_fixture._YEARS)
+            for dcid in basis_fixture._DAC1_MEMBERS
+            for donor in (basis_fixture._USA, provider_fixture._DAC_COUNTRIES)
+        ],
+        role_names=dict.fromkeys(basis_fixture._DAC1_MEMBERS, donor_only),
+        facet_metadata={"dac1": FacetMetadata(provenance_id=basis_fixture._DAC1, unit="USD")},
+    )
+    row = basis_fixture._CELLS["donor-only-2019"]
+    part = basis_fixture._ask(row.variable, time=row.time, recipient=row.recipient)
+    graph = FakeGraph(
+        nodes={
+            basis_fixture._USA: {"label": "United States", "type": "Country"},
+            provider_fixture._DAC_COUNTRIES: {"label": "DAC countries", "type": "Place"},
+            **{dcid: basis_fixture._member_node(dcid) for dcid in basis_fixture._ALL_MEMBERS},
+        },
+        detect={
+            row.variable: {
+                "svs": list(basis_fixture._ALL_MEMBERS),
+                "cosine_scores": [0.9] * len(basis_fixture._ALL_MEMBERS),
+            }
+        },
+        resolve={"United States": basis_fixture._USA},
+    )
+    llm = basis_fixture._PickingLLM()
+
+    whole = _donor_whole(part, graph=graph, llm=llm)
+    again = _over_window(whole, 2015, 2018, graph=graph, llm=llm)
+
+    derived = _scope(whole).derived
+    assert derived is not None and derived.kind == "published_total"
+    assert _scope(again).derived is None
+    for answer in (whole, again):
+        assert _bound(answer, "origin") == [provider_fixture._DAC_COUNTRIES]
+        assert "origin" not in _open_roles(answer)
