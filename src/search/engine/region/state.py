@@ -903,6 +903,13 @@ class ResolveState:
     # The request's own words for each entity name (`RegionResult.entity_words`), which own
     # their tokens in the variable phrase as the name does (`entity_texts`).
     entity_words: dict[str, str] = field(default_factory=dict)
+    # The character ranges of the variable phrase that name a party the part binds by a name
+    # Search reads it by ("US" in "total US ODA" beside the donor United States), set once at
+    # intake (`party_aliases.bound_party_spans`). The coverage rule and the nomination of
+    # unread words (`phase_rank_bind._free_readers`) and the candidate menu
+    # (`phase_rank_bind._candidate_menus`) count these ranges as read, and no other copy of
+    # their words. The phrase a model reads is unchanged.
+    party_alias_spans: tuple[tuple[int, int], ...] = ()
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool

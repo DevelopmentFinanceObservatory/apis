@@ -1,0 +1,19 @@
+{
+  "ASEAN": "groups/ASEAN",
+  "AU": "groups/AU",
+  "DRC": "country/COD",
+  "EU": "EuropeanUnion",
+  "G20": "groups/G20",
+  "G7": "GroupOfSeven",
+  "G8": "groups/G8",
+  "LDC": "groups/UN.LDC",
+  "LDCs": "groups/UN.LDC",
+  "LLDCs": "groups/UN.LLDC",
+  "OPEC": "groups/OPEC",
+  "SIDS": "groups/UN.SIDS",
+  "U.S.": "country/USA",
+  "UAE": "country/ARE",
+  "UK": "country/GBR",
+  "US": "country/USA",
+  "USA": "country/USA"
+}

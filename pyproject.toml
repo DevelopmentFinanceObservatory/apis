@@ -381,7 +381,8 @@ python = ".venv"
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
 # "chanel" is the CHANEL Foundation, a private donor in the code index, and "ans"
 # is French for "years" in the relative-date phrases time_bind reads.
-skip = "tests/render/heading_words_specs.json"
+# geo_names.json is the resolver's export of place names, in several languages.
+skip = "tests/render/heading_words_specs.json,packages/dfo-data-tools/src/entity_resolution/data/geo_names.json"
 ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel,ans"
 
 [tool.ruff]

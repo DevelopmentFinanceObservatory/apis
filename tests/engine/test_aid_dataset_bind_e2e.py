@@ -32,7 +32,7 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from entity_resolution import EntityResolutionError
+from entity_resolution import EntityResolutionError, EntityResolver
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
@@ -1099,6 +1099,135 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
         assert _sources(spec) == [_DAC1]
         assert spec.definition.identity.entities == {"origin": [_DEU]}
         assert {request.words for request in binder.requests} == {("organisations",)}
+
+
+_USA = "country/USA"
+_GBR = "country/GBR"
+# DAC1 total official development assistance, net disbursements, from a donor to all
+# recipients.
+_DAC1_TOTAL_ODA = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"
+# The words the binder rates unstated on DAC1's total ODA, as the deployed binder rates "US"
+# in "total US ODA", in each casing the coverage rule asks them in.
+_RATED_UNSTATED: Mapping[str, float] = {"US": 0.0, "us": 0.0, "UK": 0.0, "uk": 0.0}
+
+
+# The resolver's own read, which each `_total_oda_resolve` records around afresh.
+_RESOLVE = EntityResolver.resolve
+
+
+def _total_oda_resolve(
+    monkeypatch: pytest.MonkeyPatch, part: ParsedPart, *, donor: str = _USA
+) -> tuple[Part, set[str]]:
+    """`part` resolved over DAC1's total ODA from `donor`, recalled for the
+    bare words "total ODA" and for `part`'s own variable, with the binder rating "US" and "UK"
+    unstated, as the deployed binder rates "US" in "total US ODA", and every text the entity
+    resolver was asked."""
+    asked: set[str] = set()
+
+    async def recording(self, texts, **kwargs):
+        asked.update(texts)
+        return await _RESOLVE(self, texts, **kwargs)
+
+    monkeypatch.setattr(EntityResolver, "resolve", recording)
+    patch_coverage(
+        monkeypatch,
+        [(_DAC1_TOTAL_ODA, "dac1", donor, ABSENT_ENTITY, [2015, 2016, 2017])],
+        role_names={_DAC1_TOTAL_ODA: RoleNames(donor="financingProvider", recipient=None)},
+        facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
+    )
+    found = {"svs": [_DAC1_TOTAL_ODA], "cosine_scores": [0.9]}
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            _GBR: {"label": "United Kingdom", "type": "Country"},
+            _DAC1: {"label": "OECD DAC1"},
+            _DAC1_TOTAL_ODA: {
+                "label": _DAC1_TOTAL_ODA,
+                "type": "StatisticalVariable",
+                "arcs": _arcs(_DAC1_TOTAL_ODA),
+            },
+        },
+        detect={"total ODA": found, part.variable_text: found},
+        resolve={"United States": _USA, "US": _USA, "United Kingdom": _GBR, "UK": _GBR},
+        obs={},
+    )
+    response = offline_resolve(
+        ResolveRequest(input=ParsedInput(parts=[part])),
+        graph=graph,
+        llm=_ScriptedLLM(part.variable_text),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=RatingBinder(GeminiBinder(), _RATED_UNSTATED),
+    )
+    (answered,) = response.parts
+    return answered, asked
+
+
+_FROM_THE_US = {"text": "United States", "role_text": "donor"}
+
+
+@pytest.mark.parametrize(
+    "stated",
+    [
+        pytest.param({}, id="variable-alone"),
+        pytest.param(
+            {"time_text": "2015 to 2023", "sources": [{"text": "OECD DAC", "polarity": "include"}]},
+            id="with-source-and-time",
+        ),
+    ],
+)
+def test_a_variable_word_naming_a_bound_party_reads_as_that_party(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue: Callable[[Catalogue], None], stated
+):
+    """ "US" in "total US ODA" is a name resolvekit lists for the United States the part
+    binds as its donor, so intake reads it as that entity, as "United States" would: the part
+    answers the spec "total ODA" answers, and names no unbound qualifier. The name comes from
+    the committed export, so the resolver is asked the entity's name alone."""
+    bind_catalogue(
+        FakeCatalogue(provenances={_DAC1: _catalogue_row(_DAC1, "OECD DAC1", "OECD DAC")})
+    )
+    answers = {
+        variable: _total_oda_resolve(
+            monkeypatch, ParsedPart(variable_text=variable, entities=[_FROM_THE_US], **stated)
+        )
+        for variable in ("total ODA", "total US ODA")
+    }
+
+    for part, asked in answers.values():
+        assert asked == {"United States"}
+        assert isinstance(part, DefinitePart), part
+        assert part.spec.definition.identity.entities == {"origin": [_USA]}
+        assert _sources(part.spec) == [_DAC1]
+    plain, restated = (part for part, _asked in answers.values())
+    assert isinstance(plain, DefinitePart) and isinstance(restated, DefinitePart)
+    assert restated.spec.spec_id == plain.spec.spec_id
+
+
+@pytest.mark.parametrize(
+    ("variable", "entity", "donor", "unbound"),
+    [
+        pytest.param("total UK ODA", _FROM_THE_US, _USA, "UK", id="uk-beside-the-us"),
+        pytest.param(
+            "US aid",
+            {"text": "United Kingdom", "role_text": "donor"},
+            _GBR,
+            "US",
+            id="us-beside-the-uk",
+        ),
+    ],
+)
+def test_a_variable_word_naming_a_party_the_part_does_not_bind_stays_unbound(
+    monkeypatch: pytest.MonkeyPatch, variable, entity, donor, unbound
+):
+    """ "UK" in "total UK ODA" names the United Kingdom, which the part does not bind beside
+    its donor the United States, and "US" in "US aid" the United States beside the donor the
+    United Kingdom, so the word stays one the answer leaves unmet and the part refuses it."""
+    part, _asked = _total_oda_resolve(
+        monkeypatch, ParsedPart(variable_text=variable, entities=[entity]), donor=donor
+    )
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == [unbound]
 
 
 @pytest.mark.parametrize(
