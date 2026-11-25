@@ -2327,6 +2327,8 @@ def test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry(
     body = resp.json()
     assert (resp.status_code, body["code"], body["pointer"]) == (422, code, pointer)
     assert "parts" not in body
+    if scope_entries is None:
+        assert body["cause"]["code"] == "axis_absent"
 
 
 class _Captured(Exception):
