@@ -197,13 +197,15 @@ class FallbackBinder:
     async def rate_words_stated(
         self, request: StatedWordsRequest, *, llm: SupportsLLM
     ) -> tuple[Mapping[str, float], dict | None]:
-        """The rating of the binder that answered the bind call (`BindResult.binder`): the
-        primary's (`JevBinder.restated`), else the fallback's. A primary request logs a
-        ``binder_part`` line of its own. A failed one falls back on nothing: it raises
-        `LLMInfraError`, so each word it was asked counts as stated and the read is noted as
-        lost, since the bind's rating described the shape before any value was bound."""
+        """The fallback's rating when the fallback answered the bind call
+        (`BindResult.binder`) or no bind decision stands, else the primary's
+        (`JevBinder.restated`). That covers a bind no model answered
+        (`code_pinned.CODE_PINNED_BINDER`). A primary request logs a ``binder_part`` line of
+        its own. A failed one falls back on nothing: it raises `LLMInfraError`, so each word
+        it was asked counts as stated and the read is noted as lost, since the bind's
+        rating described the shape before any value was bound."""
         decision = request.decision
-        if decision is None or decision.binder != self.primary.name:
+        if decision is None or decision.binder == self.fallback.name:
             return await self.fallback.rate_words_stated(request, llm=llm)
         started = time.perf_counter()
         try:

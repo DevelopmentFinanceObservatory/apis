@@ -22,13 +22,16 @@ Upstream timeouts bound stalled calls.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import dataclasses
 import functools
 import json
 import logging
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
+from concurrent.futures import Future
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -53,6 +56,7 @@ from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response,
 from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
+from dfo_platform.cloud_logging import log_event
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
@@ -71,7 +75,7 @@ from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, get_release_service
+from graph_release.service import ReleaseService, get_release_service, release_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -82,7 +86,11 @@ from materialise.shared_profiles import (
     release_shared_profiles,
 )
 from origin_catalogue import bound_catalogue, current_catalogue
-from origin_catalogue.service import CatalogueService, get_catalogue_service
+from origin_catalogue.service import (
+    CatalogueService,
+    get_catalogue_service,
+    release_catalogue_service,
+)
 from search.catalogue.response import (
     CatalogueResponse,
     catalogue_response,
@@ -453,7 +461,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
             )
 
     # Refresh before every generation-keyed cache lookup.
+    refresh_t0 = time.monotonic()
     await deps.generation.refresh_if_stale()
+    refresh_ms = round((time.monotonic() - refresh_t0) * 1000)
 
     pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
@@ -484,6 +494,10 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     ):
         await deps.skills_index.ready(timeout_s=(budget.soft - time.monotonic()) / 2)
     record = ResolveRecord()
+    record.refresh_ms = refresh_ms
+    received = getattr(request.state, "received", None)
+    if received is not None:
+        record.pre_ms = round((time.monotonic() - received) * 1000)
     caller = request.headers.get("user-agent")
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
@@ -1186,6 +1200,70 @@ def _require_jev_key() -> None:
         raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
 
 
+def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
+    """The origin catalogue and graph release services, the release loading on a daemon thread
+    under the caller's context while the catalogue loads on this one, since each first load
+    downloads its artifact.
+
+    A failing or interrupted catalogue load raises at once and abandons the release load, which process
+    exit does not wait for. When an abandoned load finishes, it gives back the release service
+    it acquired, or logs its own error as `search_startup_stage_failed`. A failing release
+    load raises its error once the catalogue has loaded and gives back the catalogue service."""
+    release: Future[ReleaseService] = Future()
+    context = contextvars.copy_context()
+
+    def load_release() -> None:
+        release.set_running_or_notify_cancel()
+        try:
+            loaded = context.run(lambda: _timed_load("graph_release", get_release_service))
+            release.set_result(loaded)
+        except BaseException as exc:
+            release.set_exception(exc)
+
+    threading.Thread(target=load_release, name="graph-release-load", daemon=True).start()
+    try:
+        catalogue = _timed_load("origin_catalogue", get_catalogue_service)
+    except BaseException:
+        # An interrupt abandons the load too, so a process that retries startup holds no
+        # second release lease.
+        release.add_done_callback(_abandon_release_load)
+        raise
+    try:
+        return catalogue, release.result()
+    except BaseException:
+        release_catalogue_service(catalogue)
+        raise
+
+
+def _abandon_release_load(release: Future[ReleaseService]) -> None:
+    """Gives back the service an abandoned release load acquired, or logs its error."""
+    if (error := release.exception()) is None:
+        release_release_service(release.result())
+        return
+    log_event(
+        logger,
+        logging.ERROR,
+        "search_startup_stage_failed",
+        exc_info=error,
+        stage="graph_release",
+        error=type(error).__name__,
+    )
+
+
+def _timed_load[T](stage: str, load: Callable[[], T]) -> T:
+    """`load()`, logged as one `search_startup_stage` line with its duration."""
+    started = time.monotonic()
+    result = load()
+    log_event(
+        logger,
+        logging.INFO,
+        "search_startup_stage",
+        stage=stage,
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
 def search_surface(
     *,
     graph: EngineGraphClient | None = None,
@@ -1221,8 +1299,7 @@ def search_surface(
     """
     _require_jev_key()
     # Fail during construction when an artifact or the graph release is missing or unreadable.
-    catalogue = get_catalogue_service()
-    release = get_release_service()
+    catalogue, release = _load_catalogue_and_release()
     # The documents read the code index as they are built, so they are built under the
     # release a request would bind.
     with bound_served_release(release):

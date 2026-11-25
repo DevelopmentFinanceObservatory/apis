@@ -7,7 +7,8 @@ request is in flight also carries `logging.googleapis.com/trace`, built from
 the Cloud Trace ID that `dfo_platform.app._trace_id_dispatch` binds, so Cloud
 Logging groups the line under that request. A record logged with
 `extra={JSON_FIELDS_ATTR: {...}}` has those keys merged into its entry as top-level
-JSON fields (`dfo_platform.caller` logs one per request this way).
+JSON fields (`dfo_platform.caller` logs one per request this way). `log_event` logs a
+line whose fields name an `event`.
 
 The trace resource names the Google Cloud project, read from the
 `GOOGLE_CLOUD_PROJECT` environment variable. Without it the lines omit the
@@ -27,6 +28,22 @@ from dfo_platform.trace import get_cloud_trace_id
 PROJECT_ENV = "GOOGLE_CLOUD_PROJECT"
 TRACE_FIELD = "logging.googleapis.com/trace"
 JSON_FIELDS_ATTR = "json_fields"
+
+
+def log_event(
+    logger: logging.Logger,
+    level: int,
+    event: str,
+    /,
+    *,
+    exc_info: BaseException | None = None,
+    **fields: object,
+) -> None:
+    """One `level` line on `logger` whose message is `event` and whose JSON entry carries
+    `event` and `fields` as top-level fields, with `exc_info`'s traceback when given."""
+    logger.log(
+        level, event, exc_info=exc_info, extra={JSON_FIELDS_ATTR: {"event": event, **fields}}
+    )
 
 
 class JsonFormatter(logging.Formatter):

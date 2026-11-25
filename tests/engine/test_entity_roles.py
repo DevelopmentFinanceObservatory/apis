@@ -8,10 +8,11 @@ import asyncio
 import pytest
 
 from search.engine.entry import raw_text
-from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
+from search.engine.entry.dataset_entries import confirm_and_interpret as dataset_door_confirm
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
     _role_query_for_part,
+    confirm_and_interpret,
     interpret_parts,
 )
 from search.engine.entry.raw_text import _prepare_extraction
@@ -728,8 +729,9 @@ class TestParsedDoorCarriesEveryOccurrence:
 
 class TestDatasetEntriesDoorCarriesEveryOccurrence:
     def test_the_resubmit_door_reads_the_same_channel(self):
-        """The dataset door uses the parsed door's interpretation."""
-        assert dataset_door_interpretation is interpret_parts
+        """The dataset door confirms and interprets its parts through the parsed door's
+        `confirm_and_interpret`, which reads `interpret_parts`."""
+        assert dataset_door_confirm is confirm_and_interpret
         part = ParsedPart(
             variable_text="aid",
             entities=[
@@ -737,9 +739,7 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
                 ParsedEntity(text="Kenya", role_text="recipient"),
             ],
         )
-        interpretation = dataset_door_interpretation(
-            [part], pointer_prefixes=["/input/entries/0/part"]
-        )
+        interpretation = interpret_parts([part], pointer_prefixes=["/input/entries/0/part"])
         (roles,) = interpretation.entity_roles
         assert roles == {
             "Kenya": [

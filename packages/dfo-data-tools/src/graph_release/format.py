@@ -30,8 +30,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 import tempfile
+import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -43,8 +45,16 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from artifact_publication.uri import download_uri_to_path, join_uri, read_uri_bytes
+from dfo_platform.cloud_logging import log_event
+from dfo_platform.executor import map_in_threads
+
+logger = logging.getLogger(__name__)
 
 FORMAT: Final[int] = 3
+
+FETCH_WORKERS: Final[int] = 8
+"""Parts `open_release` downloads at once. Each download streams one GCS object to a file
+and hashes it, so it spends most of its time waiting on the network."""
 
 MAX_ROWS = 2**21
 """The most rows a `series` or `edges` file holds, unless one variable or
@@ -746,9 +756,11 @@ def open_release(
     """Opens the pointer's release, or `release_id` when given.
 
     Downloads each part this reader knows and `local_dir` lacks with one
-    streamed GET, checks its SHA-256, and maps it. `parts`, when given, names
-    the only parts to download and map; the others are left out of `tables`
-    and `blobs`. Raises `FileNotFoundError` when no pointer is published,
+    streamed GET, up to `FETCH_WORKERS` at a time, checks its SHA-256, and maps
+    the parts in manifest order. A part that fails to download or verify fails
+    the open with the error of the earliest such part in the manifest. `parts`,
+    when given, names the only parts to download and map; the others are left
+    out of `tables` and `blobs`. Raises `FileNotFoundError` when no pointer is published,
     `ValueError` for a name in `parts` this reader does not know, and
     `ReleaseFormatError` for a release this reader must refuse.
     """
@@ -763,23 +775,27 @@ def open_release(
     if manifest.release_id != release_id:
         raise ReleaseFormatError(f"manifest {release_id!r} holds release {manifest.release_id!r}")
 
+    wanted = [
+        ref
+        for ref in manifest.parts
+        if (parts is None or ref.name in parts)
+        and (ref.name in PART_SCHEMAS or ref.name in JSON_PARTS)
+    ]
+    json_names = [ref.name for ref in wanted if ref.name in JSON_PARTS]
+    if twice := sorted({name for name in json_names if json_names.count(name) > 1}):
+        raise ReleaseFormatError(f"manifest lists JSON part {twice[0]!r} twice")
+
     local_dir.mkdir(parents=True, exist_ok=True)
+    paths = _fetch_all(root_uri, wanted, local_dir, release_id=release_id)
     pieces: dict[str, list[pa.Table]] = {}
     blobs: dict[str, bytes] = {}
-    file_names: set[str] = set()
-    for ref in manifest.parts:
-        if parts is not None and ref.name not in parts:
-            continue
+    for ref in wanted:
+        path = paths[ref.file_name]
         if ref.name in PART_SCHEMAS:
-            path = _fetch(root_uri, ref, local_dir)
             pieces.setdefault(ref.name, []).append(_map(path, PART_SCHEMAS[ref.name]))
-        elif ref.name in JSON_PARTS:
-            if ref.name in blobs:
-                raise ReleaseFormatError(f"manifest lists JSON part {ref.name!r} twice")
-            blobs[ref.name] = _fetch(root_uri, ref, local_dir).read_bytes()
         else:
-            continue
-        file_names.add(ref.file_name)
+            blobs[ref.name] = path.read_bytes()
+    file_names = {ref.file_name for ref in wanted}
     tables = {name: pa.concat_tables(files) for name, files in pieces.items()}
     return LoadedRelease(
         manifest=manifest,
@@ -790,13 +806,46 @@ def open_release(
     )
 
 
-def _fetch(root_uri: str, ref: PartRef, local_dir: Path) -> Path:
-    """The part's local path, downloading it first when absent. A file only
-    takes its final name after its hash checks, so a present file is
+def _fetch_all(
+    root_uri: str, refs: Sequence[PartRef], local_dir: Path, *, release_id: str
+) -> dict[str, Path]:
+    """Each file `refs` names, by file name, downloaded `FETCH_WORKERS` at a time. A file
+    two refs name is fetched once, for the first. Logs one `graph_release_part_fetched`
+    line per download, one WARNING `graph_release_part_failed` line per download that
+    raises, and one `graph_release_parts_fetched` line for the whole fetch."""
+    by_file: dict[str, PartRef] = {}
+    for ref in refs:
+        by_file.setdefault(ref.file_name, ref)
+    first_refs = list(by_file.values())
+    started = time.monotonic()
+    fetched = map_in_threads(
+        lambda ref: _fetch(root_uri, ref, local_dir),
+        first_refs,
+        max_workers=FETCH_WORKERS,
+        thread_name_prefix="graph-release-fetch",
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "graph_release_parts_fetched",
+        release_id=release_id,
+        files=len(first_refs),
+        downloaded=sum(1 for _, downloaded in fetched if downloaded is not None),
+        bytes=sum(downloaded for _, downloaded in fetched if downloaded is not None),
+        duration_ms=round((time.monotonic() - started) * 1000),
+        workers=FETCH_WORKERS,
+    )
+    return {ref.file_name: path for ref, (path, _) in zip(first_refs, fetched, strict=True)}
+
+
+def _fetch(root_uri: str, ref: PartRef, local_dir: Path) -> tuple[Path, int | None]:
+    """The part's local path and the bytes downloaded for it, `None` for a file already
+    present. A file only takes its final name after its hash checks, so a present file is
     trusted."""
     path = local_dir / ref.file_name
     if path.exists():
-        return path
+        return path, None
+    started = time.monotonic()
     with tempfile.NamedTemporaryFile(dir=local_dir, suffix=".partial", delete=False) as handle:
         partial = Path(handle.name)
     try:
@@ -807,10 +856,31 @@ def _fetch(root_uri: str, ref: PartRef, local_dir: Path) -> Path:
             raise ReleaseFormatError(
                 f"part {ref.name!r} downloaded with SHA-256 {digest}, manifest says {ref.sha256}"
             )
+        size = partial.stat().st_size
         partial.replace(path)
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "graph_release_part_failed",
+            part=ref.name,
+            file=ref.file_name,
+            error=type(exc).__name__,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        raise
     finally:
         partial.unlink(missing_ok=True)
-    return path
+    log_event(
+        logger,
+        logging.INFO,
+        "graph_release_part_fetched",
+        part=ref.name,
+        file=ref.file_name,
+        bytes=size,
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return path, size
 
 
 def _map(path: Path, part: PartSchema) -> pa.Table:
@@ -840,6 +910,7 @@ __all__ = [
     "DFO",
     "EDGES",
     "FACETS",
+    "FETCH_WORKERS",
     "FORMAT",
     "IMPORTS",
     "JSON_PARTS",

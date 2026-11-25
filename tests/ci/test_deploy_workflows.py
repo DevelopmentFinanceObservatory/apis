@@ -193,14 +193,14 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, two service updates, two reads of the apis
+    # Six job updates, twelve job executions, two service updates, two reads of the apis
     # service, and four traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
-            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_DATASETS_MAINTENANCE": 5,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
@@ -363,11 +363,14 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
 
 def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
     """The previous image writes rows in the old shape, and versions without a description
-    record, until both services move, so the settle and then the description backfill run after
-    the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the settle, so its failure never holds the settle back."""
+    record, until both services move, so the settle, the warning rewrite, the warning backfill
+    and then the description backfill run after the apis service moves, and they are the
+    deploy's only maintenance executions. The settle runs first, so its pin repair waits on
+    none of the others."""
     names = [step.get("name") for step in _steps()]
     settle = "Settle rows the previous image wrote"
+    rewrite = "Rewrite warnings in an old format"
+    warnings = "Backfill warning counts"
     backfill = "Backfill description records"
     executions = [
         step.get("name")
@@ -375,13 +378,14 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [settle, backfill]
+    assert executions == [settle, rewrite, warnings, backfill]
     assert "--args=settle" in _named(settle)["run"]
+    assert "--args=rewrite-warnings" in _named(rewrite)["run"]
+    assert "--args=backfill-warnings" in _named(warnings)["run"]
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
-    for name in (settle, backfill):
+    for name in executions:
         assert "--wait" in _named(name)["run"]
     assert names.index("Move traffic to the candidate revision") < names.index(settle)
-    assert names.index(settle) < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -406,6 +410,8 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     for name in (
         "Point the datasets maintenance job at the new image",
         "Settle rows the previous image wrote",
+        "Rewrite warnings in an old format",
+        "Backfill warning counts",
         "Backfill description records",
     ):
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
@@ -429,16 +435,19 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     latest revision again without the tag, then check the released image serves."""
     names = [step.get("name") for step in _steps()]
 
-    assert names[-10:] == [
+    assert names[-13:] == [
         "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
         "Fail on errors the candidate revision answered while warming",
         "Move traffic to the candidate revision",
         "Settle rows the previous image wrote",
+        "Rewrite warnings in an old format",
+        "Backfill warning counts",
         "Backfill description records",
         "Follow the latest revision again",
         "Check the released image serves",
+        "Fail on a failed warning step",
         "Follow the latest revision after a failure",
     ]
     for name in ("Warm the candidate revision", "Move traffic to the candidate revision"):
@@ -597,6 +606,49 @@ def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
 
 
 @pytest.mark.parametrize(
+    ("rewrite", "backfill", "named"),
+    [
+        ("success", "success", []),
+        ("failure", "success", ["Rewrite warnings in an old format"]),
+        ("success", "failure", ["Backfill warning counts"]),
+        ("failure", "failure", ["Rewrite warnings in an old format", "Backfill warning counts"]),
+    ],
+)
+def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
+    rewrite: str, backfill: str, named: list[str]
+):
+    """A warning step that fails leaves the description backfill, the follow step and the
+    release check to run, and the step after the release check fails the run naming it. The
+    follow step has succeeded by then, so the recovery step after a failure stays idle."""
+    rewrite_step = _step("rewrite_warnings")
+    backfill_step = _step("backfill_warnings")
+    assert rewrite_step["name"] == "Rewrite warnings in an old format"
+    assert backfill_step["name"] == "Backfill warning counts"
+    for step in (rewrite_step, backfill_step):
+        assert step["continue-on-error"] is True
+    names = [step.get("name") for step in _steps()]
+    last = _named("Fail on a failed warning step")
+    assert names.index("Check the released image serves") + 1 == names.index(last["name"])
+    assert last["env"] == {
+        "REWRITE_WARNINGS": "${{ steps.rewrite_warnings.outcome }}",
+        "BACKFILL_WARNINGS": "${{ steps.backfill_warnings.outcome }}",
+    }
+
+    check = subprocess.run(
+        ["bash", "-c", last["run"]],
+        env={"PATH": "/usr/bin:/bin", "REWRITE_WARNINGS": rewrite, "BACKFILL_WARNINGS": backfill},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert check.returncode == (1 if named else 0)
+    errors = [line for line in check.stdout.splitlines() if line.startswith("::error::")]
+    assert [name for name in named if any(f"'{name}'" in line for line in errors)] == named
+    assert len(errors) == len(named)
+
+
+@pytest.mark.parametrize(
     ("entry", "image", "exit_code"),
     [
         ({"percent": 100, "latestRevision": True, "revisionName": "svc-00002-bbb"}, _PUSHED, 0),
@@ -686,7 +738,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 25
+    assert len(later) == 28
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step

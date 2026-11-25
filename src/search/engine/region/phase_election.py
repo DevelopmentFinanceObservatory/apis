@@ -1512,7 +1512,7 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
         (
             index
             for index, menu_shape in enumerate(state.capped_shapes)
-            if menu_shape.shape_id == shape.shape_id
+            if menu_shape.shape_id in (shape.shape_id, shape.menu_shape_id)
         ),
         None,
     )
