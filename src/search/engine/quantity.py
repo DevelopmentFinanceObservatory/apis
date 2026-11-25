@@ -457,63 +457,90 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
 
 
 # The forms each operation verb computes over a part's data: `share_of` divides the part
-# by its whole, a share or a ratio of it, and `growth` computes a rate of change, read as a
-# rate or a percentage.
+# by its whole, a share or a ratio of it, and `growth` computes a rate of change.
 _OPERATION_FORMS: Mapping[OperationVerb, frozenset[NamedNormalisation]] = {
     "share_of": frozenset({"share", "rate"}),
-    "growth": frozenset({"rate", "share"}),
+    "growth": frozenset({"rate"}),
 }
+
+# The words of a growth's phrase that name its change: "growth rate", "rate of change",
+# "percentage change", "% growth". A growth owns these alone, so a share or rate its phrase
+# names beside them ("percentage change in the share of women") stays the series'.
+_GROWTH_WORDING_RE = re.compile(
+    r"\b(?:growth\s+rates?|rates?\s+of\s+(?:growth|change|increase|decrease))\b"
+    r"|(?:\bpercent(?:age)?|%)\s*(?:points?\s+)?(?:change|growth|increase|decrease|rise|fall)\b"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class FormReading:
     """The forms a part's words name, read with its operations (`read_forms`): the
-    `requirement` its series is held to, the `dropped` forms its operations own, and the
-    `operation_spans`, the character ranges of the variable those operations' phrases
-    cover."""
+    `requirement` its series is held to, the `dropped` forms its operations' words own, the
+    `computed` forms a form the quantity read states with no base is dropped for, and the
+    `whole_spans`, the character ranges of the variable `share_of` phrases cover, inside
+    which a quoted base is the operation's whole."""
 
     requirement: QuantityRequirement
     dropped: frozenset[NamedNormalisation]
-    operation_spans: tuple[tuple[int, int], ...]
+    computed: frozenset[NamedNormalisation]
+    whole_spans: tuple[tuple[int, int], ...]
 
 
 def read_forms(
     variable: str, qualifier_phrases: Iterable[str], operations: Iterable[Operation]
 ) -> FormReading:
     """The requirement of a part whose variable is `variable`, with `qualifier_phrases`
-    beside it, under `operations` (`quantity_requirement`), less the forms its operations
-    own.
+    beside it (`quantity_requirement`), less the forms its `operations` own.
 
-    An operation owns the words of its phrase where the phrase occurs in the variable
-    (`qualifier_match.token_occurrences`, hyphens read as spaces), and the series owns
-    every other word. A form an operation computes (`_OPERATION_FORMS`) is the operation's
-    when a word inside its phrase names it and no word outside every such phrase, nor a
+    An operation's phrase counts where it occurs in the variable
+    (`qualifier_match.token_occurrences`, hyphens read as spaces); a phrase the variable
+    does not hold owns nothing. A `share_of` owns every word of its phrase, and a `growth`
+    only the words naming its change (`_GROWTH_WORDING_RE`). The series owns every other
+    word. A form the owning operation computes (`_OPERATION_FORMS`), or a growth's change
+    wording names, is the operation's when a word it owns names it and no other word, nor a
     qualifier phrase, does, so it leaves the requirement. Under `share_of` on "share of
     GNI", "ODA as a share of GNI" asks for ODA; under `share_of` on "relative to",
-    "unemployment rate of women relative to men" keeps the rate. A phrase the variable
-    does not hold owns nothing."""
+    "unemployment rate of women relative to men" keeps the rate. A form the quantity read
+    states with no base is the operation's on the same terms (`computed`): one an operation
+    whose phrase occurs computes and no word outside the owned words names."""
     qualifier_phrases = tuple(qualifier_phrases)
     requirement = quantity_requirement([variable, *qualifier_phrases])
     spaced = variable.replace("-", " ")
+    lower = spaced.casefold()
     tokens = tokenize(spaced)
-    owned: list[tuple[tuple[int, int], frozenset[NamedNormalisation]]] = [
-        (span, forms)
-        for operation in operations
-        if (forms := _OPERATION_FORMS.get(operation.verb)) is not None
-        for span in token_occurrences(tokens, operation.phrase.replace("-", " "))
-    ]
-    if not owned:
-        return FormReading(requirement=requirement, dropped=frozenset(), operation_spans=())
-    spans = tuple(sorted({span for span, _ in owned}))
+    owned: list[tuple[tuple[int, int], frozenset[NamedNormalisation]]] = []
+    computes: set[NamedNormalisation] = set()
+    whole_spans: list[tuple[int, int]] = []
+    for operation in operations:
+        forms = _OPERATION_FORMS.get(operation.verb)
+        if forms is None:
+            continue
+        for start, end in token_occurrences(tokens, operation.phrase.replace("-", " ")):
+            computes.update(forms)
+            if operation.verb == "share_of":
+                owned.append(((start, end), forms))
+                whole_spans.append((start, end))
+                continue
+            for match in _GROWTH_WORDING_RE.finditer(lower, start, end):
+                named = query_normalisation(match.group(), strong=False)
+                computes.update(named)
+                owned.append((match.span(), forms | named))
+    if not owned and not computes:
+        return FormReading(
+            requirement=requirement, dropped=frozenset(), computed=frozenset(), whole_spans=()
+        )
     inside: set[NamedNormalisation] = set()
     for (start, end), forms in owned:
         inside |= forms & query_normalisation(spaced[start:end], strong=False)
     outside: set[NamedNormalisation] = set()
-    for text in (*_outside(spaced, spans), *qualifier_phrases):
+    for text in (*_outside(spaced, (span for span, _ in owned)), *qualifier_phrases):
         outside |= query_normalisation(text, strong=False)
     dropped = frozenset(inside - outside)
     return FormReading(
-        requirement=without_forms(requirement, dropped), dropped=dropped, operation_spans=spans
+        requirement=without_forms(requirement, dropped),
+        dropped=dropped,
+        computed=frozenset(computes - outside),
+        whole_spans=tuple(sorted(set(whole_spans))),
     )
 
 

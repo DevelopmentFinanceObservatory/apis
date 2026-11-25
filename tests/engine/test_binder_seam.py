@@ -486,6 +486,70 @@ def _denominator(state: ResolveState) -> str | None:
             None,
             id="published-growth-rate",
         ),
+        # A growth divides by nothing, so a base inside its phrase is the series'.
+        pytest.param(
+            "growth of ODA as a share of GNI",
+            (Operation(verb="growth", phrase="growth of ODA as a share of GNI"),),
+            _read("share", "GNI", 0),
+            {"share"},
+            _GNI_REF.ref,
+            "GNI",
+            id="growth-over-a-published-ratio",
+        ),
+        # A growth owns its change wording and no share word beside it.
+        pytest.param(
+            "percentage change in the share of women in parliament",
+            (
+                Operation(
+                    verb="growth",
+                    phrase="percentage change in the share of women in parliament",
+                ),
+            ),
+            _read(),
+            {"share"},
+            None,
+            None,
+            id="growth-of-a-published-share",
+        ),
+        pytest.param(
+            "percentage change in ODA",
+            (Operation(verb="growth", phrase="percentage change in ODA"),),
+            _read(),
+            set(),
+            None,
+            None,
+            id="growth-percentage-change",
+        ),
+        # A quote that leaves only form and function words outside it is the measure.
+        pytest.param(
+            "share of bilateral ODA",
+            (Operation(verb="share_of", phrase="share of bilateral ODA"),),
+            _read("share", "bilateral ODA", 2),
+            set(),
+            None,
+            None,
+            id="measure-quoted-as-base",
+        ),
+        # The operation computes the share the read states with no base, and no word
+        # outside its phrase names one.
+        pytest.param(
+            "aid in total aid",
+            (Operation(verb="share_of", phrase="aid in total aid"),),
+            _read("share"),
+            set(),
+            None,
+            None,
+            id="stated-share-with-no-base",
+        ),
+        pytest.param(
+            "unemployment rate of women relative to men",
+            (Operation(verb="share_of", phrase="relative to"),),
+            _read("rate"),
+            {"rate"},
+            None,
+            None,
+            id="stated-rate-the-series-words-name",
+        ),
     ],
 )
 def test_an_operation_owns_the_forms_and_base_its_phrase_names_in_the_variable(
@@ -507,6 +571,30 @@ def test_an_operation_owns_the_forms_and_base_its_phrase_names_in_the_variable(
     assert set(state.quantity_requirement.named) == named
     assert _denominator(state) == denominator
     assert state.base_words == base
+
+
+def test_a_quoted_measure_leaves_its_nouns_to_the_measure():
+    """A read quoting the measure itself as the base, "GDP" in "share of GDP" under a
+    `share_of` over the whole variable, names no base, so the measure noun stays judged."""
+    variable = "share of GDP"
+    state = _state(
+        llm=_NoCallLLM(),
+        variable=variable,
+        operations=(Operation(verb="share_of", phrase=variable),),
+    )
+
+    assert _read_quantity_answer(state, _read("share", "GDP", 2), _LISTED, _FLOW_SHAPES)
+
+    assert state.base_words is None
+    assert phase_rank_bind._named_measure_nouns(state, declared_measures_named(variable))
+
+
+def test_an_index_past_the_list_is_malformed_inside_a_share_of_phrase():
+    """The range check reads the index the quantity read gave, before the operation's
+    whole takes the base from the series."""
+    state = _state(llm=_NoCallLLM(), variable="ODA as a share of GNI", operations=(_SHARE_OF_GNI,))
+
+    assert not _read_quantity_answer(state, _read("share", "GNI", 5), _LISTED, _FLOW_SHAPES)
 
 
 def _failing_read(*_args, **_kwargs):

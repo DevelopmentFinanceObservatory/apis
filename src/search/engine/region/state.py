@@ -1049,12 +1049,14 @@ class ResolveState:
     # quantity read states joined before admissibility when no phrase named one
     # (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
-    # The forms the leg's operations own, which `quantity_requirement` drops, and the
-    # character ranges of the variable their phrases cover (`quantity.read_forms`). The
-    # quantity read gives a base quoted inside those ranges to the operation
+    # What the leg's operations own in its words (`quantity.read_forms`): the forms
+    # `quantity_requirement` drops, the forms a form the quantity read states with no base
+    # drops for, and the character ranges of the variable `share_of` phrases cover, inside
+    # which the quantity read gives a quoted base to the operation
     # (`phase_rank_bind._read_quantity_answer`).
     operation_forms: frozenset[NamedNormalisation] = field(init=False)
-    operation_spans: tuple[tuple[int, int], ...] = field(init=False)
+    computed_forms: frozenset[NamedNormalisation] = field(init=False)
+    whole_spans: tuple[tuple[int, int], ...] = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
     # (`phase_rank_bind._read_denominators`). The quantity read lists them
@@ -1075,8 +1077,8 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
-    # The question's words for a base the quantity read quoted inside an operation's phrase
-    # (`operation_spans`), the whole the operation divides by, which no denominator of the
+    # The question's words for a base the quantity read quoted inside a `share_of` phrase
+    # (`whole_spans`), the whole the operation divides by, which no denominator of the
     # leg's series is (`phase_rank_bind._read_quantity_answer`). The words stay the base's,
     # as a named denominator's do (`base_words`). `None` otherwise.
     whole_base_words: str | None = None
@@ -1514,7 +1516,8 @@ class ResolveState:
         )
         self.quantity_requirement = forms.requirement
         self.operation_forms = forms.dropped
-        self.operation_spans = forms.operation_spans
+        self.computed_forms = forms.computed
+        self.whole_spans = forms.whole_spans
         self.frame = door_frame(
             door=self.door,
             variable=self.variable,

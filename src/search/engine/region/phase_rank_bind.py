@@ -548,24 +548,31 @@ def _read_quantity_answer(
     prevalence among young women" reads as a share), as does a per-person, per-head or
     per-area form.
 
-    An operation owns the words of its phrase in the variable
-    (`ResolveState.operation_spans`). A quoted base that overlaps them is the whole the
-    operation divides by: it names no denominator of the part's series, takes a stated
-    rate or share with it, and its words stay the base's
-    (`ResolveState.whole_base_words`). A base outside them is the series' denominator. A
-    stated form with no base leaves the requirement where the part's operations own that
-    form (`ResolveState.operation_forms`).
+    A `share_of` owns the words of its phrase in the variable (`ResolveState.whole_spans`).
+    A quoted base that overlaps them is the whole the operation divides by: it names no
+    denominator of the part's series, takes a stated rate or share with it, and its words
+    stay the base's (`ResolveState.whole_base_words`). A quote there that leaves no word of
+    the variable outside it beyond form and function words (`_quotes_the_measure`) is the
+    measure, and names no base. A base outside them is the series' denominator. A stated
+    form with no base leaves the requirement where an operation whose phrase the variable
+    holds computes it and no word outside the operations' words names it
+    (`ResolveState.computed_forms`).
 
     When the denominator read failed (``state.denominator_read_failure``), a stated form
     or index the series keeps, "none of these" included, would be judged on reads that are
     missing, so the read's error is raised before any other check. Return whether the
-    output is well formed: a grounded index outside the list is a malformed output, as an
-    out-of-range shape index is, and the part refuses ``variable_not_resolved``.
+    output is well formed: a grounded index outside the list, the operation's whole's
+    included, is a malformed output, as an out-of-range shape index is, and the part
+    refuses ``variable_not_resolved``.
     """
     index = quantity.denominator_index
     stated_form = quantity.stated_form
     base_words = quantity.base_words or ""
     grounded = _names_base(state, quantity.base_words, shapes)
+    whole = grounded and _in_whole_spans(state, base_words)
+    if whole and _quotes_the_measure(state, base_words):
+        logger.info("quantity read quotes the measure %r as the base; no base read", base_words)
+        grounded = whole = False
     if not grounded:
         if index is not None:
             logger.info(
@@ -581,17 +588,13 @@ def _read_quantity_answer(
                 quantity.base_words,
             )
             stated_form = None
-        if stated_form in state.operation_forms:
+        if stated_form in state.computed_forms:
             logger.info("quantity read states %s, which the part's operation owns", stated_form)
             stated_form = None
-    elif _in_operation_spans(state, base_words):
-        logger.info("quantity read quotes %r inside the part's operation phrase", base_words)
-        state.whole_base_words = base_words
-        index = None
-        if stated_form in ("rate", "share"):
-            stated_form = None
+    elif whole and stated_form in ("rate", "share"):
+        stated_form = None
     failure = state.denominator_read_failure
-    if failure is not None and (stated_form is not None or index is not None):
+    if failure is not None and (stated_form is not None or (index is not None and not whole)):
         raise failure
     if index is not None and not 0 <= index <= len(denominators):
         logger.warning(
@@ -600,6 +603,10 @@ def _read_quantity_answer(
             len(denominators) + 1,
         )
         return False
+    if whole:
+        logger.info("quantity read quotes %r inside the part's share_of phrase", base_words)
+        state.whole_base_words = base_words
+        index = None
     requirement = with_stated_form(state.quantity_requirement, stated_form)
     if requirement != state.quantity_requirement:
         state.quantity_requirement = requirement
@@ -612,14 +619,36 @@ def _read_quantity_answer(
     return True
 
 
-def _in_operation_spans(state: ResolveState, words: str) -> bool:
+def _in_whole_spans(state: ResolveState, words: str) -> bool:
     """Whether an occurrence of `words` in the variable, hyphens read as spaces, overlaps
-    the words an operation's phrase covers (`ResolveState.operation_spans`)."""
+    the words a `share_of` phrase covers (`ResolveState.whole_spans`)."""
     tokens = tokenize(state.variable.replace("-", " "))
     return any(
         _ranges_overlap(occurrence, span)
         for occurrence in token_occurrences(tokens, words.replace("-", " "))
-        for span in state.operation_spans
+        for span in state.whole_spans
+    )
+
+
+def _quotes_the_measure(state: ResolveState, words: str) -> bool:
+    """Whether every occurrence of `words` in the variable leaves outside it, and outside
+    the spans the part's entities own (`_entity_spans`), only form and function words
+    (`quantity.names_only_form`): "bilateral ODA" in "share of bilateral ODA" is the
+    measure the share is of, and no base."""
+    tokens = tokenize(state.variable.replace("-", " "))
+    owned = _entity_spans(state, tokenize(state.variable))
+    occurrences = token_occurrences(tokens, words.replace("-", " "))
+    return bool(occurrences) and all(
+        names_only_form(
+            " ".join(
+                token.text
+                for token in tokens
+                if token.kind == "word"
+                and not _ranges_overlap((token.start, token.end), occurrence)
+                and not any(_ranges_overlap((token.start, token.end), span) for span in owned)
+            )
+        )
+        for occurrence in occurrences
     )
 
 
