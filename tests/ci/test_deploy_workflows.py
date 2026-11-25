@@ -193,15 +193,15 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) [\w-]+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, twelve job executions, two service updates, two reads of the apis
-    # service, and four traffic updates.
+    # Seven job updates, twelve job executions, one read of the origin catalogue job, two
+    # service updates, two reads of the apis service, and four traffic updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
             "JOB_DATASETS_MAINTENANCE": 5,
-            "JOB_ORIGIN_CATALOGUE": 3,
+            "JOB_ORIGIN_CATALOGUE": 5,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
@@ -346,6 +346,152 @@ def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
         "verify" if "--args=-m,graph_release.verify" in call else "build" for call in calls
     ] == executions
     assert all(call.startswith("run jobs execute") and "--wait" in call for call in calls)
+
+
+_FAKE_CLOCK_GCLOUD = """#!/bin/bash
+now=$(cat "$CLOCK")
+echo "$now $*" >> "$GCLOUD_LOG"
+echo $((now + 60)) > "$CLOCK"
+case "$*" in
+  *origin_catalogue.verify*)
+    statuses=($VERIFY_STATUSES)
+    n=$(($(grep -c origin_catalogue.verify "$GCLOUD_LOG") - 1))
+    [ "$n" -lt "${#statuses[@]}" ] || n=$((${#statuses[@]} - 1))
+    exit "${statuses[$n]}" ;;
+  *"run jobs execute"*) exit "$BUILD_STATUS" ;;
+esac
+"""
+_FAKE_DATE = '#!/bin/bash\ncat "$CLOCK"\n'
+_FAKE_SLEEP = '#!/bin/bash\necho $(($(cat "$CLOCK") + $1)) > "$CLOCK"\n'
+
+
+@pytest.mark.parametrize(
+    ("verify_statuses", "build_status", "status", "executions"),
+    [
+        ("0", 0, 0, ["verify"]),
+        ("1 0", 0, 0, ["verify", "build", "verify"]),
+        ("1", 1, 1, ["verify", "build"]),
+        ("1 1 1 0", 0, 0, ["verify", "build", "verify", "verify", "verify"]),
+    ],
+    ids=["loads", "builds-then-loads", "build-fails", "lease-holder-publishes-later"],
+)
+def test_the_origin_catalogue_step_builds_once_and_verifies_until_a_build_loads(
+    tmp_path: Path, verify_statuses: str, build_status: int, status: int, executions: list[str]
+):
+    """A build that exits 0 may have found a scheduled run holding the lease, so verify
+    repeats until that run's build loads; a build that exits non-zero stops the deploy."""
+    calls = _run_origin_catalogue_step(tmp_path, verify_statuses, build_status, status)
+    assert [kind for _, kind in calls] == executions
+
+
+def test_the_origin_catalogue_step_gives_up_after_a_verify_started_past_the_job_timeout(
+    tmp_path: Path,
+):
+    """A lease holder started before the deploy's build exited, and Cloud Run kills it after
+    the job's 7200-second timeout, so the last verify starts at or after that bound."""
+    calls = _run_origin_catalogue_step(tmp_path, "1", 0, 1)
+    build_done = next(start for start, kind in calls if kind == "build") + 60
+    verify_starts = [start for start, kind in calls if kind == "verify"][1:]
+    assert verify_starts[-1] >= build_done + 7200 > verify_starts[-2]
+
+
+def _run_origin_catalogue_step(
+    tmp_path: Path, verify_statuses: str, build_status: int, status: int
+) -> list[tuple[int, str]]:
+    """Run the ensure step against a fake gcloud and clock; return each execution's start
+    time and kind."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (
+        ("gcloud", _FAKE_CLOCK_GCLOUD),
+        ("date", _FAKE_DATE),
+        ("sleep", _FAKE_SLEEP),
+    ):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    clock = tmp_path / "clock"
+    clock.write_text("0")
+    log = tmp_path / "gcloud.log"
+    log.touch()
+    step = re.sub(
+        r"\$\{\{[^}]*\}\}",
+        "dev",
+        _named("Ensure a compatible origin catalogue is published")["run"],
+    )
+
+    ran = subprocess.run(
+        ["bash", "-c", step],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "GCLOUD_LOG": str(log),
+            "CLOCK": str(clock),
+            "VERIFY_STATUSES": verify_statuses,
+            "BUILD_STATUS": str(build_status),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert ran.returncode == status, ran.stderr
+    lines = [line.split(" ", 1) for line in log.read_text().splitlines()]
+    assert all(call.startswith("run jobs execute") and "--wait" in call for _, call in lines)
+    return [
+        (int(start), "verify" if "--args=-m,origin_catalogue.verify" in call else "build")
+        for start, call in lines
+    ]
+
+
+@pytest.mark.parametrize(
+    ("previous", "status", "updates"),
+    [
+        ("img:old", 0, ["run jobs update dev --image=img:old --region=dev --project=dev --quiet"]),
+        ("img:new", 0, []),
+        ("", 1, []),
+    ],
+    ids=["restores", "same-image", "nothing-recorded"],
+)
+def test_a_failed_origin_catalogue_step_points_the_job_back_at_its_recorded_image(
+    tmp_path: Path, previous: str, status: int, updates: list[str]
+):
+    """A job on the new image writes only the new format root, which no service reads until
+    traffic moves, so a failed or cancelled ensure step puts the job back on its old image."""
+    names = [step.get("name") for step in _steps()]
+    point = _named("Point the origin catalogue job at the new image")
+    ensure = _named("Ensure a compatible origin catalogue is published")
+    restore_name = "Point the origin catalogue job back at its previous image"
+    restore = _named(restore_name)
+    assert restore["if"] == (
+        f"always() && (steps.{ensure['id']}.outcome == 'failure'"
+        f" || steps.{ensure['id']}.outcome == 'cancelled')"
+    )
+    assert names.index(restore_name) == names.index(ensure["name"]) + 1
+    assert point["run"].index("jobs describe") < point["run"].index("jobs update")
+    assert 'echo "image=$previous" >> "$GITHUB_OUTPUT"' in point["run"]
+
+    gcloud = tmp_path / "bin" / "gcloud"
+    gcloud.parent.mkdir()
+    gcloud.write_text('#!/bin/bash\necho "$*" >> "$GCLOUD_LOG"\n')
+    gcloud.chmod(0o755)
+    log = tmp_path / "gcloud.log"
+    log.touch()
+    step = (
+        restore["run"]
+        .replace(f"${{{{ steps.{point['id']}.outputs.image }}}}", previous)
+        .replace("${{ steps.image.outputs.image }}", "img:new")
+    )
+    step = re.sub(r"\$\{\{[^}]*\}\}", "dev", step)
+
+    ran = subprocess.run(
+        ["bash", "-c", step],
+        env={"PATH": f"{gcloud.parent}:/usr/bin:/bin", "GCLOUD_LOG": str(log)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert ran.returncode == status, ran.stderr
+    assert log.read_text().splitlines() == updates
 
 
 def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
@@ -725,8 +871,8 @@ def test_the_deploy_fails_on_a_warm_error_before_traffic_moves(
 def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_step():
     """The decide step reads the service and gates every later step on `deploy=true`, so a
     run that deploys runs every step in order and a run that stopped part-way is recovered by
-    the next one from the start. Only the recovery step after a failure runs on another
-    condition."""
+    the next one from the start. Only the two recovery steps after a failure run on another
+    condition: each follows a step that runs only on `deploy=true`."""
     decide = _step("decide")
     assert decide["run"].strip() == ".github/scripts/deploy_decide.sh"
     assert decide["env"]["TARGET"] == "${{ steps.target.outputs.sha }}"
@@ -738,9 +884,13 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 28
+    assert len(later) == 29
+    recovery = {
+        "Follow the latest revision after a failure",
+        "Point the origin catalogue job back at its previous image",
+    }
     for step in later:
-        if step.get("name") != "Follow the latest revision after a failure":
+        if step.get("name") not in recovery:
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 
 

@@ -69,7 +69,8 @@ name: Deploy
 # check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
-# format (see its steps below). The graph release job is pointed at the new
+# format, and goes back to its previous image when that check fails (see its
+# steps below). The graph release job is pointed at the new
 # image and left to its Scheduler; the deploy first checks that the new image
 # opens the published release and builds one when it does not (see its step).
 # The search catalogue job is pointed at the new image and run once on it,
@@ -332,10 +333,26 @@ jobs:
       # and a running service reloads a newer build within
       # ORIGIN_CATALOGUE_RECHECK_SECONDS, so a deploy does not rebuild a
       # catalogue that is already published.
+      #
+      # The step records the job's current image as its `image` output before
+      # the update. A job writes only its own image's format root, so when the
+      # ensure step below fails, the restore step after it points the job back
+      # at that image, which keeps the root the services still read fresh.
       - name: Point the origin catalogue job at the new image
+        id: origin_catalogue_job
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
+          previous="$(gcloud run jobs describe "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format='value(spec.template.spec.template.spec.containers[0].image)')"
+          if [ -z "$previous" ]; then
+            echo "::error::The describe call returned no image for ${{ vars.JOB_ORIGIN_CATALOGUE }}."
+            exit 1
+          fi
+          echo "Origin catalogue job image before this deploy: $previous"
+          echo "image=$previous" >> "$GITHUB_OUTPUT"
           gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
             --image="${{ steps.image.outputs.image }}" \
             --region="${{ vars.REGION }}" \
@@ -352,18 +369,28 @@ jobs:
       # Verify runs first. It passes whenever the new image's format root
       # holds a compatible build, however old, and the deploy goes on. The
       # first deploy and a format bump have no build in the new format root,
-      # so verify fails, the build job (`python -m origin_catalogue.job`)
-      # runs, and a second verify confirms the build published one, all
-      # before traffic moves. With no earlier build to carry forward, that
-      # build is a full one, bounded by the Job's 7200-second timeout. The
-      # job exits 1 on a refused or failed build, and 0 without publishing
-      # when it skips, discards its build or loses the publish race, so the
-      # second verify is what checks that a compatible catalogue exists. This
-      # path has no earlier build to carry the UN rows forward from, so a UN
-      # outage also fails the build (see deploy/origin-catalogue.md). A build
-      # failure, or a second verify failure, fails the step and stops the
-      # deploy with both services on their current image.
+      # so verify fails and the build job (`python -m origin_catalogue.job`)
+      # runs, all before traffic moves. With no earlier build to carry
+      # forward, that build is a full one, bounded by the Job's 7200-second
+      # timeout. This path has no earlier build to carry the UN rows forward
+      # from, so a UN outage also fails the build (see
+      # deploy/origin-catalogue.md). The job exits 1 on a refused or failed
+      # build, which fails the step.
+      #
+      # The job exits 0 without publishing when it skips, discards its build
+      # or loses the publish race. A scheduled run on the new image can hold
+      # the lease (`lease.json`) and still be building, so after an exit 0 the
+      # step verifies every 120 seconds until a compatible build loads. The
+      # holder took the lease before the deploy's run ended, and Cloud Run
+      # kills it 7200 seconds after it started, so the step gives up after a
+      # verify that starts 7200 seconds or more after the deploy's run ended
+      # has failed. A skip for a held ingestion lock or a failed import also
+      # waits out that bound before the step fails.
+      #
+      # A failed step stops the deploy with both services on their current
+      # image, and the next step points the job back at its previous image.
       - name: Ensure a compatible origin catalogue is published
+        id: origin_catalogue
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
@@ -374,13 +401,54 @@ jobs:
               --wait \
               --args=-m,origin_catalogue.verify
           }
-          if ! verify; then
-            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
-              --region="${{ vars.REGION }}" \
-              --project="${{ vars.PROJECT_ID }}" \
-              --wait
-            verify
+          if verify; then
+            exit 0
           fi
+          if ! gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait; then
+            echo "::error::The origin catalogue build failed."
+            exit 1
+          fi
+          deadline=$(($(date +%s) + 7200))
+          while true; do
+            attempt=$(date +%s)
+            if verify; then
+              exit 0
+            fi
+            if [ "$attempt" -ge "$deadline" ]; then
+              echo "::error::No compatible origin catalogue loaded within 7200 seconds of the build exiting."
+              exit 1
+            fi
+            echo "No compatible origin catalogue yet; verifying again in 120 seconds."
+            sleep 120
+          done
+
+      # A job on the new image writes only the new format root, while both
+      # services stay on their current image and read the previous one. When
+      # the ensure step fails or is cancelled, this step points the job back
+      # at the image the point step recorded, so its scheduled runs keep the
+      # previous root fresh. An execution already running keeps its image.
+      - name: Point the origin catalogue job back at its previous image
+        if: always() && (steps.origin_catalogue.outcome == 'failure' || steps.origin_catalogue.outcome == 'cancelled')
+        run: |
+          set -euo pipefail
+          previous="${{ steps.origin_catalogue_job.outputs.image }}"
+          if [ -z "$previous" ]; then
+            echo "::error::No previous image was recorded for ${{ vars.JOB_ORIGIN_CATALOGUE }}; point it at the serving image by hand."
+            exit 1
+          fi
+          if [ "$previous" = "${{ steps.image.outputs.image }}" ]; then
+            echo "The origin catalogue job ran this image before the deploy; nothing to restore."
+            exit 0
+          fi
+          gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            --image="$previous" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+          echo "::error::The origin catalogue step failed; ${{ vars.JOB_ORIGIN_CATALOGUE }} is back on $previous."
 
       # The graph release job moves onto the new image on every deploy so its
       # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
