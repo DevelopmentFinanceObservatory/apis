@@ -148,7 +148,7 @@ A check that fails at base too is reported as pre-existing and does not block. A
 
 The eval jobs need repository secrets, so they skip on pull requests from forks and on drafts.
 
-A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service and records a Langfuse run.
+A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service, writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
 ## CI workflows
 

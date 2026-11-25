@@ -90,8 +90,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from dfo_evals.records import FaultClass, Run, RunManifest, write_run
-from dfo_evals.report import AnyReportCase, AnyReportCaseFailure, run_from_report
+from dfo_evals.records import write_run
 from pydantic_evals.reporting import EvaluationReport
 
 from graph_release.context import bound_served_release
@@ -133,6 +132,7 @@ from search.eval.gate import (
     judge,
 )
 from search.eval.live_clients import score_clients
+from search.eval.run_record import record_manifest, run_record
 from search.eval.runner import (
     EVAL_HEADERS,
     CaseRun,
@@ -674,38 +674,6 @@ def scored_answer(state: CaseState) -> ScoredAnswer:
     )
 
 
-def single_run_record(single: SingleRun, *, manifest: RunManifest) -> Run:
-    """The run record of a single-mode run: one trial per case, its modal sample, tagged
-    with its case file and scored by ``answer``. A modal sample that is infra
-    (``scored_answer``) is an infra fault, which scores leave out."""
-    return run_from_report(
-        report=single.report,
-        manifest=manifest,
-        tags_of=_case_file_tag,
-        fault_of=_infra_fault,
-        trace_of=_trace_id,
-    )
-
-
-def _case_file_tag(case: AnyReportCase | AnyReportCaseFailure) -> tuple[str, ...]:
-    """Tag a case with its case file, such as ``corpus/dac.yaml``."""
-    if not isinstance(case.metadata, CorpusCase):
-        raise TypeError(f"case {case.name!r} has no corpus metadata")
-    return (case.metadata.source,)
-
-
-def _infra_fault(case: AnyReportCase | AnyReportCaseFailure) -> FaultClass | None:
-    """An infra fault for a case whose modal sample is infra; no fault otherwise."""
-    output = getattr(case, "output", None)
-    return FaultClass.INFRA if isinstance(output, ScoredAnswer) and output.infra else None
-
-
-def _trace_id(case: AnyReportCase | AnyReportCaseFailure) -> str | None:
-    """The trace id the modal sample's response carries."""
-    output = getattr(case, "output", None)
-    return output.trace_id if isinstance(output, ScoredAnswer) else None
-
-
 def case_set_changes(
     head_cases: Mapping[str, list[Case]],
     base_cases: Mapping[str, list[Case]] | None,
@@ -955,17 +923,15 @@ def _write_record(args: argparse.Namespace, single: SingleRun, *, started_at: da
         environment["cases"] = ",".join(args.case)
     if args.file:
         environment["files"] = ",".join(args.file)
-    manifest = RunManifest(
-        suite=SUITE,
+    manifest = record_manifest(
         run_id=args.run_id or started_at.strftime("single-%Y%m%dT%H%M%SZ"),
         started_at=started_at,
         finished_at=datetime.now(UTC),
         revision=revision,
         environment=environment,
         dataset_digest=single.dataset_digest,
-        headline_check=ANSWER,
     )
-    path = write_run(root=args.records, run=single_run_record(single, manifest=manifest))
+    path = write_run(root=args.records, run=run_record(single.report, manifest=manifest))
     print(f"run record: {path}", file=sys.stderr)
 
 
