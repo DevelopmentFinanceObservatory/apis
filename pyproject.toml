@@ -25,7 +25,7 @@ datasets-maintenance = "datasets_api.maintenance:main"
 
 [project.optional-dependencies]
 eval = [
-    "langfuse>=4.6.1",
+    "langfuse>=5.2,<6.0",
     "httpx",
     # search.eval.cases parses corpus/*.yaml and corpus/families/*.yaml;
     # scripts/eval_corpus.py checks them.
@@ -58,6 +58,10 @@ engine = [
     # releases broke its API. `zstd` brings backports-zstd, without which the SDK sends
     # request bodies uncompressed below Python 3.14.
     "typesafe-sdk[zstd]==0.7.5",
+    # search.engine.resolve_trace sends one trace per resolve. Capped at the major
+    # verified here, as dfo-ai caps it. Brings opentelemetry-sdk, whose TracerProvider
+    # keeps the client's spans off the global provider.
+    "langfuse>=5.2,<6.0",
     "search[api]",
     "pydantic>=2.13",
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the

@@ -58,9 +58,14 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Hashable, Sequence
+from concurrent.futures import Future
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
 
+from dfo_platform.executor import map_in_threads
 from materialise.graph import reject_unsafe_property_token
 from skills_index.config import (
     CONSTRAINT_PROPERTIES_ARC,
@@ -143,6 +148,10 @@ _FRONT_MATTER_CHUNK_SIZE = (_MIXER_RESPONSE_CAP_BYTES // 2) // (
 _REFERENCE_CHUNK_SIZE = (_MIXER_RESPONSE_CAP_BYTES // 2) // (
     SKILL_REFERENCE_MAX_BYTES * JSON_ESCAPE_EXPANSION_FACTOR
 )
+
+_REACH_WORKERS = 8
+"""Skills whose reach and StatVar count `_assemble_skills` reads at once. Each skill makes
+one graph read at a time, so this bounds the reads the build has in flight."""
 
 _BUDGET_WHY = (
     "the build spent its corpus-wide budget for retained skill content before this "
@@ -534,22 +543,54 @@ def _assemble_skills(
     skills: dict[str, SkillEntry] = {}
     node_to_skills: dict[str, list[SkillMatch]] = {}
     reach_graph = _ReadCountingGraph(graph)
-    for skill_id in state.skill_ids:
-        attachments = tuple(
-            Attachment(dcid=target, kind=classified.kind_by_target[target])
-            for target in state.targets_by_skill[skill_id]
-        ) + tuple(
-            Attachment(dcid=target, kind=ProvenanceAttachment())
-            for target in state.provenance_targets_by_skill[skill_id]
+    attachments_by_skill = {
+        skill_id: _skill_attachments(state, classified, skill_id) for skill_id in state.skill_ids
+    }
+    failed_targets_by_skill = {
+        skill_id: _failed_targets(attachments, classified)
+        for skill_id, attachments in attachments_by_skill.items()
+    }
+    plans = {
+        skill_id: _reach_plan(
+            attachments_by_skill[skill_id],
+            failed_targets=failed_targets_by_skill[skill_id],
+            oversized=skill_id in state.oversized_applies_to,
         )
-        # A provenance attachment needs no classification read, so another skill's
-        # failed read of the same dcid says nothing about it.
-        failed_targets = [
-            attachment.dcid
-            for attachment in attachments
-            if not isinstance(attachment.kind, ProvenanceAttachment)
-            and attachment.dcid in classified.failure_by_target
-        ]
+        for skill_id in state.skill_ids
+    }
+    expanded = [skill_id for skill_id, plan in plans.items() if plan is _ReachPlan.expand]
+
+    def reach_or_error(
+        skill_id: str,
+    ) -> tuple[SkillReach, list[SkillIssue], int, bool] | Exception:
+        try:
+            return _reach_and_breadth(
+                skill_id,
+                attachments_by_skill[skill_id],
+                graph=reach_graph,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+                max_results_per_lead=max_results_per_lead,
+            )
+        except Exception as exc:
+            return exc
+
+    # Each skill's reads chain hop by hop, but skills share no state, so they run side by side.
+    outcomes = dict(
+        zip(
+            expanded,
+            map_in_threads(
+                reach_or_error,
+                expanded,
+                max_workers=_REACH_WORKERS,
+                thread_name_prefix="skills-index-reach",
+            ),
+            strict=True,
+        )
+    )
+    for skill_id in state.skill_ids:
+        attachments = attachments_by_skill[skill_id]
+        failed_targets = failed_targets_by_skill[skill_id]
         for attachment in attachments:
             if isinstance(attachment.kind, RejectedAttachment):
                 state.issues.append(
@@ -577,37 +618,33 @@ def _assemble_skills(
                 )
 
         excluded_reach = SkillReach(skill_id=skill_id, nodes=(), excluded=True)
-        if failed_targets:
-            state.issues.append(
-                _unconfirmed_issue(
-                    skill_id,
-                    f"the classification read of {', '.join(failed_targets)} failed",
-                    classified.failure_by_target[failed_targets[0]],
-                )
-            )
-            reach, statvar_count, statvar_truncated = excluded_reach, 0, False
-        elif skill_id in state.oversized_applies_to:
-            reach, statvar_count, statvar_truncated = excluded_reach, 0, False
-        elif not any(_reaches(attachment) for attachment in attachments):
-            reach = SkillReach(skill_id=skill_id, nodes=(), excluded=False)
-            statvar_count, statvar_truncated = 0, False
-        else:
-            try:
-                reach, reach_issues, statvar_count, statvar_truncated = _reach_and_breadth(
-                    skill_id,
-                    attachments,
-                    graph=reach_graph,
-                    max_depth=max_depth,
-                    max_nodes=max_nodes,
-                    max_results_per_lead=max_results_per_lead,
-                )
-            except Exception as exc:
+        match plans[skill_id]:
+            case _ReachPlan.unconfirmed:
                 state.issues.append(
-                    _unconfirmed_issue(skill_id, "a reach or StatVar count read failed", exc)
+                    _unconfirmed_issue(
+                        skill_id,
+                        f"the classification read of {', '.join(failed_targets)} failed",
+                        classified.failure_by_target[failed_targets[0]],
+                    )
                 )
                 reach, statvar_count, statvar_truncated = excluded_reach, 0, False
-            else:
-                state.issues.extend(reach_issues)
+            case _ReachPlan.oversized:
+                reach, statvar_count, statvar_truncated = excluded_reach, 0, False
+            case _ReachPlan.empty:
+                reach = SkillReach(skill_id=skill_id, nodes=(), excluded=False)
+                statvar_count, statvar_truncated = 0, False
+            case _ReachPlan.expand:
+                outcome = outcomes[skill_id]
+                if isinstance(outcome, Exception):
+                    state.issues.append(
+                        _unconfirmed_issue(
+                            skill_id, "a reach or StatVar count read failed", outcome
+                        )
+                    )
+                    reach, statvar_count, statvar_truncated = excluded_reach, 0, False
+                else:
+                    reach, reach_issues, statvar_count, statvar_truncated = outcome
+                    state.issues.extend(reach_issues)
 
         references = state.references_by_skill[skill_id]
         state.issues.extend(references.issues(skill_id))
@@ -650,25 +687,94 @@ def _assemble_skills(
     return skills, node_to_skills
 
 
+class _ReachPlan(StrEnum):
+    """How `_assemble_skills` settles one skill's reach."""
+
+    unconfirmed = "unconfirmed"
+    """A target's classification read raised, so the skill is excluded, with
+    `skill_build_unconfirmed`."""
+    oversized = "oversized"
+    """It declares more targets than `SKILLS_APPLIES_TO_MAX_TARGETS`, so it is excluded."""
+    empty = "empty"
+    """No attachment reaches anything, so the skill is served with an empty reach."""
+    expand = "expand"
+    """Its reach and StatVar count are read from the graph."""
+
+
+def _reach_plan(
+    attachments: Sequence[Attachment], *, failed_targets: Sequence[str], oversized: bool
+) -> _ReachPlan:
+    """The plan for a skill with these attachments, failed classification targets and
+    `skillAppliesTo` size."""
+    if failed_targets:
+        return _ReachPlan.unconfirmed
+    if oversized:
+        return _ReachPlan.oversized
+    if not any(_reaches(attachment) for attachment in attachments):
+        return _ReachPlan.empty
+    return _ReachPlan.expand
+
+
+def _skill_attachments(
+    state: _IndexBuildState, classified: _ClassifiedTargets, skill_id: str
+) -> tuple[Attachment, ...]:
+    """The skill's classified targets, then its provenance targets."""
+    return tuple(
+        Attachment(dcid=target, kind=classified.kind_by_target[target])
+        for target in state.targets_by_skill[skill_id]
+    ) + tuple(
+        Attachment(dcid=target, kind=ProvenanceAttachment())
+        for target in state.provenance_targets_by_skill[skill_id]
+    )
+
+
+def _failed_targets(attachments: Sequence[Attachment], classified: _ClassifiedTargets) -> list[str]:
+    """The attachments whose classification read raised. A provenance attachment needs no
+    classification read, so another skill's failed read of the same dcid says nothing
+    about it."""
+    return [
+        attachment.dcid
+        for attachment in attachments
+        if not isinstance(attachment.kind, ProvenanceAttachment)
+        and attachment.dcid in classified.failure_by_target
+    ]
+
+
 class _ReadCountingGraph:
     """A `SkillsGraph` that counts the reads that return and those that raise, and keeps
     the last error raised, so the build can tell a graph outage from a failure confined
-    to some reads."""
+    to some reads. Safe to read through from several threads: a read asked for while an
+    identical one is in flight waits for that read and takes its result or error, so the
+    pair is one read and counts once."""
 
     def __init__(self, graph: SkillsGraph) -> None:
         self._graph = graph
+        self._lock = threading.Lock()
+        self._in_flight: dict[Hashable, Future[Any]] = {}
         self.succeeded = 0
         self.failed = 0
         self.last_failure: Exception | None = None
 
-    def _counted[T](self, read: Callable[[], T]) -> T:
+    def _counted[T](self, key: Hashable, read: Callable[[], T]) -> T:
+        own: Future[T] = Future()
+        with self._lock:
+            flight = self._in_flight.setdefault(key, own)
+        if flight is not own:
+            return flight.result()
         try:
             result = read()
-        except Exception as exc:
-            self.failed += 1
-            self.last_failure = exc
+        except BaseException as exc:
+            with self._lock:
+                del self._in_flight[key]
+                if isinstance(exc, Exception):
+                    self.failed += 1
+                    self.last_failure = exc
+            own.set_exception(exc)
             raise
-        self.succeeded += 1
+        with self._lock:
+            del self._in_flight[key]
+            self.succeeded += 1
+        own.set_result(result)
         return result
 
     def node_arcs_many(
@@ -679,16 +785,18 @@ class _ReadCountingGraph:
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         return self._counted(
-            lambda: self._graph.node_arcs_many(dcids, properties=properties, deadline=deadline)
+            ("arcs", tuple(dcids), tuple(properties), deadline),
+            lambda: self._graph.node_arcs_many(dcids, properties=properties, deadline=deadline),
         )
 
     def node_subjects_many(
         self, dcids: Sequence[str], *, property: str, max_results: int
     ) -> dict[str, SubjectsPage]:
         return self._counted(
+            ("subjects", tuple(dcids), property, max_results),
             lambda: self._graph.node_subjects_many(
                 dcids, property=property, max_results=max_results
-            )
+            ),
         )
 
 

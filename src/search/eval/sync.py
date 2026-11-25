@@ -280,7 +280,8 @@ def nightly(
         wanted = {item_id_for_case(case, name) for case in eligible}
         states.update({case.id: NightlyCase(case, stem) for case in eligible})
         # `DatasetClient.run_experiment` runs every item, archived and ineligible ones too.
-        # The client's form takes the chosen items and still links each to the dataset run.
+        # The client's form takes the chosen items, runs only those, and records each one under
+        # the experiment through trace attributes.
         items = [item for item in langfuse.get_dataset(name).items if item.id in wanted]
         result = langfuse.run_experiment(
             name="nightly",
@@ -293,7 +294,7 @@ def nightly(
         )
         if errors:
             raise errors[0]
-        run_urls[name] = result.dataset_run_url
+        run_urls[name] = result.experiment_url
     return list(states.values()), run_urls
 
 
@@ -333,13 +334,25 @@ def nightly_exit_code(states: Sequence[NightlyCase]) -> int:
 
 
 def _client() -> Langfuse:
-    """A Langfuse client, raising clearly when the credentials are unset."""
-    from langfuse import get_client
+    """A Langfuse client with a tracer provider of its own, raising when it cannot export.
+
+    ``run_experiment`` records each item through exported spans. The SDK's global provider
+    samples at ``LANGFUSE_SAMPLE_RATE``, so at a rate below 1 the nightly would report an
+    experiment URL for an empty or partial experiment. A provider built here has no sampler,
+    so every span is exported. ``LANGFUSE_TRACING_ENABLED=false`` disables the client whatever
+    provider it holds, so that setting raises.
+    """
+    from langfuse import Langfuse
+    from opentelemetry.sdk.trace import TracerProvider
 
     missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY") if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Langfuse credentials missing: {', '.join(missing)}")
-    return get_client()
+    if os.environ.get("LANGFUSE_TRACING_ENABLED", "true").lower() == "false":
+        raise RuntimeError(
+            "LANGFUSE_TRACING_ENABLED is false, so the nightly results would not reach Langfuse"
+        )
+    return Langfuse(tracer_provider=TracerProvider())
 
 
 class _InfraError(Exception):

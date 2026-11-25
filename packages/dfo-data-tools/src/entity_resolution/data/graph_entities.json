@@ -529,6 +529,15 @@
     "dac_code": "20001"
   },
   {
+    "dcid": "DACDevelopingCountries",
+    "name": "developing countries (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Developing Countries, Total"
+    ],
+    "dac_code": "10100"
+  },
+  {
     "dcid": "DACEUMembers",
     "name": "DAC EU members",
     "kind": "aggregate",

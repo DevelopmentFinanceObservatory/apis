@@ -233,11 +233,16 @@ def _undirected_place_axis(
     countries" reads Germany on the side the group leaves free.
 
     Next comes the axis of the shape's one required role, the one role every recalled
-    member declares (`required_role_names`). Recalled members are a sample of the family,
-    so a debt shape requires the debtor alone when recall returns a total beside its
-    by-creditor members, and both roles when it returns by-creditor members only. On the
-    first, "Germany external debt stocks" reads Germany as the debtor though coverage
-    settles Germany as a creditor, the side a currency share by creditor holds.
+    member declares (`required_role_names`), while no place named with a direction holds
+    that axis (`directed_axes`). Recalled members are a sample of the family, so a debt
+    shape requires the debtor alone when recall returns a total beside its by-creditor
+    members, and both roles when it returns by-creditor members only. On the first,
+    "Germany external debt stocks" reads Germany as the debtor though coverage settles
+    Germany as a creditor, the side a currency share by creditor holds. Where a directed
+    place holds the required axis, the place stays open on the other: "Kenya as debtor"
+    beside an undirected "China" leaves China's axis to `undirected.settle_undirected_axis`,
+    whose `complement` rule seats China as the creditor where the coverage read finds a
+    series with China there.
 
     On a shape that leaves the direction open, the axis a rule read from data settles
     (rule `coverage` or `declaration`) comes next where `shape` declares a role on it.
@@ -261,7 +266,7 @@ def _undirected_place_axis(
     if settled is not None and settled.rule in _QUERY_RULES and settled.axis in names:
         return settled.axis
     axis = _required_role_axis(shape)
-    if axis is not None:
+    if axis is not None and axis not in directed_axes(state):
         return axis
     if settled is not None and settled.axis in names:
         return settled.axis
@@ -1205,10 +1210,19 @@ def whole_total_candidates(
     total, then the recipients' total, one at a time, since the source publishes no figure
     between two whole totals. For the same reason a side a text names a whole population on
     ("official donors") offers none, and once that population binds there (`_named_wholes`)
-    neither side does. Whether a candidate binds is `holds_whole_total`'s question, asked
-    under the bindings settled for its role keys; the first that holds binds."""
+    neither side does. A total of the bilateral destinations ("developing countries",
+    `scope_conventions.bilateral_side_total`) carries no whole marker, and the source
+    publishes the donors' total to it, so bound there it leaves the donor side's total on
+    offer. Whether a candidate binds is `holds_whole_total`'s question, asked under the
+    bindings settled for its role keys; the first that holds binds."""
     named_axes = named_whole_axes(state)
-    if not state.whole_sets or not is_role_bearing(shape) or named_axes & assignment.sets.keys():
+    parties = get_index().parties
+    marked_axes = frozenset(
+        parties[dcids[0]].sole_axis()
+        for dcids in state.whole_named.values()
+        if any(parties[dcid].whole for dcid in dcids)
+    )
+    if not state.whole_sets or not is_role_bearing(shape) or marked_axes & assignment.sets.keys():
         return ()
     datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
     declared = role_names_by_axis(shape)
@@ -1274,8 +1288,9 @@ def assign_named_places(
 
     A role-bearing shape has no subject slot: each set takes its door-resolved axis, and
     origins are kept for nearest-real probes. A set with no axis fills the axis the part
-    settles for it (`ResolveState.undirected_axis`), else the shape's one required role, or
-    on an alternate that requires two the axis the elected shape assigns it
+    settles for it (`ResolveState.undirected_axis`), else the shape's one required role
+    while no directed set holds its axis, or on an alternate that requires two the axis the
+    elected shape assigns it
     (`_undirected_place_axis`). It is ambiguous when no such axis exists, when a second set
     also lacks an axis, or when a directed set already holds that axis. Raw text compares
     extractor roles with the query wording; parsed role text has no separate preposition
@@ -1934,8 +1949,11 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     whose members some end not bound whole holds states its own ref first, so a client
     matches the set it named (`_own_ref`, as read on the first such end), then those
     members in `place_order`. A text naming a whole population ("all donors",
-    `ResolveState.whole_named`) binds the parties it names that the binding holds. A text
-    no end binds, ambiguous or unresolved, is left out.
+    `ResolveState.whole_named`) binds the parties it names that the binding holds, and one
+    asked member by member (`ResolveState.whole_listed_parties`) states the parties it names,
+    whose side the answer lists open, so "developing countries" states
+    `DACDevelopingCountries` read whole or listed. A text no end binds, ambiguous or
+    unresolved, is left out.
 
     A part refused before a shape's places are installed (`ResolveState.places_bound`),
     whether before election or after it, states the node each text names alone
@@ -1971,6 +1989,7 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):
             refs[text] = tuple(held)
+    refs.update(state.whole_listed_parties)
     return refs
 
 

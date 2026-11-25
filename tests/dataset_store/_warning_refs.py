@@ -1,5 +1,5 @@
 """Stored warnings in every format `dataset_store.warning_formats` lists, for the tests of its
-dry run and of `warning_rewrite.sql`.
+definitions and of its rewrite (`warning_formats.rewrite_old_formats`).
 
 Each old format is the message a writer stored before warnings counted their refs. The new
 shapes come from the current writers in `materialise.finish` and `datasets_api.origin`.
@@ -163,7 +163,7 @@ def trace_for(case: str) -> dict[str, object]:
 
 
 def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]]:
-    """Stored warning arrays by case, each with the array `warning_rewrite.sql` leaves."""
+    """Stored warning arrays by case, each with the array `rewrite_old_formats` leaves."""
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
     unserved_one = cast(str, new_coverage(unserved=UNSERVED[:1])["message"])
     members_counted = new_coverage(members=MEMBERS, member_count=4)
@@ -176,6 +176,10 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
         "members_without_trace_count": [_coverage(COVERAGE_DETAIL + old_member_sentence(MEMBERS))],
         "name_with_comma": [
             _coverage(COVERAGE_DETAIL + old_unserved_sentence(["country/KEN", "country/A,B"]))
+        ],
+        # A count past `integer` fails the pattern, so it is left as stored and reported.
+        "count_overflow": [
+            _coverage(COVERAGE_DETAIL + " No observations were served for KEN and 9999999999 more.")
         ],
         "unlisted": [
             {

@@ -59,7 +59,8 @@ name: Deploy
 # every deploy runs both rather than trying to detect whether any is needed.
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
-# service has moved and `backfill-descriptions` after it (see those steps).
+# service has moved, then `rewrite-warnings`, `backfill-warnings` and
+# `backfill-descriptions` (see those steps).
 # The deploy stages the new revision with no traffic, probes that revision by
 # name at its tagged URL, and moves traffic to it by name, so its background
 # builds finish before readers arrive and, in production, a revision that
@@ -307,7 +308,7 @@ jobs:
       # The datasets maintenance job runs `datasets-maintenance` tasks (the
       # reconciliation sweep, aging terminal operations) on its own Scheduler,
       # so the deploy points it at the new image here and executes it for the
-      # settle and backfill-descriptions steps after the services move. It
+      # settle, warning and description steps after the services move. It
       # moves after both migrations, so its next run finds the schema this
       # image expects. The job and its variable come from `infra`, and the
       # upfront variable check refuses the deploy when the variable is missing.
@@ -654,6 +655,61 @@ jobs:
             --wait \
             --args=settle
 
+      # An image older than the current warning writers stores warnings that
+      # name refs in an old shape, until the services move and from requests
+      # it still holds afterwards. `datasets-maintenance rewrite-warnings`
+      # rewrites them, in the `warnings` column and in `immutable_body`, each
+      # from its own value (`dataset_store.warning_formats`). It scans
+      # `version_record` on every run, 500 rows by key to a transaction, so a
+      # failed run keeps the pages it committed, and the next run, which scans
+      # from the start, finds only the rows still in an old shape. A warning it
+      # cannot parse stays as stored. It logs the rows it rewrote; the next
+      # step's summary counts the rows still in an old shape. A failure here
+      # lets the steps after it run, and the last step fails the run.
+      - name: Rewrite warnings in an old format
+        id: rewrite_warnings
+        if: steps.decide.outputs.deploy == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=rewrite-warnings
+
+      # rewrite-warnings leaves the old `coverage_below_scope` member sentence
+      # as stored, since splitting its members into off-cadence and
+      # out-of-window ones needs graph reads. `datasets-maintenance
+      # backfill-warnings` rewrites it, in the `warnings` column and in
+      # `immutable_body`, each from its own value, one row per transaction; the
+      # selection matches only rows still holding the sentence, so a repeat run
+      # touches only the rows that remain. It reads the graph, SDMX and UN base
+      # URLs and the origin catalogue from the maintenance job's environment.
+      # It starts no row after 45 minutes, within the Job's 3600-second
+      # timeout. The step fails when a row failed for a cause a retry can
+      # clear, lost to a concurrent write or was left by the budget, and the
+      # next deploy carries on from the rows that remain. A row that fails with
+      # a defect is selected again, so it fails the step on every run until the
+      # code is fixed. A row it refuses for good is logged as one WARNING line
+      # on every run and sets no exit code, and its summary counts the rows
+      # still holding any old shape (`legacy_warning_refs`), which sets no exit
+      # code; a count that fails or runs past 25 s (five sixths of the store's
+      # 30-second socket bound) is logged at ERROR with a null count and sets
+      # no exit code either. A failure here lets the steps after it run, and
+      # the last step fails the run.
+      - name: Backfill warning counts
+        id: backfill_warnings
+        if: steps.decide.outputs.deploy == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=backfill-warnings
+
       # A version row holds a description record from the image that writes
       # records onward. `datasets-maintenance backfill-descriptions` writes one,
       # with basis `backfill`, for every version row holding none: those made
@@ -734,11 +790,40 @@ jobs:
           fi
           echo "Revision $serving serves all traffic as the latest revision and runs the released image."
 
-      # A failure after the move, in settle, backfill or the step after them,
-      # would leave traffic pinned by name, so a revision `infra` creates for a
-      # configuration change would serve nothing until a deploy succeeds. This
-      # step makes traffic follow the latest revision again and keeps the
-      # `candidate` tag, so the next run still deploys.
+      # The two warning steps continue on error, so a failure in either still
+      # runs the description backfill, whose records depend on series
+      # statistics that leave the working tier, makes traffic follow the
+      # latest revision and checks the released image. This step then fails
+      # the run and names each warning step that failed. Traffic already
+      # follows the latest revision without the `candidate` tag, so a rerun of
+      # the same commit deploys nothing; the next deploy, or a
+      # `workflow_dispatch` run, runs the warning steps again from the rows
+      # that remain.
+      - name: Fail on a failed warning step
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          REWRITE_WARNINGS: ${{ steps.rewrite_warnings.outcome }}
+          BACKFILL_WARNINGS: ${{ steps.backfill_warnings.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          if [ "$REWRITE_WARNINGS" = failure ]; then
+            echo "::error::The 'Rewrite warnings in an old format' step failed. Its log names the maintenance job execution and why it failed."
+            failed=1
+          fi
+          if [ "$BACKFILL_WARNINGS" = failure ]; then
+            echo "::error::The 'Backfill warning counts' step failed. Its log names the maintenance job execution and why it failed."
+            failed=1
+          fi
+          exit "$failed"
+
+      # A failure after the move, in settle, the description backfill or the
+      # follow step, would leave traffic pinned by name, so a revision `infra`
+      # creates for a configuration change would serve nothing until a deploy
+      # succeeds. This step makes traffic follow the latest revision again and
+      # keeps the `candidate` tag, so the next run still deploys. A failed
+      # warning step fails the run only in the step above, after the follow
+      # step succeeded, so it does not run this step.
       - name: Follow the latest revision after a failure
         if: failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'
         run: |

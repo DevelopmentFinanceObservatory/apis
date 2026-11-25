@@ -16,7 +16,9 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp
 from code_index.types import DatasetDeclaration, StatVarRow
+from dataset_store.bounds import TransactionBounds
 from dataset_store.errors import PoolTimeoutError
+from dataset_store.warning_formats import _OLD_FORMAT_ROWS, OLD_FORMATS
 from datasets_api import maintenance
 from datasets_api.warning_backfill import (
     PAGE_ROWS,
@@ -174,38 +176,54 @@ def _warning(named: Sequence[str], more: int = 0) -> dict[str, object]:
     }
 
 
+_EMPTY = {"code": "empty_result", "severity": "warn", "message": "No rows."}
+
+
 class _Store:
     """Version rows in memory. `fetch_all` answers a page of the task's selection, failing a read
-    asking for more than `page_rows`, and `fetch_one` its count and its update, holding the row
-    to the column's and the body's warnings where the statement names each, and writing the
-    body's where it sets it."""
+    asking for more than `page_rows`, and `fetch_one` its count, the count of rows holding an old
+    format and its update, which writes each copy the statement sets, the column or the body's
+    `warnings`, while it still holds what the statement says was read there."""
+
+    bounds = TransactionBounds(connect=12.0)
 
     def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int = PAGE_ROWS) -> None:
         self.rows = {(row["subject_id"], row["content_version"]): dict(row) for row in rows}
         self.page_rows = page_rows
         self.updates = 0
+        self.executed: list[str] = []
 
     @contextmanager
     def transaction(self) -> Iterator[_Store]:
         yield self
 
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self.executed.append(sql)
+
     def _selected(self, sql: str, params: Sequence[object]) -> list[Mapping[str, Any]]:
         code, pattern, new_format = params
-        assert "jsonb_array_elements(warnings)" in sql, sql
 
-        def matches(warning: object) -> bool:
+        def matches(warning: object, *, in_column: bool) -> bool:
             if not isinstance(warning, Mapping) or warning.get("code") != code:
                 return False
             if re.search(str(pattern), str(warning.get("message"))):
                 return True
-            return bool(new_format) and (
-                "off_cadence_members" in warning or "out_of_window_members" in warning
+            return (
+                bool(new_format)
+                and in_column
+                and ("off_cadence_members" in warning or "out_of_window_members" in warning)
             )
 
-        return sorted(
-            (row for row in self.rows.values() if any(map(matches, row["warnings"]))),
-            key=_key,
-        )
+        def selected(row: Mapping[str, Any]) -> bool:
+            column, body = row["warnings"], row["immutable_body"].get("warnings")
+            return any(
+                matches(warning, in_column=in_column)
+                for warnings, in_column in ((column, True), (body, False))
+                if isinstance(warnings, list)
+                for warning in warnings
+            )
+
+        return sorted(filter(selected, self.rows.values()), key=_key)
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
         assert sql.endswith("ORDER BY subject_id, content_version LIMIT %s"), sql
@@ -222,22 +240,45 @@ class _Store:
             if not after or _key(row) > tuple(after)
         ][:limit]
 
+    def _old_format_rows(self) -> int:
+        def holds(warnings: object) -> bool:
+            return isinstance(warnings, list) and any(
+                re.search(OLD_FORMATS[warning["code"]], message) is not None
+                for warning in warnings
+                if isinstance(warning, Mapping)
+                and warning.get("code") in OLD_FORMATS
+                and isinstance(message := warning.get("message"), str)
+            )
+
+        return sum(
+            holds(row["warnings"]) or holds(row["immutable_body"].get("warnings"))
+            for row in self.rows.values()
+        )
+
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
+        if sql == _OLD_FORMAT_ROWS:
+            return {"count": self._old_format_rows()}
         if sql.startswith("SELECT count(*) AS count"):
             return {"count": len(self._selected(sql, params))}
-        assert sql.startswith("UPDATE datasets.version_record SET warnings"), sql
-        written, written_body, subject_id, content_version, read, read_body = params
+        assert sql.startswith("UPDATE datasets.version_record SET "), sql
+        sets_column = "SET warnings = %s::jsonb" in sql
+        sets_body = "immutable_body = jsonb_set(immutable_body, '{warnings}', %s::jsonb)" in sql
+        copies = sets_column + sets_body
+        written = [json.loads(str(value)) for value in params[:copies]]
+        subject_id, content_version = params[copies : copies + 2]
+        read = [json.loads(str(value)) for value in params[copies + 2 :]]
         row = self.rows[(subject_id, content_version)]
         body = row["immutable_body"]
-        if "AND warnings = %s" in sql and json.loads(str(read)) != row["warnings"]:
+        stored = [
+            *([row["warnings"]] if sets_column else []),
+            *([body.get("warnings")] if sets_body else []),
+        ]
+        if read != stored:
             return None
-        if "AND immutable_body -> 'warnings' = %s" in sql and json.loads(str(read_body)) != (
-            body.get("warnings")
-        ):
-            return None
-        row["warnings"] = json.loads(str(written))
-        if "immutable_body = jsonb_set(immutable_body, '{warnings}', %s::jsonb)" in sql:
-            row["immutable_body"] = {**body, "warnings": json.loads(str(written_body))}
+        if sets_column:
+            row["warnings"] = written[0]
+        if sets_body:
+            row["immutable_body"] = {**body, "warnings": written[-1]}
         self.updates += 1
         return {"subject_id": subject_id}
 
@@ -606,21 +647,66 @@ def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
     assert summary["conflicts"] == 1
 
 
-def test_a_row_whose_body_and_column_disagree_is_refused_for_good(capsys):
-    warning = _warning([_IN])
-    row = _row(warning, zero=[_IN])
-    row["immutable_body"] = {**row["immutable_body"], "warnings": [{**warning, "message": "x"}]}
+@pytest.mark.parametrize(
+    ("column", "body_warnings"),
+    [
+        pytest.param([_EMPTY], [_warning([_IN]), _EMPTY], id="body_only"),
+        pytest.param(None, [_warning([_IN])], id="null_column"),
+        pytest.param([_warning([_IN])], [_EMPTY, _warning([_IN])], id="both_differ"),
+    ],
+)
+def test_each_copy_holding_the_sentence_is_rewritten_from_its_own_warnings(
+    column, body_warnings, capsys
+):
+    """A row is selected when its body alone holds the old sentence. Each copy holding it, the
+    column or the body's `warnings`, is rewritten from its own warnings, so a body that differs
+    from its column keeps its other warnings and order, and a copy holding no sentence is left
+    as stored."""
+    row = _row(_warning([_IN]), zero=[_IN])
+    row["warnings"] = column
+    row["immutable_body"] = {**row["immutable_body"], "warnings": body_warnings}
     store = _Store([row])
-    before = json.loads(json.dumps(row, default=str))
+    alone = _Store([_row(_warning([_IN]), zero=[_IN])])
+    assert _run(alone) == 0
+    expected = _stored(alone)
+    capsys.readouterr()
 
     assert _run(store) == 0
 
-    assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == before
-    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert (failed["reason"], failed["severity"]) == ("mismatch", "WARNING")
-    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
-    assert (summary["permanent"], summary["mismatched"], summary["severity"]) == (1, 1, "WARNING")
+    stored = store.rows[("spec_a", "cv_a")]
+
+    def rewritten(warnings: object) -> object:
+        if not isinstance(warnings, list):
+            return warnings
+        return [expected if warning == _warning([_IN]) else warning for warning in warnings]
+
+    assert stored["warnings"] == rewritten(column)
+    assert stored["immutable_body"]["warnings"] == rewritten(body_warnings)
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["rewritten"], summary["permanent"], summary["legacy_warning_refs"]) == (
+        1,
+        0,
+        0,
+    )
+
+
+def test_the_summary_counts_the_rows_left_in_an_old_format_without_failing(capsys):
+    """A row the task refuses for good keeps its old sentence, which the summary counts beside
+    the refusal, and the exit code stays 0."""
+    # The trace says the named member served observations, so the row is refused.
+    store = _Store([_row(_warning([_IN]), zero=[])])
+
+    assert _run(store) == 0
+
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["permanent"], summary["legacy_warning_refs"], summary["severity"]) == (
+        1,
+        1,
+        "WARNING",
+    )
+    # The count scans the table, so its transaction caps the statement's time below the store's
+    # 12 s socket bound.
+    assert "SET LOCAL statement_timeout = '10000ms'" in store.executed
 
 
 def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
@@ -718,6 +804,7 @@ def test_the_task_without_a_graph_token_reads_the_store_and_with_no_row_opens_no
     monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
     monkeypatch.setattr(maintenance, "shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "close_shared_pool", lambda: None)
+    monkeypatch.setattr(maintenance, "LiveDatasetStore", lambda connections: _Store([]))
     selected: list[bool] = []
 
     def select_rows(store, *, new_format):
@@ -734,24 +821,37 @@ def test_the_task_without_a_graph_token_reads_the_store_and_with_no_row_opens_no
     assert maintenance.main(["backfill-warnings", "--dry-run"]) == 0
     assert selected == [True]
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
-    assert (summary["dry_run"], summary["rewritten"]) == (True, 0)
+    assert (summary["dry_run"], summary["rewritten"], summary["legacy_warning_refs"]) == (
+        True,
+        0,
+        0,
+    )
 
 
 class _OutageStore(_Store):
-    """A store whose updates fail as an unreachable pool does."""
+    """A store whose updates fail as an unreachable pool does, and its count of the rows in an
+    old format too when `counts_fail`."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]], *, counts_fail: bool) -> None:
+        super().__init__(rows)
+        self.counts_fail = counts_fail
 
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
-        if sql.startswith("UPDATE"):
+        if sql.startswith("UPDATE") or (self.counts_fail and sql == _OLD_FORMAT_ROWS):
             raise PoolTimeoutError("no connection came free")
         return super().fetch_one(sql, params)
 
 
-def test_a_store_outage_stops_the_run(capsys):
+@pytest.mark.parametrize("counts_fail", [False, True])
+def test_a_store_outage_stops_the_run(counts_fail, capsys):
+    """The run after an outage counts no row in an old format, so a store failing its reads
+    too still gets its summary."""
     store = _OutageStore(
         [
             _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
             _row(_warning([_IN]), zero=[_IN], subject_id="spec_b"),
-        ]
+        ],
+        counts_fail=counts_fail,
     )
     graph = FakeGraphReader(facets=_FACETS)
 
@@ -760,6 +860,30 @@ def test_a_store_outage_stops_the_run(capsys):
     assert graph.calls["observation_facets_batch_many"] == 1
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["remaining"], summary["permanent"]) == (2, 0)
+    assert summary["legacy_warning_refs"] is None
+
+
+class _CountOutageStore(_Store):
+    """A store whose count of the rows in an old format fails as an unreachable pool does."""
+
+    def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
+        if sql == _OLD_FORMAT_ROWS:
+            raise PoolTimeoutError("no connection came free")
+        return super().fetch_one(sql, params)
+
+
+def test_a_failed_count_after_a_run_reports_the_run_and_leaves_the_exit_code(capsys):
+    """The rows are written before the count, so a count that fails is reported at `ERROR`
+    with a null count and its error, and the exit code is the run's."""
+    store = _CountOutageStore([_row(_warning([_IN]), zero=[_IN])])
+
+    assert _run(store) == 0
+
+    assert store.updates == 1
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["rewritten"], summary["legacy_warning_refs"]) == (1, None)
+    assert summary["severity"] == "ERROR"
+    assert summary["count_error"].startswith("PoolTimeoutError")
 
 
 class _PageOutageStore(_Store):
@@ -809,10 +933,17 @@ def test_a_failed_page_read_reports_the_rows_left_and_raises(failing, rewritten,
     ],
     ids=["not-an-object", "no-message", "non-integer-count"],
 )
-def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malformed, capsys):
+@pytest.mark.parametrize("body_only", [False, True], ids=["both-copies", "body-only"])
+def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(
+    malformed, body_only, capsys
+):
+    """A copy holding a warning that cannot be read is left as stored and refuses its row once;
+    the other copy is still rewritten from its own warnings."""
     bad = _row(_warning([_IN]), zero=[_IN], subject_id="spec_b")
-    bad["warnings"] = [malformed, *bad["warnings"]]
-    bad["immutable_body"] = {**bad["immutable_body"], "warnings": bad["warnings"]}
+    body = [malformed, *bad["warnings"]]
+    if not body_only:
+        bad["warnings"] = body
+    bad["immutable_body"] = {**bad["immutable_body"], "warnings": body}
     store = _Store(
         [
             _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
@@ -824,8 +955,16 @@ def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malf
 
     assert _run(store) == 0
 
-    assert store.updates == 2
-    assert json.loads(json.dumps(store.rows[("spec_b", "cv_a")], default=str)) == before
+    stored = json.loads(json.dumps(store.rows[("spec_b", "cv_a")], default=str))
+    if body_only:
+        assert store.updates == 3
+        assert (
+            stored["warnings"] == store.rows[("spec_a", "cv_a")]["warnings"] != before["warnings"]
+        )
+        assert stored == {**before, "warnings": stored["warnings"]}
+    else:
+        assert store.updates == 2
+        assert stored == before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
     assert (failed["subject_id"], failed["reason"], failed["severity"]) == (
@@ -835,7 +974,11 @@ def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malf
     )
     assert (failed["refused"], failed["transient"]) == (True, False)
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
-    assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (2, 1, 0)
+    assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (
+        3 if body_only else 2,
+        1,
+        0,
+    )
 
 
 def test_a_warning_the_run_does_not_rewrite_is_written_back_as_stored():

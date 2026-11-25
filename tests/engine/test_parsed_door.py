@@ -26,7 +26,6 @@ from search.engine.config import (
     settings,
 )
 from search.engine.entity_checks import check_entity_count
-from search.engine.entry import dataset_entries
 from search.engine.entry import parsed as parsed_entry
 from search.engine.errors import EngineInputError
 from search.engine.unit.base_year import TABLE_PROVENANCES
@@ -747,7 +746,6 @@ class TestEntityCap:
             return [NotFound() for _ in names]
 
         monkeypatch.setattr(parsed_entry, "confirm_part_pins", confirm)
-        monkeypatch.setattr(dataset_entries, "confirm_part_pins", confirm)
         monkeypatch.setattr(EntityResolver, "resolve", resolve)
 
         resp = make_client().post("/api/search/resolve", json={"input": body})

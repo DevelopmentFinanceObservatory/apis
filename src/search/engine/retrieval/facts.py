@@ -192,35 +192,40 @@ class GroupRoles(NamedTuple):
 
 
 def group_roles(arcs_by_sv: Mapping[str, dict]) -> GroupRoles:
-    """Return the union of a five-tuple group's declared roles.
+    """Return the union of a five-tuple group's declared roles (`union_roles`), the members'
+    in member order.
 
-    Members that declare one role set, compared without regard to order, give
-    it in the first member's arc order, with no optional role. Members that
-    differ, such as a total and its by-creditor breakdown, give the union in the
-    widest member's arc order, so input order does not change it; roles outside
-    some member are optional, and the role class the query's bound roles elect
-    (`statvar_members.elect_role_class`) picks the members that answer. An empty
-    mapping gives ``("observationAbout",)``.
-
-    Raises ``RoleSignatureError`` when no single axis mapping covers the group:
-    a subject-only member beside a role-bearing one, or two declared roles on
-    one flow axis. Delegated role parsing can raise
+    Raises ``RoleSignatureError`` as `union_roles` does. Delegated role parsing can raise
     ``DegenerateObservationProperties``.
     """
-    roles_by_sv = {sv: read_declared_roles(arcs) for sv, arcs in arcs_by_sv.items()}
+    return union_roles([read_declared_roles(arcs) for arcs in arcs_by_sv.values()])
+
+
+def union_roles(role_sets: Sequence[tuple[str, ...]]) -> GroupRoles:
+    """Return the union of the role sets a group's members declare.
+
+    Role sets that are one set, compared without regard to order, give it in the first
+    one's order, with no optional role. Role sets that differ, such as a total's and its
+    by-creditor breakdown's, give the union in the widest set's order, so input order does
+    not change it; roles outside some set are optional, and the role class the query's bound
+    roles elect (`statvar_members.elect_role_class`) picks the members that answer. No role
+    set gives ``("observationAbout",)``.
+
+    Raises ``RoleSignatureError`` when no single axis mapping covers the group: a
+    subject-only set beside a role-bearing one, or two declared roles on one flow axis.
+    """
     optional: frozenset[str] = frozenset()
-    if len({frozenset(roles) for roles in roles_by_sv.values()}) <= 1:
-        declared = next(iter(roles_by_sv.values()), (_OBSERVATION_ABOUT,))
+    if len({frozenset(roles) for roles in role_sets}) <= 1:
+        declared = next(iter(role_sets), (_OBSERVATION_ABOUT,))
     else:
-        if any(roles == (_OBSERVATION_ABOUT,) for roles in roles_by_sv.values()):
+        if any(roles == (_OBSERVATION_ABOUT,) for roles in role_sets):
             raise RoleSignatureError(
-                "group mixes subject-only and role-bearing members: "
-                f"{dict(sorted(roles_by_sv.items()))!r}"
+                f"group mixes subject-only and role-bearing members: {sorted(role_sets)!r}"
             )
-        # Widest member first, so the union's order does not depend on member order.
-        ordered = sorted(roles_by_sv.values(), key=lambda roles: (-len(roles), roles))
+        # Widest set first, so the union's order does not depend on member order.
+        ordered = sorted(role_sets, key=lambda roles: (-len(roles), roles))
         declared = tuple(dict.fromkeys(role for roles in ordered for role in roles))
-        shared = frozenset.intersection(*(frozenset(roles) for roles in roles_by_sv.values()))
+        shared = frozenset.intersection(*(frozenset(roles) for roles in role_sets))
         optional = frozenset(declared) - shared
     try:
         roles_by_axis(declared)

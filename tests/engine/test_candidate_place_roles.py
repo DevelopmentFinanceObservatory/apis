@@ -1959,14 +1959,25 @@ def _low_income_and_germany(entities: list[str], roles: dict[str, str]) -> Resol
     return state
 
 
-def test_a_group_named_first_without_a_direction_takes_the_axis_its_partner_leaves_free() -> None:
+@pytest.mark.parametrize(
+    "optional",
+    [frozenset(), frozenset({"financingRecipient"})],
+    ids=["both-roles-required", "donor-required"],
+)
+def test_a_group_named_first_without_a_direction_takes_the_axis_its_partner_leaves_free(
+    optional,
+) -> None:
     """ "Low income countries budget support from Germany" names Germany as the donor and the
     group with no direction. A shape declaring both flow axes leaves the group the recipient
     side, where Germany's aid to Ghana is held (`undirected.settle_undirected_axis`), so
     every shape binds the places as "Germany budget support to low income countries"
-    does."""
-    shape = _shape_for(
-        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    does. A shape requiring the donor alone does the same: Germany holds the donor side, so
+    the required role places the group on no side and the free one settles it."""
+    shape = dataclasses.replace(
+        _shape_for(
+            _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+        ),
+        optional_roles=optional,
     )
     undirected = _low_income_and_germany([_LOW_INCOME, "Germany"], {"Germany": "origin"})
     undirected.coverage = _flows_coverage(_DEU, _GHA)

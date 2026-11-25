@@ -525,6 +525,7 @@ def test_at_most_four_requests_are_in_flight():
             name=f"Mortality [Age={index}]", series=MORT_SERIES, member_of=MORT_BY_SEX
         )
     un = FakeUn(nodes, page_size=50)
+    un.hold_until = un_mirror.UN_MIRROR_CONCURRENCY
     un.delay = 0.002
 
     found = mirror(un)

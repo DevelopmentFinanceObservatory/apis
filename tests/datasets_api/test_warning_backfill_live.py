@@ -146,3 +146,37 @@ def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(
         }
     finally:
         _delete_versions(live_store, [rewritten, changed, split, malformed])
+
+
+def test_a_sentence_held_in_the_body_alone_is_selected_and_rewritten_there(live_store, capsys):
+    """A row whose body alone holds the old sentence, beside a column holding other warnings, is
+    selected; the body's warnings are rewritten from their own value and the column is left as
+    stored. The summary then counts no row in an old format."""
+    subject = f"spec_body_only_{uuid4().hex}"
+    other = {"code": "empty_result", "severity": "warn", "message": "No rows."}
+    row = _row(_warning([_IN]), zero=[_IN], subject_id=subject)
+    row["warnings"] = [other]
+    row["immutable_body"] = {**row["immutable_body"], "warnings": [_warning([_IN]), other]}
+    try:
+        _insert(live_store, row)
+        rows = [r for r in select_rows(live_store, new_format=False) if r.subject_id == subject]
+        assert len(rows) == 1
+
+        assert _run(live_store, rows) == 0
+
+        with live_store.transaction() as tx:
+            stored = tx.fetch_one(
+                "SELECT warnings, immutable_body -> 'warnings' AS body_warnings "
+                "FROM datasets.version_record WHERE subject_id = %s",
+                (subject,),
+            )
+        assert stored is not None
+        assert stored["warnings"] == [other]
+        written, kept = cast(list, stored["body_warnings"])
+        assert written["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_In"]}
+        assert kept == other
+        lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+        assert (summary["rewritten"], summary["legacy_warning_refs"]) == (1, 0)
+    finally:
+        _delete_versions(live_store, [subject])

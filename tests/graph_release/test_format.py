@@ -7,6 +7,8 @@ import gzip
 import hashlib
 import itertools
 import json
+import logging
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +17,7 @@ import pyarrow.compute as pc
 import pytest
 
 from artifact_publication.uri import write_uri_bytes
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from graph_release import format as release_format
 from graph_release.format import (
     FORMAT,
@@ -383,3 +386,63 @@ def test_open_release_downloads_and_maps_only_the_named_parts(tmp_path):
 def test_open_release_without_a_pointer_raises_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError):
         open_release(f"file://{tmp_path}", local_dir=tmp_path / "local")
+
+
+def test_parts_download_side_by_side_and_map_in_manifest_order(tmp_path, monkeypatch):
+    """Each download waits for the next file's download, so the files arrive last first. The
+    release still maps exactly as a one-at-a-time open does."""
+    root = f"file://{tmp_path / 'bucket'}"
+    manifest = build_test_release(root, tables=sample_tables(), blobs={"declarations": b'{"a":1}'})
+    monkeypatch.setattr(release_format, "FETCH_WORKERS", 1)
+    one_at_a_time = open_release(root, local_dir=tmp_path / "sequential")
+
+    files = list(dict.fromkeys(ref.file_name for ref in manifest.parts))
+    finished = {name: threading.Event() for name in files}
+    download = release_format.download_uri_to_path
+
+    def reversed_download(uri: str, path: Path) -> None:
+        name = uri.rsplit("/", 1)[-1]
+        later = files[files.index(name) + 1 :]
+        if later:
+            assert finished[later[0]].wait(timeout=5)
+        download(uri, path)
+        finished[name].set()
+
+    monkeypatch.setattr(release_format, "download_uri_to_path", reversed_download)
+    monkeypatch.setattr(release_format, "FETCH_WORKERS", len(files))
+    side_by_side = open_release(root, local_dir=tmp_path / "concurrent")
+
+    assert len(files) > 2
+    assert all(event.is_set() for event in finished.values())
+    assert side_by_side.tables.keys() == one_at_a_time.tables.keys()
+    for name, table in one_at_a_time.tables.items():
+        assert side_by_side.tables[name].equals(table)
+    assert side_by_side.blobs == one_at_a_time.blobs
+    assert side_by_side.file_names == one_at_a_time.file_names
+
+
+def test_one_part_failing_its_hash_fails_the_whole_open(tmp_path, caplog):
+    root = f"file://{tmp_path / 'bucket'}"
+    manifest = build_test_release(root, tables=sample_tables())
+    bad = manifest.parts[len(manifest.parts) // 2]
+    stored = Path(part_uri(root, bad).removeprefix("file://"))
+    stored.write_bytes(stored.read_bytes()[:-1] + b"\x00")
+
+    with (
+        caplog.at_level(logging.INFO, logger=release_format.__name__),
+        pytest.raises(ReleaseFormatError),
+    ):
+        open_release(root, local_dir=tmp_path / "local")
+    failed = [
+        (record.levelno, fields)
+        for record in caplog.records
+        if (fields := getattr(record, JSON_FIELDS_ATTR, {})).get("event")
+        == "graph_release_part_failed"
+    ]
+    assert [(level, f["part"], f["file"], f["error"]) for level, f in failed] == [
+        (logging.WARNING, bad.name, bad.file_name, "ReleaseFormatError")
+    ]
+    assert isinstance(failed[0][1]["duration_ms"], int)
+    names = {path.name for path in (tmp_path / "local").iterdir()}
+    assert bad.file_name not in names
+    assert not any(name.endswith(".partial") for name in names)
