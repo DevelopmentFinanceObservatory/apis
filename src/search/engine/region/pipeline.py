@@ -171,7 +171,6 @@ async def resolve_variable(
     dropped_qualifier_phrases: list[str] | None = None,
     exclusions: PartExclusions | None = None,
     operations: Sequence[Operation] = (),
-    other_variables: tuple[str, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
     unclaimed: tuple[str, ...] = (),
@@ -211,11 +210,9 @@ async def resolve_variable(
     `dropped_qualifier_phrases` are the request's match text, plus on the raw-text door this
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
     admitted operations; one over `category` opens the slots its phrase names on the
-    elected shape whether or not bind claims them. `other_variables` are the variables of
-    the request's other parts (`ResolveState.other_variables`). `open_axes` are the flow
-    axes the leg asks every member of (`ResolveState.open_axes`). `exclusions` are the
-    stretches of the request that leave something out and qualify this part, with the
-    requirements judging
+    elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
+    asks every member of (`ResolveState.open_axes`). `exclusions` are the stretches of the
+    request that leave something out and qualify this part, with the requirements judging
     its answers on them (`state.exclusion_requirements`); the result names those every
     answer meets (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
     as a match source for a single-variable request, and `unclaimed` the stretches of it no
@@ -324,7 +321,6 @@ async def resolve_variable(
             requirements=exclusions.requirements,
             exclusions=exclusions.stretches,
             operations=tuple(operations),
-            other_variables=other_variables,
             open_axes=open_axes,
             query_text=query_text,
             unclaimed=unclaimed,

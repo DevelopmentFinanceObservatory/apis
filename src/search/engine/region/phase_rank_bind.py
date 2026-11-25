@@ -117,15 +117,11 @@ from search.engine.quantity import (
     DenominatorKind,
     DenominatorRead,
     NamedDenominator,
-    NamedNormalisation,
-    QuantityBase,
-    computed_forms,
     names_only_form,
     normalisation_class,
     read_denominators,
     statvar_denominators,
     with_stated_form,
-    without_forms,
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.admissibility import (
@@ -383,11 +379,8 @@ async def _read_stated_quantity(
     usage opens the part's LLM usage (`ResolveState.var_usage`).
 
     A code-pinned part (`ResolveState.code_pinned`) reads nothing. The code fixes the
-    measure, and the one shape is the only reading a form could keep or refuse. It drops
-    the forms its operations compute, as a read naming no base would
-    (`_drop_computed_forms`)."""
+    measure, and the one shape is the only reading a form could keep or refuse."""
     if state.code_pinned:
-        _drop_computed_forms(state, "none")
         return None
     denominators = _quantity_denominators(state, shapes)
     request = QuantityRequest(
@@ -555,20 +548,23 @@ def _read_quantity_answer(
     prevalence among young women" reads as a share), as does a per-person, per-head or
     per-area form.
 
-    The forms the part's operations compute leave the requirement, the phrases' and the
-    read's alike (`_drop_computed_forms`). Where a `share_of` divides the part by a whole
-    outside its words, the base the read quoted is that whole and names no denominator of
-    the part's series, and its words stay the base's (`ResolveState.whole_base_words`).
+    An operation owns the words of its phrase in the variable
+    (`ResolveState.operation_spans`). A quoted base that overlaps them is the whole the
+    operation divides by: it names no denominator of the part's series, takes a stated
+    rate or share with it, and its words stay the base's
+    (`ResolveState.whole_base_words`). A base outside them is the series' denominator. A
+    stated form with no base leaves the requirement where the part's operations own that
+    form (`ResolveState.operation_forms`).
 
-    Return whether the output is well formed: a grounded index outside the list is a
-    malformed output, as an out-of-range shape index is, and the part refuses
-    ``variable_not_resolved``. When the denominator read failed
-    (``state.denominator_read_failure``), a stated form or any grounded index, "none of
-    these" included, would be judged on reads that are missing, so the read's error is
-    raised.
+    When the denominator read failed (``state.denominator_read_failure``), a stated form
+    or index the series keeps, "none of these" included, would be judged on reads that are
+    missing, so the read's error is raised before any other check. Return whether the
+    output is well formed: a grounded index outside the list is a malformed output, as an
+    out-of-range shape index is, and the part refuses ``variable_not_resolved``.
     """
     index = quantity.denominator_index
     stated_form = quantity.stated_form
+    base_words = quantity.base_words or ""
     grounded = _names_base(state, quantity.base_words, shapes)
     if not grounded:
         if index is not None:
@@ -585,6 +581,18 @@ def _read_quantity_answer(
                 quantity.base_words,
             )
             stated_form = None
+        if stated_form in state.operation_forms:
+            logger.info("quantity read states %s, which the part's operation owns", stated_form)
+            stated_form = None
+    elif _in_operation_spans(state, base_words):
+        logger.info("quantity read quotes %r inside the part's operation phrase", base_words)
+        state.whole_base_words = base_words
+        index = None
+        if stated_form in ("rate", "share"):
+            stated_form = None
+    failure = state.denominator_read_failure
+    if failure is not None and (stated_form is not None or index is not None):
+        raise failure
     if index is not None and not 0 <= index <= len(denominators):
         logger.warning(
             "quantity read returned denominator_index %d outside %d entries",
@@ -592,18 +600,6 @@ def _read_quantity_answer(
             len(denominators) + 1,
         )
         return False
-    base_words = quantity.base_words or ""
-    base = _quantity_base(state, base_words if grounded else None, index, denominators)
-    computed, whole = _drop_computed_forms(state, base)
-    if stated_form in computed:
-        logger.info("quantity read states %s, which the part's operation computes", stated_form)
-        stated_form = None
-    if whole and grounded:
-        state.whole_base_words = base_words
-        index = None
-    failure = state.denominator_read_failure
-    if failure is not None and (stated_form is not None or index is not None):
-        raise failure
     requirement = with_stated_form(state.quantity_requirement, stated_form)
     if requirement != state.quantity_requirement:
         state.quantity_requirement = requirement
@@ -616,42 +612,15 @@ def _read_quantity_answer(
     return True
 
 
-def _quantity_base(
-    state: ResolveState,
-    base_words: str | None,
-    index: int | None,
-    denominators: Sequence[GraphRef],
-) -> QuantityBase:
-    """What base the part's words name (`quantity.QuantityBase`): `none` without grounded
-    `base_words`, `series` when the read chose one of ``denominators``, a base a shape of
-    the part's menu divides by, and no other part of the request asks for those words
-    (`ResolveState.other_variables`), and `other` otherwise: a base no listed denominator
-    is, or one another part supplies, which a `share_of` divides by."""
-    if base_words is None:
-        return "none"
-    listed = index is not None and index < len(denominators)
-    supplied = _phrase_words(base_words) in {_phrase_words(v) for v in state.other_variables}
-    return "series" if listed and not supplied else "other"
-
-
-def _phrase_words(text: str) -> str:
-    """`text` casefolded, hyphens read as spaces and whitespace collapsed."""
-    return " ".join(text.replace("-", " ").casefold().split())
-
-
-def _drop_computed_forms(
-    state: ResolveState, base: QuantityBase
-) -> tuple[frozenset[NamedNormalisation], bool]:
-    """Drop from the part's requirement the forms its operations compute for `base`
-    (`quantity.computed_forms`), and return them with whether its whole is outside its
-    words. The quantity read runs this on what it read, and a code-pinned part, which
-    reads nothing, with no base."""
-    computed, whole = computed_forms(state.operations, base)
-    requirement = without_forms(state.quantity_requirement, computed)
-    if requirement != state.quantity_requirement:
-        logger.info("the part's operations compute %s; no form read", sorted(computed))
-        state.quantity_requirement = requirement
-    return computed, whole
+def _in_operation_spans(state: ResolveState, words: str) -> bool:
+    """Whether an occurrence of `words` in the variable, hyphens read as spaces, overlaps
+    the words an operation's phrase covers (`ResolveState.operation_spans`)."""
+    tokens = tokenize(state.variable.replace("-", " "))
+    return any(
+        _ranges_overlap(occurrence, span)
+        for occurrence in token_occurrences(tokens, words.replace("-", " "))
+        for span in state.operation_spans
+    )
 
 
 def _slot_defaults(shapes: Sequence[ShapeDraft]) -> list[SlotDefault]:

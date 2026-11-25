@@ -126,6 +126,14 @@ _DAC1_MEMBERS = (
     "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal",
     "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal",
 )
+# DAC1's bilateral ODA, aid type 1015, beside its total ODA, aid type 1010.
+_DAC1_BILATERAL = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1015_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1015_Nominal",
+    "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1015_Nominal",
+)
+_TOTAL_ODA = "DAC1AidType1010"
+_BILATERAL_ODA = "DAC1AidType1015"
 _DAC2A_MEMBERS = (
     "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
     "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
@@ -1780,26 +1788,44 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     ],
 )
 @pytest.mark.parametrize(
-    ("variable", "phrase", "quantity"),
+    ("variable", "phrase", "quantity", "aid_type"),
     [
-        pytest.param("share of aid", "share of aid", None, id="worded-share"),
+        pytest.param("share of aid", "share of aid", None, _TOTAL_ODA, id="worded-share"),
+        # The payload the planner sent for "What share of G7 ODA was bilateral".
+        pytest.param(
+            "share of bilateral ODA",
+            "share of bilateral ODA",
+            None,
+            _BILATERAL_ODA,
+            id="planner-payload",
+        ),
+        # A read quoting the measure itself as the base leaves its words to the measure.
+        pytest.param(
+            "share of bilateral ODA",
+            "share of bilateral ODA",
+            QuantityOutput(stated_form="share", base_words="bilateral ODA", denominator_index=0),
+            _BILATERAL_ODA,
+            id="measure-quoted-as-base",
+        ),
         pytest.param(
             "aid in total aid",
             "aid in total aid",
             QuantityOutput(stated_form="share", base_words="total aid", denominator_index=0),
+            _TOTAL_ODA,
             id="stated-share",
         ),
-        # The operation's phrase names the share alone, and its whole's words stay the
-        # base's, so the stated-words read rates none of them and no part of the whole
-        # reads as a restriction of the aid.
+        # The operation's phrase covers the whole's words, which stay the base's, so the
+        # stated-words read rates none of them and no part of the whole reads as a
+        # restriction of the aid.
         pytest.param(
             "aid as a share of aid to all developing countries",
-            "share",
+            "share of aid to all developing countries",
             QuantityOutput(
                 stated_form="share",
                 base_words="aid to all developing countries",
                 denominator_index=0,
             ),
+            _TOTAL_ODA,
             id="whole-in-the-words",
         ),
     ],
@@ -1814,6 +1840,7 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     variable: str,
     phrase: str,
     quantity: QuantityOutput | None,
+    aid_type: str,
 ):
     """A part a `share_of` operation divides by its whole may name the share in its words
     ("share of aid") or have the quantity read state it with the whole as its base, and the
@@ -1821,7 +1848,7 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     shape is refused for holding no share, and a donor's window crossing 2018 is counted on
     the OECD headline per year, or on the basis a carried entry asks for. The answer
     departs only in leaving the share to its client."""
-    _cover(monkeypatch, _DAC1_MEMBERS, donors=covered)
+    _cover(monkeypatch, (*_DAC1_MEMBERS, *_DAC1_BILATERAL), donors=covered)
     entries = (
         [
             Entry(
@@ -1851,6 +1878,7 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
             )
         ),
         variable,
+        members=(*_ALL_MEMBERS, *_DAC1_BILATERAL),
         llm=_PickingLLM(quantity=quantity, unstated=True),
     )
 
@@ -1858,6 +1886,10 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     assert _basis_choice(spec)[:2] == (option, provenance)
     assert _served_basis(spec) == _NET_DAC1
     assert [e.ref for e in spec.resolved.entities] == list(covered)
+    (served_aid_type,) = (
+        s.binding for s in spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    assert served_aid_type == IdentityBindingValue(ref=aid_type)
     assert "query_qualifier_dropped" not in {warning.code for warning in part.warnings}
     assert [fact.code for fact in spec_departure_facts(spec, operations=operations)] == [
         "operation_not_applied"

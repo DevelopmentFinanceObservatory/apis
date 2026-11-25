@@ -62,7 +62,7 @@ from search.engine.quantity import (
     NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
-    quantity_requirement,
+    read_forms,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.convertibility import UnitCoverage
@@ -873,10 +873,6 @@ class ResolveState:
     # This leg's admitted operations. One over `category` opens the slots it names on
     # the elected shape (`phase_rank_bind._open_operation_slots`).
     operations: tuple[Operation, ...] = ()
-    # The variables of the request's other parts. A base this leg's words name that another
-    # part asks for is that part's, so a `share_of` divides by it
-    # (`phase_rank_bind._read_quantity_answer`).
-    other_variables: tuple[str, ...] = ()
     # The flow axes this leg asks every member of. `bind_place_roles` leaves open those no
     # place binds (`PlaceRoles.open_axes`).
     open_axes: frozenset[RoleAxis] = frozenset()
@@ -1049,11 +1045,16 @@ class ResolveState:
     # (`phase_rank_bind._role_bearing_outranks`), set by `_phase_prune_and_rank`.
     role_bearing_outranks: bool = False
     # The normalisation this leg names, read from its variable and its sidecar qualifier
-    # phrases (`quantity.quantity_requirement`), with the form the quantity read states
-    # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
-    # The quantity read drops the forms its operations compute where their whole lies
-    # outside the leg's words (`phase_rank_bind._read_quantity_answer`).
+    # phrases less the forms its operations own (`quantity.read_forms`), with the form the
+    # quantity read states joined before admissibility when no phrase named one
+    # (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
+    # The forms the leg's operations own, which `quantity_requirement` drops, and the
+    # character ranges of the variable their phrases cover (`quantity.read_forms`). The
+    # quantity read gives a base quoted inside those ranges to the operation
+    # (`phase_rank_bind._read_quantity_answer`).
+    operation_forms: frozenset[NamedNormalisation] = field(init=False)
+    operation_spans: tuple[tuple[int, int], ...] = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
     # (`phase_rank_bind._read_denominators`). The quantity read lists them
@@ -1074,10 +1075,10 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
-    # The question's words for a base the leg's operation divides by, its whole, which the
-    # quantity read quoted and which no denominator of the leg's series is
-    # (`phase_rank_bind._read_quantity_answer`). The base words stay the base's, as a named
-    # denominator's do (`base_words`). `None` otherwise.
+    # The question's words for a base the quantity read quoted inside an operation's phrase
+    # (`operation_spans`), the whole the operation divides by, which no denominator of the
+    # leg's series is (`phase_rank_bind._read_quantity_answer`). The words stay the base's,
+    # as a named denominator's do (`base_words`). `None` otherwise.
     whole_base_words: str | None = None
     # Every name of declared measures the variable holds, partition labels and the quoted base
     # included (`qualifier_match.declared_measures_named`), read once per part by
@@ -1508,9 +1509,12 @@ class ResolveState:
     identity_entities: list[Entity] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.quantity_requirement = quantity_requirement(
-            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
+        forms = read_forms(
+            self.variable, (coded.phrase for coded in self.qualifiers or ()), self.operations
         )
+        self.quantity_requirement = forms.requirement
+        self.operation_forms = forms.dropped
+        self.operation_spans = forms.operation_spans
         self.frame = door_frame(
             door=self.door,
             variable=self.variable,

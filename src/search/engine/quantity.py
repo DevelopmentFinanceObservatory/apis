@@ -33,8 +33,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from code_index.tokens import tokenize
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.measure_verdict import shape_pairs
+from search.engine.qualifier_match import token_occurrences
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.bound_values import ratio_twins_of, shape_five_tuple
 from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
@@ -454,63 +456,84 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
     )
 
 
-type QuantityBase = Literal["none", "series", "other"]
-"""What base a part's words name, as the quantity read grounds it: `none`, a `series` the
-part's own menu divides by (a listed denominator no other part of the request names), or
-an `other` base (one no listed denominator is, or one another part supplies)."""
-
-
-@dataclass(frozen=True, slots=True)
-class _OperationForms:
-    """The forms an operation verb computes over a part's data, and whether it divides the
-    part by a whole of its own."""
-
-    forms: frozenset[NamedNormalisation]
-    divides: bool
-
-
-# `share_of` divides the part by its whole, a share or a ratio of it, and `growth` computes
-# a rate of change, read as a rate or a percentage.
-_OPERATION_FORMS: Mapping[OperationVerb, _OperationForms] = {
-    "share_of": _OperationForms(forms=frozenset({"share", "rate"}), divides=True),
-    "growth": _OperationForms(forms=frozenset({"rate", "share"}), divides=False),
+# The forms each operation verb computes over a part's data: `share_of` divides the part
+# by its whole, a share or a ratio of it, and `growth` computes a rate of change, read as a
+# rate or a percentage.
+_OPERATION_FORMS: Mapping[OperationVerb, frozenset[NamedNormalisation]] = {
+    "share_of": frozenset({"share", "rate"}),
+    "growth": frozenset({"rate", "share"}),
 }
 
 
-def computed_forms(
-    operations: Iterable[Operation], base: QuantityBase
-) -> tuple[frozenset[NamedNormalisation], bool]:
-    """The forms `operations` compute for a part whose words name `base`, which the part's
-    series is not asked to hold, and whether its whole is outside its words, so a base they
-    name is the operation's and no denominator of the series.
+@dataclass(frozen=True, slots=True)
+class FormReading:
+    """The forms a part's words name, read with its operations (`read_forms`): the
+    `requirement` its series is held to, the `dropped` forms its operations own, and the
+    `operation_spans`, the character ranges of the variable those operations' phrases
+    cover."""
 
-    An operation that divides (`share_of`) computes its forms unless the words name a base
-    the part's own menu divides by: "ODA as a share of GNI" asks for the published ratio,
-    while "share of bilateral ODA" and "aid to Africa as a share of aid to all developing
-    countries" ask for the aid, which the operation divides by its whole. A growth names no
-    base of its own, so any base belongs to the series, and its forms are the ones its own
-    phrase names: "growth rate" computes the rate, while under "growth of" the
-    "unemployment rate" stays the series' form."""
-    forms: set[NamedNormalisation] = set()
-    whole = False
-    for operation in operations:
-        reading = _OPERATION_FORMS.get(operation.verb)
-        if reading is None:
-            continue
-        if reading.divides:
-            if base != "series":
-                forms |= reading.forms
-                whole = True
-        elif base == "none":
-            forms |= reading.forms & query_normalisation(operation.phrase, strong=True)
-    return frozenset(forms), whole
+    requirement: QuantityRequirement
+    dropped: frozenset[NamedNormalisation]
+    operation_spans: tuple[tuple[int, int], ...]
+
+
+def read_forms(
+    variable: str, qualifier_phrases: Iterable[str], operations: Iterable[Operation]
+) -> FormReading:
+    """The requirement of a part whose variable is `variable`, with `qualifier_phrases`
+    beside it, under `operations` (`quantity_requirement`), less the forms its operations
+    own.
+
+    An operation owns the words of its phrase where the phrase occurs in the variable
+    (`qualifier_match.token_occurrences`, hyphens read as spaces), and the series owns
+    every other word. A form an operation computes (`_OPERATION_FORMS`) is the operation's
+    when a word inside its phrase names it and no word outside every such phrase, nor a
+    qualifier phrase, does, so it leaves the requirement. Under `share_of` on "share of
+    GNI", "ODA as a share of GNI" asks for ODA; under `share_of` on "relative to",
+    "unemployment rate of women relative to men" keeps the rate. A phrase the variable
+    does not hold owns nothing."""
+    qualifier_phrases = tuple(qualifier_phrases)
+    requirement = quantity_requirement([variable, *qualifier_phrases])
+    spaced = variable.replace("-", " ")
+    tokens = tokenize(spaced)
+    owned: list[tuple[tuple[int, int], frozenset[NamedNormalisation]]] = [
+        (span, forms)
+        for operation in operations
+        if (forms := _OPERATION_FORMS.get(operation.verb)) is not None
+        for span in token_occurrences(tokens, operation.phrase.replace("-", " "))
+    ]
+    if not owned:
+        return FormReading(requirement=requirement, dropped=frozenset(), operation_spans=())
+    spans = tuple(sorted({span for span, _ in owned}))
+    inside: set[NamedNormalisation] = set()
+    for (start, end), forms in owned:
+        inside |= forms & query_normalisation(spaced[start:end], strong=False)
+    outside: set[NamedNormalisation] = set()
+    for text in (*_outside(spaced, spans), *qualifier_phrases):
+        outside |= query_normalisation(text, strong=False)
+    dropped = frozenset(inside - outside)
+    return FormReading(
+        requirement=without_forms(requirement, dropped), dropped=dropped, operation_spans=spans
+    )
+
+
+def _outside(text: str, spans: Iterable[tuple[int, int]]) -> list[str]:
+    """The stretches of `text` outside `spans`, each read apart, so no form wording forms
+    across a removed span."""
+    stretches: list[str] = []
+    at = 0
+    for start, end in sorted(spans):
+        if start > at:
+            stretches.append(text[at:start])
+        at = max(at, end)
+    stretches.append(text[at:])
+    return [stretch for stretch in stretches if stretch.strip()]
 
 
 def without_forms(
     requirement: QuantityRequirement, forms: frozenset[NamedNormalisation]
 ) -> QuantityRequirement:
-    """`requirement` without `forms`, the forms the part's operations compute
-    (`computed_forms`)."""
+    """`requirement` without `forms`, the forms the part's operations own (`read_forms`)."""
     if not forms:
         return requirement
     return QuantityRequirement(named=requirement.named - forms, framing=requirement.framing - forms)

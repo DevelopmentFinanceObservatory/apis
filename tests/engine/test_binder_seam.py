@@ -35,10 +35,11 @@ from search.engine.binders.jev_client import JevError
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.errors import GraphInfraError
 from search.engine.interpret import Recall
 from search.engine.interpretation import Interpretation
 from search.engine.qualifier_match import declared_measures_named
-from search.engine.quantity import quantity_requirement
+from search.engine.quantity import serves_every_form
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, phase_rank_bind
 from search.engine.region.candidate_collapse import _record_unheld_values, _unheld_requirement
@@ -115,14 +116,22 @@ class _NoCallLLM:
         raise AssertionError(f"no model call expected; got {schema.__name__!r}")
 
 
-def _state(*, llm: SupportsLLM, binder: Binder | None = None) -> ResolveState:
-    """A part whose seated menu is `_MENU`. The services bind does not read are unset."""
+def _state(
+    *,
+    llm: SupportsLLM,
+    binder: Binder | None = None,
+    variable: str = "female population",
+    operations: tuple[Operation, ...] = (),
+) -> ResolveState:
+    """A part whose seated menu is `_MENU`, asking for `variable` under `operations`. The
+    services bind does not read are unset."""
     state = ResolveState(
-        variable="female population",
+        variable=variable,
         entities=[],
         date_request=None,
-        detect_query="female population",
-        role_query="female population",
+        detect_query=variable,
+        role_query=variable,
+        operations=operations,
         pac=True,
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
@@ -325,115 +334,153 @@ class _QuantityRecordingBinder(GeminiBinder):
 
 
 _GNI_REF = GraphRef(ref="GrossNationalIncome", label="Gross national income")
-# ODA and ODA divided by GNI, which the quantity read lists GNI for.
-_ODA_SHAPES = [
-    dataclasses.replace(_shape("oda"), pop_type_dcid="FinancialFlow", meas_prop_dcid="amount"),
-    dataclasses.replace(
-        _shape("oda_per_gni"),
+_EXPORTS_REF = GraphRef(ref="Exports", label="Exports")
+_LISTED = [_GNI_REF, _EXPORTS_REF]
+
+
+def _flow(shape_id: str, denominator: str | None = None) -> ShapeDraft:
+    return dataclasses.replace(
+        _shape(shape_id),
         pop_type_dcid="FinancialFlow",
         meas_prop_dcid="amount",
-        meas_denom_dcid=_GNI_REF.ref,
-    ),
+        meas_denom_dcid=denominator,
+    )
+
+
+# ODA, and ODA divided by GNI and by exports, whose denominators the quantity read lists.
+_FLOW_SHAPES = [
+    _flow("oda"),
+    _flow("oda_per_gni", _GNI_REF.ref),
+    _flow("oda_per_exports", _EXPORTS_REF.ref),
 ]
+_SHARE_OF_GNI = Operation(verb="share_of", phrase="share of GNI")
+_NONE_OF_THESE = "none of these"
+
+
+def _read(form: str | None = None, base: str | None = None, index: int | None = None):
+    return QuantityOutput(stated_form=form, base_words=base, denominator_index=index)
+
+
+def _denominator(state: ResolveState) -> str | None:
+    """The ref of the part's named denominator, `_NONE_OF_THESE` for one the list does not
+    hold, None for none."""
+    named = state.named_denominator
+    if named is None:
+        return None
+    return named.ref.ref if named.ref is not None else _NONE_OF_THESE
 
 
 @pytest.mark.parametrize(
-    ("variable", "operation", "others", "read", "named", "denominator", "base"),
+    ("variable", "operations", "read", "named", "denominator", "base"),
     [
-        # A base the part's menu divides by is the published ratio's.
+        # The operation's phrase names the share and the base, so the part is ODA.
         pytest.param(
             "ODA as a share of GNI",
-            Operation(verb="share_of", phrase="share of GNI"),
-            (),
-            QuantityOutput(stated_form="share", base_words="GNI", denominator_index=0),
-            {"share"},
-            _GNI_REF.ref,
-            "GNI",
-            id="share-of-a-listed-base",
-        ),
-        # Another part asks for the base, so the operation divides by that part.
-        pytest.param(
-            "ODA as a share of GNI",
-            Operation(verb="share_of", phrase="share of GNI"),
-            ("GNI",),
-            QuantityOutput(stated_form="share", base_words="GNI", denominator_index=0),
+            (_SHARE_OF_GNI,),
+            _read("share", "GNI", 0),
             set(),
             None,
             "GNI",
-            id="share-of-a-base-another-part-asks-for",
+            id="share-and-base-in-the-phrase",
         ),
         pytest.param(
             "share of bilateral ODA",
-            Operation(verb="share_of", phrase="share of bilateral ODA"),
-            (),
-            QuantityOutput(stated_form="share"),
+            (Operation(verb="share_of", phrase="share of bilateral ODA"),),
+            _read("share"),
             set(),
             None,
             None,
-            id="share-of-a-whole-outside-the-words",
+            id="whole-variable-phrase",
         ),
-        # The base is the same measure over a wider population, no denominator of the
-        # menu's, whatever form the read states.
+        # "rate" lies outside the phrase, so the series keeps it.
         pytest.param(
-            "aid to Africa as a share of aid to all developing countries",
-            Operation(verb="share_of", phrase="share"),
-            (),
-            QuantityOutput(
-                stated_form="share",
-                base_words="aid to all developing countries",
-                denominator_index=1,
-            ),
+            "unemployment rate of women relative to men",
+            (Operation(verb="share_of", phrase="relative to"),),
+            _read(),
+            {"rate"},
+            None,
+            None,
+            id="series-rate-outside-the-phrase",
+        ),
+        # "rate" is the growth's; the share of GNI, outside its phrase, is the series'.
+        pytest.param(
+            "growth rate of ODA as a share of GNI",
+            (Operation(verb="growth", phrase="growth rate"),),
+            _read("share", "GNI", 0),
+            {"share"},
+            _GNI_REF.ref,
+            "GNI",
+            id="growth-rate-of-a-published-ratio",
+        ),
+        pytest.param(
+            "growth rate of ODA as a share of GNI",
+            (Operation(verb="growth", phrase="growth rate"), _SHARE_OF_GNI),
+            _read("share", "GNI", 0),
             set(),
             None,
-            "aid to all developing countries",
-            id="share-of-an-unlisted-base",
+            "GNI",
+            id="growth-rate-of-a-computed-share",
         ),
         pytest.param(
-            "ratio of ODA to total aid",
-            Operation(verb="share_of", phrase="ratio of ODA to total aid"),
-            (),
-            QuantityOutput(stated_form="rate", base_words="total aid", denominator_index=1),
-            set(),
-            None,
-            "total aid",
-            id="ratio-of-an-unlisted-base",
-        ),
-        pytest.param(
-            "ODA against total aid",
-            Operation(verb="share_of", phrase="ODA against total aid"),
-            (),
-            QuantityOutput(base_words="total aid", denominator_index=1),
-            set(),
-            None,
-            "total aid",
-            id="unlisted-base-with-no-form",
-        ),
-        pytest.param(
-            "growth rate of ODA",
-            Operation(verb="growth", phrase="growth rate"),
-            (),
-            QuantityOutput(stated_form="rate"),
-            set(),
-            None,
-            None,
-            id="growth-rate",
-        ),
-        # The rate is the series' own: the growth's phrase names none.
-        pytest.param(
-            "growth of the ODA rate",
-            Operation(verb="growth", phrase="growth of"),
-            (),
-            QuantityOutput(stated_form="rate"),
+            "growth of the unemployment rate",
+            (Operation(verb="growth", phrase="growth of"),),
+            _read("rate"),
             {"rate"},
             None,
             None,
             id="growth-of-a-published-rate",
         ),
         pytest.param(
-            "ODA growth rate",
+            "debt service as a percentage of exports, relative to Ghana",
+            (Operation(verb="share_of", phrase="relative to"),),
+            _read("share", "exports", 1),
+            {"share"},
+            _EXPORTS_REF.ref,
+            "exports",
+            id="published-ratio-beside-the-phrase",
+        ),
+        pytest.param(
+            "aid in total aid",
+            (Operation(verb="share_of", phrase="aid in total aid"),),
+            _read("share", "total aid", 2),
+            set(),
             None,
+            "total aid",
+            id="stated-share-on-a-base-in-the-phrase",
+        ),
+        # A phrase that leaves the whole's words outside gives the base to the series,
+        # which a level then cannot serve.
+        pytest.param(
+            "aid as a share of aid to all developing countries",
+            (Operation(verb="share_of", phrase="share"),),
+            _read("share", "aid to all developing countries", 2),
+            {"share"},
+            _NONE_OF_THESE,
+            "aid to all developing countries",
+            id="whole-outside-a-short-phrase",
+        ),
+        pytest.param(
+            "ODA as a share of GNI",
+            (Operation(verb="share_of", phrase="proportion of GNI"),),
+            _read(),
+            {"share"},
+            None,
+            None,
+            id="phrase-absent-from-the-variable",
+        ),
+        pytest.param(
+            "share of aid per capita",
+            (Operation(verb="share_of", phrase="share of aid per capita"),),
+            _read(),
+            {"per_person"},
+            None,
+            None,
+            id="per-capita-in-the-phrase",
+        ),
+        pytest.param(
+            "ODA growth rate",
             (),
-            QuantityOutput(stated_form="rate"),
+            _read("rate"),
             {"rate"},
             None,
             None,
@@ -441,33 +488,86 @@ _ODA_SHAPES = [
         ),
     ],
 )
-def test_the_forms_an_operation_computes_leave_the_part_unless_its_words_name_a_series_base(
+def test_an_operation_owns_the_forms_and_base_its_phrase_names_in_the_variable(
     variable: str,
-    operation: Operation | None,
-    others: tuple[str, ...],
+    operations: tuple[Operation, ...],
     read: QuantityOutput,
     named: set[str],
     denominator: str | None,
     base: str | None,
 ):
-    """A `share_of` divides the part by its whole, so the share or ratio it names and the
-    base its words quote are the operation's, unless the base is one a shape of the part's
-    menu divides by and no other part asks for it: then the words ask for the published
-    ratio. Base words the operation's whole owns stay the base's. A growth computes only the
-    forms its own phrase names, so a published rate keeps its form."""
-    state = _state(llm=_NoCallLLM())
-    state.variable = variable
-    state.operations = (operation,) if operation is not None else ()
-    state.other_variables = others
-    state.quantity_requirement = quantity_requirement([variable])
+    """An operation owns the words of its phrase where the phrase occurs in the variable,
+    and the series owns the rest: a form or base named inside the phrase is the
+    operation's, so the series is not held to it, and one named outside stays the
+    series'. A phrase the variable does not hold owns nothing."""
+    state = _state(llm=_NoCallLLM(), variable=variable, operations=operations)
 
-    assert _read_quantity_answer(state, read, [_GNI_REF], _ODA_SHAPES)
+    assert _read_quantity_answer(state, read, _LISTED, _FLOW_SHAPES)
 
     assert set(state.quantity_requirement.named) == named
-    named_denominator = state.named_denominator
-    ref = named_denominator.ref if named_denominator is not None else None
-    assert (ref.ref if ref is not None else None) == denominator
+    assert _denominator(state) == denominator
     assert state.base_words == base
+
+
+def _failing_read(*_args, **_kwargs):
+    raise GraphInfraError("graph down")
+
+
+@pytest.mark.parametrize(
+    ("variable", "operations", "read", "raises_at"),
+    [
+        # The series names a rate of its own, so the denominator read cannot be deferred.
+        pytest.param(
+            "unemployment rate of women relative to men",
+            (Operation(verb="share_of", phrase="relative to"),),
+            _read(),
+            "denominators",
+            id="series-form",
+        ),
+        # The base is the operation's, so nothing about the series is judged on the reads.
+        pytest.param(
+            "ODA as a share of GNI",
+            (_SHARE_OF_GNI,),
+            _read("share", "GNI", 0),
+            None,
+            id="operation-owned-base",
+        ),
+        # An index past the list the failed read left empty is the read's failure, not a
+        # malformed output.
+        pytest.param(
+            "ODA relative to GNI",
+            (Operation(verb="share_of", phrase="relative to"),),
+            _read(None, "GNI", 1),
+            "answer",
+            id="series-base-past-an-empty-list",
+        ),
+    ],
+)
+def test_a_failed_denominator_read_is_raised_wherever_the_series_needs_it(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    operations: tuple[Operation, ...],
+    read: QuantityOutput,
+    raises_at: str | None,
+):
+    """A graph failure reading the denominators raises where the series' own form or base
+    needs them, and is held where only the operation's whole does."""
+    monkeypatch.setattr(phase_rank_bind, "read_denominators", _failing_read)
+    state = _state(llm=_NoCallLLM(), variable=variable, operations=operations)
+
+    if raises_at == "denominators":
+        with pytest.raises(GraphInfraError):
+            asyncio.run(phase_rank_bind._read_denominators(state, _FLOW_SHAPES))
+        return
+    asyncio.run(phase_rank_bind._read_denominators(state, _FLOW_SHAPES))
+    denominators = phase_rank_bind._quantity_denominators(state, _FLOW_SHAPES)
+    if raises_at == "answer":
+        with pytest.raises(GraphInfraError):
+            _read_quantity_answer(state, read, denominators, _FLOW_SHAPES)
+        return
+    assert _read_quantity_answer(state, read, denominators, _FLOW_SHAPES)
+    assert not state.quantity_requirement.named
+    assert serves_every_form(state.quantity_requirement, _FLOW_SHAPES[0])
 
 
 def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
