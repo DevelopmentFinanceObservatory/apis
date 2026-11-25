@@ -1,4 +1,4 @@
-"""`phase_intake.bound_party_spans` reads the ranges of the variable phrase that name a party
+"""`party_aliases.bound_party_spans` reads the ranges of the variable phrase that name a party
 the part binds, from the committed export of its names (`pack.geo_names`), and the readers
 mask exactly those ranges."""
 
@@ -25,9 +25,9 @@ _USA = _place("country/USA", "United States")
 _AFRICA = _place("africa", "Africa")
 _ITALY = _place("country/ITA", "Italy")
 _UGANDA = _place("country/UGA", "Uganda")
-_CANADA = _place("country/CAN", "Canada")
 _EU = _place("EuropeanUnion", "European Union")
 _G7 = Group(members=(), entity=None, dcid="GroupOfSeven", label="Group of Seven")
+_AU = Group(members=(), entity=None, dcid="groups/AU", label="African Union")
 
 
 @pytest.mark.parametrize(
@@ -41,7 +41,11 @@ _G7 = Group(members=(), entity=None, dcid="GroupOfSeven", label="Group of Seven"
         pytest.param("U.S. aid", _USA, ("U.S.",), id="dotted-abbreviation"),
         pytest.param("aid to us", _USA, (), id="pronoun-us"),
         pytest.param("ODA to the states of the Sahel", _USA, (), id="ordinary-phrase"),
-        pytest.param("what can donors give", _CANADA, (), id="verb-can"),
+        pytest.param("ODA from the eu budget", _EU, (), id="lower-case-eu"),
+        pytest.param("au pair aid", _AU, (), id="lower-case-au"),
+        pytest.param("AU ODA", _AU, ("AU",), id="au-in-capitals"),
+        pytest.param("US ODA in constant US dollars", _USA, ("US",), id="currency-phrase"),
+        pytest.param("ODA in US$", _USA, (), id="currency-symbol"),
         pytest.param("G7 ODA", _G7, ("G7",), id="group-abbreviation"),
         pytest.param("Italy's ODA for IT", _ITALY, ("Italy's",), id="fuzzy-code-unread"),
         pytest.param("ODA to +256", _UGANDA, (), id="dial-code-unread"),

@@ -11,6 +11,7 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Final
 
+from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, tokenize
 from entity_resolution import Group, Resolution, Resolved
 from entity_resolution.pack import (
@@ -22,10 +23,20 @@ from entity_resolution.pack import (
 )
 from search.engine.extract import _span_occurrences
 from search.engine.function_words import FUNCTION_WORDS
+from search.engine.qualifier_match import read_qualifiers
+from search.engine.unit.lexicon import (
+    AMBIGUOUS_CURRENCY_NAMES,
+    CURRENCY_ALIASES,
+    MAX_PHRASE_WORDS,
+)
+from search.engine.unit.lexicon import _name_key as currency_name_key
 
 type CharSpan = tuple[int, int]
 
 _WORD_RE: Final = re.compile(r"\w+")
+# The currency symbols the unit binder reads (`unit.lexicon.CURRENCY_ALIASES`), which a
+# country's code can prefix ("US$").
+_CURRENCY_SYMBOLS: Final = frozenset(key for key in CURRENCY_ALIASES if len(key) == 1)
 # The ending a name may take inside its token: "UK's" holds the name "UK".
 _POSSESSIVE_RE: Final = re.compile(r"['\u2019]s?", re.IGNORECASE)
 
@@ -53,13 +64,14 @@ def bound_party_spans(text: str, resolutions: Iterable[Resolution]) -> tuple[Cha
     "US-funded" is no stretch, and that may end before a possessive ending its token holds
     ("UK's"), which the range then takes. It writes as the name does each word the name
     writes in capitals, and writes a name of two letters or fewer, a code, in capitals
-    (`_written_as`), so the pronoun "us", the verb "can" or the word "so" never reads as the
-    United States, Canada or Somalia. Longer names take their stretch first. A name that is a
-    function word is never read. A stretch inside a longer stretch that names something
-    else, an organisation or aggregate the entity pack stores (`pack.stored_name_forms`:
-    "Africa Finance Corporation") or another country, region or group
-    (`pack.geo_name_forms`: "South Africa"), written as that name is, is not read as the
-    party."""
+    (`_written_as`), so the pronoun "us" or the words "eu" and "au" never read as the United
+    States, the European Union or the African Union. Longer names take their stretch first.
+    A name that is a function word is never read. A stretch inside a longer stretch that
+    names something else is not read as the party: an organisation or aggregate the entity
+    pack stores (`pack.stored_name_forms`: "Africa Finance Corporation") or another country,
+    region or group (`pack.geo_name_forms`: "South Africa"), written as that name is, or a
+    code, measure or currency phrase the indexes read (`_inside_a_read_phrase`: "constant US
+    dollars", "US$")."""
     names = {
         name
         for resolution in resolutions
@@ -71,6 +83,7 @@ def bound_party_spans(text: str, resolutions: Iterable[Resolution]) -> tuple[Cha
         return ()
     tokens = tokenize(text)
     words = list(_WORD_RE.finditer(text))
+    read_phrases: list[CharSpan] | None = None
     taken: list[CharSpan] = []
     for name in sorted(names, key=lambda name: (-len(name), name)):
         for occurrence in _span_occurrences(text, name):
@@ -83,6 +96,10 @@ def bound_party_spans(text: str, resolutions: Iterable[Resolution]) -> tuple[Cha
             if any(start < other_end and other_start < end for other_start, other_end in taken):
                 continue
             if _inside_another_name(text, words, *occurrence.span()):
+                continue
+            if read_phrases is None:
+                read_phrases = _read_phrases(text)
+            if _inside_a_read_phrase(text, words, read_phrases, *occurrence.span()):
                 continue
             taken.append(span)
     return tuple(sorted(taken))
@@ -102,11 +119,54 @@ def _on_token_bounds(tokens: Sequence[Token], start: int, end: int) -> CharSpan 
     return None
 
 
+def _read_phrases(text: str) -> list[CharSpan]:
+    """The ranges of `text` each code or measure term the indexes read in it covers
+    (`qualifier_match.read_qualifiers`): "constant US dollars" in "ODA in constant US
+    dollars"."""
+    matches, ties = read_qualifiers(text, get_index(), get_measure_index())
+    phrases = {match.matched_text for match in (*matches, *ties)}
+    return [
+        occurrence.span() for phrase in phrases for occurrence in _span_occurrences(text, phrase)
+    ]
+
+
+def _inside_a_read_phrase(
+    text: str,
+    words: Sequence[re.Match[str]],
+    read_phrases: Sequence[CharSpan],
+    start: int,
+    end: int,
+) -> bool:
+    """Whether the stretch `start:end` of `text` lies inside a longer phrase the indexes read
+    (`read_phrases`), is followed straight by a currency symbol ("US$"), or lies inside a
+    longer stretch of words the unit binder reads as a currency ("US dollars",
+    `unit.lexicon.CURRENCY_ALIASES`)."""
+    if any(
+        phrase_start <= start and end <= phrase_end and (phrase_start, phrase_end) != (start, end)
+        for phrase_start, phrase_end in read_phrases
+    ):
+        return True
+    if text[end : end + 1] in _CURRENCY_SYMBOLS:
+        return True
+    inside = [index for index, word in enumerate(words) if start <= word.start() < end]
+    if not inside:
+        return False
+    first, last = inside[0], inside[-1]
+    for begin in range(max(0, first - MAX_PHRASE_WORDS), first + 1):
+        for stop in range(last, min(len(words), last + MAX_PHRASE_WORDS + 1)):
+            if (begin, stop) == (first, last):
+                continue
+            key = currency_name_key(text[words[begin].start() : words[stop].end()])
+            if key in CURRENCY_ALIASES or key in AMBIGUOUS_CURRENCY_NAMES:
+                return True
+    return False
+
+
 def _written_as(name: str, stretch: str) -> bool:
     """Whether `stretch`, an occurrence of `name` casing aside, writes each word `name`
-    writes in capitals with no lowercase letter ("US", "CAN", "G7") exactly as `name` does,
-    and writes a name of two letters or fewer, a code, in capitals: "SO" for Somalia's "so",
-    never the word "so". A stretch whose words do not pair with the name's, which the
+    writes in capitals with no lowercase letter ("USA", "ASEAN", "G7") exactly as `name`
+    does, and writes a name of two letters or fewer, a code, in capitals: "EU" for the
+    European Union, never "eu". A stretch whose words do not pair with the name's, which the
     entity pack's normal form can make, is taken as written."""
     if sum(char.isalpha() for char in name) <= 2 and any(char.islower() for char in stretch):
         return False

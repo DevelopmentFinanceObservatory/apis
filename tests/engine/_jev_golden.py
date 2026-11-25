@@ -183,8 +183,10 @@ def load_item(path: Path) -> GoldenItem:
 def ground(output: QuantityOutput, variable: str, shapes: Sequence[ShapeDraft]) -> QuantityOutput:
     """`output` as the engine keeps it (`_read_quantity_answer`): the index, and a rate or
     share on the quote, drop when the quote names no base in `variable` (`_names_base`)."""
-    state = SimpleNamespace(variable=variable, entity_texts=(), entity_roles={})
-    # The stub holds the three fields `_names_base` reads.
+    state = SimpleNamespace(
+        variable=variable, entity_texts=(), entity_roles={}, party_alias_spans=()
+    )
+    # The stub holds the four fields `_names_base` reads.
     if _names_base(state, output.base_words, shapes):  # ty: ignore[invalid-argument-type]
         return output
     stated_form = output.stated_form
