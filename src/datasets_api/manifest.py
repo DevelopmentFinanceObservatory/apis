@@ -227,7 +227,10 @@ def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | N
     (`origin_catalogue.partial_period_of`, `materialise.partial_period.reaches`), the latest
     period any of its series reaches (`SeriesFigures.latest_by_source`), and `unknown` when
     the catalogue does not document its source (`Undocumented`), its rows name no provenance,
-    or the frame grammar cannot read the mark or the period. A complete pair is left out, so an empty list is judged and complete.
+    or the frame grammar cannot read the mark or the period. A pair whose source's
+    documentation states no `partialObservationDate` is complete, whatever the source's
+    origin, a UN System agency included. A complete pair is left out, so an empty list is
+    judged and complete.
 
     `None`, unknown as a whole, with no catalogue bound or when the catalogue judged no pair, so
     a stale catalogue's mint leaves a stored record standing (`version_store`)."""
