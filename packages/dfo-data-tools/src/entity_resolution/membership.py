@@ -3,9 +3,10 @@
 Every membership names its authority, whether that authority dates its rows, the entity classes
 it admits, and the projections it records. A projection splits the members by class:
 
-- `countries`, the default: countries that exist today whose United Nations membership has not
-  ended by the date asked. Resolvekit's curated, dated UN membership is the authority for this
-  class.
+- `countries`, the default: countries that exist today, had come into being by the date asked
+  (where a start date is recorded: resolvekit's `valid_from` or the policy file's
+  `country_starts`), and whose United Nations membership has not ended by that date.
+  Resolvekit's curated, dated UN membership is the authority for this class.
 - `other_states`: states outside the UN, from the declared list in `data/membership_policy.json`,
   which names the source of the class.
 - `territories`: every other country that exists today, which leaves dependent territories.
@@ -26,6 +27,7 @@ can read."""
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import json
 from collections.abc import Iterable, Iterator, Mapping
@@ -59,6 +61,8 @@ REGION_CLASSES: tuple[RegionClass, ...] = get_args(RegionClass)
 GEO_DOMAIN = "geo"
 MEMBERSHIP_INCOMPLETE = "membership_incomplete"
 _POLICY_FILE = "membership_policy.json"
+# Names the rule `Sovereignty.classify` applies; change it with the rule.
+CLASSING_RULE = "existed-and-un-unended"
 
 
 class Projection(StrEnum):
@@ -431,12 +435,21 @@ class MembershipPolicy:
 def authority(resolver: Resolver, name: str) -> Authority:
     """An authority read from the resolver's bundled data.
 
-    The version names the data. The rule that classes members by country standing ships with
-    this code, so it moves with the code and not with the version."""
+    The version names the resolvekit data, the classing rule (`CLASSING_RULE`), and a digest of
+    the policy file's `country_starts`, so it moves when any input to a member's class moves."""
     return Authority(
         name=name,
-        version=f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}",
+        version=(
+            f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}, "
+            f"classing {CLASSING_RULE} starts {_country_starts_digest()}"
+        ),
     )
+
+
+def _country_starts_digest() -> str:
+    starts = {member: day.isoformat() for member, day in policy_data().country_starts.items()}
+    encoded = json.dumps(starts, sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()[:8]
 
 
 def to_dcid(entity_id: str) -> str:

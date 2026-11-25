@@ -15,8 +15,8 @@
     "source": "States outside UN membership: the UN General Assembly's non-member observer states (Holy See, State of Palestine) and states with limited recognition (Kosovo, Taiwan)"
   },
   "country_starts": {
-    "members": { "country/ARE": "1971-12-02" },
-    "source": "Start dates for countries whose resolvekit entity records none: the United Arab Emirates formed on 2 December 1971. A start date resolvekit records (Montenegro, South Sudan, Timor-Leste) takes precedence."
+    "members": { "country/ARE": "1971-12-02", "country/KWT": "1961-06-19" },
+    "source": "Start dates for countries whose resolvekit entity records none: the United Arab Emirates formed on 2 December 1971 and Kuwait became independent on 19 June 1961. A start date resolvekit records (Montenegro, South Sudan, Timor-Leste) takes precedence."
   },
   "region_gaps": {
     "projections": ["territories", "former_states", "other_states"],

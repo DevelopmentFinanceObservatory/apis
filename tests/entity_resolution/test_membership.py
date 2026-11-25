@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -21,7 +22,9 @@ from entity_resolution.membership import (
     Row,
     Sovereignty,
     UnknownMembership,
+    authority,
     build_policy,
+    policy_data,
 )
 from entity_resolution.shared import SharedResolver
 
@@ -107,7 +110,7 @@ def test_a_row_holds_over_a_half_open_window(
         ("country/LFT", date(2000, 1, 1), Projection.OTHER_STATES),
         # A state that joins the UN later is already a country before it joins.
         ("country/LATE", date(1995, 1, 1), Projection.COUNTRIES),
-        # A country is no country before it came into being, whatever its UN row says.
+        # A country with a recorded start is a territory until that start, whatever its UN row says.
         ("country/NEW", date(1970, 1, 1), Projection.TERRITORIES),
         ("country/NEW", date(1971, 1, 1), Projection.COUNTRIES),
         ("country/OTH", date(2020, 1, 1), Projection.OTHER_STATES),
@@ -345,7 +348,7 @@ def test_a_membership_names_each_member_by_its_canonical_name(
 _OECD = "undata-geo/G00406000"
 
 
-def test_a_dated_group_classes_members_by_standing_not_membership_on_the_day(
+def test_a_dated_group_counts_a_member_that_joins_the_un_later_as_a_country(
     policy: MembershipPolicy,
 ) -> None:
     # Switzerland joined the UN in 2002 and West Germany in 1973; both were OECD countries before.
@@ -364,3 +367,20 @@ def test_a_country_joins_a_group_count_only_once_it_exists(policy: MembershipPol
     after = policy.members("groups/OPEC", as_of=date(1975, 6, 1)).members
     assert "country/ARE" not in _listed(before)
     assert "country/ARE" in _listed(after)
+    # Kuwait became independent on 19 June 1961, after OPEC's founding in 1960.
+    assert "country/KWT" not in _listed(
+        policy.members("groups/OPEC", as_of=date(1961, 1, 1)).members
+    )
+
+
+def test_the_authority_version_moves_with_the_country_starts(
+    _shared_resolvekit_pack: SharedResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolver = _shared_resolvekit_pack.resolver
+    before = authority(resolver, "x").version
+    edited = replace(
+        policy_data(),
+        country_starts={**policy_data().country_starts, "country/ARE": date(1970, 1, 1)},
+    )
+    monkeypatch.setattr("entity_resolution.membership.policy_data", lambda: edited)
+    assert authority(resolver, "x").version != before

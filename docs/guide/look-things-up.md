@@ -81,7 +81,7 @@ curl -fsS "$DFO_API/api/v1/graph/node/CRSPurposeCodeEnum/members?relation=codes&
 
 A page holds 200 items unless `limit` asks for up to 1000. When `next_cursor` is not `null`, send it back as `cursor` with the same other parameters to read the next page. A cursor from a different node, relation, projection, or `as_of` date is refused.
 
-A group or region takes a `projection`. `countries` is the default and counts the countries that belong to the United Nations. `other_states`, `territories`, `former_states`, and `institutions` cut the rest. A group that dates its membership takes `as_of`. A dated read counts the states that existed by `as_of` and whose UN membership had not ended by then, including states that joined the United Nations later. A projection that the membership source records only in part carries the gap `membership_incomplete` and `complete: false`.
+A group or region takes a `projection`. `countries` is the default and counts the countries that belong to the United Nations. `other_states`, `territories`, `former_states`, and `institutions` cut the rest. A group that dates its membership takes `as_of`. A dated read counts a state when its UN membership had not ended by `as_of`, including states that joined the United Nations later, and, where the country has a recorded start date, when it had come into being by `as_of`. A projection that the membership source records only in part carries the gap `membership_incomplete` and `complete: false`.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/node/africa/members?relation=countries&limit=3" \
