@@ -24,7 +24,7 @@
       "country/BRN": "1984-01-01",
       "country/ARE": "1971-12-02"
     },
-    "source": "States sovereign before they joined the UN, for countries whose resolvekit entity records no start. West Germany's Basic Law took effect on 23 May 1949, Kuwait became independent on 19 June 1961, Brunei on 1 January 1984, and the United Arab Emirates formed on 2 December 1971. Switzerland, Italy and Portugal were sovereign long before the UN, and 1 January 1945 stands for that: no group row begins earlier. A start resolvekit records (Montenegro, South Sudan, Timor-Leste) takes precedence, and a country in neither place is a country from its UN entry."
+    "source": "States sovereign before they joined the UN, for countries whose resolvekit entity records no start. West Germany's Basic Law took effect on 23 May 1949, Kuwait became independent on 19 June 1961, Brunei on 1 January 1984, and the United Arab Emirates formed on 2 December 1971. Switzerland, Italy, and Portugal were sovereign long before the UN, and 1 January 1945 stands for that: no group row begins earlier. A start resolvekit records (Montenegro, South Sudan, Timor-Leste) takes precedence, and a country in neither place is a country from its UN entry."
   },
   "region_gaps": {
     "projections": ["territories", "former_states", "other_states"],

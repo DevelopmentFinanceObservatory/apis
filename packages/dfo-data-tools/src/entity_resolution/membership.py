@@ -302,17 +302,20 @@ class Membership:
     def effective_date(self, as_of: date | None = None) -> date | None:
         """The latest membership change on or before `as_of` (today when `None`).
 
+        A change is a row bound, or for a country member in the group on `as_of` its sovereign
+        start or a bound of its UN rows, since those move which projection it falls in.
         `None` for an undated membership, whose composition carries no date."""
         day = self._day(as_of)
         if not self.dated:
             return None
-        bounds = (
-            bound
-            for row in self.rows
-            for bound in (row.valid_from, row.valid_until)
-            if bound is not None and bound <= day
-        )
-        return max(bounds, default=None)
+        bounds = [bound for row in self.rows for bound in (row.valid_from, row.valid_until)]
+        for row in self.rows:
+            if row.member_class != COUNTRY_CLASS or not row.active(day):
+                continue
+            bounds.append(self.sovereignty.starts.get(row.member))
+            for un_row in self.sovereignty.states.get(row.member, ()):
+                bounds.extend((un_row.valid_from, un_row.valid_until))
+        return max((b for b in bounds if b is not None and b <= day), default=None)
 
     def _day(self, as_of: date | None) -> date:
         if as_of is None:

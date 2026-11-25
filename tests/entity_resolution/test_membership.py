@@ -357,15 +357,21 @@ def test_a_dated_group_counts_a_member_that_joins_the_un_later_as_a_country(
 def test_a_member_with_a_sovereign_start_is_a_country_from_it(
     policy: MembershipPolicy,
 ) -> None:
-    # The United Arab Emirates formed on 2 December 1971.
-    before = policy.members("groups/OPEC", as_of=date(1969, 6, 1)).members
-    after = policy.members("groups/OPEC", as_of=date(1975, 6, 1)).members
-    assert "country/ARE" not in _listed(before)
-    assert "country/ARE" in _listed(after)
-    # Kuwait became independent on 19 June 1961, after OPEC's founding in 1960.
-    assert "country/KWT" not in _listed(
-        policy.members("groups/OPEC", as_of=date(1961, 1, 1)).members
-    )
+    def countries(day: date) -> tuple[str, ...]:
+        return _listed(policy.members("groups/OPEC", as_of=day).members)
+
+    # The United Arab Emirates formed on 2 December 1971 and joined the UN on 9 December.
+    assert "country/ARE" not in countries(date(1969, 6, 1))
+    assert "country/ARE" in countries(date(1971, 12, 5))
+    # Kuwait became independent on 19 June 1961 and joined the UN in 1963.
+    assert "country/KWT" not in countries(date(1961, 1, 1))
+    assert "country/KWT" in countries(date(1962, 1, 1))
+
+
+def test_the_effective_date_counts_a_members_sovereign_start(policy: MembershipPolicy) -> None:
+    effective = policy.members("groups/OPEC", as_of=date(1962, 1, 1)).effective_date
+    assert effective is not None
+    assert effective >= date(1961, 6, 19)
 
 
 def test_the_authority_version_moves_with_the_policy_file(
@@ -409,3 +415,23 @@ def test_every_member_row_that_begins_before_its_un_entry_has_a_sovereign_start(
             ):
                 undeclared.add((group.ref, row.member))
     assert not undeclared
+
+
+def test_every_sovereign_start_falls_on_or_before_the_members_earliest_un_row(
+    policy: MembershipPolicy,
+) -> None:
+    sovereignty = next(iter(policy)).sovereignty
+    late = {
+        member: (start, entry)
+        for member, start in sovereignty.starts.items()
+        if member not in sovereignty.dissolved
+        and (
+            entry := min(
+                (r.valid_from for r in sovereignty.states.get(member, ()) if r.valid_from),
+                default=None,
+            )
+        )
+        is not None
+        and start > entry
+    }
+    assert not late
