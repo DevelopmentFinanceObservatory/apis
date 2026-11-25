@@ -12,8 +12,10 @@ year from the one component holding it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 
 import httpx
+import pyarrow as pa
 import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
@@ -22,6 +24,7 @@ from code_index import CodeIndex
 from code_index.composites import DECLARED_COMPOSITES
 from code_index.declarations import COMPOSITES, DAC2A_BILATERAL
 from code_index.shared import get_index
+from code_index.types import StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import render
 from datasets_api.adapter import resolve_definition_members
@@ -271,13 +274,14 @@ def test_the_composite_cases_cover_every_declared_composite():
 
 
 @pytest.mark.parametrize(("identity", "populated"), _COMPOSITE_CASES)
-def test_search_sums_components_and_the_mints_time_sum_collapses_every_composite(
+def test_search_states_how_the_mints_time_sum_collapses_every_composite(
     monkeypatch: pytest.MonkeyPatch, identity: dict, populated: download._Populated
 ):
-    """The flag Search serves on every declared composite's restated StatVar counts
-    (`_stat_vars`) is true, and the mint's sum over time collapses the composite's components
-    with no `rollup_not_summable` refusal: a stacked composite adds them, and the spliced
-    headline serves each year from the one component holding it."""
+    """Search's restated StatVar counts (`_stat_vars`) serve `sums_components` true on a
+    stacked composite and `splices_components` true on the spliced headline, and the mint's sum
+    over time collapses each one's components with no `rollup_not_summable` refusal: a
+    stacked composite adds them, and the headline serves each year from the one component
+    holding it."""
     refused: list[str] = []
     refusal_init = RollupNotSummableError.__init__
 
@@ -312,7 +316,10 @@ def test_search_sums_components_and_the_mints_time_sum_collapses_every_composite
         client, identity=identity, options={"groupby": {"by": ["time_period"], "op": "sum"}}
     )
 
-    assert served.sums_components is True
+    assert (served.sums_components, served.splices_components) == (
+        declaration.kind == "stacked",
+        declaration.kind == "spliced",
+    )
     assert minted.status_code == 200, minted.text
     assert refused == []
 
@@ -364,11 +371,17 @@ def _headline_rows(*years_by_member: tuple[str, int, tuple[int, ...]]) -> tuple[
     )
 
 
-def _headline_time_sum(monkeypatch: pytest.MonkeyPatch, rows: tuple[tuple, ...], *, streamed: bool):
-    """The mint's sum over time of the headline frame of `rows`, read as one table or as the
-    frame slices of one row each a streamed render folds."""
+def _headline_time_sum(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: tuple[tuple, ...],
+    *,
+    streamed: bool,
+    code_index: CodeIndex | None = None,
+    members: tuple[str, ...] = (f"dcid:{download._NET}", f"dcid:{download._GRANT_EQUIVALENT}"),
+):
+    """The mint's sum over time of the headline frame of `rows`, resolved to `members`, read
+    as one table or as the frame slices of one row each a streamed render folds."""
     frame = frame_of_rows(_HEADLINE_COLUMNS, rows)
-    members = (f"dcid:{download._NET}", f"dcid:{download._GRANT_EQUIVALENT}")
     if streamed:
         monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 1)
         chunks = list(render._reslice_chunks([frame]))
@@ -382,7 +395,7 @@ def _headline_time_sum(monkeypatch: pytest.MonkeyPatch, rows: tuple[tuple, ...],
         reads=_RenderReads(
             enrichment=EnrichmentLookup(FakeMintGraphReader()), parties={}, known={}, deadline=None
         ),
-        code_index=get_index(),
+        code_index=get_index() if code_index is None else code_index,
         resolved_stat_var_refs=members,
         provenance_refs=(download._HEADLINE,),
         subject_id="spec_test",
@@ -428,23 +441,33 @@ def test_a_headline_frame_whose_components_share_a_year_is_refused(
     )
 
 
-def _headline_check(*, missing_reads_zero: bool) -> SpliceCheck:
-    """A check of the headline frame over an index where net flows hold two members with the
-    same codes, the second a copy of the first under another dcid."""
+def _index_with(*rows: StatVarRow) -> CodeIndex:
+    """The fixture index with `rows` added."""
     index = get_index()
-    net = index.statvar_by_dcid(download._NET)
-    assert net is not None
-    twin_index = CodeIndex(
+    return CodeIndex(
         stamp=index.stamp,
         declarations=tuple(index.declarations.values()),
         codes=index.codes,
-        statvars=(*index.statvars, dataclasses.replace(net, dcid="TwinNet")),
+        statvars=(*index.statvars, *rows),
         datasets=tuple(index.datasets.values()),
+        composites=DECLARED_COMPOSITES.values(),
     )
+
+
+def _net_copy(dcid: str, **changes: object) -> StatVarRow:
+    """The headline's net member under `dcid`, with `changes`."""
+    net = get_index().statvar_by_dcid(download._NET)
+    assert net is not None
+    return dataclasses.replace(net, dcid=dcid, **changes)
+
+
+def _headline_check(*, missing_reads_zero: bool) -> SpliceCheck:
+    """A check of the headline frame over an index where net flows hold two members with the
+    same codes, the second a copy of the first under another dcid."""
     members = (f"dcid:{download._NET}", "dcid:TwinNet", f"dcid:{download._GRANT_EQUIVALENT}")
     return SpliceCheck(
         DECLARED_COMPOSITES[download._HEADLINE],
-        index=twin_index,
+        index=_index_with(_net_copy("TwinNet")),
         cell_columns=("financingProvider", "time_period"),
         members=members,
         lookup={member: {} for member in members},
@@ -453,27 +476,101 @@ def _headline_check(*, missing_reads_zero: bool) -> SpliceCheck:
     )
 
 
+def _note(check: SpliceCheck, rows: Sequence[tuple[str | None, str]]) -> None:
+    """Note `rows`, each a `stat_var` ref or none and a year, at the one provider."""
+    check.note(
+        pa.array([stat_var for stat_var, _year in rows], pa.string()),
+        pa.table(
+            {
+                "financingProvider": [_PROVIDER] * len(rows),
+                "time_period": [year for _stat_var, year in rows],
+            }
+        ),
+    )
+
+
 def test_a_spliced_cell_lacking_a_member_of_its_own_component_is_refused():
     """A cell expects every member of the component holding it and none of the others'."""
     complete = _headline_check(missing_reads_zero=False)
-    complete.note(
-        [f"dcid:{download._NET}", "dcid:TwinNet", f"dcid:{download._GRANT_EQUIVALENT}"],
-        [(_PROVIDER, "2017"), (_PROVIDER, "2017"), (_PROVIDER, "2018")],
+    _note(
+        complete,
+        [
+            (f"dcid:{download._NET}", "2017"),
+            ("dcid:TwinNet", "2017"),
+            (f"dcid:{download._GRANT_EQUIVALENT}", "2018"),
+        ],
     )
-    complete.refuse()
-    lacking = [f"dcid:{download._NET}", f"dcid:{download._GRANT_EQUIVALENT}"]
-    cells = [(_PROVIDER, "2017"), (_PROVIDER, "2018")]
+    complete.refuse_structure()
+    complete.refuse_missing()
+    lacking = [(f"dcid:{download._NET}", "2017"), (f"dcid:{download._GRANT_EQUIVALENT}", "2018")]
     read_as_zero = _headline_check(missing_reads_zero=True)
-    read_as_zero.note(lacking, cells)
-    read_as_zero.refuse()
+    _note(read_as_zero, lacking)
+    read_as_zero.refuse_missing()
 
     incomplete = _headline_check(missing_reads_zero=False)
-    incomplete.note(lacking, cells)
+    _note(incomplete, lacking)
+    incomplete.refuse_structure()
     with pytest.raises(RollupNotSummableError) as refused:
-        incomplete.refuse()
+        incomplete.refuse_missing()
 
     assert refused.value.precondition == "missing_members"
     assert "dcid:TwinNet" in str(refused.value)
+
+
+def test_a_spliced_row_with_no_stat_var_is_refused_unless_absence_reads_zero():
+    """The fold reads a spliced cell's absent members as no row, so the splice keeps its
+    refusal of a row holding no member."""
+    rows = [(f"dcid:{download._NET}", "2017"), ("dcid:TwinNet", "2017"), (None, "2018")]
+    read_as_zero = _headline_check(missing_reads_zero=True)
+    _note(read_as_zero, rows)
+    read_as_zero.refuse_structure()
+    read_as_zero.refuse_missing()
+
+    unknown = _headline_check(missing_reads_zero=False)
+    _note(unknown, rows)
+    unknown.refuse_structure()
+    with pytest.raises(RollupNotSummableError) as refused:
+        unknown.refuse_missing()
+
+    assert (refused.value.axis, refused.value.precondition) == ("stat_var", "missing_members")
+
+
+_STRAY = _net_copy(
+    "StrayNet",
+    provenances=("provenance/OECDDAC2A",),
+    constraint_properties={
+        **_net_copy("StrayNet").constraint_properties,
+        "dac1AidType": "DAC1AidType1015",
+    },
+)
+"""A net member no headline component serves, since DAC2A publishes it and not DAC1, of
+another aid type, so no decoded code makes it ambiguous beside the members."""
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["whole", "streamed"])
+def test_a_spliced_frame_holding_a_member_no_component_serves_is_refused(
+    monkeypatch: pytest.MonkeyPatch, streamed: bool
+):
+    """A StatVar `component_of` cannot place is no component of its own: the splice refuses
+    it (`spliced_component_unknown`) rather than reading it as a third component."""
+    with pytest.raises(RollupNotSummableError) as refused:
+        _headline_time_sum(
+            monkeypatch,
+            _headline_rows(
+                (download._NET, 100, (2017,)),
+                (download._GRANT_EQUIVALENT, 90, (2018,)),
+                ("StrayNet", 5, (2019,)),
+            ),
+            streamed=streamed,
+            code_index=_index_with(_STRAY),
+            members=(
+                f"dcid:{download._NET}",
+                f"dcid:{download._GRANT_EQUIVALENT}",
+                "dcid:StrayNet",
+            ),
+        )
+
+    assert refused.value.precondition == "spliced_component_unknown"
 
 
 def _time_sum_description(identity: dict, populated: download._Populated) -> dict:
@@ -523,18 +620,29 @@ def test_a_headline_time_sum_records_no_sum_and_a_stacked_one_records_its_sum():
 
 
 @pytest.mark.parametrize(
-    ("composite", "adds"),
-    [(None, True), (DECLARED_COMPOSITES[download._HEADLINE], False)],
-    ids=["no-composite", "headline"],
+    ("composite", "contributors", "adds"),
+    [
+        (None, [download._NET, download._GRANT_EQUIVALENT], True),
+        (
+            DECLARED_COMPOSITES[download._HEADLINE],
+            [download._NET, download._GRANT_EQUIVALENT],
+            False,
+        ),
+        (DECLARED_COMPOSITES[download._HEADLINE], [download._NET, "StrayNet"], True),
+    ],
+    ids=["no-composite", "headline", "headline-and-unplaced"],
 )
-def test_the_headline_s_two_members_add_only_outside_the_splice(composite, adds: bool):
+def test_the_headline_s_two_members_add_only_outside_the_splice(
+    composite, contributors: list[str], adds: bool
+):
     """Net flows and grant equivalents hold one tuple of kept codes, so outside a composite
     their collapse adds them; keyed on their headline components, it adds nothing, which the
-    analysis door's summed count reads as well."""
+    analysis door's summed count reads as well. A member no component serves is no component
+    of its own, so beside it the collapse reads as adding."""
     assert (
         adds_stat_vars(
-            [download._NET, download._GRANT_EQUIVALENT],
-            index=get_index(),
+            contributors,
+            index=_index_with(_STRAY),
             kept=(),
             levels={},
             components=False,

@@ -92,7 +92,7 @@ from artifact_store import (
     Tier,
 )
 from artifact_store.errors import ArtifactIntegrityError
-from code_index.composites import DECLARED_COMPOSITES
+from code_index.composites import DECLARED_COMPOSITES, components_splice
 from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
@@ -775,8 +775,11 @@ def _reshape_groupby_collapse(
     selection on axes the frame decodes, a sum checks the groups it sums. The checks before
     the folds read every row: provenance disagreement, decode gaps (which refuse a level
     roll-up's missing ancestor), StatVar collision and, for a spliced composite's components,
-    a cell holding rows of two components (`groupby.SpliceCheck`), so they refuse as the same
-    render without a selection does. Then only the rows whose `stat_var_<axis>` cell is a selected
+    a StatVar no one component serves or a cell holding rows of two components
+    (`groupby.SpliceCheck.refuse_structure`), so they refuse as the same render without a
+    selection does. A splice's own missing-member check
+    (`groupby.SpliceCheck.refuse_missing`) runs after the `stat_var` fold's preconditions, on
+    the whole-table and streamed paths alike. Then only the rows whose `stat_var_<axis>` cell is a selected
     code reach the folds (`_selected_mask`, `_selected_table_rows`), so a fold precondition
     (facet homogeneity, missing members, a finite total, the expected population, a unique
     grain) reads the selected groups alone, and a fault in a group the selection leaves out
@@ -813,7 +816,7 @@ def _reshape_groupby_collapse(
             missing_reads_zero=missing_declared_as_zero,
             selection=selection,
         )
-        if composite is not None and splices_components(composite, components=components)
+        if components and composite is not None and components_splice(composite)
         else None
     )
     if frame_chunks is None:
@@ -835,7 +838,7 @@ def _reshape_groupby_collapse(
         )
         if splice is not None:
             _note_splice_rows(splice, current)
-            splice.refuse()
+            splice.refuse_structure()
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
         if selection is not None:
@@ -919,7 +922,7 @@ def _reshape_groupby_collapse(
                     composite=composite,
                 )
                 if splice is not None:
-                    splice.refuse()
+                    splice.refuse_structure()
                 if outcome.violation is not None:
                     raise outcome.violation
                 assert outcome.table is not None
@@ -945,6 +948,9 @@ def _reshape_groupby_collapse(
                         )
                     ),
                 )
+            if axis_index == 0 and splice is not None:
+                # After the fold's own preconditions, on both paths.
+                splice.refuse_missing()
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
         if selection is not None:
             contributors = {
@@ -1009,22 +1015,36 @@ def _reshape_groupby_collapse(
 
 
 def _note_splice_rows(splice: SpliceCheck, table: Table) -> None:
-    """Note every row of `table` in `splice`."""
-    positions = [table.columns.index(column) for column in splice.cell_columns]
+    """Note every row of `table` in `splice`: from its Arrow table when it is a frame slice
+    (`_FrameSlice`), else from its tuple rows, a non-string `stat_var` cell noted as none."""
+    if isinstance(table, _FrameSlice):
+        _note_splice_arrow(splice, table.table)
+        return
     stat_var = table.columns.index(_STAT_VAR_COLUMN)
     splice.note(
-        [row[stat_var] for row in table.rows],
-        (tuple(row[position] for position in positions) for row in table.rows),
+        pa.array(
+            [row[stat_var] if isinstance(row[stat_var], str) else None for row in table.rows],
+            pa.string(),
+        ),
+        pa.table(
+            {
+                column: [row[table.columns.index(column)] for row in table.rows]
+                for column in splice.cell_columns
+            }
+        ),
     )
+
+
+def _note_splice_arrow(splice: SpliceCheck, table: pa.Table) -> None:
+    """Note every row of the frame slice `table` in `splice`."""
+    splice.note(table.column(_STAT_VAR_COLUMN), table.select(list(splice.cell_columns)))
 
 
 def _noting_splice(frame_chunks: Iterable[Table], splice: SpliceCheck) -> Iterator[Table]:
     """`frame_chunks`, frame slices (`_FrameSlice`), each noted in `splice` from its Arrow
     table as it passes."""
     for chunk in frame_chunks:
-        arrow = cast(_FrameSlice, chunk).table
-        cells = [arrow.column(column).to_pylist() for column in splice.cell_columns]
-        splice.note(arrow.column(_STAT_VAR_COLUMN).to_pylist(), zip(*cells, strict=True))
+        _note_splice_arrow(splice, cast(_FrameSlice, chunk).table)
         yield chunk
 
 
@@ -1190,9 +1210,12 @@ def _reshape_groupby(
         decoded_code_systems=decoded_code_systems,
         declarations=code_index.declarations,
     )
+    frame_composite = _frame_composite(code_index, provenance_refs)
+    # A stacked composite's components are added and a spliced one's spliced; either collapse
+    # runs the loop below.
     components = sums_components(
-        by=options.groupby.by, composite=_frame_composite(code_index, provenance_refs)
-    )
+        by=options.groupby.by, composite=frame_composite
+    ) or splices_components(by=options.groupby.by, composite=frame_composite)
     rekeyed = rekeys_stat_vars(
         by=options.groupby.by,
         decoded_code_systems=decoded_code_systems,

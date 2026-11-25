@@ -17,10 +17,14 @@ performs the sum.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
-from code_index.composites import component_of, components_sum
+import pyarrow as pa
+import pyarrow.compute as pc
+
+from code_index.composites import component_of, components_splice, components_sum
 from code_index.query import CodeIndex
 from code_index.types import (
     CodeSystemDeclaration,
@@ -152,17 +156,23 @@ def selected_contributors(
 
 
 def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
-    """Return true when the groupby collapses the components of `composite`, the composite
-    the frame's rows carry as their provenance or `None`, into one series per cell: the
-    composite's components sum (`code_index.composites.components_sum`) and `by` keeps no
-    `stat_var`.
+    """Return true when the groupby adds the components of `composite`, the composite the
+    frame's rows carry as their provenance or `None`, into one total: the composite's
+    components sum (`code_index.composites.components_sum`) and `by` keeps no `stat_var`.
 
     A stacked composite's components are parts of one total by declaration, so their StatVars
     sum whether or not they decode a summable axis. DAC2a's total ODA and its imputed
-    multilateral ODA differ only on the aid type, which is not summable. A spliced
-    composite's components serve disjoint years, so the collapse is a splice: each cell takes
-    the one component holding it, and `SpliceCheck` refuses a cell holding two."""
+    multilateral ODA differ only on the aid type, which is not summable."""
     return composite is not None and components_sum(composite) and _STAT_VAR_COLUMN not in by
+
+
+def splices_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
+    """Return true when the groupby splices the components of `composite`, the composite the
+    frame's rows carry as their provenance or `None`, into one series per cell: the
+    composite's components splice (`code_index.composites.components_splice`) and `by` keeps
+    no `stat_var`. Each cell takes the members of the one component holding it, and
+    `SpliceCheck` refuses a frame in which it cannot."""
+    return composite is not None and components_splice(composite) and _STAT_VAR_COLUMN not in by
 
 
 def sums_stat_vars(
@@ -173,10 +183,11 @@ def sums_stat_vars(
     declarations: Mapping[str, CodeSystemDeclaration],
     composite: CompositeDeclaration | None = None,
 ) -> bool:
-    """Return true when the groupby sums this frame's StatVars: a decoded summable axis
+    """Return true when the groupby collapses this frame's StatVars: a decoded summable axis
     collapses, `by` leaves out `stat_var` on a frame decoding a summable axis
-    (`rekeys_stat_vars`), a kept axis rolls up to a level, or the frame's stacked composite adds
-    its components (`sums_components`)."""
+    (`rekeys_stat_vars`), a kept axis rolls up to a level, the frame's stacked composite adds
+    its components (`sums_components`), or its spliced composite splices them
+    (`splices_components`)."""
     return (
         bool(
             collapse_axes(
@@ -188,26 +199,37 @@ def sums_stat_vars(
         )
         or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
         or sums_components(by=by, composite=composite)
+        or splices_components(by=by, composite=composite)
     )
 
 
+_COMPONENT_COLUMN = "__component"
+_CODES_COLUMN = "__codes"
+
+
 class SpliceCheck:
-    """The rows of a spliced composite's frame, noted chunk by chunk before its `stat_var`
-    collapse, so the collapse serves each cell from one component and adds no two.
+    """The rows of a spliced composite's frame, noted chunk by chunk as Arrow group-bys before
+    its `stat_var` collapse, so the collapse serves each cell from one component and adds no
+    two components' values.
 
     A cell is a role tuple and time period (`cell_columns`). A row's component is the one of
-    `composite` that serves its StatVar (`code_index.composites.component_of`); a StatVar no
-    one component serves stands as its own. The `stat_var` fold reads a member absent from a
-    cell as no row there, since a spliced cell holds one component's members and none of the
-    others', so this check states the fold's missing-member rule for the component holding
-    the cell: each group of decoded codes (`lookup`) the cell holds expects every member of
-    that component in `members` with those codes, unless `missing_reads_zero`. With
-    `selection`, a `groupby.codes` selection, only the members it keeps are noted or
-    expected, as the fold reads only their rows.
+    `composite` that serves its StatVar (`code_index.composites.component_of`). Each noted
+    chunk keeps only its distinct cells with their components, and its distinct cells with
+    the decoded codes and StatVars of the members `selection` keeps, so the check holds at most
+    a few short columns per frame row, beside the fold's `_ARROW_FOLD_BYTES_PER_ROW`, and no
+    Python object per row.
 
-    `refuse` raises `RollupNotSummableError` (`rollup_not_summable`): `spliced_overlap`
-    naming the first cell noted with rows of two components, else `missing_members` naming
-    the first cell lacking a member its component expects."""
+    `refuse_structure` reads every row, whatever `selection` keeps, and raises
+    `RollupNotSummableError` (`rollup_not_summable`): `spliced_component_unknown` for a
+    StatVar no one component serves, among the resolved `members` or the rows, else
+    `spliced_overlap` for the first cell holding rows of two components.
+
+    The `stat_var` fold reads a member absent from a cell as no row there, since a spliced
+    cell holds one component's members and none of the others', so `refuse_missing`, run after
+    the fold's own preconditions, states the fold's missing-member rule for the component
+    holding each cell, unless `missing_reads_zero`: a row with a null or non-string `stat_var`
+    refuses `missing_members`, and so does a cell lacking a member of its component that
+    `selection` keeps with the decoded codes (`lookup`) the cell holds."""
 
     def __init__(
         self,
@@ -228,61 +250,126 @@ class SpliceCheck:
         self._decoded = tuple(decoded_code_systems)
         self._missing_reads_zero = missing_reads_zero
         self._selection = selection
-        self._component_of: dict[str, str] = {}
-        self._expected: dict[tuple[str, tuple[str | None, ...]], set[str]] = {}
+        self._component_of: dict[str, str | None] = {}
+        self._unknown: str | None = None
+        self._expected: dict[tuple[str, str], set[str]] = {}
         for ref in members:
-            if self._selected(ref):
-                key = (self._component(ref), self._codes(ref))
-                self._expected.setdefault(key, set()).add(ref)
-        self._cells: dict[tuple[object, ...], str] = {}
-        self._observed: dict[tuple[tuple[object, ...], tuple[str | None, ...]], set[str]] = {}
-        self._overlap: tuple[tuple[object, ...], str, str] | None = None
+            component = self._component(ref)
+            if component is not None and self._selected(ref):
+                self._expected.setdefault((component, self._codes(ref)), set()).add(ref)
+        self._cell_parts: list[pa.Table] = []
+        self._member_parts: list[pa.Table] = []
+        self._null_rows = 0
 
-    def note(self, stat_vars: Sequence[object], cells: Iterable[tuple[object, ...]]) -> None:
-        """Note the rows whose StatVar refs are `stat_vars` and whose cells are `cells`, in
-        the same order. A row with no StatVar, or one `selection` leaves out, is skipped."""
-        for stat_var, cell in zip(stat_vars, cells, strict=True):
-            if not isinstance(stat_var, str) or not self._selected(stat_var):
-                continue
-            component = self._component(stat_var)
-            holder = self._cells.setdefault(cell, component)
-            if holder != component and self._overlap is None:
-                self._overlap = (cell, holder, component)
-            self._observed.setdefault((cell, self._codes(stat_var)), set()).add(stat_var)
-
-    def refuse(self) -> None:
-        """Raise `RollupNotSummableError` when a noted cell holds rows of two components, or
-        lacks a member of the component holding it."""
-        if self._overlap is not None:
-            cell, first, second = self._overlap
-            raise RollupNotSummableError(
-                f"groupby axis {_STAT_VAR_COLUMN!r} refused: the spliced composite "
-                f"{self._composite.provenance!r} serves one component in each cell, but the "
-                f"cell {self._named(cell)!r} holds rows of both {first!r} and {second!r}, so "
-                "the frame's components overlap and their values are not added",
-                axis=_STAT_VAR_COLUMN,
-                precondition="spliced_overlap",
-            )
+    def note(self, stat_vars: pa.Array | pa.ChunkedArray, cells: pa.Table) -> None:
+        """Note the rows whose `stat_var` refs are `stat_vars`, strings with a null for a row
+        holding none, and whose cells are the rows of `cells`, its `cell_columns`."""
+        stat_vars = pc.cast(stat_vars, pa.string())
+        if stat_vars.null_count:
+            self._null_rows += stat_vars.null_count
+            valid = pc.is_valid(stat_vars)
+            stat_vars, cells = stat_vars.filter(valid), cells.filter(valid)
+        if len(stat_vars) == 0:
+            return
+        refs = cast("list[str]", pc.unique(stat_vars).to_pylist())
+        positions = pc.index_in(stat_vars, value_set=pa.array(refs, pa.string()))
+        components = pa.array([self._component(ref) for ref in refs], pa.string()).take(positions)
+        keyed = cells.select(list(self.cell_columns)).append_column(_COMPONENT_COLUMN, components)
+        self._cell_parts.append(
+            keyed.group_by([*self.cell_columns, _COMPONENT_COLUMN], use_threads=False).aggregate([])
+        )
         if self._missing_reads_zero:
             return
-        for (cell, codes), observed in self._observed.items():
-            absent = self._expected.get((self._cells[cell], codes), set()) - observed
-            if absent:
+        selected = pa.array([self._selected(ref) for ref in refs], pa.bool_()).take(positions)
+        codes = pa.array([self._codes(ref) for ref in refs], pa.string()).take(positions)
+        members = (
+            keyed.append_column(_CODES_COLUMN, codes)
+            .append_column(_STAT_VAR_COLUMN, stat_vars)
+            .filter(selected)
+        )
+        self._member_parts.append(
+            members.group_by(
+                [*self.cell_columns, _COMPONENT_COLUMN, _CODES_COLUMN, _STAT_VAR_COLUMN],
+                use_threads=False,
+            ).aggregate([])
+        )
+
+    def refuse_structure(self) -> None:
+        """Raise `RollupNotSummableError` for a StatVar no one component serves, else for a
+        cell holding rows of two components."""
+        if self._unknown is not None:
+            raise RollupNotSummableError(
+                f"groupby axis {_STAT_VAR_COLUMN!r} refused: {self._unknown!r} is a member of "
+                f"no one component of the spliced composite {self._composite.provenance!r}, "
+                "so no cell can be read as one component's",
+                axis=_STAT_VAR_COLUMN,
+                precondition="spliced_component_unknown",
+            )
+        if not self._cell_parts:
+            return
+        held = (
+            pa.concat_tables(self._cell_parts, promote_options="default")
+            .group_by(list(self.cell_columns), use_threads=False)
+            .aggregate([(_COMPONENT_COLUMN, "distinct")])  # ty: ignore[invalid-argument-type]  # pyarrow-stubs widen the aggregation name
+        )
+        lengths = cast(
+            "pa.Int32Array",
+            pc.list_value_length(held.column(f"{_COMPONENT_COLUMN}_distinct").combine_chunks()),
+        )
+        overlapping = held.filter(
+            cast("pa.BooleanArray", pc.greater(lengths, pa.scalar(1, pa.int32())))
+        )
+        if overlapping.num_rows == 0:
+            return
+        first = overlapping.slice(0, 1).to_pylist()[0]
+        roles = sorted(first.pop(f"{_COMPONENT_COLUMN}_distinct"))
+        raise RollupNotSummableError(
+            f"groupby axis {_STAT_VAR_COLUMN!r} refused: the spliced composite "
+            f"{self._composite.provenance!r} serves one component in each cell, but the cell "
+            f"{first!r} holds rows of {roles!r}, so the frame's components overlap and their "
+            "values are not added",
+            axis=_STAT_VAR_COLUMN,
+            precondition="spliced_overlap",
+        )
+
+    def refuse_missing(self) -> None:
+        """Raise `RollupNotSummableError` (`missing_members`) for a row with no `stat_var`, or
+        a cell lacking a member of the component holding it, unless `missing_reads_zero`."""
+        if self._missing_reads_zero:
+            return
+        if self._null_rows:
+            raise RollupNotSummableError(
+                f"groupby axis {_STAT_VAR_COLUMN!r} refused: {self._null_rows} row(s) of the "
+                f"spliced composite {self._composite.provenance!r} hold no {_STAT_VAR_COLUMN!r} "
+                "(a null/suppressed member), and the source has not declared missing members "
+                "as zero",
+                axis=_STAT_VAR_COLUMN,
+                precondition="missing_members",
+            )
+        if not self._member_parts:
+            return
+        groups = (
+            pa.concat_tables(self._member_parts, promote_options="default")
+            .group_by([*self.cell_columns, _COMPONENT_COLUMN, _CODES_COLUMN], use_threads=False)
+            .aggregate([(_STAT_VAR_COLUMN, "distinct")])  # ty: ignore[invalid-argument-type]  # pyarrow-stubs widen the aggregation name
+        )
+        for group in groups.to_pylist():
+            observed = set(group.pop(f"{_STAT_VAR_COLUMN}_distinct"))
+            component = group.pop(_COMPONENT_COLUMN)
+            expected = self._expected.get((component, group.pop(_CODES_COLUMN)), set())
+            if absent := expected - observed:
                 raise RollupNotSummableError(
                     f"groupby axis {_STAT_VAR_COLUMN!r} refused: expected member(s) "
                     f"{tuple(sorted(absent))!r} of the spliced composite's component "
-                    f"{self._cells[cell]!r} never appear in the cell {self._named(cell)!r}, "
-                    "and the source has not declared missing members as zero",
+                    f"{component!r} never appear in the cell {group!r}, and the source has "
+                    "not declared missing members as zero",
                     axis=_STAT_VAR_COLUMN,
                     precondition="missing_members",
                 )
 
-    def _named(self, cell: tuple[object, ...]) -> dict[str, object]:
-        return dict(zip(self.cell_columns, cell, strict=True))
-
-    def _codes(self, ref: str) -> tuple[str | None, ...]:
+    def _codes(self, ref: str) -> str:
         codes = self._lookup.get(ref, {})
-        return tuple(codes.get(code_system) for code_system in self._decoded)
+        return json.dumps([codes.get(code_system) for code_system in self._decoded])
 
     def _selected(self, ref: str) -> bool:
         if self._selection is None:
@@ -290,20 +377,16 @@ class SpliceCheck:
         codes = self._lookup.get(ref, {})
         return all(codes.get(axis) in kept for axis, kept in self._selection.items())
 
-    def _component(self, ref: str) -> str:
-        found = self._component_of.get(ref)
-        if found is None:
+    def _component(self, ref: str) -> str | None:
+        """The role of the one component serving `ref`, noting `ref` as unknown when none
+        does."""
+        if ref not in self._component_of:
             row = self._index.statvar_by_dcid(_bare_dcid(ref))
             role = component_of(self._composite, row) if row is not None else None
-            found = role if role is not None else ref
-            self._component_of[ref] = found
-        return found
-
-
-def splices_components(composite: CompositeDeclaration, *, components: bool) -> bool:
-    """Whether a collapse of `composite`'s components (`components`, `sums_components`)
-    splices them: `composite` is spliced."""
-    return components and composite.kind == "spliced"
+            self._component_of[ref] = role
+            if role is None and self._unknown is None:
+                self._unknown = ref
+        return self._component_of[ref]
 
 
 def rekeys_stat_vars(
@@ -342,8 +425,9 @@ def yields_grammar_frame(
     components: bool = False,
 ) -> bool:
     """Return true when the sum leaves a grammar frame: this frame decodes a summable axis, or
-    the sum adds a stacked composite's components (`components`, `sums_components`), and
-    every unsummed axis holds one value across the resolved members in `lookup`.
+    the collapse adds a stacked composite's components (`sums_components`) or splices a
+    spliced one's (`splices_components`), either of which `components` states, and every
+    unsummed axis holds one value across the resolved members in `lookup`.
 
     The frame carries one `stat_var` on every row and keeps each summable axis named in `by`
     (`kept_axes`) as a string grain column. An unsummed axis holding one value describes the
@@ -478,7 +562,9 @@ def adds_stat_vars(
     collapse is a splice: each cell holds one component's members (`SpliceCheck`), so its
     contributors are keyed on their component (`code_index.composites.component_of`) as well
     as their kept codes, and only two members of one component sharing kept codes add. The
-    headline's net and grant-equivalent members add nothing."""
+    headline's net and grant-equivalent members add nothing. A StatVar no one component
+    serves reads as adding, since nothing tells it apart; the mint refuses it
+    (`SpliceCheck`, `spliced_component_unknown`)."""
     spliced = composite is not None and composite.kind == "spliced"
     if levels or (components and not spliced):
         return True
@@ -490,7 +576,11 @@ def adds_stat_vars(
         if spliced:
             assert composite is not None
             role = component_of(composite, statvar) if statvar is not None else None
-            key = (role if role is not None else _bare_dcid(ref), *key)
+            if role is None:
+                # A StatVar no one component serves cannot be told apart from the others, so
+                # the collapse is read as adding it (`SpliceCheck` refuses it at the mint).
+                return True
+            key = (role, *key)
         if key in seen:
             return True
         seen.add(key)

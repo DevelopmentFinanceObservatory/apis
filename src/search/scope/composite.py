@@ -36,6 +36,7 @@ from code_index.composites import (
     ComponentIdentity,
     CompositeNotServable,
     component_identities,
+    components_splice,
     components_sum,
     provenance_account,
     table_identity,
@@ -859,8 +860,9 @@ def _stat_vars(
     StatVars a mint of each component serves (None where the index does not settle some
     component's members), the served date
     range spans the years the components serve, and `sums_components` states whether a
-    groupby sum collapses the components (`code_index.composites.components_sum`), the rule
-    the mint collapses by."""
+    groupby sum adds the components (`code_index.composites.components_sum`), the rule the
+    mint sums by, and `splices_components` whether it splices them
+    (`code_index.composites.components_splice`), the rule the mint splices by."""
     years = sorted({year for item in served for year in item.served})
     confirmed = sum(
         len(
@@ -877,6 +879,7 @@ def _stat_vars(
             "member_count_exact": True,
             "served_count": None if None in counts else sum(c for c in counts if c is not None),
             "sums_components": components_sum(declaration),
+            "splices_components": components_splice(declaration),
             "data_date_range": (
                 DateRange(start=str(years[0]), end=str(years[-1])) if years else None
             ),
