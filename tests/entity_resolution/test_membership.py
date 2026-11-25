@@ -29,6 +29,13 @@ _AUTHORITY = Authority(name="test authority", version="1")
 _SOVEREIGNTY = Sovereignty(
     states={
         "country/AAA": (Row(member="country/AAA", member_class="geo.country"),),
+        "country/LATE": (
+            Row(
+                member="country/LATE",
+                member_class="geo.country",
+                valid_from=date(2002, 1, 1),
+            ),
+        ),
         "country/LFT": (
             Row(
                 member="country/LFT",
@@ -96,6 +103,8 @@ def test_a_row_holds_over_a_half_open_window(
         ("country/LFT", date(1999, 1, 1), Projection.COUNTRIES),
         # UN membership outranks the declared list of states outside it.
         ("country/LFT", date(2000, 1, 1), Projection.OTHER_STATES),
+        # A state that joins the UN later is already a country before it joins.
+        ("country/LATE", date(1995, 1, 1), Projection.COUNTRIES),
         ("country/OTH", date(2020, 1, 1), Projection.OTHER_STATES),
         ("country/TER", date(2020, 1, 1), Projection.TERRITORIES),
         ("country/OLD", date(1980, 1, 1), Projection.FORMER_STATES),
@@ -105,6 +114,24 @@ def test_sovereignty_classes_a_country_on_a_day(
     member: str, day: date, projection: Projection
 ) -> None:
     assert _SOVEREIGNTY.classify(member, day) is projection
+
+
+def test_classing_never_reads_today(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Today(date):
+        value = date(2000, 1, 1)
+
+        @classmethod
+        def today(cls) -> date:
+            return cls.value
+
+    monkeypatch.setattr("entity_resolution.membership.date", _Today)
+    answers = []
+    for today in (date(1990, 1, 1), date(2030, 1, 1)):
+        _Today.value = today
+        answers.append(
+            [_SOVEREIGNTY.classify(m, date(1995, 1, 1)) for m in ("country/LFT", "country/LATE")]
+        )
+    assert answers[0] == answers[1] == [Projection.COUNTRIES, Projection.COUNTRIES]
 
 
 def test_projections_split_the_active_members_by_class() -> None:
@@ -312,3 +339,66 @@ def test_a_membership_names_each_member_by_its_canonical_name(
     membership = policy.get(ref)
     assert membership.member_labels[member] == label
     assert set(_listed(membership.members())) <= set(membership.member_labels)
+
+
+_OECD = "undata-geo/G00406000"
+_UN = "groups/UN"
+
+
+def test_a_dated_group_classes_members_by_standing_not_membership_on_the_day(
+    policy: MembershipPolicy,
+) -> None:
+    # Switzerland joined the UN in 2002 and West Germany in 1973; both were OECD countries before.
+    in_1995 = policy.members(_OECD, as_of=date(1995, 6, 1)).members
+    in_1965 = policy.members(_OECD, as_of=date(1965, 6, 1)).members
+    assert "country/CHE" in _listed(in_1995)
+    assert "country/DEU" in _listed(in_1965)
+    assert "country/CHE" not in _listed(
+        policy.members(_OECD, projection=Projection.TERRITORIES, as_of=date(1995, 6, 1)).members
+    )
+
+
+def test_a_past_answer_does_not_depend_on_today(
+    policy: MembershipPolicy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Today(date):
+        value = date(2000, 1, 1)
+
+        @classmethod
+        def today(cls) -> date:
+            return cls.value
+
+    monkeypatch.setattr("entity_resolution.membership.date", _Today)
+    answers = []
+    for today in (date(2000, 1, 1), date(2040, 1, 1)):
+        _Today.value = today
+        answers.append(
+            [
+                policy.members(_OECD, projection=p, as_of=date(1965, 6, 1)).members
+                for p in COUNTRY_PROJECTIONS
+            ]
+        )
+    assert answers[0] == answers[1]
+
+
+@pytest.mark.parametrize("ref", [_UN, _OECD])
+def test_todays_projections_follow_the_rows_active_today(
+    policy: MembershipPolicy, ref: str
+) -> None:
+    membership = policy.get(ref)
+    today = date.today()
+    sovereignty = membership.sovereignty
+
+    def class_on_active_rows(member: str) -> Projection:
+        if member in sovereignty.dissolved:
+            return Projection.FORMER_STATES
+        if any(row.active(today) for row in sovereignty.states.get(member, ())):
+            return Projection.COUNTRIES
+        if member in sovereignty.other_states:
+            return Projection.OTHER_STATES
+        return Projection.TERRITORIES
+
+    active = {row.member for row in membership.rows if row.active(today)}
+    for projection in COUNTRY_PROJECTIONS:
+        expected = sorted(m for m in active if class_on_active_rows(m) is projection)
+        assert _listed(membership.members(projection)) == tuple(expected)

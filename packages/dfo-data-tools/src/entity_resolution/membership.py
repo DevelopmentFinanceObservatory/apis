@@ -3,8 +3,9 @@
 Every membership names its authority, whether that authority dates its rows, the entity classes
 it admits, and the projections it records. A projection splits the members by class:
 
-- `countries`, the default: countries that exist today and belong to the United Nations at the
-  date asked. Resolvekit's curated, dated UN membership is the authority for this class.
+- `countries`, the default: countries that exist today whose United Nations membership has not
+  ended by the date asked. Resolvekit's curated, dated UN membership is the authority for this
+  class.
 - `other_states`: states outside the UN, from the declared list in `data/membership_policy.json`,
   which names the source of the class.
 - `territories`: every other country that exists today, which leaves dependent territories.
@@ -169,10 +170,20 @@ class Row:
             self.valid_until is None or day < self.valid_until
         )
 
+    def unended(self, day: date) -> bool:
+        """Whether the row has not ended by `day`: unbounded or ending after it."""
+        return self.valid_until is None or day < self.valid_until
+
 
 @dataclass(frozen=True, slots=True)
 class Sovereignty:
     """Classes a country member into exactly one of the four country projections.
+
+    A member is a country on a day when its UN membership has not ended by then: some UN row has
+    no `valid_until` or one after the day. A state that joined the UN later (Switzerland in 1995)
+    or left the list since (Taiwan in 1965) is a country on that day, so a dated group read at a
+    past date classes its members by the standing they had since. The rule never reads today's
+    date.
 
     `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, and `other_states`
     the declared states outside the UN."""
@@ -185,7 +196,7 @@ class Sovereignty:
         """The country projection `member` falls in on `day`."""
         if member in self.dissolved:
             return Projection.FORMER_STATES
-        if any(row.active(day) for row in self.states.get(member, ())):
+        if any(row.unended(day) for row in self.states.get(member, ())):
             return Projection.COUNTRIES
         if member in self.other_states:
             return Projection.OTHER_STATES
