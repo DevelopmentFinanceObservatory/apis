@@ -1054,9 +1054,8 @@ class ResolveState:
     # (`quantity.share_spans_variable`). The variable then names the share and its whole,
     # so the leg reads as the share's numerator measure: `quantity_requirement` drops the
     # forms a share computes from the variable's own (`quantity.share_numerator_requirement`),
-    # the quantity read's share, rate and base are ignored
-    # (`phase_rank_bind._read_quantity_answer`), and admissibility holds every shape to a
-    # level (`quantity.serves_share_numerator`).
+    # and the quantity read's share, rate and base are ignored
+    # (`phase_rank_bind._read_quantity_answer`).
     share_spans_variable: bool = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule

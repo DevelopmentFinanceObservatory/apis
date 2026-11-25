@@ -460,16 +460,23 @@ SHARE_FORMS: frozenset[NamedNormalisation] = frozenset({"share", "rate"})
 
 
 def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool:
-    """Whether a `share_of` among `operations` has `variable` itself as its phrase, its
-    words equal once casing and spacing are set aside (`code_index.tokens.word_tokens`).
-    The variable then names the share, and the part reads as the share's numerator
-    measure: "share of bilateral ODA" asks for bilateral ODA."""
-    words = [token.text.casefold() for token in word_tokens(variable)]
+    """Whether a `share_of` among `operations` has `variable` itself as its phrase, their
+    words equal once casing, spacing and function words (`FUNCTION_WORDS`) are set aside
+    (`code_index.tokens.word_tokens`): "the share of bilateral ODA" spans "share of
+    bilateral ODA". The variable then names the share, and the part reads as the share's
+    numerator measure: "share of bilateral ODA" asks for bilateral ODA."""
+    words = _content_words(variable)
     return any(
-        operation.verb == "share_of"
-        and [token.text.casefold() for token in word_tokens(operation.phrase)] == words
+        operation.verb == "share_of" and _content_words(operation.phrase) == words
         for operation in operations
     )
+
+
+def _content_words(text: str) -> list[str]:
+    """The casefolded words of `text` other than function words."""
+    return [
+        word for token in word_tokens(text) if (word := token.text.casefold()) not in FUNCTION_WORDS
+    ]
 
 
 def share_numerator_requirement(
@@ -486,17 +493,6 @@ def share_numerator_requirement(
         named=(own.named - SHARE_FORMS) | beside.named,
         framing=(own.framing - SHARE_FORMS) | beside.framing,
     )
-
-
-def serves_share_numerator(
-    shape: ShapeDraft, kinds: Mapping[str, DenominatorKind] | None = None
-) -> bool:
-    """Whether `shape` can be the numerator a `share_of` spanning the part's variable
-    divides (`share_spans_variable`): a level, or a shape whose denominator arc did not
-    resolve, which contradicts nothing (`normalisation_class`). A ratio, a share or a
-    figure per person or per area is already divided, and the operation would divide it
-    again."""
-    return normalisation_class(shape, kinds=kinds) in ("level", "unknown")
 
 
 def with_stated_form(

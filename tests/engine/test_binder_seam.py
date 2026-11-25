@@ -377,6 +377,14 @@ def _share_of(phrase: str) -> tuple[Operation, ...]:
             id="casing-and-spacing-aside",
         ),
         pytest.param(
+            "the share of bilateral ODA",
+            _share_of("share of bilateral ODA"),
+            _read("share"),
+            set(),
+            None,
+            id="function-words-aside",
+        ),
+        pytest.param(
             "share of bilateral ODA",
             _share_of("share of bilateral ODA"),
             _read("share", "ODA", 1),
