@@ -292,8 +292,8 @@ def _log_resolve(
     `surface` is `website`, `api` or `mcp` as a vouched upstream names it in `x-dfo-surface`,
     `studio` for a vouched `conversation:` caller, `direct` with no vouching principal and
     `unknown` for a vouched request naming none. `caller_key` is the identity's caller, an
-    `ip:`, `user:` or `conversation:` key followed by 32 hex digits of a keyed digest, never an address,
-    null when none resolves. `mcp_client` is the end client's MCP `initialize` name on an
+    `ip:`, `user:` or `conversation:` key followed by 32 hex digits of a keyed digest,
+    never an address, null when none resolves. `mcp_client` is the end client's MCP `initialize` name on an
     `mcp` request, `turn_id` the Studio turn on a `conversation:` caller's request, each null
     otherwise. `parts` lists one `{status, spec_ids}` per part in order, `spec_ids` the specs
     the part answers with in rank order, at most ten (`resolve_trace.part_specs`). `trace` is
