@@ -26,6 +26,11 @@ datasets-maintenance = "datasets_api.maintenance:main"
 [project.optional-dependencies]
 eval = [
     "langfuse>=5.2,<6.0",
+    # The DFO's shared eval library: run records, the Pydantic Evals adapter, the
+    # Langfuse sink and the results page. `langfuse` is the extra the sink needs.
+    "dfo-evals[langfuse]",
+    # search.eval runs the corpus as a Pydantic Evals dataset.
+    "pydantic-evals>=2.66",
     "httpx",
     # search.eval.cases parses corpus/*.yaml and corpus/families/*.yaml;
     # scripts/eval_corpus.py checks them.
@@ -334,6 +339,9 @@ dfo-analysis-engine = { workspace = true }
 # `origin` and `destination` flow axes that `dfo_platform.roles.ROLE_AXES` reads.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
+# Pinned to an evals dev commit until v0.1.0 is tagged after the first nightly
+# run record; then the pin moves to the tag.
+dfo-evals = { git = "https://github.com/DevelopmentFinanceObservatory/evals.git", rev = "732a431e186ca4ee549273fea19f9ec3ea698e07" }
 dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/spec-kit" }
 dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/client-contract" }
 
