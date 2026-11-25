@@ -22,15 +22,18 @@ Upstream timeouts bound stalled calls.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import dataclasses
 import functools
 import json
 import logging
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
+from concurrent.futures import Future
 from contextlib import (
-    AbstractContextManager,
+    AbstractAsyncContextManager,
     AsyncExitStack,
     ExitStack,
     aclosing,
@@ -42,6 +45,7 @@ from typing import Annotated, NamedTuple, TypedDict
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import ValidationError
 
 import graph_generation.config as generation_config
 import search.engine.clients.llm as _llm_mod
@@ -52,6 +56,7 @@ from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response,
 from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
+from dfo_platform.cloud_logging import log_event
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
@@ -70,7 +75,7 @@ from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, get_release_service
+from graph_release.service import ReleaseService, get_release_service, release_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -81,7 +86,11 @@ from materialise.shared_profiles import (
     release_shared_profiles,
 )
 from origin_catalogue import bound_catalogue, current_catalogue
-from origin_catalogue.service import CatalogueService, get_catalogue_service
+from origin_catalogue.service import (
+    CatalogueService,
+    get_catalogue_service,
+    release_catalogue_service,
+)
 from search.catalogue.response import (
     CatalogueResponse,
     catalogue_response,
@@ -133,10 +142,13 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import compute_options
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.resolve_trace import drain_resolve_traces
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import prepare_index_views
 from search.engine.schema import schema_payload
+from search.engine.stated_scope import read_stated_scope
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     ConversionCatalogueService,
@@ -148,6 +160,11 @@ from search.models import (
     OptionsResponse,
     ResolveRequest,
     ResolveResponse,
+    StatedScopeEntry,
+    StatedScopeReading,
+    StatedScopeRequest,
+    StatedScopeResponse,
+    TextOrigin,
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
@@ -261,7 +278,7 @@ async def _event_source(
     *,
     hard_deadline: float,
     record: ResolveRecord,
-    line: AbstractContextManager[None],
+    line: AbstractAsyncContextManager[None],
 ) -> AsyncIterator[str]:
     """Merge events with 10-second heartbeat comments. Stop at the terminal frame and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
@@ -279,7 +296,8 @@ async def _event_source(
 
     `line` writes the request's `resolve` log line (`resolve_line`). It wraps the consumer,
     which resumes only once the server took its frame, so `record.delivered` is set when the
-    last frame has left. A terminal error is `record.error_code`.
+    last frame has left. A terminal error is `record.error_code`. The line's wait for the
+    resolve's trace export follows the last frame, so the client holds its answer first.
     """
     queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
@@ -318,7 +336,7 @@ async def _event_source(
 
     prod_task = asyncio.create_task(produce())
     hb_task = asyncio.create_task(heartbeat())
-    with line:
+    async with line:
         try:
             while True:
                 frame = await queue.get()
@@ -443,7 +461,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
             )
 
     # Refresh before every generation-keyed cache lookup.
+    refresh_t0 = time.monotonic()
     await deps.generation.refresh_if_stale()
+    refresh_ms = round((time.monotonic() - refresh_t0) * 1000)
 
     pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
@@ -474,6 +494,10 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     ):
         await deps.skills_index.ready(timeout_s=(budget.soft - time.monotonic()) / 2)
     record = ResolveRecord()
+    record.refresh_ms = refresh_ms
+    received = getattr(request.state, "received", None)
+    if received is not None:
+        record.pre_ms = round((time.monotonic() - received) * 1000)
     caller = request.headers.get("user-agent")
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
@@ -501,18 +525,18 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
     # later, ends a request whose unfinished work does not unwind in time.
-    with (
-        resolve_line(body, record, caller=caller, transport="buffered", served_code=_served_code),
-        request_deadline(budget.hard),
+    async with resolve_line(
+        body, record, caller=caller, transport="buffered", served_code=_served_code
     ):
-        async with asyncio.timeout(budget.hard - time.monotonic()):
-            result: ResolveResponse = await resolve_async(
-                body, budget=budget, record=record, **pipeline_deps
-            )
-        # The degraded-leg flag rides in a header so the body contract stays unchanged.
-        degraded = record.done is not None and record.done.degraded_leg
-        headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
-        return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
+        with request_deadline(budget.hard):
+            async with asyncio.timeout(budget.hard - time.monotonic()):
+                result: ResolveResponse = await resolve_async(
+                    body, budget=budget, record=record, **pipeline_deps
+                )
+            # The degraded-leg flag rides in a header so the body contract stays unchanged.
+            degraded = record.done is not None and record.done.degraded_leg
+            headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
+            return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
 async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
@@ -600,6 +624,47 @@ async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
     result = OptionsResponse(diagnostics=diagnostics, for_=body.for_, options=computed.options)
     # Keep the `for` alias and meaningful `coverage=null` for unconfirmed SSE coverage.
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
+
+
+def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
+    """The scope each posted text states, in order: the entries the raw-text door would read
+    from it, whether it asks for a total, and every provider option it names
+    (`stated_scope.read_stated_scope`). A client confirms which provider options a text
+    states, as a user message or as a requirement's measure. Each text is read normalised, as
+    a part's scope is (`part_scope_intakes`), and origin offsets index the normalised text.
+    A plain `def`, so the regex reads run in FastAPI's threadpool, off the event loop."""
+    limit = settings().max_query_chars
+    for i, text in enumerate(body.texts):
+        if len(text) > limit:
+            raise EngineInputError(
+                f"A text exceeds this deployment's {limit}-character limit.",
+                code="request_invalid",
+                pointer=f"/texts/{i}",
+            )
+    readings = []
+    for i, text in enumerate(body.texts):
+        try:
+            stated = read_stated_scope(normalise_query(text))
+        except ValidationError as error:
+            # A scope phrase longer than an origin can quote (one unbroken word beside a cue).
+            raise EngineInputError(
+                "A text names a scope phrase too long to quote.",
+                code="request_invalid",
+                pointer=f"/texts/{i}",
+            ) from error
+        readings.append(
+            StatedScopeReading(
+                entries=[
+                    StatedScopeEntry(axis=e.axis, option_id=e.option_id, origin=e.origin)
+                    for e in stated.entries
+                    if isinstance(e.origin, TextOrigin)
+                ],
+                total=stated.total,
+                mentions=list(stated.mentions),
+                sums_providers=stated.sums_providers,
+            )
+        )
+    return StatedScopeResponse(readings=readings)
 
 
 async def get_health() -> HealthResponse:
@@ -1135,6 +1200,70 @@ def _require_jev_key() -> None:
         raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
 
 
+def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
+    """The origin catalogue and graph release services, the release loading on a daemon thread
+    under the caller's context while the catalogue loads on this one, since each first load
+    downloads its artifact.
+
+    A failing or interrupted catalogue load raises at once and abandons the release load, which process
+    exit does not wait for. When an abandoned load finishes, it gives back the release service
+    it acquired, or logs its own error as `search_startup_stage_failed`. A failing release
+    load raises its error once the catalogue has loaded and gives back the catalogue service."""
+    release: Future[ReleaseService] = Future()
+    context = contextvars.copy_context()
+
+    def load_release() -> None:
+        release.set_running_or_notify_cancel()
+        try:
+            loaded = context.run(lambda: _timed_load("graph_release", get_release_service))
+            release.set_result(loaded)
+        except BaseException as exc:
+            release.set_exception(exc)
+
+    threading.Thread(target=load_release, name="graph-release-load", daemon=True).start()
+    try:
+        catalogue = _timed_load("origin_catalogue", get_catalogue_service)
+    except BaseException:
+        # An interrupt abandons the load too, so a process that retries startup holds no
+        # second release lease.
+        release.add_done_callback(_abandon_release_load)
+        raise
+    try:
+        return catalogue, release.result()
+    except BaseException:
+        release_catalogue_service(catalogue)
+        raise
+
+
+def _abandon_release_load(release: Future[ReleaseService]) -> None:
+    """Gives back the service an abandoned release load acquired, or logs its error."""
+    if (error := release.exception()) is None:
+        release_release_service(release.result())
+        return
+    log_event(
+        logger,
+        logging.ERROR,
+        "search_startup_stage_failed",
+        exc_info=error,
+        stage="graph_release",
+        error=type(error).__name__,
+    )
+
+
+def _timed_load[T](stage: str, load: Callable[[], T]) -> T:
+    """`load()`, logged as one `search_startup_stage` line with its duration."""
+    started = time.monotonic()
+    result = load()
+    log_event(
+        logger,
+        logging.INFO,
+        "search_startup_stage",
+        stage=stage,
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
 def search_surface(
     *,
     graph: EngineGraphClient | None = None,
@@ -1170,8 +1299,7 @@ def search_surface(
     """
     _require_jev_key()
     # Fail during construction when an artifact or the graph release is missing or unreadable.
-    catalogue = get_catalogue_service()
-    release = get_release_service()
+    catalogue, release = _load_catalogue_and_release()
     # The documents read the code index as they are built, so they are built under the
     # release a request would bind.
     with bound_served_release(release):
@@ -1218,6 +1346,7 @@ def search_surface(
                 finally:
                     variable_breadth = None
                     SEARCH_DEPS_SLOT.clear(app)
+                    await drain_resolve_traces()
 
     router = APIRouter()
     # The handler returns a pre-built Response, so response_model only
@@ -1226,6 +1355,7 @@ def search_surface(
         "/api/search/resolve", response_model=ResolveResponse, responses=_RESOLVE_RESPONSES
     )(resolve)
     router.post("/api/search/options", response_model=OptionsResponse)(list_options)
+    router.post("/api/search/stated-scope", response_model=StatedScopeResponse)(read_stated_scopes)
     router.get("/api/search/healthz", response_model=HealthResponse)(get_health)
     router.get(
         "/api/search/json-schema",

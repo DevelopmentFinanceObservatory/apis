@@ -155,8 +155,14 @@ class FakeUn:
         self.requests: list[dict] = []
         self.count_reads: list[str] = []
         self.max_in_flight = 0
+        # With `hold_until` set, each request waits until that many are in flight, so a
+        # test sees the client's concurrency cap whatever the runner's thread timing. A
+        # client that never reaches it releases them after `hold_timeout` seconds.
+        self.hold_until: int | None = None
+        self.hold_timeout = 2.0
         self._in_flight = 0
         self._lock = threading.Lock()
+        self._released = threading.Event()
 
     def close(self) -> None:
         return None
@@ -169,7 +175,12 @@ class FakeUn:
             self.requests.append(payload)
             self._in_flight += 1
             self.max_in_flight = max(self.max_in_flight, self._in_flight)
+            if self.hold_until is not None and self._in_flight >= self.hold_until:
+                self._released.set()
         try:
+            if self.hold_until is not None and not self._released.is_set():
+                self._released.wait(self.hold_timeout)
+                self._released.set()
             if self.delay:
                 time.sleep(self.delay)
             if any(dcids <= set(payload["nodes"]) for dcids in self.refused):

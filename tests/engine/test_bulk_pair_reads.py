@@ -10,6 +10,7 @@ each role and the facets as a product, and `LATEST` keeps each series' newest ro
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -30,10 +31,17 @@ from search.engine.region.codes import OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations.bulk_pair_reads import BulkPairSdmx, PlannedRead
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
-from search.engine.retrieval.read_plan import PairPlan, PlanRoles, PlanSeries, plan_pairs
+from search.engine.retrieval.read_plan import (
+    PairPlan,
+    PlanRoles,
+    PlanSeries,
+    plan_pairs,
+    read_in_years,
+)
 from search.models import IdentityUnitRequest, SpecObservations, TimeWindow, Warning
 from search.models.identity import IdentityCurrencyRole
 from series_coverage.index import CoverageIndex
+from tests._json_fields import json_fields
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._harness import (
     _SDMX_CSV_CONTENT_TYPE,
@@ -173,6 +181,8 @@ _DEFAULT = ObsFacetFixture(facet_id="f-default", provenance_id=_PROVENANCE, unit
 _SECOND_METHOD = ObsFacetFixture(
     facet_id="f-method", provenance_id=_PROVENANCE, unit=_USD, measurement_method="Estimated"
 )
+# A second facet under the default's method, which contests its years.
+_SECOND_RELEASE = ObsFacetFixture(facet_id="f-release", provenance_id=_PROVENANCE, unit=_USD)
 
 
 @dataclass(frozen=True)
@@ -186,6 +196,9 @@ class _Case:
     debtors: tuple[str, ...] = (_KEN,)
     # Whether the first member's second-method rows are held by SDMX alone, outside the plan.
     unplanned_second_facet: bool = False
+    # The years a composite serves, which a component's plan is read in (`read_in_years`).
+    served: frozenset[int] | None = None
+    second: ObsFacetFixture = _SECOND_METHOD
 
 
 def _holdings(case: _Case) -> list[_Holding]:
@@ -205,7 +218,7 @@ def _holdings(case: _Case) -> list[_Holding]:
                             sv,
                             creditor,
                             debtor,
-                            _SECOND_METHOD,
+                            case.second,
                             tuple(range(2016, end + 3)),
                             planned=not (case.unplanned_second_facet and i == 0),
                         )
@@ -275,6 +288,10 @@ def _preview(
     search_settings(obs_preview_concurrency=concurrency)
     holdings = _holdings(case)
     plan = _plan(holdings, case)
+    if case.served is not None:
+        served_plan = read_in_years(plan, case.served)
+        assert served_plan is not None
+        plan = served_plan
     members = list(plan.members)
     mixer = _Mixer(holdings, failing=case.failing)
     server = RateTableServer(_RATE_BODIES, fallback=mixer.handle)
@@ -319,6 +336,21 @@ _CASES = {
         years=TimeWindow(start_year=2015, end_year=2024),
         unplanned_second_facet=True,
     ),
+    # The first member reads one facet and asks SDMX for the span's years, the others two
+    # and ask from the span's first year to the window's end, or under every date to the
+    # clock's year: every read of the group asks for the union.
+    "served_years_mixed_facets": _Case(
+        two_facets=True,
+        years=TimeWindow(start_year=2015, end_year=2024),
+        unplanned_second_facet=True,
+        served=frozenset(range(2018, 2023)),
+    ),
+    "served_years_every_date": _Case(
+        two_facets=True,
+        unplanned_second_facet=True,
+        served=frozenset(range(2016, 2021)),
+        second=_SECOND_RELEASE,
+    ),
     "two_debtors": _Case(debtors=(_KEN, _UGA)),
     "one_failing_member": _Case(failing=frozenset({_FAILING})),
     "unit_request": _Case(unit_request=IdentityUnitRequest(currency="EUR", prices="current")),
@@ -332,7 +364,7 @@ _CASES = {
 
 @pytest.mark.parametrize("name", list(_CASES))
 def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
-    name: str, search_settings
+    name: str, search_settings, caplog
 ) -> None:
     """Twelve members, each read with its creditor open and two series, preview alike from
     twelve per-series requests and from bulk rows, under every window, a member holding a
@@ -342,6 +374,7 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
     per_series, per_series_warn, per_series_requests = _preview(
         case, concurrency=100, search_settings=search_settings
     )
+    caplog.set_level(logging.INFO, logger="search.engine.region.observations.fetch")
     bulk, bulk_warn, bulk_requests = _preview(case, concurrency=2, search_settings=search_settings)
 
     assert per_series.series, per_series
@@ -356,7 +389,12 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
         periods = {params.get("c[TIME_PERIOD]") for params in per_series_requests}
         # Members whose reads name the same debtors share a request: `two_debtors` has
         # members reading both debtors and members reading the first alone.
-        assert len(bulk_requests) == len(periods) * (2 if name == "two_debtors" else 1)
+        # A composite component's reads ask for the union of their years, one request.
+        expected = 1 if case.served is not None else len(periods)
+        assert len(bulk_requests) == expected * (2 if name == "two_debtors" else 1)
+        # The first member's one-facet read is the one the union widens.
+        widened = [f["span_reads_widened"] for f in json_fields(caplog, "span_reads_widened")]
+        assert sum(widened) == (1 if case.served is not None else 0)
         assert all(len(params["c[variableMeasured]"].split(",")) > 1 for params in bulk_requests)
 
 
@@ -380,7 +418,12 @@ def _rows(sdmx: SdmxClient | BulkPairSdmx, read: PlannedRead, facet_ids: list[st
         return set(roles), pa.Table.from_batches(list(batches), schema=observation_schema(roles))
 
 
-@pytest.mark.parametrize("period", [None, "LATEST"], ids=["every_date", "latest"])
+@pytest.mark.parametrize(
+    "period",
+    # A component's read in the years it serves asks for those years (`PlannedRead.periods`).
+    [None, "LATEST", ["2018", "2019", "2020"]],
+    ids=["every_date", "latest", "years"],
+)
 @pytest.mark.parametrize("quirk", [None, "extra_role", "no_facet_id"])
 def test_each_read_gets_the_rows_its_own_request_returns(period, quirk) -> None:
     """Each planned read, the first member's dispatching its default facet alone and every
@@ -399,6 +442,7 @@ def test_each_read_gets_the_rows_its_own_request_returns(period, quirk) -> None:
             facet_ids=frozenset({"f-default"} if i == 0 else {"f-default", "f-method"}),
             declared_roles=frozenset(_ROLES),
             latest=period == "LATEST",
+            periods=tuple(period) if isinstance(period, list) else None,
         )
         for i in range(_MEMBERS)
         for debtor in case.debtors

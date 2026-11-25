@@ -15,5 +15,6 @@
   "g20 countries": { "name": "Group of Twenty", "members": true },
   "oecd members": { "name": "Organisation for Economic Co-operation and Development", "members": true },
   "ldcs": { "name": "Least Developed Countries" },
+  "low-income countries (lics)": { "name": "World Bank Low-Income Countries" },
   "commonwealth": { "name": "Commonwealth of Nations" }
 }

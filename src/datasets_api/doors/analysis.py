@@ -9,7 +9,7 @@
   freshness from the roots it resolved (`analysis.stored_heads`), composed here and never
   stored. A request stating `include` receives `summary` only when it names it, reading a
   stored answer without it, and `manifest`, the derived manifest of the answer's pair read now
-  (`doors.derived.derived_manifest`), when it names that. A request naming neither gets the
+  (`doors.derived.derived_manifest_model`), when it names that. A request naming neither gets the
   body it always has;
 - 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building, or
   under `latest: "stored"` has no servable head and its rebuild is queued;
@@ -48,10 +48,21 @@ key executor. It logs no `datasets.delivery` line, since it serves no frame. A `
 that also sets `latest`, `true` or `"stored"`, or names a Spec root, refuses `request_invalid`
 (400), since neither names a version, and so does one that sets `include`.
 
-Both routes admit every caller and spend no allowance. The caller is resolved
-(`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
-service cannot name logs as unresolved, a malformed `x-dfo-caller` of a vouched request
-included. Every Datasets code the routes answer
+Both routes spend no allowance. The caller is resolved once per request
+(`dfo_platform.caller.resolve_caller`), for the call's log line and for its share of the door, and
+a caller this service cannot name logs as unresolved, a malformed `x-dfo-caller` of a vouched
+request included. Each caller holds a share of each stage on this instance: requests waiting for
+or holding a keying thread (`DATASETS_ANALYSIS_KEY_MAX_PER_CALLER`), and runs, anchors and
+verifications waiting for or holding an analysis thread (`DATASETS_ANALYSIS_MAX_PER_CALLER`).
+Unset, each share is half its stage's in-flight bound, at least 1: 10 of the 20 keying requests
+and 5 of the 10 analysis requests at the default pool sizes, so one caller never fills a stage
+and a browser's two requests at a time fit. A request past its caller's share refuses retryable
+`caller_over_share` (429) with `Retry-After` 2 at once, while other callers are still admitted,
+and its `Server-Timing` header and `datasets.timings` line count `caller_over_share`, the line
+naming the stage as `over_share_stage`. Every caller this service cannot name shares one share.
+A count is taken before the stage's own bound is checked and released when the request leaves
+the stage, however it leaves it, a timeout included, so a stored answer releases its keying count
+and takes no analysis count. Counts are kept per process. Every Datasets code the routes answer
 goes out at the status the code registry maps on `datasets.analysis`.
 
 A run is keyed first (`analysis.prepare_analysis`), on a thread of the analysis key executor
@@ -81,6 +92,24 @@ for its frames. The request answers timeout (504) after `DATASETS_ANALYSIS_TIMEO
 counted from admission over keying and computing together. A timeout while the run computes
 leaves its thread running on to store the frame and answer. A timeout while it keys stores
 nothing, since the run never reaches an analysis thread, and a retry keys it again.
+
+A run's `Server-Timing` header and `datasets.timings` line carry phases whose sum covers
+`total`: `queue`, from the request's wait for an executor thread to the job's start, and
+`handoff`, from the job's end back to the event loop, summed over the keying and analysis hops;
+`resolve_roots`, planning the tree and resolving its roots (`analysis.prepare_analysis`);
+`request_key`; `stored_answer`, the answer read, its frame file check and the renewal of a file
+near the end of its retention; `derived_manifest`, under `include: ["manifest"]`; `body`,
+validating and dumping `AnalysisReady`; and `serialise`, encoding the response. A run that
+computes adds `locate_roots`, reading its root frames; `evaluate`, the engine's evaluation of
+the tree over them (`analysis._evaluated_frames`); `store_frame`, writing the computed frame; and
+`write_answer`, recording the answer under its request key. Phases recorded inside these say where
+their time went, such as `snapshot_state`, `head_read`, `coverage` and `head_check` inside
+`resolve_roots`, and the connection pool's `db_pool_wait`, `db_connect` and `db_ping` inside
+whichever phase borrowed the connection.
+
+A `latest: "stored"` request keys through `dataset_store.snapshot.SharedVersionReads`, so the
+roots' resolution, the stored answer's file check and a hit's derived manifest read each
+version once for each set of revoking ids.
 """
 
 from __future__ import annotations
@@ -91,13 +120,15 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from dataset_store.snapshot import SharedVersionReads
 from datasets_api.admission import bound_release_served, bounded_materialise_slot
 from datasets_api.analysis import (
     STORED,
@@ -138,14 +169,15 @@ from datasets_api.doors.definition import (
     _run_retrieval,
     definition_deps,
 )
-from datasets_api.doors.derived import DerivedManifest, derived_manifest
+from datasets_api.doors.derived import DerivedManifest, derived_manifest_model
 from datasets_api.doors.mint_errors import MintBackgroundDeclined
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.operations.renewal import renew_on_hit
+from datasets_api.operations.task_create_pool import joining_creates
 from datasets_api.principals import Grant, Principals, VerifyNotPermitted
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.timings import PhaseTimings, door_call
+from datasets_api.timings import PhaseTimings, door_call, phase
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode, RetryMode
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
@@ -171,6 +203,28 @@ class AnalysisBackpressure(Backpressure):
 
     def __init__(self) -> None:
         super().__init__("the analysis door is at its concurrent capacity right now; retry")
+
+
+# The `Retry-After` of a request past its caller's share. A share frees as one of the caller's
+# own requests ends, and a stored answer keys in well under a second.
+_OVER_SHARE_RETRY_AFTER_S = 2
+
+
+class CallerOverShare(Refusal):
+    """The caller already holds its share of one stage of the door on this instance. Maps to
+    retryable `caller_over_share` (429) with `Retry-After`."""
+
+    code = "caller_over_share"
+    retryable = True
+    headers = MappingProxyType({"Retry-After": str(_OVER_SHARE_RETRY_AFTER_S)})
+
+    def __init__(self, *, stage: Literal["keying", "computing"], share: int) -> None:
+        self.stage = stage
+        self.share = share
+        super().__init__(
+            f"this caller already has {share} analysis requests {stage} on this instance, its "
+            "share; retry once one of them ends"
+        )
 
 
 class StatVarsSummed(BaseModel):
@@ -366,13 +420,19 @@ def _pending(pending: AnalysisPending) -> JSONResponse:
     )
 
 
-def _log_caller(request: Request, deps: Deps, *, route: str) -> None:
-    """Log the caller of `request`. A caller the service cannot name logs as unresolved."""
+# The share key of every caller the service cannot name.
+_UNRESOLVED_CALLER = "unresolved"
+
+
+def _caller_share_key(request: Request, deps: Deps, *, route: str) -> str:
+    """Log the caller of `request` and return the key its share counts under. A caller the
+    service cannot name logs as unresolved and counts under `_UNRESOLVED_CALLER`."""
     try:
         key: str | None = resolve_caller(request, deps.settings.caller).key
     except (CallerUnresolved, CallerHeaderInvalid):
         key = None
     logger.info("analysis call", extra={JSON_FIELDS_ATTR: {"route": route, "caller": key}})
+    return _UNRESOLVED_CALLER if key is None else key
 
 
 def classify_analysis_exception(exc: BaseException) -> ProblemSpec | None:
@@ -545,12 +605,15 @@ def _ready(
         ]
     if body.include is not None and "manifest" in body.include:
         member = ready["ref"]["members"][0]
-        ready["manifest"] = derived_manifest(
-            id=member["spec"]["spec_id"],
-            content_version=member["content_version"],
-            current=current,
-        )
-    return AnalysisReady.model_validate(ready).model_dump(mode="json")
+        with phase("derived_manifest"):
+            # The validated model, which `AnalysisReady` takes as it stands and dumps once.
+            ready["manifest"] = derived_manifest_model(
+                id=member["spec"]["spec_id"],
+                content_version=member["content_version"],
+                current=current,
+            )
+    with phase("body"):
+        return AnalysisReady.model_validate(ready).model_dump(mode="json")
 
 
 def _key_job(
@@ -558,7 +621,31 @@ def _key_job(
 ) -> _Keyed:
     """Key `body` (`analysis.prepare_analysis`) and read the answer stored under its key. A
     `latest: "stored"` request resolves its roots from records alone, rendering nothing
-    (`LiveRootSource` `defer_renders`)."""
+    (`LiveRootSource` `defer_renders`), so keying writes nothing a version state holds (it
+    writes a head read mark and may queue renewals and head checks), and its reads share each
+    version's record, state and locations (`SharedVersionReads`): the roots' resolution, the
+    stored answer's file check and the derived manifest of a hit read each once for each set
+    of revoking ids. The sharing ends with this job. The source it
+    hands a run that misses, and that run's own reads on its analysis thread, read the stores
+    as they stand then, so a version revoked or renewed since keying is judged anew."""
+    if body.latest != STORED:
+        return _keyed(deps=deps, current=current, body=body, trace_id=trace_id)
+    reads = SharedVersionReads(current.snapshot_reader)
+    try:
+        return _keyed(
+            deps=replace(deps, snapshot_reader=reads),
+            current=replace(current, snapshot_reader=reads),
+            body=body,
+            trace_id=trace_id,
+        )
+    finally:
+        reads.close()
+
+
+def _keyed(
+    *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
+) -> _Keyed:
+    """`_key_job` over the stores `deps` and `current` read."""
     source = LiveRootSource(
         deps=deps, recipes=current.recipe_store, defer_renders=body.latest == STORED
     )
@@ -657,6 +744,48 @@ _RUN_WAIT_SECONDS = 5.0
 _RUN_QUEUE_PER_THREAD = 4
 
 
+class _CallerShares:
+    """The requests each caller has in one stage of the door, waiting for or holding a thread.
+    Read and written on the event loop alone, as the stage's own count is. A caller holding
+    none has no entry, so the map holds only callers with requests in flight."""
+
+    def __init__(self, stage: Literal["keying", "computing"]) -> None:
+        self._stage: Literal["keying", "computing"] = stage
+        self._held: dict[str, int] = {}
+
+    @contextmanager
+    def hold(self, caller: str, *, share: int, timings: PhaseTimings) -> Iterator[None]:
+        """Count one request of `caller` while the block runs, and release it however the
+        block ends.
+
+        Raises:
+            CallerOverShare: `caller` already holds `share`, counted on `timings` as
+                `caller_over_share`.
+        """
+        held = self._held.get(caller, 0)
+        if held >= share:
+            timings.count("caller_over_share")
+            timings.label("over_share_stage", self._stage)
+            raise CallerOverShare(stage=self._stage, share=share)
+        self._held[caller] = held + 1
+        try:
+            yield
+        finally:
+            left = self._held[caller] - 1
+            if left:
+                self._held[caller] = left
+            else:
+                del self._held[caller]
+
+
+def _share(setting: int | None, *, pool_size: int, queue_per_thread: int) -> int:
+    """A caller's share of a stage: `setting`, else half the stage's in-flight bound, at
+    least 1."""
+    if setting is not None:
+        return setting
+    return max(1, pool_size * (1 + queue_per_thread) // 2)
+
+
 class _Reservations:
     """The analysis threads each waiting anchor or verification needs free, so a run waiting
     beside it leaves them free (`_AnalysisRoutes._on_analysis_thread`). Written from the event
@@ -684,9 +813,9 @@ class _Reservations:
             return max(self._held.values(), default=0)
 
 
-# What a door answers with: the request's `Deps`, its retrieval view and the call's timings in,
-# the answer body out.
-type _Answering = Callable[[Deps, DefinitionDeps, PhaseTimings], Awaitable[dict[str, Any]]]
+# What a door answers with: the request's `Deps`, its retrieval view, the call's timings and the
+# caller's share key in, the answer body out.
+type _Answering = Callable[[Deps, DefinitionDeps, PhaseTimings, str], Awaitable[dict[str, Any]]]
 
 
 class _AnalysisRoutes:
@@ -700,6 +829,9 @@ class _AnalysisRoutes:
         # event loop alone.
         self._keying = 0
         self._running = 0
+        # The same requests counted by caller, each caller to its share of the stage.
+        self._keying_shares = _CallerShares("keying")
+        self._running_shares = _CallerShares("computing")
         self._reservations = _Reservations()
 
     async def _run(
@@ -713,21 +845,26 @@ class _AnalysisRoutes:
         """Answer door `name` with `answering`. A door given `record` delivers: `record`
         records its answer for the call's `datasets.delivery` line."""
         current = self._cell.get()
-        _log_caller(request, current, route=name)
+        caller = _caller_share_key(request, current, route=name)
         deps = definition_deps(
             current, deadline=time.monotonic() + current.settings.analysis_timeout_seconds
         )
         with door_call(name, logger=logger, delivers=record is not None) as call:
-            try:
-                answer = await answering(current, deps, call.timings)
-            except AnalysisPending as pending:
-                outcome: JSONResponse = _pending(pending)
-            except (AnalysisRefused, Refusal) as refused:
-                outcome = _refused(refused)
-            else:
-                if record is not None:
-                    record(answer)
-                outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
+            # A `latest: "stored"` root's head check task create runs beside the rest of
+            # the call.
+            async with joining_creates(call.timings):
+                try:
+                    answer = await answering(current, deps, call.timings, caller)
+                except AnalysisPending as pending:
+                    outcome: JSONResponse = _pending(pending)
+                except (AnalysisRefused, Refusal) as refused:
+                    outcome = _refused(refused)
+                else:
+                    if record is not None:
+                        record(answer)
+                    started = time.perf_counter()
+                    outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
+                    call.timings.record("serialise", (time.perf_counter() - started) * 1000)
         outcome.headers["Server-Timing"] = call.server_timing
         return call.delivered(outcome)
 
@@ -738,6 +875,7 @@ class _AnalysisRoutes:
         current: Deps,
         deps: DefinitionDeps,
         timings: PhaseTimings,
+        caller: str,
         headroom: int = 0,
         reserve: bool = False,
         **kwargs: object,
@@ -745,44 +883,53 @@ class _AnalysisRoutes:
         """Run `job` on a thread of the analysis executor, waiting for one up to
         `_RUN_WAIT_SECONDS` or the deadline, with `_RUN_QUEUE_PER_THREAD` requests waiting per
         thread, and refusing 503 past either bound or once a swap replaces the release the
-        request bound. `headroom` is the threads that must stay free after `job` takes one. A
+        request bound. `caller` waits or holds one of its share of the stage meanwhile. `headroom`
+        is the threads that must stay free after `job` takes one. A
         `reserve` job, an anchor or a verification, holds the threads it needs while it waits,
         and a run waiting beside it leaves them free (`_Reservations`), so runs queued for
         every thread never starve it.
 
         Raises:
+            CallerOverShare: `caller` already holds its share of the stage.
             AnalysisBackpressure: As above.
         """
         assert deps.deadline is not None
         executor = current.analysis_executor
-        if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
-            raise AnalysisBackpressure()
-        reservations = self._reservations
-        token = reservations.add(1 + headroom) if reserve else None
+        share = _share(
+            current.settings.analysis_max_per_caller,
+            pool_size=executor.pool_size,
+            queue_per_thread=_RUN_QUEUE_PER_THREAD,
+        )
+        with self._running_shares.hold(caller, share=share, timings=timings):
+            if self._running >= executor.pool_size * (1 + _RUN_QUEUE_PER_THREAD):
+                raise AnalysisBackpressure()
+            reservations = self._reservations
+            token = reservations.add(1 + headroom) if reserve else None
 
-        def started(**arguments: object) -> Any:
-            if token is not None:
-                reservations.drop(token)
-            return job(**arguments)
+            def started(**arguments: object) -> Any:
+                if token is not None:
+                    reservations.drop(token)
+                return job(**arguments)
 
-        self._running += 1
-        try:
-            return await _run_retrieval(
-                executor,
-                started,
-                deps=deps,
-                timings=timings,
-                refuse=AnalysisBackpressure,
-                wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
-                headroom=headroom if reserve else reservations.headroom,
-                keep_waiting=bound_release_served(),
-                current=current,
-                **kwargs,
-            )
-        finally:
-            self._running -= 1
-            if token is not None:
-                reservations.drop(token)
+            self._running += 1
+            try:
+                return await _run_retrieval(
+                    executor,
+                    started,
+                    deps=deps,
+                    timings=timings,
+                    refuse=AnalysisBackpressure,
+                    wait_seconds=min(_RUN_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
+                    headroom=headroom if reserve else reservations.headroom,
+                    keep_waiting=bound_release_served(),
+                    timed_hop=True,
+                    current=current,
+                    **kwargs,
+                )
+            finally:
+                self._running -= 1
+                if token is not None:
+                    reservations.drop(token)
 
     def _on_analysis_executor(self, job: Any, *, body: BaseModel, headroom: int = 0) -> _Answering:
         """Answer with `job`, an anchor or a verification, on a thread of the analysis
@@ -790,13 +937,14 @@ class _AnalysisRoutes:
         `job` takes one."""
 
         async def answering(
-            current: Deps, deps: DefinitionDeps, timings: PhaseTimings
+            current: Deps, deps: DefinitionDeps, timings: PhaseTimings, caller: str
         ) -> dict[str, Any]:
             return await self._on_analysis_thread(
                 job,
                 current=current,
                 deps=deps,
                 timings=timings,
+                caller=caller,
                 headroom=headroom,
                 reserve=True,
                 body=body,
@@ -808,32 +956,42 @@ class _AnalysisRoutes:
     def _keyed_run(self, body: AnalysisRequest) -> _Answering:
         """Key `body` and read its stored answer on the analysis key executor, then compute any
         other run on the analysis executor. The wait for a keying thread is bounded as the
-        module docstring says."""
+        module docstring says, and the caller holds one of its share of each stage while it
+        waits for or holds that stage's thread."""
 
         async def answering(
-            current: Deps, deps: DefinitionDeps, timings: PhaseTimings
+            current: Deps, deps: DefinitionDeps, timings: PhaseTimings, caller: str
         ) -> dict[str, Any]:
             assert deps.deadline is not None
             trace_id = get_trace_id()
             executor = current.analysis_key_executor
-            if self._keying >= executor.pool_size * (1 + _KEY_QUEUE_PER_THREAD):
-                raise AnalysisBackpressure()
-            self._keying += 1
-            try:
-                keyed = await _run_retrieval(
-                    executor,
-                    _key_job,
-                    deps=deps,
-                    timings=timings,
-                    refuse=AnalysisBackpressure,
-                    wait_seconds=min(_KEY_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())),
-                    keep_waiting=bound_release_served(),
-                    current=current,
-                    body=body,
-                    trace_id=trace_id,
-                )
-            finally:
-                self._keying -= 1
+            share = _share(
+                current.settings.analysis_key_max_per_caller,
+                pool_size=executor.pool_size,
+                queue_per_thread=_KEY_QUEUE_PER_THREAD,
+            )
+            with self._keying_shares.hold(caller, share=share, timings=timings):
+                if self._keying >= executor.pool_size * (1 + _KEY_QUEUE_PER_THREAD):
+                    raise AnalysisBackpressure()
+                self._keying += 1
+                try:
+                    keyed = await _run_retrieval(
+                        executor,
+                        _key_job,
+                        deps=deps,
+                        timings=timings,
+                        refuse=AnalysisBackpressure,
+                        wait_seconds=min(
+                            _KEY_WAIT_SECONDS, max(0.0, deps.deadline - time.monotonic())
+                        ),
+                        keep_waiting=bound_release_served(),
+                        timed_hop=True,
+                        current=current,
+                        body=body,
+                        trace_id=trace_id,
+                    )
+                finally:
+                    self._keying -= 1
             if keyed.answer is not None:
                 return keyed.answer
             return await self._on_analysis_thread(
@@ -841,6 +999,7 @@ class _AnalysisRoutes:
                 current=current,
                 deps=deps,
                 timings=timings,
+                caller=caller,
                 keyed=keyed,
                 trace_id=trace_id,
             )
@@ -910,6 +1069,7 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
             AnalysisTooLarge,
             AnalysisStoreDiverges,
             AnalysisBackpressure,
+            CallerOverShare,
             # A dataset root whose queued rebuild failed (`datasets_api.analysis_roots`).
             RefreshRebuildFailed,
             # A `verify` request from a caller without the `verify` grant.
@@ -939,6 +1099,7 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
                 AnalysisTooLarge(ceiling_kind="analysis_nodes", count=65, cap=64),
                 AnalysisStoreDiverges(spec_id="ops_exemplar", content_version="ocv_exemplar"),
                 AnalysisBackpressure(),
+                CallerOverShare(stage="keying", share=10),
                 RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
                 VerifyNotPermitted(presented=False),
             )
@@ -952,6 +1113,7 @@ __all__ = [
     "AnalysisReady",
     "AnalysisVerified",
     "AnchorAnswer",
+    "CallerOverShare",
     "ResolvedRootBody",
     "RunningAnalyses",
     "analysis_bounds",

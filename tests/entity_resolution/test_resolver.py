@@ -37,7 +37,6 @@ from entity_resolution.resolver import (
     _QUERY_ALIASES,
     _GateOutcome,
     _normalize_key,
-    _parse_group_survivors,
     _resolve_batch_job,
     _ttu,
     _without_article_and_punctuation,
@@ -466,6 +465,10 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("All Donors, Total", "DACOfficialDonors", "official donors (DAC)"),
         ("all official donors", "DACOfficialDonors", "official donors (DAC)"),
         ("all recipients", "DACAllRecipients", "all recipients (DAC)"),
+        ("Total Recipients", "DACAllRecipients", "all recipients (DAC)"),
+        ("developing countries", "DACDevelopingCountries", "developing countries (DAC)"),
+        ("all developing countries", "DACDevelopingCountries", "developing countries (DAC)"),
+        ("Developing Countries, Total", "DACDevelopingCountries", "developing countries (DAC)"),
         (
             "regional development banks",
             "DACRegionalDevelopmentBanks",
@@ -490,6 +493,41 @@ def test_curated_acronym_resolves_to_the_pinned_parent(
     assert isinstance(result, Resolved), (text, result)
     assert result.entity.dcid == dcid
     assert result.entity.name == name
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "dcid"),
+    [
+        ("ODA recipients", NotFound, None),
+        ("low and middle income countries", NotFound, None),
+        ("Developing countries unspecified", Resolved, "DACBilateralUnallocated"),
+        ("least developed countries", Group, "groups/UN.LDC"),
+        ("landlocked developing countries", Group, "groups/UN.LLDC"),
+        ("small island developing states", Group, "groups/UN.SIDS"),
+    ],
+)
+def test_a_developing_countries_neighbour_keeps_its_own_reading(
+    shared_resolver, text: str, kind: type, dcid: str | None
+):
+    """The developing countries' total takes only its own names. "ODA recipients" could be
+    either recipient total and "low and middle income countries" is the World Bank's list,
+    so both stay unresolved; the DAC's unallocated line and the UN's country groups keep
+    their own reading."""
+    graph = FakeGraphLookup(
+        nodes={
+            node: {"typeOf": ("DACGroup",), "name": _UNUSED_GRAPH_NAME}
+            for node in ("DACDevelopingCountries", "DACAllRecipients", "DACBilateralUnallocated")
+        }
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve([text]))
+
+    assert isinstance(result, kind), (text, result)
+    if isinstance(result, Resolved):
+        assert result.entity.dcid == dcid
+    if isinstance(result, Group):
+        assert result.dcid == dcid
 
 
 def test_gate_invariant_no_listed_survivor_falls_to_fallback_ladder(shared_resolver):
@@ -688,19 +726,17 @@ def test_a_dac_region_resolves_to_the_group_its_total_is_paired_with(
     assert [e.dcid for e in result.members] == sorted(member_ids)
 
 
-def _parse_group_survivors_on_shared_thread(resolver, text: str):
-    context = ResolutionContext(entity_types=ADMITTED_TYPES)
-    group_types = resolver._runner.available_group_types
-    return _parse_group_survivors(resolver, text, context, group_types)
-
-
 @pytest.mark.parametrize(
     ("text", "group_name", "reading"),
     [
         ("G7 countries", "G7", "entity"),
         ("the G7 countries", "G7", "entity"),
         ("G20 countries", "G20", "members"),
-        ("OECD countries", "OECD", "entity"),
+        ("OECD countries", "OECD", "members"),
+        ("European Union countries", "European Union", "members"),
+        ("countries in the European Union", "European Union", "members"),
+        ("G20 economies", "G20", "members"),
+        ("Group of Twenty countries", "G20", "members"),
         ("European Union", "European Union", "entity"),
         ("EU countries", "European Union", "members"),
         ("EU member states", "European Union", "members"),
@@ -716,6 +752,20 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
         ("UN", "United Nations", "entity"),
         ("the UN", "United Nations", "entity"),
         ("UN members", "United Nations", "entity"),
+        ("G7 member countries", "G7", "entity"),
+        ("G-7 countries", "G7", "entity"),
+        ("DAC donor countries", "OECD Development Assistance Committee", "entity"),
+        ("G20 creditors", "G20", "members"),
+        ("G20 members", "G20", "members"),
+        ("members of the EU", "European Union", "members"),
+        ("EU member countries", "European Union", "members"),
+        ("OECD member countries", "OECD", "members"),
+        ("low-income countries (LICs)", "Low income", "entity"),
+        ("countries in the G7", "G7", "entity"),
+        ("members of the G7", "G7", "entity"),
+        ("all G20 countries", "G20", "members"),
+        ("European Union (EU)", "European Union", "entity"),
+        ("OECD DAC donors", "OECD Development Assistance Committee", "entity"),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(
@@ -723,8 +773,12 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 ):
     """Long group phrases recover the bare group's membership.
 
-    Parsing handles G7, G20, and OECD. Aliases handle EU and DAC phrases, and a group
-    reached through an alias row that declares `members` says its text names them.
+    A group's listed name resolves whole ("European Union (EU)"). A wording generated from a
+    group's own names ("G7 countries", "members of the G7") takes the reading of the group's
+    curated rows ("<name> countries", "members" or "member states") where they agree ("G20
+    members" reads as the G20's members, as "G20 countries" does, whichever of its names the
+    text uses), and otherwise reads as the group itself, as its bare name does. A curated
+    alias row states its own reading.
     """
     member_ids = shared_resolver.run(
         _members_of_on_shared_thread, shared_resolver.resolver, group_name
@@ -740,6 +794,29 @@ def test_group_phrase_recovers_the_bare_groups_membership(
     assert isinstance(result, Group), (text, result)
     assert [e.dcid for e in result.members] == sorted(member_ids)
     assert result.reading == reading
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "recipient countries (DAC)",
+        "African countries (G20)",
+        "G7 countries (excluding Canada)",
+        "OECD countries in the DAC",
+        "OECD members of the DAC",
+        "DAC members of the OECD",
+    ],
+)
+def test_a_phrase_wider_than_its_group_span_does_not_resolve_to_the_group(
+    shared_resolver, text: str
+):
+    """A group's name inside a longer phrase does not resolve the phrase. The phrase names a
+    different set (a part of the group, or two groups' overlap), and no alias holds it."""
+    resolver = EntityResolver(graph=FakeGraphLookup(nodes={}), shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve([text]))
+
+    assert isinstance(result, NotFound), (text, result)
 
 
 def test_an_alias_that_declares_no_members_resolves_as_the_whole(shared_resolver):
@@ -882,17 +959,8 @@ def test_without_article_and_punctuation(text: str, expected: str):
     assert _without_article_and_punctuation(text) == expected
 
 
-@pytest.mark.parametrize("text", ["Central Africa", "the Sudan region"])
-def test_parse_group_survivors_rejects_a_country_span(shared_resolver, text: str):
-    """Central Africa and the Sudan region parse as Country, outside the allowed group types."""
-    survivors = shared_resolver.run(
-        _parse_group_survivors_on_shared_thread, shared_resolver.resolver, text
-    ).result()
-    assert survivors == ()
-
-
-def test_the_sudan_region_does_not_resolve_via_a_recovered_country_span(shared_resolver):
-    """The unlisted phrase "the Sudan region" does not resolve through a country span."""
+def test_the_sudan_region_does_not_resolve_to_the_country_it_names(shared_resolver):
+    """The unlisted phrase "the Sudan region" does not resolve to Sudan."""
     graph = FakeGraphLookup(
         nodes={"country/SDN": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME}}
     )

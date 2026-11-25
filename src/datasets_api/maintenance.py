@@ -58,6 +58,19 @@ is therefore above 0 only for a row whose body holds neither `prepared_at` nor
 0033's trigger is missing. When any count is above 0 the line has `ERROR` severity and the task
 exits 1. It reads only the runtime database settings.
 
+`rewrite-warnings` runs on every deploy run whose target image serves, after `settle`. It
+rewrites the stored warnings that name refs in an old format
+(`dataset_store.warning_formats.rewrite_old_formats`), in the column and the body, each from its
+own value. It scans `datasets.version_record` on every run, a page of rows per transaction, so
+a failure keeps the pages committed before it, and the next run, which scans from the start,
+finds only the rows still holding an old format. It leaves the member sentences, which
+`backfill-warnings` rewrites, and any list the rewrite cannot parse, which stays as stored. It
+writes one `datasets_warnings_rewritten` line once its last page has committed, counting the
+rows it rewrote (`rewritten_warning_rows`), which sets no exit code; the rows still holding an
+old format are counted by `backfill-warnings`, which runs after it (`legacy_warning_refs`).
+When a page fails, the line is at `ERROR` with the rows its committed pages rewrote, and the
+task fails. It reads only the runtime database settings.
+
 `backfill-descriptions` runs on every deploy, after the services move and the code index they
 run is recorded. It first fills the `continuations` of every published frame's version row
 holding none, recorded before versions stored them or by the previous image until the services
@@ -95,17 +108,24 @@ failed transiently and left for the next run. It exits 1 when the store is unrea
 it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
 It reads the settings `sweep` reads.
 
-`backfill-warnings [--dry-run]` rewrites each stored `coverage_below_scope` member sentence
-that names members by ref into the counts and member fields a mint writes, in the `warnings`
-column and in `immutable_body`, reading each row's members from the graph
-(`warning_backfill`), one row per transaction, starting none once
-`BACKFILL_DESCRIPTIONS_BUDGET` has passed. It writes one `datasets_warning_backfill_failed`
-`ERROR` line per row it leaves, saying whether a later run can get past the failure, and one
-`datasets_warnings_backfilled` line with the counts. It stops at a store outage
-(`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare or was left.
-A row refused for good is refused again on every run from what it stores, so it is reported
-each time and sets no exit code. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
-per row, and compares its split with the stored one on rows a mint already split. When no row
+`backfill-warnings [--dry-run]` runs on every deploy run whose target image serves, after
+`rewrite-warnings`. It rewrites each stored
+`coverage_below_scope` member sentence that names members by ref into the counts and member
+fields a mint writes, in the `warnings` column and in `immutable_body`, each from its own stored
+value, reading each row's members from the graph (`warning_backfill`), one row per transaction,
+starting none once `BACKFILL_DESCRIPTIONS_BUDGET` has passed. It writes one
+`datasets_warning_backfill_failed` line per row it leaves, at `ERROR` when a later run can get
+past the failure and at `WARNING` when the row is refused for good, and one
+`datasets_warnings_backfilled` line with the counts and the version rows still holding a
+warning in any old format (`legacy_warning_refs`). It stops at a store outage
+(`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare, was left or
+failed with a defect, which the next run selects again until the code is fixed.
+A row refused for good is refused again on every run from what it stores, so it is reported each
+time and sets no exit code, as `legacy_warning_refs` does. A count of those rows that fails or
+runs past five sixths of the store's socket bound, 25 s by default, leaves `legacy_warning_refs`
+null, puts the line at `ERROR` with `count_error`, and sets no exit code, since the rows are
+already written. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line per
+row, and compares its split with the stored one on rows a mint already split. When no row
 matches it opens no release and builds no client. It reads the runtime database settings,
 `DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
 release and `ORIGIN_CATALOGUE_URI`.
@@ -385,6 +405,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from dataset_store.warning_formats import rewrite_old_formats
 from datasets_api.admission import MaterialisePermits
 from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
@@ -722,6 +743,21 @@ def run_settle(*, store: DatasetStore) -> int:
     return unsettled
 
 
+def run_rewrite_warnings(*, store: DatasetStore) -> None:
+    """Rewrite the stored warnings in an old format (`warning_formats.rewrite_old_formats`) and
+    emit one `datasets_warnings_rewritten` line counting the rows its committed pages rewrote,
+    each page's count added once it has committed. When a page raises, the line is at `ERROR`
+    and counts only the committed pages, and the exception propagates."""
+    rewritten = 0
+    try:
+        for page in rewrite_old_formats(store):
+            rewritten += page
+    except Exception:
+        emit("datasets_warnings_rewritten", severity="ERROR", rewritten_warning_rows=rewritten)
+        raise
+    emit("datasets_warnings_rewritten", severity="INFO", rewritten_warning_rows=rewritten)
+
+
 def _count(tx: Transaction, sql: str) -> int:
     row = tx.fetch_one(sql)
     # `count(*)` without `GROUP BY` returns exactly one row.
@@ -735,6 +771,14 @@ def _settle() -> int:
     finally:
         close_shared_pool()
     return 1 if unsettled else 0
+
+
+def _rewrite_warnings() -> int:
+    try:
+        run_rewrite_warnings(store=LiveDatasetStore(connections=shared_pool()))
+    finally:
+        close_shared_pool()
+    return 0
 
 
 def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
@@ -1255,7 +1299,7 @@ def _backfill_warnings(dry_run: bool) -> int:
     try:
         rows = select_rows(store, new_format=dry_run)
         if not rows:
-            emit_nothing_backfilled(dry_run=dry_run)
+            emit_nothing_backfilled(store, dry_run=dry_run)
             return 0
         try:
             settings = DatasetsSettings.from_env()
@@ -2687,6 +2731,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks.add_parser(
         "settle", help="label raw pin principals and count version rows holding no facts"
     ).set_defaults(run=_settle)
+    tasks.add_parser(
+        "rewrite-warnings",
+        help="rewrite stored warnings in an old format",
+    ).set_defaults(run=_rewrite_warnings)
     tasks.add_parser(
         "backfill-descriptions",
         help="write a description record for every version made before records existed",

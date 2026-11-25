@@ -25,7 +25,7 @@ datasets-maintenance = "datasets_api.maintenance:main"
 
 [project.optional-dependencies]
 eval = [
-    "langfuse>=4.6.1",
+    "langfuse>=5.2,<6.0",
     "httpx",
     # search.eval.cases parses corpus/*.yaml and corpus/families/*.yaml;
     # scripts/eval_corpus.py checks them.
@@ -58,6 +58,10 @@ engine = [
     # releases broke its API. `zstd` brings backports-zstd, without which the SDK sends
     # request bodies uncompressed below Python 3.14.
     "typesafe-sdk[zstd]==0.7.5",
+    # search.engine.resolve_trace sends one trace per resolve. Capped at the major
+    # verified here, as dfo-ai caps it. Brings opentelemetry-sdk, whose TracerProvider
+    # keeps the client's spans off the global provider.
+    "langfuse>=5.2,<6.0",
     "search[api]",
     "pydantic>=2.13",
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the
@@ -286,7 +290,8 @@ dfo-analysis-engine = { workspace = true }
 # route serves, each at its status. Its frame grammar is 1.2.0, which adds `deflation_basis`,
 # and its steps schema's `simple_unit` and components catalogue's `structured_unit`
 # carry `deflation_basis` too, under components catalogue release 2026.11.0. It also adds the
-# `order` member, under catalogue release 2026.11.1.
+# `order` member, under catalogue release 2026.11.1. Its description schema adds
+# `freshness.partial_periods`, under catalogue release 2026.11.2.
 # It maps the share routes' refusals on presentation.shares at the statuses the
 # presentation write and components routes use, adds `payload_too_large` (413)
 # for a share body over the routes' limit, maps `timeout` (504) on
@@ -329,8 +334,8 @@ dfo-analysis-engine = { workspace = true }
 # `origin` and `destination` flow axes that `dfo_platform.roles.ROLE_AXES` reads.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

@@ -1,8 +1,9 @@
 """`datasets-maintenance` dispatches tasks by subcommand. Its daily sweep reports reconciliation
 counts per tier, `age-operations` fails abandoned operations and deletes terminal ones past
 the published retention, `backfill-frame1` converts pinned frame1 documents to canonical
-frames, and `settle` labels the raw pin principals migration 0026 missed and counts the version
-rows holding no facts or the enrichment `kind`, each reporting structured log lines."""
+frames, `settle` labels the raw pin principals migration 0026 missed and counts the version
+rows holding no facts or the enrichment `kind`, and `rewrite-warnings` rewrites stored warnings
+in an old format, each reporting structured log lines."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, get_args
 
 import pytest
@@ -491,6 +493,39 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
         if line["event"] == "datasets_settled"
     ] == [(severity, left, left, left)]
     assert closed == [True]
+
+
+@pytest.mark.usefixtures("job_env")
+def test_rewrite_warnings_runs_from_the_job_environment_alone(monkeypatch, capsys):
+    """`rewrite-warnings` counts each page once it has committed and closes the pool. A page
+    that raises fails the task after an `ERROR` line counting only the pages before it."""
+    committed = [2, 1]
+    failure = RuntimeError("lock timeout")
+
+    def pages(store, *, fail: bool):
+        yield committed[0]
+        if fail:
+            raise failure
+        yield committed[1]
+
+    closed: list[bool] = []
+    monkeypatch.setattr(maintenance, "LiveDatasetStore", lambda connections: object())
+    monkeypatch.setattr(maintenance, "shared_pool", lambda: object())
+    monkeypatch.setattr(maintenance, "close_shared_pool", lambda: closed.append(True))
+
+    monkeypatch.setattr(maintenance, "rewrite_old_formats", partial(pages, fail=False))
+    assert maintenance.main(["rewrite-warnings"]) == 0
+    monkeypatch.setattr(maintenance, "rewrite_old_formats", partial(pages, fail=True))
+    with pytest.raises(RuntimeError, match="lock timeout"):
+        maintenance.main(["rewrite-warnings"])
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [
+        (line["severity"], line["rewritten_warning_rows"])
+        for line in lines
+        if line["event"] == "datasets_warnings_rewritten"
+    ] == [("INFO", 3), ("ERROR", 2)]
+    assert closed == [True, True]
 
 
 def _statements(sql: str) -> list[str]:

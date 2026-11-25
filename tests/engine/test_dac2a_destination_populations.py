@@ -24,6 +24,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from origin_catalogue import DFO
 from search.engine.clients.graph import Facet
+from search.engine.errors import EngineInputError
 from search.engine.events import ObservationsEvent
 from search.engine.quantity import NamedDenominator
 from search.engine.region import (
@@ -39,8 +40,10 @@ from search.engine.region.state import ResolveState
 from search.engine.retrieval import role_resolve
 from search.models import (
     BaseIdentity,
+    ChoiceOrigin,
     DatasetResubmitInput,
     DefinitePart,
+    Entry,
     IdentityBindingValue,
     NoDataPart,
     OptionAvailability,
@@ -54,6 +57,7 @@ from search.models import (
     ResubmitIdentityEntry,
     Spec,
     Warning,
+    WholeRequest,
 )
 from search.render.heading import LATEST_YEAR_LABEL
 from search.render.plan import render_sentence_plan
@@ -1309,9 +1313,16 @@ def _nearest_real(monkeypatch: pytest.MonkeyPatch) -> Callable[[FakeSdmxClient],
             )
             for scenario, source in (
                 ("H1", _BILATERAL),
-                ("H2", DAC2A_INCLUSIVE),
                 ("H6", _BILATERAL),
             )
+        ),
+        # A default request resolves the imputed component once, with no preview.
+        pytest.param(
+            _answered(_SCENARIOS["H2"]),
+            None,
+            DAC2A_INCLUSIVE,
+            [("answer", True), ("resubmit", True)],
+            id="H2",
         ),
         pytest.param(
             _answered(lambda: _trailing("H1")),
@@ -1382,3 +1393,193 @@ def test_a_donor_with_no_total_oda_rows_answers_no_observations(
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "no_observations"
+
+
+# The bilateral line from France at the developing countries' total, beside `_AT_TOTAL`.
+_AT_DEVELOPING = {**_AT_TOTAL, (_DAC2A_ATTRIBUTED, _FRA, _DEVELOPING): 9}
+
+
+def _france_answer(recipient: str | None) -> DefinitePart:
+    """The fresh answer for ODA from France, to `recipient` or to no recipient named."""
+    entities = [_FRANCE, *([("to", recipient)] if recipient else [])]
+    message = "official development assistance from France" + (
+        f" to {recipient}" if recipient else ""
+    )
+    return _part(
+        offline_resolve(
+            _fresh_request(entities, message=message, open_role=None),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(_AT_DEVELOPING),
+        )
+    )
+
+
+def _under_total_oda(
+    part: DefinitePart, held: dict[tuple[str, str, str], int] = _AT_DEVELOPING
+) -> DefinitePart:
+    """`part`'s scope base resubmitted under `provider:contributions`, DAC2a's total ODA,
+    read over `held`."""
+    choices = part.spec.resolved.scope_choices
+    assert choices is not None
+    switch = Entry(
+        axis="provider",
+        option_id="provider:contributions",
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=f"{part.spec.spec_id}:provider"),
+    )
+    return _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=choices.base.identity,
+                            scope_entries=[switch],
+                        )
+                    ]
+                )
+            ),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(held),
+        )
+    )
+
+
+def test_developing_countries_keep_their_recipient_through_the_bilateral_composite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "France ODA to developing countries" reads DAC2a's bilateral composite naming
+    `DACDevelopingCountries`, in its identity and in its scope's base, and a resubmit of it
+    answers the same Spec. Total ODA to the bilateral side holds no core contribution, so
+    its scope offers no switch to total ODA (`destination_bilateral`) and a resubmit asking
+    for one refuses, where France's ODA to no recipient named switches to total ODA to all
+    recipients, the published total of both sides."""
+    _patched_coverage(monkeypatch, _AT_DEVELOPING)
+
+    named = _france_answer("developing countries")
+    unnamed = _france_answer(None)
+
+    choices = named.spec.resolved.scope_choices
+    assert choices is not None
+    assert named.spec.definition.identity.entities["destination"] == [_DEVELOPING]
+    assert choices.base.identity.entities["destination"] == [_DEVELOPING]
+    assert _resolve_resubmit(named.spec.definition.identity, held=_AT_DEVELOPING).spec.spec_id == (
+        named.spec.spec_id
+    )
+    (total,) = [
+        option
+        for choice in choices.choices
+        for option in choice.options
+        if option.option_id == "provider:contributions"
+    ]
+    assert (total.availability.status, total.availability.code) == (
+        "unavailable",
+        "provider_not_offered",
+    )
+    with pytest.raises(EngineInputError) as refused:
+        _under_total_oda(named)
+    assert refused.value.code == "requested_option_unavailable"
+    at_all = {**_AT_DEVELOPING, (_DAC2A_MEMBER, _FRA, _ALL_RECIPIENTS): 500}
+    _patched_coverage(monkeypatch, at_all)
+    switched = _under_total_oda(unnamed, at_all).spec.definition.identity
+    assert switched.entities["destination"] == [_ALL_RECIPIENTS]
+    assert not switched.open_roles
+    assert (switched.facets or {}).get("provenance") is None
+
+
+def _whole_of(part: DefinitePart, held: dict[tuple[str, str, str], int]) -> DefinitePart:
+    """The provider whole of `part`, its scope's base and entries resubmitted with `whole`,
+    read over `held`."""
+    choices = part.spec.resolved.scope_choices
+    assert choices is not None
+    return _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=choices.base.identity,
+                            scope_entries=choices.entries,
+                            whole=WholeRequest(axis="provider"),
+                        )
+                    ]
+                )
+            ),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(held),
+        )
+    )
+
+
+@pytest.mark.parametrize("recipient", ["developing countries", None], ids=["named", "unnamed"])
+def test_france_s_provider_whole_is_total_oda_to_all_recipients(
+    monkeypatch: pytest.MonkeyPatch, recipient: str | None
+) -> None:
+    """DAC2a declares that the provider whole of a part over the whole recipient population
+    rebinds the recipient side (`ProviderWhole.recipient`): France's ODA to developing
+    countries, whose switch to total ODA alone is refused, and France's ODA to no recipient
+    named both take total ODA to all recipients, and `derived` states the rebind. The
+    whole's scope base and entries posted again without `whole` answer the same Spec. Compile
+    judges the switch to total ODA on the identity the recipient edit produces, so the pair
+    holds on the composite where the switch alone is refused."""
+    _patched_coverage(monkeypatch, _AT_DEVELOPING)
+    part = _france_answer(recipient)
+    at_all = {**_AT_DEVELOPING, (_DAC2A_MEMBER, _FRA, _ALL_RECIPIENTS): 500}
+    _patched_coverage(monkeypatch, at_all)
+
+    whole = _whole_of(part, at_all)
+
+    identity = whole.spec.definition.identity
+    assert identity.entities["destination"] == [_ALL_RECIPIENTS]
+    assert not identity.open_roles
+    assert (identity.facets or {}).get("provenance") is None
+    scope = whole.spec.resolved.scope_choices
+    assert scope is not None and scope.derived is not None
+    assert (scope.derived.whole.option_id, scope.derived.rebind) == (
+        "provider:contributions",
+        f"recipient:{_ALL_RECIPIENTS}",
+    )
+    assert scope.derived.part.spec_id == part.spec.spec_id
+    again = _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=scope.base.identity,
+                            scope_entries=scope.entries,
+                        )
+                    ]
+                )
+            ),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(at_all),
+        )
+    )
+    assert again.spec.spec_id == whole.spec.spec_id
+
+
+def test_a_plain_switch_to_total_oda_on_the_developing_countries_composite_still_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no recipient edit beside it, the switch to total ODA on France's bilateral ODA to
+    developing countries is judged on the composite naming them, where total ODA holds no
+    core contribution, and refuses at the entry as before."""
+    at_all = {**_AT_DEVELOPING, (_DAC2A_MEMBER, _FRA, _ALL_RECIPIENTS): 500}
+    _patched_coverage(monkeypatch, at_all)
+    named = _france_answer("developing countries")
+
+    with pytest.raises(EngineInputError) as refused:
+        _under_total_oda(named, at_all)
+
+    assert (refused.value.code, refused.value.pointer) == (
+        "requested_option_unavailable",
+        "/input/entries/0/scope_entries/0",
+    )

@@ -1246,8 +1246,12 @@ def default_scope_of(members: Sequence[MemberProbe]) -> DefaultPlaceScope:
 def merge_facets(facets: Sequence[Facet]) -> Facet:
     """The first of `facets` with the others' points added: counts summed, date bounds
     widened, dated points concatenated in order, the earliest series end kept
-    (`Facet.first_series_end`), and annual evidence held only when every facet holds it
-    (`Facet.reads_annual`). The merged dates are complete while
+    (`Facet.first_series_end`), and annual evidence held only when every facet that
+    carries evidence holds it (`Facet.reads_annual`). A coverage facet (`Facet.dates_coarsened`)
+    with no evidence of its own states none either way, since coverage's years are
+    none, so the evidence reads the other facets alone: a coverage facet merged with a
+    complete bare-year graph facet reads annual. A merge of coverage facets alone states
+    no evidence (`annual_evidence` None). The merged dates are complete while
     each facet's dates account for its observations, so a facet read without dates leaves
     them incomplete. Metadata stays the first facet's.
 
@@ -1270,8 +1274,18 @@ def merge_facets(facets: Sequence[Facet]) -> Facet:
         dates_complete=all(
             _dates_account_for_points(f) if dates else f.dates_complete for f in facets
         ),
-        annual_evidence=all(f.reads_annual for f in facets),
+        annual_evidence=_merged_annual_evidence(facets),
     )
+
+
+def _merged_annual_evidence(facets: Sequence[Facet]) -> bool | None:
+    """The annual evidence of `facets` merged (`merge_facets`): False when a facet carrying
+    evidence reads otherwise, True when every one reads annual, None when each is a coverage
+    facet stating none."""
+    judged = [f for f in facets if not (f.dates_coarsened and f.annual_evidence is None)]
+    if not judged:
+        return None
+    return all(f.reads_annual for f in judged)
 
 
 def _dates_account_for_points(facet: Facet) -> bool:

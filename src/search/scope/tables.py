@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
+from origin_catalogue.context import current_source_scope
 from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
@@ -26,11 +27,17 @@ class AxisTable:
     `published` says the part counts a published total, whose options may also bind the code
     of another total (`PUBLISHED_BINDING`). `conflicts` are the pairs of one of the axis's
     options and an option of another axis that cannot hold together on this part, beside the
-    ones every part declares (`rules.CONFLICTS`).
+    ones every part declares (`rules.CONFLICTS`). `whole` is the option that holds the
+    axis's whole, the one a whole request with no option asks for (`whole.derive_whole`);
+    None where the axis declares none, with `whole_cause` why. `whole_alternatives` are the
+    other options a client may ask for as the whole (DAC2a's inclusive scope beside total
+    ODA, a side summed over its members beside its total). `whole_rebind` is the side option
+    the declared whole takes beside `whole` (DAC2a's total ODA to all recipients,
+    `ProviderWhole.recipient`), None where the whole keeps the part's sides.
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
-    axis or binding kind, a `preference`, `held` or `rules` naming no option, or `rules`
-    naming no rule for `held`."""
+    axis or binding kind, a `preference`, `held` or `rules` naming no option, `rules`
+    naming no rule for `held`, or a `whole` or `whole_alternatives` naming no option."""
 
     axis: ScopeAxis
     options: tuple[Option, ...]
@@ -40,6 +47,10 @@ class AxisTable:
     concept: str | None = None
     published: bool = False
     conflicts: tuple[Conflict, ...] = ()
+    whole: str | None = None
+    whole_alternatives: tuple[str, ...] = ()
+    whole_cause: str = "whole_undeclared"
+    whole_rebind: str | None = None
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]
@@ -61,6 +72,12 @@ class AxisTable:
             raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
         if self.held not in self.rules:
             raise ScopeTableError(f"{self.axis!r} names no rule for {self.held!r}")
+        if self.whole is not None and self.whole not in ids:
+            raise ScopeTableError(f"{self.axis!r} whole {self.whole!r} names no option")
+        if not set(self.whole_alternatives) <= set(ids):
+            raise ScopeTableError(
+                f"{self.axis!r} whole alternatives {self.whole_alternatives} name no option"
+            )
 
     @property
     def rule(self) -> str:
@@ -131,14 +148,21 @@ class ScopeFacts:
     _scans: dict[tuple[int, tuple[str, ...]], tuple[IndexFamily, FamilyValues]] = field(
         default_factory=dict, init=False, compare=False, repr=False
     )
-    _years: dict[str, object] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _years: dict[tuple[tuple[str, ...] | None, str], object] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
 
     def remembered[T](self, key: str, read: Callable[[], T]) -> T:
         """`read()`, read once per build for `key`, a canonical document of what it reads
-        (`composite.component_years` keys the years an identity's family holds on it)."""
-        if key not in self._years:
-            self._years[key] = read()
-        return cast(T, self._years[key])
+        (`composite.component_years` keys the years an identity's family holds on it), and
+        the source scope bound to the caller's context
+        (`origin_catalogue.current_source_scope`), which admits the coverage rows it reads.
+        So a read under a part's source scope and one under none keep apart."""
+        scope = current_source_scope()
+        scoped = (None if scope is None else tuple(sorted(scope)), key)
+        if scoped not in self._years:
+            self._years[scoped] = read()
+        return cast(T, self._years[scoped])
 
     def family_values(self, family: IndexFamily, properties: tuple[str, ...]) -> FamilyValues:
         """What `family`'s rows hold on `properties` (`FamilyValues`), read in one scan of

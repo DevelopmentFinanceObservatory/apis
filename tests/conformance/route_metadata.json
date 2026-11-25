@@ -119,6 +119,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "read_heads",
+    "operation_id": "datasets_read_heads",
+    "path": "/api/datasets/heads",
+    "summary": "Read Heads",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_health",
     "operation_id": "datasets_get_health",
     "path": "/api/datasets/healthz",
@@ -996,6 +1005,15 @@
     "operation_id": "search_resolve",
     "path": "/api/search/resolve",
     "summary": "Resolve",
+    "surface": "search"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "read_stated_scopes",
+    "operation_id": "search_read_stated_scopes",
+    "path": "/api/search/stated-scope",
+    "summary": "Read Stated Scopes",
     "surface": "search"
   },
   {

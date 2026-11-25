@@ -51,12 +51,10 @@ formats = ["dfo-data-tools[sdmx]", "openpyxl>=3.1.5"]
 surface = ["fastapi>=0.138", "starlette", "uvicorn"]
 # entity_resolution's custom BYOD pack. Exact pin -- 0.1.x is pre-1.0 and its
 # API edges move; both the engine and graph extras pull this in through
-# dfo-data-tools, so the whole repo resolves to one version. `[parsing]`
-# pulls in `ahocorasick_rs`, which `resolvekit.parse()` needs to recover a
-# group span from inside a longer phrase (e.g. "G7 countries").
+# dfo-data-tools, so the whole repo resolves to one version.
 # entity_resolution also imports graph_generation directly (its own shared
 # GenerationStamp), so `resolve` carries `generation`'s own dependencies too.
-resolve = ["resolvekit[parsing]==0.1.13", "dfo-data-tools[generation]"]
+resolve = ["resolvekit==0.1.13", "dfo-data-tools[generation]"]
 # graph_generation.source.CloudRunGenerationSource authenticates its Cloud
 # Run Admin API read with Application Default Credentials --
 # google.auth.default() plus a bearer-token refresh, the same shape as
@@ -94,11 +92,11 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 dfo-analysis-engine = { workspace = true }
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/spec-kit" }
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c65c7e162be25cce1e7824d93c3ab571c7055b9e", subdirectory = "python/descriptions" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

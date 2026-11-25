@@ -68,8 +68,9 @@ type _Group = tuple[frozenset[str], frozenset[str]]
 class PlannedRead:
     """One per-series read the preview will make: its bare `variable`, the dcids it filters
     each bound role on (`bound`, in the read's role order), the facet ids it may dispatch
-    (its planned group), the roles its variable declares, and under a `latest` window the
-    year its member elected (`elected_year`)."""
+    (its planned group), the roles its variable declares, under a `latest` window the year
+    its member elected (`elected_year`), and outside one the periods it asks for
+    (`periods`, `materialise.SpanRead.fetched_periods`), None for every period."""
 
     variable: str
     bound: _Bound
@@ -77,6 +78,7 @@ class PlannedRead:
     declared_roles: frozenset[str]
     latest: bool
     elected_year: int | None = None
+    periods: tuple[str, ...] | None = None
 
     @property
     def group(self) -> _Group:
@@ -85,11 +87,11 @@ class PlannedRead:
         return self.declared_roles, frozenset(role for role, _dcids in self.bound)
 
     def requests(self, period: _Period) -> bool:
-        """Whether materialise's read may ask for `period`. Outside `latest` it sets no time
-        filter. Under `latest` it asks for `LATEST` or the one year its member elected
+        """Whether materialise's read may ask for `period`. Outside `latest` it asks for its
+        `periods`. Under `latest` it asks for `LATEST` or the one year its member elected
         (`materialise.generation._time_period_for_window`)."""
         if not self.latest:
-            return period is None
+            return period == self.periods
         if period == "LATEST":
             return True
         return self.elected_year is not None and period == (str(self.elected_year),)

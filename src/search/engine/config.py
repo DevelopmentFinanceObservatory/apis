@@ -78,6 +78,9 @@ SEARCH_MAX_CODE_PARTS: int = 32
 SEARCH_MAX_PART_ENTITIES: int = 16
 SEARCH_MAX_VARIABLE_TEXT_CHARS: int = 200
 SEARCH_MAX_ENTITY_TEXT_CHARS: int = 128
+# Texts one stated-scope request may hold, duplicated as the Field literal in
+# search.models.stated_scope_door. Each text may hold up to `max_query_chars` characters.
+SEARCH_MAX_STATED_SCOPE_TEXTS: int = 64
 SEARCH_MAX_ROLE_TEXT_CHARS: int = 64
 SEARCH_MAX_TIME_TEXT_CHARS: int = 100
 SEARCH_MAX_UNIT_TEXT_CHARS: int = 100
@@ -683,6 +686,8 @@ class SearchSettings(BaseSettings):
                 "max_part_entities": SEARCH_MAX_PART_ENTITIES,
                 "max_variable_text_chars": SEARCH_MAX_VARIABLE_TEXT_CHARS,
                 "max_entity_text_chars": SEARCH_MAX_ENTITY_TEXT_CHARS,
+                "max_stated_scope_texts": SEARCH_MAX_STATED_SCOPE_TEXTS,
+                "max_stated_scope_text_chars": self.max_query_chars,
                 "max_role_text_chars": SEARCH_MAX_ROLE_TEXT_CHARS,
                 "max_time_text_chars": SEARCH_MAX_TIME_TEXT_CHARS,
                 "max_unit_text_chars": SEARCH_MAX_UNIT_TEXT_CHARS,

@@ -6,12 +6,20 @@ the same name, so `AlreadyExists` means an earlier create succeeded and counts a
 retryable resubmit increments `submission_count` and gets a new name. The default 10-second
 enqueue timeout is a third of `datasets_api.operations.dispatch.ENQUEUE_RECOVERY_SECONDS`. A
 caller on a read path passes a shorter one (`datasets_api.operations.head_check`).
+
+The worker re-enqueues an operation whose run failed transiently (`RetryTaskClient`), scheduled
+the delay the worker route picks ahead (`datasets_api.operations.worker_app`), under the name `{operation_id}-{submission_count}`
+plus `-retry{generation}`, where the generation is the failed claim's place in the submission
+(`Operation.submission_attempts`). Each generation names a new task, so a retry never collides
+with the submission's own task or an earlier retry, and a repeated create of the same retry is
+an `AlreadyExists` no-op.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -69,6 +77,21 @@ class TaskClient(Protocol):
         ...
 
 
+class RetryTaskClient(Protocol):
+    def enqueue_retry(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        generation: int,
+        delay_seconds: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        """Enqueues the `generation`th retry of this operation submission, scheduled
+        `delay_seconds` ahead, waiting at most `timeout` seconds for the create."""
+        ...
+
+
 class NullTaskClient:
     """Raises on enqueue so missing live-client configuration surfaces immediately."""
 
@@ -88,6 +111,7 @@ class FakeTaskClient:
 
     def __init__(self, *, on_enqueue: Callable[[str, int], None] | None = None) -> None:
         self.enqueued: list[tuple[str, int]] = []
+        self.retries: list[tuple[str, int, int, int]] = []
         self.timeouts: list[float] = []
         self._on_enqueue = on_enqueue
 
@@ -102,6 +126,19 @@ class FakeTaskClient:
         self.enqueued.append((operation_id, submission_count))
         if self._on_enqueue is not None:
             self._on_enqueue(operation_id, submission_count)
+
+    def enqueue_retry(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        generation: int,
+        delay_seconds: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        """Records `(operation_id, submission_count, generation, delay_seconds)`."""
+        self.timeouts.append(timeout)
+        self.retries.append((operation_id, submission_count, generation, delay_seconds))
 
 
 class LiveTaskClient:
@@ -129,10 +166,45 @@ class LiveTaskClient:
         submission_count: int,
         timeout: float = ENQUEUE_TIMEOUT_SECONDS,
     ) -> None:
+        self._create(
+            task_id=f"{operation_id}-{submission_count}",
+            operation_id=operation_id,
+            submission_count=submission_count,
+            schedule_at=None,
+            timeout=timeout,
+        )
+
+    def enqueue_retry(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        generation: int,
+        delay_seconds: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        self._create(
+            task_id=f"{operation_id}-{submission_count}-retry{generation}",
+            operation_id=operation_id,
+            submission_count=submission_count,
+            schedule_at=time.time() + delay_seconds,
+            timeout=timeout,
+        )
+
+    def _create(
+        self,
+        *,
+        task_id: str,
+        operation_id: str,
+        submission_count: int,
+        schedule_at: float | None,
+        timeout: float,
+    ) -> None:
+        """Creates one task, scheduled at the epoch second `schedule_at` or else at once."""
         from google.api_core.exceptions import AlreadyExists
 
-        task_name = f"{self._queue}/tasks/{operation_id}-{submission_count}"
-        task = {
+        task_name = f"{self._queue}/tasks/{task_id}"
+        task: dict[str, object] = {
             "name": task_name,
             "http_request": {
                 "http_method": "POST",
@@ -150,6 +222,8 @@ class LiveTaskClient:
             },
             "dispatch_deadline": {"seconds": DISPATCH_DEADLINE_SECONDS},
         }
+        if schedule_at is not None:
+            task["schedule_time"] = {"seconds": int(schedule_at)}
         try:
             self._client.create_task(request={"parent": self._queue, "task": task}, timeout=timeout)
         except AlreadyExists:
@@ -184,6 +258,7 @@ __all__ = [
     "FakeTaskClient",
     "LiveTaskClient",
     "NullTaskClient",
+    "RetryTaskClient",
     "TaskClient",
     "TaskClientSettings",
     "build_live_task_client",

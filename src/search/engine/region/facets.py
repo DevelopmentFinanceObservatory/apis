@@ -9,7 +9,7 @@ the admitted facets.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
@@ -494,6 +494,24 @@ class FacetAdmission:
         return facet_admitted(self.axes, facet)
 
 
+@dataclass
+class _TrackedAdmission:
+    """`admission.admits`, noting whether its axis predicates left out a candidate its unit
+    elections admit (`axes_narrowed`)."""
+
+    admission: FacetAdmission
+    axes_narrowed: bool = False
+
+    def __call__(self, stat_var: str, facet: _AxisFacetCandidate) -> bool:
+        elected = self.admission.elected_units
+        if elected is not None and facet.unit not in elected.get(stat_var, frozenset()):
+            return False
+        if facet_admitted(self.admission.axes, facet):
+            return True
+        self.axes_narrowed = True
+        return False
+
+
 @dataclass(frozen=True)
 class FilteredAnswer:
     """An answer under a request's facet filter: the preview's read plan narrowed by the
@@ -531,10 +549,20 @@ def filter_answer(
     (`elected_units`), so the members holding data that it elects none for are left out, and
     the narrowed plan names them (`ReadPlan.leaving_out`). With no filter, or an answer that
     read no facets, the answer is unchanged.
+
+    The narrowed plan is marked `ReadPlan.request_filtered` when the axis predicates
+    (`FacetAdmission.axes`) leave out a candidate the unit elections admit. A twin cluster's
+    currency and a literal unit filter do, and each elects over inputs the answer's identity
+    does not state. The unit elections (`elected_units`) leave it unmarked. They decide the
+    identity's own unit request (`identity.facets["unit"]`) over the members, years,
+    coverage and probes a resolve of the identity reads, so that resolve elects them again.
     """
     if not admission or mat.read_plan is None or mat.coverage_form is None:
         return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
-    narrowed = mat.read_plan.narrowed(admission.admits)
+    admits = _TrackedAdmission(admission)
+    narrowed = mat.read_plan.narrowed(admits)
+    if admits.axes_narrowed:
+        narrowed = replace(narrowed, request_filtered=True)
     if admission.elected_units is not None:
         narrowed = narrowed.leaving_out(
             populated_members(mat.read_plan) - admission.elected_units.keys()

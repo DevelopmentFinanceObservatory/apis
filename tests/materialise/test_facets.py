@@ -2248,6 +2248,52 @@ def test_merging_many_facets_equals_merging_them_one_pair_at_a_time(length: int)
         assert merge_facets(facets) == reduce(_merge_pair, facets), facets
 
 
+_COVERAGE_FACET = Facet(
+    obs_count=3,
+    earliest_date="2010",
+    latest_date="2012",
+    facet_id="f",
+    dates=("2010", "2011", "2012"),
+    dates_coarsened=True,
+)
+
+
+@pytest.mark.parametrize(
+    ("others", "evidence"),
+    [
+        pytest.param(
+            [
+                Facet(
+                    obs_count=2,
+                    earliest_date="2013",
+                    latest_date="2014",
+                    facet_id="f",
+                    dates=("2013", "2014"),
+                )
+            ],
+            True,
+            id="coverage-with-a-bare-year-graph-facet",
+        ),
+        pytest.param(
+            [
+                Facet(
+                    obs_count=2,
+                    earliest_date="2013-01",
+                    latest_date="2013-02",
+                    facet_id="f",
+                    dates=("2013-01", "2013-02"),
+                )
+            ],
+            False,
+            id="coverage-with-a-month-dated-graph-facet",
+        ),
+        pytest.param([_COVERAGE_FACET], None, id="coverage-alone"),
+    ],
+)
+def test_merged_annual_evidence_reads_the_non_coverage_facets_alone(others, evidence):
+    assert merge_facets([_COVERAGE_FACET, *others]).annual_evidence is evidence
+
+
 def _ilo_facet(facet_id: str, period: str | None, obs_count: int) -> Facet:
     """An ILO unemployment facet for one place: the UN graph publishes the same rate as an
     annual (`P1Y`) and a quarterly (`P3M`) facet, alike on every facet axis."""

@@ -34,14 +34,25 @@ class RequestScope:
     awaits every unclaimed task. ``claim_withheld_read`` grants the request's one
     ``withheld_by_registry`` re-read. ``thread_permits`` bounds, at the same limit, the
     reads the request's worker threads run at once where they cannot take a permit of the
-    semaphore, since the part leg that starts them holds one.
+    semaphore, since the part leg that starts them holds one. ``continuation_permits``
+    bounds, at the same limit, the resolves that settle a composite's continuation from its
+    components' plans (`composite_answer.with_composite_continuation`) inside a part leg
+    that holds a permit of the semaphore. Those resolves wait on no other permit, so a leg
+    waiting on one cannot wait on itself.
     """
 
-    __slots__ = ("_withheld_read_claimed", "semaphore", "tasks", "thread_permits")
+    __slots__ = (
+        "_withheld_read_claimed",
+        "continuation_permits",
+        "semaphore",
+        "tasks",
+        "thread_permits",
+    )
 
     def __init__(self) -> None:
         self.semaphore = asyncio.Semaphore(settings().max_variable_concurrency)
         self.thread_permits = threading.BoundedSemaphore(settings().max_variable_concurrency)
+        self.continuation_permits = asyncio.BoundedSemaphore(settings().max_variable_concurrency)
         self.tasks: set[asyncio.Task[Any]] = set()
         self._withheld_read_claimed = False
 
@@ -94,6 +105,17 @@ def current_scope() -> RequestScope:
 def bounded_semaphore() -> asyncio.Semaphore:
     """Return the semaphore shared by the current request's bounded call sites."""
     return current_scope().semaphore
+
+
+def continuation_semaphore() -> asyncio.Semaphore:
+    """Return the current request's limit on the composite continuation resolves its part
+    legs run at once (`RequestScope.continuation_permits`). A part resolved outside any
+    request scope, as a direct pipeline call is, gets a bound of its own at the same limit,
+    so its resolves stay bounded and the call never raises."""
+    scope = _scope.get()
+    if scope is None:
+        return asyncio.BoundedSemaphore(settings().max_variable_concurrency)
+    return scope.continuation_permits
 
 
 def bounded_thread_permits() -> threading.BoundedSemaphore:

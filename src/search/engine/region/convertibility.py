@@ -1226,7 +1226,9 @@ def over_conversion_period(mat: Materialised, period: ConversionPeriod) -> Mater
     answer the same request builds under that window. The door then filters the plan again
     and states the answer from it."""
     plan = mat.read_plan
-    return mat if plan is None else replace(mat, read_plan=plan.windowed(period.window))
+    if plan is None:
+        return mat
+    return replace(mat, read_plan=replace(plan.windowed(period.window), request_filtered=True))
 
 
 def conversion_period_departure(

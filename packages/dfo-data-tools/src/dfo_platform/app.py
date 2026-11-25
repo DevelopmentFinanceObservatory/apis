@@ -30,7 +30,7 @@ from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.routing import BaseRoute, Match
-from starlette.types import ASGIApp, Scope
+from starlette.types import ASGIApp, Receive, Scope, Send
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
@@ -39,6 +39,7 @@ from dfo_platform.caller import (
     CLIENT_HEADER,
     delivery_identity,
     log_request,
+    log_request_received,
     reset_delivery_identity,
     set_delivery_identity,
 )
@@ -510,14 +511,17 @@ def _install_trace_id_outermost_middleware_stack(
     CORS returns preflight responses before entering its inner stack. An
     outer trace layer sees those responses and all other paths. `commit` is
     bound once from `build_commit()`. `caller` names each request's delivery
-    identity. Install the override before the first request, while FastAPI's
-    middleware stack remains lazy.
+    identity. `InFlightMiddleware` wraps the trace layer, so a request counts in flight
+    for its whole ASGI call. Install the override before the first request, while
+    FastAPI's middleware stack remains lazy.
     """
     base_build_middleware_stack = app.build_middleware_stack
     dispatch = functools.partial(_trace_id_dispatch, commit=commit, caller=caller)
 
     def _build_middleware_stack() -> ASGIApp:
-        return BaseHTTPMiddleware(base_build_middleware_stack(), dispatch=dispatch)
+        return InFlightMiddleware(
+            BaseHTTPMiddleware(base_build_middleware_stack(), dispatch=dispatch)
+        )
 
     app.build_middleware_stack = _build_middleware_stack  # ty: ignore[invalid-assignment]
 
@@ -569,6 +573,32 @@ start, so the elapsed time would be time-to-headers on a stream, not the
 whole response)."""
 
 
+_in_flight = 0
+"""HTTP requests in this process that `InFlightMiddleware` has taken and whose ASGI call
+has not returned. Only the event loop updates it, so it takes no lock."""
+
+
+class InFlightMiddleware:
+    """Count each HTTP request in `_in_flight` from the moment it enters the app until its
+    ASGI call returns or raises, so the count covers a streamed body's terminal send and
+    a send that fails when the client has gone. It wraps the trace-ID layer, which logs
+    the count on arrival."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        global _in_flight  # a process-wide count of requests in flight
+        _in_flight += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _in_flight -= 1
+
+
 async def _trace_id_dispatch(
     request: Request, call_next: RequestResponseEndpoint, *, commit: str, caller: CallerSettings
 ) -> Response:
@@ -588,15 +618,30 @@ async def _trace_id_dispatch(
 
     Exception handlers run inside `call_next` before the context resets.
     `_dispatch` can rebind the ID from `request.state` as a fallback.
+
+    Logs a `request_received` line on entry, with the count of requests in flight, and
+    stores the entry time on `request.state.received` (a `time.monotonic()` reading)
+    for a route to measure its own start against. `InFlightMiddleware`, outside this
+    layer, has already counted the request.
     """
     trace_id = new_trace_id()
     request.state.trace_id = trace_id
+    request.state.received = time.monotonic()
     token = set_trace_id(trace_id)
     cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
     identity_token = set_delivery_identity(delivery_identity(request, caller))
     start = time.perf_counter()
     status: int | None = None
     try:
+        try:
+            log_request_received(
+                trace_id=trace_id,
+                method=request.method,
+                path=request.url.path,
+                in_flight=_in_flight,
+            )
+        except Exception as exc:
+            logger.warning("request_received log line failed: %s", type(exc).__name__)
         response = await call_next(request)
         status = response.status_code
         elapsed_ms = (time.perf_counter() - start) * 1000

@@ -1,8 +1,9 @@
-"""Refusal codes the analysis door owns: every engine refusal (`dfo_analysis_engine.refusal`)
-and `several_members`.
+"""Refusal codes the analysis door owns: every engine refusal (`dfo_analysis_engine.refusal`),
+`several_members` and `caller_over_share`.
 
-Every one answers 422. `ANALYSIS_STATUSES` holds them, since the code registry maps only
-`rolling_populations_differ` and `several_members` on `datasets.analysis`.
+Every engine refusal answers 422, and `ANALYSIS_STATUSES` holds them, since the door renders an
+engine refusal at that status itself. `several_members` (422) and `caller_over_share` (429) go out
+at the status the code registry maps on `datasets.analysis`.
 """
 
 from __future__ import annotations
@@ -76,9 +77,16 @@ ANALYSIS_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "An analysis step takes one reading for each input, and an input names a dataset "
         "that holds several.",
     ),
+    "caller_over_share": (
+        "Caller Over Share",
+        "The caller already has its share of analysis requests in flight on this instance; "
+        "Retry-After names when to retry.",
+    ),
 }
 
-ANALYSIS_STATUSES: Mapping[str, int] = dict.fromkeys(ANALYSIS_DOOR_CODE_CATALOGUE, 422)
+ANALYSIS_STATUSES: Mapping[str, int] = dict.fromkeys(
+    [*(code.value for code in RefusalCode), "several_members"], 422
+)
 
 if set(RefusalCode) - set(_ENGINE_DEFINITIONS):
     raise AssertionError(

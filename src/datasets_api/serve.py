@@ -171,10 +171,11 @@ from materialise.bundle import ReproducingCall
 from materialise.ceiling import check_ceiling
 from materialise.composite import (
     ComponentResult,
+    ComponentYears,
     compose_components,
+    read_table_years,
     rows_in_years,
     stacked_years,
-    table_years,
 )
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.errors import (
@@ -709,10 +710,13 @@ def _materialise_components(
     declaration order, sharing `ceiling`, then composed into one frame
     (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
     `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
-    it keep: a stacked composite keeps the rows in the years every component's table covers
-    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. A run's
-    origin findings are read only for a version not on record (`_component_findings`). A
-    component no request names, a spliced one whose periods the window does not reach, is
+    it may keep: a stacked composite keeps rows only in years every component's table covers
+    in `coverage_index` (`materialise.composite.read_table_years`), each read before any run
+    under its own pinned provenances, as its rows are, so a run is charged its rows in those
+    years. The composite's years are then settled from the rows the runs read
+    (`materialise.composite.stacked_years`), and the composed frame's rows checked against
+    `ceiling`. A run's origin findings are read only for a version not on record
+    (`_component_findings`). A component no request names, a spliced one whose periods the window does not reach, is
     left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
     years are read from, and `DestinationUnclassifiedError` before any read when a component
     reads a population `coverage_index` holds a destination outside of, or cannot list the
@@ -730,11 +734,19 @@ def _materialise_components(
             variables=unavailable.unlisted,
         )
     composite = cast("CompositeDeclaration", code_index.composite(ref))
-    covered = {
-        component.role: table_years(code_index, coverage_index, component.identity)
-        for component in components
-    }
-    kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
+    covered = (
+        {
+            component.role: read_table_years(code_index, coverage_index, component)
+            for component in components
+        }
+        if composite.kind == "stacked"
+        else {}
+    )
+    kept = (
+        stacked_years(ComponentYears(table=years, held=None) for years in covered.values())
+        if covered
+        else None
+    )
     results: list[ComponentResult] = []
     runs: list[_ComponentRun] = []
     remaining = ceiling
@@ -764,7 +776,7 @@ def _materialise_components(
                 recipe=component.recipe,
                 requests=part,
                 result=result,
-                covered_years=covered[component.role],
+                table_years=covered.get(component.role),
             )
         )
     with phase("materialise"):

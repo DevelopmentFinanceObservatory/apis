@@ -28,6 +28,7 @@ from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.concurrency import continuation_semaphore
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
@@ -49,7 +50,10 @@ from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
-from search.engine.region.composite_answer import with_composite_observations
+from search.engine.region.composite_answer import (
+    with_composite_continuation,
+    with_composite_observations,
+)
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -87,7 +91,11 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import RegionResult, every_member_phrases
+from search.engine.region.result import (
+    RegionResult,
+    every_member_phrases,
+    unserved_scope_refusal,
+)
 from search.engine.region.scope_decision import ScopeDecision, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
@@ -642,11 +650,14 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
     """`result` with the preview of the composite it answers, which `_with_scope_choices`
     leaves unlaunched. It launches as a trailing task where
     the request streams observations, so the `response` event waits on nothing new, and reads
-    inline where the request embeds them. Any other result returns unchanged.
+    inline where the request embeds them. A request reading no preview states the
+    continuation its components' read plans serve instead
+    (`composite_answer.with_composite_continuation`). Any other result returns unchanged.
 
-    The inline read takes no permit of the request semaphore, since the part's own leg holds
+    The inline reads take no permit of the request semaphore, since the part's own leg holds
     one while it resolves (`fanout`), and a request whose legs held every permit would wait
-    on itself."""
+    on itself. The continuation's resolves hold a permit of the request's own bound for them
+    (`concurrency.continuation_semaphore`), which nothing holding one waits on."""
     relaunch = result.observations_relaunch
     if relaunch is None or result.observations_task is not None:
         return result
@@ -654,7 +665,7 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
         return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
     if state.include_observations:
         return await with_composite_observations(result, semaphore=None)
-    return dataclasses.replace(result, observations_relaunch=None)
+    return await with_composite_continuation(result, semaphore=continuation_semaphore())
 
 
 def merged_scope_choices(
@@ -1061,6 +1072,9 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         state,
                     )
                     answered = _with_scope_choices(_stating_unpublished_wholes(result, state))
+                    if (refused := unserved_scope_refusal(answered)) is not None:
+                        await _cancel_trailing_tasks([answered])
+                        return refused
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))

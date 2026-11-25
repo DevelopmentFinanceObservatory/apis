@@ -58,6 +58,7 @@ from .grammar import (
     SourceRef,
     TimeWindow,
     in_window,
+    in_years,
 )
 
 # Leading-underscore names imported below are private in their home submodule
@@ -160,6 +161,7 @@ from .request import (
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     SourceMention,
+    WholeRequest,
     asked_open_axes,
 )
 from .response import (
@@ -182,6 +184,8 @@ from .scope import (
     ChoiceOrigin,
     CompiledScope,
     Component,
+    DerivedSide,
+    DerivedWhole,
     DroppedEntry,
     EntitiesBinding,
     Entry,
@@ -195,6 +199,7 @@ from .scope import (
     ProviderBinding,
     ScopeChoice,
     ShapeBinding,
+    SideBinding,
     SlotBinding,
     TextOrigin,
     YearSpan,
@@ -219,6 +224,12 @@ from .spec import (
     SpecAlternativeMeasure,
     SpecDefinition,
     UnitConversion,
+)
+from .stated_scope_door import (
+    StatedScopeEntry,
+    StatedScopeReading,
+    StatedScopeRequest,
+    StatedScopeResponse,
 )
 from .statvar import (
     DateRange,
@@ -346,6 +357,8 @@ __all__ = [
     "DefinitePart",
     "Departure",
     "DepartureCode",
+    "DerivedSide",
+    "DerivedWhole",
     "Diagnostics",
     "DownloadFacts",
     "DownloadLicence",
@@ -481,6 +494,7 @@ __all__ = [
     "Shape",
     "ShapeBinding",
     "ShapeUpstream",
+    "SideBinding",
     "Skill",
     "Slot",
     "SlotBinding",
@@ -500,6 +514,10 @@ __all__ = [
     "SpecObservations",
     "StatVar",
     "StatVarSlotValue",
+    "StatedScopeEntry",
+    "StatedScopeReading",
+    "StatedScopeRequest",
+    "StatedScopeResponse",
     "StatusLiteral",
     "TextOrigin",
     "TimeWindow",
@@ -513,12 +531,14 @@ __all__ = [
     "ValueKind",
     "Warning",
     "WarningSeverity",
+    "WholeRequest",
     "YearSpan",
     "asked_open_axes",
     "coverage_is_empty",
     "departures_in_precedence_order",
     "elect_no_data_reason",
     "in_window",
+    "in_years",
     "omitted_observations",
     "role_ref",
     "served_date_range",

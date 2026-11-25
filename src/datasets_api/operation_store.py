@@ -25,7 +25,13 @@ operation deadline returns `None`.
 `progress`, `record_estimate`, `complete`, `fail`, and `release` require `state = 'running'` and
 the claim's token, and return `None` once the token is stale or the row leaves `running`.
 `release` returns a running row to `pending` and clears its lease and `final_delivery`, so the
-next Cloud Tasks retry claims it at once.
+next delivery claims it at once. `submission_attempts` counts the claims of the submission
+`submission_attempts_of` names. `claim` adds one when that is the row's `submission_count` and
+otherwise starts the count at 1 for the current submission, in the same statement, so a reset by
+any image starts the next submission's count without writing it. `release` leaves both. With a
+cap, the claim stores `final_delivery` true when the delivery is the task's last or its count
+reaches the cap. The worker reads the count for the attempt cap
+(`datasets_api.operations.worker_app`).
 
 A lease that has ended means its attempt has stopped owning the row. Whether another delivery
 will run it is what `final_delivery` records. A row is abandoned when nothing will finish it:
@@ -126,7 +132,13 @@ _COLUMNS = (
     "estimate_requests, rows_written, subject_id, content_version, refusal_code, "
     "attempt_count, claimed_at, lease_seconds, created_at, updated_at, "
     "submission_count, retryable, dispatched_at, submitted_at, origin_catalogue_build_id, "
-    "refusal, final_delivery, confirmed_at, family"
+    "refusal, final_delivery, confirmed_at, family, submission_attempts, submission_attempts_of"
+)
+
+# The count a claim gives the current submission, read from the row before the claim.
+_NEXT_SUBMISSION_ATTEMPT = (
+    "(CASE WHEN submission_attempts_of = submission_count "
+    "THEN COALESCE(submission_attempts, 0) + 1 ELSE 1 END)"
 )
 
 # The end of a running row's static lease.
@@ -267,9 +279,11 @@ class Operation:
     ended on, and `None` on every other row, including one whose stored refusal this image
     cannot parse.
     `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`
-    fences worker writes. `claimed_at` and `lease_seconds` are the current claim's
-    static lease, set on every `running` row. `final_delivery` is whether that claim was made
-    by the task's last delivery, and `None` on a row that is not claimed or that an image
+    fences worker writes. `submission_attempts` is how many claims the current submission has
+    made, 0 before its first claim and on a row no claim of this image has counted. `claimed_at`
+    and `lease_seconds` are the current claim's static lease, set on every `running` row.
+    `final_delivery` is whether that claim was made by the task's last delivery or reached the
+    claim's attempt cap, and `None` on a row that is not claimed or that an image
     recording no delivery claimed. `dispatched_at` is when the current submission's
     task create returned, `None` until then. `coverage_stamp` records admission, and `estimate`
     is the latest estimate, replaced by the worker's re-estimate. `origin_catalogue_build_id`
@@ -301,6 +315,7 @@ class Operation:
     final_delivery: bool | None = None
     confirmed_at: datetime | None = None
     family: RecordedFamily | None = None
+    submission_attempts: int = 0
 
     def lease_ended(self, now: datetime) -> bool:
         """Whether this is a `running` row whose claim has stopped owning it at `now`, the rule
@@ -362,11 +377,19 @@ class OperationStore(Protocol):
         ...
 
     def claim(
-        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
+        self,
+        id: str,
+        *,
+        submission_count: int,
+        lease_seconds: int,
+        final_delivery: bool,
+        max_attempts: int | None = None,
     ) -> Operation | None:
         """Claims a pending row, or a running row whose lease ended, for this submission and
-        increments the fencing token. `final_delivery` records whether the claiming delivery is
-        the task's last. Returns `None` for an unknown or terminal row, another submission, a
+        increments the fencing token and the submission's claim count
+        (`Operation.submission_attempts`). It stores `final_delivery` true when the claiming
+        delivery is the task's last or the incremented count reaches `max_attempts`, so the
+        stored flag matches the run's own last-attempt rule. Returns `None` for an unknown or terminal row, another submission, a
         live lease, or a row past the operation deadline.
         """
         ...
@@ -460,7 +483,13 @@ class NullOperationStore:
         return None
 
     def claim(
-        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
+        self,
+        id: str,
+        *,
+        submission_count: int,
+        lease_seconds: int,
+        final_delivery: bool,
+        max_attempts: int | None = None,
     ) -> Operation | None:
         return None
 
@@ -507,6 +536,14 @@ class NullOperationStore:
         return None
 
 
+def _submission_attempts(row: Mapping[str, object]) -> int:
+    """The claims of the row's current submission: the stored count when it belongs to that
+    submission, else 0."""
+    if row["submission_attempts_of"] != row["submission_count"]:
+        return 0
+    return cast("int | None", row["submission_attempts"]) or 0
+
+
 def _operation_from_row(row: Mapping[str, object]) -> Operation:
     return Operation(
         id=cast(str, row["id"]),
@@ -535,6 +572,7 @@ def _operation_from_row(row: Mapping[str, object]) -> Operation:
         final_delivery=cast("bool | None", row["final_delivery"]),
         confirmed_at=cast("datetime | None", row["confirmed_at"]),
         family=parse_recorded_family(row["family"]),
+        submission_attempts=_submission_attempts(row),
     )
 
 
@@ -777,20 +815,31 @@ class LiveOperationStore:
         )
 
     def claim(
-        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
+        self,
+        id: str,
+        *,
+        submission_count: int,
+        lease_seconds: int,
+        final_delivery: bool,
+        max_attempts: int | None = None,
     ) -> Operation | None:
         now = self._now()
         return self._update_one(
             "claiming",
             id,
             "UPDATE datasets.operation SET state = 'running', "
-            "attempt_count = attempt_count + 1, claimed_at = %s, lease_seconds = %s, "
-            "final_delivery = %s, updated_at = %s "
+            "attempt_count = attempt_count + 1, "
+            f"submission_attempts = {_NEXT_SUBMISSION_ATTEMPT}, "
+            "submission_attempts_of = submission_count, "
+            "claimed_at = %s, lease_seconds = %s, "
+            f"final_delivery = (%s OR COALESCE({_NEXT_SUBMISSION_ATTEMPT} >= %s, FALSE)), "
+            "updated_at = %s "
             f"WHERE id = %s AND submission_count = %s AND {_CLAIMABLE}",
             (
                 now,
                 lease_seconds,
                 final_delivery,
+                max_attempts,
                 now,
                 id,
                 submission_count,

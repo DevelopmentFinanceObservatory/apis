@@ -13,7 +13,9 @@ read, as the deployed service reads them.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Sequence
+from typing import cast
 
 import pytest
 
@@ -27,9 +29,15 @@ from code_index.scope_conventions import (
     PUBLISHED_PROVIDER_SCOPES,
 )
 from code_index.shared import get_index
-from origin_catalogue import bound_catalogue
+from origin_catalogue import bound_catalogue, scoped_reads
 from search.engine import departures
+from search.engine.assemble import ScopeNotServedError, with_scope_choices
+from search.engine.entry import dataset_resubmit
+from search.engine.events import DoneEvent, ResponseEvent
+from search.engine.region import pipeline
+from search.engine.region.result import RegionResult
 from search.engine.region.scope_decision import decide_scope
+from search.engine.response_cache import ResponseCache
 from search.engine.spec_id import identity_spec_id
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -41,6 +49,7 @@ from search.models import (
     IdentityBindingSet,
     IdentityBindingValue,
     IdentityWindowRange,
+    NoDataPart,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -79,7 +88,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import offline_events, offline_resolve
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import listing
 from tests.scope import test_basis as basis
@@ -992,6 +1001,26 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
     assert option.availability.status == "available"
 
 
+def test_the_inclusive_reach_reads_the_bilateral_years_asked_under_the_part_s_scope():
+    """A part read under the imputed table's source scope holds no bilateral CRS series, so
+    the years its bilateral answer asks for are none, while the composite's components read
+    under their own pins and cover the years both tables hold."""
+    rows = [
+        *((dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _CRS_MEMBERS),
+        *((dcid, "imputed", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _IMPUTED_MEMBERS),
+    ]
+    facts = _facts(rows)
+    identity = _bilateral_identity()
+
+    unscoped = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
+    with scoped_reads(frozenset({_IMPUTED})):
+        scoped = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
+
+    assert unscoped.asked == frozenset(range(2015, 2021))
+    assert scoped.asked == frozenset()
+    assert scoped.covered == unscoped.covered == frozenset(range(2015, 2021))
+
+
 # DAC1's published totals: a donor's total ODA counts its core contributions to
 # multilaterals, and its bilateral ODA its bilateral flows alone. The parts resolve over
 # `test_basis`'s fixture graph, where DAC1's total ODA members sit beside the CRS's.
@@ -1262,6 +1291,264 @@ def test_a_dac1_multilateral_oda_answer_the_words_pick_is_stated(
         for entry in scope.entries
     )
     assert not any(d.entry.axis == "provider" for d in scope.dropped_entries)
+
+
+_DAC1_LINES = {
+    "bilateral": _DAC1_BILATERAL_MEMBERS,
+    "multilateral": _DAC1_MULTILATERAL_MEMBERS,
+    "total": _DAC1_TOTAL_MEMBERS,
+}
+_DAC1_ALL_MEMBERS = tuple(m for ms in _DAC1_MEMBERS_BY_CODE.values() for m in ms)
+
+
+def _dac1_lines_graph(texts: Sequence[str]) -> FakeGraph:
+    """The United States and every DAC1 member, each of `texts` recalling the members of the
+    line its first word names (`_DAC1_LINES`)."""
+    return FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            **{dcid: basis._member_node(dcid) for dcid in _DAC1_ALL_MEMBERS},
+        },
+        detect={
+            text: {"svs": list(found), "cosine_scores": [0.9] * len(found)}
+            for text in texts
+            for found in [_DAC1_LINES[text.split()[0]]]
+        },
+        resolve={"United States": _USA},
+    )
+
+
+def _dac1_lines_request(texts: Sequence[str], *, message: str | None = None) -> ResolveRequest:
+    """The US parts `texts` over 2010 to 2023, with `message`."""
+    return ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text=text,
+                    entities=[ParsedEntity(text="United States", role_text="from")],
+                    time_text="2010 to 2023",
+                )
+                for text in texts
+            ],
+            user_message=message,
+        )
+    )
+
+
+def _definite_parts(response: object) -> list[DefinitePart]:
+    assert isinstance(response, Resolution), response
+    assert all(isinstance(part, DefinitePart) for part in response.parts), response.parts
+    return cast("list[DefinitePart]", response.parts)
+
+
+def _ask_dac1_parts(
+    monkeypatch: pytest.MonkeyPatch, texts: Sequence[str], *, message: str | None = None
+) -> list[DefinitePart]:
+    """The US parts `texts`, each asked over 2010 to 2023 with `message`, the bilateral,
+    multilateral or total ODA a part names its only recall, over US series of all three."""
+    basis._cover(monkeypatch, _DAC1_ALL_MEMBERS)
+    response = offline_resolve(
+        _dac1_lines_request(texts, message=message),
+        graph=_dac1_lines_graph(texts),
+        llm=_PickingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    return _definite_parts(response)
+
+
+def _aid_type(part: DefinitePart) -> str | list[str] | None:
+    """The DAC1 aid type the part's identity binds: a value, the refs of a set, or None."""
+    (binding,) = (
+        s.binding for s in part.spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    if isinstance(binding, IdentityBindingSet):
+        return sorted(binding.refs)
+    return binding.ref if isinstance(binding, IdentityBindingValue) else None
+
+
+_SHARE_MESSAGE = "What share of US ODA was bilateral each year from 2010 to 2023?"
+
+
+@pytest.mark.parametrize("message", [None, _SHARE_MESSAGE], ids=["no-message", "share"])
+@pytest.mark.parametrize(
+    ("texts", "line", "option"),
+    [
+        pytest.param(
+            ("bilateral ODA net disbursements", "total ODA net disbursements"),
+            _DAC1_BILATERAL_ODA,
+            "provider:bilateral",
+            id="bilateral-net",
+        ),
+        pytest.param(
+            ("bilateral ODA gross disbursements", "total ODA gross disbursements"),
+            _DAC1_BILATERAL_ODA,
+            "provider:bilateral",
+            id="bilateral-gross",
+        ),
+        pytest.param(
+            ("multilateral ODA net disbursements", "total ODA net disbursements"),
+            _DAC1_MULTILATERAL_ODA,
+            "provider:multilateral",
+            id="multilateral-net",
+        ),
+    ],
+)
+def test_a_dac1_provider_line_beside_its_total_answers_apart_with_its_own_choice(
+    monkeypatch, texts: tuple[str, str], line: str, option: str, message: str | None
+):
+    """A part on DAC1's bilateral or multilateral ODA shares its total's five-tuple, and the
+    total's aid type holds the line's. The two parts answer apart, each its own Spec, the
+    line's with the provider choice its words state."""
+    line_part, total_part = _ask_dac1_parts(monkeypatch, texts, message=message)
+
+    assert line_part.spec.spec_id != total_part.spec.spec_id
+    assert (_aid_type(line_part), _aid_type(total_part)) == (line, _DAC1_TOTAL_ODA)
+    assert (_provider(line_part.spec).active, _provider(line_part.spec).provenance) == (
+        option,
+        "explicit",
+    )
+    assert _provider(total_part.spec).active == "provider:contributions"
+    for part in (line_part, total_part):
+        assert _scope(part.spec).compiled.spec_id == part.spec.spec_id
+        assert "binding_folded" not in {w.code for w in part.warnings}
+
+
+@pytest.mark.parametrize("with_entries", [False, True], ids=["no-scope-entries", "scope-entries"])
+def test_a_resubmit_of_a_dac1_line_and_its_total_answers_two_specs(monkeypatch, with_entries: bool):
+    """A dataset_resubmit of the bilateral ODA and total ODA identities answers each its own
+    Spec, with or without the scope entries the fresh answers applied: a posted Spec answers
+    the figure its identity names, so total ODA, which holds bilateral ODA, absorbs nothing."""
+    texts = ("bilateral ODA net disbursements", "total ODA net disbursements")
+    fresh = _ask_dac1_parts(monkeypatch, texts)
+    entries = [
+        ResubmitIdentityEntry(
+            variable_text=text,
+            identity=part.spec.definition.identity,
+            scope_entries=list(_scope(part.spec).entries) if with_entries else None,
+        )
+        for text, part in zip(texts, fresh, strict=True)
+    ]
+
+    resubmitted = _definite_parts(
+        offline_resolve(
+            ResolveRequest(input=DatasetResubmitInput(entries=entries)),
+            graph=_dac1_lines_graph(()),
+            llm=_PickingLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    assert [part.spec.spec_id for part in resubmitted] == [part.spec.spec_id for part in fresh]
+    assert [_aid_type(part) for part in resubmitted] == [_DAC1_BILATERAL_ODA, _DAC1_TOTAL_ODA]
+    assert not any("binding_folded" in {w.code for w in part.warnings} for part in resubmitted)
+
+
+def test_bilateral_and_multilateral_dac1_parts_fold_into_their_set(monkeypatch):
+    """A guard on the fold: DAC1's bilateral and multilateral ODA do not nest, so
+    the two parts fold into one answer binding both aid types, which states no provider
+    choice."""
+    first, second = _ask_dac1_parts(
+        monkeypatch, ("bilateral ODA net disbursements", "multilateral ODA net disbursements")
+    )
+
+    assert first.spec.spec_id == second.spec.spec_id
+    assert _aid_type(first) == [_DAC1_BILATERAL_ODA, _DAC1_MULTILATERAL_ODA]
+    assert not any(c.axis == "provider" for c in _scope(first.spec).choices)
+    assert "binding_folded" in {w.code for w in second.warnings}
+
+
+def test_a_scope_compiling_another_identity_is_refused_by_with_scope_choices(monkeypatch):
+    """Attaching a scope whose compiled identity is not the Spec raises, naming both."""
+    bilateral, total = _ask_dac1_parts(
+        monkeypatch, ("bilateral ODA net disbursements", "total ODA net disbursements")
+    )
+
+    with pytest.raises(ScopeNotServedError) as raised:
+        with_scope_choices(total.spec, _scope(bilateral.spec))
+
+    assert (raised.value.spec_id, raised.value.compiled_spec_id) == (
+        total.spec.spec_id,
+        bilateral.spec.spec_id,
+    )
+
+
+@pytest.mark.parametrize("mismatched", [True, False], ids=["mismatched", "control"])
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+def test_a_part_whose_scope_compiles_another_identity_fails_closed(
+    monkeypatch, caplog, door: str, mismatched: bool
+):
+    """A definite answer whose scope compiles to an identity other than its Spec answers
+    no_data `facet_not_available`, logs both spec_ids, reports a degraded leg and streams
+    no event under its spec_id, its trailing tasks cancelled; a fresh search stores no
+    response. Each door's producer refuses it: a fresh search's terminal and a resubmit's
+    entry. The control states its own scope."""
+    texts = ("total ODA net disbursements",)
+    (bilateral,) = _ask_dac1_parts(monkeypatch, ("bilateral ODA net disbursements",))
+    (total,) = _ask_dac1_parts(monkeypatch, texts)
+    if mismatched and door == "fresh":
+        stated = pipeline._with_scope_choices
+
+        def other_scope(result: RegionResult) -> RegionResult:
+            return dataclasses.replace(stated(result), scope_choices=_scope(bilateral.spec))
+
+        monkeypatch.setattr(pipeline, "_with_scope_choices", other_scope)
+    if mismatched and door == "resubmit":
+        monkeypatch.setattr(
+            dataset_resubmit, "_served_scope", lambda _served, _region: _scope(bilateral.spec)
+        )
+    request = (
+        _dac1_lines_request(texts)
+        if door == "fresh"
+        else ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=texts[0],
+                        identity=total.spec.definition.identity,
+                        scope_entries=list(_scope(total.spec).entries),
+                    )
+                ]
+            )
+        )
+    )
+    cache = ResponseCache()
+
+    with caplog.at_level(logging.ERROR, logger="search.engine.region.result"):
+        events = offline_events(
+            request,
+            graph=_dac1_lines_graph(texts if door == "fresh" else ()),
+            llm=_PickingLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            stream_slot_options=True,
+            response_cache=cache,
+        )
+
+    (response,) = [e.response for e in events if isinstance(e, ResponseEvent)]
+    (done,) = [e for e in events if isinstance(e, DoneEvent)]
+    (part,) = response.parts
+    carrying = [e.kind for e in events if total.spec.spec_id in e.model_dump_json()]
+    logged = [
+        (record.spec_id, record.compiled_spec_id)
+        for record in caplog.records
+        if hasattr(record, "compiled_spec_id")
+    ]
+    if mismatched:
+        assert isinstance(part, NoDataPart), part
+        assert part.no_data.reason == "facet_not_available"
+        assert done.degraded_leg
+        assert carrying == []
+        assert logged == [(total.spec.spec_id, bilateral.spec.spec_id)]
+    else:
+        assert isinstance(part, DefinitePart) and part.spec.spec_id == total.spec.spec_id
+        assert not done.degraded_leg
+        assert len(carrying) > 1
+        assert logged == []
+    if door == "fresh":
+        # The resubmit door stores no response, whatever its answer.
+        assert (cache.stats().entries > 0) is not mismatched
+    if door == "fresh" and mismatched:
+        assert part.entity_refs == total.entity_refs
+        assert [ref.refs for ref in part.entity_refs] == [[_USA]]
 
 
 def _dac1_identity(

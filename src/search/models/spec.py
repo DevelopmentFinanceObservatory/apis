@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Literal, Protocol
 
 from dfo_frame_grammar import DeflationBasis
@@ -1100,6 +1100,10 @@ class ResolvedSpec(StrictModel):
     # Whether the served series include points continuing a series past its last period
     # (`ResolvedSpec.continued`), which the part states in a `modelled_values` departure.
     _continued: bool = PrivateAttr(default=False)
+    # For a composite answer, whether its own read plan serves a continuation in the years
+    # each component that reads that same table previews, keyed by the component's spec_id
+    # and those years (`ResolvedSpec.component_continued`).
+    _component_continued: tuple[tuple[str, frozenset[int], bool], ...] = PrivateAttr(default=())
     # The sets the request named whose every member a role binds, each with its role and
     # member dcids (`ResolvedSpec.named_sets`). The part's departures count a set's members
     # without values against it. `entity_groups` carries the one set a role's entities equal.
@@ -1290,6 +1294,35 @@ class ResolvedSpec(StrictModel):
         stated = self.model_copy()
         stated._continued = continued
         return stated
+
+    @property
+    def states_component_continued(self) -> bool:
+        """Whether the answer states its own plan's continuation for some component
+        (`component_continued`)."""
+        return bool(self._component_continued)
+
+    def component_continued(self, spec_id: str, years: frozenset[int]) -> bool | None:
+        """Whether the composite answer's own read plan serves a continuation in `years`, for
+        the component whose preview resolves `spec_id` in them, or None where the answer read
+        no such component (`spec_build.build_spec`)."""
+        return next(
+            (
+                continued
+                for stated_id, stated_years, continued in self._component_continued
+                if stated_id == spec_id and stated_years == years
+            ),
+            None,
+        )
+
+    def stating_component_continued(
+        self, stated: Iterable[tuple[str, frozenset[int], bool]]
+    ) -> ResolvedSpec:
+        """A copy stating `stated`, each a component's spec_id, the years it previews and
+        whether the answer's own read plan serves a continuation in them
+        (`component_continued`)."""
+        copy = self.model_copy()
+        copy._component_continued = tuple(stated)
+        return copy
 
     def stating_members(self, members: Sequence[StatVar]) -> ResolvedSpec:
         """A copy whose `members` are `members` and whose `sentence_facts` are theirs."""

@@ -41,19 +41,24 @@ to its own region's `reads_deadline` too, so a composite whose walk ran the full
 its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
-`served_entry` and `as_composite` steps of its `timing_by_step`, and a buffered composite
-preview's read under `composite_preview`, beside the steps `resolve_spec_resubmit` books, so
-the part's total covers the scope compile and the composite answer.
+`served_entry` and `as_composite` steps of its `timing_by_step`, a buffered composite
+preview's read under `composite_preview`, and the component-plan resolves that state a
+no-preview composite's continuation under `composite_continuation`, beside the steps
+`resolve_spec_resubmit` books, so the part's total covers the scope compile and the
+composite answer.
 
 An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
-scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
+scope on its definite part (`_compiled_scope`, `_served_scope`); one that asks for its
+`whole` resolves and carries the whole's scope (`scope.whole.derive_whole`). A composite identity, posted
 or compiled, resolves the identity its option was set on
 (`identity_edit.composite_table_identity`) with no observation preview, mints its Spec as
 the composite (`ResubmitIdentityPayload.composite`), and launches none of that table's
 option or preview probes (`_as_composite`). The composite's preview reads each of its
 components through the part memo (`composite_answer`), in a trailing task where the request
-streams observations and inline where it embeds them. A definite part read as its own
+streams observations and inline where it embeds them. A request reading no preview resolves
+each component's read plan through the memo with no row read, and states the
+continuation those plans serve (`composite_answer.with_composite_continuation`). A definite part read as its own
 identity states the `bilateral_reading_unavailable` warning a fresh answer of it states
 (`_with_withheld_reading`). A posted identity, as a posted candidate, is read as a fresh
 search of it would serve it (`dataset_entries.served_posted_identity`): a flow side it leaves open binds its dataset's
@@ -96,7 +101,7 @@ from search.engine.codes import CODE_CATALOG
 from search.engine.concurrency import bounded_semaphore
 from search.engine.config import settings
 from search.engine.conjoin import assemble_region
-from search.engine.deadline import _await_bounded
+from search.engine.deadline import _await_bounded, _cancel_trailing_tasks
 from search.engine.departures import warning_key
 from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
 from search.engine.entity_checks import check_entity_count
@@ -118,12 +123,14 @@ from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
+    with_composite_continuation,
     with_composite_observations,
 )
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import (
     any_degraded,
+    unserved_scope_refusal,
     with_runnable_operations,
 )
 from search.engine.region.scope_decision import bilateral_withheld_warning, scope_facts
@@ -142,6 +149,7 @@ from search.models import (
     ResubmitIdentityPayload,
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
+    ScopeAxis,
     Unsupported,
     Warning,
 )
@@ -150,8 +158,9 @@ from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.provider import elect_latest_window
 from search.scope.region import region_groups
-from search.scope.state import ScopeState
+from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.whole import WholeRefusal, derive_whole, whole_error
 from series_coverage.shared import CoverageSnapshot
 
 
@@ -184,13 +193,13 @@ def _served_entry(
     """`entry` with its identity and scope entries as a fresh search of the identity would
     serve them (`dataset_entries.served_posted_identity`), so a no-op resubmit of a fresh
     answer answers the same Spec, and the scope its scope entries compile to
-    (`_compiled_scope`), None when it posts none."""
+    (`_compiled_scope`), or its whole's where it asks for one; None when it posts neither."""
     identity, entries = served_posted_identity(
         entry.identity, entry.scope_entries, coverage=coverage
     )
     if identity is not entry.identity:
         entry = entry.model_copy(update={"identity": identity, "scope_entries": entries})
-    if entry.scope_entries is None:
+    if entry.scope_entries is None and entry.whole is None:
         return entry, None
     return entry, _compiled_scope(entry, index=index, coverage=coverage)
 
@@ -199,32 +208,35 @@ def _compiled_scope(
     entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
 ) -> PartScope:
     """The scope `entry`'s scope entries compile to over its identity, with the basis record
-    the identity reads (`basis.identity_basis_record`). Raises the compile's refusal as a
-    422 error pointed at the scope entry it refuses."""
-    assert entry.scope_entries is not None
+    the identity reads (`basis.identity_basis_record`), or the scope of its whole
+    (`scope.whole.derive_whole`) where it asks for one. Raises the compile's refusal as a
+    422 error pointed at the scope entry it refuses, and the whole's at `whole`."""
     dataset = identity_dataset(entry.identity)
     # The comprehension widens the posted role keys to `str`, which `dict()` cannot.
     groups: dict[str, EntityGroup] = {  # noqa: C416
         role: group for role, group in (entry.entity_groups or {}).items()
     }
-    basis = identity_basis_record(entry.identity, get_index(), entry.scope_entries)
-    built = build_part_scope(
-        base=entry.identity,
-        entries=entry.scope_entries,
-        records={} if basis is None else {"measure_basis": basis},
-        facts=ScopeFacts(
-            index=get_index(),
-            coverage=coverage,
-            part=PartFacts(
-                operations=tuple(entry.operations),
-                entity_groups=groups,
-                datasets=() if dataset is None else (dataset,),
-            ),
+    posted = entry.scope_entries or []
+    basis = identity_basis_record(entry.identity, get_index(), posted)
+    records: dict[ScopeAxis, AxisRecord] = {} if basis is None else {"measure_basis": basis}
+    facts = ScopeFacts(
+        index=get_index(),
+        coverage=coverage,
+        part=PartFacts(
+            operations=tuple(entry.operations),
+            entity_groups=groups,
+            datasets=() if dataset is None else (dataset,),
         ),
     )
+    built = build_part_scope(base=entry.identity, entries=posted, records=records, facts=facts)
     if isinstance(built, Refusal):
         raise refusal_error(built, pointer=f"/input/entries/{index}/scope_entries/{built.entry}")
-    return built
+    if entry.whole is None:
+        return built
+    whole = derive_whole(built, entry.whole, records=records, facts=facts)
+    if isinstance(whole, WholeRefusal):
+        raise whole_error(whole, pointer=f"/input/entries/{index}/whole")
+    return whole
 
 
 def _as_composite(
@@ -251,18 +263,25 @@ def _as_composite(
 
 
 def _with_withheld_reading(
-    region: RegionResult, entry: ResubmitIdentityEntry, *, coverage: CoverageSnapshot
+    region: RegionResult,
+    entry: ResubmitIdentityEntry,
+    scope: PartScope | None,
+    *,
+    coverage: CoverageSnapshot,
 ) -> RegionResult:
     """`region`, a definite answer read as its own identity, carrying the
     `bilateral_reading_unavailable` warning a fresh answer of that identity carries where
     the bilateral default reaches it and cannot apply on a part with no provider axis
     (`scope_decision.bilateral_withheld_warning`), read over the facts its Spec states and
-    the entry's posted scope entries, so a provider entry asking for total ODA raises none."""
+    the entries its scope applied (the posted ones, or its whole's), so a provider entry
+    asking for total ODA raises none."""
     spec = region.spec
     warning = bilateral_withheld_warning(
         spec.spec_id,
         spec.definition.identity,
-        selection=ScopeState(entries=tuple(entry.scope_entries or ())),
+        selection=ScopeState(
+            entries=tuple((entry.scope_entries or ()) if scope is None else scope.entries)
+        ),
         facts=scope_facts(spec, operations=entry.operations, coverage=coverage),
     )
     if warning is None or warning_key(warning) in set(map(warning_key, region.warnings)):
@@ -551,9 +570,10 @@ async def handle(
             # It reads coverage and scans families, so it runs off the event loop. The memo
             # stores the region without it, since the posted scope entries decide it.
             region = await asyncio.to_thread(
-                _with_withheld_reading, region, entry, coverage=params.coverage
+                _with_withheld_reading, region, entry, scope, coverage=params.coverage
             )
-        if promoted.read is not promoted.identity and region.status == "definite":
+        composite = promoted.read is not promoted.identity and region.status == "definite"
+        if composite:
             started = now_ms()
             # The components read to the deadline the entry's own reads ran to, the
             # full-read bound where its member walk ran the full read.
@@ -564,11 +584,7 @@ async def handle(
             )
             region = _as_composite(region, promoted.identity, reads=reads)
             steps["as_composite"] = now_ms() - started
-            if params.include_observations and not params.stream_observations:
-                region = await with_composite_observations(region, semaphore=sem)
-            elif not params.stream_observations:
-                region = dataclasses.replace(region, observations_relaunch=None)
-        return dataclasses.replace(
+        answered = dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
@@ -576,7 +592,17 @@ async def handle(
             earliest_index=index,
             separate=entry.separate,
             scope_choices=_served_scope(scope, region),
+            posted_identity=True,
         )
+        # Refused before a composite's components are read.
+        if (refused := unserved_scope_refusal(answered)) is not None:
+            await _cancel_trailing_tasks([answered])
+            return refused
+        if composite and params.include_observations and not params.stream_observations:
+            return await with_composite_observations(answered, semaphore=sem)
+        if composite and not params.stream_observations:
+            return await with_composite_continuation(answered, semaphore=sem)
+        return answered
 
     def _memo_hit(stored: RegionResult) -> RegionResult:
         """Return `stored` with this request's relaunch closures, built over its own conversion

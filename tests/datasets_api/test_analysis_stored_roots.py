@@ -9,6 +9,9 @@ head names the raw version and the cut is a version of its own recorded from it.
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -23,11 +26,14 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.renewal import RENEW_MARKER
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.task_create_pool import TaskCreatePool
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from dfo_platform.timings import count
 from spec_registry.identity import recompute_identity
 
 from ._version_record_store import FakeVersionRecordDatasetStore
+from .conftest import FakeDatasetStore
 from .test_analysis_cut_sums import (
     _BARE,
     _CSV,
@@ -53,16 +59,40 @@ _UNSUMMED = {
 }
 
 
-class _Rig:
-    """The fixture dataset minted bare and cut, and the client, stores and doubles over it."""
+def _count_transactions(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
+    """Add each transaction of `store` to the call's `db_transactions` count, as
+    `LiveDatasetStore` does."""
+    transaction = store.transaction
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @contextmanager
+    def counted() -> Iterator[Any]:
+        count("db_transactions")
+        with transaction() as tx:
+            yield tx
+
+    monkeypatch.setattr(store, "transaction", counted)
+
+
+class _Rig:
+    """The fixture dataset minted bare and cut, and the client, stores and doubles over it.
+    With `counted`, every transaction of the version and spec stores counts on the call's
+    `db_transactions` (`_count_transactions`)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, counted: bool = False) -> None:
         self.store = FakeVersionRecordDatasetStore()
+        definitions = FakeDatasetStore()
+        if counted:
+            _count_transactions(monkeypatch, self.store)
+            _count_transactions(monkeypatch, definitions)
         self.heads = _FakeHeadStore()
         self.tasks = FakeTaskClient()
+        # The pool the lifespan would build, held so a test waits for the head checks' task
+        # creates a stored read hands off.
+        self.task_creates = TaskCreatePool()
         self.operations = LiveOperationStore(store=self.store)
         self.client = _client(
             graph=_graph(),
+            store=definitions,
             sdmx_transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     200,
@@ -78,6 +108,7 @@ class _Rig:
             version_lister=LiveVersionLister(store=self.store),
             operation_store=self.operations,
             task_client=self.tasks,
+            task_creates=self.task_creates,
         )
         self.spec_id = recompute_identity(_IDENTITY).spec_id
         sidecar = {"schema_version": 1, "spec_id": self.spec_id, "identity": _IDENTITY}
@@ -210,6 +241,31 @@ def test_a_stored_miss_whose_cut_file_is_gone_renders_it_on_the_analysis_thread(
     assert rig.keys[0] == rig.keys[1]
 
 
+def test_a_stored_miss_refuses_a_head_revoked_after_keying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The head's version is taken down once the request has keyed and before its run reads
+    the root: the run, on its analysis thread, reads the version as it stands then and refuses
+    `snapshot_revoked`, though keying read it live."""
+    rig = _Rig(monkeypatch)
+    rig.age_rendered_files()
+    key_job = analysis_door._key_job
+
+    def keyed_then_revoked(**kwargs: Any) -> Any:
+        keyed = key_job(**kwargs)
+        assert keyed.prepared is not None
+        assert keyed.answer is None
+        _revoke_head(rig, monkeypatch)
+        return keyed
+
+    monkeypatch.setattr(analysis_door, "_key_job", keyed_then_revoked)
+    response = rig.stored(_UNSUMMED)
+
+    assert response.status_code == 410, response.text
+    assert response.json()["code"] == "snapshot_revoked"
+    assert rig.renders == 0
+
+
 def test_a_stale_head_resolves_pending_and_submits_one_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,7 +296,39 @@ def test_a_stale_head_resolves_pending_and_submits_one_check(
     ]
     assert reads
     assert len(set(reads)) == len(reads)
+    assert rig.task_creates.wait_idle(5)
     assert len(rig.tasks.enqueued) == 1
+
+
+def test_a_stale_heads_check_is_created_before_the_answer_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check keying submits for a stale head is created on the pool beside the rest of the
+    run, and the answer leaves only once that create has finished, timed as `head_check_join`."""
+    rig = _Rig(monkeypatch)
+    rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
+    entered, gate = threading.Event(), threading.Event()
+    enqueue = rig.tasks.enqueue
+
+    def gated(**kwargs: Any) -> None:
+        entered.set()
+        assert gate.wait(5)
+        enqueue(**kwargs)
+
+    monkeypatch.setattr(rig.tasks, "enqueue", gated)
+
+    def release_once_waiting() -> None:
+        assert entered.wait(5)
+        time.sleep(0.2)
+        gate.set()
+
+    threading.Thread(target=release_once_waiting, daemon=True).start()
+    response = rig.stored(_UNSUMMED)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["resolved_roots"][0]["freshness"] == "pending"
+    assert len(rig.tasks.enqueued) == 1
+    assert "head_check_join;dur=" in response.headers["server-timing"]
 
 
 def test_a_dataset_with_no_head_answers_202_naming_its_queued_rebuild(
@@ -340,8 +428,11 @@ def _fail_head_check(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     rig.heads.age_head(rig.spec_id, age=_PAST_INTERVAL)
     monkeypatch.setattr(
         current,
-        "head_check_operation",
-        lambda **_: _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        "request_head_check",
+        lambda **_: (
+            "failed",
+            _operation(id="op_check", state="failed", refusal_code="over_ceiling"),
+        ),
     )
 
 
@@ -451,3 +542,53 @@ def test_a_recorded_rendering_whose_file_is_gone_renews_its_served_frame(
         for r in _renewals(rig.operations, rig.tasks)
     ]
     assert renewals == [(rig.spec_id, rig.cut, frame)]
+
+
+def _db_transactions(response: httpx.Response) -> int:
+    """The call's `db_transactions` count its `Server-Timing` states."""
+    (entry,) = [
+        part.strip()
+        for part in response.headers["server-timing"].split(",")
+        if part.strip().startswith("db_transactions;")
+    ]
+    return int(entry.removeprefix("db_transactions;desc="))
+
+
+@pytest.mark.parametrize(
+    ("step", "transactions"),
+    [
+        # The definition, the head version's state, the answer, the answer's frame state, and
+        # the answer's recipe. The roots' records, the frame's retention and the derived
+        # manifest's frame state come from the states read.
+        pytest.param(_UNSUMMED, 5, id="plain"),
+        # Adds the recorded versions listed from the head and the recorded sum's state.
+        pytest.param(_SUMMED, 7, id="groupby-implied"),
+    ],
+)
+def test_a_stored_hit_reads_each_record_once(
+    monkeypatch: pytest.MonkeyPatch, step: dict[str, Any], transactions: int
+) -> None:
+    """A stored hit with `include: ["manifest"]` over a root in its plain rendering reads each
+    record once (`SharedVersionReads`). The head store is in memory, so its read counts
+    nothing. No write is due: the requests before it marked the root's reads, its files are
+    fresh, so no renewal is due, and its head was confirmed this second, so no head check is
+    due; the hit writes nothing."""
+    rig = _Rig(monkeypatch, counted=True)
+    root = {"spec_id": rig.spec_id}
+    request = {
+        "tree": {**step, "inputs": {"data": root}},
+        "latest": "stored",
+        "include": ["manifest"],
+    }
+    for _ in range(2):
+        assert rig.client.post(_PATH, json=request).status_code == 200
+    queued, changes = len(rig.tasks.enqueued), rig.store.total_changes
+
+    hit = rig.client.post(_PATH, json=request)
+
+    assert hit.status_code == 200, hit.text
+    body = hit.json()
+    assert body["resolved_roots"][0]["freshness"] == "current"
+    assert body["manifest"]["content_version"] == body["ref"]["members"][0]["content_version"]
+    assert (len(rig.tasks.enqueued), rig.store.total_changes) == (queued, changes)
+    assert _db_transactions(hit) == transactions

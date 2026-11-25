@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 from google.api_core.exceptions import AlreadyExists
@@ -72,6 +73,32 @@ def test_a_new_submission_gets_a_new_task() -> None:
     client.enqueue(operation_id="op_abc", submission_count=1)
 
     assert list(cloud_tasks.tasks) == [f"{_QUEUE}/tasks/op_abc-0", f"{_QUEUE}/tasks/op_abc-1"]
+
+
+def test_a_retry_is_scheduled_ahead_under_a_name_no_other_task_of_the_operation_takes() -> None:
+    cloud_tasks = _DedupingCloudTasks()
+    client = _client(cloud_tasks)
+    client.enqueue(operation_id="op_abc", submission_count=0)
+    before = time.time()
+
+    client.enqueue_retry(operation_id="op_abc", submission_count=0, generation=1, delay_seconds=60)
+    client.enqueue_retry(operation_id="op_abc", submission_count=0, generation=2, delay_seconds=60)
+    client.enqueue_retry(operation_id="op_abc", submission_count=0, generation=2, delay_seconds=60)
+
+    assert list(cloud_tasks.tasks) == [
+        f"{_QUEUE}/tasks/op_abc-0",
+        f"{_QUEUE}/tasks/op_abc-0-retry1",
+        f"{_QUEUE}/tasks/op_abc-0-retry2",
+    ]
+    original = cloud_tasks.tasks[f"{_QUEUE}/tasks/op_abc-0"]
+    retry = cloud_tasks.tasks[f"{_QUEUE}/tasks/op_abc-0-retry1"]
+    assert "schedule_time" not in original
+    assert before + 59 <= retry["schedule_time"]["seconds"] <= time.time() + 60
+    assert json.loads(retry["http_request"]["body"]) == {
+        "operation_id": "op_abc",
+        "submission_count": 0,
+    }
+    assert retry["http_request"]["url"] == original["http_request"]["url"]
 
 
 class _LandsThenTimesOut(_DedupingCloudTasks):

@@ -10,8 +10,11 @@ snapshot."""
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -26,6 +29,11 @@ from resolvekit.core.module_registry import register_module
 
 from dfo_platform.singleton import RefCountedSingleton
 from entity_resolution import pack
+from entity_resolution.group_wordings import (
+    GroupWordings,
+    build_group_wordings,
+    load_query_aliases,
+)
 from entity_resolution.groups import GroupRegistry, build_group_registry
 from entity_resolution.membership import MembershipPolicy, build_policy
 
@@ -43,6 +51,8 @@ _CACHE_DIR_ENV = "RESOLVEKIT_CACHE_DIR"
 _OFFLINE_ENV = "RESOLVEKIT_OFFLINE"
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class _ResolverEnv(BaseSettings):
@@ -101,8 +111,9 @@ def shared_membership_policy() -> MembershipPolicy:
 
 
 class SharedResolver:
-    """Composed resolver with a dedicated single-worker executor, its pack cache directory and
-    the exact index of the `dfo_graph` pack's names. `groups` and `policy` are the process's
+    """Composed resolver with a dedicated single-worker executor, its pack cache directory,
+    the exact index of the `dfo_graph` pack's names, and the wording aliases generated from
+    every group's names (`group_wordings`). `groups` and `policy` are the process's
     (`shared_memberships`).
 
     Resolvekit's query cache requires serial calls. Use `acquire_shared` and `release_shared`
@@ -115,11 +126,13 @@ class SharedResolver:
         executor: ThreadPoolExecutor,
         cache_dir: Path,
         alias_index: pack.AliasIndex,
+        group_wordings: GroupWordings,
     ) -> None:
         self.resolver = resolver
         self.executor = executor
         self.cache_dir = cache_dir
         self.alias_index = alias_index
+        self.group_wordings = group_wordings
 
     @property
     def groups(self) -> GroupRegistry:
@@ -151,6 +164,19 @@ def _resolve_cache_dir(cache_dir: Path | None) -> Path:
     return Path(env_value)
 
 
+_cached_wordings: dict[tuple[str, str], GroupWordings] = {}
+"""The last built wordings, keyed by `_wordings_key`. One entry bounds it. `_build` runs under
+the singleton's lock, so builds do not race. The process's group registry is fixed, so the
+key leaves it out."""
+
+
+def _wordings_key(pack_dir: Path) -> tuple[str, str]:
+    """What the wordings derive from: the pack (its directory name is the content hash of the
+    records and curated aliases) and the curated query aliases file."""
+    query_aliases = pack.query_aliases_path().read_bytes()
+    return pack_dir.name, hashlib.sha256(query_aliases).hexdigest()
+
+
 def _build(cache_dir: Path | None) -> SharedResolver:
     resolved = _resolve_cache_dir(cache_dir)
     # Read the memberships with the resolver, so no request is the one that reads them.
@@ -162,13 +188,47 @@ def _build(cache_dir: Path | None) -> SharedResolver:
         records_path=records_path, curated_path=curated_path, out_dir=resolved
     )
     alias_index = pack.build_alias_index(records_path=records_path, curated_path=curated_path)
+    curated = load_query_aliases()
     register_module(pack.MODULE_ID, pack_dir)
     resolver = Resolver.lite(
         module_ids=list(MODULE_IDS), routing_mode=RoutingMode.EXPLICIT, cache_size=0
     )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="resolvekit")
+    started = time.monotonic()
+    key = _wordings_key(pack_dir)
+    try:
+        group_wordings = _cached_wordings.get(key)
+        if group_wordings is None:
+            group_wordings = executor.submit(
+                build_group_wordings,
+                resolver,
+                alias_index,
+                shared_memberships().groups,
+                curated=curated,
+            ).result()
+            _cached_wordings.clear()
+            _cached_wordings[key] = group_wordings
+    except BaseException:
+        executor.shutdown(wait=True)
+        resolver.close()
+        raise
+    logger.info(
+        "group wordings ready in %.2f s: %d aliases, %d skipped, %d unnamed names",
+        time.monotonic() - started,
+        len(group_wordings.aliases),
+        len(group_wordings.skipped),
+        len(group_wordings.unnamed),
+    )
+    for unnamed in group_wordings.unnamed:
+        logger.debug(
+            "group wording left out %r of %s: %s", unnamed.name, unnamed.group, unnamed.reason
+        )
     return SharedResolver(
-        resolver=resolver, executor=executor, cache_dir=resolved, alias_index=alias_index
+        resolver=resolver,
+        executor=executor,
+        cache_dir=resolved,
+        alias_index=alias_index,
+        group_wordings=group_wordings,
     )
 
 

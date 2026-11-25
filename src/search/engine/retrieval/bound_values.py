@@ -75,6 +75,7 @@ from code_index.members import (
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
+from code_index.ratio_twins import RatioClass, RatioTwins, ratio_twins
 from code_index.scope_conventions import BASIS_MEASURES, NETTING_BASIS_SLOT, BasisMeasure
 from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import (
@@ -114,6 +115,7 @@ from search.engine.retrieval.facts import (
     _dcids_for,
     read_constraints,
     read_declared_roles,
+    read_five_tuple,
     read_name,
     read_slot_taxonomy,
 )
@@ -548,7 +550,8 @@ def _member_reading(arcs: dict) -> tuple[object, ...]:
 def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
     """`shape` without the `removed` members, its taxonomy read over the rest as
     `derive_shapes` reads it: over the members with data at a probed place, else all. It
-    stands for those members alone, so it holds no family (`ShapeDraft.held_family`)."""
+    stands for those members alone, so it holds no family (`ShapeDraft.held_family`,
+    `ShapeDraft.twin_families`)."""
     arcs = {sv: a for sv, a in (shape.sv_arc_facts or {}).items() if sv not in removed}
     coverage = shape.member_coverage
     if coverage is not None:
@@ -571,6 +574,7 @@ def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
         slot_taxonomy=taxonomy,
         place_available=bool(available) if coverage is not None else shape.place_available,
         held_family=None,
+        twin_families=(),
     )
 
 
@@ -2763,45 +2767,54 @@ def held_family_memo() -> Iterator[None]:
 def shape_population_arcs(shape: ShapeDraft) -> dict[str, dict]:
     """The arcs of the members `shape` stands for: its own members (`sv_arc_facts`), then,
     for a shape stamped with a family the catalogue holds (`ShapeDraft.held_family`), every
-    other member of that family, of the role set the role-class election narrowed it to
-    when one did (`ShapeDraft.held_roles`). Every reader of a shape's members reads them
+    other member of that family, then those of each family of a ratio twin it spans
+    (`ShapeDraft.twin_families`), each of the role set the role-class election narrowed it
+    to when one did (`ShapeDraft.held_roles`). Every reader of a shape's members reads them
     here, so the members agree with the slot taxonomy derive read from the same family."""
-    own = shape.sv_arc_facts or {}
-    if shape.held_family is None:
-        return dict(own)
-    held = _held_members(shape.held_family)
-    return {
-        **own,
-        **{
-            sv: arcs
-            for sv, arcs in held.arcs.items()
-            if sv not in own and (shape.held_roles is None or held.roles[sv] == shape.held_roles)
-        },
-    }
+    population = dict(shape.sv_arc_facts or {})
+    for key in _held_keys(shape):
+        held = _held_members(key)
+        for sv, arcs in held.arcs.items():
+            if sv not in population and (
+                shape.held_roles is None or held.roles[sv] == shape.held_roles
+            ):
+                population[sv] = arcs
+    return population
+
+
+def _held_keys(shape: ShapeDraft) -> tuple[FamilyKey, ...]:
+    """The catalogue families `shape` stands for the members of: its held family, then its
+    ratio twins' (`ShapeDraft.twin_families`)."""
+    held = () if shape.held_family is None else (shape.held_family,)
+    return (*held, *shape.twin_families)
 
 
 def held_family_arcs(shape: ShapeDraft) -> dict[str, dict]:
     """The arcs of every member of the family the catalogue holds for `shape`
     (`ShapeDraft.held_family`) beside the shape's own members, of every role class: unlike
     `shape_population_arcs`, no role-class election narrows them (`ShapeDraft.held_roles`).
-    The shape's own members alone for a shape holding no family. Reads no graph."""
-    own = shape.sv_arc_facts or {}
-    if shape.held_family is None:
-        return dict(own)
-    return {
-        **own,
-        **{sv: arcs for sv, arcs in _held_members(shape.held_family).arcs.items() if sv not in own},
-    }
+    The families of the ratio twins it spans (`ShapeDraft.twin_families`) follow. The
+    shape's own members alone for a shape holding no family. Reads no graph."""
+    population = dict(shape.sv_arc_facts or {})
+    for key in _held_keys(shape):
+        for sv, arcs in _held_members(key).arcs.items():
+            population.setdefault(sv, arcs)
+    return population
 
 
 def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
     """`shape` standing for `members` alone, some of the members it stands for
-    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`). A
-    shape narrowed from a held family's members is seeded, when walked, with the members
+    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`).
+    A shape narrowed from a held family's members is seeded, when walked, with the members
     among them it held before (`ShapeDraft.walk_seeds`), so the family widens what it
     stands for and never what a walk reads. A shape that held no family stood for its own
-    members alone, and keeps its seeds."""
-    if shape.held_family is None:
+    members alone, and keeps its seeds.
+
+    `shape` spans no ratio family's classes (`spans_ratio_twins`): such a shape keeps its
+    base class's five-tuple over members of every class, so its class is elected first
+    (`on_elected_ratio_class`) and its members are narrowed within that class."""
+    assert not spans_ratio_twins(shape), "a ratio family's class is elected before narrowing"
+    if not _held_keys(shape):
         return replace(shape, sv_arc_facts=members)
     own = shape.sv_arc_facts or {}
     return replace(
@@ -2856,13 +2869,13 @@ def held_family_exact(shape: ShapeDraft) -> bool:
 
 
 async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
-    """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
-    request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
-    finds the family read. The phases call it before their first on-loop reader: the bind
-    reads the menu's, the elected shape's among them, before the words it nominates read
-    their members' names, and settling the election reads any the bind did not, which
-    candidate admission, the alternates' walks and refusals read after it. Reads nothing with no
-    memo bound or every family already read."""
+    """Read the families each of `shapes` stands for (`ShapeDraft.held_family`,
+    `ShapeDraft.twin_families`) into the request's memo (`held_family_memo`) off the event
+    loop, so a reader that runs on it finds the family read. The phases call it before their
+    first on-loop reader: the bind reads the menu's, the elected shape's among them, before
+    the words it nominates read their members' names, and settling the election reads any
+    the bind did not, which candidate admission, the alternates' walks and refusals read
+    after it. Reads nothing with no memo bound or every family already read."""
     memo = _held_family_memo.get()
     if memo is None:
         return
@@ -2870,9 +2883,10 @@ async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     origin = served_origin_key()
     keys = list(
         dict.fromkeys(
-            shape.held_family
+            key
             for shape in shapes
-            if shape.held_family is not None and (build_id, origin, shape.held_family) not in memo
+            for key in _held_keys(shape)
+            if (build_id, origin, key) not in memo
         )
     )
     if keys:
@@ -3455,12 +3469,23 @@ def elected_role_class_shape(
     `FAILED` when the walk, or the read of its members' arcs, settles nothing. A resolution
     the walk or the tables settled states what the mint states of the members
     (`MembershipResolution.walked`). The walk is seeded with the shape's recalled members
-    (`ShapeDraft.walk_seeds`).
+    (`ShapeDraft.walk_seeds`). A shape with no member runs no walk, unless the index lists
+    its five-tuple (`_index_lists`), whose walk elects from the index and reads no seed.
+
+    A shape spanning the classes of a ratio family (`ShapeDraft.twin_families`) leaves the
+    first election on one class (`_elected_ratio_class`), and `query` is read on that
+    class's five-tuple from then on, so the tables, the walk and the mint read one
+    five-tuple. A caller that reads its query after this call rebuilds it from the
+    returned shape.
 
     Raises `RoleSignatureError` when the walk meets role sets the election cannot order,
-    and `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
+    or the asked roles cannot choose between a ratio and its twin, and
+    `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
     identity, so no sample answers it."""
     narrowed = _recalled_role_class_shape(shape, query)
+    assert not spans_ratio_twins(narrowed), "the role-class election resolves ratio twins"
+    if narrowed.meas_denom_dcid != shape.meas_denom_dcid:
+        query = replace(query, five_tuple=_member_five_tuple(shape_five_tuple(narrowed)))
     if index_decides(get_index(), query):
         return MembershipResolution(narrowed, MembershipAuthority.AUTHORITATIVE)
     if narrowed.held_family is not None and _tables_hold_five_tuple(narrowed.held_family):
@@ -3476,11 +3501,11 @@ def elected_role_class_shape(
         return MembershipResolution(
             narrowed, MembershipAuthority.AUTHORITATIVE, WalkedMembers.of(query, held_group)
         )
-    if walks is None or arcs_graph is None or not narrowed.sv_arc_facts:
+    if walks is None or arcs_graph is None or not (narrowed.sv_arc_facts or _index_lists(query)):
         return MembershipResolution(narrowed, MembershipAuthority.SAMPLED)
     seeds = tuple(
         sv
-        for sv in narrowed.sv_arc_facts
+        for sv in narrowed.sv_arc_facts or ()
         if narrowed.walk_seeds is None or sv in narrowed.walk_seeds
     )
     walked = walks.family(query, seeds, deadline=deadline)
@@ -3606,6 +3631,12 @@ def _walked_label(shape: ShapeDraft, group: MemberGroup, members: Mapping[str, d
     )
 
 
+def _index_lists(query: FamilyQuery) -> bool:
+    """Whether the index lists `query`'s five-tuple (`CodeIndex.listed_by_five_tuple`), so
+    the walk elects its members from the index with no seed (`RoleClassWalks.family`)."""
+    return bool(get_index().listed_by_five_tuple.get(query.five_tuple))
+
+
 def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDraft:
     """Return `shape` narrowed to the role class `query` elects among the members it stands
     for (`shape_population_arcs`): its recalled members, beside the family the catalogue
@@ -3621,9 +3652,15 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
     that set; when none of its own members is of that set it
     holds the set's least-constrained member. `shape` is returned unchanged when the index
     decides the query's membership and when the election decides nothing
-    (`_recall_role_election`)."""
-    members = shape.sv_arc_facts
-    if shape.sv_arc_facts_complete or not members or index_decides(get_index(), query):
+    (`_recall_role_election`).
+
+    A shape spanning the classes of a ratio family (`ShapeDraft.twin_families`) always
+    leaves on one class (`on_ratio_class`), the one `_elected_ratio_class` elects over the
+    family's index rows, so recall plays no part in it."""
+    if spans_ratio_twins(shape):
+        return on_elected_ratio_class(shape, query)
+    members = shape.sv_arc_facts or {}
+    if shape.sv_arc_facts_complete or index_decides(get_index(), query) or not members:
         return shape
     population = shape_population_arcs(shape)
     recall: dict[str, MemberFacts] = {
@@ -3657,6 +3694,136 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         sv_arc_facts=kept,
         label=label,
         held_roles=role_set if shape.held_family is not None else None,
+    )
+
+
+def spans_ratio_twins(shape: ShapeDraft) -> bool:
+    """Whether `shape` stands for every role class of a ratio family
+    (`ratio_twins_of`), which derive merges into one shape over the base class: it carries
+    the other classes' families (`ShapeDraft.twin_families`)."""
+    return bool(shape.twin_families)
+
+
+def shape_ratio_twins(shape: ShapeDraft) -> RatioTwins:
+    """The ratio family `shape`, which spans its classes (`spans_ratio_twins`), stands for."""
+    ratio = ratio_twins_of(shape_five_tuple(shape))
+    assert ratio is not None, "derive merges the classes of a ratio family alone"
+    return ratio
+
+
+def _elected_ratio_class(shape: ShapeDraft, query: FamilyQuery) -> RatioClass:
+    """The class of `shape`'s ratio family (`shape_ratio_twins`) that `query` elects.
+
+    The role-class election (`_recall_role_election`) runs over every index row of the
+    family's classes (`RatioClass.rows`), the rows the listed election
+    (`code_index.members.listed_group`) elects from once the shape is resolved, so the
+    class follows from the query and the release alone. The elected role set names its
+    class (`RatioTwins.class_of`). When the election decides nothing, the class is
+    `_unelected_ratio_class`'s. An exact shape (`ShapeDraft.sv_arc_facts_complete`) and a
+    query the index decides leave on the base class."""
+    ratio = shape_ratio_twins(shape)
+    if shape.sv_arc_facts_complete or index_decides(get_index(), query):
+        return ratio.base
+    rows: dict[str, MemberFacts] = {
+        row.dcid: IndexMemberFacts(row=row)
+        for ratio_class in ratio.classes
+        for row in ratio_class.rows
+    }
+    elected = _recall_role_election(rows, query)
+    if elected is None:
+        return _unelected_ratio_class(shape, ratio, query)
+    role_set, _members = elected
+    ratio_class = ratio.class_of(tuple(role_set))
+    assert ratio_class is not None, "each role set of a ratio family's rows is one class"
+    return ratio_class
+
+
+def _unelected_ratio_class(shape: ShapeDraft, ratio: RatioTwins, query: FamilyQuery) -> RatioClass:
+    """The class a shape spanning `ratio`'s classes leaves on when the role-class election
+    over their rows decides nothing: the one class holding the rows that match `query`'s
+    slots, the base when no row matches, so the bound values a member lacks refuse on the
+    aggregate as they would on a stock.
+
+    Raises `RoleSignatureError` when rows of two classes match: the roles cannot tell the
+    ratio from its twin, as a role tie cannot tell two role sets."""
+    matching = [
+        ratio_class
+        for ratio_class in ratio.classes
+        if any(
+            _matches_query_slots(IndexMemberFacts(row=row), query.slots) for row in ratio_class.rows
+        )
+    ]
+    if len(matching) > 1:
+        raise RoleSignatureError(
+            f"members of shape {shape.shape_id!r} matching the bound values divide by "
+            f"{len(matching)} denominators the asked roles do not choose between: "
+            + ", ".join(ratio_class.denominator for ratio_class in matching)
+        )
+    return matching[0] if matching else ratio.base
+
+
+def on_elected_ratio_class(shape: ShapeDraft, query: FamilyQuery) -> ShapeDraft:
+    """`shape` on the class of its ratio family `query` elects (`_elected_ratio_class`,
+    `on_ratio_class`) when it spans the family's classes (`spans_ratio_twins`), else
+    `shape` itself. Raises `RoleSignatureError` when the asked roles cannot choose between
+    the ratio and its twin (`_unelected_ratio_class`)."""
+    if not spans_ratio_twins(shape):
+        return shape
+    return on_ratio_class(shape, _elected_ratio_class(shape, query))
+
+
+def on_ratio_class(shape: ShapeDraft, ratio_class: RatioClass) -> ShapeDraft:
+    """`shape`, which spans the classes of a ratio family (`spans_ratio_twins`), standing
+    for `ratio_class` alone: its five-tuple, denominator and roles are the class's, with no
+    optional role, and its shape id is the one derive and a resubmit give that five-tuple
+    (`derive.group_shape_id`). It keeps its own members of that five-tuple and spans no
+    twin. Its catalogue family (`ShapeDraft.held_family`) is the class's when the
+    catalogue holds it, else none. A class other than the base takes the label its family
+    reads as (`walked_family_label`) over the shape's own members of the class, else over
+    the members the catalogue holds for it, so it carries the base class's name only when
+    neither names it. It records the id it leaves
+    (`ShapeDraft.menu_shape_id`), the menu reading's.
+
+    A class with no member in recall or the catalogue leaves the shape with no member: the
+    family's rows are listed, so the mint's walk elects them from the index
+    (`elected_role_class_shape`)."""
+    # derive imports this module, so its shape id rule is read at call time.
+    from search.engine.retrieval.derive import group_shape_id
+
+    denominator = ratio_class.denominator
+    five_tuple = shape_five_tuple(shape)._replace(meas_denom_dcid=denominator)
+    assert _member_five_tuple(five_tuple) == ratio_class.five_tuple, (
+        "a ratio family's classes differ in their denominator alone"
+    )
+    key = FamilyKey(*five_tuple, True)
+    held = current_catalogue().held_family(key)
+    members = {
+        sv: arcs
+        for sv, arcs in (shape.sv_arc_facts or {}).items()
+        if read_five_tuple(arcs).meas_denom_dcid == denominator
+    }
+    label = shape.label
+    if denominator != shape.meas_denom_dcid:
+        named = members or (_held_members(key).arcs if held is not None else {})
+        label = (
+            walked_family_label(
+                named, held=held, population_type_label=None, prop_labels={}, value_labels={}
+            )
+            or shape.label
+        )
+    return replace(
+        shape,
+        shape_id=group_shape_id(five_tuple, role_bearing=True, family=None),
+        meas_denom_dcid=denominator,
+        declared_roles=ratio_class.roles,
+        optional_roles=frozenset(),
+        sv_arc_facts=members,
+        label=label,
+        held_family=key if held is not None else None,
+        twin_families=(),
+        menu_shape_id=shape.shape_id,
+        held_roles=None,
+        walk_seeds=None,
     )
 
 
@@ -3774,14 +3941,9 @@ def bind_member_values(
     A slot asked in full that the members hold one value on is a request they cannot
     answer: "across all debtor types" beside DT.TDS.DEGG.CD. `bindings` then return as
     drafted beside those drafts, for the caller to refuse the part."""
-    index = get_index()
-    rows = [index.statvar_by_dcid(dcid) for dcid in members]
-    if not rows or any(row is None for row in rows):
+    shared = shared_member_values(members)
+    if shared is None:
         return list(bindings), []
-    first, *rest = (row.constraint_properties for row in rows if row is not None)
-    shared = {
-        prop: value for prop, value in first.items() if all(c.get(prop) == value for c in rest)
-    }
     bound, added = _bind_sole_options(shape, bindings, shared)
     fixed = {binding.property_dcid for binding in added}
     asked_in_full = [
@@ -3792,6 +3954,27 @@ def bind_member_values(
     if asked_in_full:
         return list(bindings), asked_in_full
     return bound, []
+
+
+def member_constraint_values(members: Collection[str]) -> list[Mapping[str, str]] | None:
+    """The constraint values of each StatVar of `members`, by its index row, or None when
+    `members` is empty or the index holds no row for one of them."""
+    index = get_index()
+    rows = [index.statvar_by_dcid(dcid) for dcid in members]
+    if not rows or any(row is None for row in rows):
+        return None
+    return [row.constraint_properties for row in rows if row is not None]
+
+
+def shared_member_values(members: Collection[str]) -> dict[str, str] | None:
+    """The constraint values every StatVar of `members` holds, by property, or None when
+    `members` is empty or the index holds no row for one of them
+    (`member_constraint_values`). `bind_member_values` binds a code's shape to them."""
+    rows = member_constraint_values(members)
+    if rows is None:
+        return None
+    first, *rest = rows
+    return {prop: value for prop, value in first.items() if all(c.get(prop) == value for c in rest)}
 
 
 def canonical_pin_bindings(
@@ -3889,14 +4072,22 @@ def five_tuple_families(
     return (index or get_index()).families_by_five_tuple.get(_member_five_tuple(five_tuple), ())
 
 
+def ratio_twins_of(five_tuple: FiveTuple, index: CodeIndex | None = None) -> RatioTwins | None:
+    """The ratio family (`code_index.ratio_twins.RatioTwins`) one of whose role classes is
+    `five_tuple`, or None. The ratio's aggregate and its by-creditor twin, which divides by
+    the by-creditor stock, are two classes of one family."""
+    return ratio_twins(index or get_index()).get(_member_five_tuple(five_tuple))
+
+
 def prepare_index_views() -> None:
     """Loads the release's code index and measure index and builds the views of the index
-    that search reads on every resolve: its five-tuples (`index_carries_five_tuple`) and
-    the member views (`code_index.members.prepare_member_views`). Each is otherwise built
+    that search reads on every resolve: its five-tuples (`index_carries_five_tuple`), its
+    ratio families (`ratio_twins_of`) and the member views (`code_index.members.prepare_member_views`). Each is otherwise built
     by the first request that reads it, about 135 ms on the dev release's code index."""
     index = get_index()
     get_measure_index()
     _index_five_tuples(index)
+    ratio_twins(index)
     prepare_member_views(index)
 
 

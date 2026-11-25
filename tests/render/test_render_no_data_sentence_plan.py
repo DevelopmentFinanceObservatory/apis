@@ -751,29 +751,50 @@ def test_ids_028_a_role_refusal_is_a_claim():
 
 
 @pytest.mark.parametrize(
-    ("entity_terms", "closing"),
+    ("entity_terms", "side", "closing"),
     [
         pytest.param(
             ["all donors"],
-            ' "all donors" belongs on the other side of the flow. Swap its "from" or "to".',
-            id="one",
+            "origin",
+            ' "all donors" names providers, so it cannot be the receiving side of this flow.',
+            id="donors-received",
         ),
         pytest.param(
             ["all donors", "official donors"],
-            ' "all donors" and "official donors" belong on the other side of the flow. Swap '
-            'their "from" or "to".',
-            id="two",
+            "origin",
+            ' "all donors" and "official donors" name providers, so they cannot be the '
+            "receiving side of this flow.",
+            id="two-donor-populations",
+        ),
+        pytest.param(
+            ["developing countries"],
+            "destination",
+            ' "developing countries" names recipients, so it cannot be the providing '
+            "side of this flow.",
+            id="recipients-giving",
+        ),
+        pytest.param(
+            ["all recipients", "official donors"],
+            None,
+            ' "all recipients" and "official donors" each name one side of the flow only, and '
+            "the question puts them on the other.",
+            id="both-sides",
         ),
     ],
 )
 def test_a_role_refusal_naming_misdirected_populations_closes_on_them(
-    entity_terms: list[str], closing: str
+    entity_terms: list[str], side: str | None, closing: str
 ):
     """A role_incompatible refusal naming the whole populations the request directs to the
     other side keeps its claim as the first token, which a composed envelope reframes, and
-    names them in a token of their own, which it keeps."""
+    names them in a token of their own, which it keeps: what they name and the side they
+    cannot be, with no swap advice, since "aid from developing countries to Africa" asks
+    about aid they give, which no swap answers."""
     plan = no_data_sentence_plan(
-        "role_incompatible", variable_term="debt share", entity_terms=entity_terms
+        "role_incompatible",
+        variable_term="debt share",
+        entity_terms=entity_terms,
+        role_axis=side,
     )
 
     assert [token.text for token in plan] == [

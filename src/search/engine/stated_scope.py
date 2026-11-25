@@ -146,11 +146,17 @@ class StatedScope:
     """What one text states of its scope: an explicit entry per axis it states, in axis
     order, each with the words it was read from as a text origin, whether it asks for a
     total, and whether its provider entry sums the bilateral and multilateral lines naming
-    no imputed share (`ScopeIntake.sums_providers`)."""
+    no imputed share (`ScopeIntake.sums_providers`). `mentions` lists every provider option
+    the text names, in order of first occurrence, read before the collapse that leaves an
+    axis stating two options without an entry ("bilateral aid as a share of aid including
+    imputed multilateral" has no entry and mentions `provider:bilateral` and
+    `provider:inclusive`); it is empty where a mention of a kind of provider leaves the axis
+    unstated. It is a reading for clients and does not enter the response cache key."""
 
     entries: tuple[Entry, ...] = ()
     total: bool = False
     sums_providers: bool = False
+    mentions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +187,12 @@ def read_stated_scope(text: str) -> StatedScope:
         )
         sums_providers = sums_providers or first.sums
     total = any(not occurrence_negated(text, m.start(), m.end()) for m in _TOTAL.finditer(text))
-    return StatedScope(entries=tuple(entries), total=total, sums_providers=sums_providers)
+    mentions = tuple(
+        dict.fromkeys(s.option_id for s in sorted(stated["provider"] or (), key=lambda s: s.start))
+    )
+    return StatedScope(
+        entries=tuple(entries), total=total, sums_providers=sums_providers, mentions=mentions
+    )
 
 
 def _basis_stated(text: str) -> list[_Stated]:

@@ -143,6 +143,9 @@ class FakeCatalogue:
     def scoped(self, allowed: frozenset[str]) -> FakeCatalogue:
         return replace(self, scope=allowed if self.scope is None else self.scope & allowed)
 
+    def unscoped(self) -> FakeCatalogue:
+        return replace(self, scope=None)
+
     def is_stale(self, *, now: datetime | None = None) -> bool:
         return False
 

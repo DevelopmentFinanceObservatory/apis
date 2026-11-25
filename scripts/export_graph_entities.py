@@ -1,12 +1,13 @@
 """Regenerate graph-derived entity and region packs.
 
 `entities` exports `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty`
-nodes, every declared origin total and every whole total (a `PartyRow.whole` marker, such as the
-recipient side's `DACAllRecipients`), sorted by dcid, then folds each `_MERGED_DCIDS` source
-record into its target. A record's `dac_code` is the node's numerically lowest `dacCode`; its other
-codes join its aliases, since a resolvekit entity holds one code per system and every code must
-resolve. A total that holds a resolver group lists only its codes, under its dcid as name: its
-names resolve to the group, and its DAC codes name the total itself.
+nodes, every declared origin total, every whole total (a `PartyRow.whole` marker, such as the
+recipient side's `DACAllRecipients`) and every total of the bilateral destinations
+(`scope_conventions.bilateral_side_total`, `DACDevelopingCountries`), sorted by dcid, then folds
+each `_MERGED_DCIDS` source record into its target. A record's `dac_code` is the node's numerically
+lowest `dacCode`; its other codes join its aliases, since a resolvekit entity holds one code per
+system and every code must resolve. A total that holds a resolver group lists only its codes, under
+its dcid as name: its names resolve to the group, and its DAC codes name the total itself.
 `regions` maps resolvekit subregions and continents to graph dcids via `/v2/resolve`.
 `place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
 `entity_resolution.types.entity_kind` classes as places.
@@ -28,6 +29,7 @@ from pathlib import Path
 import httpx
 
 from code_index.query import CodeIndex
+from code_index.scope_conventions import bilateral_side_total
 from code_index.shared import get_index
 from code_index.types import ANY_AXIS, ANY_DATASET
 from dc_graph import GraphClient, label_or_self_name
@@ -129,8 +131,9 @@ def _numeric_code(code: str) -> int:
 
 
 def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[str]]:
-    """Return the code-index label of each declared origin total and of each whole total on any
-    axis, keyed by dcid, and the dcids of the totals that hold a resolver group.
+    """Return the code-index label of each declared origin total, of each whole total on any
+    axis and of each total of the bilateral destinations (`bilateral_side_total`), keyed by
+    dcid, and the dcids of the totals that hold a resolver group.
 
     An ungrouped total is exported with its names. Organization totals are already covered by the
     organization export; the remaining ungrouped records must be graph `DACGroup` nodes. A party
@@ -141,7 +144,7 @@ def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[
     grouped = set()
     for dcid, party in index.parties.items():
         if party.kind_over(ANY_AXIS) != "total" or not (
-            party.publishes("origin", ANY_DATASET) or party.whole
+            party.publishes("origin", ANY_DATASET) or party.whole or bilateral_side_total(dcid)
         ):
             continue
         if party.label is None:
@@ -157,7 +160,8 @@ def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[
 def export_entities(
     reader: GraphClient, *, max_results: int = 1000, index: CodeIndex | None = None
 ) -> list[dict]:
-    """Fetch every `_KIND_BY_TYPE` population, declared donor total and whole total in dcid order.
+    """Fetch every `_KIND_BY_TYPE` population, declared donor total, whole total and total of the
+    bilateral destinations in dcid order.
 
     The declared totals come from `index`, by default the bound release's code index. Each
     declared total's code-index label must equal its graph name. A total that holds a group

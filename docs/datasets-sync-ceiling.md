@@ -137,8 +137,8 @@ ago, and a poll for one answers `operation_not_found`.
 A lease that has ended (`claimed_at + lease_seconds` before now) means the attempt has stopped
 owning the row. Whether another delivery will run it is a separate fact, which the claim records
 as `final_delivery`: true when the claiming delivery is the task's last
-(`X-CloudTasks-TaskRetryCount` at `DATASETS_OPERATION_MAX_ATTEMPTS - 1`), false when a later one
-is due. A row is abandoned when nothing will finish it:
+(`X-CloudTasks-TaskRetryCount` at `DATASETS_OPERATION_MAX_ATTEMPTS - 1`) or the submission's
+claims reach `DATASETS_OPERATION_MAX_ATTEMPTS`, false when a later run is due. A row is abandoned when nothing will finish it:
 
 - A `running` row whose lease has ended and whose `final_delivery` is true. No delivery is left.
 - A `running` row with no `claimed_at`, once `updated_at` is `LEASE_SECONDS` (1,620) old. An image
@@ -225,17 +225,31 @@ more, and the route answers 200 `superseded`. The head advance carries the claim
 `HeadFence`: `LiveHeadStore.advance_head` locks the operation row in the head's own transaction
 and, when another attempt has claimed it, raises `HeadFenceLost` with the head and the
 materialisation table unchanged, which ends the run the same way. A deterministic failure
-(`classify_definition_exception` says not retryable) calls `fail` and answers 200. A transient
-failure before the operation's last Cloud Tasks attempt (`X-CloudTasks-TaskRetryCount` against
-`DATASETS_OPERATION_MAX_ATTEMPTS`) releases the row back to `pending` with its lease cleared and
-answers non-2xx, so the retry claims it at once. On the last attempt it fails the operation,
-retryable, and answers 200. A worker that dies mid-run leaves its lease to end. A later delivery
-reclaims it, or the next poll fails it retryable.
+(`classify_definition_exception` says not retryable) calls `fail` and answers 200. A run is the
+operation's last when either Cloud Tasks' retry count (`X-CloudTasks-TaskRetryCount`) or the
+claims of its submission (`submission_attempts`) reaches `DATASETS_OPERATION_MAX_ATTEMPTS`, and
+a claim past it fails the row retryable without running. The claim computes the count and the
+`final_delivery` it stores in one statement. It stores the count with the `submission_count` it
+belongs to (`submission_attempts_of`) and starts at 1 when that differs from the row's, so a
+reset starts the next submission's count without writing it. A transient failure before the last
+attempt releases the row back to `pending` with its lease cleared, schedules a new task named
+`{operation_id}-{submission_count}-retry{submission_attempts}`, and answers 200 `retrying`, so the
+original task is not retried after the queue's 1,680-second backoff. The retry after the
+submission's first run is due `DATASETS_OPERATION_RETRY_DELAY_SECONDS` (60) ahead, and every later
+one `DATASETS_OPERATION_RETRY_LATER_DELAY_SECONDS` (900) ahead, below that backoff, so three runs
+span about 16 minutes of an outage. A release that finds the row moved on schedules nothing and
+answers 200 `superseded`. A retry that finds the row done, failed or resubmitted answers 200
+without running. When the create fails, or the worker has
+no `DFO_TASKS_QUEUE`, it answers 503 and the queue's backoff retries the delivery. On the last
+attempt it fails the operation, retryable, and answers 200. A worker that dies mid-run leaves its
+lease to end. A later delivery reclaims it after the queue's backoff, or the next poll fails it
+retryable.
 
 The API side needs `DFO_WORKER_URL`, `DFO_WORKER_INVOKER_SERVICE_ACCOUNT`, and `DFO_TASKS_QUEUE`
-(Cloud Tasks' fully-qualified queue resource name) to enqueue, for the mint and definition doors
-and for the operations poll. The worker needs `DFO_WORKER_URL` and
-`DFO_WORKER_INVOKER_SERVICE_ACCOUNT` to verify, plus the same `DATASETS_GRAPH_BASE_URL`/
+(Cloud Tasks' fully-qualified queue resource name) to enqueue, for the mint and definition doors and
+for the operations poll. The worker needs `DFO_WORKER_URL` and `DFO_WORKER_INVOKER_SERVICE_ACCOUNT`
+to verify, and `DFO_TASKS_QUEUE` to schedule its retries, with the queue's enqueuer role and
+`iam.serviceAccountUser` on the invoker account, plus the same `DATASETS_GRAPH_BASE_URL`/
 `DATASETS_SDMX_BASE_URL` the API doors read, since it materialises through the same
 `current.serve_current` entry point the synchronous doors call.
 

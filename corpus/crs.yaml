@@ -231,14 +231,14 @@
 
 - id: dq-crs-020
   query: aid to developing countries unspecified
-  why: The 9998 bucket is a CRS recipient node that raw text may or may not name; expanding to every developing country is wrong.
+  why: Developing countries unspecified (CRS 9998) binds as one recipient, and donor-less aid reads DAC2a net receipts from official donors; listing every developing country is wrong.
   reuse: panel/crs-024
   tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [crs_quirk]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
-      entities: [{dcid: DACBilateralUnallocated, role: destination}]
-    no_data: {reason: entity_not_resolved, category: unresolved}
+      measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACBilateralUnallocated, role: destination}]
 
 - id: dq-crs-021
   query: basic sanitation aid from Germany to Kenya in 2022

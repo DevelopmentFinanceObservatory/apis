@@ -74,7 +74,6 @@ from search.render.no_data import (
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
 from search.scope.basis import offers_basis_of, with_deflation_basis
-from search.scope.build import served_scope
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -214,30 +213,37 @@ def with_skills(spec: Spec, *, index: SkillsIndex) -> Spec:
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
 
 
+class ScopeNotServedError(ValueError):
+    """A part's scope compiles to an identity other than the Spec the part answers, so its
+    choices describe another identity's rows (`with_scope_choices`). `spec_id` is the
+    Spec's, `compiled_spec_id` the scope's."""
+
+    def __init__(self, *, spec_id: str, compiled_spec_id: str) -> None:
+        super().__init__(f"the scope compiled {compiled_spec_id}, but the part answers {spec_id}")
+        self.spec_id = spec_id
+        self.compiled_spec_id = compiled_spec_id
+
+
 def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
-    """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
-    restated from ``spec``'s own definition: the identity the part serves, which the resolve
-    may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
-    stands as it is, since a composite's states the years each component serves. Its
+    """Attach how the part was counted under ``resolved.scope_choices``. The scope's compiled
+    record is ``spec`` itself, a composite's stating the years each component serves. A
+    scope compiling any other identity raises `ScopeNotServedError`: its choices describe
+    that identity's rows. Such a scope never reaches assembly: the producers of a single
+    answer refuse it (`region.result.unserved_scope_refusal`), and a same-shape merge whose
+    scope compiles elsewhere refuses to merge (`same_shape._collapse_group`, `_RefuseMerge`).
+    Its
     measure-basis labels name whose prices deflate the answer as ``spec``'s conversion states
     it (`scope.basis.with_deflation_basis`). An
     alternative measure on a basis the measure-basis choice offers
     (`scope.basis.offers_basis_of`) leaves ``resolved.alternative_measures``, since the choice
     is the part's one route to it. Update ``resolved`` because ``model_copy(update=...)``
     skips validation and the field belongs to it."""
-    served = (
-        scope
-        if scope.compiled.spec_id == spec.spec_id
-        else scope.model_copy(
-            update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
-        )
-    )
+    if scope.compiled.spec_id != spec.spec_id:
+        raise ScopeNotServedError(spec_id=spec.spec_id, compiled_spec_id=scope.compiled.spec_id)
     # The measure-basis labels name the basis the answer's conversion states, as its byline
     # does.
     conversion = spec.resolved.unit_conversion
-    served = with_deflation_basis(
-        served, None if conversion is None else conversion.deflation_basis
-    )
+    served = with_deflation_basis(scope, None if conversion is None else conversion.deflation_basis)
     update: dict[str, object] = {"scope_choices": served}
     alternatives = spec.resolved.alternative_measures
     if alternatives is not None:
@@ -595,10 +601,11 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine, ``unlisted`` the
-    populations among them no source lists exactly (`UnlistedPopulation`), and ``entity_groups``
-    groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
-    open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
+    ``entity_terms`` preserves the place wording seen by the engine, ``unlisted`` the populations
+    among them no source lists exactly (`UnlistedPopulation`), and ``entity_groups`` groups a
+    ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an open
+    origin or destination axis in ``no_observations`` copy, and the side the misdirected populations
+    of a ``role_incompatible`` refusal sit on (`misdirected_sentence`). ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording

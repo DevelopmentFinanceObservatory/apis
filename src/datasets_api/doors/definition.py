@@ -136,6 +136,7 @@ from datasets_api.operations.submit import (
     operation_submitted_resource,
     retry_after_headers,
 )
+from datasets_api.operations.task_create_pool import joining_creates
 from datasets_api.query_options import (
     QueryOptionsInvalid,
     parse_query_options,
@@ -581,6 +582,7 @@ def definition_deps(deps: Deps, *, deadline: float | None) -> DefinitionDeps:
         deadline=deadline,
         operation_store=deps.operation_store,
         task_client=deps.task_client,
+        task_creates=deps.task_creates,
         settings=settings,
         rebuilds=deps.rebuilds,
         version_lister=deps.version_lister,
@@ -623,12 +625,14 @@ async def _run_retrieval[T](
     wait_seconds: float = 0.0,
     headroom: int | Callable[[], int] = 0,
     keep_waiting: Callable[[], bool] | None = None,
+    timed_hop: bool = False,
     **kwargs: object,
 ) -> T:
     """Run `fn(deps=deps, **kwargs)` on `executor` under `deps.deadline`, bound as the request
     deadline (`dfo_platform.request_deadline`) so every graph and SDMX read inside takes it.
     `wait_seconds` is `DoorExecutor.run`'s wait for a permit, `headroom` the permits that
-    must stay free after it takes one, and `keep_waiting` what ends the wait early.
+    must stay free after it takes one, and `keep_waiting` what ends the wait early. With
+    `timed_hop`, `timings` also records the hop's `queue` and `handoff` (`DoorExecutor.run`).
     The wait ends with the unwind margin after the deadline, however many hops the request
     made before, and answers timeout (504). The worker finishes after a client timeout."""
     deadline = deps.deadline
@@ -638,6 +642,7 @@ async def _run_retrieval[T](
             executor.run(
                 functools.partial(run_with_timings, fn, timings, deps=deps, **kwargs),
                 refuse=refuse,
+                timings=timings if timed_hop else None,
                 wait_seconds=wait_seconds,
                 headroom=headroom,
                 keep_waiting=keep_waiting,
@@ -722,38 +727,40 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> Resp
     request_deps = request_definition_deps(deps)
     submitted_resource: OperationResource | None = None
     with door_call("definition", logger=logger, delivers=True) as call:
-        try:
-            head_answer = await _run_retrieval(
-                deps.read_executor,
-                _serve_spec_head,
-                deps=request_deps,
-                timings=call.timings,
-                spec_id=id,
-                options=options,
-                trace_id=trace_id,
-            )
-            if isinstance(head_answer, HeadRead):
-                manifest = await _run_retrieval(
-                    deps.work_executor,
-                    retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
-                    timings=call.timings,
-                    stored=head_answer.stored,
-                    options=options,
-                    trigger="get",
+        # The head check task create a stale head offers runs beside the rest of the call.
+        async with joining_creates(call.timings):
+            try:
+                head_answer = await _run_retrieval(
+                    deps.read_executor,
+                    _serve_spec_head,
                     deps=request_deps,
+                    timings=call.timings,
+                    spec_id=id,
+                    options=options,
                     trace_id=trace_id,
-                    head_read=head_answer,
-                    revoked_under=(id,),
                 )
-                # The work executor judged the head in this request.
-                call.timings.label("freshness", "current")
-                answer = StoredHeadAnswer(manifest=manifest, freshness="current")
-            else:
-                answer = head_answer
-            record_manifest(answer.manifest)
-        except OperationSubmitted as submitted:
-            # Treat a 202 submission as a successful `door_call` outcome.
-            submitted_resource = operation_submitted_resource(submitted, now=deps.now())
+                if isinstance(head_answer, HeadRead):
+                    manifest = await _run_retrieval(
+                        deps.work_executor,
+                        retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
+                        timings=call.timings,
+                        stored=head_answer.stored,
+                        options=options,
+                        trigger="get",
+                        deps=request_deps,
+                        trace_id=trace_id,
+                        head_read=head_answer,
+                        revoked_under=(id,),
+                    )
+                    # The work executor judged the head in this request.
+                    call.timings.label("freshness", "current")
+                    answer = StoredHeadAnswer(manifest=manifest, freshness="current")
+                else:
+                    answer = head_answer
+                record_manifest(answer.manifest)
+            except OperationSubmitted as submitted:
+                # Treat a 202 submission as a successful `door_call` outcome.
+                submitted_resource = operation_submitted_resource(submitted, now=deps.now())
     if submitted_resource is not None:
         assert submitted_resource.operation.poll is not None
         return JSONResponse(

@@ -9,8 +9,7 @@ import importlib.resources
 import json
 import os
 import re
-import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -65,37 +64,6 @@ def region_ids_path() -> Traversable:
 def query_aliases_path() -> Traversable:
     """The packaged `query_aliases.json` path."""
     return importlib.resources.files(_PACKAGE) / _DATA_DIR / _QUERY_ALIASES_FILENAME
-
-
-_MINUS_SIGN = "\u2212"
-_SOFT_HYPHEN = "\u00ad"
-
-
-def _folded_char(char: str) -> str:
-    """`char` as `fold_hyphens` reads it: a space for a hyphen or dash (Unicode category
-    Pd) or the minus sign, nothing for the soft hyphen, which marks where a word may break
-    and is no separator, and `char` otherwise."""
-    if char == _SOFT_HYPHEN:
-        return ""
-    if char == _MINUS_SIGN or unicodedata.category(char) == "Pd":
-        return " "
-    return char
-
-
-def fold_hyphens(normalized: str) -> str:
-    """`normalized` with every hyphen or dash (Unicode category Pd) and the minus sign, and
-    the spaces around it, read as one space, and every soft hyphen dropped.
-
-    "world bank-ida", "world bank - ida" and "world bank ida" give one form, so a name the
-    records write with a hyphen matches the same name written with a space. Idempotent, so it
-    folds a stored normal form and a query's alike."""
-    return " ".join("".join(map(_folded_char, normalized)).split())
-
-
-def org_name_key(text: str, normalize: Callable[[str], str]) -> str:
-    """The form an organisation name is matched in: `normalize` (`OrgNormalizer.normalize_name`),
-    then `fold_hyphens`."""
-    return fold_hyphens(normalize(text))
 
 
 class CuratedAliasError(ValueError):
@@ -178,15 +146,29 @@ def _rows(
 class AliasIndex:
     """Every name the pack stores for a row, mapped to that row as an org-pack candidate.
 
-    Keys and queries both pass through `normalize`: `OrgNormalizer.normalize_name`, the form
-    the BYOD build stores as `value_norm`, then `fold_hyphens`, the form the listed-name gate
-    compares organisation names in."""
+    Keys and queries both pass through `normalize`, `OrgNormalizer.normalize_name`, which is
+    the form the BYOD build stores as `value_norm` and the listed-name gate compares against."""
 
     owners: Mapping[str, tuple[CandidateSummary, ...]]
     normalize: Callable[[str], str]
 
     def owners_of(self, text: str) -> tuple[CandidateSummary, ...]:
         return self.owners.get(self.normalize(text), ())
+
+    def with_owners(
+        self, candidates: Sequence[CandidateSummary], text: str
+    ) -> tuple[CandidateSummary, ...]:
+        """Append each row that stores `text` as a name and is missing from `candidates`.
+
+        Resolvekit generates no candidate for many stored aliases. Its org exact-name and
+        acronym sources skip `alias` rows, so `OAPEC` misses its organisation. Resolvekit
+        offers only `groups/OPEC`, which the gate rejects. The BYOD build stores each alias
+        with its punctuation, which the org query profile strips, so `C&A Foundation` misses
+        in every source. Appended owners carry no confidence, so they rank after resolvekit's
+        candidates, and they pass the listed-name gate like any other candidate."""
+        present = {candidate.entity_id for candidate in candidates}
+        owners = tuple(owner for owner in self.owners_of(text) if owner.entity_id not in present)
+        return (*candidates, *owners)
 
 
 def build_alias_index(
@@ -211,12 +193,12 @@ def build_alias_index(
         names = [row["name"]] + [
             value for column, value in row.items() if column.startswith(_ALIAS_COLUMN_PREFIX)
         ]
-        for key in dict.fromkeys(org_name_key(name, normalizer.normalize_name) for name in names):
+        for key in dict.fromkeys(normalizer.normalize_name(name) for name in names):
             if key:
                 owners.setdefault(key, []).append(candidate)
     return AliasIndex(
         owners={key: tuple(candidates) for key, candidates in owners.items()},
-        normalize=functools.partial(org_name_key, normalize=normalizer.normalize_name),
+        normalize=normalizer.normalize_name,
     )
 
 
@@ -235,6 +217,27 @@ def organisations_named(text: str) -> frozenset[str]:
         for candidate in _committed_alias_index().owners_of(text)
         if candidate.entity_type == ENTITY_TYPE_ORGANISATION
     )
+
+
+def is_stored_name(text: str) -> bool:
+    """Whether the pack stores `text` as the name or an alias of any of its records, an
+    organisation, a DAC aggregate or a residual: "developing countries unspecified" for the
+    DAC's bilateral unallocated line."""
+    return bool(_committed_alias_index().owners_of(text))
+
+
+@functools.cache
+def longest_stored_name_tokens() -> int:
+    """The most word tokens any name or alias the pack stores has, as written in the
+    committed records and curated aliases, so a reader stepping a text by those tokens
+    reaches every stored name."""
+    curated = _load_curated(curated_path())
+    names = [
+        name
+        for record in _load_records(records_path())
+        for name in (record["name"], *(record.get("aliases") or ()))
+    ] + [alias for aliases in curated.values() for alias in aliases]
+    return max((len(re.findall(r"\w+", name)) for name in names), default=0)
 
 
 def is_organisation_name(text: str) -> bool:

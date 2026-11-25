@@ -541,6 +541,91 @@ def version_state_in(
     )
 
 
+class SharedVersionReads:
+    """`SnapshotReader` over `inner` that reads each version once while it is open, for one
+    caller's span of reads that writes no version record, link or revocation meanwhile.
+
+    A version state (`read_version_state`) is read once per subject, version and set of
+    revoking subjects, and answers every later read of that state. A version record
+    (`read_version`) and its locations (`read_artifact_locations`) come from any state of the
+    pair already read, since one transaction read them by the same queries, else the record is
+    read once. A read that finds no record reads again. Other reads pass through.
+
+    `close` ends the span: every read after it passes through to `inner`, so a holder that
+    outlives the span reads the stores as they stand.
+    """
+
+    def __init__(self, inner: SnapshotReader) -> None:
+        self._inner = inner
+        self._open = True
+        self._states: dict[tuple[str, str, frozenset[str]], VersionState] = {}
+        self._versions: dict[tuple[str, str], StoredVersion] = {}
+
+    def close(self) -> None:
+        """Pass every later read through to `inner`, and forget the reads held."""
+        self._open = False
+        self._states.clear()
+        self._versions.clear()
+
+    def _state_of(self, subject_id: str, content_version: str) -> VersionState | None:
+        return next(
+            (
+                state
+                for (subject, version, _), state in self._states.items()
+                if (subject, version) == (subject_id, content_version)
+            ),
+            None,
+        )
+
+    def read_version(self, subject_id: str, content_version: str) -> StoredVersion | None:
+        if not self._open:
+            return self._inner.read_version(subject_id, content_version)
+        state = self._state_of(subject_id, content_version)
+        if state is not None:
+            return state.version
+        key = (subject_id, content_version)
+        held = self._versions.get(key)
+        if held is None:
+            held = self._inner.read_version(subject_id, content_version)
+            if held is not None:
+                self._versions[key] = held
+        return held
+
+    def read_artifact_locations(
+        self, subject_id: str, content_version: str
+    ) -> list[StoredArtifactLocation]:
+        state = self._state_of(subject_id, content_version) if self._open else None
+        if state is not None:
+            return list(state.locations)
+        return self._inner.read_artifact_locations(subject_id, content_version)
+
+    def read_revocation(self, subject_id: str, content_version: str) -> Revocation | None:
+        return self._inner.read_revocation(subject_id, content_version)
+
+    def artifact_inventoried(self, artifact_digest: str) -> bool:
+        return self._inner.artifact_inventoried(artifact_digest)
+
+    def read_versions_of(self, content_versions: Sequence[str]) -> list[StoredVersion]:
+        return self._inner.read_versions_of(content_versions)
+
+    def read_version_state(
+        self, subject_id: str, content_version: str, *, revoked_under: Sequence[str] = ()
+    ) -> VersionState | None:
+        if not self._open:
+            return self._inner.read_version_state(
+                subject_id, content_version, revoked_under=revoked_under
+            )
+        key = (subject_id, content_version, frozenset((subject_id, *revoked_under)))
+        held = self._states.get(key)
+        if held is None:
+            held = self._inner.read_version_state(
+                subject_id, content_version, revoked_under=revoked_under
+            )
+            if held is not None:
+                self._states[key] = held
+        return held
+
+
 def select_servable_locations(
     locations: Sequence[StoredArtifactLocation], *, now: datetime
 ) -> list[StoredArtifactLocation]:

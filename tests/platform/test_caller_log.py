@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import gc
 import io
 import json
 import logging
@@ -14,8 +16,9 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
+from dfo_platform import app as app_module
 from dfo_platform import caller
 from dfo_platform.app import Surface, _trace_id_dispatch, create_app
 from dfo_platform.caller import (
@@ -187,7 +190,12 @@ def request_lines():
     log.addHandler(handler)
     log.setLevel(logging.INFO)
     log.propagate = False
-    yield lambda: [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def lines(message: str = "request") -> list[dict]:
+        entries = [json.loads(line) for line in stream.getvalue().splitlines()]
+        return [entry for entry in entries if entry["message"] == message]
+
+    yield lines
     log.removeHandler(handler)
     log.setLevel(logging.NOTSET)
     log.propagate = True
@@ -226,6 +234,115 @@ def test_a_request_logs_one_line_with_the_callers_claimed_identity(request_lines
         "caller_email": _EMAIL,
         "caller_aud": _AUD,
     }
+
+
+def test_a_request_logs_its_arrival_with_the_trace_id_and_the_requests_in_flight(request_lines):
+    seen: list[int] = []
+    router = APIRouter()
+
+    @router.get("/api/t/ok")
+    async def ok():
+        seen.append(app_module._in_flight)
+        return {}
+
+    surface = Surface(name="t", prefix="/api/t", router=router, capability_version="v-t", codes={})
+    client = TestClient(create_app([surface]))
+
+    response = client.get("/api/t/ok")
+
+    (arrival,) = request_lines("request_received")
+    assert arrival["logger"] == "dfo_platform.request"
+    assert arrival["trace_id"] == response.headers["x-dfo-trace-id"]
+    assert arrival["http_path"] == "/api/t/ok"
+    assert arrival["in_flight"] == 1
+    assert seen == [1]
+    assert app_module._in_flight == 0
+
+
+def _stream_app(seen: list[int]):
+    """An app whose event stream records the in-flight count between its two events."""
+    router = APIRouter()
+
+    async def events():
+        yield b"data: 1\n\n"
+        seen.append(app_module._in_flight)
+        yield b"data: 2\n\n"
+
+    @router.get("/api/t/stream")
+    async def stream():
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    surface = Surface(name="t", prefix="/api/t", router=router, capability_version="v-t", codes={})
+    return create_app([surface])
+
+
+def _get(path: str) -> dict:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+    }
+
+
+def test_an_event_stream_counts_in_flight_through_its_terminal_send():
+    """The count covers the request's whole ASGI lifecycle, so a stream counts in flight
+    at every send, the terminal empty body included, and leaves the count on return."""
+    seen: list[int] = []
+    app = _stream_app(seen)
+    sent: list[tuple[str, bool, int]] = []
+
+    async def receive():
+        await asyncio.sleep(3600)  # the client never disconnects
+
+    async def send(message):
+        sent.append((message["type"], message.get("more_body", False), app_module._in_flight))
+
+    asyncio.run(app(_get("/api/t/stream"), receive, send))
+
+    assert seen == [1]
+    assert sent[-1] == ("http.response.body", False, 1)
+    assert {count for _type, _more, count in sent} == {1}
+    assert app_module._in_flight == 0
+
+
+@pytest.mark.parametrize("failure", ["disconnect", "send_fails"])
+def test_a_client_gone_mid_stream_leaves_the_count_as_the_app_returns(failure):
+    """A client that disconnects, or whose send fails, ends the request, and it leaves the
+    count before the app returns, with no wait on garbage collection or loop shutdown."""
+    app = _stream_app([])
+    after: list[int] = []
+
+    async def receive():
+        if failure == "disconnect":
+            return {"type": "http.disconnect"}
+        await asyncio.sleep(3600)
+        raise AssertionError  # unreachable
+
+    async def send(message):
+        if failure == "send_fails" and message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    async def serve():
+        # The stack may wrap the failed send.
+        with contextlib.suppress(Exception):
+            await app(_get("/api/t/stream"), receive, send)
+        after.append(app_module._in_flight)
+
+    gc.disable()
+    try:
+        asyncio.run(serve())
+    finally:
+        gc.enable()
+    assert after == [0]
 
 
 @pytest.mark.parametrize(

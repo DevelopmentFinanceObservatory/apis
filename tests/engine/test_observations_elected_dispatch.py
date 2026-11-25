@@ -549,6 +549,7 @@ def test_no_unit_request_leaves_existing_fixture_unchanged():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         captured.append(request)
         return stub_preview_result(sv=_BARE_STAT_VAR, entity="country/IND")
@@ -648,6 +649,7 @@ def test_relaunch_closure_forwards_unit_request_and_elected_to_conversion():
                     member_facts=None,
                     unit_request=unit_request,
                     elected=elected,
+                    years=None,
                 ),
                 graph=FakeGraph(),
                 sdmx=None,

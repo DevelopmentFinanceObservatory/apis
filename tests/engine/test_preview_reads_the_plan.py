@@ -147,6 +147,7 @@ def test_a_windowed_discovered_pair_serves_the_planned_facet(search_settings) ->
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         admitted = [f for f in precomputed if request.candidate_filter(f)]
         dispatched.extend(f.facet_id for f in admitted)
@@ -215,6 +216,7 @@ def test_a_result_dispatching_outside_its_planned_group_is_never_served(
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         result = stub_preview_result(entity=_KEN)
         assert result.selections["provenance"].dispatch_facet_id == "f1"
@@ -300,6 +302,7 @@ def test_an_open_role_read_gives_each_series_its_own_rows_and_conversion_record(
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         requests.append((dict(request.role_bindings), tuple(series_roles)))
         frame = Frame.build(

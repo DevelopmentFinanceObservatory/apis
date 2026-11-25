@@ -41,6 +41,7 @@ from code_index.declarations import (
     DAC2A_BILATERAL,
     DAC2A_INCLUSIVE,
     DAC2A_TOTAL_ODA,
+    DAC_RECIPIENT_LIST_DATASETS,
 )
 from code_index.multilaterals import ORGANIZATION_TYPE, party_facts
 from code_index.query import CodeIndex
@@ -292,9 +293,10 @@ class OptionLabels:
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
-    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral`,
-    `provider_inclusive`, `provider_contributions` and `provider_multilateral` name the four
-    provider scopes, `provider_inclusive_net` the inclusive scope on a part counted on net
+    basis or divides by something other than a head count. `oecd_headline` names the
+    OECD's headline basis per year. `provider_bilateral`, `provider_inclusive`,
+    `provider_contributions` and `provider_multilateral` name the four provider scopes,
+    `provider_inclusive_net` the inclusive scope on a part counted on net
     flows, which adds the imputed line as published, and `provider_years` a scope's `label`
     followed by the `years` its option serves ("2011 to 2024", "2023") where they set the
     part's window. `provider_rebound` names a scope's `label` read at the total of the
@@ -558,6 +560,68 @@ PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
     ),
 )
 
+
+@dataclass(frozen=True)
+class ProviderWhole:
+    """The provider option that holds the whole of a part's provider axis on `dataset`.
+
+    `scope` is the whole of a part over the dataset's whole recipient population (no
+    recipient named, or the population's own total), and `alternatives` the other scopes
+    that also hold such a part's streams, which a client may ask for in its place.
+    `named_scope` is the whole of a part naming recipients below the population's total (a
+    country or a region), None where it is `scope`. `recipient` is the recipient total the
+    whole reads beside `scope`, rebinding the recipient side, None where `scope` keeps the
+    part's recipients. `note` says why."""
+
+    dataset: str
+    scope: ProviderScope
+    alternatives: tuple[ProviderScope, ...]
+    note: str
+    named_scope: ProviderScope | None = None
+    recipient: str | None = None
+
+
+# The whole of each table's provider axis. DAC1's total ODA counts the bilateral flows and the
+# core contributions, every stream its bilateral and multilateral ODA count; its inclusive
+# option is never offered there. On the CRS the inclusive scope adds the imputed share to the
+# bilateral flows, the only other option. DAC2a offers both: the inclusive scope counts the
+# donor's multilateral money as its imputed share of the agencies' spending, and total ODA
+# counts it as core contributions in the year paid, which go to the agencies and so to no
+# country or region. Over a named country or region total ODA counts the bilateral flows
+# alone, so the inclusive scope is the whole there. Over the whole population, a part listing
+# every recipient, naming the developing countries' total or a multilateral agency, or holding
+# total ODA, the whole is total ODA to all recipients, the OECD's denominator of a donor's
+# bilateral share and the figure DAC1 serves for the same donor: the provider and the
+# recipient side both move, so a listing's every recipient divides by one figure. The
+# inclusive scope is the alternative.
+PROVIDER_WHOLES: tuple[ProviderWhole, ...] = (
+    ProviderWhole(
+        dataset=DAC1,
+        scope="contributions",
+        alternatives=(),
+        note="DAC1 total ODA counts bilateral flows plus core contributions",
+    ),
+    ProviderWhole(
+        dataset=CRS,
+        scope="inclusive",
+        alternatives=(),
+        note="the CRS inclusive scope counts bilateral flows plus the imputed share",
+    ),
+    ProviderWhole(
+        dataset=DAC2A,
+        scope="contributions",
+        alternatives=("inclusive",),
+        named_scope="inclusive",
+        recipient="DACAllRecipients",
+        note=(
+            "DAC2a total ODA counts core contributions to the agencies and the inclusive "
+            "scope an imputed share of their spending; over a named country or region total "
+            "ODA holds the bilateral flows alone"
+        ),
+    ),
+)
+
+
 # The composite each table's inclusive scope binds. The CRS stacks on ONE's imputed
 # multilateral sectors table, which publishes gross disbursements alone. DAC2a stacks its total
 # ODA on its own imputed multilateral ODA, published gross alone and added to total ODA on
@@ -712,6 +776,35 @@ def _total_side(total: PartyRow) -> DestinationSide:
     if total.dcid == DAC_ALL_MULTILATERAL_RECIPIENTS or ORGANIZATION_TYPE in total.types:
         return "multilateral"
     return "bilateral"
+
+
+def bilateral_side_total(dcid: str) -> bool:
+    """Whether `dcid` is a published total of the bilateral destinations
+    (`BilateralSource.rebound`, "Developing Countries, Total"): a population a request can
+    name on the destination side. It holds the bilateral side alone, so it carries no whole
+    marker (`code_index.types.WholeMarker`). A dataset that publishes no row of it reads it as
+    every recipient it holds where it holds the DAC's recipient list
+    (`reads_dac_recipient_list`), and lists it where it also reads the bilateral side of a
+    total (`lists_bilateral_destinations`)."""
+    return any(row.rebound == dcid for row in BILATERAL_SOURCES)
+
+
+def reads_dac_recipient_list(datasets: Collection[str]) -> bool:
+    """Whether every one of `datasets`, at least one, holds the DAC List of ODA Recipients
+    alone as its recipients (`DAC_RECIPIENT_LIST_DATASETS`), as the CRS does."""
+    return bool(datasets) and all(dataset in DAC_RECIPIENT_LIST_DATASETS for dataset in datasets)
+
+
+def lists_bilateral_destinations(datasets: Collection[str], *, total_kept: bool) -> bool:
+    """Whether every one of `datasets`, at least one, lists the bilateral destinations alone
+    on an open recipient side: it holds the DAC's recipient list (`reads_dac_recipient_list`),
+    or its bilateral composite reads the population of that side (`BILATERAL_SOURCES`), as
+    DAC2a's does, where the part does not keep the dataset's total itself (`total_kept`, a
+    `provider:contributions` entry), whose open side lists the multilateral agencies too."""
+    bilateral = set() if total_kept else {row.dataset for row in BILATERAL_SOURCES}
+    return bool(datasets) and all(
+        dataset in DAC_RECIPIENT_LIST_DATASETS or dataset in bilateral for dataset in datasets
+    )
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,8 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
 # The schema covers version records, artifacts and their heads, revocations, references, caller allowances,
-# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, subject heads,
+# and the registry's definitions, bindings and quarantine that `LiveHeadStore.read_stored_heads` reads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -177,6 +178,29 @@ CREATE TABLE datasets.materialisation (
     conversion TEXT,
     trace_id TEXT
 );
+CREATE TABLE datasets.spec_registry (
+    spec_id TEXT PRIMARY KEY,
+    identity_version TEXT NOT NULL,
+    identity_bytes BLOB NOT NULL,
+    identity_digest TEXT NOT NULL
+);
+CREATE TABLE datasets.spec_definition (
+    spec_id TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    definition TEXT NOT NULL,
+    PRIMARY KEY (spec_id, schema_version)
+);
+CREATE TABLE datasets.spec_alias (
+    posted_spec_id TEXT NOT NULL,
+    served_spec_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY (posted_spec_id, served_spec_id)
+);
+CREATE TABLE datasets.identity_quarantine (
+    id INTEGER PRIMARY KEY,
+    id_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL
+);
 CREATE TABLE datasets.subject_head (
     subject_id TEXT PRIMARY KEY,
     content_version TEXT NOT NULL,
@@ -202,6 +226,10 @@ def _role_columns(output_profile: str | None) -> str | None:
 _JSONB_REPLACE = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb, false\)")
 """A `jsonb_set` that sets one existing top-level key and adds none (`create_missing` false),
 SQLite's `json_replace`."""
+_JSONB_SET = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb\)")
+"""A `jsonb_set` that sets one top-level key, adding it when missing, SQLite's `json_set`."""
+_JSONB_TYPEOF = re.compile(r"jsonb_typeof\((\w+)\)")
+"""The JSON type of a JSONB column, SQLite's `json_type`."""
 _JSONB_EQUALS = re.compile(r"(\w+(?: -> '\w+')?) = %s::jsonb")
 """A JSONB column, or one key of it, compared with a parameter in a `WHERE` clause."""
 
@@ -215,6 +243,8 @@ def _to_sqlite(sql: str) -> str:
     # SQLite runs one writer at a time, so a row lock has nothing to add.
     sql = sql.removesuffix(" FOR UPDATE")
     sql = _JSONB_REPLACE.sub(r"json_replace(\1, '$.\2', json(%s))", sql)
+    sql = _JSONB_SET.sub(r"json_set(\1, '$.\2', json(%s))", sql)
+    sql = _JSONB_TYPEOF.sub(r"json_type(\1)", sql)
     # A JSONB comparison compares values; `json` minifies both texts alike.
     head, where, condition = sql.partition(" WHERE ")
     sql = head + where + _JSONB_EQUALS.sub(r"json(\1) = json(%s)", condition)

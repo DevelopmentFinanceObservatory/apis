@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
+import pytest
+
 import search.engine.region.observations.fetch as region_fetch
 from materialise.graph import Facet as MaterialiseFacet
 from search.engine.region.codes import (
@@ -220,7 +222,16 @@ def test_facet_filter_measurement_method_single_ref_steers_dispatch_to_the_bound
     assert constrained.series[0].facet["measurementMethod"].ref == "GrantEquivalent"
 
 
-def test_facet_filter_single_ref_binding_absent_everywhere_still_refuses_no_matching_source():
+# A read in given years (`read_plan.read_in_years`) keeps the series the filter emptied.
+_READ_YEARS = pytest.mark.parametrize(
+    "years", [None, frozenset({2020})], ids=["own-years", "given-years"]
+)
+
+
+@_READ_YEARS
+def test_facet_filter_single_ref_binding_absent_everywhere_still_refuses_no_matching_source(
+    years,
+):
     """A bound method absent from the candidate pool returns
     `OBSERVATIONS_NO_MATCHING_SOURCE`, not a probe-failure warning.
     """
@@ -237,6 +248,7 @@ def test_facet_filter_single_ref_binding_absent_everywhere_still_refuses_no_matc
             )
         },
         coverage=empty_coverage_snapshot(),
+        years=years,
     )
     assert observations.series == []
     assert observations.omitted is not None
@@ -245,7 +257,8 @@ def test_facet_filter_single_ref_binding_absent_everywhere_still_refuses_no_matc
     assert warn.code == OBSERVATIONS_NO_MATCHING_SOURCE
 
 
-def test_facet_filter_set_binding_drops_entities_that_fail_it():
+@_READ_YEARS
+def test_facet_filter_set_binding_drops_entities_that_fail_it(years):
     """USA has the sole EUR facet; GBR has the sole USD facet. An EUR filter
     keeps the USA series, drops GBR, and reports one rejection out of two.
     """
@@ -258,6 +271,7 @@ def test_facet_filter_set_binding_drops_entities_that_fail_it():
         materialise_sdmx=materialise_sdmx,
         facet_filter={"unit": FacetAxisFilter(predicate=lambda f: f.unit in frozenset({"EUR"}))},
         coverage=empty_coverage_snapshot(),
+        years=years,
     )
     assert warn is not None
     assert warn.code == OBSERVATIONS_NO_MATCHING_SOURCE
@@ -339,6 +353,7 @@ def test_facet_filter_simple_single_ref_predicate_admits_a_satisfying_pair():
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         return stub_preview_result(provenance="prov1")
 
@@ -387,6 +402,7 @@ def _record_requests(requests: list) -> object:
         series_roles=(),
         series_limit=None,
         refuse_when_every_row_omitted=True,
+        span=None,
     ):
         requests.append((request, precomputed))
         return stub_preview_result(provenance="prov2")

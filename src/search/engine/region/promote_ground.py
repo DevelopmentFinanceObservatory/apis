@@ -559,6 +559,7 @@ def _ground_and_build_spec(
         entities=entities,
         coverage=state.narrowed_coverage,
         plan=state.narrowed_plan,
+        preview_years=state.preview_years,
         headline=state.narrowed_headline,
         coverage_index=state.coverage.index,
         coverage_stamp=mat_result.coverage_stamp,

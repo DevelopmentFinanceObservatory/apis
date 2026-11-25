@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import unicodedata
 
 import pyarrow as pa
+import pytest
 
 from dc_sdmx import SdmxObservation
-from materialise.facet_collapse import collapse_duplicate_identity_facets_table
+from dfo_platform.timings import PhaseTimings, collecting
+from materialise.facet_collapse import (
+    CollapseCell,
+    FacetRankStats,
+    collapse_duplicate_identity_facets_table,
+    facet_rank,
+    keep_mask,
+)
+from tests._json_fields import json_fields
 
 from . import _row_oracle
 from ._table_support import table_from_observations
@@ -365,3 +375,53 @@ def test_differential_against_the_row_path():
         rows = tuple(_random_row(rng, facet_ids) for _ in range(rng.randint(4, 20)))
 
         _assert_table_matches_row_oracle(rows)
+
+
+def test_given_ranks_that_lack_a_facet_of_the_table_leave_every_facet_ranked_by_its_rows(caplog):
+    """The ranks name facet "1" alone, while the table holds facet "2" and a row with no
+    facet id too. Ranks over a window and ranks over rows are on different scales, so every
+    facet ranks by its rows: "2", two rows, beats "1", one row here though ten over the
+    window, on the 2016 key, and the null facet on 2017. The request's timings count the
+    fallback and an INFO line logs it."""
+    rows = (
+        _row(facet_id="1", observation_period=None, time_period="2016", value="a"),
+        _row(facet_id="2", observation_period=None, time_period="2016", value="b"),
+        _row(facet_id="2", observation_period=None, time_period="2017", value="c"),
+        _row(facet_id=None, observation_period=None, time_period="2017", value="d"),
+    )
+    ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
+
+    caplog.set_level(logging.INFO, logger="materialise.facet_collapse")
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        kept = collapse_duplicate_identity_facets_table(
+            _table(rows), declared_roles=_ROLES, ranks=ranks
+        )
+
+    assert kept["OBS_VALUE"].to_pylist() == ["b", "c"]
+    assert timings.count_snapshot() == {"collapse_rank_fallbacks": 1}
+    (fields,) = json_fields(caplog, "collapse_rank_fallback")
+    assert fields["unranked_facets"] == ["2", None]
+
+
+def test_keep_mask_refuses_ranks_that_lack_a_facet_of_its_cells():
+    """A bulk caller ranks every facet of the cells it holds over the whole table; ranks
+    lacking one would mix scales, so `keep_mask` refuses them."""
+    cells = [
+        CollapseCell(
+            variable="Count_Person",
+            role_values=("country/KEN",),
+            time_period="2016",
+            unit=None,
+            measurement_method=None,
+            provenance="p",
+            observation_period=None,
+            facet_id=facet_id,
+        )
+        for facet_id in ("1", "2")
+    ]
+    ranks = {"1": facet_rank(FacetRankStats(facet_id="1", has_period=False, rows=10, span_years=9))}
+
+    with pytest.raises(ValueError, match="no rank given"):
+        keep_mask(cells, rank_within_series=False, ranks=ranks)

@@ -59,6 +59,9 @@ _REFUSAL_KNOWN_PASSTHROUGHS: frozenset[tuple[str, str]] = frozenset(
         # Raises the code `scope.compile` fixed on the refusal, one of the two
         # `RefusalCode` literals, both registered in `engine.codes`.
         ("scope/build.py", "refusal.code"),
+        # Raises the code `derive_whole` fixed on a `WholeRefusal`, a `RefusalCode`
+        # literal registered in `engine.codes`.
+        ("scope/whole.py", "refusal.code"),
     }
 )
 
