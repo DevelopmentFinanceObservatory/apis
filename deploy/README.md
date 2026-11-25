@@ -43,6 +43,73 @@ Related guides:
 - [deploy/origin-catalogue.md](origin-catalogue.md) covers the origin catalogue: its layout, the job that builds it, its refusals, and the deploy-order dependency the services have on it.
 - [deploy/search-catalogue.md](search-catalogue.md) covers the search catalogue: its layout, the job that builds and checks it, its events, and how `GET /api/search/catalogue` reads it.
 
+## Dev parser replay
+
+`scripts/replay_parser_experiment.py` runs a paired comparison through the normal `/api/search/resolve` door of a tagged, no-traffic `dfo-dev-apis` revision. Each input runs once through `flash-lite` and once through `ministral`, back to back, in a deterministic random order. The runner records an opaque request ID for Cloud Logging joins, the HTTP status and problem code, the accepted arm header, time to the first interpretation event, time to the `response` event, the terminal event, response status, spec IDs, and a narrow structured interpretation summary. Treat results as private data because interpretation fields can repeat words from the input. Compare arms on `response_ms`, the time to the `response` event. `done_ms` also holds the wait for the served extraction's agreement, up to `SEARCH_LLM_SECOND_SAMPLE_SETTLE_S` after its first sample was read. The application cache is bypassed for every replay request. Provider prefix caching stays on and is measured.
+
+The replay revision needs these dev-only settings:
+
+| Setting                         | Value                                                                        |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `SEARCH_PARSER_REPLAY_ENABLED`  | `true`                                                                       |
+| `SEARCH_PARSER_REPLAY_REVISION` | The revision's name, `dfo-dev-apis-` followed by its suffix                  |
+| `SEARCH_PARSER_REPLAY_KEY`      | The `dfo-dev-parser-replay-key` secret, also exported locally under the name |
+| `MISTRAL_API_KEY`               | The `dfo-dev-mistral-api-key` secret                                         |
+
+A revision's settings cannot change after it is created. An update creates a new revision with a generated name, which the gate then refuses. Create the revision and its settings in one command, from the image the current dev revision runs:
+
+```bash
+IMAGE=$(gcloud run services describe dfo-dev-apis --region northamerica-northeast1 \
+  --format='value(spec.template.spec.containers[0].image)')
+gcloud run deploy dfo-dev-apis --region northamerica-northeast1 \
+  --image "$IMAGE" --no-traffic --tag parser-replay --revision-suffix parser-replay-01 \
+  --update-env-vars SEARCH_PARSER_REPLAY_ENABLED=true,SEARCH_PARSER_REPLAY_REVISION=dfo-dev-apis-parser-replay-01 \
+  --update-secrets MISTRAL_API_KEY=dfo-dev-mistral-api-key:latest,SEARCH_PARSER_REPLAY_KEY=dfo-dev-parser-replay-key:latest
+```
+
+The gate checks `K_SERVICE` and `K_REVISION`, which Cloud Run sets, against `dfo-dev-apis` and `SEARCH_PARSER_REPLAY_REVISION`. `--no-traffic` pins dev's traffic to the revision serving before the deploy, by name, so dev keeps serving the same image. A later dev revision inherits the settings but has another name, so it refuses replay requests. An infra apply that resets the service's traffic drops the tag. Re-add it with `gcloud run services update-traffic dfo-dev-apis --update-tags parser-replay=dfo-dev-apis-parser-replay-01 --region northamerica-northeast1`.
+
+The runner accepts JSONL or a JSON array with `id`, `query`, and optional `expected` fields. Keep input files outside source control. `--write-synthetic` writes labelled synthetic cases:
+
+```bash
+uv run --extra engine --extra eval --extra datasets --extra graph \
+  python scripts/replay_parser_experiment.py \
+  --write-synthetic /private/tmp/dfo-parser-synthetic.jsonl
+```
+
+The runner accepts only `http` loopback URLs. Open a proxy to the tagged revision in one terminal. The proxy keeps the credentials fresh for the whole run.
+
+```bash
+gcloud run services proxy dfo-dev-apis --tag parser-replay \
+  --region northamerica-northeast1 --port 8080
+```
+
+Run the replay in another terminal.
+
+```bash
+export SEARCH_PARSER_REPLAY_KEY=...
+uv run --extra engine --extra eval --extra datasets --extra graph \
+  python scripts/replay_parser_experiment.py \
+  --url http://127.0.0.1:8080 \
+  --cases /private/path/cases.jsonl \
+  --output /private/path/results.jsonl \
+  --concurrency 3
+```
+
+`--concurrency` bounds the pairs in flight. A pair's two arms share one slot. Use `--concurrency 1` and `--pace-ms` for a sparse pass. The runner refuses an `--output` path that exists, so a rerun cannot overwrite earlier results. It creates the file with mode `0600` and adds one line per arm as each pair completes, so an interrupted run keeps the finished pairs. A gate refusal appears as `status_code` 403 with its `problem_code`.
+
+Join each result's `request_id` to `parser_replay.replay_id` in the `resolve` log. `parser_replay.calls` lists the replay's extraction calls only; the tokens of every other stage are in the line's `llm_usage`. With `--stream-probe`, read `first_content_ms` from the call whose `attempt` is `first` and whose `phase` equals `parser_replay.served_phase`. The other calls are agreement samples, or parses of the whole query that the door discards once the exclusion read blanks part of it. Cost an arm from its calls' `usage`, both agreement samples and Gemini's `thought_tokens` included, and report calls with an `error` and no `usage` separately.
+
+To remove the replay, drop the settings, then return traffic to the latest revision and drop the tag:
+
+```bash
+gcloud run services update dfo-dev-apis --region northamerica-northeast1 \
+  --remove-env-vars SEARCH_PARSER_REPLAY_ENABLED,SEARCH_PARSER_REPLAY_REVISION \
+  --remove-secrets MISTRAL_API_KEY,SEARCH_PARSER_REPLAY_KEY
+gcloud run services update-traffic dfo-dev-apis --to-latest --remove-tags parser-replay \
+  --region northamerica-northeast1
+```
+
 ## Continuous Deployment (`deploy.yml`)
 
 `.github/workflows/deploy.yml` holds the deploy steps. Two callers choose the triggers and the GitHub Environment, so dev and production run the same steps against the names their environment's variables hold:
