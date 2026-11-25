@@ -875,6 +875,10 @@ class ResolveState:
     # This leg's admitted operations. One over `category` opens the slots it names on
     # the elected shape (`phase_rank_bind._open_operation_slots`).
     operations: tuple[Operation, ...] = ()
+    # The cut that took the words of the leg's sources, series code and scope phrases out
+    # of `variable` (`fanout.pass_variable`). A `share_of` phrase quotes the part's own
+    # words, so `share_spans_variable` reads it through the same cut.
+    measure_words: Callable[[str], str] = str
     # The flow axes this leg asks every member of. `bind_place_roles` leaves open those no
     # place binds (`PlaceRoles.open_axes`).
     open_axes: frozenset[RoleAxis] = frozenset()
@@ -1050,8 +1054,8 @@ class ResolveState:
     # phrases (`quantity.quantity_requirement`), with the form the quantity read states
     # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
-    # Whether a `share_of` has the whole variable as its phrase
-    # (`quantity.share_spans_variable`). The variable then names the share and its whole,
+    # Whether a `share_of` has the whole variable as its phrase, each read through
+    # `measure_words` (`quantity.share_spans_variable`). The variable then names the share and its whole,
     # so the leg reads as the share's numerator measure: `quantity_requirement` drops the
     # forms a share computes from the variable's own (`quantity.share_numerator_requirement`),
     # and the quantity read's share, rate and base are ignored
@@ -1507,7 +1511,13 @@ class ResolveState:
 
     def __post_init__(self) -> None:
         qualifier_phrases = [coded.phrase for coded in self.qualifiers or ()]
-        self.share_spans_variable = share_spans_variable(self.variable, self.operations)
+        self.share_spans_variable = share_spans_variable(
+            self.variable,
+            [
+                op.model_copy(update={"phrase": self.measure_words(op.phrase)})
+                for op in self.operations
+            ],
+        )
         self.quantity_requirement = (
             share_numerator_requirement(self.variable, qualifier_phrases)
             if self.share_spans_variable

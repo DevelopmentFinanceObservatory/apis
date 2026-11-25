@@ -439,6 +439,26 @@ def test_a_share_of_spanning_the_variable_reads_it_as_the_numerator_measure(
     assert (named_denominator.ref if named_denominator is not None else None) == denominator
 
 
+@pytest.mark.parametrize(
+    ("operations", "well_formed"),
+    [
+        pytest.param(_share_of("share of bilateral ODA"), False, id="spanning"),
+        pytest.param((), True, id="ungrounded-without-an-operation"),
+    ],
+)
+def test_a_denominator_index_outside_the_list_is_malformed_under_a_spanning_share_of(
+    operations: tuple[Operation, ...], well_formed: bool
+):
+    """A spanning `share_of` sets the read's base aside, but an index past "none of these"
+    is a malformed output first, and the part refuses ``variable_not_resolved``. Without the
+    operation an index on no quoted base is dropped as ungrounded."""
+    state = _state(llm=_NoCallLLM(), variable="share of bilateral ODA", operations=operations)
+
+    assert _read_quantity_answer(state, _read("share", None, 5), _LISTED, _FLOW_SHAPES) is (
+        well_formed
+    )
+
+
 def test_a_share_of_spanning_the_variable_keeps_the_forms_its_qualifiers_name():
     """Only the variable's own share wording is the operation's: a qualifier phrase beside
     it ("as a percentage of GNI") still names a share."""
@@ -480,7 +500,8 @@ def test_a_failed_denominator_read_is_not_raised_for_the_share_of_s_own_base(
     asyncio.run(phase_rank_bind._read_denominators(state, _FLOW_SHAPES))
     denominators = phase_rank_bind._quantity_denominators(state, _FLOW_SHAPES)
 
-    assert _read_quantity_answer(state, _read("share", "ODA", 1), denominators, _FLOW_SHAPES)
+    # The failed read lists no denominator, so index 0 is "none of these".
+    assert _read_quantity_answer(state, _read("share", "ODA", 0), denominators, _FLOW_SHAPES)
     assert serves_every_form(state.quantity_requirement, _FLOW_SHAPES[0])
 
 

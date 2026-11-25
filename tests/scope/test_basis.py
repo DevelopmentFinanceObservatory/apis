@@ -1885,6 +1885,46 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     ]
 
 
+def test_a_share_of_spanning_a_variable_that_names_its_source_reads_the_measure(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue
+):
+    """A `share_of` phrase quotes the part's words, its source among them, while the leg
+    resolves the variable less the source's words: the phrase still spans the variable, so
+    the share the read states is the operation's and the bilateral level answers."""
+    bind_catalogue(
+        FakeCatalogue(provenances={ref: provenance_row(ref, BASE) for ref in (_DAC1, _DAC2A)})
+    )
+    _cover(monkeypatch, (*_DAC1_MEMBERS, *_DAC1_BILATERAL), donors=(_USA,))
+    variable = "share of bilateral ODA in DAC1"
+    operations = [Operation(verb="share_of", phrase=variable)]
+
+    part = _resolve_part(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2015-2023",
+                        sources=[SourceMention(text="DAC1")],
+                        operations=operations,
+                    )
+                ]
+            )
+        ),
+        "share of bilateral ODA in",
+        members=(*_ALL_MEMBERS, *_DAC1_BILATERAL),
+        llm=_PickingLLM(quantity=QuantityOutput(stated_form="share"), unstated=True),
+    )
+
+    spec = part.spec
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [_DAC1]
+    (served_aid_type,) = (
+        s.binding for s in spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    assert served_aid_type == IdentityBindingValue(ref=_BILATERAL_ODA)
+
+
 @pytest.mark.parametrize(
     ("window", "expected"),
     [
