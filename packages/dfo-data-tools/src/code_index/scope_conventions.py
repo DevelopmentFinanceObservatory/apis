@@ -866,7 +866,7 @@ BASIS_MEASURES: tuple[BasisMeasure, ...] = (
         netting_basis=None,
         flow_type=_DISBURSED,
         oda_flows=(ODA_FLOW, CRS_FLOW_PRIVATE_SECTOR_INSTRUMENTS),
-        words="grant equivalents (OECD headline)",
+        words="grant equivalents",
     ),
     BasisMeasure(
         basis="commitments",
