@@ -3,10 +3,10 @@ mint's sum over the same family.
 
 Each family is resolved as the mint resolves it, one of its members holds a row and the
 rest hold none, and the mint sums the frame down to one series per year. The sum completes
-exactly when Search reads the family's summable axes true. Search serves
-`sums_components` true on every declared composite, and the mint collapses each one's
-components: a stacked composite's by adding them, the spliced headline's by serving each
-year from the one component holding it.
+exactly when Search reads the family's summable axes true. Search serves `sums_components`
+true on a stacked composite and `splices_components` true on the spliced headline, and the
+mint collapses each one's components: a stacked composite's by adding them, the headline's by
+serving each year from the one component holding it.
 """
 
 from __future__ import annotations
@@ -359,6 +359,7 @@ def test_a_time_sum_of_the_headline_serves_each_year_from_the_component_holding_
     ]
 
 
+_TIME_SUM = MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum"))
 _HEADLINE_COLUMNS = ("stat_var", "financingProvider", "time_period", "value", "unit", "provenance")
 
 
@@ -377,6 +378,7 @@ def _headline_time_sum(
     *,
     streamed: bool,
     code_index: CodeIndex | None = None,
+    options: MintOptions | None = None,
     members: tuple[str, ...] = (f"dcid:{download._NET}", f"dcid:{download._GRANT_EQUIVALENT}"),
 ):
     """The mint's sum over time of the headline frame of `rows`, resolved to `members`, read
@@ -390,7 +392,7 @@ def _headline_time_sum(
         table, frame_chunks = Table(columns=frame.columns, rows=frame.rows), None
     return _reshape(
         table,
-        options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
+        options=_TIME_SUM if options is None else options,
         entity_columns=("financingProvider",),
         reads=_RenderReads(
             enrichment=EnrichmentLookup(FakeMintGraphReader()), parties={}, known={}, deadline=None
@@ -471,7 +473,7 @@ def _headline_check(*, missing_reads_zero: bool) -> SpliceCheck:
         cell_columns=("financingProvider", "time_period"),
         members=members,
         lookup={member: {} for member in members},
-        decoded_code_systems=(),
+        kept_code_systems=(),
         missing_reads_zero=missing_reads_zero,
     )
 
@@ -650,3 +652,92 @@ def test_the_headline_s_two_members_add_only_outside_the_splice(
         )
         is adds
     )
+
+
+_SECTOR_A, _SECTOR_B = "CRSPurposeCode11110", "CRSPurposeCode11120"
+_NET_A = _net_copy(
+    "NetA",
+    constraint_properties={**_net_copy("NetA").constraint_properties, "crsPurpose": _SECTOR_A},
+)
+_NET_B = _net_copy(
+    "NetB",
+    constraint_properties={**_net_copy("NetB").constraint_properties, "crsPurpose": _SECTOR_B},
+)
+
+
+def _ge_copy(dcid: str, **constraints: str) -> StatVarRow:
+    """The headline's grant-equivalent member under `dcid`, with `constraints` added."""
+    ge = get_index().statvar_by_dcid(download._GRANT_EQUIVALENT)
+    assert ge is not None
+    return dataclasses.replace(
+        ge, dcid=dcid, constraint_properties={**ge.constraint_properties, **constraints}
+    )
+
+
+_GE_A = _ge_copy("GeA", crsPurpose=_SECTOR_A)
+_SECTOR_INDEX_ROWS = (_NET_A, _NET_B, _GE_A)
+_SECTOR_MEMBERS = ("dcid:NetA", "dcid:NetB", "dcid:GeA")
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["whole", "streamed"])
+def test_a_splice_whose_components_hold_different_codes_on_a_summed_axis_serves_each(
+    monkeypatch: pytest.MonkeyPatch, streamed: bool
+):
+    """Net flows hold two sectors and grant equivalents one. The sum over time collapses the
+    sector axis too, and each year expects the sectors of the component holding it, so 2018
+    serves grant equivalents' one sector and lacks none."""
+    spliced = _headline_time_sum(
+        monkeypatch,
+        _headline_rows(("NetA", 100, (2017,)), ("NetB", 50, (2017,)), ("GeA", 90, (2018,))),
+        streamed=streamed,
+        code_index=_index_with(*_SECTOR_INDEX_ROWS),
+        members=_SECTOR_MEMBERS,
+    )
+
+    year, value = spliced.table.columns.index("time_period"), spliced.table.columns.index("value")
+    assert sorted((row[year], row[value]) for row in spliced.table.rows) == [
+        ("2017", 150.0),
+        ("2018", 90.0),
+    ]
+    with pytest.raises(RollupNotSummableError) as refused:
+        _headline_time_sum(
+            monkeypatch,
+            _headline_rows(("NetA", 100, (2017,)), ("GeA", 90, (2018,))),
+            streamed=streamed,
+            code_index=_index_with(*_SECTOR_INDEX_ROWS),
+            members=_SECTOR_MEMBERS,
+        )
+    assert refused.value.precondition == "missing_members"
+    assert "dcid:NetB" in str(refused.value)
+
+
+def test_a_spliced_row_with_no_stat_var_outside_the_selection_is_not_refused():
+    """A `groupby.codes` selection keeps no row without a member, so the fold never reads one,
+    and the splice refuses none."""
+    rows = (
+        *_headline_rows(("NetA", 100, (2017,)), ("NetB", 50, (2017,)), ("GeA", 90, (2018,))),
+        (None, _PROVIDER, "2019", 3.0, "USD", download._HEADLINE),
+    )
+    spliced = _reshape(
+        Table(columns=_HEADLINE_COLUMNS, rows=rows),
+        options=MintOptions(
+            groupby=GroupbyOptions(
+                by=["time_period", "crsPurpose"], op="sum", codes={"crsPurpose": [_SECTOR_A]}
+            )
+        ),
+        entity_columns=("financingProvider",),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(FakeMintGraphReader()), parties={}, known={}, deadline=None
+        ),
+        code_index=_index_with(*_SECTOR_INDEX_ROWS),
+        resolved_stat_var_refs=_SECTOR_MEMBERS,
+        provenance_refs=(download._HEADLINE,),
+        subject_id="spec_test",
+        pivot_max_output_cells=5_000_000,
+    )
+
+    year, value = spliced.table.columns.index("time_period"), spliced.table.columns.index("value")
+    assert sorted((row[year], row[value]) for row in spliced.table.rows) == [
+        ("2017", 100.0),
+        ("2018", 90.0),
+    ]

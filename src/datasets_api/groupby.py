@@ -215,7 +215,7 @@ class SpliceCheck:
     A cell is a role tuple and time period (`cell_columns`). A row's component is the one of
     `composite` that serves its StatVar (`code_index.composites.component_of`). Each noted
     chunk keeps only its distinct cells with their components, and its distinct cells with
-    the decoded codes and StatVars of the members `selection` keeps, so the check holds at most
+    the kept codes and StatVars of the members `selection` keeps, so the check holds at most
     a few short columns per frame row, beside the fold's `_ARROW_FOLD_BYTES_PER_ROW`, and no
     Python object per row.
 
@@ -224,12 +224,16 @@ class SpliceCheck:
     StatVar no one component serves, among the resolved `members` or the rows, else
     `spliced_overlap` for the first cell holding rows of two components.
 
-    The `stat_var` fold reads a member absent from a cell as no row there, since a spliced
-    cell holds one component's members and none of the others', so `refuse_missing`, run after
-    the fold's own preconditions, states the fold's missing-member rule for the component
-    holding each cell, unless `missing_reads_zero`: a row with a null or non-string `stat_var`
-    refuses `missing_members`, and so does a cell lacking a member of its component that
-    `selection` keeps with the decoded codes (`lookup`) the cell holds."""
+    While a splice runs, every fold of the collapse reads an absent member as no row, since a
+    spliced cell holds one component's members and none of the others', and its codes on a
+    collapsed axis can differ from another component's. `refuse_missing`, run after the
+    `stat_var` fold's own preconditions, states the folds' missing-member rule for the
+    component holding each cell instead, unless `missing_reads_zero`: a cell's group of kept
+    codes (`kept_code_systems`, the decoded axes the collapse does not sum, read from
+    `lookup`) expects every member of that component that `selection` keeps with those codes,
+    so every code of a collapsed axis that component's members hold. A row with a null or
+    non-string `stat_var` refuses `missing_members` too, where the fold would read it: with no
+    `selection`, since a selection keeps no row without a member."""
 
     def __init__(
         self,
@@ -239,7 +243,7 @@ class SpliceCheck:
         cell_columns: Sequence[str],
         members: Iterable[str],
         lookup: Mapping[str, Mapping[str, str]],
-        decoded_code_systems: Sequence[str],
+        kept_code_systems: Sequence[str],
         missing_reads_zero: bool,
         selection: Mapping[str, frozenset[str]] | None = None,
     ) -> None:
@@ -247,7 +251,7 @@ class SpliceCheck:
         self._index = index
         self.cell_columns = tuple(cell_columns)
         self._lookup = lookup
-        self._decoded = tuple(decoded_code_systems)
+        self._kept = tuple(kept_code_systems)
         self._missing_reads_zero = missing_reads_zero
         self._selection = selection
         self._component_of: dict[str, str | None] = {}
@@ -266,7 +270,8 @@ class SpliceCheck:
         holding none, and whose cells are the rows of `cells`, its `cell_columns`."""
         stat_vars = pc.cast(stat_vars, pa.string())
         if stat_vars.null_count:
-            self._null_rows += stat_vars.null_count
+            if self._selection is None:
+                self._null_rows += stat_vars.null_count
             valid = pc.is_valid(stat_vars)
             stat_vars, cells = stat_vars.filter(valid), cells.filter(valid)
         if len(stat_vars) == 0:
@@ -369,7 +374,7 @@ class SpliceCheck:
 
     def _codes(self, ref: str) -> str:
         codes = self._lookup.get(ref, {})
-        return json.dumps([codes.get(code_system) for code_system in self._decoded])
+        return json.dumps([codes.get(code_system) for code_system in self._kept])
 
     def _selected(self, ref: str) -> bool:
         if self._selection is None:

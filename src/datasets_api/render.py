@@ -812,7 +812,11 @@ def _reshape_groupby_collapse(
             ),
             members=decode_lookup.keys(),
             lookup=decode_lookup,
-            decoded_code_systems=decoded_code_systems,
+            kept_code_systems=tuple(
+                code_system
+                for code_system in decoded_code_systems
+                if code_system not in axes_to_collapse
+            ),
             missing_reads_zero=missing_declared_as_zero,
             selection=selection,
         )
@@ -878,11 +882,9 @@ def _reshape_groupby_collapse(
             axis_population = ExpectedPopulation(
                 columns=remaining_columns, members=projected_members
             )
-            # A spliced cell holds one component's members, so the fold reads the others'
+            # A spliced cell holds one component's members, so every fold reads the others'
             # absence there as no row, and `splice` checks the holding component's members.
-            missing_reads_zero = missing_declared_as_zero or (
-                splice is not None and axis == _STAT_VAR_COLUMN
-            )
+            missing_reads_zero = missing_declared_as_zero or splice is not None
             if axis_index == 0 and frame_chunks is not None:
                 # Fold the first axis with one output-group accumulator and the previous grain key.
                 # Later axes operate on the reduced, one-row-per-group table.
