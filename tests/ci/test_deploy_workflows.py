@@ -291,7 +291,6 @@ def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
         < names.index("Ensure a compatible graph release is published")
         < names.index(update)
         < names.index(build)
-        < names.index("Point the datasets worker at the new image")
         < names.index("Stage the new revision with no traffic")
     )
 
@@ -316,7 +315,9 @@ def test_the_scheduled_origin_catalogue_job_moves_to_the_new_image_right_after_t
         if '"${{ vars.JOB_ORIGIN_CATALOGUE }}"' in step.get("run", "")
     ] == [point_scheduled]
     assert scheduled.format("update") in _named(point_scheduled)["run"]
-    assert "--image=${{ steps.image.outputs.image }}" in _named(point_scheduled)["run"].replace(
+    # The staged revision's image by digest, the string the decide and reconcile steps compare
+    # with the serving revision's image.
+    assert "--image=${{ steps.stage.outputs.image }}" in _named(point_scheduled)["run"].replace(
         '"', ""
     )
     assert names.index(point_candidate) < names.index(ensure) < names.index(move)
@@ -481,10 +482,10 @@ def test_one_named_revision_is_staged_probed_given_traffic_and_checked():
     names = [step.get("name") for step in _steps()]
 
     assert names[-14:] == [
-        "Point the datasets worker at the new image",
         "Stage the new revision with no traffic",
         "Warm the candidate revision",
         "Fail on errors the candidate revision answered while warming",
+        "Point the datasets worker at the new image",
         "Move traffic to the candidate revision",
         "Point the scheduled origin catalogue job at the new image",
         "Settle rows the previous image wrote",
@@ -640,14 +641,13 @@ def test_traffic_moves_by_name_then_follows_the_latest_revision(
 
 
 def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
-    """A step after the move can fail, or the run be cancelled, while traffic is pinned by
-    name, and an `infra` revision must still take traffic until the next deploy."""
+    """Settle or backfill can fail after traffic is pinned by name, and an `infra` revision
+    must still take traffic until the next deploy. A cancelled run leaves traffic as it is,
+    since the move may not have reached Cloud Run."""
     step = _named("Follow the latest revision after a failure")
 
     assert step["if"] == (
-        "(failure() || cancelled())"
-        " && (steps.move.outcome == 'success' || steps.move.outcome == 'cancelled')"
-        " && steps.follow.outcome != 'success'"
+        "failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'"
     )
     assert _named("Move traffic to the candidate revision")["id"] == "move"
     assert _named("Follow the latest revision again")["id"] == "follow"
@@ -803,10 +803,42 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
 
     steps = _steps()
     later = steps[steps.index(decide) + 1 :]
-    assert len(later) == 29
+    assert len(later) == 30
     for step in later:
         if step.get("name") != "Follow the latest revision after a failure":
             assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+
+
+def test_the_scheduled_origin_catalogue_job_follows_the_serving_image_before_anything_moves():
+    """A run that stopped or failed after the traffic move leaves the job behind, so the step
+    after the decide step points it at the serving image before the build, and the decide step
+    reads the same job to tell a finished deploy from one that left it behind."""
+    steps = _steps()
+    decide = _step("decide")
+    reconcile = _step("reconcile")
+
+    assert steps.index(reconcile) == steps.index(decide) + 1
+    assert reconcile["run"].strip() == ".github/scripts/deploy_reconcile.sh"
+    assert reconcile["env"] == {
+        "SERVICE": "${{ vars.SERVICE_APIS }}",
+        "JOB": "${{ vars.JOB_ORIGIN_CATALOGUE }}",
+        "REGION": "${{ vars.REGION }}",
+        "PROJECT_ID": "${{ vars.PROJECT_ID }}",
+    }
+    assert "continue-on-error" not in reconcile
+    assert decide["env"]["JOB"] == "${{ vars.JOB_ORIGIN_CATALOGUE }}"
+
+
+def test_the_datasets_worker_moves_after_the_probe_and_before_traffic():
+    """The probe calls no route that reaches the worker, so a failed probe leaves the worker on
+    the serving image."""
+    names = [step.get("name") for step in _steps()]
+
+    assert (
+        names.index("Fail on errors the candidate revision answered while warming") + 1
+        == names.index("Point the datasets worker at the new image")
+        == names.index("Move traffic to the candidate revision") - 1
+    )
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():

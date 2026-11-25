@@ -15,9 +15,16 @@
 # started, or traffic moved by hand), and the target deploys.
 #
 # In the known state, a target equal to the serving commit, or one whose diff
-# from it touches none of the watched paths, needs no deploy. A serving tag
-# that isn't a commit this checkout knows (a placeholder image, or a
-# since-deleted branch) can't be compared, so the target deploys.
+# from it touches none of the watched paths, needs no deploy, provided the
+# scheduled origin catalogue job (JOB) runs the serving image. A deploy points
+# that job at the serving revision's image after traffic moves, and the update
+# continues on error, so a run that failed or stopped there leaves the service
+# released and the job behind. The job's image is compared with the image of
+# the revision serving (serving_image.sh), and a job on any other image makes
+# the target deploy, so a rerun of the same commit reaches deploy.yml's
+# reconcile step. A serving tag that isn't a commit this checkout knows (a
+# placeholder image, or a since-deleted branch) can't be compared, so the
+# target deploys.
 #
 # Env:
 #   SERVICE      Cloud Run service name (vars.SERVICE_APIS) -- required
@@ -25,13 +32,16 @@
 #   PROJECT_ID   GCP project id (vars.PROJECT_ID) -- required
 #   TARGET       the commit deploy.yml resolved as the deploy target --
 #                required
+#   JOB          scheduled origin catalogue job name (vars.JOB_ORIGIN_CATALOGUE)
+#                -- required
 #   FORCE        "true" on workflow_dispatch: deploys whatever the service
 #                state, since dispatch exists to force a redeploy of exactly
 #                the dispatched commit. Optional, defaults to false.
 #
 # Writes `deploy=true` or `deploy=false` to $GITHUB_OUTPUT (or stdout, when
 # $GITHUB_OUTPUT is unset, so this runs the same way under a test). Exits
-# non-zero only when the service can't be read.
+# non-zero only when the service, its serving revision or the job can't be
+# read.
 
 set -euo pipefail
 
@@ -39,6 +49,7 @@ set -euo pipefail
 : "${REGION:?REGION is required}"
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${TARGET:?TARGET is required}"
+: "${JOB:?JOB is required}"
 FORCE="${FORCE:-false}"
 
 described="$(gcloud run services describe "$SERVICE" \
@@ -90,6 +101,21 @@ elif git diff --quiet "$live" "$TARGET" -- \
   deploy=false
 else
   deploy=true
+fi
+
+if [ "$deploy" = false ]; then
+  serving="$("$(dirname "$0")/serving_image.sh")"
+  job_image="$(gcloud run jobs describe "$JOB" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(spec.template.spec.template.spec.containers[0].image)')" || {
+    echo "::error::gcloud run jobs describe failed for job '$JOB'."
+    exit 1
+  }
+  if [ "$job_image" != "$serving" ]; then
+    echo "::notice::the scheduled origin catalogue job '$JOB' runs ${job_image:-no image}, not the serving image $serving, so the last deploy did not finish. Deploying $TARGET."
+    deploy=true
+  fi
 fi
 
 echo "target=$TARGET live=$live state=$state deploy=$deploy"

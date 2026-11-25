@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import os
-import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.ci import cloud_run_fake
 
 _SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "deploy_decide.sh"
 
@@ -62,6 +62,11 @@ def repo(tmp_path: Path) -> Path:
 
 _SERVING = "dfo-dev-apis-00001-aaa"
 _STAGED = "dfo-dev-apis-00002-bbb"
+_JOB = "dfo-dev-origin-catalogue"
+# Revisions record their image by digest, and a finished deploy points the scheduled origin
+# catalogue job at the serving revision's digest.
+_SERVING_DIGEST = "host/repo/dfo-apis@sha256:aaa"
+_STAGED_DIGEST = "host/repo/dfo-apis@sha256:bbb"
 
 # Traffic following the latest revision, as a finished deploy leaves it.
 _FOLLOWING = [{"percent": 100, "latestRevision": True}]
@@ -69,39 +74,37 @@ _FOLLOWING = [{"percent": 100, "latestRevision": True}]
 
 def _service(commit: str, *, traffic: list | None = None, ready: str = _STAGED) -> dict:
     """A `gcloud run services describe --format=json` document, trimmed to the fields the
-    script reads: the template's image, the traffic asked for, and the latest created
-    (`_STAGED`) and latest ready revisions."""
+    scripts read: the template's image, the traffic asked for and the traffic serving, and the
+    latest created (`_STAGED`) and latest ready revisions."""
     return {
         "spec": {
             "template": {"spec": {"containers": [{"image": _image_for(commit)}]}},
             "traffic": _FOLLOWING if traffic is None else traffic,
         },
-        "status": {"latestCreatedRevisionName": _STAGED, "latestReadyRevisionName": ready},
+        "status": {
+            "latestCreatedRevisionName": _STAGED,
+            "latestReadyRevisionName": ready,
+            "traffic": [{"percent": 100, "latestRevision": True, "revisionName": ready}],
+        },
     }
 
 
-def _fake_gcloud(bin_dir: Path, *, service: dict | None = None, exit_code: int = 0) -> None:
-    """A PATH shim standing in for `gcloud run services describe`, which prints the service as
-    JSON under `--format=json` and the template's image under the value format that reads
-    it."""
-    bin_dir.mkdir(exist_ok=True)
-    image = service["spec"]["template"]["spec"]["containers"][0].get("image", "") if service else ""
-    script = bin_dir / "gcloud"
-    script.write_text(
-        f"""#!/usr/bin/env bash
-if [ "{exit_code}" != 0 ]; then
-  exit {exit_code}
-fi
-for arg in "$@"; do
-  case "$arg" in
-    --format=json) echo '{json.dumps(service or {})}'; exit 0 ;;
-    --format=value*) echo "{image}"; exit 0 ;;
-  esac
-done
-exit 2
-"""
+def _fake_gcloud(
+    bin_dir: Path,
+    *,
+    service: dict | None = None,
+    exit_code: int = 0,
+    job_image: str | None = _STAGED_DIGEST,
+) -> None:
+    """A PATH shim standing in for `gcloud run`, serving `service`, the two revisions' digests
+    and the scheduled origin catalogue job on `job_image`, or no such job when it is None."""
+    cloud_run_fake.install(
+        bin_dir,
+        service=service or {},
+        revisions={_SERVING: _SERVING_DIGEST, _STAGED: _STAGED_DIGEST},
+        jobs={} if job_image is None else {_JOB: job_image},
+        fail=exit_code != 0,
     )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
 
 
 def _run_decide(
@@ -121,6 +124,7 @@ def _run_decide(
             "REGION": "northamerica-northeast1",
             "PROJECT_ID": "dev-fin-observatory",
             "TARGET": target,
+            "JOB": _JOB,
             "FORCE": force,
             "GITHUB_OUTPUT": str(output_file),
         },
@@ -276,6 +280,40 @@ def test_force_with_live_equal_to_target_still_deploys(repo: Path, tmp_path: Pat
 
     assert result.returncode == 0, result.stderr
     assert output == "deploy=true\n"
+
+
+@pytest.mark.parametrize(
+    "job_image",
+    [
+        _SERVING_DIGEST,
+        # The tag a deploy before the digest pin set, which names no serving revision's digest.
+        "host/repo/dfo-apis:abc",
+    ],
+    ids=["previous-image", "tag"],
+)
+def test_a_released_service_with_the_job_behind_deploys(repo: Path, tmp_path: Path, job_image):
+    """A run whose scheduled job update failed or never ran leaves the service released, so the
+    same commit deploys again and the workflow's reconcile step moves the job."""
+    sha = _commit(repo, "init", {"src/app.py": "1\n"})
+    bin_dir = tmp_path / "bin"
+    _fake_gcloud(bin_dir, service=_service(sha), job_image=job_image)
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
+
+    assert result.returncode == 0, result.stderr
+    assert output == "deploy=true\n"
+
+
+def test_an_unreadable_job_exits_nonzero(repo: Path, tmp_path: Path):
+    sha = _commit(repo, "init", {"src/app.py": "1\n"})
+    bin_dir = tmp_path / "bin"
+    _fake_gcloud(bin_dir, service=_service(sha), job_image=None)
+
+    result, output = _run_decide(repo, bin_dir, tmp_path, target=sha)
+
+    assert result.returncode != 0
+    assert "::error::" in result.stdout
+    assert "deploy=" not in output
 
 
 def test_watched_paths_match_the_workflows_declared_image_inputs():

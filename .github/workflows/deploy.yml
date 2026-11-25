@@ -79,8 +79,7 @@ name: Deploy
 # and the apis service move (see its steps). A failed step stops the job
 # before any step after it runs, so a failed migration or artifact build leaves
 # both services on their current image. The one exception is the last step,
-# which runs after a failure or a cancellation once traffic has moved (see
-# that step).
+# which runs after a failure once traffic has moved (see that step).
 
 on:
   workflow_call:
@@ -218,8 +217,29 @@ jobs:
           REGION: ${{ vars.REGION }}
           PROJECT_ID: ${{ vars.PROJECT_ID }}
           TARGET: ${{ steps.target.outputs.sha }}
+          JOB: ${{ vars.JOB_ORIGIN_CATALOGUE }}
           FORCE: ${{ github.event_name == 'workflow_dispatch' }}
         run: .github/scripts/deploy_decide.sh
+
+      # A job writes only its own image's format root, so the scheduled origin
+      # catalogue job must run the image the apis service serves. A run that
+      # stopped between the traffic move and the job's update, or whose update
+      # failed, leaves the job on the previous image, and the decide step then
+      # deploys. This step reads the serving revisions from status.traffic,
+      # and points the job at their image when it runs another, before
+      # anything else moves, so the job writes the served root even if this
+      # run stops early. Traffic split across revisions running different
+      # images has no one serving image, and the step fails the run with
+      # nothing moved. See .github/scripts/deploy_reconcile.sh.
+      - name: Point the scheduled origin catalogue job at the serving image
+        id: reconcile
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          SERVICE: ${{ vars.SERVICE_APIS }}
+          JOB: ${{ vars.JOB_ORIGIN_CATALOGUE }}
+          REGION: ${{ vars.REGION }}
+          PROJECT_ID: ${{ vars.PROJECT_ID }}
+        run: .github/scripts/deploy_reconcile.sh
 
       - uses: docker/setup-buildx-action@v4
         if: steps.decide.outputs.deploy == 'true'
@@ -502,24 +522,6 @@ jobs:
             --wait \
             --args=-m,search.catalogue.verify
 
-      # The async operations worker (the `infra` repository's google_cloud_run_v2_service
-      # .datasets_worker) runs the same image as the apis service, and moves
-      # onto the new one before the apis step below does, because an
-      # in-flight or newly-enqueued operation must run against the schema and
-      # graph release this deploy just brought current. Image-only
-      # update, with traffic following the new revision at once. `infra` owns the
-      # service's own scaling/secrets/runtime-service-account config via
-      # lifecycle.ignore_changes on the container image.
-      - name: Point the datasets worker at the new image
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run services update "${{ vars.SERVICE_WORKER }}" \
-            --image="${{ steps.image.outputs.image }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --quiet
-
       # Image-only update against the service `infra` already defined. This
       # step uses `gcloud run services update`, not `gcloud run services
       # replace`, since replace takes a full manifest and would fight
@@ -633,6 +635,28 @@ jobs:
           echo "::error::The candidate revision answered a probe with an error, or could not be probed where the probe is required. Traffic stays on the previous revision. See the 'Warm the candidate revision' step."
           exit 1
 
+      # The async operations worker (the `infra` repository's google_cloud_run_v2_service
+      # .datasets_worker) runs the same image as the apis service. It moves
+      # onto the new one after the candidate revision passes its probe and
+      # right before traffic moves, because an in-flight or newly-enqueued
+      # operation must run against the schema and graph release this deploy
+      # just brought current. The probe calls only skills, graph schema and
+      # stated-scope routes, none of which enqueue an operation or call the
+      # worker, so the probe needs the previous worker no less than the new
+      # one, and a failed probe leaves the worker on the serving image.
+      # Image-only update, with traffic following the new revision at once.
+      # `infra` owns the service's own scaling/secrets/runtime-service-account
+      # config via lifecycle.ignore_changes on the container image.
+      - name: Point the datasets worker at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.SERVICE_WORKER }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
       # Moves all traffic to the probed revision by name, so no other
       # revision can take it while settle and backfill run.
       - name: Move traffic to the candidate revision
@@ -653,13 +677,16 @@ jobs:
       # origin catalogue job (Cloud Scheduler, every 15 minutes) keeps fresh
       # while it runs the previous image. Moving the job here, right after
       # the apis service starts reading the new root, keeps it refreshing the
-      # root the serving image reads. A deploy that stops before traffic moves
-      # leaves this job on the serving image. The datasets worker moves to the
-      # new image before traffic, so a deploy that stops between the worker
-      # update and the traffic move leaves the worker reading the new format
-      # root, which nothing refreshes until the next deploy, while the
-      # scheduled job keeps the apis service's root current. A failed update
-      # lets the steps after it run, and the last step fails the run.
+      # root the serving image reads. The job takes the staged revision's
+      # image by digest, the string the decide and reconcile steps compare
+      # with the serving revision's image. A deploy that stops before traffic
+      # moves leaves this job on the serving image. A deploy that stops
+      # between the worker update and the traffic move leaves the worker
+      # reading the new format root, which nothing refreshes until the next
+      # deploy, while the scheduled job keeps the apis service's root current.
+      # A failed update lets the steps after it run, and the last step fails
+      # the run. The job then runs another image than the serving one, so the
+      # next run of any commit deploys and its reconcile step moves the job.
       - name: Point the scheduled origin catalogue job at the new image
         id: scheduled_job
         if: steps.decide.outputs.deploy == 'true'
@@ -667,7 +694,7 @@ jobs:
         run: |
           set -euo pipefail
           gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
-            --image="${{ steps.image.outputs.image }}" \
+            --image="${{ steps.stage.outputs.image }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
@@ -834,14 +861,17 @@ jobs:
           echo "Revision $serving serves all traffic as the latest revision and runs the released image."
 
       # The scheduled job's update and the two warning steps continue on error,
-      # so a failure in any of them still runs the description backfill, whose records depend on series
-      # statistics that leave the working tier, makes traffic follow the
-      # latest revision and checks the released image. This step then fails
-      # the run and names each of these steps that failed. Traffic already
-      # follows the latest revision without the `candidate` tag, so a rerun of
-      # the same commit deploys nothing; the next deploy, or a
-      # `workflow_dispatch` run, runs the warning steps again from the rows
-      # that remain.
+      # so a failure in any of them still runs the description backfill, whose
+      # records depend on series statistics that leave the working tier, makes
+      # traffic follow the latest revision and checks the released image. This
+      # step then fails the run and names each of these steps that failed.
+      # Traffic already follows the latest revision without the `candidate`
+      # tag. After a failed warning step, a rerun of the same commit deploys
+      # nothing, and the next deploy, or a `workflow_dispatch` run, runs the
+      # warning steps again from the rows that remain. After a failed
+      # scheduled job update, the job runs another image than the serving one,
+      # so a rerun of the same commit deploys and points the job at the
+      # serving image before anything else moves.
       - name: Fail on a failed warning step
         if: steps.decide.outputs.deploy == 'true'
         env:
@@ -852,7 +882,7 @@ jobs:
           set -euo pipefail
           failed=0
           if [ "$SCHEDULED_JOB" = failure ]; then
-            echo "::error::The 'Point the scheduled origin catalogue job at the new image' step failed. The scheduled job is still on the previous image and writes the previous format root. Run the deploy again with workflow_dispatch."
+            echo "::error::The 'Point the scheduled origin catalogue job at the new image' step failed. The scheduled job is on the previous image and writes the previous format root. A rerun of this commit points it at the serving image before anything else moves."
             failed=1
           fi
           if [ "$REWRITE_WARNINGS" = failure ]; then
@@ -865,17 +895,21 @@ jobs:
           fi
           exit "$failed"
 
-      # A failure or a cancellation after the move, in settle, the description
-      # backfill or the follow step, would leave traffic pinned by name, so a
-      # revision `infra` creates for a configuration change would serve nothing
-      # until a deploy succeeds. A cancellation during the move itself may
-      # already have pinned traffic, so the step also runs when the move was
-      # cancelled. This step makes traffic follow the latest revision again and
-      # keeps the `candidate` tag, so the next run still deploys. A failed
-      # scheduled job update or warning step fails the run only in the step
-      # above, after the follow step succeeded, so it does not run this step.
+      # A failure after the move, in settle, the description backfill or the
+      # follow step, would leave traffic pinned by name, so a revision `infra`
+      # creates for a configuration change would serve nothing until a deploy
+      # succeeds. This step makes traffic follow the latest revision again and
+      # keeps the `candidate` tag, so the next run still deploys. A cancelled
+      # run skips it: a cancellation can land before Cloud Run received the
+      # move, and following the latest revision then would serve the
+      # candidate while the scheduled origin catalogue job writes the previous
+      # format root. A cancelled run leaves traffic pinned and the tag in
+      # place, so the next run deploys, and its reconcile step first points
+      # the job at whatever serves. A failed scheduled job update or warning
+      # step fails the run only in the step above, after the follow step
+      # succeeded, so it does not run this step.
       - name: Follow the latest revision after a failure
-        if: (failure() || cancelled()) && (steps.move.outcome == 'success' || steps.move.outcome == 'cancelled') && steps.follow.outcome != 'success'
+        if: failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'
         run: |
           set -euo pipefail
           gcloud run services update-traffic "${{ vars.SERVICE_APIS }}" \
