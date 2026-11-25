@@ -1,9 +1,9 @@
 """The stretches of a phrase that name a party the part binds, by a name Search reads it by.
 
 Intake reads them in the variable phrase once (`ResolveState.party_alias_spans`). The
-coverage rule, the nomination of unread words, the candidate menu and the bind's unplaced
-phrases count them as read; the phrase a model reads is unchanged. The names come from a
-committed export (`pack.geo_names`), so no resolver or graph read is made."""
+coverage rule, the nomination of unread words and the candidate menu count them as read;
+the phrase a model reads is unchanged. The names come from a committed export
+(`pack.geo_names`), so no resolver or graph read is made."""
 
 from __future__ import annotations
 
@@ -167,13 +167,10 @@ def _written_as(name: str, stretch: str) -> bool:
     """Whether `stretch`, an occurrence of `name` casing aside, writes each word `name`
     writes in capitals with no lowercase letter ("USA", "ASEAN", "G7") exactly as `name`
     does, and writes every letter of a name of two letters or fewer, a code, in capitals:
-    "EU" reads as the European Union. A stretch whose words do not pair with the name's, which the
-    entity pack's normal form can make, is taken as written."""
+    "EU" reads as the European Union. `stretch` holds the words of `name`, casing aside."""
     if sum(char.isalpha() for char in name) <= 2 and any(char.islower() for char in stretch):
         return False
     name_words, written = _WORD_RE.findall(name), _WORD_RE.findall(stretch)
-    if len(name_words) != len(written):
-        return True
     return all(
         word == stated
         for word, stated in zip(name_words, written, strict=True)
@@ -184,7 +181,10 @@ def _written_as(name: str, stretch: str) -> bool:
 def _inside_another_name(text: str, words: Sequence[re.Match[str]], start: int, end: int) -> bool:
     """Whether the stretch `start:end` of `text` lies inside a longer stretch of its words
     that the entity pack stores as a name (`pack.stored_name_forms`) or that names a country,
-    region or group (`pack.geo_name_forms`), written as that name is (`_written_as`)."""
+    region or group (`pack.geo_name_forms`), written as that name is: the name's words, casing
+    aside (`_same_words`), with its capitals kept (`_written_as`). "Africa finance flows" holds
+    no stored name, though the pack's normal form of "Africa Finance Corporation" drops its
+    last word."""
     inside = [index for index, word in enumerate(words) if start <= word.start() < end]
     if not inside:
         return False
@@ -196,6 +196,13 @@ def _inside_another_name(text: str, words: Sequence[re.Match[str]], start: int, 
                 continue
             stretch = text[words[begin].start() : words[stop].end()]
             forms = (*stored_name_forms(stretch), *geo_name_forms(stretch))
-            if any(_written_as(form, stretch) for form in forms):
+            if any(_same_words(form, stretch) and _written_as(form, stretch) for form in forms):
                 return True
     return False
+
+
+def _same_words(name: str, stretch: str) -> bool:
+    """Whether `stretch` holds the words of `name`, casing aside."""
+    return [word.casefold() for word in _WORD_RE.findall(name)] == [
+        word.casefold() for word in _WORD_RE.findall(stretch)
+    ]

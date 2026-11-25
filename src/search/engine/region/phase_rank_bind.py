@@ -4418,9 +4418,6 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        Nor may every word of it occur in the label of a dataset the elected shape answers
        from, or in the words its datasets state (`_names_answering_dataset`): "imputed" on the
        imputed table chose that table, and "bilateral" on the CRS states what every row is.
-       The words of a phrase naming a party the part binds (`ResolveState.party_alias_spans`)
-       are the party and leave first (`_without_party_words`): "US military" beside the
-       donor United States is judged as "military", and "US" alone records nothing.
        Surviving phrases get ``no_vocabulary`` with no named codes.
     5. Match the words each code system the shape declares has no vocabulary for
        (``CodeSystemDeclaration.no_vocabulary_terms``) in variable text and optional query
@@ -4463,31 +4460,6 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
         if requirement.refuses and _normalize(requirement.term.text) not in already_recorded
     )
     return resolved
-
-
-def _without_party_words(phrase: str, state: ResolveState) -> str:
-    """`phrase` less the words of its first occurrence in the variable phrase that name a
-    party the part binds (`ResolveState.party_alias_spans`): "military" for "US military"
-    beside the donor United States, "" for "US" alone. A phrase the variable does not hold,
-    or one holding no such words, is returned as it is."""
-    ranges = _all_normalized_text_ranges(phrase, state.variable)
-    if not ranges:
-        return phrase
-    start, end = ranges[0]
-    inside = sorted(
-        (max(start, span_start), min(end, span_end))
-        for span_start, span_end in state.party_alias_spans
-        if span_start < end and start < span_end
-    )
-    if not inside:
-        return phrase
-    kept: list[str] = []
-    at = start
-    for cut_start, cut_end in inside:
-        kept.append(state.variable[at:cut_start])
-        at = max(at, cut_end)
-    kept.append(state.variable[at:end])
-    return " ".join(" ".join(kept).split())
 
 
 def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
@@ -4589,13 +4561,7 @@ def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
     slot_nouns = [
         index.declarations[prop].plain_name for prop in declared if prop in index.declarations
     ]
-    for listed in state.bind_result.unplaced:
-        # The words of a phrase that name a party the part binds ("US" in "US military"
-        # beside the donor United States) are the party, as the field asks of a place; the
-        # rest of the phrase is judged alone.
-        phrase = _without_party_words(listed, state)
-        if not phrase:
-            continue
+    for phrase in state.bind_result.unplaced:
         if _names_carried_per_head_rate(phrase, state.shape_draft, state.denominator_kinds):
             continue
         # A phrase as long as the noun that names it is the noun, singular or plural.

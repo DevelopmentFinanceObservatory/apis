@@ -324,6 +324,15 @@ def _stored_forms() -> dict[str, tuple[str, ...]]:
     return {key: tuple(dict.fromkeys(written)) for key, written in forms.items()}
 
 
+def warm_name_forms() -> None:
+    """Read the stored and geo name forms (`stored_name_forms`, `geo_name_forms`) now, so no
+    request is the one that builds them."""
+    _stored_forms()
+    _geo_forms()
+    longest_stored_name_tokens()
+    longest_geo_name_tokens()
+
+
 def is_organisation_name(text: str) -> bool:
     """Whether `text` is a name the pack stores for an organisation (`organisations_named`)."""
     return bool(organisations_named(text))

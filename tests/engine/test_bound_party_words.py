@@ -50,6 +50,9 @@ _AU = Group(members=(), entity=None, dcid="groups/AU", label="African Union")
             "Africa Finance Corporation lending", _AFRICA, (), id="inside-an-organisation-name"
         ),
         pytest.param("South Africa ODA", _AFRICA, (), id="inside-another-place-name"),
+        pytest.param(
+            "Africa finance flows", _AFRICA, ("Africa",), id="stored-name-normal-form-only"
+        ),
         pytest.param("ODA of dac EU members", _EU, ("EU",), id="enclosing-name-written-otherwise"),
         pytest.param("EU ODA through EU institutions", _EU, ("EU",), id="inside-a-stored-name"),
     ],

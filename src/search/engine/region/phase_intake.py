@@ -148,8 +148,8 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     (`ResolveState.open_axes`) in place of naming a total there, on the shapes that list
     exactly its parties there (`_prune_shapes_by_listing`). Whether the request directs such
     a text to the other side is recorded too (`ResolveState.whole_misdirected`). The variable
-    phrase's stretches naming a party the part binds are read once, from the committed names
-    (`ResolveState.party_alias_spans`, `bound_party_spans`).
+    phrase's stretches naming a party a place set binds are read once, from the committed
+    names (`ResolveState.party_alias_spans`, `bound_party_spans`).
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -258,7 +258,11 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         )
         place_sets[name] = replace(place_set, oecd=oecd_reading(place_set, membership=membership))
     state.place_sets = place_sets
-    state.party_alias_spans = bound_party_spans(state.variable, rcl.resolutions.values())
+    # Only a name the part binds as a place set reads as its party in the variable: a whole
+    # population ("all donors") and a group with no usable members bind no party.
+    state.party_alias_spans = bound_party_spans(
+        state.variable, [rcl.resolutions[name] for name in place_sets]
+    )
     state.party_sets = await _party_word_sets(state)
     state.whole_named = whole_named
     state.whole_sets = _whole_total_sets(state)
