@@ -62,9 +62,7 @@ from search.engine.quantity import (
     NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
-    operation_forms,
     quantity_requirement,
-    without_forms,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.convertibility import UnitCoverage
@@ -875,6 +873,10 @@ class ResolveState:
     # This leg's admitted operations. One over `category` opens the slots it names on
     # the elected shape (`phase_rank_bind._open_operation_slots`).
     operations: tuple[Operation, ...] = ()
+    # The variables of the request's other parts. A base this leg's words name that another
+    # part asks for is that part's, so a `share_of` divides by it
+    # (`phase_rank_bind._read_quantity_answer`).
+    other_variables: tuple[str, ...] = ()
     # The flow axes this leg asks every member of. `bind_place_roles` leaves open those no
     # place binds (`PlaceRoles.open_axes`).
     open_axes: frozenset[RoleAxis] = frozenset()
@@ -1042,8 +1044,8 @@ class ResolveState:
     # The normalisation this leg names, read from its variable and its sidecar qualifier
     # phrases (`quantity.quantity_requirement`), with the form the quantity read states
     # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
-    # A form one of its operations computes is the operation's (`operation_forms`), so
-    # neither reading holds it.
+    # The quantity read drops the forms its operations compute where their whole lies
+    # outside the leg's words (`phase_rank_bind._read_quantity_answer`).
     quantity_requirement: QuantityRequirement = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
@@ -1065,6 +1067,11 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
+    # The question's words for a base the leg's operation divides by, its whole, which the
+    # quantity read quoted and which no denominator of the leg's series is
+    # (`phase_rank_bind._read_quantity_answer`). The base words stay the base's, as a named
+    # denominator's do (`base_words`). `None` otherwise.
+    whole_base_words: str | None = None
     # Every name of declared measures the variable holds, partition labels and the quoted base
     # included (`qualifier_match.declared_measures_named`), read once per part by
     # `phase_rank_bind._phase_prune_and_rank`. `named_measures` and the coverage of code terms
@@ -1494,11 +1501,8 @@ class ResolveState:
     identity_entities: list[Entity] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.quantity_requirement = without_forms(
-            quantity_requirement(
-                [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
-            ),
-            self.operation_forms,
+        self.quantity_requirement = quantity_requirement(
+            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
         )
         self.frame = door_frame(
             door=self.door,
@@ -1519,11 +1523,13 @@ class ResolveState:
         )
 
     @property
-    def operation_forms(self) -> frozenset[NamedNormalisation]:
-        """The forms this leg's operations compute (`quantity.operation_forms`): a share
-        under `share_of`. The leg's series holds none of them, so its form readings drop
-        them."""
-        return operation_forms(operation.verb for operation in self.operations)
+    def base_words(self) -> str | None:
+        """The question's words for the base its quantity divides by: the named
+        denominator's, else the operation's whole's (`whole_base_words`). Readers of the
+        variable leave them to the base."""
+        if self.named_denominator is not None:
+            return self.named_denominator.base_words
+        return self.whole_base_words
 
     @property
     def undirected_axis(self) -> RoleAxis | None:

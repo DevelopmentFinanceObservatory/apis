@@ -474,6 +474,7 @@ async def _stream_one_variable(
     dropped_qualifier_phrases: list[str] | None = None,
     exclusions: PartExclusions | None = None,
     operations: tuple[Operation, ...] = (),
+    other_variables: tuple[str, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     separate: bool = False,
     query_text: str | None = None,
@@ -512,7 +513,8 @@ async def _stream_one_variable(
     `entity_roles` also supplies the axes written into the leg's restatement, which carries
     its source mentions (`restated_sources`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
-    bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
+    bind alone, and the region opens the slots they run over. `other_variables` are the
+    other legs' variables (`ResolveState.other_variables`). `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
     resolution leaves open (`asked_open_axes`). Place binding drops an axis a place binds,
     and the part warns for each of its own, and each a whole population asked member by
@@ -591,6 +593,7 @@ async def _stream_one_variable(
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             exclusions=exclusions,
             operations=operations,
+            other_variables=other_variables,
             open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text and (without_scope_phrases(query_text, scope_intake) or None),
             unclaimed=unclaimed,
@@ -1043,6 +1046,7 @@ def _launch_variable_tasks(
                     else None
                 ),
                 operations=_leg_operations(overrides, i),
+                other_variables=tuple(u for j, u in enumerate(unique) if j != i),
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
                 query_text=query_text,

@@ -34,7 +34,7 @@ from search.engine.assemble import with_scope_choices
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.binders.base import Binder
-from search.engine.departures import served_datasets
+from search.engine.departures import served_datasets, spec_departure_facts
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, candidate_grounding, pipeline
 from search.engine.region.codes import (
@@ -46,7 +46,7 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.spec_id import identity_spec_id
-from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.stated_words_read import WORDS_HEADER, StatedWord, StatedWordsOutput
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
@@ -223,28 +223,38 @@ def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
 
 
 _MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
+_WORD_LINE = re.compile(r"^  (\d+): ", re.MULTILINE)
 
 
 class _PickingLLM:
     """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
     shape, so the whole menu is the house policies' pool; reads `quantity`, no quantity by
-    default, and rates no word. It drafts `bindings` on its pick."""
+    default, and rates no word, or with `unstated` every word it is asked about as one the
+    series does not state. It drafts `bindings` on its pick."""
 
     def __init__(
         self,
         pick: int = 0,
         bindings: Sequence[SlotBindingDraft] = (),
         quantity: QuantityOutput | None = None,
+        *,
+        unstated: bool = False,
     ) -> None:
         self.pick = pick
         self.bindings = bindings
         self.quantity = quantity
+        self.unstated = unstated
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY if self.quantity is None else (self.quantity, None)
         if schema is StatedWordsOutput:
-            return NO_RATING
+            if not self.unstated:
+                return NO_RATING
+            words = _WORD_LINE.findall(prompt.split(WORDS_HEADER)[-1])
+            return StatedWordsOutput(
+                words=[StatedWord(index=int(number), stated=False) for number in words]
+            ), None
         match = _MENU_SIZE.search(prompt)
         assert match is not None, prompt[:400]
         size = int(match.group(1))
@@ -298,12 +308,12 @@ def _resolve_part(
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
-    quantity: QuantityOutput | None = None,
+    llm: _PickingLLM | None = None,
 ) -> DefinitePart:
     response = offline_resolve(
         request,
         graph=_graph(variable, members),
-        llm=_PickingLLM(pick, quantity=quantity),
+        llm=_PickingLLM(pick) if llm is None else llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     assert isinstance(response, Resolution), response
@@ -318,9 +328,8 @@ def _resolve(
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
-    quantity: QuantityOutput | None = None,
 ) -> Spec:
-    return _resolve_part(request, variable, pick=pick, members=members, quantity=quantity).spec
+    return _resolve_part(request, variable, pick=pick, members=members).spec
 
 
 def _ask(
@@ -332,24 +341,14 @@ def _ask(
     message: str | None = None,
     carried: list[Entry] | None = None,
     members: tuple[str, ...] = _ALL_MEMBERS,
-    donor: str = "United States",
-    operations: list[Operation] | None = None,
-    quantity: QuantityOutput | None = None,
 ) -> Spec:
-    entities = [ParsedEntity(text=donor, role_text="from")]
+    entities = [ParsedEntity(text="United States", role_text="from")]
     if recipient:
         entities.append(ParsedEntity(text="Kenya", role_text="to"))
     return _resolve(
         ResolveRequest(
             input=ParsedInput(
-                parts=[
-                    ParsedPart(
-                        variable_text=variable,
-                        entities=entities,
-                        time_text=time,
-                        operations=operations or [],
-                    )
-                ],
+                parts=[ParsedPart(variable_text=variable, entities=entities, time_text=time)],
                 user_message=message,
                 carried_entries=carried,
             )
@@ -357,7 +356,6 @@ def _ask(
         variable,
         pick=pick,
         members=members,
-        quantity=quantity,
     )
 
 
@@ -1782,13 +1780,27 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     ],
 )
 @pytest.mark.parametrize(
-    ("variable", "quantity"),
+    ("variable", "phrase", "quantity"),
     [
-        pytest.param("share of aid", None, id="worded-share"),
+        pytest.param("share of aid", "share of aid", None, id="worded-share"),
         pytest.param(
+            "aid in total aid",
             "aid in total aid",
             QuantityOutput(stated_form="share", base_words="total aid", denominator_index=0),
             id="stated-share",
+        ),
+        # The operation's phrase names the share alone, and its whole's words stay the
+        # base's, so the stated-words read rates none of them and no part of the whole
+        # reads as a restriction of the aid.
+        pytest.param(
+            "aid as a share of aid to all developing countries",
+            "share",
+            QuantityOutput(
+                stated_form="share",
+                base_words="aid to all developing countries",
+                denominator_index=0,
+            ),
+            id="whole-in-the-words",
         ),
     ],
 )
@@ -1800,13 +1812,15 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     option: str,
     provenance: str,
     variable: str,
+    phrase: str,
     quantity: QuantityOutput | None,
 ):
     """A part a `share_of` operation divides by its whole may name the share in its words
     ("share of aid") or have the quantity read state it with the whole as its base, and the
     share and its base are the operation's: the part's series is the aid, a level, so no
     shape is refused for holding no share, and a donor's window crossing 2018 is counted on
-    the OECD headline per year, or on the basis a carried entry asks for."""
+    the OECD headline per year, or on the basis a carried entry asks for. The answer
+    departs only in leaving the share to its client."""
     _cover(monkeypatch, _DAC1_MEMBERS, donors=covered)
     entries = (
         [
@@ -1820,20 +1834,34 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
         if carried is not None
         else None
     )
+    operations = [Operation(verb="share_of", phrase=phrase)]
 
-    spec = _ask(
+    part = _resolve_part(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text=donor, role_text="from")],
+                        time_text="2015-2023",
+                        operations=operations,
+                    )
+                ],
+                carried_entries=entries,
+            )
+        ),
         variable,
-        time="2015-2023",
-        recipient=False,
-        donor=donor,
-        carried=entries,
-        operations=[Operation(verb="share_of", phrase=variable)],
-        quantity=quantity,
+        llm=_PickingLLM(quantity=quantity, unstated=True),
     )
 
+    spec = part.spec
     assert _basis_choice(spec)[:2] == (option, provenance)
     assert _served_basis(spec) == _NET_DAC1
     assert [e.ref for e in spec.resolved.entities] == list(covered)
+    assert "query_qualifier_dropped" not in {warning.code for warning in part.warnings}
+    assert [fact.code for fact in spec_departure_facts(spec, operations=operations)] == [
+        "operation_not_applied"
+    ]
 
 
 @pytest.mark.parametrize(
