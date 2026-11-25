@@ -37,8 +37,10 @@ PARSER_KEY_HEADER = "X-DFO-Parser-Replay-Key"
 PARSER_CACHE_HEADER = "X-DFO-Parser-Cache"
 PARSER_STREAM_HEADER = "X-DFO-Parser-Stream"
 
-ARM = Literal["flash-lite", "ministral"]
-ARMS: tuple[ARM, ARM] = ("flash-lite", "ministral")
+ARM = Literal["flash-lite", "ministral", "mistral-small"]
+ARMS: tuple[ARM, ARM, ARM] = ("flash-lite", "ministral", "mistral-small")
+# Consecutive arms that fail without an HTTP status before the runner stops sending.
+TRANSPORT_FAILURE_LIMIT = 5
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNTHETIC_COUNTRIES = (
@@ -54,6 +56,16 @@ _SYNTHETIC_COUNTRIES = (
     "Viet Nam",
 )
 _SYNTHETIC_DONORS = ("United States", "Germany", "Japan", "France", "Canada")
+
+
+class ReplayStopped(Exception):
+    """The run stopped sending after ``TRANSPORT_FAILURE_LIMIT`` consecutive transport
+    errors. ``results`` holds every arm that finished; ``cause`` names the last error."""
+
+    def __init__(self, results: list[Result], cause: str) -> None:
+        super().__init__(cause)
+        self.results = results
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -438,25 +450,47 @@ async def replay(
     concurrency: int,
     pace_ms: int,
     stream_probe: bool,
+    arms: Sequence[ARM] = ARMS,
     on_result: Callable[[Result], None] = lambda _result: None,
 ) -> list[Result]:
-    """Run each case's two arms back to back; ``concurrency`` bounds pairs in flight.
+    """Run each case's arms back to back; ``concurrency`` bounds cases in flight.
 
-    ``on_result`` receives each result as its pair completes.
+    The arm order is a permutation of ``arms`` drawn per case from a hash of the replay
+    id and case id. ``on_result`` receives each result as its case completes. After
+    ``TRANSPORT_FAILURE_LIMIT`` consecutive arms fail without an HTTP status, no further
+    request is sent and ``ReplayStopped`` is raised with every finished result.
     """
     semaphore = asyncio.Semaphore(concurrency)
+    consecutive_transport_failures = 0
+    stop_cause: str | None = None
 
-    async def run_pair(case: Case) -> list[Result]:
-        arms = (
-            ARMS
-            if hashlib.sha256(f"{replay_id}:{case.case_id}".encode()).digest()[0] % 2 == 0
-            else ARMS[::-1]
+    def arm_order(case: Case) -> list[ARM]:
+        return sorted(
+            arms,
+            key=lambda arm: hashlib.sha256(f"{replay_id}:{case.case_id}:{arm}".encode()).digest(),
         )
+
+    def observe(result: Result) -> None:
+        nonlocal consecutive_transport_failures, stop_cause
+        if result.status_code is None and result.error is not None:
+            consecutive_transport_failures += 1
+            if consecutive_transport_failures >= TRANSPORT_FAILURE_LIMIT:
+                stop_cause = result.error
+        else:
+            consecutive_transport_failures = 0
+
+    async def run_case(case: Case) -> list[Result]:
+        results: list[Result] = []
+        if stop_cause is not None:
+            return results
         async with semaphore:
+            if stop_cause is not None:
+                return results
             if pace_ms:
                 await asyncio.sleep(pace_ms / 1000)
-            results: list[Result] = []
-            for order, arm in enumerate(arms, start=1):
+            for order, arm in enumerate(arm_order(case), start=1):
+                if stop_cause is not None:
+                    break
                 try:
                     result = await _run_arm(
                         client,
@@ -470,14 +504,18 @@ async def replay(
                     )
                 except Exception as exc:
                     result = _error_result(case, arm=arm, order=order, replay_id=replay_id, exc=exc)
+                observe(result)
                 results.append(result)
         for result in results:
             on_result(result)
         return results
 
     async with httpx.AsyncClient(timeout=90, follow_redirects=False, auth=apis_auth()) as client:
-        pairs = await asyncio.gather(*(run_pair(case) for case in cases))
-    return [result for pair in pairs for result in pair]
+        groups = await asyncio.gather(*(run_case(case) for case in cases))
+    finished = [result for group in groups for result in group]
+    if stop_cause is not None:
+        raise ReplayStopped(finished, stop_cause)
+    return finished
 
 
 def _write_private_lines(path: Path, lines: Iterable[str]) -> None:
@@ -521,7 +559,19 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--write-synthetic", type=Path, help="Write 400 labelled synthetic cases and exit"
     )
     parser.add_argument("--synthetic-count", type=int, default=400)
+    parser.add_argument(
+        "--arms",
+        default=",".join(ARMS),
+        help=f"Comma-separated arms to replay, from {', '.join(ARMS)} (default: all)",
+    )
     options = parser.parse_args(argv)
+    options.arms = tuple(arm.strip() for arm in options.arms.split(",") if arm.strip())
+    if (
+        not options.arms
+        or len(set(options.arms)) != len(options.arms)
+        or not set(options.arms) <= set(ARMS)
+    ):
+        parser.error(f"--arms takes distinct names from {', '.join(ARMS)}")
     if options.write_synthetic is None and (
         not options.url or not options.cases or not options.output
     ):
@@ -562,20 +612,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         def write_result(result: Result) -> None:
             output.write(json.dumps(asdict(result), sort_keys=True) + "\n")
 
-        results = asyncio.run(
-            replay(
-                cases,
-                url=url,
-                replay_key=replay_key,
-                replay_id=options.replay_id,
-                concurrency=options.concurrency,
-                pace_ms=options.pace_ms,
-                stream_probe=options.stream_probe,
-                on_result=write_result,
+        try:
+            results = asyncio.run(
+                replay(
+                    cases,
+                    url=url,
+                    replay_key=replay_key,
+                    replay_id=options.replay_id,
+                    concurrency=options.concurrency,
+                    pace_ms=options.pace_ms,
+                    stream_probe=options.stream_probe,
+                    arms=options.arms,
+                    on_result=write_result,
+                )
             )
-        )
+        except ReplayStopped as stopped:
+            print(
+                f"stopped after {TRANSPORT_FAILURE_LIMIT} consecutive transport errors "
+                f"({stopped.cause}); kept {len(stopped.results)} finished arm results"
+            )
+            return 1
     failures = sum(result.error is not None for result in results)
-    print(f"wrote {len(results)} paired arm results with {failures} failures")
+    print(f"wrote {len(results)} arm results with {failures} failures")
     return 1 if failures else 0
 
 
