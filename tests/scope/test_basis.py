@@ -1788,45 +1788,35 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     ],
 )
 @pytest.mark.parametrize(
-    ("variable", "phrase", "quantity", "aid_type"),
+    ("variable", "quantity", "aid_type"),
     [
-        pytest.param("share of aid", "share of aid", None, _TOTAL_ODA, id="worded-share"),
+        pytest.param("share of aid", None, _TOTAL_ODA, id="worded-share"),
         # The payload the planner sent for "What share of G7 ODA was bilateral".
+        pytest.param("share of bilateral ODA", None, _BILATERAL_ODA, id="planner-payload"),
+        # A read quoting the measure, or a word of it, as the base leaves it the measure.
         pytest.param(
-            "share of bilateral ODA",
-            "share of bilateral ODA",
-            None,
-            _BILATERAL_ODA,
-            id="planner-payload",
-        ),
-        # A read quoting the measure itself as the base leaves its words to the measure.
-        pytest.param(
-            "share of bilateral ODA",
             "share of bilateral ODA",
             QuantityOutput(stated_form="share", base_words="bilateral ODA", denominator_index=0),
             _BILATERAL_ODA,
             id="measure-quoted-as-base",
         ),
         pytest.param(
-            "aid in total aid",
+            "share of bilateral ODA",
+            QuantityOutput(stated_form="share", base_words="ODA", denominator_index=0),
+            _BILATERAL_ODA,
+            id="measure-noun-quoted-as-base",
+        ),
+        pytest.param(
             "aid in total aid",
             QuantityOutput(stated_form="share", base_words="total aid", denominator_index=0),
             _TOTAL_ODA,
-            id="stated-share",
+            id="stated-share-on-a-base",
         ),
-        # The operation's phrase covers the whole's words, which stay the base's, so the
-        # stated-words read rates none of them and no part of the whole reads as a
-        # restriction of the aid.
         pytest.param(
-            "aid as a share of aid to all developing countries",
-            "share of aid to all developing countries",
-            QuantityOutput(
-                stated_form="share",
-                base_words="aid to all developing countries",
-                denominator_index=0,
-            ),
+            "aid in total aid",
+            QuantityOutput(stated_form="share"),
             _TOTAL_ODA,
-            id="whole-in-the-words",
+            id="stated-share",
         ),
     ],
 )
@@ -1838,15 +1828,14 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
     option: str,
     provenance: str,
     variable: str,
-    phrase: str,
     quantity: QuantityOutput | None,
     aid_type: str,
 ):
-    """A part a `share_of` operation divides by its whole may name the share in its words
-    ("share of aid") or have the quantity read state it with the whole as its base, and the
-    share and its base are the operation's: the part's series is the aid, a level, so no
-    shape is refused for holding no share, and a donor's window crossing 2018 is counted on
-    the OECD headline per year, or on the basis a carried entry asks for. The answer
+    """A `share_of` whose phrase is the whole variable reads the variable as the share's
+    numerator measure: the share its words or the quantity read name, and any base the read
+    quotes, are the operation's, so the part's series is the aid, a level, and no shape is
+    refused for holding no share. A donor's window crossing 2018 is then counted on the
+    OECD headline per year, or on the basis a carried entry asks for, and the answer
     departs only in leaving the share to its client."""
     _cover(monkeypatch, (*_DAC1_MEMBERS, *_DAC1_BILATERAL), donors=covered)
     entries = (
@@ -1861,7 +1850,7 @@ def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
         if carried is not None
         else None
     )
-    operations = [Operation(verb="share_of", phrase=phrase)]
+    operations = [Operation(verb="share_of", phrase=variable)]
 
     part = _resolve_part(
         ResolveRequest(

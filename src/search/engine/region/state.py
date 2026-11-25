@@ -57,12 +57,15 @@ from search.engine.qualifier_match import (
     read_qualifiers,
 )
 from search.engine.quantity import (
+    SHARE_FORMS,
     DenominatorKind,
     DenominatorRead,
     NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
-    read_forms,
+    quantity_requirement,
+    share_spans_variable,
+    without_forms,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.convertibility import UnitCoverage
@@ -1045,18 +1048,15 @@ class ResolveState:
     # (`phase_rank_bind._role_bearing_outranks`), set by `_phase_prune_and_rank`.
     role_bearing_outranks: bool = False
     # The normalisation this leg names, read from its variable and its sidecar qualifier
-    # phrases less the forms its operations own (`quantity.read_forms`), with the form the
-    # quantity read states joined before admissibility when no phrase named one
-    # (`quantity.with_stated_form`).
+    # phrases (`quantity.quantity_requirement`), with the form the quantity read states
+    # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
-    # What the leg's operations own in its words (`quantity.read_forms`): the forms
-    # `quantity_requirement` drops, the forms a form the quantity read states with no base
-    # drops for, and the character ranges of the variable `share_of` phrases cover, inside
-    # which the quantity read gives a quoted base to the operation
+    # Whether a `share_of` has the whole variable as its phrase
+    # (`quantity.share_spans_variable`). The variable then names the share and its whole,
+    # so the leg reads as the share's numerator measure: `quantity_requirement` drops the
+    # forms a share computes, and the quantity read's share, rate and base are ignored
     # (`phase_rank_bind._read_quantity_answer`).
-    operation_forms: frozenset[NamedNormalisation] = field(init=False)
-    computed_forms: frozenset[NamedNormalisation] = field(init=False)
-    whole_spans: tuple[tuple[int, int], ...] = field(init=False)
+    share_spans_variable: bool = field(init=False)
     # The kind and name of each StatVar denominator the shapes admitted on their measure
     # and roles divide by, read in one batch before the form rule
     # (`phase_rank_bind._read_denominators`). The quantity read lists them
@@ -1077,11 +1077,6 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
-    # The question's words for a base the quantity read quoted inside a `share_of` phrase
-    # (`whole_spans`), the whole the operation divides by, which no denominator of the
-    # leg's series is (`phase_rank_bind._read_quantity_answer`). The words stay the base's,
-    # as a named denominator's do (`base_words`). `None` otherwise.
-    whole_base_words: str | None = None
     # Every name of declared measures the variable holds, partition labels and the quoted base
     # included (`qualifier_match.declared_measures_named`), read once per part by
     # `phase_rank_bind._phase_prune_and_rank`. `named_measures` and the coverage of code terms
@@ -1511,13 +1506,12 @@ class ResolveState:
     identity_entities: list[Entity] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        forms = read_forms(
-            self.variable, (coded.phrase for coded in self.qualifiers or ()), self.operations
+        self.quantity_requirement = quantity_requirement(
+            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
         )
-        self.quantity_requirement = forms.requirement
-        self.operation_forms = forms.dropped
-        self.computed_forms = forms.computed
-        self.whole_spans = forms.whole_spans
+        self.share_spans_variable = share_spans_variable(self.variable, self.operations)
+        if self.share_spans_variable:
+            self.quantity_requirement = without_forms(self.quantity_requirement, SHARE_FORMS)
         self.frame = door_frame(
             door=self.door,
             variable=self.variable,
@@ -1535,15 +1529,6 @@ class ResolveState:
             operations=self.operations,
             open_axes=self.open_axes,
         )
-
-    @property
-    def base_words(self) -> str | None:
-        """The question's words for the base its quantity divides by: the named
-        denominator's, else the operation's whole's (`whole_base_words`). Readers of the
-        variable leave them to the base."""
-        if self.named_denominator is not None:
-            return self.named_denominator.base_words
-        return self.whole_base_words
 
     @property
     def undirected_axis(self) -> RoleAxis | None:

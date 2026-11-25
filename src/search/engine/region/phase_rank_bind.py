@@ -114,6 +114,7 @@ from search.engine.qualifier_match import (
 )
 from search.engine.quantity import (
     PER_HEAD_RATE_BASE_RE,
+    SHARE_FORMS,
     DenominatorKind,
     DenominatorRead,
     NamedDenominator,
@@ -443,14 +444,15 @@ def _named_measure_nouns(
     declared acronym of one (`CodeIndex.variable_aliases`, "GNI"), outside every longer
     occurrence of a declared name, so the longest declared name wins its words, and
     outside the spans the part's entities own (`_entity_spans`) and the base the quantity
-    read quoted (`ResolveState.base_words`). "GDP" in "health expenditure as a
+    read quoted (`ResolveState.named_denominator`). "GDP" in "health expenditure as a
     share of GDP" names no noun and "health expenditure" does; "GDP growth" names the noun
     "GDP growth" and not "GDP", and "GDP" names its three nouns at once. Admissibility
     judges each shape against them (`admissibility.judge_pinned_parts`)."""
     owned = _entity_spans(state, tokenize(state.variable))
-    if state.base_words is not None:
+    if state.named_denominator is not None:
         owned += token_occurrences(
-            tokenize(state.variable.replace("-", " ")), state.base_words.replace("-", " ")
+            tokenize(state.variable.replace("-", " ")),
+            state.named_denominator.base_words.replace("-", " "),
         )
     nouns = frozenset(get_measure_index().nouns)
     spans: list[NamedMeasure] = []
@@ -538,42 +540,36 @@ def _read_quantity_answer(
 ) -> bool:
     """Record what the quantity read found the question asks for: the form it states,
     joined to the requirement when no phrase named one (`quantity.with_stated_form`), and
-    the denominator it chose from ``denominators``, the last index meaning "none of
-    these". The denominator stands only when the read quotes the phrase's words that name
-    it (`_names_base`, over `shapes`, the shapes whose denominators the list holds);
-    otherwise the phrase names no base, whatever the index. A stated rate or share is a
-    division by a base, so a quote that names none drops it too: "debt service to private
-    creditors" read as a rate on "private creditors", a qualifier, states no form. An
-    unquoted rate or share stands, since a share of people quotes no base by design ("HIV
-    prevalence among young women" reads as a share), as does a per-person, per-head or
-    per-area form.
-
-    A `share_of` owns the words of its phrase in the variable (`ResolveState.whole_spans`).
-    A quoted base that overlaps them is the whole the operation divides by: it names no
-    denominator of the part's series, takes a stated rate or share with it, and its words
-    stay the base's (`ResolveState.whole_base_words`). A quote there that leaves no word of
-    the variable outside it beyond form and function words (`_quotes_the_measure`) is the
-    measure, and names no base. A base outside them is the series' denominator. A stated
-    form with no base leaves the requirement where an operation whose phrase the variable
-    holds computes it and no word outside the operations' words names it
-    (`ResolveState.computed_forms`).
-
-    When the denominator read failed (``state.denominator_read_failure``), a stated form
-    or index the series keeps, "none of these" included, would be judged on reads that are
-    missing, so the read's error is raised before any other check. Return whether the
-    output is well formed: a grounded index outside the list, the operation's whole's
-    included, is a malformed output, as an out-of-range shape index is, and the part
-    refuses ``variable_not_resolved``.
+    the denominator it chose from ``denominators``, the last index meaning "none of these".
+    The denominator stands only when the read quotes the phrase's words that name it
+    (`_names_base`, over `shapes`, the shapes whose denominators the list holds); otherwise the phrase names no base, whatever the index. A stated
+    rate or share is a division by a base, so a quote that names none drops it too:
+    "debt service to private creditors" read as a rate on "private creditors", a
+    qualifier, states no form. An unquoted rate or share stands, since a share of people
+    quotes no base by design ("HIV prevalence among young women" reads as a share), as
+    does a per-person, per-head or per-area form. A part whose `share_of` spans the whole
+    variable (`ResolveState.share_spans_variable`) reads as the share's numerator measure,
+    so the read's share or rate and any base it quotes are the operation's and are not
+    read. Return whether the output is well formed: a grounded index outside the list is a
+    malformed output, as an out-of-range shape index is, and the part refuses
+    ``variable_not_resolved``. When the denominator read failed
+    (``state.denominator_read_failure``), a stated form or any grounded index, "none of
+    these" included, would be judged on reads that are missing, so the read's error is
+    raised.
     """
     index = quantity.denominator_index
     stated_form = quantity.stated_form
-    base_words = quantity.base_words or ""
-    grounded = _names_base(state, quantity.base_words, shapes)
-    whole = grounded and _in_whole_spans(state, base_words)
-    if whole and _quotes_the_measure(state, base_words):
-        logger.info("quantity read quotes the measure %r as the base; no base read", base_words)
-        grounded = whole = False
-    if not grounded:
+    if state.share_spans_variable:
+        if index is not None or stated_form in SHARE_FORMS:
+            logger.info(
+                "quantity read states %s on %r under a share_of spanning the variable; not read",
+                stated_form,
+                quantity.base_words,
+            )
+        index = None
+        if stated_form in SHARE_FORMS:
+            stated_form = None
+    if not _names_base(state, quantity.base_words, shapes):
         if index is not None:
             logger.info(
                 "quantity read names denominator_index %d on ungrounded words %r; no base read",
@@ -588,25 +584,9 @@ def _read_quantity_answer(
                 quantity.base_words,
             )
             stated_form = None
-        if stated_form in state.computed_forms:
-            logger.info("quantity read states %s, which the part's operation owns", stated_form)
-            stated_form = None
-    elif whole and stated_form in ("rate", "share"):
-        stated_form = None
     failure = state.denominator_read_failure
-    if failure is not None and (stated_form is not None or (index is not None and not whole)):
+    if failure is not None and (stated_form is not None or index is not None):
         raise failure
-    if index is not None and not 0 <= index <= len(denominators):
-        logger.warning(
-            "quantity read returned denominator_index %d outside %d entries",
-            index,
-            len(denominators) + 1,
-        )
-        return False
-    if whole:
-        logger.info("quantity read quotes %r inside the part's share_of phrase", base_words)
-        state.whole_base_words = base_words
-        index = None
     requirement = with_stated_form(state.quantity_requirement, stated_form)
     if requirement != state.quantity_requirement:
         state.quantity_requirement = requirement
@@ -614,42 +594,19 @@ def _read_quantity_answer(
         state.denominator_kinds = _kinds_of(state.denominator_reads)
     if index is None:
         return True
-    ref = denominators[index] if index < len(denominators) else None
-    state.named_denominator = NamedDenominator(ref=ref, base_words=base_words)
-    return True
-
-
-def _in_whole_spans(state: ResolveState, words: str) -> bool:
-    """Whether an occurrence of `words` in the variable, hyphens read as spaces, overlaps
-    the words a `share_of` phrase covers (`ResolveState.whole_spans`)."""
-    tokens = tokenize(state.variable.replace("-", " "))
-    return any(
-        _ranges_overlap(occurrence, span)
-        for occurrence in token_occurrences(tokens, words.replace("-", " "))
-        for span in state.whole_spans
-    )
-
-
-def _quotes_the_measure(state: ResolveState, words: str) -> bool:
-    """Whether every occurrence of `words` in the variable leaves outside it, and outside
-    the spans the part's entities own (`_entity_spans`), only form and function words
-    (`quantity.names_only_form`): "bilateral ODA" in "share of bilateral ODA" is the
-    measure the share is of, and no base."""
-    tokens = tokenize(state.variable.replace("-", " "))
-    owned = _entity_spans(state, tokenize(state.variable))
-    occurrences = token_occurrences(tokens, words.replace("-", " "))
-    return bool(occurrences) and all(
-        names_only_form(
-            " ".join(
-                token.text
-                for token in tokens
-                if token.kind == "word"
-                and not _ranges_overlap((token.start, token.end), occurrence)
-                and not any(_ranges_overlap((token.start, token.end), span) for span in owned)
-            )
+    base_words = quantity.base_words or ""
+    if 0 <= index < len(denominators):
+        state.named_denominator = NamedDenominator(ref=denominators[index], base_words=base_words)
+    elif index == len(denominators):
+        state.named_denominator = NamedDenominator(ref=None, base_words=base_words)
+    else:
+        logger.warning(
+            "quantity read returned denominator_index %d outside %d entries",
+            index,
+            len(denominators) + 1,
         )
-        for occurrence in occurrences
-    )
+        return False
+    return True
 
 
 def _slot_defaults(shapes: Sequence[ShapeDraft]) -> list[SlotDefault]:
@@ -3443,9 +3400,8 @@ def _coverage_records(
     count of households, and a noun naming a role on an axis the shape declares
     (`role_text.role_axis_for_text`), so "creditors" is read on debt by creditor. The form
     wording (`_form_ranges`: "rate", "share", "percent", "per capita") and the question's
-    words for the base the quantity read quoted (`ResolveState.base_words`), a denominator
-    or the whole an operation divides by, are read, since the materialise gate holds the
-    elected shape to the form and the denominator
+    words for the denominator the quantity read names (`NamedDenominator.base_words`) are
+    read, since the materialise gate holds the elected shape to both
     (`quantity.serves_quantity`) and states a denominator it cannot verify
     (`denominator_unverified`). So are the words of each value the bind
     drafted on a slot the shape lacks, which each answer is judged on
@@ -3781,14 +3737,14 @@ def _free_readers(
     texts, the spans of their door roles and the ranges naming a party the part binds
     (`ResolveState.party_alias_spans`), its operation phrases, its unit text, the
     series code it names, the form wording (`_form_ranges`), the question's words for the
-    base the quantity read quoted (`ResolveState.base_words`), the words
-    `_conversational_words` accepts for
+    denominator the quantity read names, the words `_conversational_words` accepts for
     `shape`, on a shape measuring a count (`shape.measures_count`) the nouns for what it
     counts (`COUNT_WORDS`) and, on one counting persons (`shape.counts_persons`), the nouns
     for people (`PERSON_WORDS`), and a noun naming a role on an axis `shape` declares
     (`role_text.role_axis_for_text`). The coverage rule reads them after the bind
     (`_coverage_reading`), and the nomination of each menu shape's words before it
     (`_nominated_words`)."""
+    named_base = state.named_denominator
     counts = measures_count(shape)
     persons = counts_persons(shape)
     try:
@@ -3821,7 +3777,7 @@ def _free_readers(
             _occurrences(tokens, [state.source_code.code if state.source_code else None]),
         ),
         form=("form", _form_ranges(state.variable, tokens)),
-        base=("base", _occurrences(tokens, [state.base_words])),
+        base=("base", _occurrences(tokens, [named_base.base_words if named_base else None])),
         conversational=("conversational", _conversational_words(state, index, shape)),
         count=(
             "count",

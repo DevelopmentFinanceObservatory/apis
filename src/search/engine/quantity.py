@@ -33,15 +33,14 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from code_index.tokens import tokenize
+from code_index.tokens import word_tokens
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.measure_verdict import shape_pairs
-from search.engine.qualifier_match import token_occurrences
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.bound_values import ratio_twins_of, shape_five_tuple
 from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
 from search.engine.shape import ShapeDraft, counts_persons, is_role_bearing, measures_count
-from search.models import GraphRef, Operation, OperationVerb, QuantityForm
+from search.models import GraphRef, Operation, QuantityForm
 from unit_words.unit_class import is_per_head_denominator
 
 if TYPE_CHECKING:
@@ -456,113 +455,27 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
     )
 
 
-# The forms each operation verb computes over a part's data: `share_of` divides the part
-# by its whole, a share or a ratio of it, and `growth` computes a rate of change.
-_OPERATION_FORMS: Mapping[OperationVerb, frozenset[NamedNormalisation]] = {
-    "share_of": frozenset({"share", "rate"}),
-    "growth": frozenset({"rate"}),
-}
-
-# The words of a growth's phrase that name its change: "growth rate", "rate of change",
-# "percentage change", "% growth". A growth owns these alone, so a share or rate its phrase
-# names beside them ("percentage change in the share of women") stays the series'.
-_GROWTH_WORDING_RE = re.compile(
-    r"\b(?:growth\s+rates?|rates?\s+of\s+(?:growth|change|increase|decrease))\b"
-    r"|(?:\bpercent(?:age)?|%)\s*(?:points?\s+)?(?:change|growth|increase|decrease|rise|fall)\b"
-)
+# The forms a `share_of` computes: the share or ratio of its whole.
+SHARE_FORMS: frozenset[NamedNormalisation] = frozenset({"share", "rate"})
 
 
-@dataclass(frozen=True, slots=True)
-class FormReading:
-    """The forms a part's words name, read with its operations (`read_forms`): the
-    `requirement` its series is held to, the `dropped` forms its operations' words own, the
-    `computed` forms a form the quantity read states with no base is dropped for, and the
-    `whole_spans`, the character ranges of the variable `share_of` phrases cover, inside
-    which a quoted base is the operation's whole."""
-
-    requirement: QuantityRequirement
-    dropped: frozenset[NamedNormalisation]
-    computed: frozenset[NamedNormalisation]
-    whole_spans: tuple[tuple[int, int], ...]
-
-
-def read_forms(
-    variable: str, qualifier_phrases: Iterable[str], operations: Iterable[Operation]
-) -> FormReading:
-    """The requirement of a part whose variable is `variable`, with `qualifier_phrases`
-    beside it (`quantity_requirement`), less the forms its `operations` own.
-
-    An operation's phrase counts where it occurs in the variable
-    (`qualifier_match.token_occurrences`, hyphens read as spaces); a phrase the variable
-    does not hold owns nothing. A `share_of` owns every word of its phrase, and a `growth`
-    only the words naming its change (`_GROWTH_WORDING_RE`). The series owns every other
-    word. A form the owning operation computes (`_OPERATION_FORMS`), or a growth's change
-    wording names, is the operation's when a word it owns names it and no other word, nor a
-    qualifier phrase, does, so it leaves the requirement. Under `share_of` on "share of
-    GNI", "ODA as a share of GNI" asks for ODA; under `share_of` on "relative to",
-    "unemployment rate of women relative to men" keeps the rate. A form the quantity read
-    states with no base is the operation's on the same terms (`computed`): one an operation
-    whose phrase occurs computes and no word outside the owned words names."""
-    qualifier_phrases = tuple(qualifier_phrases)
-    requirement = quantity_requirement([variable, *qualifier_phrases])
-    spaced = variable.replace("-", " ")
-    lower = spaced.casefold()
-    tokens = tokenize(spaced)
-    owned: list[tuple[tuple[int, int], frozenset[NamedNormalisation]]] = []
-    computes: set[NamedNormalisation] = set()
-    whole_spans: list[tuple[int, int]] = []
-    for operation in operations:
-        forms = _OPERATION_FORMS.get(operation.verb)
-        if forms is None:
-            continue
-        for start, end in token_occurrences(tokens, operation.phrase.replace("-", " ")):
-            computes.update(forms)
-            if operation.verb == "share_of":
-                owned.append(((start, end), forms))
-                whole_spans.append((start, end))
-                continue
-            for match in _GROWTH_WORDING_RE.finditer(lower, start, end):
-                named = query_normalisation(match.group(), strong=False)
-                computes.update(named)
-                owned.append((match.span(), forms | named))
-    if not owned and not computes:
-        return FormReading(
-            requirement=requirement, dropped=frozenset(), computed=frozenset(), whole_spans=()
-        )
-    inside: set[NamedNormalisation] = set()
-    for (start, end), forms in owned:
-        inside |= forms & query_normalisation(spaced[start:end], strong=False)
-    outside: set[NamedNormalisation] = set()
-    for text in (*_outside(spaced, (span for span, _ in owned)), *qualifier_phrases):
-        outside |= query_normalisation(text, strong=False)
-    dropped = frozenset(inside - outside)
-    return FormReading(
-        requirement=without_forms(requirement, dropped),
-        dropped=dropped,
-        computed=frozenset(computes - outside),
-        whole_spans=tuple(sorted(set(whole_spans))),
+def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool:
+    """Whether a `share_of` among `operations` has `variable` itself as its phrase, its
+    words equal once casing and spacing are set aside (`code_index.tokens.word_tokens`).
+    The variable then names the share, and the part reads as the share's numerator
+    measure: "share of bilateral ODA" asks for bilateral ODA."""
+    words = [token.text.casefold() for token in word_tokens(variable)]
+    return any(
+        operation.verb == "share_of"
+        and [token.text.casefold() for token in word_tokens(operation.phrase)] == words
+        for operation in operations
     )
-
-
-def _outside(text: str, spans: Iterable[tuple[int, int]]) -> list[str]:
-    """The stretches of `text` outside `spans`, each read apart, so no form wording forms
-    across a removed span."""
-    stretches: list[str] = []
-    at = 0
-    for start, end in sorted(spans):
-        if start > at:
-            stretches.append(text[at:start])
-        at = max(at, end)
-    stretches.append(text[at:])
-    return [stretch for stretch in stretches if stretch.strip()]
 
 
 def without_forms(
     requirement: QuantityRequirement, forms: frozenset[NamedNormalisation]
 ) -> QuantityRequirement:
-    """`requirement` without `forms`, the forms the part's operations own (`read_forms`)."""
-    if not forms:
-        return requirement
+    """`requirement` without `forms`."""
     return QuantityRequirement(named=requirement.named - forms, framing=requirement.framing - forms)
 
 

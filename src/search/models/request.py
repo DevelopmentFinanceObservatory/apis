@@ -119,9 +119,9 @@ class Operation(StrictModel):
         max_length=_PARSED_MAX_OPERATION_PHRASE_CHARS,
         description=(
             "the query wording that asks for the operation, e.g. 'top 5 donors'; one line "
-            "with no control characters or line separators, and not blank. Words of the "
-            "phrase that occur in the part's variable_text are the operation's, and the "
-            "series is read from the rest"
+            "with no control characters or line separators, and not blank. A share_of "
+            "whose phrase is the part's whole variable_text reads the variable as the "
+            "share's numerator measure"
         ),
     )
     over: OperationAxis | None = Field(
