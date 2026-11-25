@@ -17,6 +17,7 @@ import pytest
 
 from artifact_publication.jobs import LEASE_FILE, Ingestion, acquire_lease
 from dc_graph import UNRESOLVED_NODE, GraphClient, GraphReadError, SubjectPage
+from materialise.provenance_doc import read_source_citations
 from origin_catalogue import (
     BASE,
     DFO,
@@ -31,7 +32,7 @@ from origin_catalogue import (
 )
 from origin_catalogue import job as catalogue_job
 from origin_catalogue.artifact import load_catalogue, read_un_mirror
-from origin_catalogue.catalogue import Licence, SourceDocumentation
+from origin_catalogue.catalogue import Licence, SourceDocumentation, partial_period_of
 from origin_catalogue.enumerate import EnumerationError
 from origin_catalogue.graph import UN_BASE_URL
 from origin_catalogue.registry import parse_registry
@@ -67,6 +68,8 @@ WHO_GROUP = "undata/g/who"
 WDI_DATASET = "dc/d/WorldBank_WorldDevelopmentIndicators"
 CRS_DATASET = "dc/d/OECD_CreditorReportingSystem"
 UNSD = "undata/d/UNSD"
+UN = "undata/s/UN"
+WHO_DESCRIPTION = "Health statistics of WHO member states."
 
 _UN_PROBE = "undata/who/MORT_U5_RATE"
 
@@ -266,8 +269,12 @@ def mixer() -> FakeGraph:
 def un_deployment() -> FakeGraph:
     return FakeGraph(
         arcs={
-            WHO: _provenance("https://www.who.int/data", name="WHO", part_of=UNSD),
+            WHO: {
+                **_provenance("https://www.who.int/data", name="WHO", part_of=UNSD, source=UN),
+                "description": (WHO_DESCRIPTION,),
+            },
             UNSD: {"typeOf": ("Dataset",), "name": ("United Nations Statistics Division",)},
+            UN: {"typeOf": ("Source",), "name": ("United Nations",)},
             WHO_GROUP: {"typeOf": ("StatVarGroup",), "name": ("WHO (UN Data)",)},
         },
         refused=frozenset({"country/GRC", "country/ESH"}),
@@ -539,6 +546,8 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
             source_url="https://www.oecd.org/crs",
         ),
         IDS: CardFacts(source_url="https://datacatalog.worldbank.org/0038015"),
+        # A UN agency is its own entry, with the facts the UN deployment states.
+        WHO: CardFacts(description=WHO_DESCRIPTION, source_url="https://www.who.int/data"),
     }
     assert rows[CRS].licence == Licence(
         type="CreativeCommonsAttributionLicense",
@@ -560,6 +569,7 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
         ),
         # The graph holds no node for IDS's Source, so it names no publisher.
         IDS: SourceDocumentation(provenances=(IDS,)),
+        WHO: SourceDocumentation(provenances=(WHO,), publisher="United Nations"),
     }
     assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE, POPULATION}
     assert snapshot.manifest.overlaps == (POPULATION, IDS_VARIABLE)
@@ -581,6 +591,23 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
     assert snapshot.manifest.un_carried_forward is None
     assert builder.calls[0]["provenances"] == [OECD_MAIN, WDI]
     assert not (root(tmp_path) / LEASE_FILE).exists()
+
+
+def test_a_published_un_row_is_documented_as_a_base_row_is(tmp_path, capsys):
+    """A UN citation carries its entry's documentation, and a UN source whose import marks no
+    partial period is judged complete, where both were undocumented before UN facts."""
+    run(tmp_path)
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    graph = un_deployment()
+
+    [citation] = read_source_citations(graph, [WHO], catalogue=snapshot, documented=True).values()
+
+    assert graph.calls == []
+    assert citation.documentation is not None
+    assert citation.documentation.provenances == (WHO,)
+    assert citation.documentation.source_url == "https://www.who.int/data"
+    assert citation.documentation.publisher == "United Nations"
+    assert partial_period_of(snapshot, WHO) is None
 
 
 def test_the_build_holds_every_node_a_resolver_index_names(tmp_path, capsys):
@@ -849,6 +876,12 @@ def test_a_un_read_failure_carries_the_un_rows_and_refused_places_forward(
     snapshot = load_catalogue(f"file://{tmp_path}")
     assert snapshot.build_id == published["build_id"] != first
     assert snapshot.tables.provenances[WHO].url == "https://www.who.int/data"
+    assert snapshot.tables.dataset_facts[WHO] == CardFacts(
+        description=WHO_DESCRIPTION, source_url="https://www.who.int/data"
+    )
+    assert snapshot.tables.source_documentation[WHO] == SourceDocumentation(
+        provenances=(WHO,), publisher="United Nations"
+    )
     assert snapshot.un_blocked_places == {"country/GRC"}
     note = snapshot.manifest.un_carried_forward
     assert note is not None
@@ -958,6 +991,26 @@ label = "UNICEF"
     assert rows[WHO].segment == "who"
     # An agency the carried build never read stays out until the UN answers.
     assert "undata/p/UNICEF" not in rows
+
+
+def test_a_carried_stage_holds_facts_for_the_rows_it_keeps_alone(tmp_path, capsys):
+    """An agency the registry dropped during an outage takes its facts with it, so
+    the facts tables match the carried rows, as `CatalogueTables` requires."""
+    run(tmp_path)
+    capsys.readouterr()
+    uri = f"file://{tmp_path}"
+    carried = catalogue_job._carried_un(uri, *artifact.load_tables(uri))
+    assert WHO in carried.dataset_facts
+    refusals: list[catalogue_job.Refusal] = []
+
+    stage = carried.stage(
+        parse_registry(REGISTRY.replace(WHO, "undata/p/UNICEF").encode()),
+        reason="down",
+        refusals=refusals,
+    )
+
+    assert (stage.rows, stage.dataset_facts, stage.source_documentation) == ({}, {}, {})
+    assert [(r.kind, r.subject) for r in refusals] == [("un_carried_agency_mismatch", "who")]
 
 
 def test_a_un_read_failure_with_nothing_published_fails_the_build(tmp_path, capsys):
@@ -1609,11 +1662,13 @@ def test_a_variable_spanner_declares_no_node_for_stays_dfo_with_base_arcs(tmp_pa
 
 def _as_format_3(build: Path) -> None:
     """Rewrites `build` as a format-3 build of an earlier ISO week: no arc
-    tables, no source documentation, no licence on any provenance row and no
-    ingestion in its manifest."""
+    tables, no source documentation, no UN dataset facts, no licence on any
+    provenance row and no ingestion in its manifest."""
     manifest = json.loads((build / "manifest.json").read_text())
     for logical in ("dfo_arcs", "base_arcs", "schema_arcs", "arc_targets", "source_documentation"):
         (build / manifest["files"].pop(logical)).unlink()
+    facts = build / manifest["files"]["dataset_facts"]
+    facts.write_text(json.dumps([e for e in json.loads(facts.read_text()) if e["ref"] != WHO]))
     provenances = build / manifest["files"]["provenances"]
     rows = json.loads(provenances.read_text())
     for row in rows:
@@ -1665,6 +1720,9 @@ def test_carry_un_from_takes_a_format_3_build_s_un_stage_without_reading_the_un(
     snapshot = load_catalogue(f"file://{tmp_path / 'new'}")
     assert snapshot.un_blocked_places == {"country/GRC"}
     assert snapshot.tables.provenances[WHO].segment == "who"
+    # A build before format 7 holds no UN facts, so the carried row reads as undocumented.
+    assert snapshot.tables.dataset_facts[WHO] == CardFacts()
+    assert snapshot.tables.source_documentation[WHO] == SourceDocumentation()
     note = snapshot.manifest.un_carried_forward
     assert note is not None
     assert note.from_build == build.name
@@ -1888,7 +1946,7 @@ def test_a_row_belongs_to_its_first_parent_typed_dataset(tmp_path, capsys):
     # A parent the graph does not hold is no Dataset, so the row is its own entry.
     assert rows[OECD_MAIN].dataset is None
     assert rows[OECD_MAIN].name == OECD_MAIN
-    assert set(tables.dataset_facts) == {WDI_DATASET, OECD_MAIN, CRS_DATASET, IDS}
+    assert set(tables.dataset_facts) == {WDI_DATASET, OECD_MAIN, CRS_DATASET, IDS, WHO}
 
 
 def test_a_dfo_provenance_under_an_unregistered_source_takes_the_graph_label(tmp_path, capsys):

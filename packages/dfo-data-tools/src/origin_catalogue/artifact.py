@@ -22,8 +22,9 @@ them with `publish_build`; dfo-apis loads the published build with
 - `scan.json`: the ordered scan places and the levels scanned per source.
 - `un.json`: `blocked_places`, the places the UN front door refuses to have
   named in an observation GET.
-- `dataset_facts.json`: one object per DFO and base source-index entry
-  (`catalogue.entry_ref`): its `ref` and its `CardFacts` members.
+- `dataset_facts.json`: one object per source-index entry
+  (`catalogue.entry_ref`), a UN agency's included: its `ref` and its
+  `CardFacts` members.
 - `source_documentation.json`: one object per entry of `dataset_facts.json`:
   its `ref` and its `SourceDocumentation` members, `documents` an object from
   document property to its list of stored values.
@@ -97,7 +98,7 @@ import json
 import logging
 import sys
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from typing import Any, Final
@@ -123,6 +124,7 @@ from origin_catalogue.catalogue import (
     SourceDocumentation,
     SourceRef,
     UnTables,
+    entry_ref,
 )
 from origin_catalogue.families import (
     FamilyKey,
@@ -1006,12 +1008,16 @@ def _un_mirror_from(
 
 @dataclass(frozen=True, slots=True)
 class BuildUnTables:
-    """One build directory's UN rows, the places the UN front door refused
-    it, and its UN tables, with the build's id and format."""
+    """One build directory's UN rows, the card facts and documentation facts
+    it holds for their entries (none before format 7), the places the UN
+    front door refused it, and its UN tables, with the build's id and
+    format."""
 
     build_id: str
     format_version: int
     rows: Mapping[str, ProvenanceRow]
+    dataset_facts: Mapping[str, CardFacts]
+    source_documentation: Mapping[str, SourceDocumentation]
     blocked_places: frozenset[str]
     mirror: UnMirror
 
@@ -1023,7 +1029,10 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
     check. `un.json` and the five UN table files have kept their encoding
     since format 3, and so have the UN rows of `provenances.json`, apart from
     the empty `licence` format 4 added to every row, which a UN row decodes
-    to whether or not its build wrote one. Refuses, with
+    to whether or not its build wrote one. The entries of
+    `dataset_facts.json` and `source_documentation.json` keyed by a UN row's
+    entry ref are read too; a build before format 7 holds none, and a build
+    without either file reads as holding none. Refuses, with
     `CatalogueArtifactError`, a missing or malformed file, UN tables breaking
     `UnMirror`'s invariants or holding a variable no agency's id prefix
     starts, and UN tables whose row counts or agency counts disagree with the
@@ -1059,6 +1068,11 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
             if item["data_commons"] == UN_SYSTEM.id
         )
         blocked = frozenset(_string(place) for place in json.loads(read("un"))["blocked_places"])
+        refs = {entry_ref(row) for row in un_rows.values()}
+        dataset_facts = _decode_dataset_facts(_un_entries(read, "dataset_facts", files, refs))
+        documentation = _decode_source_documentation(
+            _un_entries(read, "source_documentation", files, refs)
+        )
     except (ValueError, KeyError, TypeError) as exc:
         raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
     mirror = decode_un_mirror(
@@ -1078,9 +1092,22 @@ def read_build_un_tables(build_uri: str) -> BuildUnTables:
         build_id=build_id,
         format_version=format_version,
         rows=un_rows,
+        dataset_facts=dataset_facts,
+        source_documentation=documentation,
         blocked_places=blocked,
         mirror=mirror,
     )
+
+
+def _un_entries(
+    read: Callable[[str], bytes], logical: str, files: Mapping[str, str], refs: set[str]
+) -> list[Any]:
+    """The items of the JSON list file `logical` whose `ref` is in `refs`, so
+    the current format's decoder reads them whatever the format of the
+    file's other items. Empty when the build has no such file."""
+    if logical not in files:
+        return []
+    return [item for item in json.loads(read(logical)) if item["ref"] in refs]
 
 
 def read_arc_tables(base_uri: str, manifest: CatalogueManifest) -> ArcTables:
@@ -1456,8 +1483,10 @@ def _decode_tables(files: Mapping[str, bytes], *, label: str) -> CatalogueTables
             topics=_decode_topics(files[TOPICS_FILE]),
             scan_places=scan_places,
             scan_levels=scan_levels,
-            dataset_facts=_decode_dataset_facts(files[DATASET_FACTS_FILE]),
-            source_documentation=_decode_source_documentation(files[SOURCE_DOCUMENTATION_FILE]),
+            dataset_facts=_decode_dataset_facts(json.loads(files[DATASET_FACTS_FILE])),
+            source_documentation=_decode_source_documentation(
+                json.loads(files[SOURCE_DOCUMENTATION_FILE])
+            ),
             un_blocked_places=frozenset(
                 _string(place) for place in json.loads(files[UN_FILE])["blocked_places"]
             ),
@@ -1537,9 +1566,9 @@ def _provenance_rows(items: Iterable[Mapping[str, Any]]) -> dict[str, Provenance
     return rows
 
 
-def _decode_dataset_facts(raw: bytes) -> dict[str, CardFacts]:
+def _decode_dataset_facts(items: Iterable[Any]) -> dict[str, CardFacts]:
     facts: dict[str, CardFacts] = {}
-    for item in json.loads(raw):
+    for item in items:
         ref = _string(item["ref"])
         if ref in facts:
             raise CatalogueTableError(f"dataset facts for {ref!r} appear twice")
@@ -1553,9 +1582,9 @@ def _decode_dataset_facts(raw: bytes) -> dict[str, CardFacts]:
     return facts
 
 
-def _decode_source_documentation(raw: bytes) -> dict[str, SourceDocumentation]:
+def _decode_source_documentation(items: Iterable[Any]) -> dict[str, SourceDocumentation]:
     documentation: dict[str, SourceDocumentation] = {}
-    for item in json.loads(raw):
+    for item in items:
         ref = _string(item["ref"])
         if ref in documentation:
             raise CatalogueTableError(f"source documentation for {ref!r} appears twice")

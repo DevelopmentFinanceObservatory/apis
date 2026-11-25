@@ -117,7 +117,12 @@ def _catalogue(*, un_system_enabled: bool = True, build_id: str | None = None) -
         un_mirror=un_mirror(
             _UN_VARIABLES, excluded={"undata/WHO/SV_EXCLUDED": "undata/WHO/SERIES_X"}
         ),
-        dataset_facts={_WHO: CardFacts(description="Health statistics."), _WB: CardFacts()},
+        dataset_facts={
+            _WHO: CardFacts(description="Health statistics."),
+            _WB: CardFacts(),
+            _UN_WHO: CardFacts(description="WHO's own statistics."),
+            _UN_ILO: CardFacts(),
+        },
         un_system_enabled=un_system_enabled,
         build_id=build_id,
     )
@@ -192,14 +197,15 @@ def test_a_source_scope_changes_nothing_in_the_document(origin) -> None:
 
 
 def test_the_un_document_counts_each_agency_variable() -> None:
-    """The ILO row holds no variable, so it has no entry, and UN rows carry no card facts."""
+    """The ILO row holds no variable, so it has no entry, and a UN row's description is its
+    entry's card facts', as a base row's is."""
     entries = _entries(_catalogue(), "un_system")
 
     assert list(entries) == [_UN_WHO]
     who = entries[_UN_WHO]
     assert (who["label"], who["description"], who["stat_var_count"]) == (
         "World Health Organization",
-        None,
+        "WHO's own statistics.",
         2,
     )
     assert [p["examples"] for p in who["patterns"]] == [["undata/WHO/SV_B"], ["undata/WHO/SV_A"]]
