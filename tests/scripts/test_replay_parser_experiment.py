@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -224,7 +225,7 @@ def test_replay_pairs_hold_one_slot_for_both_arms(monkeypatch, concurrency, over
 
     results = _replay(["one", "two", "three"], concurrency=concurrency)
 
-    assert len(results) == 6
+    assert len(results) == 3 * len(m.ARMS)
     # Another case starting between a pair's first start and last finish means overlap.
     interleaved = False
     for case_id in ("one", "two", "three"):
@@ -232,6 +233,87 @@ def test_replay_pairs_hold_one_slot_for_both_arms(monkeypatch, concurrency, over
         window = events[indexes[0] : indexes[-1] + 1]
         interleaved |= any(c != case_id for _, c in window)
     assert interleaved is overlap
+
+
+def test_replay_runs_each_arm_once_per_case_in_an_order_that_varies(monkeypatch):
+    started: list[tuple[str, str]] = []
+
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        started.append((case.case_id, arm))
+        return _result(case.case_id, arm, order, replay_id)
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+    case_ids = [f"case-{n}" for n in range(12)]
+
+    results = _replay(case_ids, concurrency=1)
+
+    orders = {c: tuple(a for cc, a in started if cc == c) for c in case_ids}
+    assert all(sorted(order) == sorted(m.ARMS) for order in orders.values())
+    assert len(results) == 3 * len(case_ids)
+    assert len(set(orders.values())) > 1
+    assert len({order[0] for order in orders.values()}) > 1
+    assert orders == {
+        c: tuple(r.arm for r in sorted(results, key=lambda r: r.order) if r.case_id == c)
+        for c in case_ids
+    }
+
+
+def test_replay_stops_sending_after_consecutive_transport_errors(monkeypatch):
+    calls: list[str] = []
+    streamed: list[m.Result] = []
+
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        calls.append(case.case_id)
+        result = _result(case.case_id, arm, order, replay_id)
+        if case.case_id == "ok":
+            return result
+        return replace(result, status_code=None, error="ConnectError: refused")
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+
+    with pytest.raises(m.ReplayStopped) as stopped:
+        _replay(["ok", "a", "b", "c", "d"], concurrency=1, on_result=streamed.append)
+
+    assert len(calls) == 3 + m.TRANSPORT_FAILURE_LIMIT
+    assert len(stopped.value.results) == len(calls)
+    assert streamed == stopped.value.results
+    assert stopped.value.cause == "ConnectError: refused"
+
+
+def test_an_http_status_failure_resets_the_transport_error_count(monkeypatch):
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        result = _result(case.case_id, arm, order, replay_id)
+        if order == 2:
+            return replace(result, error="HTTP 503")
+        return replace(result, status_code=None, error="ConnectError: refused")
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+
+    assert len(_replay(["a", "b", "c", "d"], concurrency=1)) == 12
+
+
+def test_main_exits_non_zero_when_the_run_stops(monkeypatch, tmp_path):
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text("".join(json.dumps({"id": f"c{n}", "query": "q"}) + "\n" for n in range(4)))
+    output = tmp_path / "out.jsonl"
+
+    async def fake_run_arm(_client, *, case, arm, order, replay_id, **_kwargs):
+        result = _result(case.case_id, arm, order, replay_id)
+        return replace(result, status_code=None, error="ConnectError: refused")
+
+    monkeypatch.setattr(m, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(m, "apis_auth", lambda: None)
+    monkeypatch.setenv("SEARCH_PARSER_REPLAY_KEY", "key")
+
+    code = m.main(
+        ["--url", "http://127.0.0.1:8080", "--cases", str(cases), "--output", str(output)]
+    )
+
+    assert code == 1
+    assert len(output.read_text().splitlines()) == m.TRANSPORT_FAILURE_LIMIT
 
 
 def test_replay_records_a_pair_exception_and_keeps_the_other_pairs(monkeypatch):
@@ -250,7 +332,7 @@ def test_replay_records_a_pair_exception_and_keeps_the_other_pairs(monkeypatch):
     by_case = {case: [r for r in results if r.case_id == case] for case in ("bad", "good")}
     assert all(r.error is not None for r in by_case["bad"])
     assert all(r.error is None for r in by_case["good"])
-    assert len(streamed) == 4
+    assert len(streamed) == 2 * len(m.ARMS)
 
 
 def test_main_writes_a_private_output_file(monkeypatch, tmp_path):
@@ -272,9 +354,8 @@ def test_main_writes_a_private_output_file(monkeypatch, tmp_path):
     assert code == 0
     assert output.stat().st_mode & 0o777 == 0o600
     assert [json.loads(line)["case_id"] for line in output.read_text().splitlines()] == [
-        "one",
-        "one",
-    ]
+        "one"
+    ] * len(m.ARMS)
 
 
 def test_main_refuses_an_existing_output_file(monkeypatch, tmp_path):
