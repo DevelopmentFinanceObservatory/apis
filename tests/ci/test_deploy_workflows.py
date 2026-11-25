@@ -645,24 +645,34 @@ def test_a_failure_after_the_move_makes_traffic_follow_the_latest_revision():
     step = _named("Follow the latest revision after a failure")
 
     assert step["if"] == (
-        "(failure() || cancelled()) && steps.move.outcome == 'success'"
+        "(failure() || cancelled())"
+        " && (steps.move.outcome == 'success' || steps.move.outcome == 'cancelled')"
         " && steps.follow.outcome != 'success'"
     )
     assert _named("Move traffic to the candidate revision")["id"] == "move"
     assert _named("Follow the latest revision again")["id"] == "follow"
 
 
+_SCHEDULED_JOB = "Point the scheduled origin catalogue job at the new image"
+
+
 @pytest.mark.parametrize(
-    ("rewrite", "backfill", "named"),
+    ("scheduled", "rewrite", "backfill", "named"),
     [
-        ("success", "success", []),
-        ("failure", "success", ["Rewrite warnings in an old format"]),
-        ("success", "failure", ["Backfill warning counts"]),
-        ("failure", "failure", ["Rewrite warnings in an old format", "Backfill warning counts"]),
+        ("success", "success", "success", []),
+        ("success", "failure", "success", ["Rewrite warnings in an old format"]),
+        ("success", "success", "failure", ["Backfill warning counts"]),
+        (
+            "success",
+            "failure",
+            "failure",
+            ["Rewrite warnings in an old format", "Backfill warning counts"],
+        ),
+        ("failure", "success", "success", [_SCHEDULED_JOB]),
     ],
 )
 def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
-    rewrite: str, backfill: str, named: list[str]
+    scheduled: str, rewrite: str, backfill: str, named: list[str]
 ):
     """A warning step that fails leaves the description backfill, the follow step and the
     release check to run, and the step after the release check fails the run naming it. The
@@ -671,7 +681,9 @@ def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
     backfill_step = _step("backfill_warnings")
     assert rewrite_step["name"] == "Rewrite warnings in an old format"
     assert backfill_step["name"] == "Backfill warning counts"
-    for step in (rewrite_step, backfill_step):
+    scheduled_step = _step("scheduled_job")
+    assert scheduled_step["name"] == _SCHEDULED_JOB
+    for step in (scheduled_step, rewrite_step, backfill_step):
         assert step["continue-on-error"] is True
     names = [step.get("name") for step in _steps()]
     last = _named("Fail on a failed warning step")
@@ -679,11 +691,17 @@ def test_a_failed_warning_step_fails_the_run_once_the_release_is_checked(
     assert last["env"] == {
         "REWRITE_WARNINGS": "${{ steps.rewrite_warnings.outcome }}",
         "BACKFILL_WARNINGS": "${{ steps.backfill_warnings.outcome }}",
+        "SCHEDULED_JOB": "${{ steps.scheduled_job.outcome }}",
     }
 
     check = subprocess.run(
         ["bash", "-c", last["run"]],
-        env={"PATH": "/usr/bin:/bin", "REWRITE_WARNINGS": rewrite, "BACKFILL_WARNINGS": backfill},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "SCHEDULED_JOB": scheduled,
+            "REWRITE_WARNINGS": rewrite,
+            "BACKFILL_WARNINGS": backfill,
+        },
         capture_output=True,
         text=True,
         check=False,
