@@ -12,8 +12,12 @@ name: Eval nightly
 # manifest.json second, since a reader treats a run with a manifest as
 # complete. The copy authenticates as the eval runs writer, which may create
 # objects only under apis-search/ and whose workload identity binding admits
-# only this workflow file on dev. --no-clobber leaves an object already there
-# untouched.
+# only this workflow file on dev. Each object is created only when none of
+# its name exists (search.eval.record_upload).
+#
+# The nightly and the corpus sync (eval-sync.yml) share one concurrency
+# group, since both write the Langfuse datasets and a sync during the
+# nightly would change the item inputs its push checks.
 #
 # The job fails on exit 2, a crash or setup error, whether or not alerting is on.
 # Alerting is off unless the repository variable EVAL_NIGHTLY_ALERT is 'true'.
@@ -36,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: eval-nightly
+  group: eval-langfuse
   cancel-in-progress: false
 
 env:
@@ -142,26 +146,21 @@ jobs:
           service_account: ${{ secrets.EVAL_RUNS_WRITER_SA }}
 
       # results.jsonl goes first and manifest.json second: a reader treats a
-      # run with a manifest as complete.
+      # run with a manifest as complete. search.eval.record_upload creates each
+      # object only when none of its name exists, which needs no read: the
+      # writer may create objects and nothing else, and gcloud storage cp reads
+      # the destination first.
       - name: Upload the run record
         if: ${{ !cancelled() }}
         env:
           BUCKET: ${{ vars.EVAL_RUNS_BUCKET }}
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/eval-records/apis-search"
-          shopt -s nullglob
-          runs=("$root"/*/)
-          if [ "${#runs[@]}" -eq 0 ]; then
+          root="$RUNNER_TEMP/eval-records"
+          if [ ! -d "$root/apis-search" ]; then
             echo "::notice::The nightly wrote no run record; nothing to upload."
             exit 0
           fi
           : "${BUCKET:?vars.EVAL_RUNS_BUCKET is unset}"
-          for dir in "${runs[@]}"; do
-            dir="${dir%/}"
-            run_id="$(basename "$dir")"
-            dest="gs://$BUCKET/apis-search/$run_id"
-            gcloud storage cp --no-clobber "$dir/results.jsonl" "$dest/results.jsonl"
-            gcloud storage cp --no-clobber "$dir/manifest.json" "$dest/manifest.json"
-            echo "Uploaded the run record to $dest/" >> "$GITHUB_STEP_SUMMARY"
-          done
+          uv run python -m search.eval.record_upload --bucket "$BUCKET" "$root"
+          echo "Uploaded the run record to gs://$BUCKET/apis-search/" >> "$GITHUB_STEP_SUMMARY"
