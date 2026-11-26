@@ -252,12 +252,18 @@ def counted_bilateral_source(
 
 
 def _with_window(identity: BaseIdentity, window: YearSpan | None) -> BaseIdentity:
-    """`identity` asking for the years `window` spans, or as it is when `window` is None."""
+    """`identity` asking for the years `window` spans, with the opt-in its own window
+    carries, or as it is when `window` is None."""
     if window is None:
         return identity
     first, last = window
+    include = identity.requested_window.include
     return identity.model_copy(
-        update={"requested_window": IdentityWindowRange(start_year=first, end_year=last)}
+        update={
+            "requested_window": IdentityWindowRange(
+                start_year=first, end_year=last, include=include
+            )
+        }
     )
 
 

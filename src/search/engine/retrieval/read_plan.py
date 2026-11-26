@@ -71,15 +71,17 @@ from search.engine.retrieval.facet_election import (
     select_role_candidate,
     window_of,
 )
-from search.models import TimeWindow, in_window
+from search.models import HeldKind, TimeWindow, in_window
 from search.observations import PreviewMode, preview_mode
 from search.scope_window import read_range as _read_range
 from search.scope_window import role_read_years
 from series_coverage.coverage_types import COVERAGE_ROLE_AXES
+from series_coverage.index import served_until
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
     from materialise.graph import FacetDefaultPolicy
+    from materialise.held_runs import HeldRun
     from search.engine.clients.sdmx import RoleFacetCandidate, RoleTuple
     from search.engine.extract import DateRequest
     from search.engine.retrieval.facet_policy import DeclaredPolicies
@@ -154,14 +156,16 @@ def plan_years(
     last_year: int | None = None,
 ) -> PlanYears:
     """The years a preview for `date_request` reads, on every route: a range from
-    `read_range` over the years it asks for, whose bounds a role read passes from its
-    coverage horizon. Raise `NoYearsToRead` when the range holds no year."""
+    `read_range` over the years it asks for (`DateRequest.read`, its opt-in included),
+    whose bounds a role read passes from its coverage horizon. Raise `NoYearsToRead` when
+    the range holds no year."""
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
-    assert date_request.window is not None  # DateRequest's own either/or invariant
-    return _range_years(date_request.window, first_year=first_year, last_year=last_year)
+    window = date_request.read
+    assert window is not None  # DateRequest's own either/or invariant
+    return _range_years(window, first_year=first_year, last_year=last_year)
 
 
 def confirming_years(date_request: DateRequest | None) -> PlanYears:
@@ -232,12 +236,45 @@ def role_years(date_request: DateRequest | None, horizon: YearHorizon) -> RoleYe
 
 
 def plan_window(years: PlanYears) -> RequestedWindow:
-    """`years` as the window materialise ranks and reads a series with."""
+    """`years` as the window materialise ranks and reads a series with, its opt-in
+    (`opt_in`) included."""
     if years is None:
         return RequestedWindow(kind="all")
     if years == "latest":
         return RequestedWindow(kind="latest")
-    return RequestedWindow(kind="range", start_year=years.start_year, end_year=years.end_year)
+    return RequestedWindow(
+        kind="range", start_year=years.start_year, end_year=years.end_year, include=years.opt_in
+    )
+
+
+def opted_in[P: PairPlan | BulkPlan](plan: P, include: Collection[str]) -> P:
+    """`plan` stating `include` as its range's opt-in (`TimeWindow.include`), for a plan read
+    under every held-back year whose window holds none of the kinds `include` leaves out
+    (`region.facets.settled_opt_in`), which every read of it therefore serves alike. A plan
+    reading `latest` or every date is unchanged."""
+    if not isinstance(plan.years, TimeWindow):
+        return plan
+    stated = sorted(include) or None
+    served = plan.served_years
+    if served is not None and isinstance(served.elected_under, TimeWindow):
+        served = replace(
+            served, elected_under=served.elected_under.model_copy(update={"include": stated})
+        )
+    return replace(
+        plan, years=plan.years.model_copy(update={"include": stated}), served_years=served
+    )
+
+
+def opt_in(years: PlanYears) -> frozenset[HeldKind]:
+    """The held-back years a read of `years` serves (`TimeWindow.include`): none under
+    `latest` or every date, which Search never opts in."""
+    return years.opt_in if isinstance(years, TimeWindow) else frozenset()
+
+
+def year_window(year: int, years: PlanYears) -> TimeWindow:
+    """The one year `year` as a window keeping `years`' opt-in (`opt_in`), so a judgement
+    of one year of a read holds back what the read holds back."""
+    return TimeWindow(start_year=year, end_year=year, include=sorted(opt_in(years)) or None)
 
 
 def _absent_readings() -> Mapping[str, AbsentReading]:
@@ -307,9 +344,14 @@ class PlanSeries:
     @property
     def latest_period(self) -> str | None:
         """The newest period its group's facets state (`materialise.window.latest_period`
-        over their latest dates), the one a read of the series alone serves under
-        `latest`."""
-        return latest_period(f.latest_date for f in self.group)
+        over their latest dates) less the years a read holds back of each (`kept_dates`),
+        the one a read of the series alone serves under `latest`, as a mint holds back a
+        series' newest rows and serves the year before (`materialise.generation`)."""
+        return latest_period(
+            dates[1]
+            for f in self.group
+            if (dates := kept_dates(f, (f.earliest_date, f.latest_date))) is not None
+        )
 
     @property
     def unservable(self) -> bool:
@@ -324,22 +366,91 @@ class PlanSeries:
 def has_points(facets: Sequence[Facet], years: PlanYears) -> bool:
     """Whether any of `facets` holds a point under `years`, by the rule every election
     narrows a window with (`materialise.facets.overlaps_window`): its dates when it carries
-    them all, else its span."""
-    window = plan_window(years)
-    return any(f.obs_count > 0 and overlaps_window(f, window=window) for f in facets)
+    them all, else its span, less the years a read holds back of it (`kept_dates`)."""
+    return any(facet_dates(f, years) is not None for f in facets)
+
+
+def _holds_points(facet: Facet, years: PlanYears) -> bool:
+    """Whether `facet` holds a point under `years` before any year is held back
+    (`has_points`)."""
+    return facet.obs_count > 0 and overlaps_window(facet, window=plan_window(years))
+
+
+def kept_dates(
+    facet: Facet | RoleFacetCandidate,
+    dates: ServedDates,
+    *,
+    include: frozenset[str] = frozenset(),
+) -> ServedDates | None:
+    """`dates`, the first and last dates of `facet`'s points, less the periods a read opting
+    in to `include` holds back of it (`series_coverage.index.served_until`), as a mint cuts
+    its rows (`materialise.columnar.held_back_mask`): ending in the period before the one
+    holding its source's partial mark, at the last date's grain, where that mark reaches the
+    last date, and None for a projection pair or a span left with no period. So a `2025-06`
+    mark ends a monthly span at `2025-05` and an annual one at `2024`. A facet carrying all
+    its dates ends at the last of them kept (`kept_points`). A last date the rule cannot read
+    is kept."""
+    first, last = dates
+    if last is None:
+        return dates
+    through = served_until(
+        source=facet.provenance_id,
+        method=facet.measurement_method,
+        newest=last,
+        include=include,
+    )
+    if through is None:
+        return None
+    if through == last:
+        return dates
+    if first is not None and first > through:
+        return None
+    if isinstance(facet, Facet) and facet.dates and facet.dates_complete:
+        inside = (d for d in facet.dates if (first is None or d >= first) and d <= last)
+        kept = kept_points(facet, inside, include=include)
+        return (first, max(kept)) if kept else None
+    return first, through
+
+
+def kept_points(
+    facet: Facet | RoleFacetCandidate, dates: Iterable[str], *, include: frozenset[str]
+) -> list[str]:
+    """`dates`, dates of `facet`'s points, less those a read opting in to `include` holds
+    back, each judged at its own period as a mint judges each row
+    (`materialise.columnar.held_back_mask`, `series_coverage.index.served_until`): a date
+    its source's partial mark reaches, and every one of a projection pair. A date the rule
+    cannot read is kept."""
+    return [
+        d
+        for d in dates
+        if served_until(
+            source=facet.provenance_id,
+            method=facet.measurement_method,
+            newest=d,
+            include=include,
+        )
+        == d
+    ]
 
 
 def points_in_years(facet: Facet, years: PlanYears) -> int:
     """The observations `facet` holds under `years`, the count option coverage states.
-    Inside a range: its dates there when it carries them all, else its whole count when it
-    holds a point there (`has_points`), the most its points can reach, and zero without one.
-    Under `latest` or every date: its whole count."""
+    Inside a range: its dates there a read of the range keeps (`kept_points`) when it
+    carries them all, else its whole count when it holds a point there (`has_points`), the
+    most its points can reach, and zero without one. Under `latest` or every date, which
+    opt in to no held-back year: its dates a read keeps when it carries them all, else zero
+    for a projection pair, whose every point is held back (`kept_dates`), and its whole
+    count otherwise."""
     if not isinstance(years, TimeWindow):
-        return facet.obs_count
+        if facet.dates and facet.dates_complete:
+            return len(kept_points(facet, facet.dates, include=frozenset()))
+        span = (facet.earliest_date, facet.latest_date)
+        return facet.obs_count if kept_dates(facet, span) is not None else 0
     if not has_points([facet], years):
         return 0
     if facet.dates and facet.dates_complete:
-        return sum(1 for d in facet.dates if in_window(d, years))
+        inside = (d for d in facet.dates if in_window(d, years))
+        return len(kept_points(facet, inside, include=years.opt_in))
     return facet.obs_count
 
 
@@ -361,17 +472,20 @@ def facet_dates(facet: Facet, years: PlanYears) -> ServedDates | None:
     """The first and last dates `facet` holds under `years` by the point rule (`has_points`),
     or None when it holds no point there. Inside a range, a facet carrying all its dates
     gives the dates in the range, and one without gives its span clipped to the range, the
-    most its points can reach. An every-date or `latest` read gives its whole span."""
-    if not has_points([facet], years):
+    most its points can reach. An every-date or `latest` read gives its whole span. Each
+    leaves out the years a read of `years` holds back of `facet` (`kept_dates`, `opt_in`)."""
+    if not _holds_points(facet, years):
         return None
     if not isinstance(years, TimeWindow):
-        return (
+        dates: ServedDates = (
             facet.earliest_date or min(facet.dates, default=None),
             facet.latest_date or max(facet.dates, default=None),
         )
+        return kept_dates(facet, dates)
+    include = opt_in(years)
     if facet.dates and facet.dates_complete:
         inside = [d for d in facet.dates if in_window(d, years)]
-        return min(inside), max(inside)
+        return kept_dates(facet, (min(inside), max(inside)), include=include)
     first, last = facet.earliest_date, facet.latest_date
     if years.start_year is not None and (
         (year := year_of(first)) is None or year < years.start_year
@@ -379,7 +493,7 @@ def facet_dates(facet: Facet, years: PlanYears) -> ServedDates | None:
         first = str(years.start_year)
     if years.end_year is not None and ((year := year_of(last)) is None or year > years.end_year):
         last = str(years.end_year)
-    return first, last
+    return kept_dates(facet, (first, last), include=include)
 
 
 @dataclass(frozen=True)
@@ -402,7 +516,7 @@ def asked_years(date_request: DateRequest | None) -> TimeWindow | None:
     these; a role read's horizon-clamped years (`role_years`) serve its read alone. A
     trailing span asks for the calendar years its words cover.
     None for a latest or dateless request, or a range holding no year."""
-    if date_request is None or (window := date_request.window) is None:
+    if date_request is None or (window := date_request.read) is None:
         return None
     return read_range(window)
 
@@ -614,8 +728,13 @@ class ServedYears:
 
     @property
     def span(self) -> TimeWindow:
-        """The closed span of `years`, the narrowed plan's own years."""
-        return TimeWindow(start_year=min(self.years), end_year=max(self.years))
+        """The closed span of `years`, the narrowed plan's own years, keeping the opt-in of
+        the window it elected under (`opt_in`)."""
+        return TimeWindow(
+            start_year=min(self.years),
+            end_year=max(self.years),
+            include=sorted(opt_in(self.elected_under)) or None,
+        )
 
 
 def _election_years(plan: ReadPlan) -> PlanYears:
@@ -656,7 +775,10 @@ class PairPlan:
     request's own facet filter or conversion period narrowed (`facets.filter_answer`,
     `convertibility.over_conversion_period`), whose election read inputs its identity does
     not state. Every plan derived from it keeps the mark. A trailing answer's window is its
-    identity's own, so `windowed` alone leaves it unmarked.
+    identity's own, so `windowed` alone leaves it unmarked. `held_runs` holds the runs of
+    held-back years the plan's sources hold, read once by the answer that states the plan
+    (`facets.plan_answer`); a plan whose dispatch changes (`narrowed`, `windowed`,
+    `omitting`, `read_in_years`) holds none until it is stated again.
     """
 
     members: tuple[str, ...]
@@ -676,6 +798,7 @@ class PairPlan:
     elect: Election | None = field(default=None, compare=False, repr=False)
     served_years: ServedYears | None = None
     request_filtered: bool = field(default=False, compare=False)
+    held_runs: tuple[HeldRun, ...] | None = field(default=None, compare=False, repr=False)
 
     @property
     def declared_defaults(self) -> DeclaredDefaults:
@@ -788,6 +911,7 @@ class PairPlan:
                 if not any((s.stat_var, role, dcid) in omitted for role, dcid in s.role_tuple)
             ),
             omitted=self.omitted | omitted,
+            held_runs=None,
         )
 
     def narrowed(self, admits: Admits) -> PairPlan:
@@ -883,7 +1007,8 @@ class BulkPlan:
     the years it serves and `read_years` those years alone, while the collapse ranks and
     the continuation's cut read the window the plan elected under (`election_bounds`).
     `request_filtered` marks a plan a request's own facet filter or window narrowed, as
-    `PairPlan.request_filtered` does.
+    `PairPlan.request_filtered` does, and `held_runs` holds the runs its sources hold, as
+    `PairPlan.held_runs` does.
     """
 
     members: tuple[str, ...]
@@ -903,6 +1028,7 @@ class BulkPlan:
     elect: Election | None = field(default=None, compare=False, repr=False)
     served_years: ServedYears | None = None
     request_filtered: bool = field(default=False, compare=False)
+    held_runs: tuple[HeldRun, ...] | None = field(default=None, compare=False, repr=False)
 
     @property
     def declared_defaults(self) -> DeclaredDefaults:
@@ -982,15 +1108,21 @@ class BulkPlan:
         """The year a `latest` read serves `sv` in: the year it elected (`elected_years`),
         or for a member that elected none the year of its latest period under the elected
         facet, the leading year of `materialise.window.latest_period` over its pairs'
-        latest dates. Both are read after any omission (`omitting`). Coverage knows only
-        years, so the plan fixes the year and the bulk read reduces `sv`'s points within it
-        by the same definition. None for a member the facets its group's selection serves
-        it hold no dated pair of."""
+        latest dates less the years a read holds back of each (`kept_dates`). Both are read
+        after any omission (`omitting`). Coverage knows only years, so the plan fixes the
+        year and the bulk read reduces `sv`'s points within it by the same definition. None
+        for a member the facets its group's selection serves it hold no dated pair of."""
         if self.elected is None:
             return None
         if (year := (self.elected_years or {}).get(sv)) is not None:
             return year
-        return year_of(latest_period(c.latest_date for c in self.selected_candidates(sv)))
+        return year_of(
+            latest_period(
+                dates[1]
+                for c in self.selected_candidates(sv)
+                if (dates := kept_dates(c, (None, c.latest_date))) is not None
+            )
+        )
 
     def member_years(self, sv: str) -> YearBounds:
         """The years the read serves `sv` in: under `latest` its one year alone
@@ -1075,15 +1207,33 @@ class BulkPlan:
     def selected_ends(self, sv: str, bounds: YearBounds | None = None) -> Mapping[RoleTuple, int]:
         """Each role tuple of `sv` with the last year the facets the group's selection serves
         it (`selected_candidates`) hold a point in at it, within `bounds`, by default the
-        years its election reads (`election_bounds`). A continuation serves the tuple only
-        after that year (`materialise.columnar.continuation_mask`)."""
+        years its election reads (`election_bounds`), less the years a read of the window it
+        elected under holds back of each (`_kept_years`). A continuation serves the tuple only
+        after that year (`materialise.columnar.continuation_mask`), which reads the rows the
+        mint kept after its held-back cut (`materialise.columnar.selected_mask`)."""
         first, last = self.election_bounds(sv) if bounds is None else bounds
         ends: dict[RoleTuple, int] = {}
         for c in self.selected_candidates(sv):
-            for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
-                year = by_year[-1][0]
-                ends[role_tuple] = max(year, ends.get(role_tuple, year))
+            counted = c.pairs.year_counts(first_year=first, last_year=last)
+            kept = self._kept_years(c, counted)
+            for role_tuple, by_year in counted:
+                if held := [year for year, _n in by_year if year in kept]:
+                    ends[role_tuple] = max(held[-1], ends.get(role_tuple, held[-1]))
         return ends
+
+    def _kept_years(
+        self,
+        candidate: RoleFacetCandidate,
+        counted: Sequence[tuple[RoleTuple, tuple[tuple[int, int], ...]]],
+    ) -> frozenset[int]:
+        """The years of `counted`, `candidate`'s observations by year at each role tuple,
+        that a read of the window this plan elected under (`election_years`) keeps of it
+        (`kept_points`), judged once per year."""
+        years = sorted({year for _role_tuple, by_year in counted for year, _n in by_year})
+        kept = kept_points(
+            candidate, (str(year) for year in years), include=opt_in(self.election_years)
+        )
+        return frozenset(int(year) for year in kept)
 
     def continued_years(
         self, sv: str, years: YearBounds | None = None
@@ -1092,7 +1242,8 @@ class BulkPlan:
         selection does not serve it, with the facet id and the observations by year it keeps
         there: those in `years`, by default the member's years (`member_years`), after the
         tuple's last year under the selected facets (`selected_ends`), every one where they
-        hold none, as `materialise.columnar.continuation_mask` keeps a continuation's rows.
+        hold none, less the years a read holds back of it (`_kept_years`), as
+        `materialise.columnar.continuation_mask` keeps a continuation's rows.
         That last year reads `years` when given, as a mint cuts its rows to the years it
         ranks over before it masks them, else the years the election reads. Coverage counts
         by year, so a year the selected facets hold keeps none of the continuation. A tuple
@@ -1101,9 +1252,13 @@ class BulkPlan:
         lead = self.selected_candidates(sv)
         ends = self.selected_ends(sv, years)
         for c in self.served_candidates(sv)[len(lead) :]:
-            for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
+            counted = c.pairs.year_counts(first_year=first, last_year=last)
+            served = self._kept_years(c, counted)
+            for role_tuple, by_year in counted:
                 end = ends.get(role_tuple)
-                if kept := tuple((y, n) for y, n in by_year if end is None or y > end):
+                if kept := tuple(
+                    (y, n) for y, n in by_year if y in served and (end is None or y > end)
+                ):
                     yield c.facet_id, role_tuple, kept
 
     @cached_property
@@ -1199,8 +1354,9 @@ class BulkPlan:
             read_years=self.read_years,
             index_sourced=self.index_sourced,
             declared=self.declared,
+            include=opt_in(self.years),
         )
-        return replace(self, **election._asdict(), candidates=candidates)
+        return replace(self, **election._asdict(), candidates=candidates, held_runs=None)
 
     def windowed(self, years: TimeWindow) -> BulkPlan:
         """This plan read over `years`, a range with both bounds inside the plan's own
@@ -1214,8 +1370,9 @@ class BulkPlan:
             read_years=listed,
             index_sourced=self.index_sourced,
             declared=self.declared,
+            include=opt_in(years),
         )
-        return replace(self, **election._asdict(), years=years, read_years=listed)
+        return replace(self, **election._asdict(), years=years, read_years=listed, held_runs=None)
 
     def omitting(self, omitted: Omissions) -> BulkPlan:
         """This plan with each candidate's pairs leaving out the tuples that bind an entity
@@ -1243,7 +1400,9 @@ class BulkPlan:
                 pair_count=sum(c.pair_count for c in kept),
                 latest_date=max((c.latest_date for c in kept if c.latest_date), default=None),
             )
-        narrowed = replace(self, candidates=candidates, omitted=self.omitted | omitted)
+        narrowed = replace(
+            self, candidates=candidates, omitted=self.omitted | omitted, held_runs=None
+        )
         if self.elected is None:
             return narrowed
         served: set[str] = set()
@@ -1279,6 +1438,7 @@ def role_election(
     read_years: Sequence[str] | None,
     index_sourced: bool = False,
     declared: DeclaredPolicies,
+    include: frozenset[str] = frozenset(),
 ) -> RoleElection:
     """The election a bulk read of `members` serves from `candidates` inside `read_years`
     under the defaults every member `candidates` populates declares (`declared`,
@@ -1289,7 +1449,8 @@ def role_election(
     with no candidate. `index_sourced` lets several members agree on provenance and unit
     alone. One member elects its method too, as a mint of one StatVar does
     (`materialise.generation._select_member_facets`), so every election and re-election of
-    a one-member read serves the facets that mint serves."""
+    a one-member read serves the facets that mint serves. Each reads the window opting in
+    to `include`, the read's held-back years (`opt_in`)."""
     declared_defaults = plan_declared_defaults(
         declared, _bulk_populated(candidates, members=members)
     )
@@ -1300,6 +1461,7 @@ def role_election(
         time_period=read_years,
         index_sourced=index_sourced,
         policies=declared_defaults,
+        include=include,
     )
     if best is None:
         return RoleElection(None, {}, (), ())
@@ -1310,12 +1472,13 @@ def role_election(
         lead=best.facet_id,
         index_sourced=index_sourced,
         policies=declared_defaults,
+        include=include,
     )
     return RoleElection(
         best.facet_id,
         selected,
         unserved,
-        role_continuation(best, candidates, window=window_of(read_years)),
+        role_continuation(best, candidates, window=window_of(read_years, include=include)),
     )
 
 
@@ -1422,9 +1585,13 @@ def read_in_years[P: PairPlan | BulkPlan](plan: P, years: frozenset[int]) -> P |
     span = served.span
     if isinstance(plan, BulkPlan):
         return replace(
-            plan, years=span, read_years=tuple(str(year) for year in kept), served_years=served
+            plan,
+            years=span,
+            read_years=tuple(str(year) for year in kept),
+            served_years=served,
+            held_runs=None,
         )
-    each = [TimeWindow(start_year=year, end_year=year) for year in kept]
+    each = [year_window(year, own) for year in kept]
 
     def kept_series(s: PlanSeries) -> bool:
         if not s.candidates:
@@ -1437,6 +1604,7 @@ def read_in_years[P: PairPlan | BulkPlan](plan: P, years: frozenset[int]) -> P |
         years=span,
         series=tuple(s for s in plan.series if kept_series(s)),
         served_years=served,
+        held_runs=None,
     )
 
 
@@ -1493,11 +1661,26 @@ def series_points(series: PlanSeries, read: TimeWindow | None) -> int:
     """The points a series serves inside `read` (every date when None): one per date across
     its group, since materialise keeps one row per date of facets sharing a provenance,
     method and unit, whatever their observation period (`materialise.facet_collapse`'s
-    grain key). A group with a data-bearing facet whose dates are incomplete counts each
-    facet's observations."""
+    grain key), less the dates a read of `read` holds back of each facet (`kept_points`). A
+    group with a data-bearing facet whose dates are incomplete counts each facet's
+    observations."""
     if dated_without_complete_dates(series.group):
         return sum(f.obs_count for f in series.group)
-    return len({d for f in series.group for d in f.dates if read is None or in_window(d, read)})
+    return len(series_point_dates(series, read))
+
+
+def series_point_dates(series: PlanSeries, read: TimeWindow | None) -> frozenset[str]:
+    """The dates of the points a series whose group lists every date serves inside `read`
+    (every date when None), less those a read of `read` holds back of each facet
+    (`kept_points`)."""
+    include = read.opt_in if read is not None else frozenset()
+    return frozenset(
+        d
+        for f in series.group
+        for d in kept_points(
+            f, (d for d in f.dates if read is None or in_window(d, read)), include=include
+        )
+    )
 
 
 def facets_served(plan: ReadPlan) -> list[Facet]:
@@ -1561,8 +1744,8 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
     served series (`series_dates`), or in bulk across the pairs of the facets the read
     dispatches (`BulkPlan.served_candidates`) inside the member's years
     (`BulkPlan.member_years`), at year grain, which under `latest` is the member's one
-    year alone (`BulkPlan.member_year`). A StatVar the plan serves no dated point of is
-    absent.
+    year alone (`BulkPlan.member_year`). Neither holds a year a read holds back
+    (`kept_dates`). A StatVar the plan serves no dated point of is absent.
 
     Coverage states its window from these dates and every answer dates its StatVars from
     them (`spec_build.build_stat_vars`), so the years a sentence names are years the
@@ -1586,14 +1769,16 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
                 served[sv] = (str(first), str(first))
             continue
         spans = [
-            span
+            kept
             for c in plan.served_candidates(sv)
             if (span := c.pairs.year_span(first_year=first, last_year=last)) is not None
+            and (kept := kept_dates(c, (str(span[0]), str(span[1])), include=opt_in(plan.years)))
+            is not None
         ]
         if spans:
             served[sv] = (
-                str(min(start for start, _end in spans)),
-                str(max(end for _start, end in spans)),
+                min(start for start, _end in spans if start is not None),
+                max(end for _start, end in spans if end is not None),
             )
     return served
 
@@ -1682,7 +1867,7 @@ def serves_continuation(plan: ReadPlan | None) -> bool:
     windows: list[PlanYears] = (
         [plan.years]
         if served is None
-        else [TimeWindow(start_year=year, end_year=year) for year in sorted(served.years)]
+        else [year_window(year, plan.years) for year in sorted(served.years)]
     )
     for s in plan.served:
         selection = plan.selections.get(s.stat_var, frozenset())
@@ -2041,7 +2226,9 @@ def plan_role_read(
         members=members,
         years=years,
         read_years=listed,
-        **role_election(merged, members=members, read_years=listed, declared=declared)._asdict(),
+        **role_election(
+            merged, members=members, read_years=listed, declared=declared, include=opt_in(years)
+        )._asdict(),
         candidates=merged,
         roles=roles,
         declared=declared,

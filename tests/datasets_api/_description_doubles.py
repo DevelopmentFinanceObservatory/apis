@@ -193,10 +193,14 @@ def mint_definition(client: httpx.Client | RunningClient) -> dict[str, Any]:
 
 
 def mint_family(
-    client: httpx.Client | RunningClient, *, options: Mapping[str, object]
+    client: httpx.Client | RunningClient,
+    *,
+    options: Mapping[str, object],
+    window: dict[str, object] | None = None,
 ) -> dict[str, Any]:
-    """Mint the `family` fixture's two members under `options`."""
-    spec_id, sidecar = family_fixture._spec_id_and_sidecar()
+    """Mint the `family` fixture's two members under `options`, its window `window` when
+    given."""
+    spec_id, sidecar = family_fixture._spec_id_and_sidecar(window=window)
     return family_fixture._mint(client, spec_id=spec_id, sidecar=sidecar, options=dict(options))
 
 

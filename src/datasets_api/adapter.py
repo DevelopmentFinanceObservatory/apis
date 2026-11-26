@@ -323,15 +323,18 @@ def _identity_window(scope: Scope | None) -> dict[str, object]:
 
 
 def window_to_identity(window: WindowAll | WindowLatest | WindowRange) -> dict[str, object]:
-    """Convert a wire `scope.window` to the identity-core `requested_window` form."""
+    """Convert a wire `scope.window` to the identity-core `requested_window` form. `include`
+    is written sorted and de-duplicated, and omitted when empty, as the identity core's
+    normal form has it."""
+    result: dict[str, object] = {"kind": window.kind}
     if window.kind == "range":
-        result: dict[str, object] = {"kind": "range"}
         if window.start_year is not None:
             result["start_year"] = window.start_year
         if window.end_year is not None:
             result["end_year"] = window.end_year
-        return result
-    return {"kind": window.kind}
+    if window.include:
+        result["include"] = sorted(set(window.include))
+    return result
 
 
 def _identity_facets(scope: Scope | None) -> dict[str, object]:
@@ -748,6 +751,7 @@ def _requested_window(
             kind=kind,
             start_year=cast("int | None", window.get("start_year")),
             end_year=cast("int | None", window.get("end_year")),
+            include=frozenset(cast("Sequence[str]", window.get("include", ()))),
         ),
         clock_year=clock_year,
     )

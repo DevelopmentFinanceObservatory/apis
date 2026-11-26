@@ -20,7 +20,6 @@ from search.engine.clients.graph import Facet
 from search.engine.departures import window_gap_fact
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError, EngineInputError
-from search.engine.extract import DateRequest
 from search.engine.region.arcs import inapplicable_slots_from_arcs, unresolved_slots_from_arcs
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
@@ -35,6 +34,7 @@ from search.engine.region.convertibility import (
     decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
+    narrowed_request,
     over_conversion_period,
     survivor_declared_roles,
     unit_gate,
@@ -305,8 +305,8 @@ def _narrowed_to_period(
     """The answer read over `period`'s window, departing `year_unavailable` naming the
     table that leaves the other years out (`_over_conversion_period`)."""
     requested = state.date_request.window if state.date_request is not None else None
-    state.date_request = DateRequest(window=period.window, latest=False)
-    mat_result = over_conversion_period(mat_result, period)
+    state.date_request = narrowed_request(state.date_request, period)
+    mat_result = over_conversion_period(mat_result, period, date_request=state.date_request)
     state.mat_result = mat_result
     _narrow_ground_facets(state, mat_result)
     state.warnings.append(
@@ -320,10 +320,12 @@ def _narrowed_to_period(
 def _install_narrowed_answer(
     state: _PromoteState, mat_result: Materialised, filtered: FilteredAnswer
 ) -> None:
-    """Record the resubmit's coverage, headline and read plan, and restate the
+    """Record the resubmit's coverage, headline, read plan and the request it settled
+    (`facets.plan_answer`), whose window's opt-in the identity states, and restate the
     discovered-scope warning to count the members that plan serves, as the scope list and
     coverage do. A Spec minted as a composite counts its components' members instead
     (`_ground_and_build_spec`)."""
+    state.date_request = filtered.date_request
     state.narrowed_coverage = filtered.coverage
     state.narrowed_headline = filtered.headline
     state.narrowed_plan = filtered.plan
@@ -927,7 +929,9 @@ def _convert_narrowed_answer(state: _PromoteState, mat_result: Materialised) -> 
     reports its outcome (`_PromoteState.unit_coverage`)."""
     plan = state.narrowed_plan
     assert plan is not None  # `_may_convert`
-    filtered = FilteredAnswer(state.narrowed_coverage, state.narrowed_headline, plan)
+    filtered = FilteredAnswer(
+        state.narrowed_coverage, state.narrowed_headline, plan, state.date_request
+    )
     converted, state.unit_coverage = convertible_answer(
         mat_result,
         filtered,

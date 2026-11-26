@@ -693,6 +693,8 @@ def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
                 total=stated.total,
                 mentions=list(stated.mentions),
                 sums_providers=stated.sums_providers,
+                named_years=list(stated.named_years),
+                projection=stated.projection,
             )
         )
     return StatedScopeResponse(readings=readings)

@@ -182,7 +182,10 @@ def _series_points(
         group,
         facets,
         window=RequestedWindow(
-            kind="range", start_year=window.start_year, end_year=window.end_year
+            kind="range",
+            start_year=window.start_year,
+            end_year=window.end_year,
+            include=window.opt_in,
         ),
         serves=lambda facet_id: at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of),
     )

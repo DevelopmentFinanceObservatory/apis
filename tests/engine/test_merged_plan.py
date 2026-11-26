@@ -135,7 +135,7 @@ def test_a_merge_of_answers_narrowed_to_their_own_elected_units_rebuilds_no_plan
     )
 
     counted = same_shape._merged_counts(
-        group, group[0].spec, diff_key=("how", "sector"), reads=reads
+        group, group[0].spec, window=None, diff_key=("how", "sector"), reads=reads
     )
 
     assert (counted is None) is units_elected

@@ -42,8 +42,8 @@ its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
 `served_entry` and `as_composite` steps of its `timing_by_step`, a buffered composite
-preview's read under `composite_preview`, and the component-plan resolves that state a
-no-preview composite's continuation under `composite_continuation`, beside the steps
+preview's read under `composite_preview`, and the component-plan resolves that state every
+composite's continuation and held-back runs under `composite_plans`, beside the steps
 `resolve_spec_resubmit` books, so the part's total covers the scope compile and the
 composite answer.
 
@@ -56,9 +56,10 @@ or compiled, resolves the identity its option was set on
 the composite (`ResubmitIdentityPayload.composite`), and launches none of that table's
 option or preview probes (`_as_composite`). The composite's preview reads each of its
 components through the part memo (`composite_answer`), in a trailing task where the request
-streams observations and inline where it embeds them. A request reading no preview resolves
-each component's read plan through the memo with no row read, and states the
-continuation those plans serve (`composite_answer.with_composite_continuation`). A definite part read as its own
+streams observations and inline where it embeds them. Before either, and on a request
+reading no preview, each component's read plan resolves through the memo with no row read,
+and the part states the continuation and held-back runs those plans serve
+(`composite_answer.settled_composite`). A definite part read as its own
 identity states the `bilateral_reading_unavailable` warning a fresh answer of it states
 (`_with_withheld_reading`). A posted identity, as a posted candidate, is read as a fresh
 search of it would serve it (`dataset_entries.served_posted_identity`): a flow side it leaves open binds its dataset's
@@ -123,8 +124,7 @@ from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
-    with_composite_continuation,
-    with_composite_observations,
+    settled_composite,
 )
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
@@ -246,10 +246,10 @@ def _as_composite(
     (`ResubmitIdentityPayload.composite`), carrying the closure that reads the composite's
     preview per component over `reads` (`composite_answer.CompositeRelaunch`), which
     `_launch_trailing_tasks` launches once every promote has returned, or
-    `with_composite_observations` reads inline. The slot-options, place-options and preview
-    probes of the table identity it read are dropped, so none launches and no table option
-    event streams under the composite's spec_id. The closure reads the composite's identity
-    alone, so a region the part memo held answers with one too."""
+    `composite_answer.settled_composite` reads inline. The slot-options, place-options and
+    preview probes of the table identity it read are dropped, so none launches and no table
+    option event streams under the composite's spec_id. The closure reads the composite's
+    identity alone, so a region the part memo held answers with one too."""
     assert region.spec.definition.identity == identity, "the resubmit minted another Spec"
     return dataclasses.replace(
         region,
@@ -598,10 +598,16 @@ async def handle(
         if (refused := unserved_scope_refusal(answered)) is not None:
             await _cancel_trailing_tasks([answered])
             return refused
-        if composite and params.include_observations and not params.stream_observations:
-            return await with_composite_observations(answered, semaphore=sem)
-        if composite and not params.stream_observations:
-            return await with_composite_continuation(answered, semaphore=sem)
+        if composite:
+            # Streamed, its closure launches with the other trailing tasks
+            # (`_launch_trailing_tasks`).
+            return await settled_composite(
+                answered,
+                stream=params.stream_observations,
+                embed=params.include_observations,
+                plans_semaphore=sem,
+                preview_semaphore=sem,
+            )
         return answered
 
     def _memo_hit(stored: RegionResult) -> RegionResult:

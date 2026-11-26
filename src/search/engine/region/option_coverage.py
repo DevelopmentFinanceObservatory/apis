@@ -79,6 +79,7 @@ from search.engine.retrieval.read_plan import (
     PlanYears,
     ReadPlan,
     minimal_constraint_svs,
+    opt_in,
     points_in_years,
     served_role_entities,
 )
@@ -355,6 +356,7 @@ class RoleServedFilter:
                 kept_years=(
                     coverage_kept_years(counted, role_names) if counted is not None else None
                 ),
+                include=window.opt_in if window is not None else frozenset(),
             )
             if found is None:
                 continue
@@ -1312,7 +1314,10 @@ def _observed_facets(
     election weighs it by (`read_plan.points_in_years`).
     Role-bearing StatVars read `materialise.role_bearing_facets` over the coverage index
     instead: the bound roles' rows within `years`, with a role the map omits left open, the
-    rows the role paths' refusals judge. Materialisation selects from the same
+    rows the role paths' refusals judge, each holding the points a read of `years` serves
+    (`read_plan.opt_in`): with no opt-in, none of a source's partial period and none of a
+    projection pair, so a facet a read serves nothing of is left out, as
+    `points_in_years` counts a subject facet. Materialisation selects from the same
     candidates. No graph or SDMX request is made on that path, and a StatVar the index does
     not cover is left out. With no range, or `latest`, every observation counts. The one
     period a `latest` read serves each StatVar (`materialise.window.latest_period`) does not
@@ -1340,6 +1345,7 @@ def _observed_facets(
         coverage=coverage,
         first_year=year_window.start_year if year_window is not None else None,
         last_year=year_window.end_year if year_window is not None else None,
+        include=opt_in(years),
     ).items():
         by_sv[sv] = published(datasets, sv, facets)
         windowed.extend((sv, facet, facet.obs_count) for facet in by_sv[sv])

@@ -669,7 +669,9 @@ def _span_read(dispatch: _Dispatch, *, served: TimeWindow, selected: frozenset[s
             return span
         role_dcids = dict(s.role_tuple)
         ranks[tuple(role_dcids[role] for role in open_roles)] = held
-    fetched = TimeWindow(start_year=served.start_year, end_year=max(end, served.end_year))
+    fetched = TimeWindow(
+        start_year=served.start_year, end_year=max(end, served.end_year), include=served.include
+    )
     return replace(span, fetched=plan_window(fetched), ranks=ranks)
 
 

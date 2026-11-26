@@ -789,7 +789,8 @@ def _clipped_window(
     window: Mapping[str, object], periods: YearPeriod | None
 ) -> Mapping[str, object] | None:
     """`window` clipped to `periods`, or `None` when the two share no year. A `latest`
-    window passes unclipped, as does any window when `periods` is `None`."""
+    window passes unclipped, as does any window when `periods` is `None`. The clipped
+    window keeps `window`'s `include`."""
     if periods is None or window.get("kind") == "latest":
         return window
     start = cast("int | None", window.get("start_year")) if window.get("kind") == "range" else None
@@ -798,13 +799,15 @@ def _clipped_window(
     last = _earlier(end, periods.last)
     if first is not None and last is not None and first > last:
         return None
-    if first is None and last is None:
-        return {"kind": "all"}
     clipped: dict[str, object] = {"kind": "range"}
+    if first is None and last is None:
+        clipped = {"kind": "all"}
     if first is not None:
         clipped["start_year"] = first
     if last is not None:
         clipped["end_year"] = last
+    if "include" in window:
+        clipped["include"] = window["include"]
     return clipped
 
 
