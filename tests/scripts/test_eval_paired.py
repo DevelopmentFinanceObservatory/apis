@@ -375,7 +375,12 @@ def test_a_case_whose_runs_all_fail_on_infrastructure_is_an_infra_fault(corpus, 
     assert faults == {"eth-health": FaultClass.INFRA, "eth-steady": None}
 
 
-def test_single_mode_posts_at_most_concurrency_requests_at_once(corpus, tmp_path):
+@pytest.mark.parametrize(("concurrency", "most"), [(1, 1), (4, 2)])
+def test_single_mode_bounds_posts_and_runs_a_case_s_samples_side_by_side(
+    corpus, tmp_path, concurrency, most
+):
+    """`eth-health` fails at head, so it takes one sample and then two more. The shared
+    bound lets those two run side by side under ``--concurrency=4``; under 1 they wait."""
     in_flight = Counter()
 
     async def resolve(request: Request) -> JSONResponse:
@@ -397,7 +402,12 @@ def test_single_mode_posts_at_most_concurrency_requests_at_once(corpus, tmp_path
         ]
     )
     args = m._parser().parse_args(
-        ["--single-url=http://head", f"--corpus-dir={corpus}", "--concurrency=1"]
+        [
+            "--single-url=http://head",
+            f"--corpus-dir={corpus}",
+            "--case=eth-health",
+            f"--concurrency={concurrency}",
+        ]
     )
     reads = m.Reads(catalogue=CATALOGUE, release=get_release_service(), graph=AllExist())
 
@@ -407,7 +417,57 @@ def test_single_mode_posts_at_most_concurrency_requests_at_once(corpus, tmp_path
             return await m.run(args, reads=reads, client=client)
 
     assert asyncio.run(go()) == 1
-    assert in_flight["max"] == 1
+    assert in_flight["max"] == most
+
+
+def test_a_check_that_raises_in_single_mode_exits_2_with_its_traceback(
+    corpus, tmp_path, monkeypatch, capsys
+):
+    transports, _, _ = _transports(steady, steady)
+
+    @contextmanager
+    def score_clients() -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(graph=Raising(ValueError("a bug")), sdmx=None, coverage=None)
+
+    monkeypatch.setattr(m, "_load_catalogue", lambda: CATALOGUE)
+    monkeypatch.setattr(m, "score_clients", score_clients)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", functools.partial(httpx.AsyncClient, mounts=transports)
+    )
+
+    assert m.main(["--single-url=http://head", f"--corpus-dir={corpus}"]) == 2
+    err = capsys.readouterr().err
+    assert "single mode crashed on case eth-health" in err
+    assert "raise self.error" in err
+
+
+@pytest.mark.parametrize("run_id", ["night 1", "-night", "a/b"])
+def test_a_run_id_a_directory_cannot_take_is_a_usage_error(corpus, tmp_path, run_id):
+    with pytest.raises(SystemExit) as raised:
+        m._parser().parse_args(
+            ["--single-url=http://head", f"--corpus-dir={corpus}", f"--run-id={run_id}"]
+        )
+
+    assert raised.value.code == 2
+
+
+def test_a_run_record_that_exists_stops_the_run_before_any_post(corpus, tmp_path):
+    (tmp_path / "runs" / "apis-search" / "night-1").mkdir(parents=True)
+
+    with pytest.raises(m.SetupError, match="already exists"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+
+def test_the_report_is_written_before_the_run_record(corpus, tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(m, "write_run", broken)
+
+    with pytest.raises(OSError, match="disk full"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+    assert (tmp_path / "report.json").exists()
 
 
 def test_paired_mode_refuses_the_run_record_options(corpus, tmp_path):
