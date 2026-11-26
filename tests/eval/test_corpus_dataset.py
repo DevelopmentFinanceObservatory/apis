@@ -22,6 +22,7 @@ from search.eval.checks.base import CHECKS
 from search.eval.corpus_dataset import (
     SUITE,
     CaseInputs,
+    CorpusCase,
     case_inputs,
     corpus_dataset,
     corpus_digest,
@@ -124,17 +125,29 @@ def test_the_digest_ignores_order_and_moves_with_cases_and_expectations():
     assert digest(a, b) == digest(a, b.model_copy(update={"why": "Another reason."}))
 
 
-@pytest.mark.parametrize("door", ["raw_text", "parsed", "dataset_resubmit"])
-def test_a_case_s_inputs_survive_a_json_round_trip_with_their_digest(door: str):
+def test_every_case_s_inputs_survive_a_json_round_trip_with_their_digest():
     """A Langfuse item stores the inputs as JSON, and a push checks the stored input's
-    digest against the run record's, so every door's inputs must round-trip exactly."""
-    case = next(case for cases in load_case_files().values() for case in cases if case.door == door)
-    inputs = case_inputs(case)
+    digest against the run record's, so every case's inputs must round-trip exactly."""
+    cases = [case for cases in load_case_files().values() for case in cases]
+    assert {case.door for case in cases} == {"raw_text", "parsed", "dataset_resubmit"}
 
-    stored = json.loads(json.dumps(to_jsonable_python(inputs)))
+    for case in cases:
+        inputs = case_inputs(case)
+        stored = json.loads(json.dumps(to_jsonable_python(inputs)))
 
-    assert CaseInputs.model_validate(stored) == inputs
-    assert input_digest(stored) == input_digest(inputs)
+        assert CaseInputs.model_validate(stored) == inputs, case.id
+        assert input_digest(stored) == input_digest(inputs), case.id
+
+
+def test_the_corpus_metadata_round_trips_through_a_dump():
+    case = make_case(id="kenya")
+    (eval_case,) = corpus_dataset({"dac": [case]}, implemented_checks=ALL_CHECKS).cases
+    assert eval_case.metadata is not None
+
+    reloaded = CorpusCase.model_validate(eval_case.metadata.model_dump())
+
+    assert reloaded == eval_case.metadata
+    assert reloaded.source == "corpus/dac.yaml"
 
 
 def test_the_digest_refuses_a_case_without_corpus_metadata():

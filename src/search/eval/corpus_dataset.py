@@ -51,7 +51,12 @@ class CorpusCase(BaseModel):
 
     @property
     def source(self) -> str:
-        """The case file's path under the repository root, such as ``corpus/dac.yaml``."""
+        """The case file's path in the repository's corpus, such as ``corpus/dac.yaml``.
+
+        It names the file as the repository's ``corpus/`` holds it, whatever directory the
+        cases were loaded from, since run records tag results with it across runs. It is a
+        property, so a dump of the model carries ``file`` and not ``source``, and loads back.
+        """
         return f"corpus/{self.file}.yaml"
 
 
