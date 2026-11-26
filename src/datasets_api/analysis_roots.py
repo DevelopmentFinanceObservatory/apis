@@ -263,20 +263,18 @@ def mint_options(rendering: RootRendering) -> dict[str, Any]:
     to the default asks for `enrichment: "default"` in their place, which `record_options`
     resolves against the version read, as the mint resolves it.
 
-    `columns` are sorted and each listed once, the order `frame_ref_for` names the frame by, so
-    the frame pair, the frame-layout file, the record and the recipe's normal form all see one
-    order, and two roots that list the same columns in another order are one root. `groupby.by`
-    is sorted for the same reason."""
+    `rendering` holds `columns` and `groupby.by` sorted (`RootRendering`), the order
+    `frame_ref_for` names the frame by, so the frame pair, the frame-layout file, the record and
+    the recipe's normal form all see one order."""
     options: dict[str, Any] = dict(_BASE_OPTIONS)
     if rendering.columns is None:
         options["enrichment"] = "default"
     elif rendering.columns:
-        options["columns"] = sorted(set(rendering.columns))
+        options["columns"] = list(rendering.columns)
     if rendering.without_party_totals:
         options["without_party_totals"] = True
     if rendering.groupby is not None:
-        groupby = rendering.groupby.model_dump(mode="json", exclude_none=True)
-        options["groupby"] = {**groupby, "by": sorted(groupby["by"])}
+        options["groupby"] = rendering.groupby.model_dump(mode="json", exclude_none=True)
     return options
 
 
@@ -305,7 +303,7 @@ def implied_groupby(
     the steps over it name: none when the words name `stat_var` or there are fewer than two
     StatVars, else `{by, op: "sum"}`, `by` `time_period` and the summable axes those StatVars
     decode (`code_index` declarations) that the words name, as the axis or as its
-    `stat_var_<axis>` column, sorted as `mint_options` sorts a stated `by`: the groupby a
+    `stat_var_<axis>` column, sorted as a stated `by` is held (`RootRendering`): the groupby a
     caller following the refusal's summed read states. The datasets door sums every other
     summable axis away, and `stat_var` with them (conformance C120).
 
