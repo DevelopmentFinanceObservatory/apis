@@ -1633,17 +1633,18 @@ def build_spec(
     years_with_data: YearsWithData | None = None
     if composite is not None:
         download = composite.download()
-    elif plan is not None and coverage_index is not None:
+    elif plan is not None:
         conversion = counted_conversion(
             plan, identity_doc.facets, catalogue=current_conversion_catalogue()
         )
-        download = download_facts(
-            plan,
-            coverage_index,
-            requested_window=requested_window,
-            conversion=conversion,
-            provenance=provenance.ref if provenance is not None else None,
-        )
+        if coverage_index is not None:
+            download = download_facts(
+                plan,
+                coverage_index,
+                requested_window=requested_window,
+                conversion=conversion,
+                provenance=provenance.ref if provenance is not None else None,
+            )
         years_with_data = answer_years(plan, coverage_index, conversion=conversion)
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))

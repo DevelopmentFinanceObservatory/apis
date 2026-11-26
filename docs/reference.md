@@ -10,7 +10,7 @@ Every API surface mounts onto the shared platform app. The public deployment ser
 
 Search queries resolve against the Data Commons graph. Observation previews and candidate coverage are computed in memory via the `materialise` bridge.
 
-A resolve answer states the years its served series hold data in `resolved.years_with_data`: `start_year`, `end_year`, and `gap_years` for the years between them with none. The years run over each series' whole span, whatever window the request named, and leave out partly reported and projected years as a request naming no window does. A client offering the reader other years of the same answer reads them there (conformance C202).
+A resolve answer states the years its series hold data in `resolved.years_with_data`: `start_year`, `end_year`, and `gap_years` for the years between them with none. The years run over each series' whole span, whatever window the request named, counting every series the answer holds before a `latest` window reduces them, and leave out partly reported and projected years as a request naming no window does. Conformance clause C202 lists the answers that omit it.
 
 | Method | Endpoint                   | Description                                                                                                                                                                    |
 | :----- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

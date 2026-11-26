@@ -241,6 +241,9 @@ def test_a_range_to_a_projected_year_opts_in_and_names_the_projections(text, win
     assert identity_window.include == ["projected"]
     assert spec.resolved.coverage.window == TimeWindow(start_year=window[0], end_year=window[1])
     assert _held(spec) == [("projected", True, _IDS, "World Bank IDS", 2026, 2030, None)]
+    # The years with data leave out the projections the request opted in to, so a read
+    # electing the projection facet alone states none.
+    assert _years_with_data(spec) == (None if window[0] > 2025 else (2000, 2025, None))
     modelled = [f for f in spec_departure_facts(spec, operations=()) if f.code == "modelled_values"]
     assert modelled == [
         DepartureFact(

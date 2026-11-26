@@ -38,6 +38,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from origin_catalogue import current_catalogue, entry_ref
 from search.engine.retrieval.coverage import (
     counted_rows,
@@ -52,19 +54,26 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     dated_without_complete_dates,
     facet_dates,
+    kept_points,
     opt_in,
     series_dates,
     series_point_dates,
     series_points,
     year_of,
 )
-from search.engine.unit.conversion import CountConversion, CountedConversion, counted_exact
+from search.engine.unit.conversion import (
+    UNDECIDED,
+    CountConversion,
+    CountedConversion,
+    counted_exact,
+)
 from search.models import DownloadFacts, DownloadLicence, TimeWindow, YearsWithData
-from series_coverage.schema import ABSENT_ENTITY
+from series_coverage.schema import ABSENT_ENTITY, MASK_WORD_BITS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
+    from search.engine.clients.graph import Facet
     from search.models import RequestedWindow
     from series_coverage.index import CoverageIndex, KeptYears
     from series_coverage.index import Role as CoverageRole
@@ -241,30 +250,42 @@ def _coverage_extent(
 
 
 def answer_years(
-    plan: ReadPlan, coverage_index: CoverageIndex, *, conversion: CountConversion
+    plan: ReadPlan, coverage_index: CoverageIndex | None, *, conversion: CountConversion
 ) -> YearsWithData | None:
-    """The years the series `plan` holds have data over their whole span (`YearsWithData`):
-    the series it holds before a `latest` window reduces them, each read under every date,
-    unclipped by the plan's window and with no opt-in, so a source's partial period and
+    """The years the series `plan` holds have data in (`YearsWithData`): the series it holds
+    under its window before a `latest` window reduces them (`PairPlan.held`), each read under
+    every date, unclipped by the window and with no opt-in, so a source's partial period and
     projected facets hold no year. Under a unit request each series keeps the years
     `conversion` keeps, as the download counts them.
 
     - A role-bearing plan reads the coverage index (`CoverageIndex.series_years`) over the
       rows it holds (`coverage.held_rows`) less those a conversion leaves out
-      (`coverage.coverage_exclusions`). None when the index lacks a member the plan reads.
-    - A standard plan reads its held series' facet metadata (`_series_years`): the years of
-      the dates a facet lists when it lists them all, else every year of its span.
+      (`coverage.coverage_exclusions`).
+    - A standard plan reads its held series' facet metadata alone (`_facet_years`), so it
+      needs no coverage index.
 
-    None when no series holds a year."""
+    None when the conversion's effect cannot be read in memory (`UNDECIDED`), for a
+    role-bearing plan with no coverage index or one lacking a member the plan reads, for a
+    standard plan with a data-bearing facet whose first or last date is unknown, and when no
+    series holds a year."""
+    if conversion == UNDECIDED:
+        return None
     kept = conversion if isinstance(conversion, CountedConversion) else None
     if isinstance(plan, PairPlan) and plan.roles is None:
         years: set[int] = set()
         for s in plan.held:
-            held = _series_years(s, None)
             allowed = kept.kept_years(dict(s.role_tuple)) if kept is not None else None
-            years.update(held if allowed is None else held & allowed)
+            for facet in s.group:
+                held = _facet_years(facet)
+                if held is None:
+                    return None
+                years.update(held if allowed is None else held & allowed)
         return _years_with_data(years)
-    if plan.roles is None or not all(coverage_index.covers(sv) for sv in plan.members):
+    if (
+        plan.roles is None
+        or coverage_index is None
+        or not all(coverage_index.covers(sv) for sv in plan.members)
+    ):
         return None
     found = coverage_index.series_years(
         variables=plan.members,
@@ -275,11 +296,37 @@ def answer_years(
     )
     if found is None:
         return None
-    bits = 0
-    for series_bits in found.year_bits():
-        bits |= series_bits
     epoch = coverage_index.horizon.epoch_year
-    return _years_with_data({epoch + i for i in range(bits.bit_length()) if bits >> i & 1})
+    held_words = np.bitwise_or.reduce(found.masks, axis=0).tolist()
+    return _years_with_data(
+        {
+            epoch + MASK_WORD_BITS * word + bit
+            for word, value in enumerate(held_words)
+            for bit in range(int(value).bit_length())
+            if int(value) >> bit & 1
+        }
+    )
+
+
+def _facet_years(facet: Facet) -> frozenset[int] | None:
+    """The years `facet` holds under every date with no opt-in: those of the dates it keeps
+    (`kept_points`) when it lists them all, else every year of its kept span (`facet_dates`).
+    Empty for a facet holding no point; None when its span has an unknown bound."""
+    if facet.obs_count <= 0:
+        return frozenset()
+    if facet.dates and facet.dates_complete:
+        return frozenset(
+            year
+            for d in kept_points(facet, facet.dates, include=frozenset())
+            if (year := year_of(d)) is not None
+        )
+    span = facet_dates(facet, None)
+    if span is None:
+        return frozenset()
+    first, last = year_of(span[0]), year_of(span[1])
+    if first is None or last is None:
+        return None
+    return frozenset(range(first, last + 1))
 
 
 def _years_with_data(years: set[int]) -> YearsWithData | None:
