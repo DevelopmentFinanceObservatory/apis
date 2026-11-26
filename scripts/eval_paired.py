@@ -56,6 +56,9 @@ task samples and judges it as above, and returns its modal sample's scores, whic
 sample with every check's verdict, scored by ``answer`` and tagged with its case file. A
 case whose modal sample failed on infrastructure, or whose check could not read the graph
 or coverage, records an infra fault, which the results page leaves out of its scores.
+The record's id and revision are fixed before any case runs, and the record is written
+after the report, summary and responses. A case whose task or evaluator raises does not stop
+the others: once they finish, the run prints each failure's traceback and exits 2.
 
 ``--shard K/N`` (1 <= K <= N) runs the cases whose id hashes to K - 1 modulo N (the sha256
 of the id, so a case stays in its shard across runs and machines), intersected with ``--case`` and
@@ -90,7 +93,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from dfo_evals.records import write_run
+from dfo_evals.records import SafeName, write_run
+from pydantic import TypeAdapter, ValidationError
 from pydantic_evals.reporting import EvaluationReport
 
 from graph_release.context import bound_served_release
@@ -152,6 +156,9 @@ if TYPE_CHECKING:
 
 type Side = Literal["head", "base"]
 type Round = Literal["head", "base", "confirm_head", "confirm_base"]
+
+# A run id names the run record's directory, so it follows dfo-evals' safe-name rule.
+_RUN_ID: TypeAdapter[str] = TypeAdapter(SafeName)
 
 # Above the engine's 45-second request deadline, as in search.eval.runner.
 _TIMEOUT_S = 90.0
@@ -635,13 +642,18 @@ async def run_single(
         return scored_answer(state)
 
     report = await dataset.evaluate(task, name=SUITE, max_concurrency=concurrency, progress=False)
-    crashed = [f"{f.name}: {f.error_message}" for f in report.failures] + [
-        f"{case.name}: {failure.error_message}"
+    crashed = [(f.name, f.error_message, f.error_stacktrace) for f in report.failures] + [
+        (case.name, failure.error_message, failure.error_stacktrace)
         for case in report.cases
         for failure in case.evaluator_failures
     ]
     if crashed:
-        raise RuntimeError(f"single mode crashed on {len(crashed)} case(s): {crashed}")
+        # Pydantic Evals keeps each failure's traceback as text, so print it where the
+        # raise below would otherwise hide it.
+        for name, _, stacktrace in crashed:
+            print(f"single mode crashed on case {name}:\n{stacktrace}", file=sys.stderr)
+        messages = [f"{name}: {message}" for name, message, _ in crashed]
+        raise RuntimeError(f"single mode crashed on {len(crashed)} case(s): {messages}")
     return SingleRun(
         states=[states[eval_case.name] for eval_case in dataset.cases],
         report=report,
@@ -805,6 +817,21 @@ def write_responses(states: Sequence[CaseState], path: Path) -> None:
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def parse_run_id(value: str) -> str:
+    """Check a ``--run-id`` is a name a run record's directory can take.
+
+    Raises:
+        argparse.ArgumentTypeError: The value does not match ``dfo-evals``' safe-name rule.
+    """
+    try:
+        return _RUN_ID.validate_python(value)
+    except ValidationError as exc:
+        raise argparse.ArgumentTypeError(
+            f"run id {value!r} must start with a letter or digit and hold only letters, "
+            "digits, '.', '_' and '-'"
+        ) from exc
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -831,9 +858,17 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="write the run record under this root, as <root>/apis-search/<run id>/ (single mode)",
     )
-    parser.add_argument("--run-id", help="the run record's id (default: single-<UTC start time>)")
     parser.add_argument(
-        "--revision", help="the revision the app runs, for the run record (default: git HEAD)"
+        "--run-id",
+        type=parse_run_id,
+        help="the run record's id: letters, digits, '.', '_' and '-' (default: single-<UTC start>)",
+    )
+    parser.add_argument(
+        "--revision",
+        help=(
+            "the commit the app at --single-url runs, for the run record (default: the corpus "
+            "checkout's git HEAD, right only when the app runs from this checkout)"
+        ),
     )
     return parser
 
@@ -856,8 +891,12 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
         "shard": str(args.shard) if args.shard else None,
     }
 
+    single, plan = None, None
     if args.single_url:
         started_at = datetime.now(UTC)
+        # The record's id and revision resolve before any case runs, so a bad one stops
+        # the run before it spends anything.
+        plan = _plan_record(args, started_at=started_at) if args.records else None
         single = await run_single(
             picked,
             url=args.single_url,
@@ -867,8 +906,6 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
             reads=reads,
         )
         states = single.states
-        if args.records:
-            _write_record(args, single, started_at=started_at)
         code = single_exit_code(states)
         report = build_report(states, mode="single", url=args.single_url, exit_code=code, **header)
         print(single_text(report))
@@ -906,16 +943,38 @@ async def _run_bound(args: argparse.Namespace, *, reads: Reads, client: httpx.As
         args.summary.write_text(markdown)
     if args.responses:
         write_responses(states, args.responses)
+    # Last, after every other output, so a record that cannot be written loses nothing else.
+    if single is not None and plan is not None:
+        _write_record(args, single, plan=plan)
     return code
 
 
-def _write_record(args: argparse.Namespace, single: SingleRun, *, started_at: datetime) -> None:
-    """Write single mode's run record under ``args.records``.
+@dataclass(frozen=True)
+class RecordPlan:
+    """The run record's id, revision and start time, fixed before the run."""
+
+    run_id: str
+    revision: str
+    started_at: datetime
+
+
+def _plan_record(args: argparse.Namespace, *, started_at: datetime) -> RecordPlan:
+    """Fix the run record's id and revision before any case runs.
 
     Raises:
-        SetupError: ``--revision`` is absent and git cannot read HEAD.
+        SetupError: The run directory already exists, or ``--revision`` is absent and git
+            cannot read HEAD.
     """
+    run_id = args.run_id or started_at.strftime("single-%Y%m%dT%H%M%SZ")
+    run_dir = args.records / SUITE / run_id
+    if run_dir.exists():
+        raise SetupError(f"the run record {run_dir} already exists; pass another --run-id")
     revision = args.revision or _head_revision(args.corpus_dir)
+    return RecordPlan(run_id=run_id, revision=revision, started_at=started_at)
+
+
+def _write_record(args: argparse.Namespace, single: SingleRun, *, plan: RecordPlan) -> None:
+    """Write single mode's run record under ``args.records``."""
     environment = {"url": args.single_url, "samples": str(args.samples)}
     if args.shard:
         environment["shard"] = str(args.shard)
@@ -924,10 +983,10 @@ def _write_record(args: argparse.Namespace, single: SingleRun, *, started_at: da
     if args.file:
         environment["files"] = ",".join(args.file)
     manifest = record_manifest(
-        run_id=args.run_id or started_at.strftime("single-%Y%m%dT%H%M%SZ"),
-        started_at=started_at,
+        run_id=plan.run_id,
+        started_at=plan.started_at,
         finished_at=datetime.now(UTC),
-        revision=revision,
+        revision=plan.revision,
         environment=environment,
         dataset_digest=single.dataset_digest,
     )

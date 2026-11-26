@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from dfo_evals.report import input_digest
+from pydantic_core import to_jsonable_python
+from pydantic_evals import Case as EvalCase
+from pydantic_evals import Dataset
 
 from search.eval.cases import (
     CHECK_NAMES,
@@ -116,3 +122,25 @@ def test_the_digest_ignores_order_and_moves_with_cases_and_expectations():
     assert digest(a, b) != digest(a)
     assert digest(a, b) != digest(a, edited)
     assert digest(a, b) == digest(a, b.model_copy(update={"why": "Another reason."}))
+
+
+@pytest.mark.parametrize("door", ["raw_text", "parsed", "dataset_resubmit"])
+def test_a_case_s_inputs_survive_a_json_round_trip_with_their_digest(door: str):
+    """A Langfuse item stores the inputs as JSON, and a push checks the stored input's
+    digest against the run record's, so every door's inputs must round-trip exactly."""
+    case = next(case for cases in load_case_files().values() for case in cases if case.door == door)
+    inputs = case_inputs(case)
+
+    stored = json.loads(json.dumps(to_jsonable_python(inputs)))
+
+    assert CaseInputs.model_validate(stored) == inputs
+    assert input_digest(stored) == input_digest(inputs)
+
+
+def test_the_digest_refuses_a_case_without_corpus_metadata():
+    dataset = Dataset[CaseInputs, object, object](
+        name=SUITE, cases=[EvalCase(name="bare", inputs=case_inputs(make_case(id="bare")))]
+    )
+
+    with pytest.raises(ValueError, match="'bare' has no corpus metadata"):
+        corpus_digest(dataset)  # type: ignore[arg-type]
