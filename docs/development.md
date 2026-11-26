@@ -140,7 +140,7 @@ just eval-paired http://127.0.0.1:8100 http://127.0.0.1:8101 <base-sha>   # head
 
 ### The paired gate
 
-A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case runs once at head and takes up to three samples (`--samples`) when a check did not pass; a case the verdict needs base for runs three samples there, and a case that sets `repeat` takes at least that many in every round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
+A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case takes one sample at head and, when a check did not pass, `--samples` minus one more (three in all by default). A case the verdict needs base for takes `--samples` there, and a candidate regression one more sample on each side in a confirm round. A case that sets `repeat` takes at least `repeat` samples in each of those batches, so a `repeat: 5` case takes five at head, ten when it needs a second batch, five at base and five on each side of the confirm round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
 
 - the case is new or its expectation changed;
 - the check passes on all three base samples and again in a confirm round (a regression);
@@ -152,7 +152,7 @@ A check that fails at base too is reported as pre-existing and does not block. A
 
 The eval jobs need repository secrets, so they skip on pull requests from forks and on drafts.
 
-A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items whose case changed. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service, writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
+A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items whose case changed. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service (`repeat` samples for a case that sets it), writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
 ## CI workflows
 
