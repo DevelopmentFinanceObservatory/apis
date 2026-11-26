@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from dfo_evals.records import FaultClass, read_run
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -325,6 +326,205 @@ def test_single_mode_prints_each_failing_check_per_case(corpus, tmp_path, capsys
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"eth-health (main) {REGRESSING}"
     assert lines[1].split()[:5] == ["FAIL", "entities", "F", "F", "F"]
+
+
+def single_record_args(corpus: Path, tmp_path: Path) -> list[str]:
+    return [
+        "--single-url=http://head",
+        f"--corpus-dir={corpus}",
+        f"--report={tmp_path / 'report.json'}",
+        f"--records={tmp_path / 'runs'}",
+        "--run-id=night-1",
+        "--revision=abc123",
+    ]
+
+
+def test_single_mode_records_each_case_as_its_modal_sample(corpus, tmp_path):
+    code, head_posts, _ = run_driver(single_record_args(corpus, tmp_path))
+
+    assert code == 1
+    assert head_posts == {REGRESSING: 3, STEADY: 1}
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    manifest = run.manifest
+    assert (manifest.headline_check, manifest.revision) == (ANSWER, "abc123")
+    assert manifest.environment == {"url": "http://head", "samples": "3"}
+    assert manifest.dataset_digest.startswith("sha256:")
+    assert [(r.case_id, r.trial) for r in run.results] == [("eth-health", 1), ("eth-steady", 1)]
+    report = json.loads((tmp_path / "report.json").read_text())
+    for result in run.results:
+        entry = report["cases"][result.case_id]
+        (modal,) = [i for i, s in enumerate(entry["samples"]["head"]) if s["modal"]]
+        assert {c.name: c.verdict.value for c in result.checks} == {
+            name: check["head"][modal]["verdict"] for name, check in entry["checks"].items()
+        }
+        assert result.tags == ("corpus/main.yaml",)
+        assert result.trace_id == "0" * 32
+        assert result.fault is None
+    verdicts = {r.case_id: {c.name: c.verdict.value for c in r.checks} for r in run.results}
+    assert (verdicts["eth-health"]["entities"], verdicts["eth-health"][ANSWER]) == ("fail", "fail")
+    assert verdicts["eth-steady"][ANSWER] == "pass"
+
+
+def test_a_case_whose_runs_all_fail_on_infrastructure_is_an_infra_fault(corpus, tmp_path):
+    down = for_regressing(lambda q, n: (503, problem(503, "service_unavailable")))
+
+    run_driver(single_record_args(corpus, tmp_path), head=down)
+
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    faults = {r.case_id: r.fault for r in run.results}
+    assert faults == {"eth-health": FaultClass.INFRA, "eth-steady": None}
+
+
+def test_a_failed_answer_stays_a_finding_when_another_read_fails(corpus, tmp_path):
+    """A graph read failure makes a case infra only when ``answer`` is not a definite
+    failure: the regressing case fails ``entities`` and stays scored, while the steady
+    case, whose only gap is the lost read, is an infra fault."""
+    run_driver(single_record_args(corpus, tmp_path), graph=Raising(GraphReadFailure("down")))
+
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    results = {r.case_id: r for r in run.results}
+    answers = {
+        case_id: next(c for c in r.checks if c.name == ANSWER) for case_id, r in results.items()
+    }
+    assert answers["eth-health"].verdict.value == "fail"
+    assert results["eth-health"].fault is None
+    assert answers["eth-steady"].verdict.value == "unverifiable"
+    assert results["eth-steady"].fault is FaultClass.INFRA
+
+
+@pytest.mark.parametrize(("concurrency", "most"), [(1, 1), (4, 2)])
+def test_single_mode_bounds_posts_and_runs_a_case_s_samples_side_by_side(
+    corpus, tmp_path, concurrency, most
+):
+    """`eth-health` fails at head, so it takes one sample and then two more. The shared
+    bound lets those two run side by side under ``--concurrency=4``; under 1 they wait."""
+    in_flight = Counter()
+
+    async def resolve(request: Request) -> JSONResponse:
+        in_flight["now"] += 1
+        in_flight["max"] = max(in_flight["max"], in_flight["now"])
+        await asyncio.sleep(0.01)
+        in_flight["now"] -= 1
+        query = (await request.json())["input"]["query"]
+        return JSONResponse(kenya() if query == REGRESSING else answer())
+
+    async def schema(request: Request) -> JSONResponse:
+        response = RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
+        return JSONResponse({"schema_version": 1, "request": {}, "response": response})
+
+    app = Starlette(
+        routes=[
+            Route("/api/search/json-schema", schema),
+            Route("/api/search/resolve", resolve, methods=["POST"]),
+        ]
+    )
+    args = m._parser().parse_args(
+        [
+            "--single-url=http://head",
+            f"--corpus-dir={corpus}",
+            "--case=eth-health",
+            f"--concurrency={concurrency}",
+        ]
+    )
+    reads = m.Reads(catalogue=CATALOGUE, release=get_release_service(), graph=AllExist())
+
+    async def go() -> int:
+        mounts = {"http://head": httpx.ASGITransport(app=app)}
+        async with httpx.AsyncClient(mounts=mounts) as client:
+            return await m.run(args, reads=reads, client=client)
+
+    assert asyncio.run(go()) == 1
+    assert in_flight["max"] == most
+
+
+def test_a_check_that_raises_in_single_mode_exits_2_with_its_traceback(
+    corpus, tmp_path, monkeypatch, capsys
+):
+    transports, _, _ = _transports(steady, steady)
+
+    @contextmanager
+    def score_clients() -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(graph=Raising(ValueError("a bug")), sdmx=None, coverage=None)
+
+    monkeypatch.setattr(m, "_load_catalogue", lambda: CATALOGUE)
+    monkeypatch.setattr(m, "score_clients", score_clients)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", functools.partial(httpx.AsyncClient, mounts=transports)
+    )
+
+    assert m.main(["--single-url=http://head", f"--corpus-dir={corpus}"]) == 2
+    err = capsys.readouterr().err
+    # The first crash cancels the other cases and is raised with its own traceback, once.
+    assert err.count("Traceback (most recent call last)") == 1
+    assert "raise self.error" in err
+    assert err.rstrip().endswith("ValueError: a bug")
+
+
+def test_a_case_that_cannot_build_its_request_stops_single_mode_before_any_post(
+    corpus, tmp_path, monkeypatch
+):
+    real = m.build_request
+
+    def build_request(case: Case) -> dict:
+        if case.id == "eth-steady":
+            raise ValueError("dataset_resubmit needs an identity definition")
+        return real(case)
+
+    monkeypatch.setattr(m, "build_request", build_request)
+
+    with pytest.raises(ValueError, match="needs an identity definition"):
+        run_driver(["--single-url=http://head", f"--corpus-dir={corpus}"])
+
+
+@pytest.mark.parametrize("run_id", ["night 1", "-night", "a/b"])
+def test_a_run_id_a_directory_cannot_take_is_a_usage_error(corpus, tmp_path, run_id):
+    with pytest.raises(SystemExit) as raised:
+        m._parser().parse_args(
+            ["--single-url=http://head", f"--corpus-dir={corpus}", f"--run-id={run_id}"]
+        )
+
+    assert raised.value.code == 2
+
+
+def test_a_run_record_that_exists_stops_the_run_before_any_post(corpus, tmp_path):
+    (tmp_path / "runs" / "apis-search" / "night-1").mkdir(parents=True)
+
+    with pytest.raises(m.SetupError, match="already exists"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+
+def test_a_records_path_that_is_a_file_stops_the_run_before_any_post(corpus, tmp_path):
+    (tmp_path / "runs").write_text("not a directory")
+
+    with pytest.raises(m.SetupError, match="cannot create the records directory"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+
+def test_the_report_is_written_before_the_run_record(corpus, tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(m, "write_run", broken)
+
+    with pytest.raises(OSError, match="disk full"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+    assert (tmp_path / "report.json").exists()
+
+
+@pytest.mark.parametrize("option", ["--run-id=night-1", "--revision=abc123"])
+def test_a_record_option_without_records_is_a_usage_error(corpus, option):
+    with pytest.raises(SystemExit) as raised:
+        m.main(["--single-url=http://head", f"--corpus-dir={corpus}", option])
+
+    assert raised.value.code == 2
+
+
+def test_paired_mode_refuses_the_run_record_options(corpus, tmp_path):
+    with pytest.raises(SystemExit) as raised:
+        m.main([*paired_args(corpus, tmp_path), f"--records={tmp_path / 'runs'}"])
+
+    assert raised.value.code == 2
 
 
 def _verdicts(tmp_path: Path, case_id: str) -> dict[str, str]:

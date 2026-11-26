@@ -124,22 +124,26 @@ The Search API evaluation scores the engine's answers to a set of cases. Each ca
 - `corpus/families/` holds the measure families the cases name.
 - `src/search/eval/checks/` holds the checks, such as `disposition`, `measure`, `entities`, `structural`, and `groundedness`.
 - `scripts/eval_paired.py` posts each case to `/api/search/resolve` over HTTP and scores the responses.
+- `src/search/eval/corpus_dataset.py` holds the eligible cases as one Pydantic Evals dataset, which single mode and the nightly run, and `src/search/eval/run_record.py` turns a run into a [`dfo-evals`](https://github.com/DevelopmentFinanceObservatory/evals) run record.
 
 `corpus/README.md` describes the case format. Scoring needs a running app and live credentials (see `.env.example`).
+
+A run record holds one trial per case, its modal sample, with every check's verdict, scored by the derived `answer` check and tagged with its case file. A case whose modal sample failed on infrastructure, or whose `answer` is not a definite failure and lost a read of the graph or coverage, records an infra fault, which the results page leaves out of its scores; a definite `answer` failure stays a finding. Langfuse still scores every case the nightly pushes, so a run that failed on infrastructure shows there as a failed `task_outcome` and `answer`.
 
 ```bash
 just corpus-check                                  # validate cases, list those that cannot gate
 just eval-app 8100                                 # serve an app with the eval profile (no response cache, no LLM memo)
 just eval-run http://127.0.0.1:8100 --file crs     # score eligible cases; or --case <id>, repeatable
+just eval-run http://127.0.0.1:8100 --records runs  # also write a dfo-evals run record under runs/apis-search/
 just eval-paired http://127.0.0.1:8100 http://127.0.0.1:8101 <base-sha>   # head against base
 ```
 
 ### The paired gate
 
-A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), three samples per case, and compares them check by check. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
+A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case takes one sample at head, and the rest of its `--samples` (three in all by default) when a check outside its `known_failure` did not pass, other than one lost to infrastructure, or passed only because no sample reached it, or when a check in its `known_failure` passed, which is reported fixed only if it passes on every sample. A case the verdict needs base for takes `--samples` there, and a candidate regression one more sample on each side in a confirm round. A case that sets `repeat` takes at least `repeat` samples in each of those batches, so with the default `--samples` a `repeat: 5` case takes five at head, ten when it needs a second batch, five at base and five on each side of the confirm round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
 
 - the case is new or its expectation changed;
-- the check passes on all three base samples and again in a confirm round (a regression);
+- the check passes on every base sample and again in a confirm round (a regression);
 - the check is `structural`.
 
 A check that fails at base too is reported as pre-existing and does not block. A base sample that stayed degraded after its retries (the app reported a degraded leg or a timeout) is a partial answer. Its failure still shows the base fails, but its pass is no baseline: a check whose base samples all pass, or whose confirm base sample passes, with one of those passes degraded, is reported as `base_inconclusive`, which counts as an infrastructure failure. A base sample that passes `disposition` or `answer` while the same sample fails `measure`, `entities` or `provenance` answered the right status on the wrong series or places. When every base sample that reached the check is such a pass, wrong on each part the head failed, a head that stops giving that answer is reported as `wrong_answer_at_base`. One base sample right in content keeps the verdict a regression. `wrong_answer_at_base` does not block, and the summary lists each one beside the base sample's content failure. The sample's own content verdicts decide, including a content check in the case's `known_failure`. A check named in a case's `known_failure` is reported and does not block, and the report marks it fixed when every head sample passes it. `known_failure` carries the issue that tracks the fault, so a case that exposes an engine fault stays in the corpus with its correct expectation. The summary lists every case the pull request deleted, made ineligible, or gave a new `known_failure`, so a reviewer sees each silenced check.
@@ -148,7 +152,7 @@ A check that fails at base too is reported as pre-existing and does not block. A
 
 The eval jobs need repository secrets, so they skip on pull requests from forks and on drafts.
 
-A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service and records a Langfuse run.
+A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items Langfuse lacks or holds differently. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service (`repeat` samples for a case that sets it), writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
 ## CI workflows
 

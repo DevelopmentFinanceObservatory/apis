@@ -54,12 +54,17 @@ Pydantic models defining the search contract and wire representations:
 The eval case model, the checks that score a response against it, and the paired gate. Cases live in `corpus/*.yaml`; `corpus/README.md` describes the format.
 
 - **`cases.py`**: The `Case` model, the loader that expands measure families, the eligibility rules, and `expectation_hash`.
+- **`corpus_dataset.py`**: The eligible corpus as one Pydantic Evals dataset, each case's inputs the request its file authors, and the corpus digest a run's manifest records.
 - **`checks/`**: One module per check (`disposition`, `measure`, `entities`, `provenance`, `request`, `operations`, `refusal`, `warnings`, `assumptions`, `candidates`, `parts`, `skills`, `entry_path`, `structural`, `groundedness`, `materialisation`, `task_outcome`). `score` runs them over one raw resolve response and returns a verdict (`pass`, `fail`, `unverifiable`, `unreached` or `n/a`) per check. `unreached` marks a check the expectation asserts but that never ran, because the response's status or kind is one the case does not accept, or an expected part is missing.
+- **`evaluator.py`**: `SearchChecks`, the Pydantic Evals evaluator that labels each check's verdict and the derived `answer` on a case's modal sample, as single mode scored it.
 - **`runner.py`**: Posts each case to a running app's `/api/search/resolve`, retries infrastructure failures and degraded answers, and picks the modal sample of several by vote.
 - **`gate.py`**: The paired regression rule that turns per-sample verdicts on head and base into one verdict per case and check.
 - **`summary.py`**: Renders the driver's report as Markdown or terminal text.
 - **`live_clients.py`**, **`graph.py`**: The graph, SDMX and coverage readers the groundedness and materialisation checks use.
-- **`dataset.py`**, **`sync.py`**: Build a case's request identity, and sync cases to Langfuse datasets.
+- **`run_record.py`**: The `dfo-evals` run record of a run of the corpus dataset, one trial per case scored by `answer` and tagged with its case file, which single mode and the nightly write.
+- **`record_upload.py`**: Copies run records to the eval runs bucket, each object created only when none of its name exists, which needs create permission alone.
+- **`dataset.py`**: Builds a `dataset_resubmit` case's request identity and names a case's Langfuse dataset item.
+- **`sync.py`**: Mirrors each case file to a Langfuse dataset through `dfo-evals`' `upsert_items`, writing only changed items, each item's input the case's authored request. With `--nightly` it runs every eligible case once on a deployed app, writes the run record and pushes it to Langfuse as one experiment per case file.
 
 ## HTTP Endpoints
 
