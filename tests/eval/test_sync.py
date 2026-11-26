@@ -113,7 +113,9 @@ class FakeLangfuse:
     def get_dataset(self, name: str) -> SimpleNamespace:
         if name not in self.items:
             raise NotFoundError(body=name)
-        return SimpleNamespace(id=f"id-{name}", items=list(self.items[name].values()))
+        # Langfuse's get_dataset lists active items only.
+        active = [i for i in self.items[name].values() if i.status == DatasetStatus.ACTIVE]
+        return SimpleNamespace(id=f"id-{name}", items=active)
 
     def _list(self, *, page: int, limit: int) -> SimpleNamespace:
         rows = [SimpleNamespace(**d) for d in self.datasets.values()]
@@ -190,6 +192,23 @@ def test_a_sync_writes_only_the_items_that_changed(tmp_path):
     assert again.written == {"search-ken": []}
     assert unchanged_writes == []
     assert edited.written == {"search-ken": ["search-ken:search-case-ken-holdout"]}
+
+
+def test_a_restored_case_file_brings_its_archived_item_back(tmp_path):
+    """Langfuse returns active items only, so an archived item reads as missing and the
+    next sync writes it again as active."""
+    fake = FakeLangfuse()
+    corpus = tmp_path / "corpus"
+    item = "search-eth:search-case-eth"
+
+    m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+    m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    archived = _active(fake, "search-eth")
+    restored = m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+
+    assert archived == set()
+    assert restored.written["search-eth"] == [item]
+    assert _active(fake, "search-eth") == {item}
 
 
 def test_a_sync_without_a_project_id_exits_2(tmp_path, monkeypatch):
