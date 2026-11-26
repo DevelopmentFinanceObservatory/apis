@@ -11,6 +11,7 @@ stores are thread-affine. The registry it returns is immutable."""
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import date
 from typing import TYPE_CHECKING
 
 from entity_resolution.membership import (
@@ -26,6 +27,7 @@ from entity_resolution.membership import (
     policy_data,
     to_dcid,
 )
+from entity_resolution.regions import identity_to_dcid
 
 if TYPE_CHECKING:
     from resolvekit import Resolver
@@ -108,6 +110,14 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
             to_dcid(entity.entity_id) for entity in countries if entity.valid_until is not None
         ),
         other_states=policy_data().other_states,
+        starts={
+            **_declared_sovereign_from(countries),
+            **{
+                to_dcid(entity.entity_id): entity.valid_from
+                for entity in countries
+                if entity.valid_from is not None
+            },
+        },
     )
     groups = [
         Membership(
@@ -127,6 +137,30 @@ def build_group_registry(resolver: Resolver) -> GroupRegistry:
         for group in entities
     ]
     return GroupRegistry(groups, sovereignty=sovereignty)
+
+
+class InvalidSovereignFrom(ValueError):
+    """`sovereign_from` names a member that is no resolvekit country, or one resolvekit dates."""
+
+
+def _declared_sovereign_from(countries: list[EntityRecord]) -> dict[str, date]:
+    """The policy file's `sovereign_from`, checked against resolvekit's countries.
+
+    Raises:
+        InvalidSovereignFrom: a key is no resolvekit country, or resolvekit already dates it.
+    """
+    dated = {
+        dcid: e.valid_from for e in countries if (dcid := identity_to_dcid(e.entity_id)) is not None
+    }
+    declared = policy_data().sovereign_from
+    unknown = sorted(set(declared) - set(dated))
+    already = sorted(m for m in declared if dated.get(m) is not None)
+    if unknown or already:
+        raise InvalidSovereignFrom(
+            f"sovereign_from names no resolvekit country: {unknown}; "
+            f"resolvekit already dates: {already}"
+        )
+    return dict(declared)
 
 
 def _rows(store: EntityStore, group_id: str) -> tuple[tuple[Row, ...], dict[str, str]]:

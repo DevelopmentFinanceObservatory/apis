@@ -81,7 +81,7 @@ curl -fsS "$DFO_API/api/v1/graph/node/CRSPurposeCodeEnum/members?relation=codes&
 
 A page holds 200 items unless `limit` asks for up to 1000. When `next_cursor` is not `null`, send it back as `cursor` with the same other parameters to read the next page. A cursor from a different node, relation, projection, or `as_of` date is refused.
 
-A group or region takes a `projection`. `countries` is the default and counts the countries that belong to the United Nations. `other_states`, `territories`, `former_states`, and `institutions` cut the rest. A group that dates its membership takes `as_of`. A projection that the membership source records only in part carries the gap `membership_incomplete` and `complete: false`.
+A group or region takes a `projection`. `countries` is the default and counts the countries that belong to the United Nations. `other_states`, `territories`, `former_states`, and `institutions` cut the rest. A group that dates its membership takes `as_of`. A dated read counts a state as a country on `as_of` when its UN membership had not ended by then and the state was sovereign by then: from its recorded sovereign start where there is one (West Germany from 1949, Kuwait from 1961), else from its UN entry. A projection that the membership source records only in part carries the gap `membership_incomplete` and `complete: false`.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/node/africa/members?relation=countries&limit=3" \
@@ -136,7 +136,7 @@ curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {ref, stat_var_count, patterns: (.patterns | length)}'
 ```
 
-`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance (no description for a UN agency) and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`. Retrying does not help.
+`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`. Retrying does not help.
 
 ## Check StatVar definitions
 

@@ -188,6 +188,7 @@ def _build(cache_dir: Path | None) -> SharedResolver:
         records_path=records_path, curated_path=curated_path, out_dir=resolved
     )
     alias_index = pack.build_alias_index(records_path=records_path, curated_path=curated_path)
+    pack.warm_name_forms()
     curated = load_query_aliases()
     register_module(pack.MODULE_ID, pack_dir)
     resolver = Resolver.lite(

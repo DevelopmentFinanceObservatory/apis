@@ -25,12 +25,15 @@ from datasets_api.manifest import incomplete_after, version_document
 from datasets_api.manifest_models import Manifest
 from materialise import MaterialisationResult
 from materialise.window import RequestedWindow
-from origin_catalogue import Catalogue, bound_catalogue
+from origin_catalogue import UN_SYSTEM, Catalogue, bound_catalogue
+from origin_catalogue.card_facts import source_documentation_of
 from tests.origin_catalogue.fake_catalogue import (
     FAKE_BUILT_AT,
     FakeCatalogue,
     dev_provenance_nodes,
     documenting,
+    provenance_row,
+    restrictive_catalogue,
 )
 
 from ._description_doubles import FAMILY_MEMBERS, GROUPBY_QUERY, datasets_client, mint_family
@@ -181,12 +184,15 @@ def _result(latest_by_source: dict[tuple[str | None, str], str]) -> Materialisat
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _UN = "provenance/UNSDG"
+_WHO = "undata/p/WHO"
 
 
 def test_each_source_is_judged_on_its_own() -> None:
     """A version mixing CRS rows reaching CRS's partial 2025 with a UN series and a row with
     no provenance, which no catalogue documents, records CRS's partial cells and lists the
-    other two as unknown, and a card drawing the CRS row reads it partial."""
+    other two as unknown, and a card drawing the CRS row reads it partial. A version drawn
+    only from a UN agency the catalogue documents with no mark is judged complete, as a
+    base or DFO source is."""
     result = _result({(_CRS, "dcid:X"): "2025", (_UN, "dcid:Y"): "2025", (None, "dcid:Z"): "2025"})
 
     with bound_catalogue(documenting({_CRS: dev_provenance_nodes()[_CRS]})):
@@ -240,6 +246,16 @@ def test_each_source_is_judged_on_its_own() -> None:
     assert not drawn(_UN, "dcid:Y")
     with bound_catalogue(FakeCatalogue()):
         assert incomplete_after(result) is None, "a catalogue judging no source records nothing"
+
+    who_arcs = {"typeOf": ("Provenance",), "url": ("https://www.who.int/data",)}
+    snapshot = restrictive_catalogue(
+        provenances=[provenance_row(_WHO, UN_SYSTEM, segment="who")],
+        source_documentation={_WHO: source_documentation_of({_WHO: who_arcs}, publisher=None)},
+    )
+    with bound_catalogue(snapshot):
+        un_only = incomplete_after(_result({(_WHO, "dcid:W"): "2025"}))
+    assert un_only is not None
+    assert un_only.entries == []
 
 
 def test_a_mark_the_frame_grammar_cannot_read_records_its_rows_unknown() -> None:

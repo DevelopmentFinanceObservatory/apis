@@ -153,6 +153,13 @@ class SearchSettings(BaseSettings):
     # Gemini API key for LLM calls. Reads unprefixed GEMINI_API_KEY.
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
 
+    # Private dev-only parser comparison. The route refuses every replay header until the
+    # switch, Cloud Run service name and revision, and capability key all match.
+    parser_replay_enabled: bool = False
+    parser_replay_key: SecretStr = SecretStr("")
+    parser_replay_revision: str = ""
+    mistral_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="MISTRAL_API_KEY")
+
     # -- Jev ------------------------------------------------------------
     # TypeSafe's System One model the Jev binder asks (`binders.jev_client`). A versioned id:
     # the `jev-latest` alias moves when a release ships, and the Jev thresholds are fitted

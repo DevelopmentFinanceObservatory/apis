@@ -195,6 +195,7 @@ def sample_tables() -> CatalogueTables:
                 source_url="https://datacatalog.worldbank.org/dataset/world-development-indicators",
             ),
             EUROSTAT_GDP: CardFacts(),
+            UN_WHO: CardFacts(source_url="https://www.who.int/data"),
         },
         source_documentation={
             CRS: SourceDocumentation(
@@ -210,6 +211,7 @@ def sample_tables() -> CatalogueTables:
             ),
             WDI_DATASET: SourceDocumentation(provenances=(WDI,), publisher="World Bank"),
             EUROSTAT_GDP: SourceDocumentation(provenances=(EUROSTAT_GDP,)),
+            UN_WHO: SourceDocumentation(provenances=(UN_WHO,), publisher="United Nations"),
         },
         un_blocked_places=frozenset({"country/GRC", "country/ESH"}),
     )

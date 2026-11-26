@@ -214,6 +214,22 @@ class ResolvedStatVars(StrictModel):
             "that slot. Spec identity does not hash it"
         ),
     )
+    splices_components: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when the definition binds a declared spliced composite, whose components "
+            "each serve their own years (the OECD headline: net flows to 2017, grant "
+            "equivalents from 2018): a datasets door `groupby` whose `by` keeps no `stat_var` "
+            "splices its components into one series per cell, each cell taking the members "
+            "of the one component holding it, and adds no two components' values. The mint "
+            "splices by the same rule (`code_index.composites.components_splice`) and refuses "
+            "a frame in which a cell holds rows of two components. False, the default, is "
+            "omitted: the answer binds no composite, or a stacked one, whose components "
+            "`sums_components` states. It says nothing about the slots. Spec identity does "
+            "not hash it"
+        ),
+    )
     data_date_range: DateRange | None = Field(
         default=None,
         description=(

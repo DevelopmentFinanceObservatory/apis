@@ -15,7 +15,15 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 from dfo_platform.app import Surface, create_app
-from dfo_platform.cloud_logging import PROJECT_ENV, TRACE_FIELD, JsonFormatter, stdout_handler
+from dfo_platform.cloud_logging import (
+    PROJECT_ENV,
+    TRACE_FIELD,
+    JsonFormatter,
+    replay_log_filter,
+    stdout_handler,
+    suppress_replay_logs,
+)
+from dfo_platform.request_deadline import detached_context
 from dfo_platform.trace import cloud_trace_id_from_headers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +111,34 @@ def test_a_traceback_is_folded_into_the_message():
 
     assert message.startswith("failed\nTraceback")
     assert "ValueError: boom" in message
+
+
+def test_replay_filter_drops_only_records_inside_the_suppressed_block_less_shared_flights():
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.addFilter(replay_log_filter())
+    log = logging.getLogger("tests.platform.replay_filter")
+    previous_level = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(handler)
+    log.propagate = False
+    try:
+        log.warning("normal request log")
+        with suppress_replay_logs(enabled=True):
+            log.warning("pipeline log: production search words")
+            detached_context().run(log.warning, "shared flight log")
+        log.info('resolve {"parser_replay":{"replay_id":"canary_01"}}')
+    finally:
+        log.handlers.clear()
+        log.propagate = True
+        log.setLevel(previous_level)
+
+    assert output.getvalue().splitlines() == [
+        "normal request log",
+        "shared flight log",
+        'resolve {"parser_replay":{"replay_id":"canary_01"}}',
+    ]
 
 
 @pytest.mark.parametrize(

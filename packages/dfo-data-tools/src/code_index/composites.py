@@ -71,6 +71,17 @@ def components_sum(composite: CompositeDeclaration) -> bool:
     return composite.kind == "stacked"
 
 
+def components_splice(composite: CompositeDeclaration) -> bool:
+    """Whether a Datasets groupby whose `by` keeps no `stat_var` splices the members of
+    `composite`'s different components into one series per cell: true for a spliced
+    composite, whose components each serve their own years, so each cell takes the members of
+    the one component holding it and no two components' values are added. The mint refuses a
+    cell holding rows of two components (`datasets_api.groupby.SpliceCheck`). The mint
+    splices by it (`datasets_api.groupby.splices_components`) and Search serves it
+    (`ResolvedStatVars.splices_components`), so the two cannot disagree."""
+    return composite.kind == "spliced"
+
+
 def _jsonable(value: object) -> object:
     if isinstance(value, frozenset | set):
         return sorted(str(item) for item in value)
