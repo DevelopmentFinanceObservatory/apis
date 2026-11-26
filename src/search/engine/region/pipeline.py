@@ -171,6 +171,7 @@ async def resolve_variable(
     dropped_qualifier_phrases: list[str] | None = None,
     exclusions: PartExclusions | None = None,
     operations: Sequence[Operation] = (),
+    measure_words: Callable[[str], str] = str,
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
     unclaimed: tuple[str, ...] = (),
@@ -210,7 +211,9 @@ async def resolve_variable(
     `dropped_qualifier_phrases` are the request's match text, plus on the raw-text door this
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
     admitted operations; one over `category` opens the slots its phrase names on the
-    elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
+    elected shape whether or not bind claims them. `measure_words` is the cut that took the
+    leg's source, series-code and scope phrase words out of `variable`
+    (`ResolveState.measure_words`). `open_axes` are the flow axes the leg
     asks every member of (`ResolveState.open_axes`). `exclusions` are the stretches of the
     request that leave something out and qualify this part, with the requirements judging
     its answers on them (`state.exclusion_requirements`); the result names those every
@@ -321,6 +324,7 @@ async def resolve_variable(
             requirements=exclusions.requirements,
             exclusions=exclusions.stretches,
             operations=tuple(operations),
+            measure_words=measure_words,
             open_axes=open_axes,
             query_text=query_text,
             unclaimed=unclaimed,

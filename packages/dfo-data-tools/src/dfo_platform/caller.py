@@ -26,14 +26,19 @@ and clipped, as `client_header`, and split into `client_name`, `client_version` 
 `client_runtime` when it has that shape. A request without the header logs none of
 these fields.
 
-`resolve_caller` names the caller an allowance counts against, as a `Caller` whose key is
-`ip:` and the first 32 hex digits of HMAC-SHA-256 over the client's address, folded
-(`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website computes the same key for the
-callers it forwards (its `src/lib/proxy/caller.ts`), so a client has one key on either path
-and no raw address is stored. A request whose `x-dfo-caller-principal` matches
-`DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`. A
-request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
-is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
+`resolve_caller` names the caller an allowance counts against, as a `Caller`. An address
+caller (`kind="address"`) has a key of `ip:` and the first 32 hex digits of HMAC-SHA-256 over
+the client's address, folded (`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website
+computes the same key for the callers it forwards (its `src/lib/proxy/caller.ts`), so a client
+has one key on either path and no raw address is stored. An account caller (`kind="account"`)
+has a key of `user:` and 32 lowercase hex digits, a digest of the account's id that the website
+computes for a request made with an API key, so its allowances count per account. The
+website derives the account key, and this service accepts it as named. A request whose
+`x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from an upstream that holds the
+secret, such as the website or the Studio harness, which names its client in `x-dfo-caller`, as
+`ip:<digest>`, `user:<digest>` or `conversation:<digest>`. A request that carries
+`x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL` is unset, refuses
+`CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
 from the right, the entry the proxies in front of this service appended. `request.client` goes
@@ -44,20 +49,21 @@ allowances and the vouched path never reads the request's address.
 
 `delivery_identity` names the consumer of a request for its delivery log line
 (`datasets_api.delivery`), and never raises. `dfo_platform.app` resolves it once per request and
-binds it for `current_delivery_identity`. A vouched request's caller is its `x-dfo-caller` (`ip:`
-or `conversation:`), or none when that header is missing, repeated or malformed, since the
+binds it for `current_delivery_identity`. A vouched request's caller is its `x-dfo-caller` (`ip:`,
+`user:` or `conversation:`), or none when that header is missing, repeated or malformed, since the
 request's own address is the upstream's. An unvouched request's caller is its own address key,
 else none. The surface is the `x-dfo-surface` header beside a valid principal, checked against
 `DeliverySurface`, except that a `conversation:` caller is always `studio`. A request no
 principal vouches for is `direct`, whatever it claims. The client is the `<name>/<version>`
 product token of `X-DFO-Client`. The user agent is a vouched request's `x-dfo-user-agent`, the
 end client's User-Agent an upstream forwards, else the request's own User-Agent, and none for a
-`conversation:` caller. The MCP client is an `ip:` caller's vouched `x-dfo-mcp-client`, the name
-the end client gave in its MCP `initialize` request (`Anthropic/ClaudeAI`, `openai-mcp`,
-`claude-code`), which data-mcp and analysis-mcp forward for public callers. It is kept when the
-stripped single value fully matches `_MCP_CLIENT_NAME`, is `invalid` when the header is present
-but does not match, and is none when the header is absent or blank, on an unvouched request and
-for any caller that is not an `ip:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16
+`conversation:` caller. The MCP client is an `ip:` or `user:` caller's vouched
+`x-dfo-mcp-client`, the name the end client gave in its MCP `initialize` request
+(`Anthropic/ClaudeAI`, `openai-mcp`, `claude-code`), which data-mcp and analysis-mcp forward for
+public callers. It is kept when the stripped single value fully matches `_MCP_CLIENT_NAME`, is
+`invalid` when the header is present but does not match, and is none when the header is absent or
+blank, on an unvouched request, and for any caller that is neither an `ip:` nor a `user:` caller:
+a `conversation:` caller, or none. The turn id is the `x-dfo-turn` header (`tr_` and 16
 lowercase hex digits) the Studio harness sends for the turn that caused the request, kept only on
 a vouched `conversation:` caller's request when the single value fully matches, else none.
 """
@@ -75,6 +81,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -230,7 +237,8 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
 
 CALLER_HEADER = "x-dfo-caller"
 """The caller an upstream names for a request it forwards: the address key the website resolved,
-as `ip:<32 hex digits>`, or the Studio harness's conversation, as `conversation:<32 hex digits>`."""
+as `ip:<32 hex digits>`, the account the website resolved for a request made with an API key, as
+`user:<32 hex digits>`, or the Studio harness's conversation, as `conversation:<32 hex digits>`."""
 CALLER_PRINCIPAL_HEADER = "x-dfo-caller-principal"
 """The secret that vouches for `CALLER_HEADER`, `DFO_CALLER_PRINCIPAL`."""
 FORWARDED_FOR_HEADER = "x-forwarded-for"
@@ -238,11 +246,30 @@ FORWARDED_FOR_HEADER = "x-forwarded-for"
 ADDRESS_KEY_PREFIX = "ip:"
 """The prefix of every `kind="address"` caller key. Reference rows keyed by a caller start with
 it, which tells them from the `secret-sha256:` labels of principals."""
+USER_KEY_PREFIX = "user:"
+"""The prefix of every `kind="account"` caller key, which the website names for a request made
+with an API key. Reference rows keyed by an account start with it."""
 CONVERSATION_KEY_PREFIX = "conversation:"
 """The prefix of the caller the Studio harness names for one conversation."""
 
-_DIGEST_LENGTH = 32
+type CallerKind = Literal["address", "account", "conversation"]
+"""The kinds of `Caller`."""
+CALLER_KEY_PREFIXES: Mapping[CallerKind, str] = MappingProxyType(
+    {
+        "address": ADDRESS_KEY_PREFIX,
+        "account": USER_KEY_PREFIX,
+        "conversation": CONVERSATION_KEY_PREFIX,
+    }
+)
+"""The key prefix of each `CallerKind`. A caller key is its prefix and `CALLER_KEY_DIGEST_LENGTH`
+lowercase hex digits, and a pin reference an open caller makes is keyed by it, so
+`datasets_api.maintenance` builds the principals `settle` leaves alone from this mapping."""
+CALLER_KEY_DIGEST_LENGTH = 32
+"""The number of lowercase hex digits after a caller key's prefix."""
+
+_DIGEST_LENGTH = CALLER_KEY_DIGEST_LENGTH
 _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+_USER_KEY = re.compile(rf"{USER_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 _CONVERSATION_KEY = re.compile(rf"{CONVERSATION_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 TURN_HEADER = "x-dfo-turn"
 """The Studio turn that caused a request, as `tr_<16 hex digits>`."""
@@ -251,10 +278,11 @@ _TURN_ID = re.compile(r"tr_[0-9a-f]{16}")
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """Who an allowance counts against. `kind="address"` keys a client by its network address and
+    """Who an allowance counts against. `kind="address"` keys a client by its network address,
+    `kind="account"` keys an account the website named for a request made with an API key, and
     `kind="conversation"` keys a Studio conversation by the vouched `conversation:` value."""
 
-    kind: Literal["address", "conversation"]
+    kind: CallerKind
     key: str
 
 
@@ -268,8 +296,8 @@ class CallerHeaderInvalid(Refusal):
     def __init__(self) -> None:
         super().__init__(
             f"the request carries a valid {CALLER_PRINCIPAL_HEADER} but no single "
-            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits> or "
-            "conversation:<32 lowercase hex digits>"
+            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits>, "
+            "user:<32 lowercase hex digits> or conversation:<32 lowercase hex digits>"
         )
 
 
@@ -356,6 +384,8 @@ def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
         named = _single(request, CALLER_HEADER)
         if named is not None and _ADDRESS_KEY.fullmatch(named):
             return Caller(kind="address", key=named)
+        if named is not None and _USER_KEY.fullmatch(named):
+            return Caller(kind="account", key=named)
         if named is not None and _CONVERSATION_KEY.fullmatch(named):
             return Caller(kind="conversation", key=named)
         raise CallerHeaderInvalid()
@@ -440,11 +470,11 @@ class DeliveryIdentity:
     clipped (see the module docstring). `admission` is `background` for a request sent with
     `X-DFO-Mint-Admission: background`, else `foreground`. `turn_id` is the `x-dfo-turn` value
     of a vouched `conversation:` caller's request when it fully matches `tr_<16 hex digits>`,
-    else `None`. `mcp_client` is an `ip:` caller's vouched `x-dfo-mcp-client`, the end client's
-    MCP `initialize` name, when the stripped single value fully matches `_MCP_CLIENT_NAME`;
-    `MCP_CLIENT_INVALID` when the header is present and empty of a usable value (it fails the
-    pattern or repeats); `None` when the header is absent or blank, or the caller is not an
-    `ip:` caller.
+    else `None`. `mcp_client` is an `ip:` or `user:` caller's vouched `x-dfo-mcp-client`, the end
+    client's MCP `initialize` name, when the stripped single value fully matches
+    `_MCP_CLIENT_NAME`; `MCP_CLIENT_INVALID` when the header is present and empty of a usable value
+    (it fails the pattern or repeats); `None` when the header is absent or blank, or the caller is
+    neither an `ip:` nor a `user:` caller.
     """
 
     caller: str | None
@@ -484,8 +514,8 @@ def _client_token(request: Request) -> str | None:
 
 
 def _mcp_client_of(request: Request) -> str | None:
-    """The `x-dfo-mcp-client` name of a vouched `ip:` caller's request: the stripped value
-    when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
+    """The `x-dfo-mcp-client` name of a vouched `ip:` or `user:` caller's request: the stripped
+    value when it matches `_MCP_CLIENT_NAME`, `None` for no header or a blank one, else
     `MCP_CLIENT_INVALID`."""
     values = request.headers.getlist(MCP_CLIENT_HEADER)
     if not values:
@@ -504,7 +534,9 @@ def _caller_of(
     if vouched:
         named = _single(request, CALLER_HEADER)
         if named is not None and (
-            _ADDRESS_KEY.fullmatch(named) or _CONVERSATION_KEY.fullmatch(named)
+            _ADDRESS_KEY.fullmatch(named)
+            or _USER_KEY.fullmatch(named)
+            or _CONVERSATION_KEY.fullmatch(named)
         ):
             return named, "vouched"
         return None, "none"
@@ -543,7 +575,9 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
         own = _clean(request.headers.get("user-agent", ""))
         mcp_client = (
             _mcp_client_of(request)
-            if vouched and caller is not None and _ADDRESS_KEY.fullmatch(caller)
+            if vouched
+            and caller is not None
+            and (_ADDRESS_KEY.fullmatch(caller) or _USER_KEY.fullmatch(caller))
             else None
         )
         return DeliveryIdentity(

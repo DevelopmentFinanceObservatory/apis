@@ -36,7 +36,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from dfo_platform.problem import Alternative
+from dfo_platform.problem import Alternative, Cause
 from dfo_platform.roles import role_key_axis
 from search.engine.errors import EngineInputError
 from search.models import (
@@ -370,7 +370,8 @@ def _labelled(table: AxisTable, options: Sequence[str]) -> tuple[tuple[str, str]
 
 
 def whole_error(refusal: WholeRefusal, *, pointer: str) -> EngineInputError:
-    """`refusal` as a 422 naming its cause, at `pointer`, with its alternatives."""
+    """`refusal` as a 422 at `pointer`, its cause in the `cause` extension, with its
+    alternatives."""
     alternatives = [Alternative(ref=ref, label=label) for ref, label in refusal.alternatives]
     return EngineInputError(
         f"The whole of this part cannot be derived: {refusal.cause}.",
@@ -378,4 +379,5 @@ def whole_error(refusal: WholeRefusal, *, pointer: str) -> EngineInputError:
         status=422,
         pointer=pointer,
         alternatives=alternatives or None,
+        cause=Cause(code=refusal.cause),
     )

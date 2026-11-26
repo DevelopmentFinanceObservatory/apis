@@ -15,8 +15,10 @@ lookup, and this reader's own `gaps` list. It makes at most five bounded reads:
 
 1. the node itself, for its identity arcs (`typeOf`, `name`, `url`,
    `isPartOf`, `source`);
-2. its `isPartOf` parents, only when the node is a Provenance that has any.
-   The first parent typed Dataset is its parent Dataset. A Provenance whose
+2. its `isPartOf` parents, only when the node is a Provenance that has any
+   and the caller's catalogue does not list it as its own entry (an admitted
+   row whose `dataset` is `None`, as for a UN agency). The first parent typed
+   Dataset is its parent Dataset. A Provenance whose
    parents are all something else (a Source, a `ProvisionalNode`, a node the
    graph does not hold) is an orphan;
 3. the Dataset's own children, via the reverse `isPartOf` arc filtered to
@@ -524,7 +526,9 @@ def read_provenance_doc(
     Dataset none of whose children it admits, `NotASourceNode` for another
     type, or `TooManyChildProvenances` when the child page truncates.
     A direct Dataset uses its own first read; an orphan Provenance is its own
-    sole child. Dataset takes precedence if both types appear.
+    sole child. With a catalogue, an admitted Provenance whose row names no
+    Dataset is an orphan whatever its `isPartOf` parents, so the page matches
+    its catalogue entry. Dataset takes precedence if both types appear.
 
     `deadline` is one absolute `time.monotonic()` value passed unchanged to
     every read. `None` uses each read's configured timeout.
@@ -548,11 +552,25 @@ def read_provenance_doc(
     if not is_dataset and not is_provenance:
         raise NotASourceNode(dcid, type_of)
 
+    own_row = (
+        catalogue.provenance(dcid)
+        if catalogue is not None
+        and is_provenance
+        and not is_dataset
+        and catalogue.is_admitted(dcid)
+        else None
+    )
+
     dataset_dcid: str | None
     dataset_arcs: dict[str, tuple[str, ...]] | None
     if is_dataset:
         dataset_dcid = dcid
         dataset_arcs = node
+    elif own_row is not None and own_row.dataset is None:
+        # The catalogue lists this provenance as its own entry (a UN agency is
+        # `isPartOf` the UNSD Dataset yet catalogued alone), so the page keeps
+        # the card's shape.
+        dataset_dcid, dataset_arcs = None, None
     else:
         dataset_dcid, dataset_arcs = _parent_dataset(
             graph, node.get("isPartOf", ()), deadline=deadline
@@ -607,14 +625,6 @@ def read_provenance_doc(
 
     publisher = node_label(batch.get(source_dcid), source_dcid) if source_dcid is not None else None
 
-    own_row = (
-        catalogue.provenance(dcid)
-        if catalogue is not None
-        and is_provenance
-        and not is_dataset
-        and catalogue.is_admitted(dcid)
-        else None
-    )
     name_of_source = (
         own_row.name
         if own_row is not None
@@ -1071,7 +1081,8 @@ def _catalogued_documentation(
     """The document `read_provenance_doc` gives a listed provenance, from the card facts and
     documentation facts of its catalogue entry (`entry_ref`), with the row's name, source and
     Data Commons. `None` when the catalogue holds no card facts or no documentation facts for
-    the entry, as for a UN row, or the entry's documentation does not list the provenance."""
+    the entry, or the entry's documentation does not list the provenance, as for a UN row
+    carried from a build that stored no UN facts."""
     ref = entry_ref(row)
     card = catalogue.dataset_facts(ref)
     documentation = catalogue.source_documentation(ref)

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -36,6 +37,7 @@ from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_cano
 from datasets_api.retention_admission import sweep_budget, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
+from dfo_platform.caller import CALLER_KEY_DIGEST_LENGTH, CALLER_KEY_PREFIXES, CallerKind
 from materialise.formats import (
     CANONICAL_FRAME_MEDIA_TYPE,
     FRAME1_MEDIA_TYPE,
@@ -535,13 +537,15 @@ def _statements(sql: str) -> list[str]:
 def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
     """After its lock, each settle statement is a statement of migration 0026, whose window it
     closes, with the old shape narrowed from "not a label" to "neither a label nor a caller
-    key", so they cannot drift apart otherwise. Version facts and the enrichment `kind` are
-    counted only: the insert triggers of migrations 0030 and 0033 repair them."""
+    key" (an address's `ip:`, an account's `user:` or a conversation's `conversation:`), so they
+    cannot drift apart otherwise. Version facts and the enrichment `kind` are counted only: the
+    insert triggers of migrations 0030 and 0033 repair them."""
     migration = (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
     expected = [
         statement.replace(
             f"NOT starts_with({column}, 'secret-sha256:')",
-            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}}|conversation:[0-9a-f]{{32}})$'",
+            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}}|user:[0-9a-f]{{32}}"
+            "|conversation:[0-9a-f]{32})$'",
         )
         for statement, column in zip(
             _statements(migration), ("raw.principal", "raw.principal", "principal"), strict=True
@@ -551,6 +555,21 @@ def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
     lock, *statements = maintenance.SETTLE_STATEMENTS
     assert lock == "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE"
     assert [" ".join(statement.split()) for statement in statements] == expected
+
+
+def test_settle_labels_cover_every_caller_kind_and_only_its_well_formed_keys():
+    """`_LABELLED` is built from `dfo_platform.caller.CALLER_KEY_PREFIXES`, which names a prefix
+    for every `CallerKind`, so a pin keyed by a caller of any kind, one added later included, is
+    left alone by `settle`, and a raw secret is still rewritten."""
+    assert set(CALLER_KEY_PREFIXES) == set(get_args(CallerKind.__value__))
+    labelled = re.compile(maintenance._LABELLED.removeprefix("'").removesuffix("'"))
+    for prefix in CALLER_KEY_PREFIXES.values():
+        # Spliced into a SQL literal and a regular expression, so it must need no escaping.
+        assert re.fullmatch(r"[a-z]+:", prefix)
+        assert labelled.fullmatch(prefix + "0f" * (CALLER_KEY_DIGEST_LENGTH // 2))
+        assert not labelled.fullmatch(prefix + "0" * (CALLER_KEY_DIGEST_LENGTH - 1))
+        assert not labelled.fullmatch(prefix + "F" * CALLER_KEY_DIGEST_LENGTH)
+    assert not labelled.fullmatch("website-secret")
 
 
 def _frame(value: float):
