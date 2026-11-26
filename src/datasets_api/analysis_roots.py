@@ -99,7 +99,7 @@ from dfo_frame_grammar.grammar import (
 from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
 from code_index.query import CodeIndex
-from code_index.types import summable_axes
+from code_index.types import CompositeDeclaration, summable_axes
 from dataset_store.snapshot import (
     SnapshotRevoked,
     StoredArtifactLocation,
@@ -389,6 +389,18 @@ def summed_count(
         return 0
     count = rendered if rendered is not None else contributors
     return count if count > 1 else 0
+
+
+def _trace_composite(index: CodeIndex, trace: Mapping[str, Any]) -> CompositeDeclaration | None:
+    """The declared composite a version's `trace` names as its one provenance selection
+    (`materialise.composite`), else `None`."""
+    refs = {
+        facet.get("ref")
+        for facet in trace.get("facets") or ()
+        if isinstance(facet, Mapping) and facet.get("axis") == "provenance"
+    }
+    ref = refs.pop() if len(refs) == 1 else None
+    return index.composite(ref) if isinstance(ref, str) else None
 
 
 def _listed_base(options: Mapping[str, Any], base: str) -> str | None:
@@ -1564,7 +1576,7 @@ class LiveRootSource:
                 version,
                 rendered=None,
                 contributors=len(contributors),
-                adds=self._adds(contributors, options["groupby"]),
+                adds=self._adds(contributors, options["groupby"], manifest.trace),
             )
         return _with_summed(
             root, count, self._selected(summed_refs(manifest.trace), options["groupby"])
@@ -1580,10 +1592,14 @@ class LiveRootSource:
             levels=groupby.get("levels"),
         )
 
-    def _adds(self, contributors: Sequence[str], groupby: Mapping[str, Any]) -> bool:
+    def _adds(
+        self, contributors: Sequence[str], groupby: Mapping[str, Any], trace: Mapping[str, Any]
+    ) -> bool:
         """Whether `groupby` adds `contributors`, bare dcids, together (`adds_stat_vars`), on
-        the summable axes its `by` keeps. A stacked composite's component sum is not told
-        apart here; its components share their kept codes, so they add."""
+        the summable axes its `by` keeps, read with the composite the version's `trace` names
+        as its provenance (`_trace_composite`). A stacked composite's component sum is not
+        told apart here; its components share their kept codes, so they add. A spliced
+        composite's components are keyed apart, so its splice adds nothing."""
         index = self._deps.code_index
         by = groupby.get("by") or ()
         kept = sorted(summable_axes(index.declarations) & frozenset(by))
@@ -1593,6 +1609,7 @@ class LiveRootSource:
             kept=kept,
             levels=dict(groupby.get("levels") or {}),
             components=False,
+            composite=_trace_composite(index, trace),
         )
 
     def _unstored(
@@ -1635,7 +1652,7 @@ class LiveRootSource:
             None,
             rendered=None,
             contributors=len(contributors),
-            adds=self._adds(contributors, options["groupby"]),
+            adds=self._adds(contributors, options["groupby"], stored.trace),
         )
         return _with_summed(
             root, count, self._selected(summed_refs(stored.trace), options["groupby"])
