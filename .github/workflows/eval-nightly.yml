@@ -139,8 +139,10 @@ jobs:
           exit 1
 
       # The record stays with the run as an artifact, so an upload that fails
-      # can be redone by hand (python -m search.eval.record_upload) without
-      # running the eval again.
+      # does not cost the eval. Only this workflow on dev can act as the writer,
+      # so finishing an upload by hand takes someone who may write the bucket:
+      # copy the missing files from the artifact with gcloud storage cp
+      # --no-clobber, manifest.json last.
       - name: Keep the run record as an artifact
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -183,6 +185,8 @@ jobs:
           fi
           : "${BUCKET:?vars.EVAL_RUNS_BUCKET is unset}"
           uv run python -m search.eval.record_upload --bucket "$BUCKET" "$root"
-          for dir in "$root"/apis-search/*/; do
-            echo "Uploaded the run record to gs://$BUCKET/apis-search/$(basename "$dir")/" >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          for manifest in "$root"/apis-search/*/manifest.json; do
+            run_id="$(basename "$(dirname "$manifest")")"
+            echo "Uploaded the run record to gs://$BUCKET/apis-search/$run_id/" >> "$GITHUB_STEP_SUMMARY"
           done

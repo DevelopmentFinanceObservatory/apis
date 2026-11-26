@@ -587,7 +587,7 @@ def test_main_writes_the_record_and_pushes_it_onto_the_synced_items(tmp_path, mo
     assert set(pushed["outputs"]) == {("eth", 1), ("ken", 1), ("ken-known", 1)}
     markdown = summary.read_text()
     assert "Langfuse experiment: `apis-search/r1 abc 0123`" in markdown
-    assert f"Run record: `{records / SUITE / 'r1'}`" in markdown
+    assert "Run record: `apis-search/r1/`" in markdown
 
 
 def test_a_nightly_without_a_project_id_exits_2_before_any_case_runs(tmp_path, monkeypatch):
@@ -730,6 +730,59 @@ def test_a_langfuse_down_at_the_start_still_runs_and_records_the_nightly(
     (written,) = (records / SUITE).iterdir()
     assert written.name.startswith("nightly-")
     assert fake.items == {}
+
+
+@pytest.mark.parametrize(
+    ("status", "code"), [(503, 3), (429, 3), (404, 2)], ids=["503", "429", "404"]
+)
+def test_a_langfuse_failure_during_the_sync_still_records_the_nightly(
+    tmp_path, monkeypatch, status, code
+):
+    """A sync Langfuse fails part-way is infrastructure, like a failed start: the cases
+    still run and the record is written. A request fault in the sync is a crash."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+    fake = _stub_nightly(
+        monkeypatch,
+        run_cases=_ethiopia_run_cases,
+        graph=AllExist(),
+        push_run=lambda **_: pytest.fail("pushed after a failed sync"),
+    )
+
+    def failing(**_):
+        raise ApiError(status_code=status, body="sync refused")
+
+    monkeypatch.setattr(fake, "create_dataset", failing)
+    argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
+
+    assert m.main([*argv, f"--summary={summary}"]) == code
+    if code == 3:
+        assert "Langfuse failed during the dataset sync" in summary.read_text()
+        (written,) = (records / SUITE).iterdir()
+        assert written.name.startswith("nightly-")
+
+
+@pytest.mark.parametrize("actions", ["true", None])
+def test_a_push_that_did_not_complete_raises_its_own_annotation(
+    tmp_path, monkeypatch, capsys, actions
+):
+    """The nightly usually exits 1, so a failed push needs a sign of its own in Actions."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": KENYA})
+
+    def push_run(**_):
+        raise PushTimeoutError("scores never appeared")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+    if actions:
+        monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    else:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 1
+    warned = "::warning::The nightly's Langfuse push did not complete" in capsys.readouterr().out
+    assert warned is (actions == "true")
 
 
 def test_keys_langfuse_refuses_stop_the_nightly_before_it_starts(tmp_path, monkeypatch):

@@ -105,7 +105,7 @@ from search.eval.corpus_dataset import (
 )
 from search.eval.dataset import item_id_for_case
 from search.eval.evaluate import evaluate_or_raise
-from search.eval.evaluator import ScoredAnswer, SearchChecks
+from search.eval.evaluator import ScoredAnswer, SearchChecks, answer_is_infra
 from search.eval.gate import Judgement, Observation, Outcome, exit_code, judge
 from search.eval.run_record import parse_run_id, record_manifest, run_record
 from search.eval.runner import (
@@ -356,7 +356,7 @@ def nightly(by_file: Mapping[str, Sequence[Case]], *, url: str, ctx: ScoreContex
             )
             return ScoredAnswer(
                 results=state.results,
-                infra=modal is None or any(r.infra for r in state.results.values()),
+                infra=answer_is_infra(state.results, run_failed=modal is None),
                 trace_id=state.trace_id(),
             )
 
@@ -458,8 +458,17 @@ def nightly_markdown(
     if experiment is not None:
         langfuse = f"- Langfuse experiment: `{experiment}`"
     else:
-        langfuse = f"- Langfuse: the push did not complete ({push_error or 'no push'})"
-    record_line = f"- Run record: `{record}`" if record is not None else "- Run record: not written"
+        langfuse = (
+            f"- Langfuse: the push did not complete ({push_error or 'no push'}). The run record "
+            "holds the night in full; Langfuse has no experiment, or a partial one, for it, "
+            "and the next nightly pushes its own."
+        )
+    record_line = (
+        f"- Run record: `apis-search/{record.name}/`, which the workflow keeps as the "
+        "`eval-records` artifact and uploads to the eval runs bucket"
+        if record is not None
+        else "- Run record: not written"
+    )
     lines += ["", "### Run", "", langfuse, record_line]
     return "\n".join(lines) + "\n"
 
@@ -668,7 +677,10 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
         unreachable = None
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
-        langfuse, unreachable = None, str(exc)
+        langfuse = None
+        unreachable = (
+            f"Langfuse did not answer at the start, so nothing was synced or pushed ({exc})"
+        )
     try:
         return _nightly_with(args, by_file, langfuse, unreachable=unreachable)
     finally:
@@ -691,7 +703,17 @@ def _nightly_with(
         schema, revision = _schema(args.nightly)
         release = _open_release()
         if langfuse is not None:
-            _sync(by_file, langfuse)
+            try:
+                _sync(by_file, langfuse)
+            except (httpx.HTTPError, ApiError) as exc:
+                if not _langfuse_at_fault(exc):
+                    raise
+                print(f"eval infrastructure error: the dataset sync failed: {exc}", file=sys.stderr)
+                langfuse = None
+                unreachable = (
+                    "Langfuse failed during the dataset sync, so the run was not pushed "
+                    f"({type(exc).__name__}: {exc})"
+                )
         run = _run_nightly(by_file, args.nightly, schema, release)
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
@@ -715,9 +737,7 @@ def _nightly_with(
     # raised once the summary is written.
     experiment, push_error, crash = None, None, None
     if langfuse is None:
-        push_error = (
-            f"Langfuse did not answer at the start, so nothing was synced or pushed ({unreachable})"
-        )
+        push_error = unreachable
         code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
     else:
         try:
@@ -735,6 +755,9 @@ def _nightly_with(
     print(markdown)
     if args.summary:
         args.summary.write_text(markdown, encoding="utf-8")
+    if push_error is not None and os.environ.get("GITHUB_ACTIONS") == "true":
+        # The nightly's usual exit 1 would hide a failed push, so it gets its own annotation.
+        print(f"::warning::The nightly's Langfuse push did not complete: {push_error}")
     if crash is not None:
         raise crash
     return code

@@ -84,7 +84,10 @@ def upload_runs(*, bucket: Bucket, root: Path) -> list[str]:
                     f"past it; created so far: {created}. Either the run id was reused, or "
                     "an earlier attempt created the object and its response was lost, which "
                     "the writer cannot tell apart since it may not read the object. The "
-                    "record is kept in the workflow's eval-records artifact."
+                    "record is kept in the workflow's eval-records artifact. When only the "
+                    "manifest is missing, someone who may write the bucket copies it from the "
+                    "artifact with `gcloud storage cp --no-clobber manifest.json "
+                    "gs://<bucket>/apis-search/<run id>/`; the writer cannot finish it."
                 ) from exc
             created.append(object_name)
             logger.info("created %s", object_name)
