@@ -470,6 +470,14 @@ def test_the_report_is_written_before_the_run_record(corpus, tmp_path, monkeypat
     assert (tmp_path / "report.json").exists()
 
 
+@pytest.mark.parametrize("option", ["--run-id=night-1", "--revision=abc123"])
+def test_a_record_option_without_records_is_a_usage_error(corpus, option):
+    with pytest.raises(SystemExit) as raised:
+        m.main(["--single-url=http://head", f"--corpus-dir={corpus}", option])
+
+    assert raised.value.code == 2
+
+
 def test_paired_mode_refuses_the_run_record_options(corpus, tmp_path):
     with pytest.raises(SystemExit) as raised:
         m.main([*paired_args(corpus, tmp_path), f"--records={tmp_path / 'runs'}"])

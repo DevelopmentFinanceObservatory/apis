@@ -9,16 +9,36 @@ graph or coverage, records an infra fault, which the results page leaves out of 
 
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 from typing import Any
 
-from dfo_evals.records import FaultClass, Run, RunManifest
+from dfo_evals.records import FaultClass, Run, RunManifest, SafeName
 from dfo_evals.report import AnyReportCase, AnyReportCaseFailure, run_from_report
+from pydantic import TypeAdapter, ValidationError
 from pydantic_evals.reporting import EvaluationReport
 
 from search.eval.checks import ANSWER
 from search.eval.corpus_dataset import SUITE, CorpusCase
 from search.eval.evaluator import ScoredAnswer
+
+# A run id names the run record's directory, so it follows dfo-evals' safe-name rule.
+_RUN_ID: TypeAdapter[str] = TypeAdapter(SafeName)
+
+
+def parse_run_id(value: str) -> str:
+    """Check a ``--run-id`` is a name a run record's directory can take, as arguments parse.
+
+    Raises:
+        argparse.ArgumentTypeError: The value does not match ``dfo-evals``' safe-name rule.
+    """
+    try:
+        return _RUN_ID.validate_python(value)
+    except ValidationError as exc:
+        raise argparse.ArgumentTypeError(
+            f"run id {value!r} must start with a letter or digit and hold only letters, "
+            "digits, '.', '_' and '-'"
+        ) from exc
 
 
 def record_manifest(

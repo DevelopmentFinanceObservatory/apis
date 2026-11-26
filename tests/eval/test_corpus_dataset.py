@@ -144,3 +144,17 @@ def test_the_digest_refuses_a_case_without_corpus_metadata():
 
     with pytest.raises(ValueError, match="'bare' has no corpus metadata"):
         corpus_digest(dataset)  # type: ignore[arg-type]
+
+
+def test_the_digest_moves_with_a_case_s_known_failures():
+    """``answer`` leaves known-failure checks out, so adding one changes the score a run
+    gives an identical answer, and the digest must show the rule changed."""
+    plain = make_case(id="a")
+    known = make_case(id="a", known_failure={"issue": 1, "checks": ["entities"]})
+    other = make_case(id="a", known_failure={"issue": 1, "checks": ["measure"]})
+
+    def digest(case: Case) -> str:
+        return corpus_digest(corpus_dataset({"f": [case]}, implemented_checks=ALL_CHECKS))
+
+    assert expectation_hash(plain) == expectation_hash(known)
+    assert len({digest(plain), digest(known), digest(other)}) == 3

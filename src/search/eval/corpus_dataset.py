@@ -106,18 +106,28 @@ def corpus_dataset(
 
 
 def corpus_digest(dataset: CorpusDataset) -> str:
-    """Digest the dataset's cases by id and ``expectation_hash``, for a run's manifest.
+    """Digest the dataset's cases for a run's manifest: each case's id, ``expectation_hash``
+    and known-failure checks.
 
-    Two runs share a digest exactly when they ran the same cases with the same requests
-    and expectations, so a change in rate between them reflects the system.
+    Two runs share a digest exactly when they ran the same cases with the same requests and
+    expectations and scored ``answer`` by the same rule. ``answer`` leaves a case's
+    known-failure checks out, so they join the digest; the gate's ``expectation_hash``
+    leaves them out on purpose and stays as it is.
 
     Raises:
         ValueError: A case has no metadata.
     """
-    pairs = []
+    rows = []
     for eval_case in dataset.cases:
         if eval_case.metadata is None:
             raise ValueError(f"case {eval_case.name!r} has no corpus metadata")
-        pairs.append([eval_case.inputs.case_id, eval_case.metadata.expectation_hash])
-    canonical = json.dumps(sorted(pairs), separators=(",", ":"))
+        known = eval_case.metadata.case.known_failure
+        rows.append(
+            [
+                eval_case.inputs.case_id,
+                eval_case.metadata.expectation_hash,
+                sorted(known.checks) if known else [],
+            ]
+        )
+    canonical = json.dumps(sorted(rows), separators=(",", ":"))
     return _DIGEST_PREFIX + hashlib.sha256(canonical.encode()).hexdigest()
