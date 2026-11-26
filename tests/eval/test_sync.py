@@ -738,8 +738,8 @@ def test_a_langfuse_down_at_the_start_still_runs_and_records_the_nightly(
 def test_a_langfuse_failure_during_the_sync_still_records_the_nightly(
     tmp_path, monkeypatch, status, code
 ):
-    """A sync Langfuse fails part-way is infrastructure, like a failed start: the cases
-    still run and the record is written. A request fault in the sync is a crash."""
+    """A sync Langfuse fails part-way is infrastructure, like a failed start. A request
+    fault in the sync is a crash, raised once the record and summary are written."""
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": ETHIOPIA})
     records, summary = tmp_path / "records", tmp_path / "nightly.md"
@@ -757,10 +757,11 @@ def test_a_langfuse_failure_during_the_sync_still_records_the_nightly(
     argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
 
     assert m.main([*argv, f"--summary={summary}"]) == code
-    if code == 3:
-        assert "Langfuse failed during the dataset sync" in summary.read_text()
-        (written,) = (records / SUITE).iterdir()
-        assert written.name.startswith("nightly-")
+    # Whoever is at fault, the cases run and the record and summary are written.
+    expected = "Langfuse failed during the dataset sync" if code == 3 else "the dataset sync failed"
+    assert expected in summary.read_text()
+    (written,) = (records / SUITE).iterdir()
+    assert written.name.startswith("nightly-")
 
 
 @pytest.mark.parametrize("actions", ["true", None])
@@ -781,8 +782,28 @@ def test_a_push_that_did_not_complete_raises_its_own_annotation(
         monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
 
     assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 1
-    warned = "::warning::The nightly's Langfuse push did not complete" in capsys.readouterr().out
+    warned = "::warning::The nightly Langfuse push did not complete" in capsys.readouterr().out
     assert warned is (actions == "true")
+
+
+def test_a_nightly_case_that_fails_its_answer_stays_scored_beside_a_lost_read(
+    tmp_path, monkeypatch
+):
+    """``ken`` answers Ethiopia and fails ``entities`` while the graph is down, so its
+    ``answer`` is a definite failure and stays a finding. ``ken-known`` lists
+    ``entities`` as known, so its ``answer`` rests on the lost read and is infra."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"ken": KENYA})
+    records = tmp_path / "records"
+    _stub_nightly(
+        monkeypatch, run_cases=_ethiopia_run_cases, graph=DownGraph(), push_run=lambda **_: "exp"
+    )
+
+    m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"])
+
+    (run_dir,) = (records / SUITE).iterdir()
+    faults = {r.case_id: r.fault for r in read_run(run_dir).results}
+    assert faults == {"ken": None, "ken-known": FaultClass.INFRA}
 
 
 def test_keys_langfuse_refuses_stop_the_nightly_before_it_starts(tmp_path, monkeypatch):

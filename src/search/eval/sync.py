@@ -7,15 +7,21 @@ expected output is the case's ``expect`` with families expanded. It archives eve
 item whose case is gone, including the items of a deleted case file. A plain sync opens no
 graph release.
 
-``python -m search.eval.sync --nightly URL`` syncs, then runs every eligible case once on
-the app at URL as the corpus dataset (``search.eval.corpus_dataset``), scoring each answer
-with the gate's checks and the derived ``answer`` check as the gate scores them. It lists
-every check that did not pass and is outside its case's ``known_failure``, and exits 0 when
-there is none, 1 when there is one, and 3 when the app's schema does not load, when the
-served graph release does not open, or when a post or a check's read failed on
-infrastructure and nothing else failed. A post that failed on infrastructure is a known
-failure on a case whose ``known_failure.checks`` holds ``task_outcome``, as in the gate.
-Any crash exits 2, an unset ``GRAPH_RELEASE_URI`` or ``LANGFUSE_PROJECT_ID`` among them.
+``python -m search.eval.sync --nightly URL`` loads the app's schema and the served graph
+release, syncs the datasets, then runs every eligible case on the app at URL as the corpus
+dataset (``search.eval.corpus_dataset``): one post per case, or ``repeat`` posts for a case
+that sets it. It scores each case's modal answer with the gate's checks and the derived
+``answer`` check. Unlike the gate, which fails ``task_outcome`` and marks every other check
+n/a, it scores a case with a post that failed on infrastructure on the error body
+``{"task_error": ...}`` with every check, so checks such as ``disposition`` fail too, even
+when the case's other posts answered. It lists every check that did not pass and is outside
+its case's ``known_failure``, and exits 0 when there is none, 1 when there is one, and 3
+when the app's schema does not load, when the served graph release does not open, or when
+a post or a check's read failed on infrastructure and nothing else failed. A post that
+failed on infrastructure is a known failure on a case whose ``known_failure.checks`` holds
+``task_outcome``, as in the gate, for the exit code; in the record and in Langfuse its
+``answer`` still fails through the other checks. Any crash exits 2, an unset
+``GRAPH_RELEASE_URI`` or ``LANGFUSE_PROJECT_ID`` among them.
 
 The nightly's results become a ``dfo-evals`` run record (``search.eval.run_record``): one
 trial per eligible case, scored by ``answer`` and tagged with its case file. With
@@ -23,16 +29,20 @@ trial per eligible case, scored by ``answer`` and tagged with its case file. Wit
 pushed to Langfuse as one experiment in each case file's dataset, all under one run name,
 with each case's response body as its output (``dfo_evals.langfuse_sink.push_run``). Each
 check scores 1 on a pass and 0 on a failure, and has no score when it is unverifiable, n/a
-or unreached. A push that Langfuse does not show in full before its timeout, a transport
-error, or a 5xx or 429 from Langfuse is infrastructure: the nightly then exits 1 when the
-checks gave 1, else 3. Any other push error, such as a 404 from an endpoint Langfuse
-removed, exits 2. When Langfuse fails the project check at the start, the nightly still
-runs and writes its record, skipping the sync and the push, which counts as infrastructure
-the same way. The first case whose task raises stops the run (exit 2) with its traceback.
-The summary is written either way, and
-the experiments are named ``apis-search`` with the run's name, in place of the per-file
-``nightly`` experiments of earlier runs. The record's
-revision is the commit the app's ``x-dfo-commit`` header names, or ``unknown``.
+or unreached.
+
+Langfuse is at fault when it does not show a push in full before its timeout, or answers
+with a transport error, a 5xx or a 429. At the project check or during the sync, the
+nightly then runs and records without syncing or pushing; during the push, the record is
+already written. Either way it exits 1 when the checks gave 1, else 3, and the summary says
+the push did not complete. Any other Langfuse error during the sync or the push, such as a
+404 from an endpoint Langfuse removed, exits 2 once the record and summary are written;
+keys Langfuse refuses, or keys of another project, exit 2 before anything runs. No record
+or summary is written when the schema or the release fails (exit 3), or when a case's task
+or the evaluator raises (exit 2, with the traceback). The experiments are named
+``apis-search`` with the run's name, in place of the per-file ``nightly`` experiments of
+earlier runs. The record's revision is the commit the app's ``x-dfo-commit`` header names,
+or ``unknown``.
 
 Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also requires
 ``LANGFUSE_PROJECT_ID``, the project the keys must name, and reads ``LANGFUSE_BASE_URL``
@@ -125,7 +135,7 @@ _SOURCE_KEY = "source"
 _NIGHTLY_CONCURRENCY = 8
 _NIGHTLY_SAMPLES: Final = 1
 _SCHEMA_TIMEOUT_S = 30.0
-# Each case runs once, so the record holds trial 1 of every case.
+# Each case is one trial, its modal answer, so the record holds trial 1 of every case.
 _TRIAL: Final = 1
 _UNKNOWN_REVISION: Final = "unknown"
 # Langfuse reads a comma in an experiment name as a list of names, so the sink refuses a
@@ -138,6 +148,8 @@ _EXIT_INFRA: Final = 3
 
 # Langfuse answers at or above this status when it, not the request, is at fault.
 _SERVER_ERROR: Final = 500
+# How much of an API error's body the summary and annotations quote.
+_DESCRIBED_BODY_CHARS: Final = 200
 # Langfuse answers this when it limits a client's rate, which a later run clears.
 _TOO_MANY_REQUESTS: Final = 429
 
@@ -305,11 +317,13 @@ class NightlyRun:
 
 
 def nightly(by_file: Mapping[str, Sequence[Case]], *, url: str, ctx: ScoreContext) -> NightlyRun:
-    """Run every eligible case once on ``url`` as the corpus dataset.
+    """Run every eligible case on ``url`` as the corpus dataset.
 
-    Each case's task posts it once, with at most ``_NIGHTLY_CONCURRENCY`` posts in flight
-    across the run, scores the answer with every check and ``answer``, and returns the
-    results as a ``ScoredAnswer``, which ``SearchChecks`` labels.
+    Each case's task posts it once, or ``repeat`` times for a case that sets it, with at most
+    ``_NIGHTLY_CONCURRENCY`` posts in flight across the run. It scores the modal answer with
+    every check and ``answer``, or, when a post failed on infrastructure, the error body
+    ``{"task_error": ...}`` with every check, and returns the results as a
+    ``ScoredAnswer``, which ``SearchChecks`` labels.
 
     Args:
         by_file: Cases keyed by case file stem, as ``load_case_files`` returns them.
@@ -459,13 +473,14 @@ def nightly_markdown(
         langfuse = f"- Langfuse experiment: `{experiment}`"
     else:
         langfuse = (
-            f"- Langfuse: the push did not complete ({push_error or 'no push'}). The run record "
-            "holds the night in full; Langfuse has no experiment, or a partial one, for it, "
-            "and the next nightly pushes its own."
+            f"- Langfuse: the push did not complete ({push_error or 'no push'}); Langfuse has "
+            "no experiment, or a partial one, for this night"
         )
+        if record is not None:
+            langfuse += ", and the run record holds it in full"
     record_line = (
-        f"- Run record: `apis-search/{record.name}/`, which the workflow keeps as the "
-        "`eval-records` artifact and uploads to the eval runs bucket"
+        f"- Run record: `{record.parent.name}/{record.name}/`, kept as the workflow's "
+        "`eval-records` artifact and, on `dev`, uploaded to the eval runs bucket"
         if record is not None
         else "- Run record: not written"
     )
@@ -532,7 +547,20 @@ def _connect(project_id: str) -> Langfuse:
     except (httpx.HTTPError, ApiError) as exc:
         if not _langfuse_at_fault(exc):
             raise
-        raise _InfraError(f"Langfuse did not answer: {type(exc).__name__}: {exc}") from exc
+        raise _InfraError(f"Langfuse did not answer: {_describe(exc)}") from exc
+
+
+def _describe(exc: BaseException) -> str:
+    """A short, one-line account of an error, for the summary and annotations: an API error
+    as its status and the start of its body, without the response headers it prints."""
+    if isinstance(exc, ApiError):
+        return f"ApiError {exc.status_code}: {repr(exc.body)[:_DESCRIBED_BODY_CHARS]}"
+    return " ".join(f"{type(exc).__name__}: {exc}".split())
+
+
+def _command_text(text: str) -> str:
+    """Escape text for a GitHub Actions workflow command, which ends at a newline."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _langfuse_at_fault(exc: BaseException) -> bool:
@@ -702,18 +730,25 @@ def _nightly_with(
         # The app's schema loads first, so an outage of the app reads as one.
         schema, revision = _schema(args.nightly)
         release = _open_release()
+        sync_crash: Exception | None = None
         if langfuse is not None:
             try:
                 _sync(by_file, langfuse)
-            except (httpx.HTTPError, ApiError) as exc:
-                if not _langfuse_at_fault(exc):
-                    raise
-                print(f"eval infrastructure error: the dataset sync failed: {exc}", file=sys.stderr)
+            except Exception as exc:
+                # The run goes on without Langfuse either way, so its record and summary are
+                # written; a sync error Langfuse is not at fault for is raised after them.
                 langfuse = None
-                unreachable = (
-                    "Langfuse failed during the dataset sync, so the run was not pushed "
-                    f"({type(exc).__name__}: {exc})"
-                )
+                if _langfuse_at_fault(exc):
+                    print(
+                        f"eval infrastructure error: the dataset sync failed: {_describe(exc)}",
+                        file=sys.stderr,
+                    )
+                    unreachable = f"Langfuse failed during the dataset sync, so the run was not pushed ({_describe(exc)})"
+                else:
+                    sync_crash = exc
+                    unreachable = (
+                        f"the dataset sync failed, so the run was not pushed ({_describe(exc)})"
+                    )
         run = _run_nightly(by_file, args.nightly, schema, release)
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
@@ -735,15 +770,16 @@ def _nightly_with(
     # keeps the run's findings. Langfuse or the network failing (``_langfuse_at_fault``) is
     # infrastructure, which an unmarked failure outranks. Any other push error is a crash,
     # raised once the summary is written.
-    experiment, push_error, crash = None, None, None
+    experiment, push_error, crash = None, None, sync_crash
     if langfuse is None:
         push_error = unreachable
-        code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
+        if crash is None:
+            code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
     else:
         try:
             experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=langfuse)
         except Exception as exc:
-            push_error = f"{type(exc).__name__}: {exc}"
+            push_error = _describe(exc)
             if _langfuse_at_fault(exc):
                 code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
             else:
@@ -757,7 +793,9 @@ def _nightly_with(
         args.summary.write_text(markdown, encoding="utf-8")
     if push_error is not None and os.environ.get("GITHUB_ACTIONS") == "true":
         # The nightly's usual exit 1 would hide a failed push, so it gets its own annotation.
-        print(f"::warning::The nightly's Langfuse push did not complete: {push_error}")
+        print(
+            f"::warning::{_command_text(f'The nightly Langfuse push did not complete: {push_error}')}"
+        )
     if crash is not None:
         raise crash
     return code
