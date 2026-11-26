@@ -161,7 +161,10 @@ class DepartureFact:
       `omitted_unnamed` counts the entities it leaves out that no held name covers, and
       `omission_undecided` marks an answer whose conversion may leave out rows when the
       loaded tables cannot say whose; it names no entity.
-    - `partial` (`modelled_values`): only some of the served series are modelled.
+    - `some_series` (`modelled_values`): only some of the served series are modelled.
+    - `projected_years` (`modelled_values`): on an answer whose window opted in to
+      projections, the first and last projected years it serves; `sources` then names the
+      sources projecting them, by display name, empty when none has one.
     - `limits` (`scope_limited`): the values a no-data check covered that the request did
       not name, each as the code index names it.
     - `values` (`measure_not_applied`): when `asked` is `None`, what the answer does not
@@ -216,7 +219,8 @@ class DepartureFact:
     omitted_years: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...] = ()
     omitted_unnamed: int = 0
     omission_undecided: bool = False
-    partial: bool = False
+    some_series: bool = False
+    projected_years: tuple[int, int] | None = None
     limits: tuple[str, ...] = ()
     values: tuple[str, ...] = ()
     left_out: bool = False

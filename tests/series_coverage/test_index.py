@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import tracemalloc
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
@@ -25,7 +26,7 @@ from series_coverage.index import (
     elected_year,
 )
 from series_coverage.schema import FacetMetadata, RoleNames, YearHorizon
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, dev_provenance_nodes, documenting
 from tests.series_coverage.support import (
     _ROWS,
     BUILD_EPOCH_YEAR,
@@ -746,6 +747,121 @@ def test_elected_years_count_the_series_the_read_selects() -> None:
     assert idx.elected_years(
         variables=[_WINDOW_SV], bound={"donor": frozenset(map(_donor, (0, 5, 6, 7)))}
     ) == {_WINDOW_SV: 2024}
+
+
+_IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
+_IDS_REPORTED = "ids-reported"
+_IDS_ESTIMATED = "ids-estimated"
+
+
+def test_a_read_holds_back_partial_and_projected_years_unless_it_opts_in() -> None:
+    """CRS, marked partial for 2025, holds six donors in 2025 and ten in 2024 and 2023, so
+    2025 would elect. An IDS-like variable holds reported values to 2025 and `Estimated`
+    values, a declared projection pair, from 2026 to 2030. A read opting in to nothing
+    elects 2024 and 2025, its headline's recent years end in 2024, a range to 2030 serves
+    neither held-back run, neither run's years are held (`years_held`), bound or not, and
+    facet candidates counted for such a read (`filter_facet_candidates`) hold neither run's
+    points. Opting in to each kind serves its years again."""
+    rows = [
+        *_donor_rows(_WINDOW_SV, {2025: 6, 2024: 10, 2023: 10}),
+        *_donor_rows(_SECOND_SV, {2025: 4, 2024: 4}, facet_id=_IDS_REPORTED),
+        *_donor_rows(_SECOND_SV, dict.fromkeys(range(2026, 2031), 4), facet_id=_IDS_ESTIMATED),
+    ]
+    idx = _election_index(
+        rows,
+        {
+            _WINDOW_FACET: FacetMetadata(provenance_id=_CRS_PROVENANCE, unit="USD"),
+            _IDS_REPORTED: FacetMetadata(provenance_id=_IDS_PROVENANCE, unit="USD"),
+            _IDS_ESTIMATED: FacetMetadata(
+                provenance_id=_IDS_PROVENANCE, measurement_method="Estimated", unit="USD"
+            ),
+        },
+    )
+    variables = [_WINDOW_SV, _SECOND_SV]
+    crs = {_CRS_PROVENANCE: dev_provenance_nodes()[_CRS_PROVENANCE]}
+    unmarked = {_IDS_PROVENANCE: {"lastDataRefreshDate": ("2026-10-29",)}}
+
+    with bound_catalogue(documenting({**crs, **unmarked})):
+        elected = idx.elected_years(variables=variables)
+        headline = idx.headline(variables=[_WINDOW_SV], elected=elected)
+        extent = idx.served_extent(variables=variables, first_year=2020, last_year=2030)
+        opted = {
+            kind: idx.elected_years(variables=variables, include=frozenset({kind}))
+            for kind in ("partial", "projected")
+        }
+        opted_headline = idx.headline(
+            variables=[_WINDOW_SV],
+            elected=opted["partial"],
+            include=frozenset({"partial"}),
+        )
+        held = {
+            (variable, kinds, bound): idx.years_held(
+                variables=[variable],
+                bound={"recipient": frozenset({KEN})} if bound else {},
+                include=frozenset(kinds),
+            )
+            for variable, kinds in (
+                (_WINDOW_SV, ()),
+                (_WINDOW_SV, ("partial",)),
+                (_SECOND_SV, ()),
+                (_SECOND_SV, ("projected",)),
+            )
+            for bound in (False, True)
+        }
+        candidates = {
+            kinds: {
+                facet.facet_id: (facet.n_obs, facet.last_year)
+                for found in idx.filter_facet_candidates(
+                    variables=variables, include=frozenset(kinds)
+                )
+                for facet in found.facets
+            }
+            for kinds in ((), ("partial",), ("projected",))
+        }
+
+    assert elected == {_WINDOW_SV: 2024, _SECOND_SV: 2025}
+    assert headline is not None
+    assert [c.year for c in headline.recent_years] == [2024, 2023, 2022]
+    assert extent is not None and extent.last_year == 2025
+    assert opted == {
+        "partial": {_WINDOW_SV: 2025, _SECOND_SV: 2025},
+        "projected": {_WINDOW_SV: 2024, _SECOND_SV: 2030},
+    }
+    assert opted_headline is not None
+    assert (opted_headline.year, opted_headline.series) == (2025, 6)
+    for bound in (False, True):
+        assert held[(_WINDOW_SV, (), bound)] == {2023, 2024}
+        assert held[(_WINDOW_SV, ("partial",), bound)] == {2023, 2024, 2025}
+        assert held[(_SECOND_SV, (), bound)] == {2024, 2025}
+        assert held[(_SECOND_SV, ("projected",), bound)] == set(range(2024, 2031))
+    assert candidates == {
+        (): {_WINDOW_FACET: (20, 2024), _IDS_REPORTED: (8, 2025)},
+        ("partial",): {_WINDOW_FACET: (26, 2025), _IDS_REPORTED: (8, 2025)},
+        ("projected",): {
+            _WINDOW_FACET: (20, 2024),
+            _IDS_REPORTED: (8, 2025),
+            _IDS_ESTIMATED: (20, 2030),
+        },
+    }
+
+
+def test_a_facet_without_metadata_is_served_whole_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No metadata names the facet's source, so no cut can judge its 2025, and the index
+    says so once."""
+    idx = _election_index(_donor_rows(_WINDOW_SV, {2025: 6, 2024: 10}))
+    coverage_index_module._warn_unjudged.cache_clear()
+    crs = {_CRS_PROVENANCE: dev_provenance_nodes()[_CRS_PROVENANCE]}
+
+    with bound_catalogue(documenting(crs)), caplog.at_level(logging.WARNING):
+        held = idx.years_held(variables=[_WINDOW_SV], bound={"recipient": frozenset({KEN})})
+        idx.years_held(variables=[_WINDOW_SV], bound={"recipient": frozenset({KEN})})
+
+    assert held == {2024, 2025}
+    assert [r.args for r in caplog.records if r.name == coverage_index_module.__name__] == [
+        (_WINDOW_FACET,)
+    ]
 
 
 def test_a_two_variable_headline_names_the_newest_elected_year_and_counts_its_variable() -> None:

@@ -609,6 +609,12 @@ class CacheScope:
         read unjudged, its second sample cut or failed (`clients.llm.settle`)."""
         return self._extraction_agreed
 
+    @property
+    def extraction_agreement(self) -> AnyAgreement | None:
+        """The agreement of the served extraction's two samples, noted last
+        (`note_extraction`), None before one is noted."""
+        return self._agreements[-1] if self._agreements else None
+
     def note_health(
         self,
         *,

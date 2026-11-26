@@ -45,8 +45,8 @@ name: Deploy
 #
 # The apis service moves to an image only after both migration jobs
 # (vars.JOB_DATASETS_MIGRATE, vars.JOB_PRESENTATION_MIGRATE), the datasets
-# maintenance job (vars.JOB_DATASETS_MAINTENANCE), the origin catalogue job
-# (vars.JOB_ORIGIN_CATALOGUE), the search catalogue job
+# maintenance job (vars.JOB_DATASETS_MAINTENANCE), the origin catalogue
+# candidate job (vars.JOB_ORIGIN_CATALOGUE_CANDIDATE), the search catalogue job
 # (vars.JOB_SEARCH_CATALOGUE), the graph release job
 # (vars.JOB_GRAPH_RELEASE), and the datasets worker service
 # (vars.SERVICE_WORKER) have moved onto that same image: build and push the
@@ -67,9 +67,11 @@ name: Deploy
 # answers an error or does not answer never serves (see the warm step). The
 # environment must set vars.JOB_DATASETS_MAINTENANCE, and the upfront variable
 # check refuses the deploy when it is missing.
-# The origin catalogue job is pointed at the new image on every deploy but
-# built only when no compatible artifact is published for the image's
-# format (see its steps below). The graph release job is pointed at the new
+# The origin catalogue candidate job is pointed at the new image on every
+# deploy and builds only when no compatible artifact is published for the
+# image's format. The scheduled origin catalogue job
+# (vars.JOB_ORIGIN_CATALOGUE) moves to the new image right after traffic
+# does (see their steps below). The graph release job is pointed at the new
 # image and left to its Scheduler; the deploy first checks that the new image
 # opens the published release and builds one when it does not (see its step).
 # The search catalogue job is pointed at the new image and run once on it,
@@ -93,6 +95,13 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # GitHub's own limit, stated so the steps below are read against it. The
+    # origin catalogue ensure step can run three job executions in a row
+    # (verify, build, verify), each bounded by its job's 7200-second task
+    # timeout, so it can take up to 21600 seconds, which is this limit. The job
+    # runs with no task retries (dfo-infra sets max retries 0 on both origin
+    # catalogue jobs), so one execution is one attempt.
+    timeout-minutes: 360
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
@@ -156,6 +165,7 @@ jobs:
           JOB_DATASETS_MIGRATE: ${{ vars.JOB_DATASETS_MIGRATE }}
           JOB_PRESENTATION_MIGRATE: ${{ vars.JOB_PRESENTATION_MIGRATE }}
           JOB_ORIGIN_CATALOGUE: ${{ vars.JOB_ORIGIN_CATALOGUE }}
+          JOB_ORIGIN_CATALOGUE_CANDIDATE: ${{ vars.JOB_ORIGIN_CATALOGUE_CANDIDATE }}
           JOB_SEARCH_CATALOGUE: ${{ vars.JOB_SEARCH_CATALOGUE }}
           JOB_DATASETS_MAINTENANCE: ${{ vars.JOB_DATASETS_MAINTENANCE }}
           JOB_GRAPH_RELEASE: ${{ vars.JOB_GRAPH_RELEASE }}
@@ -165,14 +175,15 @@ jobs:
           checked=0
           for name in PROJECT_ID REGION AR_REPO SERVICE_APIS SERVICE_WORKER \
             JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_ORIGIN_CATALOGUE \
-            JOB_SEARCH_CATALOGUE JOB_DATASETS_MAINTENANCE JOB_GRAPH_RELEASE; do
+            JOB_ORIGIN_CATALOGUE_CANDIDATE JOB_SEARCH_CATALOGUE \
+            JOB_DATASETS_MAINTENANCE JOB_GRAPH_RELEASE; do
             checked=$((checked + 1))
             if [ -z "${!name}" ]; then
               echo "::error::Missing vars.$name in the '${{ inputs.environment }}' GitHub Environment."
               missing=1
             fi
           done
-          [ "$checked" -eq 11 ] || { echo "::error::checked $checked variables, expected 11."; exit 1; }
+          [ "$checked" -eq 12 ] || { echo "::error::checked $checked variables, expected 12."; exit 1; }
           [ "$missing" -eq 0 ] || exit 1
           image="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:${{ steps.target.outputs.sha }}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
@@ -208,8 +219,29 @@ jobs:
           REGION: ${{ vars.REGION }}
           PROJECT_ID: ${{ vars.PROJECT_ID }}
           TARGET: ${{ steps.target.outputs.sha }}
+          JOB: ${{ vars.JOB_ORIGIN_CATALOGUE }}
           FORCE: ${{ github.event_name == 'workflow_dispatch' }}
         run: .github/scripts/deploy_decide.sh
+
+      # A job writes only its own image's format root, so the scheduled origin
+      # catalogue job must run the image the apis service serves. A run that
+      # stopped between the traffic move and the job's update, or whose update
+      # failed, leaves the job on the previous image, and the decide step then
+      # deploys. This step reads the serving revisions from status.traffic,
+      # and points the job at their image when it runs another, before
+      # anything else moves, so the job writes the served root even if this
+      # run stops early. Traffic split across revisions running different
+      # images has no one serving image, and the step fails the run with
+      # nothing moved. See .github/scripts/deploy_reconcile.sh.
+      - name: Point the scheduled origin catalogue job at the serving image
+        id: reconcile
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          SERVICE: ${{ vars.SERVICE_APIS }}
+          JOB: ${{ vars.JOB_ORIGIN_CATALOGUE }}
+          REGION: ${{ vars.REGION }}
+          PROJECT_ID: ${{ vars.PROJECT_ID }}
+        run: .github/scripts/deploy_reconcile.sh
 
       - uses: docker/setup-buildx-action@v4
         if: steps.decide.outputs.deploy == 'true'
@@ -322,21 +354,24 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # The origin catalogue job moves onto the new image on every deploy so
-      # its scheduled runs (Cloud Scheduler, every 15 minutes) use the new
-      # code. The deploy itself only needs the guarantee the services have at
-      # startup: the apis service and the datasets worker load the catalogue
-      # through ORIGIN_CATALOGUE_URI
-      # (`origin_catalogue.service.get_catalogue_service()`) and fail
-      # readiness when none can be loaded. The scheduled job owns freshness,
-      # and a running service reloads a newer build within
+      # The origin catalogue candidate job has the scheduled origin catalogue
+      # job's template, environment, service account and task timeout, and no
+      # Scheduler. Each deploy points it at the new image and runs the
+      # catalogue check and any build as its executions, so the scheduled job
+      # stays on the serving image until traffic moves (see "Point the
+      # scheduled origin catalogue job at the new image"). The apis service
+      # and the datasets worker load the catalogue through
+      # ORIGIN_CATALOGUE_URI (`origin_catalogue.service.get_catalogue_service()`)
+      # and fail readiness when none can be loaded, so the deploy needs a
+      # compatible build published before either moves. The scheduled job
+      # owns freshness, and a running service reloads a newer build within
       # ORIGIN_CATALOGUE_RECHECK_SECONDS, so a deploy does not rebuild a
       # catalogue that is already published.
-      - name: Point the origin catalogue job at the new image
+      - name: Point the origin catalogue candidate job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
-          gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+          gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE_CANDIDATE }}" \
             --image="${{ steps.image.outputs.image }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
@@ -345,37 +380,43 @@ jobs:
       # `python -m origin_catalogue.verify` loads the catalogue from
       # ORIGIN_CATALOGUE_URI with the loader the services call at startup and
       # exits non-zero unless a compatible build loads from this image's
-      # format root. It runs as an execution of the origin catalogue Job with
-      # its args overridden, so it reads the Job's Terraform-provisioned
-      # ORIGIN_CATALOGUE_URI.
+      # format root. It runs as an execution of the candidate job with its
+      # args overridden, so it reads the Terraform-provisioned
+      # ORIGIN_CATALOGUE_URI the scheduled job shares.
       #
       # Verify runs first. It passes whenever the new image's format root
       # holds a compatible build, however old, and the deploy goes on. The
       # first deploy and a format bump have no build in the new format root,
       # so verify fails, the build job (`python -m origin_catalogue.job`)
-      # runs, and a second verify confirms the build published one, all
-      # before traffic moves. With no earlier build to carry forward, that
-      # build is a full one, bounded by the Job's 7200-second timeout. The
-      # job exits 1 on a refused or failed build, and 0 without publishing
-      # when it skips, discards its build or loses the publish race, so the
-      # second verify is what checks that a compatible catalogue exists. This
-      # path has no earlier build to carry the UN rows forward from, so a UN
-      # outage also fails the build (see deploy/origin-catalogue.md). A build
-      # failure, or a second verify failure, fails the step and stops the
-      # deploy with both services on their current image.
+      # runs on the candidate job, and a second verify confirms the build
+      # published one, all before traffic moves. With no earlier build to
+      # carry forward, that build is a full one, bounded by the job's
+      # 7200-second task timeout. The job exits 1 on a refused or failed
+      # build, and 0 without publishing when it skips, discards its build or
+      # loses the publish race, so the second verify is what checks that a
+      # compatible catalogue exists. This path has no earlier build to carry
+      # the UN rows forward from, so a UN outage also fails the build (see
+      # deploy/origin-catalogue.md). A build failure, or a second verify
+      # failure, fails the step and stops the deploy with both services and
+      # the scheduled job on their current image. The step runs three job
+      # executions at most, one after another, and waits on nothing else, so
+      # each execution's task timeout bounds it and it sets no timeout of its
+      # own. The jobs run with no task retries (dfo-infra sets max retries 0 on
+      # both origin catalogue jobs), so a timeout or a failure ends the
+      # execution at once.
       - name: Ensure a compatible origin catalogue is published
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
           verify() {
-            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE_CANDIDATE }}" \
               --region="${{ vars.REGION }}" \
               --project="${{ vars.PROJECT_ID }}" \
               --wait \
               --args=-m,origin_catalogue.verify
           }
           if ! verify; then
-            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE_CANDIDATE }}" \
               --region="${{ vars.REGION }}" \
               --project="${{ vars.PROJECT_ID }}" \
               --wait
@@ -482,24 +523,6 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --wait \
             --args=-m,search.catalogue.verify
-
-      # The async operations worker (the `infra` repository's google_cloud_run_v2_service
-      # .datasets_worker) runs the same image as the apis service, and moves
-      # onto the new one before the apis step below does, because an
-      # in-flight or newly-enqueued operation must run against the schema and
-      # graph release this deploy just brought current. Image-only
-      # update, with traffic following the new revision at once. `infra` owns the
-      # service's own scaling/secrets/runtime-service-account config via
-      # lifecycle.ignore_changes on the container image.
-      - name: Point the datasets worker at the new image
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run services update "${{ vars.SERVICE_WORKER }}" \
-            --image="${{ steps.image.outputs.image }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --quiet
 
       # Image-only update against the service `infra` already defined. This
       # step uses `gcloud run services update`, not `gcloud run services
@@ -614,6 +637,28 @@ jobs:
           echo "::error::The candidate revision answered a probe with an error, or could not be probed where the probe is required. Traffic stays on the previous revision. See the 'Warm the candidate revision' step."
           exit 1
 
+      # The async operations worker (the `infra` repository's google_cloud_run_v2_service
+      # .datasets_worker) runs the same image as the apis service. It moves
+      # onto the new one after the candidate revision passes its probe and
+      # right before traffic moves, because an in-flight or newly-enqueued
+      # operation must run against the schema and graph release this deploy
+      # just brought current. The probe calls only skills, graph schema and
+      # stated-scope routes, none of which enqueue an operation or call the
+      # worker, so the probe needs the previous worker no less than the new
+      # one, and a failed probe leaves the worker on the serving image.
+      # Image-only update, with traffic following the new revision at once.
+      # `infra` owns the service's own scaling/secrets/runtime-service-account
+      # config via lifecycle.ignore_changes on the container image.
+      - name: Point the datasets worker at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.SERVICE_WORKER }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
       # Moves all traffic to the probed revision by name, so no other
       # revision can take it while settle and backfill run.
       - name: Move traffic to the candidate revision
@@ -629,22 +674,49 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # A job writes only its own image's format root. Until traffic moves the
+      # apis service reads the previous image's root, which the scheduled
+      # origin catalogue job (Cloud Scheduler, every 15 minutes) keeps fresh
+      # while it runs the previous image. Moving the job here, right after
+      # the apis service starts reading the new root, keeps it refreshing the
+      # root the serving image reads. The job takes the staged revision's
+      # image by digest, the string the decide and reconcile steps compare
+      # with the serving revision's image. A deploy that stops before traffic
+      # moves leaves this job on the serving image. A deploy that stops
+      # between the worker update and the traffic move leaves the worker
+      # reading the new format root, which nothing refreshes until the next
+      # deploy, while the scheduled job keeps the apis service's root current.
+      # A failed update lets the steps after it run, and the last step fails
+      # the run. The job then runs another image than the serving one, so the
+      # next run of any commit deploys and its reconcile step moves the job.
+      - name: Point the scheduled origin catalogue job at the new image
+        id: scheduled_job
+        if: steps.decide.outputs.deploy == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            --image="${{ steps.stage.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
       # statements for a pin principal that is neither a label nor an open
-      # caller's `ip:` key, under a table lock that holds pins back until it
-      # commits, so a repeat run changes nothing. A version row the previous
-      # image writes needs no repair, also for a request an old revision
-      # finishes after this step: the insert trigger of migration 0030 fills
-      # the facts of a row written with only immutable_body, and that of
-      # migration 0033 renames the party-kind enrichment `kind` to
-      # `party_kind`. settle counts the version rows holding no facts, those
-      # still naming `kind` and the pin references still raw, and fails the
-      # step when any count is above 0. It runs as an execution of the
-      # maintenance job, whose container command is `datasets-maintenance`,
-      # with the task as its args. The step must run on every deploy: a raw
-      # pin reference matches no caller's label.
+      # caller's `ip:`, `user:` or `conversation:` key, under a table lock
+      # that holds pins back until it commits, so a repeat run changes
+      # nothing. A version row the previous image writes needs no repair, also
+      # for a request an old revision finishes after this step: the insert
+      # trigger of migration 0030 fills the facts of a row written with only
+      # immutable_body, and that of migration 0033 renames the party-kind
+      # enrichment `kind` to `party_kind`. settle counts the version rows
+      # holding no facts, those still naming `kind` and the pin references
+      # still raw, and fails the step when any count is above 0. It runs as an
+      # execution of the maintenance job, whose container command is
+      # `datasets-maintenance`, with the task as its args. The step must run
+      # on every deploy: a raw pin reference matches no caller's label.
       - name: Settle rows the previous image wrote
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -790,23 +862,31 @@ jobs:
           fi
           echo "Revision $serving serves all traffic as the latest revision and runs the released image."
 
-      # The two warning steps continue on error, so a failure in either still
-      # runs the description backfill, whose records depend on series
-      # statistics that leave the working tier, makes traffic follow the
-      # latest revision and checks the released image. This step then fails
-      # the run and names each warning step that failed. Traffic already
-      # follows the latest revision without the `candidate` tag, so a rerun of
-      # the same commit deploys nothing; the next deploy, or a
-      # `workflow_dispatch` run, runs the warning steps again from the rows
-      # that remain.
+      # The scheduled job's update and the two warning steps continue on error,
+      # so a failure in any of them still runs the description backfill, whose
+      # records depend on series statistics that leave the working tier, makes
+      # traffic follow the latest revision and checks the released image. This
+      # step then fails the run and names each of these steps that failed.
+      # Traffic already follows the latest revision without the `candidate`
+      # tag. After a failed warning step, a rerun of the same commit deploys
+      # nothing, and the next deploy, or a `workflow_dispatch` run, runs the
+      # warning steps again from the rows that remain. After a failed
+      # scheduled job update, the job runs another image than the serving one,
+      # so a rerun of the same commit deploys and points the job at the
+      # serving image before anything else moves.
       - name: Fail on a failed warning step
         if: steps.decide.outputs.deploy == 'true'
         env:
           REWRITE_WARNINGS: ${{ steps.rewrite_warnings.outcome }}
           BACKFILL_WARNINGS: ${{ steps.backfill_warnings.outcome }}
+          SCHEDULED_JOB: ${{ steps.scheduled_job.outcome }}
         run: |
           set -euo pipefail
           failed=0
+          if [ "$SCHEDULED_JOB" = failure ]; then
+            echo "::error::The 'Point the scheduled origin catalogue job at the new image' step failed. The scheduled job is on the previous image and writes the previous format root. A rerun of this commit points it at the serving image before anything else moves."
+            failed=1
+          fi
           if [ "$REWRITE_WARNINGS" = failure ]; then
             echo "::error::The 'Rewrite warnings in an old format' step failed. Its log names the maintenance job execution and why it failed."
             failed=1
@@ -821,9 +901,15 @@ jobs:
       # follow step, would leave traffic pinned by name, so a revision `infra`
       # creates for a configuration change would serve nothing until a deploy
       # succeeds. This step makes traffic follow the latest revision again and
-      # keeps the `candidate` tag, so the next run still deploys. A failed
-      # warning step fails the run only in the step above, after the follow
-      # step succeeded, so it does not run this step.
+      # keeps the `candidate` tag, so the next run still deploys. A cancelled
+      # run skips it: a cancellation can land before Cloud Run received the
+      # move, and following the latest revision then would serve the
+      # candidate while the scheduled origin catalogue job writes the previous
+      # format root. A cancelled run leaves traffic pinned and the tag in
+      # place, so the next run deploys, and its reconcile step first points
+      # the job at whatever serves. A failed scheduled job update or warning
+      # step fails the run only in the step above, after the follow step
+      # succeeded, so it does not run this step.
       - name: Follow the latest revision after a failure
         if: failure() && steps.move.outcome == 'success' && steps.follow.outcome != 'success'
         run: |

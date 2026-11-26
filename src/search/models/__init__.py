@@ -18,6 +18,8 @@ from .coverage import (
     CoverageExact,
     Headline,
     HeadlineYear,
+    HeldBack,
+    ReportedShare,
     coverage_is_empty,
 )
 from .departure import (
@@ -47,6 +49,7 @@ from .grammar import (
     DataCommonsRef,
     Expansion,
     GraphRef,
+    HeldKind,
     ProvenanceRef,
     RequestedWindow,
     SentenceToken,
@@ -383,6 +386,8 @@ __all__ = [
     "GraphRef",
     "Headline",
     "HeadlineYear",
+    "HeldBack",
+    "HeldKind",
     "IdentityBinding",
     "IdentityBindingExact",
     "IdentityBindingSet",
@@ -455,6 +460,7 @@ __all__ = [
     "RawTextInput",
     "RelatedMeasure",
     "Relaxation",
+    "ReportedShare",
     "RequestedWindow",
     "Resolution",
     "ResolutionTrace",

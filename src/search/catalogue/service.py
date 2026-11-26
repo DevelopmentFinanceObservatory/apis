@@ -26,7 +26,12 @@ from pydantic import Field
 
 from artifact_publication.jobs import AliasOnlySettings
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from search.catalogue.artifact import CatalogueArtifact, load_published, read_pointer
+from search.catalogue.artifact import (
+    FORMAT_VERSION,
+    CatalogueArtifact,
+    load_published,
+    read_pointer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +143,7 @@ class SearchCatalogueService:
             loaded = self._loader(self._artifact_uri)
             fields = {
                 "event": "search_catalogue_loaded",
+                "format_version": FORMAT_VERSION,
                 "catalogue_version": loaded.catalogue_version,
                 "previous_catalogue_version": None if old is None else old.catalogue_version,
                 "counts": loaded.counts.model_dump(mode="json"),

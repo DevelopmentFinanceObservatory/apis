@@ -202,13 +202,19 @@ def _code_index_no_summable_axis() -> CodeIndex:
     )
 
 
-def _spec_id_and_sidecar() -> tuple[str, dict]:
-    recomputed = recompute_identity(_IDENTITY)
+def _spec_id_and_sidecar(*, window: dict | None = None) -> tuple[str, dict]:
+    """`_IDENTITY`'s spec id and sidecar, its `requested_window` replaced by `window`."""
+    identity = _IDENTITY if window is None else {**_IDENTITY, "requested_window": window}
+    recomputed = recompute_identity(identity)
     return recomputed.spec_id, {
         "schema_version": 1,
         "spec_id": recomputed.spec_id,
-        "identity": _IDENTITY,
+        "identity": identity,
     }
+
+
+_ALL_WITH_PARTIAL = {"kind": "all", "include": ["partial"]}
+"""A window serving the partial periods a test's catalogue marks."""
 
 
 def _mint(client, *, spec_id: str, sidecar: dict, options: dict) -> dict:
@@ -606,8 +612,9 @@ def _partial(stat_vars: list[str], mark: str) -> list[dict[str, object]]:
 def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
     serve_catalogue: Callable[[Catalogue], None],
 ) -> None:
-    """The source marks 2020 partial. The sum of both members names its row by the spec id
-    under the members' provenance, so it is partial from the members' mark."""
+    """The source marks 2020 partial and the window opts in to it. The sum of both members
+    names its row by the spec id under the members' provenance, so it is partial from the
+    members' mark."""
     _marking(serve_catalogue, "2020")
     version_store = FakeVersionRecordDatasetStore()
     client = _client(
@@ -617,7 +624,7 @@ def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
         code_index=_code_index(),
         coverage=_coverage_service(),
     )
-    spec_id, sidecar = _spec_id_and_sidecar()
+    spec_id, sidecar = _spec_id_and_sidecar(window=_ALL_WITH_PARTIAL)
 
     collapsed = _mint(
         client,

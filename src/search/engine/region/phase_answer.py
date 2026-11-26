@@ -23,7 +23,6 @@ from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableErro
 from origin_catalogue import current_catalogue
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError
-from search.engine.extract import DateRequest
 from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
@@ -42,6 +41,7 @@ from search.engine.region.convertibility import (
     decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
+    narrowed_request,
     option_pins,
     over_conversion_period,
     survivor_declared_roles,
@@ -393,8 +393,8 @@ def _narrowed_to_period(
     """The answer read over `period`'s window, departing `year_unavailable` naming the
     table that leaves the other years out and `requested`, the years asked
     (`_over_conversion_period`), with the years it shows."""
-    state.date_request = DateRequest(window=period.window, latest=False)
-    mat_result = over_conversion_period(mat_result, period)
+    state.date_request = narrowed_request(state.date_request, period)
+    mat_result = over_conversion_period(mat_result, period, date_request=state.date_request)
     state.mat_result = mat_result
     filtered = filter_answer(
         mat_result,
@@ -402,6 +402,7 @@ def _narrowed_to_period(
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
+    state.date_request = filtered.date_request
     warning, fact = conversion_period_departure(period, requested=requested, plan=filtered.plan)
     state.depart(warning, fact)
     assert fact.shown is not None
@@ -421,10 +422,12 @@ def _answer_unit_filter(
 def _install_filtered_answer(
     state: ResolveState, mat_result: Materialised, filtered: FilteredAnswer
 ) -> None:
-    """Record the answer's coverage, headline and read plan, and restate the discovered-scope
-    warning to count the members that plan serves, as the scope list and coverage do. A
-    part whose read elected a composite (`ResolveState.reading`) counts the composite's
-    parties instead, once its Spec is minted (`_build_definite_spec`)."""
+    """Record the answer's coverage, headline, read plan and the request it settled
+    (`facets.plan_answer`), whose window's opt-in the identity states, and restate the
+    discovered-scope warning to count the members that plan serves, as the scope list and
+    coverage do. A part whose read elected a composite (`ResolveState.reading`) counts the
+    composite's parties instead, once its Spec is minted (`_build_definite_spec`)."""
+    state.date_request = filtered.date_request
     state.elected_coverage = filtered.coverage
     state.elected_headline = filtered.headline
     state.elected_plan = filtered.plan
@@ -538,6 +541,7 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
+    state.date_request = _filtered.date_request
     mat_result, _filtered = _over_answer_years(state, mat_result, _filtered, _admission)
     _install_filtered_answer(state, mat_result, _filtered)
 

@@ -15,10 +15,11 @@ the role it lacks, which no lookup returns as a dcid.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
 from types import MappingProxyType
 from typing import Literal, cast
 
@@ -30,6 +31,14 @@ from dfo_frame_grammar.rolling import ANCHOR_SHARE
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
 from dfo_platform.lru_memo import LruMemo
 from dfo_platform.roles import RoleAxis
+from materialise.held_back import (
+    HELD_KINDS,
+    cut_catalogue,
+    held_back,
+    judge,
+    last_period_before,
+)
+from materialise.method_status import is_projection
 from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
 from series_coverage._bits import bit_length64, lowest_set_bit_index64, popcount64
@@ -60,6 +69,8 @@ from series_coverage.schema import (
     YearHorizon,
 )
 from series_coverage.summary import CoverageSummary
+
+_log = logging.getLogger(__name__)
 
 _NO_BINDING: BoundRoles = MappingProxyType({})
 _NO_FACET_METADATA: Mapping[str, FacetMetadata] = MappingProxyType({})
@@ -93,6 +104,77 @@ def elected_year(series_by_year: Mapping[int, int]) -> int | None:
     }
     floor = ANCHOR_SHARE * max(recent.values())
     return next(year for year, series in recent.items() if series >= floor)
+
+
+@cache
+def _warn_unjudged(facet_id: str) -> None:
+    """Logs, once per process, that the coverage index serves `facet_id`'s years whole: it
+    holds no metadata for the facet, so no held-back cut can judge it."""
+    _log.warning(
+        "held-back cut: coverage holds no metadata for facet %s; its years are served whole",
+        facet_id,
+    )
+
+
+def served_through(
+    *, source: str | None, method: str | None, newest: int, include: frozenset[str] = frozenset()
+) -> int | None:
+    """The newest year a read opting in to `include` serves of an annual facet of `source`
+    under `method` whose newest year is `newest` (`served_until` at year grain): the year
+    before its source's partial period when that period reaches `newest`, and None for a
+    projection pair. The coverage index holds annual facets alone
+    (`graph_release.format.MASK_PERIODS`), so it cuts its years by this.
+
+    Raises:
+        CatalogueNotBound: `include` does not name `"partial"` and no origin catalogue is
+            bound (`held_back.cut_catalogue`).
+    """
+    through = served_until(source=source, method=method, newest=str(newest), include=include)
+    return None if through is None else int(through)
+
+
+def served_until(
+    *, source: str | None, method: str | None, newest: str, include: frozenset[str] = frozenset()
+) -> str | None:
+    """The newest period a read opting in to `include` serves of a facet of `source` under
+    `method` whose newest period is `newest`, at `newest`'s own grain, by the judge a mint
+    cuts its rows with (`materialise.held_back.judge`): `newest` when the read holds none of
+    it back, the period before the one holding its source's partial mark when that mark
+    reaches `newest` (`held_back.last_period_before`: a `2025-06` mark serves a monthly facet
+    through `2025-05` and an annual one through `2024`), and None for a projection pair,
+    whose every period is projected. The partial mark is the bound origin catalogue's, read
+    at query time, so a read opting in to `"partial"` sees the periods a default read holds
+    back. A mark or a period the rule cannot read leaves `newest` served, as a mint serves a
+    row it cannot judge.
+
+    Raises:
+        CatalogueNotBound: `include` does not name `"partial"` and no origin catalogue is
+            bound (`held_back.cut_catalogue`).
+    """
+    if include >= HELD_KINDS:
+        return newest
+    if "partial" in include:
+        return None if is_projection(source, method) else newest
+    judgement = judge(source=source, method=method, period=newest, catalogue=cut_catalogue())
+    if judgement is None or not held_back(judgement, include=include):
+        return newest
+    if judgement.status == "projected":
+        return None
+    through = last_period_before(judgement, period=newest)
+    return newest if through is None else through
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldFacets:
+    """What the held-back cut reads of each facet of a `CoverageIndex`, by facet code
+    (`CoverageIndex._facet_cut`): `provenance`, the position of its provenance in
+    `provenances`, -1 for none; `projected`, whether its `(provenance, measurementMethod)`
+    pair is a projection pair; `unjudged`, whether the index holds no metadata for it."""
+
+    provenances: tuple[str, ...]
+    provenance: np.ndarray
+    projected: np.ndarray
+    unjudged: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,14 +465,21 @@ def _apply_window(
     table = table.filter(pa.array(survives))
     if windowed.shape[0] == 0:
         return table
-    n_obs = popcount64(windowed).sum(axis=1)
-    first_years, last_years = _year_bounds(windowed, horizon)
+    return _with_masks(table, windowed, horizon)
+
+
+def _with_masks(table: pa.Table, masks: np.ndarray, horizon: YearHorizon) -> pa.Table:
+    """`table` with each row's year masks replaced by its row of `(rows, mask_words)`
+    `masks`, and its observation count and first and last years read from them. Every row
+    of `masks` must have a bit set."""
+    n_obs = popcount64(masks).sum(axis=1)
+    first_years, last_years = _year_bounds(masks, horizon)
     replacements = {
         N_OBS_COLUMN: pa.array(n_obs, type=pa.uint32()),
         FIRST_YEAR_COLUMN: pa.array(first_years, type=pa.uint16()),
         LAST_YEAR_COLUMN: pa.array(last_years, type=pa.uint16()),
         **{
-            name: pa.array(windowed[:, word], type=pa.uint64())
+            name: pa.array(masks[:, word], type=pa.uint64())
             for word, name in enumerate(horizon.mask_columns)
         },
     }
@@ -626,6 +715,128 @@ class CoverageIndex:
     def _to_build_year(self, masks: np.ndarray) -> np.ndarray:
         """`masks` without the years after `build_year`."""
         return masks & _window_words(self._horizon, first_year=None, last_year=self._build_year)
+
+    def _held_cut(
+        self, rows: pa.Table, masks: np.ndarray, include: frozenset[str]
+    ) -> tuple[pa.Table, np.ndarray]:
+        """One-chunk `rows` and `masks`, their `(rows, mask_words)` year masks, less the years
+        a read opting in to `include` holds back of each row's facet (`_facet_cut`), and less
+        the rows left holding no year. `masks` is cut in place."""
+        if include >= HELD_KINDS or masks.shape[0] == 0:
+            return rows, masks
+        cut = self._facet_cut(
+            self._index_facet_codes(cast("pa.DictionaryArray", rows[FACET_COLUMN].chunk(0))),
+            masks,
+            include,
+        )
+        kept = cut.any(axis=1)
+        if kept.all():
+            return rows, cut
+        return rows.filter(pa.array(kept)).combine_chunks(), cut[kept]
+
+    def _held_rows(self, rows: pa.Table, include: frozenset[str]) -> pa.Table:
+        """`rows` less the years a read opting in to `include` holds back (`_held_cut`), with
+        each row's observation count and first and last years read from the years left, and
+        less the rows left holding no year."""
+        if include >= HELD_KINDS:
+            return rows
+        rows = rows.combine_chunks()
+        rows, masks = self._held_cut(rows, _mask_matrix(rows, self._horizon), include)
+        return _with_masks(rows, masks, self._horizon) if rows.num_rows else rows
+
+    def _index_facet_codes(self, facets: pa.DictionaryArray) -> np.ndarray:
+        """Each row's facet code in the index's facet dictionary (`_facet_ids`). Rows taken
+        from the index keep its dictionary, so their codes are those already."""
+        codes = facets.indices.to_numpy(zero_copy_only=False)
+        dictionary = facets.dictionary
+        if len(dictionary) == len(self._facet_ids) and all(
+            mine.address == theirs.address
+            for mine, theirs in zip(dictionary.buffers(), self._facet_ids.buffers(), strict=True)
+            if mine is not None and theirs is not None
+        ):
+            return codes
+        remap = pc.index_in(dictionary, value_set=self._facet_ids).to_numpy(zero_copy_only=False)
+        return remap[codes]
+
+    @cached_property
+    def _held_facets(self) -> _HeldFacets:
+        """What the held-back cut reads of each facet of `_facet_ids`, from its metadata
+        (`_HeldFacets`)."""
+        provenances: dict[str, int] = {}
+        provenance = np.full(len(self._facet_ids), -1, dtype=np.int64)
+        projected = np.zeros(len(self._facet_ids), dtype=bool)
+        unjudged = np.ones(len(self._facet_ids), dtype=bool)
+        for code, facet_id in enumerate(cast("list[str]", self._facet_ids.to_pylist())):
+            metadata = self._facet_metadata.get(facet_id)
+            if metadata is None:
+                continue
+            unjudged[code] = False
+            projected[code] = is_projection(metadata.provenance_id, metadata.measurement_method)
+            if metadata.provenance_id is not None:
+                provenance[code] = provenances.setdefault(metadata.provenance_id, len(provenances))
+        return _HeldFacets(
+            provenances=tuple(provenances),
+            provenance=provenance,
+            projected=projected,
+            unjudged=unjudged,
+        )
+
+    def _facet_cut(
+        self, codes: np.ndarray, masks: np.ndarray, include: frozenset[str]
+    ) -> np.ndarray:
+        """`masks`, one per row whose facet has the code `codes[row]` in `_facet_ids`, less
+        the years a read opting in to `include` holds back of each facet, cut in place with
+        one AND of each row's limit.
+
+        A projection facet's limit holds no year unless `include` names `"projected"`
+        (`method_status.is_projection`), and every year when it does. Any other facet's limit
+        holds every year up to the year before its provenance's partial period
+        (`served_through`), unless `include` names `"partial"`. Each provenance of the read is
+        judged once, at the horizon's last year. That cuts what a judgement at the newest year
+        a facet holds cuts, since a mark either reaches that year and cuts from its own, or
+        lies past it and cuts nothing. A facet without metadata is served whole, as a mint
+        serves a row it cannot judge, and a read holding no year of any judged facet consults
+        no catalogue.
+
+        Raises:
+            CatalogueNotBound: `include` does not name `"partial"`, a judged facet holds a
+                year, and no origin catalogue is bound (`held_back.cut_catalogue`).
+        """
+        facets = self._held_facets
+        unjudged = facets.unjudged[codes]
+        if unjudged.any():
+            for code in np.unique(codes[unjudged]).tolist():
+                _warn_unjudged(cast(str, self._facet_ids[code].as_py()))
+        if not (masks.any(axis=1) & ~unjudged).any():
+            return masks
+        # One limit row per provenance, and a last one, all years, that code -1 (no
+        # provenance) reads.
+        limits = np.full(
+            (len(facets.provenances) + 1, self._horizon.mask_words),
+            np.iinfo(np.uint64).max,
+            dtype=np.uint64,
+        )
+        projected = facets.projected[codes]
+        # A projection facet is judged a projection whatever its period, so its provenance's
+        # partial period never cuts it.
+        row_provenances = np.where(projected, -1, facets.provenance[codes])
+        if "partial" not in include:
+            cut_catalogue()
+            newest = self._horizon.max_year
+            for code in np.unique(row_provenances[row_provenances >= 0]).tolist():
+                through = served_through(
+                    source=facets.provenances[code],
+                    method=None,
+                    newest=newest,
+                    include=include | {"projected"},
+                )
+                if through is not None and through < newest:
+                    limits[code] = _window_words(self._horizon, first_year=None, last_year=through)
+        row_limits = limits[row_provenances]
+        if "projected" not in include:
+            row_limits[projected] = 0
+        np.bitwise_and(masks, row_limits, out=masks)
+        return masks
 
     @property
     def horizon(self) -> YearHorizon:
@@ -947,6 +1158,7 @@ class CoverageIndex:
         bound: BoundRoles = _NO_BINDING,
         first_year: int | None = None,
         last_year: int | None = None,
+        include: frozenset[str] | None = None,
     ) -> list[VariableCoverage]:
         """Return globally admitted facet candidates under role and year bounds.
 
@@ -954,6 +1166,15 @@ class CoverageIndex:
         facet pin or listing replacements for one.  It ignores a request's active
         source scope and per-series DFO precedence, while still excluding unknown,
         globally unavailable, and disabled-UN provenances.
+
+        With `include`, each facet holds only the years a read opting in to `include`
+        serves (`_held_cut`): with no opt-in, no year of a source's partial period and no
+        projected facet, so its `n_obs` counts the points such a read serves. A facet
+        left with no year is omitted. Without it, every year counts.
+
+        Raises:
+            CatalogueNotBound: `include` is given without `"partial"`, a judged facet
+                holds a year, and no origin catalogue is bound (`held_back.cut_catalogue`).
         """
         filtered = _apply_window(
             self._candidate_member_rows(variables=variables, bound=bound),
@@ -961,6 +1182,8 @@ class CoverageIndex:
             first_year=first_year,
             last_year=last_year,
         )
+        if include is not None and filtered.num_rows:
+            filtered = self._held_rows(filtered, include)
         if filtered.num_rows == 0:
             return []
         by_variable: dict[str, list[FacetCoverage]] = {}
@@ -1321,6 +1544,7 @@ class CoverageIndex:
         first_year: int | None = None,
         last_year: int | None = None,
         elected: Mapping[str, int] | None = None,
+        include: frozenset[str] = frozenset(),
     ) -> Headline | None:
         """The latest year any row surviving `bound` has data inside `[first_year,
         last_year]` (unbounded by default, across a series' whole history), with the exact
@@ -1363,6 +1587,9 @@ class CoverageIndex:
         `role_counts` omits a role no active row carries, such as `donor`
         when every active row belongs to a variable declaring a recipient
         role alone.
+
+        Every count leaves out the years a read opting in to `include` holds back
+        (`_held_cut`): with no opt-in, a source's partial period and projected facets.
         """
         rows = self._member_rows(variables=variables, bound=bound)
         if served is not None and rows.num_rows:
@@ -1371,7 +1598,10 @@ class CoverageIndex:
             rows = rows.filter(pa.array(~dropped))
         if rows.num_rows == 0:
             return None
-        masks = _mask_matrix(rows, self._horizon)
+        rows = rows.combine_chunks()
+        rows, masks = self._held_cut(rows, _mask_matrix(rows, self._horizon), include)
+        if rows.num_rows == 0:
+            return None
         window = _window_words(self._horizon, first_year=first_year, last_year=last_year)
         combined = np.bitwise_or.reduce(masks, axis=0) & window
         if not combined.any():
@@ -1452,10 +1682,12 @@ class CoverageIndex:
         served: Iterable[tuple[str, str, str | None, str | None]] | None = None,
         excluded: Iterable[tuple[str, Role, str]] = (),
         admits: Callable[[str, str], bool] | None = None,
+        include: frozenset[str] = frozenset(),
     ) -> dict[str, int]:
         """The year a `latest` read of `variables` under `bound` serves each variable
         (`elected_year`), counted over the series `served`, `excluded` and `admits` select
-        as they do for `series_years`, across their whole history up to `build_year`.
+        as they do for `series_years`, across their whole history up to `build_year`, less
+        the years a read opting in to `include` holds back (`series_years`).
 
         Those series are the ones the read holds before it reduces any to one year: every
         series of the facets it reads, less the rows it leaves out. Every count, reduction
@@ -1465,7 +1697,12 @@ class CoverageIndex:
         it or when none of its selected series holds a year up to `build_year`. Such a
         variable serves its own latest period."""
         found = self.series_years(
-            variables=variables, bound=bound, served=served, excluded=excluded, admits=admits
+            variables=variables,
+            bound=bound,
+            served=served,
+            excluded=excluded,
+            admits=admits,
+            include=include,
         )
         if found is None:
             return {}
@@ -1498,13 +1735,14 @@ class CoverageIndex:
         excluded: Iterable[tuple[str, Role, str]] = (),
         first_year: int,
         last_year: int,
+        include: frozenset[str] = frozenset(),
     ) -> dict[int, int]:
         """How many series of `variables` under `bound` hold each year of `[first_year,
         last_year]`, a year none holds kept at zero: the series `headline` counts in
-        `recent_years` and `elected_years` elects over, selected by `served` and
-        `excluded` as they select them."""
+        `recent_years` and `elected_years` elects over, selected by `served`, `excluded`
+        and `include` as they select them."""
         found = self.series_years(
-            variables=variables, bound=bound, served=served, excluded=excluded
+            variables=variables, bound=bound, served=served, excluded=excluded, include=include
         )
         counts = dict.fromkeys(range(first_year, last_year + 1), 0)
         if found is None:
@@ -1515,16 +1753,21 @@ class CoverageIndex:
         return counts
 
     def years_held(
-        self, *, variables: Iterable[str], bound: BoundRoles = _NO_BINDING
+        self,
+        *,
+        variables: Iterable[str],
+        bound: BoundRoles = _NO_BINDING,
+        include: frozenset[str] = frozenset(),
     ) -> frozenset[int]:
         """The years any row of `variables` under `bound` holds, as `series_by_year`
         counts a series in over the whole horizon, with no `served` or `excluded`, and under the
-        source-scope admission every read applies (`_admit_scoped_rows`). With no binding it
+        source-scope admission every read applies (`_admit_scoped_rows`), less the years a read
+        opting in to `include` holds back (`_held_cut`). With no binding it
         reads the per-pair year masks the index builds once (`_pair_year_masks`), so the cost
         follows the variables' facets, not their rows. Under a binding it reads the series
         `series_years` serves."""
         if bound:
-            found = self.series_years(variables=list(variables), bound=bound)
+            found = self.series_years(variables=list(variables), bound=bound, include=include)
             if found is None:
                 return frozenset()
             return _years_of(np.bitwise_or.reduce(found.masks, axis=0).tolist(), self._horizon)
@@ -1539,7 +1782,10 @@ class CoverageIndex:
             )
             kept = pc.is_in(self._facet_ids, value_set=admitted).to_numpy(zero_copy_only=False)
             selected = selected[kept[pairs.facet_codes[selected]]]
-        held = np.bitwise_or.reduce(pairs.masks[selected], axis=0)
+        masks = pairs.masks[selected]
+        if not include >= HELD_KINDS and masks.shape[0]:
+            masks = self._facet_cut(pairs.facet_codes[selected], masks, include)
+        held = np.bitwise_or.reduce(masks, axis=0)
         return _years_of(held.tolist(), self._horizon)
 
     def covers(self, variable: str) -> bool:
@@ -1558,6 +1804,7 @@ class CoverageIndex:
         last_year: int | None = None,
         latest: Mapping[str, int] | None = None,
         kept_years: KeptYears | None = None,
+        include: frozenset[str] = frozenset(),
     ) -> SeriesYears | None:
         """The series a read of `variables` under `bound` serves inside `[first_year,
         last_year]` and the years each serves, the points `served_extent` counts. `served`
@@ -1575,6 +1822,10 @@ class CoverageIndex:
         each variable elected (`elected_years`): the variable serves that year alone, from
         the series holding it. A variable `latest` omits serves its own latest year, from
         the series whose latest year it is. A series serving neither serves nothing.
+
+        A read opting in to `include` serves no year it holds back (`_held_cut`): with no
+        opt-in, no year of a source's partial period and no projected facet. A series left
+        with no year serves nothing.
         """
         filtered = self._filtered(
             variables=variables, bound=bound, first_year=first_year, last_year=last_year
@@ -1587,7 +1838,11 @@ class CoverageIndex:
             filtered = filtered.filter(pa.array(~dropped))
         if filtered.num_rows == 0:
             return None
-        filtered = filtered.combine_chunks()
+        filtered, row_masks = self._held_cut(
+            filtered.combine_chunks(), _mask_matrix(filtered, self._horizon), include
+        )
+        if filtered.num_rows == 0:
+            return None
         keys = np.zeros(filtered.num_rows, dtype=np.int64)
         for column in _SERIES_COLUMNS:
             width = len(cast("pa.DictionaryArray", filtered[column].chunk(0)).dictionary)
@@ -1595,7 +1850,7 @@ class CoverageIndex:
         order = np.argsort(keys, kind="stable")
         sorted_keys = keys[order]
         starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
-        masks = np.bitwise_or.reduceat(_mask_matrix(filtered, self._horizon)[order], starts)
+        masks = np.bitwise_or.reduceat(row_masks[order], starts)
         firsts = order[starts]
         if latest is not None:
             variable_codes = _codes(filtered[VARIABLE_COLUMN])[firsts]
@@ -1700,6 +1955,7 @@ class CoverageIndex:
         last_year: int | None = None,
         latest: Mapping[str, int] | None = None,
         kept_years: KeptYears | None = None,
+        include: frozenset[str] = frozenset(),
     ) -> ServedExtent | None:
         """The rows, series and years a read of `variables` under `bound` serves inside
         `[first_year, last_year]`, over every year of the window where `headline` counts
@@ -1707,7 +1963,7 @@ class CoverageIndex:
         and `excluded` select rows as they do for `headline`. `None` when nothing
         survives. With `latest`, each variable serves one year alone, the one it elected
         (`series_years`), and the years span the earliest and latest of those. `kept_years`
-        narrows each series' years as it does for `series_years`.
+        and `include` narrow each series' years as they do for `series_years`.
         """
         found = self.series_years(
             variables=variables,
@@ -1718,6 +1974,7 @@ class CoverageIndex:
             last_year=last_year,
             latest=latest,
             kept_years=kept_years,
+            include=include,
         )
         if found is None:
             return None

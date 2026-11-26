@@ -31,11 +31,11 @@ from artifact_publication.uri import (
     write_uri_bytes,
     write_uri_bytes_if_unchanged,
 )
-from origin_catalogue.origins import DFO
+from origin_catalogue.origins import BASE, DFO, UN_SYSTEM
 
 logger = logging.getLogger(__name__)
 
-FORMAT_VERSION: Final[int] = 4
+FORMAT_VERSION: Final[int] = 5
 """Bumped when a build's JSON changes shape, so an image reads only the
 builds it understands."""
 
@@ -85,18 +85,18 @@ class AidCounts(_Model):
 
 
 class OriginSplit(_Model):
-    """The indicators, datasets and publishers one group of origins holds."""
+    """The indicators, datasets and publishers one origin holds."""
 
-    indicators: int = Field(description="distinct StatVars the origins hold")
-    datasets: int = Field(description="distinct source-index entries of the origins' provenances")
-    publishers: int = Field(description="distinct sources of the origins' provenances")
+    indicators: int = Field(description="distinct StatVars the origin holds")
+    datasets: int = Field(description="distinct source-index entries of the origin's provenances")
+    publishers: int = Field(description="distinct sources of the origin's provenances")
 
 
 class OriginCounts(_Model):
     """`Counts` split by origin. An indicator, dataset or publisher held by
-    both groups counts in each, so the two groups can sum to more than the
-    global figure. The global `indicators` is the union of the two indicator
-    figures."""
+    more than one group counts in each, so the groups can sum to more than
+    the global figure. The global `indicators` is the union of the groups'
+    indicators."""
 
     dfo: OriginSplit = Field(
         description=(
@@ -106,20 +106,28 @@ class OriginCounts(_Model):
     )
     data_commons: OriginSplit = Field(
         description=(
-            "the `base` and `un_system` origins: base variables, the coverage variables search "
-            "serves under a base provenance, UN variables, and the provenances of those "
-            "origins. A StatVar both groups hold counts in both"
+            f"the {BASE.label} origin (`{BASE.id}`): base variables, the coverage variables "
+            "search serves on a facet of a base provenance, and the provenances of that origin"
+        )
+    )
+    un: OriginSplit = Field(
+        description=(
+            f"the {UN_SYSTEM.label} origin (`{UN_SYSTEM.id}`): UN variables, the coverage "
+            "variables search serves on a facet of a UN provenance, and the provenances of "
+            "that origin. All zero with the UN origin off"
         )
     )
 
 
 class OriginProvenances(_Model):
     """The admitted provenance ids of each origin group, sorted. The groups
-    follow `OriginCounts`: `dfo` holds the provenances of the DFO origin and
-    `data_commons` those of every other admitted origin."""
+    follow `OriginCounts`: `dfo` holds the provenances of the DFO origin,
+    `data_commons` those of the base origin and `un` those of the UN origin,
+    empty with the UN origin off."""
 
     dfo: list[str]
     data_commons: list[str]
+    un: list[str]
 
 
 class Counts(_Model):
@@ -137,9 +145,9 @@ class Counts(_Model):
     aid: AidCounts
     by_origin: OriginCounts = Field(
         description=(
-            f"indicators, datasets and publishers counted for the {DFO.label} "
-            "origin and for the Data Commons origins. Something both hold counts in "
-            "each, so the split can exceed the global figures"
+            "indicators, datasets and publishers counted for each origin. Something "
+            "more than one origin holds counts in each, so the split can exceed the "
+            "global figures"
         )
     )
 

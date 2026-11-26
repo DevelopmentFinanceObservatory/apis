@@ -84,7 +84,13 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
 )
-from search.engine.retrieval.read_plan import BulkPlan, YearBounds, year_of
+from search.engine.retrieval.read_plan import (
+    BulkPlan,
+    YearBounds,
+    kept_points,
+    opt_in,
+    year_of,
+)
 from search.models import (
     PreviewOrder,
     SpecObservations,
@@ -156,18 +162,30 @@ read under, which the read keeps until it has fixed the points a pair serves."""
 _PairRows = dict[tuple[str, RoleTuple], list[_Point]]
 
 
-def _pair_rows(sv: str, facets: list[Facet], *, plan: BulkPlan) -> list[_Point]:
+def _pair_rows(
+    sv: str, facets: list[Facet], *, plan: BulkPlan, include: frozenset[str] | None
+) -> list[_Point]:
     """The observed points (`_points_from_facets`) the read returned for one pair of `sv`
     under the facets that can serve it: those the group's selection serves `sv`
     (`BulkPlan.selected`) and those continuing the lead (`BulkPlan.continuing`). A returned
-    facet in neither, such as another member's selection, serves nothing here."""
+    facet in neither, such as another member's selection, serves nothing here.
+
+    With `include` set, each facet's points lose those a read opting in to it holds back
+    (`read_plan.kept_points`), judged by the source and method its rows carry, as a mint
+    masks its rows before it continues or collapses them (`materialise.columnar.
+    selected_mask`). None keeps every point, for a `latest` read, whose plan elects a year
+    its held-back cut already serves (`BulkPlan.member_year`)."""
     serving = {*plan.selected.get(sv, ()), *plan.continuing}
-    return [
-        (date, value, f.facet_id)
-        for f in facets
-        if f.facet_id in serving
-        for date, value in _points_from_facets([f])
-    ]
+    points: list[_Point] = []
+    for f in facets:
+        if f.facet_id not in serving:
+            continue
+        observed = _points_from_facets([f])
+        if include is not None:
+            kept = set(kept_points(f, (date for date, _value in observed), include=include))
+            observed = [(date, value) for date, value in observed if date in kept]
+        points.extend((date, value, f.facet_id) for date, value in observed)
+    return points
 
 
 class _Served(NamedTuple):
@@ -825,6 +843,7 @@ def _read_and_assemble(
 ) -> tuple[SpecObservations, Warning | None]:
     """`_bulk_role_series`'s read of `fetch_plan`, its conversion and its assembly."""
     latest = plan.years == "latest"
+    include = None if latest else opt_in(plan.years)
     # A dispatched pair names every role its variable declares, an open origin's creditor
     # included (the role index binds every role the shape places), so each row matches its
     # pair on the full role tuple, whether or not the read filtered on the open role.
@@ -858,7 +877,7 @@ def _read_and_assemble(
                     sv not in every_pair_of or _omitted(plan, sv, role_tuple)
                 ):
                     continue
-                if points := _pair_rows(sv, facets, plan=plan):
+                if points := _pair_rows(sv, facets, plan=plan, include=include):
                     found[(sv, role_tuple)] = points
         return found
 

@@ -43,6 +43,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.held_back import held_back, plan_runs
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
     NoYearsToRead,
@@ -93,6 +94,7 @@ from search.models import (
     FacetOptions,
     GraphRef,
     Headline,
+    HeldBack,
     IdentityFacetBinding,
     IdentityFacetValueRequest,
     MeasureAxisValue,
@@ -1654,7 +1656,13 @@ def build_spec(
     stated_facets = facets or {}
     published_tables = _published_tables(provenance, index)
     years = data_years(plan)
+    if composite is None and plan is not None:
+        stated_held = held_back(plan, plan_runs(plan, coverage_index=coverage_index))
+        if stated_held:
+            coverage = coverage.model_copy(update={"held_back": stated_held})
     if composite is not None:
+        # The composite's held-back runs are its components' read plans' runs, stated once
+        # those plans settle (`composite_answer.with_composite_plans`).
         coverage = composite.coverage()
         headline = composite.headline(headline)
         scope, resolved_role_axis_facts = composite.open_axes(scope, resolved_role_axis_facts)
@@ -1664,6 +1672,19 @@ def build_spec(
         published_tables = composite.published_tables()
         observations = None
         years = composite.data_years()
+    component_continued: list[tuple[str, frozenset[int], bool]] = []
+    component_held: list[tuple[str, list[HeldBack]]] = []
+    if (
+        composite is not None
+        and plan is not None
+        and not plan.request_filtered
+        and _reads_window_of(plan, composite.read, coverage_index)
+    ):
+        table_held = held_back(plan, plan_runs(plan, coverage_index=coverage_index))
+        for component, component_years in composite.table_components:
+            continued = serves_continuation(_previewed(plan, component_years))
+            component_continued.append((component, component_years, continued))
+            component_held.append((component, table_held))
     spec = Spec(
         spec_id=definition.spec_id,
         definition=definition,
@@ -1725,17 +1746,8 @@ def build_spec(
         .stating_continued(
             composite is None and serves_continuation(_previewed(plan, preview_years))
         )
-        .stating_component_continued(
-            ()
-            if composite is None
-            or plan is None
-            or plan.request_filtered
-            or not _reads_window_of(plan, composite.read, coverage_index)
-            else (
-                (component, years, serves_continuation(_previewed(plan, years)))
-                for component, years in composite.table_components
-            )
-        )
+        .stating_component_continued(component_continued)
+        .stating_component_held_back(component_held)
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
