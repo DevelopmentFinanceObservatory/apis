@@ -375,6 +375,23 @@ def test_a_case_whose_runs_all_fail_on_infrastructure_is_an_infra_fault(corpus, 
     assert faults == {"eth-health": FaultClass.INFRA, "eth-steady": None}
 
 
+def test_a_failed_answer_stays_a_finding_when_another_read_fails(corpus, tmp_path):
+    """A graph read failure makes a case infra only when ``answer`` is not a definite
+    failure: the regressing case fails ``entities`` and stays scored, while the steady
+    case, whose only gap is the lost read, is an infra fault."""
+    run_driver(single_record_args(corpus, tmp_path), graph=Raising(GraphReadFailure("down")))
+
+    run = read_run(tmp_path / "runs" / "apis-search" / "night-1")
+    results = {r.case_id: r for r in run.results}
+    answers = {
+        case_id: next(c for c in r.checks if c.name == ANSWER) for case_id, r in results.items()
+    }
+    assert answers["eth-health"].verdict.value == "fail"
+    assert results["eth-health"].fault is None
+    assert answers["eth-steady"].verdict.value == "unverifiable"
+    assert results["eth-steady"].fault is FaultClass.INFRA
+
+
 @pytest.mark.parametrize(("concurrency", "most"), [(1, 1), (4, 2)])
 def test_single_mode_bounds_posts_and_runs_a_case_s_samples_side_by_side(
     corpus, tmp_path, concurrency, most

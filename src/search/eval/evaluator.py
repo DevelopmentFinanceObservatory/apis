@@ -22,7 +22,7 @@ from dfo_evals.records import Verdict as RecordVerdict
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 from search.eval.checks import ANSWER
-from search.eval.checks.base import Result
+from search.eval.checks.base import Result, Verdict
 from search.eval.corpus_dataset import CaseInputs, CorpusCase
 
 
@@ -32,14 +32,26 @@ class ScoredAnswer:
 
     Attributes:
         results: Every check's result on the sample, ``answer`` included.
-        infra: The run failed on infrastructure, or a check's read of the graph or
-            coverage did, so the sample measures the environment rather than Search.
+        infra: The sample measures the environment rather than Search
+            (``answer_is_infra``).
         trace_id: The trace id the sample's response carries, or None.
     """
 
     results: Mapping[str, Result]
     infra: bool
     trace_id: str | None
+
+
+def answer_is_infra(results: Mapping[str, Result], *, run_failed: bool) -> bool:
+    """Whether a scored sample measures the environment rather than Search.
+
+    It does when its run failed on infrastructure, or when ``answer`` is not a definite
+    failure and a read it counts failed (``answer``'s own ``infra`` flag, which leaves the
+    case's known failures out). A definite ``answer`` failure is a finding, whatever else
+    could not be read, as the gate's exit code treats it.
+    """
+    answer = results[ANSWER]
+    return run_failed or (answer.infra and answer.verdict is not Verdict.FAIL)
 
 
 def check_label(result: Result) -> EvaluationReason:

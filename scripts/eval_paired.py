@@ -54,8 +54,9 @@ task samples and judges it as above, and returns its modal sample's scores, whic
 ``search.eval.evaluator.SearchChecks`` labels. With ``--records DIR`` it writes a
 ``dfo-evals`` run record under ``DIR/apis-search/<run id>/``: one trial per case, its modal
 sample with every check's verdict, scored by ``answer`` and tagged with its case file. A
-case whose modal sample failed on infrastructure, or whose check could not read the graph
-or coverage, records an infra fault, which the results page leaves out of its scores.
+case whose modal sample failed on infrastructure, or whose ``answer`` is not a definite
+failure and lost a read of the graph or coverage, records an infra fault, which the
+results page leaves out of its scores. A definite ``answer`` failure stays a finding.
 The record's id, revision and directory are fixed before any case runs, and the record is
 written after the report, summary and responses. Every request is built before the first
 post. The first case whose task raises cancels the others, and the run exits 2 with that
@@ -133,7 +134,7 @@ from search.eval.checks import (
 )
 from search.eval.corpus_dataset import SUITE, CaseInputs, CorpusCase, corpus_dataset, corpus_digest
 from search.eval.evaluate import evaluate_or_raise
-from search.eval.evaluator import ScoredAnswer, SearchChecks
+from search.eval.evaluator import ScoredAnswer, SearchChecks, answer_is_infra
 from search.eval.gate import (
     CONTENT_CHECKS,
     NOT_JUDGED,
@@ -692,7 +693,8 @@ def scored_answer(state: CaseState) -> ScoredAnswer:
     """The case's modal head sample with every check's result on it.
 
     The answer is infra when its run failed on infrastructure, leaving no sample to vote
-    for, or when a check's read of the graph or coverage failed.
+    for, or when ``answer`` is not a definite failure and a read it counts failed
+    (``evaluator.answer_is_infra``).
 
     Raises:
         ValueError: The head round holds no single modal sample.
@@ -708,7 +710,7 @@ def scored_answer(state: CaseState) -> ScoredAnswer:
             trace_id = diagnostics["trace_id"]
     return ScoredAnswer(
         results=score.results,
-        infra=score.infra or any(result.infra for result in score.results.values()),
+        infra=answer_is_infra(score.results, run_failed=score.infra),
         trace_id=trace_id,
     )
 
@@ -716,7 +718,8 @@ def scored_answer(state: CaseState) -> ScoredAnswer:
 def single_run_record(single: SingleRun, *, manifest: RunManifest) -> Run:
     """The run record of a single-mode run: one trial per case, its modal sample, tagged
     with its case file and scored by ``answer``. A modal sample that is infra
-    (``scored_answer``) is an infra fault, which scores leave out."""
+    (``scored_answer``) is an infra fault, which the results page leaves out of its
+    scores."""
     return run_from_report(
         report=single.report,
         manifest=manifest,
