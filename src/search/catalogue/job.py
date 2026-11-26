@@ -107,6 +107,7 @@ from origin_catalogue.artifact import read_published_pointer as read_origin_poin
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.service import CatalogueSettings
 from search.catalogue.artifact import (
+    FORMAT_VERSION,
     BuildInputs,
     CatalogueArtifact,
     CatalogueArtifactError,
@@ -409,6 +410,7 @@ async def _build(
         return
     emit(
         "search_catalogue_job_published",
+        format_version=FORMAT_VERSION,
         key=key,
         catalogue_version=version,
         inputs=inputs.model_dump(),

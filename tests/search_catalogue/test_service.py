@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from search.catalogue.artifact import CatalogueArtifact, CatalogueArtifactError, load_published
+from search.catalogue.artifact import (
+    FORMAT_VERSION,
+    CatalogueArtifact,
+    CatalogueArtifactError,
+    load_published,
+)
 from search.catalogue.service import SearchCatalogueService, search_catalogue_service
 from tests.search_catalogue.support import publish_catalogue, sample_catalogue
 
@@ -99,6 +104,7 @@ def test_logs_the_counts_once_per_loaded_build(
         published.catalogue_version,
         "20260930T001500Z-00000002",
     ]
+    assert [fields["format_version"] for fields in logged] == [FORMAT_VERSION, FORMAT_VERSION]
     assert logged[0]["counts"] == published.counts.model_dump(mode="json")
     assert logged[0]["provenances"] == {
         "dfo": ["provenance/CRS"],
