@@ -23,9 +23,13 @@ trial per eligible case, scored by ``answer`` and tagged with its case file. Wit
 pushed to Langfuse as one experiment in each case file's dataset, all under one run name,
 with each case's response body as its output (``dfo_evals.langfuse_sink.push_run``). Each
 check scores 1 on a pass and 0 on a failure, and has no score when it is unverifiable, n/a
-or unreached. A push that Langfuse does not show in full before its timeout, or that
-Langfuse's API or the network refuses, is infrastructure: the nightly then exits 1 when the
-checks gave 1, else 3. Any other push error exits 2. The summary is written either way, and
+or unreached. A push that Langfuse does not show in full before its timeout, a transport
+error, or a 5xx or 429 from Langfuse is infrastructure: the nightly then exits 1 when the
+checks gave 1, else 3. Any other push error, such as a 404 from an endpoint Langfuse
+removed, exits 2. When Langfuse fails the project check at the start, the nightly still
+runs and writes its record, skipping the sync and the push, which counts as infrastructure
+the same way. The first case whose task raises stops the run (exit 2) with its traceback.
+The summary is written either way, and
 the experiments are named ``apis-search`` with the run's name, in place of the per-file
 ``nightly`` experiments of earlier runs. The record's
 revision is the commit the app's ``x-dfo-commit`` header names, or ``unknown``.
@@ -43,10 +47,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
+import functools
 import os
 import sys
 import traceback
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,6 +104,7 @@ from search.eval.corpus_dataset import (
     corpus_digest,
 )
 from search.eval.dataset import item_id_for_case
+from search.eval.evaluate import evaluate_or_raise
 from search.eval.evaluator import ScoredAnswer, SearchChecks
 from search.eval.gate import Judgement, Observation, Outcome, exit_code, judge
 from search.eval.run_record import parse_run_id, record_manifest, run_record
@@ -104,6 +112,7 @@ from search.eval.runner import (
     EVAL_HEADERS,
     SCHEMA_PATH,
     CaseRun,
+    build_request,
     members_door_reader,
     run_cases,
 )
@@ -129,8 +138,8 @@ _EXIT_INFRA: Final = 3
 
 # Langfuse answers at or above this status when it, not the request, is at fault.
 _SERVER_ERROR: Final = 500
-# What a push raises when Langfuse or the network, not the run, is at fault.
-_PUSH_INFRA_ERRORS = (PushIncompleteError, PushTimeoutError, ApiError, httpx.HTTPError)
+# Langfuse answers this when it limits a client's rate, which a later run clears.
+_TOO_MANY_REQUESTS: Final = 429
 
 # What opening the served release raises when no release is published, or when its bucket or
 # the credentials it needs cannot answer. `ReleaseUriMissingError` is a setup error and exits 2.
@@ -311,7 +320,9 @@ def nightly(by_file: Mapping[str, Sequence[Case]], *, url: str, ctx: ScoreContex
         The judged cases, the report, the dataset digest and each case's output.
 
     Raises:
-        RuntimeError: A task or the evaluator raised, a fault in the nightly.
+        Exception: The first exception a case's task raised, a fault in the nightly; the
+            other cases are cancelled (``evaluate.evaluate_or_raise``).
+        RuntimeError: The evaluator raised.
     """
     dataset = corpus_dataset(by_file, implemented_checks=CHECKS)
     dataset.add_evaluator(SearchChecks())
@@ -320,8 +331,11 @@ def nightly(by_file: Mapping[str, Sequence[Case]], *, url: str, ctx: ScoreContex
     outputs: dict[tuple[str, int], dict[str, Any]] = {}
 
     async def evaluate() -> EvaluationReport[CaseInputs, ScoredAnswer, CorpusCase]:
-        """Evaluate the dataset with one bound on posts in flight across every case."""
+        """Evaluate the dataset with one bound on posts in flight and one scoring pool
+        across every case, stopping at the first case that raises."""
         gate = asyncio.Semaphore(_NIGHTLY_CONCURRENCY)
+        loop = asyncio.get_running_loop()
+        scorers = ThreadPoolExecutor(max_workers=_NIGHTLY_CONCURRENCY)
 
         async def task(inputs: CaseInputs) -> ScoredAnswer:
             """Post one case once and score its answer."""
@@ -334,25 +348,27 @@ def nightly(by_file: Mapping[str, Sequence[Case]], *, url: str, ctx: ScoreContex
             modal = state.run.modal
             body = modal.body if modal is not None else {"task_error": state.run.infra_error}
             outputs[(case.id, _TRIAL)] = body
-            state.results = await asyncio.to_thread(score_with_answer, case, body, ctx)
+            # The checks read the graph under the bound catalogue and release, so the scoring
+            # thread runs in a copy of this context.
+            context = contextvars.copy_context()
+            state.results = await loop.run_in_executor(
+                scorers, functools.partial(context.run, score_with_answer, case, body, ctx)
+            )
             return ScoredAnswer(
                 results=state.results,
                 infra=modal is None or any(r.infra for r in state.results.values()),
                 trace_id=state.trace_id(),
             )
 
-        return await dataset.evaluate(
-            task, name=SUITE, max_concurrency=_NIGHTLY_CONCURRENCY, progress=False
-        )
+        with scorers:
+            return await evaluate_or_raise(
+                dataset, task, name=SUITE, max_concurrency=_NIGHTLY_CONCURRENCY
+            )
 
+    # A case that cannot build its request raises here, before any post.
+    for eval_case in dataset.cases:
+        build_request(by_id[eval_case.inputs.case_id][0])
     report = asyncio.run(evaluate())
-    crashed = [f"{f.name}: {f.error_message}" for f in report.failures] + [
-        f"{case.name}: {failure.error_message}"
-        for case in report.cases
-        for failure in case.evaluator_failures
-    ]
-    if crashed:
-        raise RuntimeError(f"the nightly crashed on {len(crashed)} case(s): {crashed}")
     return NightlyRun(
         states=[states[eval_case.inputs.case_id] for eval_case in dataset.cases],
         report=report,
@@ -491,8 +507,9 @@ def _connect(project_id: str) -> Langfuse:
     ``LANGFUSE_TRACING_ENABLED=false``.
 
     Raises:
-        _InfraError: Langfuse did not answer the project check: the network failed or it
-            answered 5xx. Keys it refuses, or keys of another project, raise as they are.
+        _InfraError: Langfuse did not answer the project check: the network failed, or it
+            answered 5xx or 429. Keys it refuses, or keys of another project, raise as they
+            are.
     """
     try:
         return connect(
@@ -503,12 +520,23 @@ def _connect(project_id: str) -> Langfuse:
             or _DEFAULT_LANGFUSE_BASE_URL,
             project_id=project_id,
         )
-    except httpx.HTTPError as exc:
-        raise _InfraError(f"Langfuse did not answer: {type(exc).__name__}: {exc}") from exc
-    except ApiError as exc:
-        if exc.status_code is not None and exc.status_code < _SERVER_ERROR:
+    except (httpx.HTTPError, ApiError) as exc:
+        if not _langfuse_at_fault(exc):
             raise
-        raise _InfraError(f"Langfuse answered {exc.status_code}: {exc.body}") from exc
+        raise _InfraError(f"Langfuse did not answer: {type(exc).__name__}: {exc}") from exc
+
+
+def _langfuse_at_fault(exc: BaseException) -> bool:
+    """Whether ``exc`` is Langfuse or the network failing, which a later run clears: a push
+    Langfuse did not show in full, a transport error, a 5xx, a 429, or an API error with no
+    status. Any other API error, such as a 404 from an endpoint Langfuse removed, is a fault
+    in the request that every run would repeat."""
+    if isinstance(exc, PushIncompleteError | PushTimeoutError | httpx.HTTPError):
+        return True
+    if isinstance(exc, ApiError):
+        status = exc.status_code
+        return status is None or status >= _SERVER_ERROR or status == _TOO_MANY_REQUESTS
+    return False
 
 
 class _InfraError(Exception):
@@ -626,31 +654,44 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
 
     One Langfuse client, checked against ``LANGFUSE_PROJECT_ID`` before anything is read or
     written, syncs the datasets and pushes the run, so keys of another project write nothing.
+    When Langfuse or the network fails that check, the nightly still runs and writes its
+    record, skipping the sync and the push, which the summary reports as lost to
+    infrastructure.
 
     Returns:
-        The nightly's exit code: 3 when Langfuse, the schema or the release does not answer.
+        The nightly's exit code: 3 when Langfuse, the schema or the release does not answer,
+        unless the checks found an unmarked failure (1).
     """
+    project_id = _project_id()
     try:
-        langfuse = _connect(_project_id())
+        langfuse: Langfuse | None = _connect(project_id)
+        unreachable = None
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
-        return _EXIT_INFRA
+        langfuse, unreachable = None, str(exc)
     try:
-        return _nightly_with(args, by_file, langfuse)
+        return _nightly_with(args, by_file, langfuse, unreachable=unreachable)
     finally:
-        langfuse.shutdown()
+        if langfuse is not None:
+            langfuse.shutdown()
 
 
 def _nightly_with(
-    args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]], langfuse: Langfuse
+    args: argparse.Namespace,
+    by_file: Mapping[str, Sequence[Case]],
+    langfuse: Langfuse | None,
+    *,
+    unreachable: str | None,
 ) -> int:
-    """``_main_nightly``'s body, on a connected client."""
+    """``_main_nightly``'s body. With no client, ``unreachable`` says why, and the run
+    skips the sync and the push."""
     started_at = datetime.now(UTC)
     try:
         # The app's schema loads first, so an outage of the app reads as one.
         schema, revision = _schema(args.nightly)
         release = _open_release()
-        _sync(by_file, langfuse)
+        if langfuse is not None:
+            _sync(by_file, langfuse)
         run = _run_nightly(by_file, args.nightly, schema, release)
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
@@ -669,18 +710,24 @@ def _nightly_with(
     code = nightly_exit_code(run.states)
 
     # The summary is written whatever the push does, so a push that fails after a full run
-    # keeps the run's findings. A push Langfuse did not show in full, or one its API or the
-    # network refused, is infrastructure, which an unmarked failure outranks. Any other push
-    # error is a crash, raised once the summary is written.
+    # keeps the run's findings. Langfuse or the network failing (``_langfuse_at_fault``) is
+    # infrastructure, which an unmarked failure outranks. Any other push error is a crash,
+    # raised once the summary is written.
     experiment, push_error, crash = None, None, None
-    try:
-        experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=langfuse)
-    except _PUSH_INFRA_ERRORS as exc:
-        push_error = f"{type(exc).__name__}: {exc}"
+    if langfuse is None:
+        push_error = (
+            f"Langfuse did not answer at the start, so nothing was synced or pushed ({unreachable})"
+        )
         code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
-    except Exception as exc:
-        push_error = f"{type(exc).__name__}: {exc}"
-        crash = exc
+    else:
+        try:
+            experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=langfuse)
+        except Exception as exc:
+            push_error = f"{type(exc).__name__}: {exc}"
+            if _langfuse_at_fault(exc):
+                code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
+            else:
+                crash = exc
 
     markdown = nightly_markdown(
         run.states, experiment=experiment, record=path, push_error=push_error

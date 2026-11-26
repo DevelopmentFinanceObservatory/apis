@@ -138,11 +138,28 @@ jobs:
           echo "::error::The nightly eval exited $rc; see the run summary."
           exit 1
 
+      # The record stays with the run as an artifact, so an upload that fails
+      # can be redone by hand (python -m search.eval.record_upload) without
+      # running the eval again.
+      - name: Keep the run record as an artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-records
+          path: ${{ runner.temp }}/eval-records
+          if-no-files-found: ignore
+          retention-days: 30
+
       # The writer may create objects only under apis-search/ in the eval runs
       # bucket, and its workload identity binding admits only this workflow
-      # file on dev.
+      # file on dev, so a run dispatched from another branch keeps its record
+      # in the artifact alone.
+      - name: Skip the upload off dev
+        if: ${{ !cancelled() && github.ref != 'refs/heads/dev' }}
+        run: echo "::notice::Run from ${{ github.ref }}; the writer admits dev only, so the record stays in the eval-records artifact."
+
       - name: Authenticate to Google Cloud as the eval runs writer
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
@@ -154,7 +171,7 @@ jobs:
       # writer may create objects and nothing else, and gcloud storage cp reads
       # the destination first.
       - name: Upload the run record
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
         env:
           BUCKET: ${{ vars.EVAL_RUNS_BUCKET }}
         run: |
@@ -166,4 +183,6 @@ jobs:
           fi
           : "${BUCKET:?vars.EVAL_RUNS_BUCKET is unset}"
           uv run python -m search.eval.record_upload --bucket "$BUCKET" "$root"
-          echo "Uploaded the run record to gs://$BUCKET/apis-search/" >> "$GITHUB_STEP_SUMMARY"
+          for dir in "$root"/apis-search/*/; do
+            echo "Uploaded the run record to gs://$BUCKET/apis-search/$(basename "$dir")/" >> "$GITHUB_STEP_SUMMARY"
+          done

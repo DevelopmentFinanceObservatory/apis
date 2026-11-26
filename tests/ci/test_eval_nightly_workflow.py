@@ -31,20 +31,38 @@ def test_the_nightly_writes_its_record_and_names_its_langfuse_project():
     assert run["env"]["LANGFUSE_PROJECT_ID"] == "${{ vars.LANGFUSE_PROJECT_ID }}"
 
 
-def test_the_record_is_uploaded_as_the_writer_after_the_run_whatever_its_code():
+_ON_DEV = "${{ !cancelled() && github.ref == 'refs/heads/dev' }}"
+
+
+def test_the_record_is_kept_then_uploaded_as_the_writer_whatever_the_run_s_code():
     names = [step.get("name", "") for step in _STEPS]
+    artifact = _step("Keep the run record as an artifact")
+    skip = _step("Skip the upload off dev")
     auth = _step("eval runs writer")
     upload = _step("Upload the run record")
 
-    assert names.index(auth["name"]) == names.index("Run the nightly eval") + 1
-    assert names.index(upload["name"]) == names.index(auth["name"]) + 1
-    assert auth["if"] == upload["if"] == "${{ !cancelled() }}"
+    order = [names.index(step["name"]) for step in (artifact, skip, auth, upload)]
+    assert order == sorted(order)
+    assert order[0] == names.index("Run the nightly eval") + 1
+    assert artifact["if"] == "${{ !cancelled() }}"
+    assert artifact["uses"] == "actions/upload-artifact@v7"
+    assert artifact["with"]["path"] == "${{ runner.temp }}/eval-records"
+    # The writer's binding admits this workflow on dev alone.
+    assert auth["if"] == upload["if"] == _ON_DEV
+    assert skip["if"] == "${{ !cancelled() && github.ref != 'refs/heads/dev' }}"
     assert auth["uses"] == "google-github-actions/auth@v3"
     assert auth["with"] == {
         "workload_identity_provider": "${{ secrets.EVAL_WIF_PROVIDER }}",
         "service_account": "${{ secrets.EVAL_RUNS_WRITER_SA }}",
     }
     assert upload["env"]["BUCKET"] == "${{ vars.EVAL_RUNS_BUCKET }}"
+
+
+def test_the_corpus_sync_needs_no_google_cloud_credentials():
+    job = _SYNC_WORKFLOW["jobs"]["sync"]
+
+    assert "id-token" not in job["permissions"]
+    assert not [step for step in job["steps"] if "auth" in step.get("uses", "")]
 
 
 def _upload(tmp_path: Path, run_ids: list[str]) -> tuple[subprocess.CompletedProcess, list[str]]:
@@ -86,6 +104,8 @@ def test_the_upload_hands_the_records_root_to_the_create_only_uploader(tmp_path)
 
     assert done.returncode == 0, done.stderr
     assert calls == [f"run python -m search.eval.record_upload --bucket eval-runs {root}"]
+    summary = (tmp_path / "summary.md").read_text()
+    assert "gs://eval-runs/apis-search/nightly-20261125T041700Z/" in summary
     assert "gcloud" not in _step("Upload the run record")["run"]
 
 
