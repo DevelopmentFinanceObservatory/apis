@@ -4,8 +4,9 @@ name: Eval nightly
 # (python -m search.eval.sync --nightly, which syncs the Langfuse datasets
 # first). The run is written as a dfo-evals run record and pushed to Langfuse
 # as one experiment per case file. The run summary lists every check that
-# failed outside its case's known_failure, and every check lost to
-# infrastructure, including a push Langfuse did not show in full.
+# failed outside its case's known_failure and every check lost to
+# infrastructure, and says whether the Langfuse push completed; a push that
+# did not also raises its own warning.
 #
 # Once the run ends, whatever its exit code, the record is copied to the
 # eval runs bucket under apis-search/<run id>/, results.jsonl first and
@@ -140,9 +141,10 @@ jobs:
 
       # The record stays with the run as an artifact, so an upload that fails
       # does not cost the eval. Only this workflow on dev can act as the writer,
-      # so finishing an upload by hand takes someone who may write the bucket:
-      # copy the missing files from the artifact with gcloud storage cp
-      # --no-clobber, manifest.json last.
+      # so finishing an upload by hand takes someone who may read and write the
+      # bucket: check any results.jsonl already there matches the artifact's
+      # (gcloud storage hash), then copy the missing files with gcloud storage
+      # cp --no-clobber, manifest.json last.
       - name: Keep the run record as an artifact
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
