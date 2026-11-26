@@ -2,7 +2,8 @@
 
 The nightly writes its run record under ``$RUNNER_TEMP/eval-records`` and two steps after
 it copy the record to the eval runs bucket as the eval runs writer, whatever the run's exit
-code. The upload step's shell runs here under bash, with ``gcloud`` stubbed.
+code. The upload step's shell runs here under bash, with ``uv`` stubbed; the upload itself
+is ``search.eval.record_upload``, tested in ``tests/eval/test_record_upload.py``.
 """
 
 import os
@@ -11,8 +12,9 @@ from pathlib import Path
 
 import yaml
 
-_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "eval-nightly.yml"
-_WORKFLOW = yaml.safe_load(_WORKFLOW_PATH.read_text())
+_WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+_WORKFLOW = yaml.safe_load((_WORKFLOWS / "eval-nightly.yml").read_text())
+_SYNC_WORKFLOW = yaml.safe_load((_WORKFLOWS / "eval-sync.yml").read_text())
 _STEPS = _WORKFLOW["jobs"]["nightly"]["steps"]
 _RECORDS = '--records "$RUNNER_TEMP/eval-records"'
 
@@ -47,7 +49,7 @@ def test_the_record_is_uploaded_as_the_writer_after_the_run_whatever_its_code():
 
 def _upload(tmp_path: Path, run_ids: list[str]) -> tuple[subprocess.CompletedProcess, list[str]]:
     """Run the upload step on a records root holding ``run_ids``; return the result and
-    each ``gcloud`` call's arguments."""
+    each ``uv`` call's arguments."""
     runner_temp = tmp_path / "runner"
     for run_id in run_ids:
         run_dir = runner_temp / "eval-records" / "apis-search" / run_id
@@ -58,9 +60,9 @@ def _upload(tmp_path: Path, run_ids: list[str]) -> tuple[subprocess.CompletedPro
     calls = tmp_path / "calls"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    gcloud = bin_dir / "gcloud"
-    gcloud.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
-    gcloud.chmod(0o755)
+    uv = bin_dir / "uv"
+    uv.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
+    uv.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -78,16 +80,13 @@ def _upload(tmp_path: Path, run_ids: list[str]) -> tuple[subprocess.CompletedPro
     return done, calls.read_text().splitlines() if calls.exists() else []
 
 
-def test_the_upload_copies_results_before_the_manifest_without_overwriting(tmp_path):
+def test_the_upload_hands_the_records_root_to_the_create_only_uploader(tmp_path):
     done, calls = _upload(tmp_path, ["nightly-20261125T041700Z"])
-    source = tmp_path / "runner" / "eval-records" / "apis-search" / "nightly-20261125T041700Z"
-    dest = "gs://eval-runs/apis-search/nightly-20261125T041700Z"
+    root = tmp_path / "runner" / "eval-records"
 
     assert done.returncode == 0, done.stderr
-    assert calls == [
-        f"storage cp --no-clobber {source}/results.jsonl {dest}/results.jsonl",
-        f"storage cp --no-clobber {source}/manifest.json {dest}/manifest.json",
-    ]
+    assert calls == [f"run python -m search.eval.record_upload --bucket eval-runs {root}"]
+    assert "gcloud" not in _step("Upload the run record")["run"]
 
 
 def test_the_upload_skips_with_a_notice_when_no_record_was_written(tmp_path):
@@ -96,3 +95,10 @@ def test_the_upload_skips_with_a_notice_when_no_record_was_written(tmp_path):
     assert done.returncode == 0, done.stderr
     assert calls == []
     assert "::notice::The nightly wrote no run record" in done.stdout
+
+
+def test_the_nightly_and_the_corpus_sync_never_run_at_once():
+    """Both write the Langfuse datasets, and a sync during the nightly would change the
+    item inputs its push checks."""
+    assert _WORKFLOW["concurrency"] == _SYNC_WORKFLOW["concurrency"]
+    assert _WORKFLOW["concurrency"]["cancel-in-progress"] is False

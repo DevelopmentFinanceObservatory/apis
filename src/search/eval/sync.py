@@ -23,13 +23,16 @@ trial per eligible case, scored by ``answer`` and tagged with its case file. Wit
 pushed to Langfuse as one experiment in each case file's dataset, all under one run name,
 with each case's response body as its output (``dfo_evals.langfuse_sink.push_run``). Each
 check scores 1 on a pass and 0 on a failure, and has no score when it is unverifiable, n/a
-or unreached. A push that Langfuse does not show in full before its timeout is
-infrastructure: the nightly then exits 1 when the checks gave 1, else 3. The record's
+or unreached. A push that Langfuse does not show in full before its timeout, or that
+Langfuse's API or the network refuses, is infrastructure: the nightly then exits 1 when the
+checks gave 1, else 3. Any other push error exits 2. The summary is written either way, and
+the experiments are named ``apis-search`` with the run's name, in place of the per-file
+``nightly`` experiments of earlier runs. The record's
 revision is the commit the app's ``x-dfo-commit`` header names, or ``unknown``.
 
 Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also requires
 ``LANGFUSE_PROJECT_ID``, the project the keys must name, and reads ``LANGFUSE_BASE_URL``
-(default ``https://cloud.langfuse.com``). A ``dataset_resubmit`` case's request reads the
+(or ``LANGFUSE_HOST``; default ``https://cloud.langfuse.com``). A ``dataset_resubmit`` case's request reads the
 code index of the served graph release, and the checks read that release, so the nightly
 reads ``GRAPH_RELEASE_URI`` and opens that release once, with Google credentials for a
 ``gs://`` URI. It also reads the graph settings and ``ORIGIN_CATALOGUE_URI`` the checks
@@ -62,6 +65,7 @@ from dfo_evals.records import Run, write_run
 from google.api_core.exceptions import GoogleAPIError
 from google.auth.exceptions import GoogleAuthError
 from langfuse.api import DatasetStatus
+from langfuse.api.core.api_error import ApiError
 from pydantic_evals.reporting import EvaluationReport
 
 from dfo_platform.app import COMMIT_HEADER
@@ -122,6 +126,9 @@ _PROJECT_ID_ENV: Final = "LANGFUSE_PROJECT_ID"
 _DEFAULT_LANGFUSE_BASE_URL: Final = "https://cloud.langfuse.com"
 _EXIT_FAILURE: Final = 1
 _EXIT_INFRA: Final = 3
+
+# What a push raises when Langfuse or the network, not the run, is at fault.
+_PUSH_INFRA_ERRORS = (PushIncompleteError, PushTimeoutError, ApiError, httpx.HTTPError)
 
 # What opening the served release raises when no release is published, or when its bucket or
 # the credentials it needs cannot answer. `ReleaseUriMissingError` is a setup error and exits 2.
@@ -479,7 +486,9 @@ def _connect(project_id: str) -> Langfuse:
     return connect(
         public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
-        base_url=os.environ.get("LANGFUSE_BASE_URL") or _DEFAULT_LANGFUSE_BASE_URL,
+        base_url=os.environ.get("LANGFUSE_BASE_URL")
+        or os.environ.get("LANGFUSE_HOST")
+        or _DEFAULT_LANGFUSE_BASE_URL,
         project_id=project_id,
     )
 
@@ -626,15 +635,20 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     path = write_run(root=args.records, run=record) if args.records else None
     code = nightly_exit_code(run.states)
 
-    # A push Langfuse did not show in full is infrastructure, which an unmarked failure
-    # outranks. Any other push error is a crash.
-    experiment, push_error = None, None
+    # The summary is written whatever the push does, so a push that fails after a full run
+    # keeps the run's findings. A push Langfuse did not show in full, or one its API or the
+    # network refused, is infrastructure, which an unmarked failure outranks. Any other push
+    # error is a crash, raised once the summary is written.
+    experiment, push_error, crash = None, None, None
     client = _connect(project_id)
     try:
         experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=client)
-    except (PushIncompleteError, PushTimeoutError) as exc:
+    except _PUSH_INFRA_ERRORS as exc:
         push_error = f"{type(exc).__name__}: {exc}"
         code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
+    except Exception as exc:
+        push_error = f"{type(exc).__name__}: {exc}"
+        crash = exc
     finally:
         client.shutdown()
 
@@ -644,6 +658,8 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     print(markdown)
     if args.summary:
         args.summary.write_text(markdown, encoding="utf-8")
+    if crash is not None:
+        raise crash
     return code
 
 

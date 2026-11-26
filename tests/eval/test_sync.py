@@ -15,6 +15,7 @@ from dfo_evals.langfuse_sink import DatasetItemRef, PushIncompleteError, PushTim
 from dfo_evals.records import FaultClass, read_run
 from dfo_evals.report import input_digest
 from langfuse.api import DatasetStatus
+from langfuse.api.core.api_error import ApiError
 from pydantic_evals.reporting import EvaluationReport
 
 import graph_release.service as release_service
@@ -599,7 +600,19 @@ def test_a_nightly_without_a_project_id_exits_2_before_any_case_runs(tmp_path, m
     assert posted == []
 
 
-@pytest.mark.parametrize("error", [PushIncompleteError, PushTimeoutError])
+def _api_error(message: str) -> Exception:
+    return ApiError(status_code=503, body=message)
+
+
+def _transport_error(message: str) -> Exception:
+    return httpx.ConnectError(message, request=httpx.Request("GET", "http://langfuse"))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PushIncompleteError, PushTimeoutError, _api_error, _transport_error],
+    ids=["incomplete", "timeout", "api error", "transport error"],
+)
 @pytest.mark.parametrize(
     ("corpus_text", "code"), [(ETHIOPIA, 3), (KENYA, 1)], ids=["checks pass", "checks fail"]
 )
@@ -623,13 +636,39 @@ def test_a_push_langfuse_did_not_show_is_infrastructure(
     assert written.name.startswith("nightly-")
 
 
-def test_another_push_error_exits_2(tmp_path, monkeypatch):
+def test_another_push_error_exits_2_after_writing_the_summary(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
-    _write(corpus, {"main": ETHIOPIA})
+    _write(corpus, {"main": KENYA})
+    summary = tmp_path / "nightly.md"
 
     def push_run(**_):
         raise ValueError("revision holds a comma")
 
     _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
 
-    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--summary={summary}"]) == 2
+    text = summary.read_text()
+    assert "ValueError: revision holds a comma" in text
+    assert "`ken` (main) `entities`" in text
+
+
+@pytest.mark.parametrize(
+    ("env", "base_url"),
+    [
+        ({"LANGFUSE_BASE_URL": "https://a", "LANGFUSE_HOST": "https://b"}, "https://a"),
+        ({"LANGFUSE_HOST": "https://b"}, "https://b"),
+        ({}, "https://cloud.langfuse.com"),
+    ],
+    ids=["base url", "host", "default"],
+)
+def test_the_client_reads_the_base_url_then_the_host(monkeypatch, env, base_url):
+    for name in ("LANGFUSE_BASE_URL", "LANGFUSE_HOST"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    seen = {}
+    monkeypatch.setattr(m, "connect", lambda **kwargs: seen.update(kwargs))
+
+    m._connect(PROJECT_ID)
+
+    assert seen["base_url"] == base_url
