@@ -8,8 +8,9 @@ The nightly's writer account may only create objects under ``apis-search/``, so 
 goes up with ``if_generation_match=0``: Cloud Storage creates it when no object of that name
 exists and refuses otherwise, without the account reading anything. ``gcloud storage cp``
 reads the destination before it writes, which that account may not do. An object the bucket
-already holds is left as it is and reported, so running the upload again finishes a run whose
-manifest did not go up.
+already holds stops the upload with an error: the writer cannot read it to check it is the
+same run, and a manifest written beside another run's results would join two runs into one.
+Run ids carry their start time to the second, so a conflict means a run id was reused.
 """
 
 from __future__ import annotations
@@ -33,6 +34,10 @@ _ABSENT: Final = 0
 _UPLOAD_ORDER: Final = (RESULTS_FILE, MANIFEST_FILE)
 
 logger = logging.getLogger(__name__)
+
+
+class ObjectExistsError(RuntimeError):
+    """The bucket already holds an object an upload would create."""
 
 
 class Blob(Protocol):
@@ -61,6 +66,8 @@ def upload_runs(*, bucket: Bucket, root: Path) -> list[str]:
 
     Raises:
         FileNotFoundError: ``root/apis-search`` does not exist.
+        ObjectExistsError: The bucket already holds an object the upload would create. The
+            run's later files, its manifest among them, are not uploaded.
     """
     created = []
     for run_dir in iter_runs(root=root, suite=SUITE):
@@ -70,9 +77,11 @@ def upload_runs(*, bucket: Bucket, root: Path) -> list[str]:
                 bucket.blob(object_name).upload_from_filename(
                     str(run_dir / name), if_generation_match=_ABSENT
                 )
-            except PreconditionFailed:
-                logger.warning("gs://.../%s already exists; left as it is", object_name)
-                continue
+            except PreconditionFailed as exc:
+                raise ObjectExistsError(
+                    f"{object_name} already exists, so run {run_dir.name!r} is not uploaded "
+                    f"past it; created so far: {created}"
+                ) from exc
             created.append(object_name)
             logger.info("created %s", object_name)
     return created

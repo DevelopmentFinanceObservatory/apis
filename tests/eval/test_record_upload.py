@@ -9,7 +9,7 @@ import pytest
 from dfo_evals.records import Run, write_run
 from google.api_core.exceptions import PreconditionFailed
 
-from search.eval.record_upload import upload_runs
+from search.eval.record_upload import ObjectExistsError, upload_runs
 from search.eval.run_record import record_manifest
 
 STARTED_AT = datetime(2026, 11, 26, 4, 17, tzinfo=UTC)
@@ -73,14 +73,16 @@ def test_each_run_goes_up_results_first_then_manifest(tmp_path):
     assert '"run_id": "nightly-1"' in bucket.objects["apis-search/nightly-1/manifest.json"]
 
 
-def test_an_object_the_bucket_holds_is_left_and_the_rest_go_up(tmp_path):
+def test_an_object_the_bucket_holds_stops_the_run_before_its_manifest(tmp_path):
+    """A manifest beside another run's results would join two runs, so the upload stops."""
     write_record(tmp_path, "nightly-1")
-    bucket = FakeBucket({"apis-search/nightly-1/results.jsonl": "earlier"})
+    bucket = FakeBucket({"apis-search/nightly-1/results.jsonl": "another run"})
 
-    created = upload_runs(bucket=bucket, root=tmp_path)
+    with pytest.raises(ObjectExistsError, match=r"results\.jsonl already exists"):
+        upload_runs(bucket=bucket, root=tmp_path)
 
-    assert created == ["apis-search/nightly-1/manifest.json"]
-    assert bucket.objects["apis-search/nightly-1/results.jsonl"] == "earlier"
+    assert bucket.uploads == []
+    assert "apis-search/nightly-1/manifest.json" not in bucket.objects
 
 
 def test_a_root_without_records_raises(tmp_path):

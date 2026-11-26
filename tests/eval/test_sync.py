@@ -683,3 +683,59 @@ def test_the_client_reads_the_base_url_then_the_host(monkeypatch, env, base_url)
     m._connect(PROJECT_ID)
 
     assert seen["base_url"] == base_url
+
+
+def test_a_run_id_a_directory_cannot_take_stops_the_nightly_before_it_starts(tmp_path):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+
+    with pytest.raises(SystemExit) as raised:
+        m.main([f"--corpus-dir={corpus}", "--nightly=http://app", "--run-id=night 1"])
+
+    assert raised.value.code == 2
+
+
+def _unreachable(**_):
+    raise httpx.ConnectError("no route", request=httpx.Request("GET", "http://langfuse"))
+
+
+def _down(**_):
+    raise ApiError(status_code=503, body="unavailable")
+
+
+def _refused(**_):
+    raise ApiError(status_code=401, body="invalid keys")
+
+
+@pytest.mark.parametrize(
+    ("connect", "code"),
+    [(_unreachable, 3), (_down, 3), (_refused, 2)],
+    ids=["network", "5xx", "refused keys"],
+)
+def test_a_langfuse_that_does_not_answer_at_start_is_infrastructure(
+    tmp_path, monkeypatch, connect, code
+):
+    """The project check runs before anything is read or written. Langfuse or the network
+    failing it is infrastructure; keys Langfuse refuses are a setup error."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
+    monkeypatch.setattr(m, "connect", connect)
+    monkeypatch.setattr(m, "_schema", lambda url: pytest.fail("the nightly ran past the check"))
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == code
+
+
+@pytest.mark.parametrize(
+    ("connect", "code"),
+    [(_unreachable, 3), (_down, 3), (_refused, 2)],
+    ids=["network", "5xx", "refused keys"],
+)
+def test_a_plain_sync_whose_langfuse_does_not_answer_is_infrastructure(
+    tmp_path, monkeypatch, connect, code
+):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    monkeypatch.setattr(m, "connect", connect)
+
+    assert m.main([f"--corpus-dir={corpus}"]) == code

@@ -102,3 +102,5 @@ def test_the_nightly_and_the_corpus_sync_never_run_at_once():
     item inputs its push checks."""
     assert _WORKFLOW["concurrency"] == _SYNC_WORKFLOW["concurrency"]
     assert _WORKFLOW["concurrency"]["cancel-in-progress"] is False
+    # Without a queue a group keeps one pending run, and a newer one cancels it.
+    assert _WORKFLOW["concurrency"]["queue"] == "max"

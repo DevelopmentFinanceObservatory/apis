@@ -6,7 +6,9 @@ whose metadata names the file. It writes one item per case, keyed by case id, th
 differently. The item's input is the case's request as its case file authors it, keyed by
 its case id (``corpus_dataset.CaseInputs``), and its expected output is the case's
 ``expect`` with families expanded. It archives every active item whose case is gone,
-including the items of a deleted case file. A plain sync opens no graph release.
+including the items of a deleted case file. A plain sync opens no graph release. It exits
+3 when Langfuse or the network fails the project check, and 2 on keys Langfuse refuses or
+any other error.
 
 ``python -m search.eval.sync --nightly URL`` syncs, then runs every eligible case once on
 the app at URL as the corpus dataset (``search.eval.corpus_dataset``), scoring each answer
@@ -103,7 +105,7 @@ from search.eval.corpus_dataset import (
 from search.eval.dataset import item_id_for_case
 from search.eval.evaluator import ScoredAnswer, SearchChecks
 from search.eval.gate import Judgement, Observation, Outcome, exit_code, judge
-from search.eval.run_record import record_manifest, run_record
+from search.eval.run_record import parse_run_id, record_manifest, run_record
 from search.eval.runner import (
     EVAL_HEADERS,
     SCHEMA_PATH,
@@ -131,6 +133,8 @@ _DEFAULT_LANGFUSE_BASE_URL: Final = "https://cloud.langfuse.com"
 _EXIT_FAILURE: Final = 1
 _EXIT_INFRA: Final = 3
 
+# Langfuse answers at or above this status when it, not the request, is at fault.
+_SERVER_ERROR: Final = 500
 # What a push raises when Langfuse or the network, not the run, is at fault.
 _PUSH_INFRA_ERRORS = (PushIncompleteError, PushTimeoutError, ApiError, httpx.HTTPError)
 
@@ -481,15 +485,26 @@ def _connect(project_id: str) -> Langfuse:
     The client sends on a tracer provider of its own, so ``LANGFUSE_SAMPLE_RATE`` does not
     thin what it writes, and ``connect`` refuses keys of another project and
     ``LANGFUSE_TRACING_ENABLED=false``.
+
+    Raises:
+        _InfraError: Langfuse did not answer the project check: the network failed or it
+            answered 5xx. Keys it refuses, or keys of another project, raise as they are.
     """
-    return connect(
-        public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
-        secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
-        base_url=os.environ.get("LANGFUSE_BASE_URL")
-        or os.environ.get("LANGFUSE_HOST")
-        or _DEFAULT_LANGFUSE_BASE_URL,
-        project_id=project_id,
-    )
+    try:
+        return connect(
+            public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
+            secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
+            base_url=os.environ.get("LANGFUSE_BASE_URL")
+            or os.environ.get("LANGFUSE_HOST")
+            or _DEFAULT_LANGFUSE_BASE_URL,
+            project_id=project_id,
+        )
+    except httpx.HTTPError as exc:
+        raise _InfraError(f"Langfuse did not answer: {type(exc).__name__}: {exc}") from exc
+    except ApiError as exc:
+        if exc.status_code is not None and exc.status_code < _SERVER_ERROR:
+            raise
+        raise _InfraError(f"Langfuse answered {exc.status_code}: {exc.body}") from exc
 
 
 class _InfraError(Exception):
@@ -576,7 +591,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="write the nightly's run record under this root, as <root>/apis-search/<run id>/",
     )
     parser.add_argument(
-        "--run-id", help="the nightly run record's id (default: nightly-<UTC start time>)"
+        "--run-id",
+        type=parse_run_id,
+        help="the nightly run record's id (default: nightly-<UTC start time>)",
     )
     args = parser.parse_args(argv)
     if (args.records or args.run_id) and not args.nightly:
@@ -595,7 +612,11 @@ def _main(args: argparse.Namespace) -> int:
     by_file = load_case_files(args.corpus_dir)
     if args.nightly:
         return _main_nightly(args, by_file)
-    langfuse = _connect(_project_id())
+    try:
+        langfuse = _connect(_project_id())
+    except _InfraError as exc:
+        print(f"eval infrastructure error: {exc}", file=sys.stderr)
+        return _EXIT_INFRA
     try:
         _sync(by_file, langfuse)
     finally:
@@ -606,13 +627,17 @@ def _main(args: argparse.Namespace) -> int:
 def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]]) -> int:
     """Sync, run the nightly, record and push it, and write its summary.
 
-    One Langfuse client, checked against ``LANGFUSE_PROJECT_ID`` before any case runs,
-    syncs the datasets and pushes the run.
+    One Langfuse client, checked against ``LANGFUSE_PROJECT_ID`` before anything is read or
+    written, syncs the datasets and pushes the run, so keys of another project write nothing.
 
     Returns:
-        The nightly's exit code: 3 when the schema or the release does not load.
+        The nightly's exit code: 3 when Langfuse, the schema or the release does not answer.
     """
-    langfuse = _connect(_project_id())
+    try:
+        langfuse = _connect(_project_id())
+    except _InfraError as exc:
+        print(f"eval infrastructure error: {exc}", file=sys.stderr)
+        return _EXIT_INFRA
     try:
         return _nightly_with(args, by_file, langfuse)
     finally:
