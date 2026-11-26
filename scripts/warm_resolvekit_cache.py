@@ -283,6 +283,14 @@ def main() -> None:
     _convert_byod_pack(cache_dir)
     _convert_composed_store(cache_dir)
 
+    # Search reads each bound party's names from the installed export at intake, so an image
+    # without it would fail every part at intake.
+    names_path = pack.geo_names_path()
+    if not names_path.is_file():
+        raise SystemExit(f"{names_path} is not installed")
+    if len(json.loads(names_path.read_text(encoding="utf-8"))) < 2:
+        raise SystemExit(f"the installed {names_path} names fewer than two parties")
+
 
 if __name__ == "__main__":
     main()

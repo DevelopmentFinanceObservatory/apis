@@ -186,8 +186,8 @@ def test_manifest_records_counts_overlaps_identity_and_size(tmp_path: Path) -> N
         "topics": 1,
         "scan_places": 5,
         "un_blocked_places": 2,
-        "dataset_facts": 3,
-        "source_documentation": 3,
+        "dataset_facts": 4,
+        "source_documentation": 4,
         "superseded_variables": 0,
         "successor_variables": 0,
     }
@@ -436,7 +436,14 @@ def test_dataset_facts_store_each_entry_s_card_facts(tmp_path: Path) -> None:
         "source_url": "https://datacatalog.worldbank.org/dataset/world-development-indicators",
     }
     assert WDI not in facts
-    assert UN_WHO not in facts
+    assert facts[UN_WHO] == {
+        "ref": UN_WHO,
+        "description": None,
+        "license_type": None,
+        "update_cadence": None,
+        "years_covered": None,
+        "source_url": "https://www.who.int/data",
+    }
 
 
 def test_source_documentation_stores_each_entry_s_documentation_facts(tmp_path: Path) -> None:
@@ -458,7 +465,7 @@ def test_source_documentation_stores_each_entry_s_documentation_facts(tmp_path: 
         "documents": {"dataNotes": ["- Figures for the latest year are preliminary.\\n"]},
         "partial_periods": {CRS: "2025"},
     }
-    assert set(documentation) == {CRS, WDI_DATASET, EUROSTAT_GDP}
+    assert set(documentation) == {CRS, WDI_DATASET, EUROSTAT_GDP, UN_WHO}
 
 
 def test_provenance_rows_carry_their_dataset_or_null_and_their_licence(tmp_path: Path) -> None:

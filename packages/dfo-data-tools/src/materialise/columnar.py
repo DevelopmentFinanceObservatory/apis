@@ -4,15 +4,24 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import cast
+from typing import Literal, cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import array_kernel, scalar_kernel
+from dfo_frame_grammar import FrameError, array_kernel, scalar_kernel
+from dfo_frame_grammar.grammar import parse_time_period
 
 from dc_sdmx.errors import SdmxResponseError
 from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN, observed_value
 from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission, RowAdmission
+from materialise.held_back import (
+    Judgement,
+    cut_catalogue,
+    held_back,
+    judge,
+    last_year_before,
+)
+from materialise.method_status import is_projection
 from materialise.window import (
     AppliedWindow,
     Coverage,
@@ -20,6 +29,8 @@ from materialise.window import (
     _leading_year,
     latest_period,
 )
+from origin_catalogue import Catalogue
+from origin_catalogue.catalogue import Undocumented, partial_period_of
 
 # `dc_sdmx.results.DIMENSION_COLUMNS`'s trailing entry, the wire's own SDMX
 # component name. Kept as a literal here, the same way `test_observation_
@@ -33,6 +44,10 @@ _STAT_VAR_REF_PREFIX = "dcid:"
 # The columns `admission_mask` reads: a subject-only row's place and its facet id.
 _PLACE_COLUMN = "observationAbout"
 _FACET_ID_COLUMN = "facetId"
+
+# The columns `held_back_mask` judges a row by.
+_PROVENANCE_COLUMN = "provenance"
+_METHOD_COLUMN = "measurementMethod"
 
 # `_NUMERIC_RE` covers `pc.cast`'s signed integers/decimals (including `.5` and `5.`),
 # exponents, and case-insensitive nan/inf/infinity. `observed_values` handles Python `float()`'s
@@ -89,7 +104,7 @@ def _map_dictionary_values(
     return mapped_dictionary.take(dict_array.indices)
 
 
-def _distinct_combinations(
+def distinct_combinations(
     columns: Sequence[pa.Array | pa.ChunkedArray],
 ) -> tuple[pa.Array, list[tuple[object, ...]]]:
     """The distinct combinations of `columns`' values, and each row's position among them.
@@ -100,7 +115,7 @@ def _distinct_combinations(
     for column in columns:
         if not isinstance(column, pa.Array):
             column = column.combine_chunks()
-        encoded = _as_dictionary_array(pc.dictionary_encode(column))
+        encoded = _as_dictionary_array(pc.dictionary_encode(column, null_encoding="encode"))
         values = encoded.dictionary.to_pylist()
         codes = encoded.indices.cast(pa.int64())
         if positions is not None:
@@ -324,7 +339,7 @@ def admission_mask(table: pa.Table, *, admission: RowAdmission) -> pa.BooleanArr
         # checked once. A role the shape lacks reads as "".
         donor, recipient = admission.role_names.donor, admission.role_names.recipient
         names = [_FACET_ID_COLUMN, *(name for name in (donor, recipient) if name is not None)]
-        positions, combinations = _distinct_combinations([table[name] for name in names])
+        positions, combinations = distinct_combinations([table[name] for name in names])
         admitted = []
         for combination in combinations:
             cells = dict(zip(names, combination, strict=True))
@@ -384,15 +399,133 @@ def selected_mask(
     window: RequestedWindow,
     observed: pa.BooleanArray | None = None,
 ) -> pa.BooleanArray:
-    """Combines facet selection and observed-value masks, adding a year-range mask only for
-    `window.kind == "range"`. Each mask reads a row alone. `observed` is `observed_mask(table)`,
-    computed here when not given."""
+    """Combines facet selection, observed-value and held-back masks (`held_back_mask`), adding
+    a year-range mask only for `window.kind == "range"`. Each mask reads a row alone.
+    `observed` is `observed_mask(table)`, computed here when not given."""
     if observed is None:
         observed = observed_mask(table)
     mask = pc.and_(selection_mask(table, selections=selections), observed)
+    mask = pc.and_(mask, pc.invert(held_back_mask(table, include=window.include)))
     if window.kind == "range":
         mask = pc.and_(mask, range_window_mask(table, window=window))
     return mask
+
+
+def held_back_mask(table: pa.Table, *, include: frozenset[str]) -> pa.BooleanArray:
+    """Whether each row is one a read opting in to `include` holds back
+    (`materialise.held_back`): a projected row unless `include` names `"projected"`, and a row
+    of its source's partial period unless it names `"partial"`. A row is judged by its
+    `provenance`, `measurementMethod` and `TIME_PERIOD` cells, each distinct combination once.
+    A row with no period is kept. The rows a mint reads carry their own source's provenance,
+    a composite component's included, since a composite composes its components' frames
+    afterwards.
+
+    Raises:
+        CatalogueNotBound: `include` does not name `"partial"` and no origin catalogue is
+            bound, so the partial cut cannot be judged (`held_back.cut_catalogue`).
+    """
+    if table.num_rows == 0 or include >= {"partial", "projected"}:
+        return pa.array([False] * table.num_rows, type=pa.bool_())
+    catalogue = None if "partial" in include else cut_catalogue()
+    positions, combinations = distinct_combinations(
+        [table[_PROVENANCE_COLUMN], table[_METHOD_COLUMN], table[_TIME_PERIOD_COLUMN]]
+    )
+    held: list[bool] = []
+    for provenance, method, period in combinations:
+        source, row_method = cast("str | None", provenance), cast("str | None", method)
+        if period is None:
+            held.append(False)
+        elif catalogue is None:
+            held.append("projected" not in include and is_projection(source, row_method))
+        else:
+            judgement = judge(
+                source=source, method=row_method, period=cast(str, period), catalogue=catalogue
+            )
+            held.append(held_back(judgement, include=include))
+    return _as_boolean_array(pa.array(held, type=pa.bool_()).take(positions))
+
+
+def held_back_through(table: pa.Table) -> int | None:
+    """The newest year before every partial period the rows of `table` reach
+    (`held_back.last_year_before`), the year a `latest` read whose newest rows a partial cut
+    holds back serves instead. `None` when no row of `table` reaches one, as for projected
+    rows, which hold no actual year under their own method."""
+    if table.num_rows == 0:
+        return None
+    catalogue = cut_catalogue()
+    _, combinations = distinct_combinations(
+        [table[_PROVENANCE_COLUMN], table[_METHOD_COLUMN], table[_TIME_PERIOD_COLUMN]]
+    )
+    years = [
+        year
+        for provenance, method, period in combinations
+        if period is not None
+        and (
+            judgement := judge(
+                source=cast("str | None", provenance),
+                method=cast("str | None", method),
+                period=cast(str, period),
+                catalogue=catalogue,
+            )
+        )
+        is not None
+        and (year := last_year_before(judgement)) is not None
+    ]
+    return min(years, default=None)
+
+
+def share_year_mask(table: pa.Table, *, catalogue: Catalogue) -> pa.BooleanArray:
+    """Whether each row is an annual row of the calendar year its source's partial mark
+    starts in, or of the year before it (`held_back.last_year_before`): the rows a partial
+    year's reported share is counted over (`reported_share`). A row is judged by its
+    `provenance` cell against `catalogue`. A row is false when it names no provenance, when
+    `catalogue` does not document its source or marks nothing in it, or when its period is
+    finer than a year."""
+    if table.num_rows == 0:
+        return pa.array([], type=pa.bool_())
+    positions, combinations = distinct_combinations(
+        [table[_PROVENANCE_COLUMN], table[_TIME_PERIOD_COLUMN]]
+    )
+    partial_years: dict[str, int | None] = {}
+    kept: list[bool] = []
+    for provenance, period in combinations:
+        if (
+            not isinstance(provenance, str)
+            or not isinstance(period, str)
+            or not (len(period) == 4 and period.isdigit())
+        ):
+            kept.append(False)
+            continue
+        if provenance not in partial_years:
+            partial_years[provenance] = _partial_year(provenance, catalogue=catalogue)
+        partial_year = partial_years[provenance]
+        kept.append(partial_year is not None and int(period) in (partial_year - 1, partial_year))
+    return _as_boolean_array(pa.array(kept, type=pa.bool_()).take(positions))
+
+
+def _partial_year(provenance: str, *, catalogue: Catalogue) -> int | None:
+    """The calendar year `provenance`'s partial mark starts in, `None` when `catalogue` marks
+    none, does not document the source, or the frame grammar cannot read the mark."""
+    try:
+        mark = partial_period_of(catalogue, provenance)
+    except Undocumented:
+        return None
+    if mark is None:
+        return None
+    before = last_year_before(Judgement(status="partial", partial_period=mark))
+    return None if before is None else before + 1
+
+
+def period_grains(table: pa.Table) -> frozenset[Literal["year", "month", "day"]]:
+    """The grains of `table`'s `TIME_PERIOD` cells (`parse_time_period`), a span's by its
+    ends. Cells the frame grammar cannot read are skipped; `year` alone when none is left."""
+    grains: set[Literal["year", "month", "day"]] = set()
+    for period in cast("list[str]", pc.unique(table[_TIME_PERIOD_COLUMN]).drop_null().to_pylist()):
+        try:
+            grains.add(parse_time_period(period).grain)
+        except FrameError:
+            continue
+    return frozenset(grains or {"year"})
 
 
 def _distinct_non_null_values(

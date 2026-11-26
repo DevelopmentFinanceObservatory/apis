@@ -12,7 +12,11 @@ the publish door stores with its lineage (`dataset_store.snapshot.FrameLineage`)
 - any other output cell, which the computation made, takes the earliest partial period among
   the inputs' entries, since a figure computed from a partial input is partial unless its key
   shows otherwise; with no partial input it is unknown when an input holds an unknown cell,
-  and unmarked otherwise.
+  and unmarked otherwise. It is projected as well from the earliest projected period among
+  the inputs' entries, since a figure computed from a projection is one.
+
+An entry states its status, source and period. A computed version's entries state no
+`reported_share`, since a computation's values need not add up as its inputs' do.
 
 A dataset input's rows carry each provenance its trace selects with each variable its
 definition resolved. A computed version's record lists every cell of its rows, its unmarked
@@ -27,7 +31,7 @@ or an input whose record is unknown (recorded before versions stored one).
 The record goes with the newest catalogue build among the input judgements it read
 (`ManifestFacts.incomplete_after_built_at`, `FrameLineage.incomplete_after_built_at`), and with
 no build when an input's judgement names none, so the store orders the republishes of one
-computed version by the judgements they read (`version_store._refresh_incomplete_after`).
+computed version by the judgements they read (`version_store._refresh_judged_record`).
 """
 
 from __future__ import annotations
@@ -112,13 +116,16 @@ def derived_incomplete_after(
             carried.update(_dataset_cells(version))
     states = {state for held_states in named.values() for state in held_states}
     partial = [state for state in states if state[0] == "partial"]
+    projected = [state for state in states if state[0] == "projected"]
+    made: list[State] = []
     if partial:
         # The earliest mark, ties broken by source, so equal inputs give one record.
-        made = min(partial, key=_order_by_mark)
+        made.append(min(partial, key=_order_by_mark))
     elif any(state[0] == "unknown" for state in states):
-        made = _UNKNOWN
-    else:
-        made = _UNMARKED
+        made.append(_UNKNOWN)
+    if projected:
+        made.append(min(projected, key=_order_by_mark))
+    made = made or [_UNMARKED]
     grouped: dict[tuple[str | None, State], list[str]] = {}
     for provenance, stat_var in sorted(frame_cells(frame), key=lambda c: (c[0] or "", c[1])):
         cell = (provenance, bare_stat_var_ref(stat_var))
@@ -142,7 +149,7 @@ def derived_incomplete_after(
 
 
 def _states(
-    cell: Cell, *, named: Mapping[Cell, set[State]], carried: set[Cell], made: State
+    cell: Cell, *, named: Mapping[Cell, set[State]], carried: set[Cell], made: list[State]
 ) -> list[State]:
     """The states the output `cell` takes (module docstring), `made` for a cell the
     computation made."""
@@ -153,7 +160,7 @@ def _states(
         else {cell} & carried
     )
     if not kept:
-        return [made]
+        return made
     if provenance is not None:
         return sorted(named.get(cell, {_UNMARKED}), key=_order)
     per_cell = [frozenset(named.get(held, {_UNMARKED})) for held in kept]
@@ -172,7 +179,7 @@ def _order_by_mark(state: State) -> tuple[str, str]:
 
 def _state(entry: Mapping[str, object]) -> State:
     status = cast(str, entry.get("status"))
-    if status == "partial":
+    if status in ("partial", "projected"):
         return status, cast(str, entry["source"]), cast(str, entry["partial_period"])
     if status == "unknown":
         return status, cast("str | None", entry.get("source")), None

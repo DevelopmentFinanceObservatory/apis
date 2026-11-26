@@ -18,6 +18,7 @@ import pytest
 import dc_graph
 from code_index.shared import get_index
 from datasets_api.adapter import composite_components
+from materialise.held_runs import HeldRun
 from origin_catalogue import current_catalogue, scoped_reads
 from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
@@ -289,7 +290,8 @@ def test_a_streamed_composite_answer_previews_both_components_after_the_response
     """The preview streams once, after the `response` event, under the composite's spec_id,
     with each component's series in the years it serves. Each component embeds its preview
     and reads no options, and only its preview warnings reach `done`, keyed to the
-    composite."""
+    composite. Before the `response` event the imputed component, whose preview resolves no
+    table the answer read, resolves its plan with no preview, for the runs it holds."""
     first, components = _components(monkeypatch)
 
     events = _stream(_request(door, first))
@@ -301,14 +303,13 @@ def test_a_streamed_composite_answer_previews_both_components_after_the_response
     assert _dates(event.observations) == _BOTH
     kinds = [e.kind for e in events]
     assert kinds.index("response") < kinds.index("observations")
-    assert sorted(_STAT_VARS[_provenance(inp.identity)] for inp, _ in components.calls) == [
-        "bilateral",
-        "imputed",
-    ]
-    assert {
-        (o.include_observations, o.stream_observations, o.include_option_coverage)
-        for _, o in components.calls
-    } == {(True, False, False)}
+    assert sorted(
+        (_STAT_VARS[_provenance(inp.identity)], o.include_observations)
+        for inp, o in components.calls
+    ) == [("bilateral", True), ("imputed", False), ("imputed", True)]
+    assert {(o.stream_observations, o.include_option_coverage) for _, o in components.calls} == {
+        (False, False)
+    }
     assert [(w.code, w.spec_id) for w in _done(events).warnings] == [(_PARTIAL.code, spec.spec_id)]
 
 
@@ -350,7 +351,8 @@ def test_a_memo_hit_on_the_table_identity_still_previews_and_its_components_hit_
     monkeypatch,
 ):
     """A repeated composite resubmit takes its table identity and both components from the
-    part memo and still streams the composed preview, which the hit's closure reads."""
+    part memo, with the imputed component's plan, and still streams the composed preview,
+    which the hit's closure reads."""
     first, components = _components(monkeypatch)
     # The fixture graph holds none of the table identity's members, and the memo refuses a
     # region warning `members_absent_from_graph`.
@@ -365,7 +367,7 @@ def test_a_memo_hit_on_the_table_identity_still_previews_and_its_components_hit_
     assert event.spec_id == _answered(events).spec_id
     assert _dates(event.observations) == _BOTH
     assert components.calls == []
-    assert memo.stats()["hits"] == 3
+    assert memo.stats()["hits"] == 4
 
 
 def test_a_composite_preview_keeps_each_component_s_estimates_for_the_late_departures(
@@ -430,13 +432,17 @@ def test_a_composite_states_modelled_values_exactly_when_a_component_read_contin
 
     claimed = "imputed" in continued if mode == "unread" else bool(continued)
     assert ("modelled_values" in {d.code for d in departures}) is claimed
-    # One resolve per component a preview reads, and none of the table the answer read.
+    # One plan resolve of the imputed component on every path, none of the table the answer
+    # read, and one preview resolve per component where a preview is read.
     read = sorted(
         (_STAT_VARS[_provenance(inp.identity)], options.include_observations, options.preview_years)
         for inp, options in components.calls
     )
-    resolved = ["imputed"] if mode == "unread" else sorted(_STAT_VARS.values())
-    assert read == [(name, mode != "unread", frozenset(_WINDOW)) for name in resolved]
+    previewed = [] if mode == "unread" else sorted(_STAT_VARS.values())
+    assert read == sorted(
+        [("imputed", False, frozenset(_WINDOW))]
+        + [(name, True, frozenset(_WINDOW)) for name in previewed]
+    )
     preview_lost = lost is not None and mode != "unread"
     assert ("observations_probe_failed" in {w.code for w in warnings}) is preview_lost
 
@@ -1404,12 +1410,26 @@ def _answer(request: ResolveRequest, mode: str) -> tuple[list[Spec], SpecObserva
     return specs, specs[0].resolved.observations
 
 
+_PARTIAL_2020 = HeldRun(
+    kind="partial", source="provenance/OECDCreditorReportingSystem", start_year=2020, end_year=2020
+)
+
+
+@pytest.mark.parametrize("runs", [(), (_PARTIAL_2020,)], ids=["no-runs", "partial-run"])
 @pytest.mark.parametrize("mode", ["streamed", "buffered"])
-def test_two_merged_composites_answer_the_composite_over_both_members(monkeypatch, mode):
+def test_two_merged_composites_answer_the_composite_over_both_members(monkeypatch, mode, runs):
     """Two composite entries the same-shape merge folds, one per purpose, answer the composite
-    over both purposes as one entry posting it does, and its preview holds every component in
-    every year each serves, each component read over both purposes."""
+    over both purposes as one entry posting it does, the held-back runs its components'
+    plans settle included, and its preview holds every component in every year each serves,
+    each component read over both purposes."""
     first, components = _components(monkeypatch)
+    settled = CompositeRelaunch.plans
+
+    async def plans(self, *, semaphore):
+        found = await settled(self, semaphore=semaphore)
+        return dataclasses.replace(found, runs=runs)
+
+    monkeypatch.setattr(CompositeRelaunch, "plans", plans)
     identity = first.definition.identity
 
     specs, observations = _answer(_entries(*(_purpose(identity, code) for code in _PURPOSES)), mode)
@@ -1420,6 +1440,10 @@ def test_two_merged_composites_answer_the_composite_over_both_members(monkeypatc
     (expected,), _ = _answer(_entries(_purpose(identity, *_PURPOSES)), mode)
 
     assert [_composite_facts(spec) for spec in specs] == [_composite_facts(expected)] * 2
+    assert [
+        (h.kind, h.served, h.source, h.start_year, h.end_year)
+        for h in expected.resolved.coverage.held_back or ()
+    ] == [(run.kind, False, run.source, run.start_year, run.end_year) for run in runs]
     assert [spec.resolved.stat_vars.sums_components for spec in specs] == [True, True]
     assert _dates(observations) == _BOTH
     assert {("bilateral", _PURPOSES), ("imputed", _PURPOSES)} <= read

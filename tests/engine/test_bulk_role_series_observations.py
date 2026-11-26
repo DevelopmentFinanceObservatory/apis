@@ -1164,6 +1164,7 @@ def test_a_pair_serves_no_point_of_a_facet_another_member_selects() -> None:
         _SV,
         [_facet(dates=["2020"], facet_id="FM1"), _facet(dates=["2021"], value=2.0, facet_id="FM2")],
         plan=plan,
+        include=None,
     )
     served = _served_pairs(plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset())
 
@@ -1204,6 +1205,7 @@ def test_a_pair_a_continuation_extends_states_the_selection_s_method() -> None:
             _facet(dates=["2020", "2021"], value=4.0, facet_id="FM4"),
         ],
         plan=plan,
+        include=None,
     )
     served = _served_pairs(
         plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset({"FM4"})

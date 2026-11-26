@@ -40,7 +40,7 @@ from contextlib import (
     asynccontextmanager,
     contextmanager,
 )
-from typing import Annotated, NamedTuple, TypedDict
+from typing import Annotated, NamedTuple, NotRequired, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -56,7 +56,7 @@ from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response,
 from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
-from dfo_platform.cloud_logging import log_event
+from dfo_platform.cloud_logging import log_event, suppress_replay_logs
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
@@ -141,6 +141,12 @@ from search.engine.options.options_response_cache import (
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import compute_options
+from search.engine.parser_replay import (
+    PARSER_ARM_HEADER,
+    ReplayRecord,
+    parser_replay,
+    replay_extraction_llm,
+)
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.resolve_trace import drain_resolve_traces
 from search.engine.response_cache import ResponseCache
@@ -158,6 +164,7 @@ from search.engine.unit.conversion_catalogue import (
 from search.models import (
     OptionsRequest,
     OptionsResponse,
+    RawTextInput,
     ResolveRequest,
     ResolveResponse,
     StatedScopeEntry,
@@ -301,7 +308,7 @@ async def _event_source(
     """
     queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
-    async def produce() -> None:
+    async def enqueue_frames() -> None:
         last_queued = False
         try:
             with request_deadline(hard_deadline):
@@ -328,6 +335,12 @@ async def _event_source(
                 record.error_code = refusal.UNHANDLED_DEFAULT.code
                 frame = f"event: error\ndata: {json.dumps({**problem, 'kind': 'error'})}\n\n"
                 queue.put_nowait(_Frame(frame, last=True))
+
+    async def produce() -> None:
+        # A replay's pipeline and the classification of its terminal error log nothing,
+        # since either can quote the query (`ReplayLogFilter`).
+        with suppress_replay_logs(enabled=record.parser_replay is not None):
+            await enqueue_frames()
 
     async def heartbeat() -> None:
         while True:
@@ -426,6 +439,8 @@ class _PipelineDeps(TypedDict):
     resolver: EntityResolver
     admission: Admission | None
     llm: SupportsLLM
+    # Present only on a parser replay, so an ordinary request calls the pipeline as before.
+    extract_llm: NotRequired[SupportsLLM]
     sdmx: EngineSdmxClient
     materialise_graph: GraphReader | None
     materialise_sdmx: MaterialiseSdmxClient | None
@@ -439,6 +454,15 @@ class _PipelineDeps(TypedDict):
 
 
 async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
+    replay = parser_replay(request)
+    replay_record: ReplayRecord | None = None
+    if replay is not None:
+        if not isinstance(body.input, RawTextInput):
+            raise EngineInputError("Parser replay accepts raw_text searches only.", status=422)
+        if not _accepts_sse(request):
+            raise EngineInputError("Parser replay requires an SSE request.", status=422)
+        replay_record = ReplayRecord(replay, query=body.input.query)
+
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
         raise EngineInputError(
@@ -469,7 +493,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "graph": deps.graph,
         "resolver": deps.resolver,
         "admission": deps.admission,
-        "llm": deps.llm,
+        # A replay compares live calls, so no stage reads the LLM memo, the extraction store
+        # or a cached response, and its arm's client parses the query.
+        "llm": _llm_mod.uncached(deps.llm) if replay_record is not None else deps.llm,
         "sdmx": deps.sdmx,
         "materialise_graph": deps.materialise_graph,
         "materialise_sdmx": deps.materialise_sdmx,
@@ -477,10 +503,12 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "population_memo": deps.population_memo,
         "place_options_pool": deps.place_options_pool,
         "shared_skills_index": deps.skills_index,
-        "response_cache": deps.response_cache,
-        "part_memo": deps.part_memo,
+        "response_cache": None if replay_record is not None else deps.response_cache,
+        "part_memo": None if replay_record is not None else deps.part_memo,
         "generation": deps.generation,
     }
+    if replay_record is not None:
+        pipeline_deps["extract_llm"] = replay_extraction_llm(replay_record)
 
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)
@@ -493,7 +521,7 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         and deps.skills_index is not None
     ):
         await deps.skills_index.ready(timeout_s=(budget.soft - time.monotonic()) / 2)
-    record = ResolveRecord()
+    record = ResolveRecord(parser_replay=replay_record)
     record.refresh_ms = refresh_ms
     received = getattr(request.state, "received", None)
     if received is not None:
@@ -502,6 +530,15 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
     if _accepts_sse(request):
+        headers = {
+            # `no-transform` prevents intermediaries such as the Next dev proxy from
+            # gzip-buffering progressive frames into one burst.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        if replay is not None:
+            headers[PARSER_ARM_HEADER] = replay.arm
         return StreamingResponse(
             _event_source(
                 resolve_events(
@@ -514,13 +551,7 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
                 ),
             ),
             media_type="text/event-stream",
-            headers={
-                # `no-transform` prevents intermediaries such as the Next dev proxy from
-                # gzip-buffering progressive frames into one burst.
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
+            headers=headers,
         )
 
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
@@ -662,6 +693,8 @@ def read_stated_scopes(body: StatedScopeRequest) -> StatedScopeResponse:
                 total=stated.total,
                 mentions=list(stated.mentions),
                 sums_providers=stated.sums_providers,
+                named_years=list(stated.named_years),
+                projection=stated.projection,
             )
         )
     return StatedScopeResponse(readings=readings)

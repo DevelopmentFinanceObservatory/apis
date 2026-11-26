@@ -21,6 +21,7 @@ from graph_release.views import ViewRefused
 from search.catalogue import job
 from search.catalogue.artifact import (
     FORMAT_ROOT,
+    FORMAT_VERSION,
     REFUSAL_FILE,
     BuildInputs,
     build_key,
@@ -209,6 +210,7 @@ def test_publishes_the_passing_lines_with_counts_and_places(setup, capsys):
     events = _events(capsys)
 
     [published] = _named(events, "search_catalogue_job_published")
+    assert published["format_version"] == FORMAT_VERSION
     assert events[-1]["event"] == "search_catalogue_job_heartbeat"
     assert events[-1]["catalogue_version"] == published["catalogue_version"]
 

@@ -25,6 +25,7 @@ from dfo_platform.config import CallerSettings
 _KEY = "test-key"
 _PRINCIPAL = "website-secret"
 _NAMED = "ip:" + "ab" * 16
+_ACCOUNT = "user:" + "cd" * 16
 _CONVERSATION = "conversation:" + "cd" * 16
 
 
@@ -124,6 +125,19 @@ def test_the_website_names_its_caller_under_the_principal():
     assert resolve_caller(request, _settings(key="")) == Caller(kind="address", key=_NAMED)
 
 
+@pytest.mark.parametrize("address", ["3.3.3.3", "4.4.4.4", "2001:db8::1"])
+def test_the_website_names_an_account_caller_under_the_principal(address: str):
+    """A request made with an API key counts against its account, whatever address it came from."""
+    request = _request(
+        ("x-forwarded-for", address),
+        ("x-dfo-caller-principal", _PRINCIPAL),
+        ("x-dfo-caller", _ACCOUNT),
+    )
+
+    # The named caller needs no key of this service's own.
+    assert resolve_caller(request, _settings(key="")) == Caller(kind="account", key=_ACCOUNT)
+
+
 @pytest.mark.parametrize(
     "callers",
     [
@@ -132,8 +146,34 @@ def test_the_website_names_its_caller_under_the_principal():
         ["ip:" + "ab" * 15],
         ["ab" * 16],
         [_NAMED, _NAMED],
+        ["user:" + "CD" * 16],
+        ["user:" + "cd" * 15],
+        ["user:" + "cd" * 17],
+        ["user:" + "zz" * 16],
+        ["user:"],
+        [" " + _ACCOUNT],
+        [_ACCOUNT + "\n"],
+        ["USER:" + "cd" * 16],
+        [_ACCOUNT, _ACCOUNT],
+        [_NAMED, _ACCOUNT],
     ],
-    ids=["missing", "uppercase", "short", "no-prefix", "repeated"],
+    ids=[
+        "missing",
+        "uppercase",
+        "short",
+        "no-prefix",
+        "repeated",
+        "user-uppercase",
+        "user-short",
+        "user-long",
+        "user-not-hex",
+        "user-empty",
+        "user-leading-space",
+        "user-trailing-newline",
+        "user-prefix-uppercase",
+        "user-repeated",
+        "ip-and-user",
+    ],
 )
 def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[str]):
     request = _request(
@@ -156,14 +196,15 @@ def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[
     ],
     ids=["wrong-secret", "repeated-secret", "empty-none-configured", "none-configured"],
 )
+@pytest.mark.parametrize("named", [_NAMED, _ACCOUNT], ids=["address", "account"])
 def test_a_principal_that_does_not_match_refuses_500_and_logs_neither_value(
-    configured: str, presented: list[str], caplog: pytest.LogCaptureFixture
+    configured: str, presented: list[str], named: str, caplog: pytest.LogCaptureFixture
 ):
     """Falling back to the address would count every website client as the website."""
     request = _request(
         ("x-forwarded-for", "3.3.3.3"),
         *(("x-dfo-caller-principal", value) for value in presented),
-        ("x-dfo-caller", _NAMED),
+        ("x-dfo-caller", named),
     )
 
     with (
@@ -185,6 +226,13 @@ def test_a_caller_header_without_a_principal_is_ignored():
     request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _NAMED))
 
     assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")
+
+
+def test_an_account_caller_without_a_principal_is_ignored_and_the_address_names_the_caller():
+    """A direct request cannot claim an account: `user:` counts only beside the website's secret."""
+    request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _ACCOUNT))
+
+    assert resolve_caller(request, _settings()) == Caller(kind="address", key=_digest("3.3.3.3"))
 
 
 def test_a_vouched_conversation_caller_is_keyed_on_the_conversation():
@@ -225,6 +273,18 @@ _VOUCHED = ("x-dfo-caller-principal", _PRINCIPAL)
             DeliverySurface.website,
         ),
         (
+            [_VOUCHED, ("x-dfo-caller", _ACCOUNT), ("x-dfo-surface", "api")],
+            _ACCOUNT,
+            "vouched",
+            DeliverySurface.api,
+        ),
+        (
+            [("x-dfo-caller", _ACCOUNT), ("x-dfo-surface", "api")],
+            _digest("3.3.3.3"),
+            "address",
+            DeliverySurface.direct,
+        ),
+        (
             [_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-surface", "direct")],
             _NAMED,
             "vouched",
@@ -248,6 +308,8 @@ _VOUCHED = ("x-dfo-caller-principal", _PRINCIPAL)
         "unvouched-surface",
         "conversation-overrules",
         "vouched-surface",
+        "vouched-account",
+        "unvouched-account-ignored",
         "unnameable-surface",
         "vouched-without-caller",
         "vouched-malformed-caller",
@@ -380,6 +442,9 @@ _MCP_CLIENT = "Anthropic/ClaudeAI"
         ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", _MCP_CLIENT)], _MCP_CLIENT),
         ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", "claude-code")], "claude-code"),
         ([("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", _MCP_CLIENT)], None),
+        ([_VOUCHED, ("x-dfo-caller", _ACCOUNT), ("x-dfo-mcp-client", _MCP_CLIENT)], _MCP_CLIENT),
+        ([_VOUCHED, ("x-dfo-caller", _ACCOUNT), ("x-dfo-mcp-client", "a" * 129)], "invalid"),
+        ([("x-dfo-caller", _ACCOUNT), ("x-dfo-mcp-client", _MCP_CLIENT)], None),
         ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-mcp-client", _MCP_CLIENT)], None),
         ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", "a" * 128)], "a" * 128),
         (
@@ -412,6 +477,9 @@ _MCP_CLIENT = "Anthropic/ClaudeAI"
         "kept",
         "bare-name",
         "unvouched",
+        "account",
+        "account-invalid",
+        "unvouched-account",
         "conversation",
         "longest",
         "parenthesised",

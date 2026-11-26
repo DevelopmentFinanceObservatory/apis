@@ -630,7 +630,7 @@ def test_an_answer_without_observations_marks_its_continued_estimates(
 
     assert spec.resolved.observations is None
     modelled = [f for f in spec_departure_facts(spec, operations=()) if f.code == "modelled_values"]
-    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    expected = DepartureFact(code="modelled_values", binding_ref=None, some_series=True)
     assert modelled == ([expected] if estimated else [])
 
 
@@ -1070,17 +1070,30 @@ def test_a_group_leaving_the_method_open_names_its_ranked_lead(search_settings):
         pytest.param(2024, None, id="control-every-series-reaches-the-end"),
     ],
 )
+@pytest.mark.parametrize(
+    ("declared", "include"),
+    [(False, ()), (True, ()), (True, ("projected",))],
+    ids=["estimates", "projections", "projections-opted-in"],
+)
 @pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])
 def test_a_plan_and_a_mint_continue_a_series_with_its_estimates_alike(
-    scope, end_year, continued_by
+    monkeypatch, declared, include, scope, end_year, continued_by
 ):
     """A GDP answer from 2016 at four places (`tests.materialise._weo_recorded`) dispatches
     the IMF's reported US dollar facet and, when the window runs past any place's last
     reported year, the IMF's estimates in US dollars: the group a mint over the same probe
     dispatches, whether each series is read on its own or one facet serves the whole scope.
     Each series' group leads with the reported facet, so the answer states the elected
-    method."""
+    method. WEO's `Estimated` is a declared projection pair
+    (`method_status.projection_methods`), which a read opting in to nothing holds back, so
+    then neither continues with it. A window whose `include` names `"projected"` continues
+    with it on both."""
+    from materialise import method_status
     from tests.materialise import _weo_recorded as weo
+
+    if not declared:
+        monkeypatch.setattr(method_status, "projection_methods", lambda _provenance: frozenset())
+    continued_by = None if declared and not include else continued_by
 
     facets_by_place = weo.recorded_facets()
     plan = plan_pairs(
@@ -1093,11 +1106,13 @@ def test_a_plan_and_a_mint_continue_a_series_with_its_estimates_alike(
             for place in weo.PLACES
         ],
         members=[weo.GDP],
-        years=TimeWindow(start_year=2016, end_year=end_year),
+        years=TimeWindow(start_year=2016, end_year=end_year, include=list(include) or None),
         scope=scope,
         declared=NO_DECLARED_POLICIES,
     )
-    window = RequestedWindow(kind="range", start_year=2016, end_year=end_year)
+    window = RequestedWindow(
+        kind="range", start_year=2016, end_year=end_year, include=frozenset(include)
+    )
     probe = plan.probes[weo.GDP]
     request = MaterialisationRequest(
         stat_var=f"dcid:{weo.GDP}",
@@ -1207,15 +1222,23 @@ def _with_revised(
         ),
     ],
 )
+@pytest.mark.parametrize("declared", [False, True], ids=["estimates", "projections"])
 @pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])
 def test_a_plan_continues_the_whole_selection_a_mint_serves(
-    scope, revised, estimates, without_lead, end_year, continued
+    monkeypatch, declared, scope, revised, estimates, without_lead, end_year, continued
 ):
     """A mint serves every facet sharing the elected facet's provenance, method, unit and
     cadence, and continues the series they hold together. A plan states continued estimates
     exactly when the mint's frame holds an estimated row, whether each series is read on its
-    own or one facet serves the whole scope."""
+    own or one facet serves the whole scope. WEO's `Estimated` is a declared projection pair
+    (`method_status.projection_methods`), which a read opting in to nothing holds back, so
+    neither the plan nor the mint continues with it. Undeclared, it continues as estimates."""
+    from materialise import method_status
     from tests.materialise import _weo_recorded as weo
+
+    if not declared:
+        monkeypatch.setattr(method_status, "projection_methods", lambda _provenance: frozenset())
+    continued = continued and not declared
 
     facets_by_place, values = _with_revised(revised, estimates=estimates, without_lead=without_lead)
     plan = plan_pairs(

@@ -403,7 +403,12 @@ def test_a_batch_is_masked_once_for_what_its_members_share(monkeypatch, third_ad
     def outcome(rows_of):
         try:
             return [
-                (index, pa.Table.from_batches(rows, schema=table.schema).to_pylist())
+                (
+                    index,
+                    pa.Table.from_batches(
+                        [*rows.served, *rows.share], schema=table.schema
+                    ).to_pylist(),
+                )
                 for index, rows in rows_of()
             ]
         except SdmxResponseError as error:

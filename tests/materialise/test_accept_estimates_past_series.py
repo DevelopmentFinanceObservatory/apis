@@ -50,7 +50,9 @@ from ._weo_recorded import (
 )
 
 _USD = "CurrencyUSD"
-_WINDOW = RequestedWindow(kind="range", start_year=2016, end_year=2030)
+_WINDOW = RequestedWindow(
+    kind="range", start_year=2016, end_year=2030, include=frozenset({"projected"})
+)
 _LAST_REPORTED = {FRANCE: 2025, KENYA: 2024, ZIMBABWE: 2024, ECUADOR: 2025}
 """The last year each place's reported series holds, as recorded."""
 
@@ -217,7 +219,9 @@ def test_the_row_ceiling_counts_the_rows_left_after_the_reported_value_wins(
 def test_a_window_the_estimates_cover_more_of_keeps_the_reported_years(
     reported, method, continued_by
 ):
-    window = RequestedWindow(kind="range", start_year=2024, end_year=2030)
+    window = RequestedWindow(
+        kind="range", start_year=2024, end_year=2030, include=frozenset({"projected"})
+    )
     facets_by_place = {
         place: [f for f in facets if reported or f.measurement_method == ESTIMATED]
         for place, facets in recorded_facets().items()
@@ -287,7 +291,9 @@ Zimbabwe and 2026 at France and Ecuador, through 2030."""
         # Only estimates in the window, four places from 2026 to 2030: every row classed, and
         # the estimates are elected alone, so nothing continues them.
         pytest.param(
-            RequestedWindow(kind="range", start_year=2026, end_year=2030),
+            RequestedWindow(
+                kind="range", start_year=2026, end_year=2030, include=frozenset({"projected"})
+            ),
             WEO,
             20,
             0,
@@ -328,7 +334,9 @@ def test_a_joined_candidates_choice_reports_the_figures_the_ranking_compared():
     """From 2024 to 2030 the US dollar candidate is the reported series joined to the
     estimates continuing it, so the unit choice the trace records gives it all seven window
     years and the observations of both, where its reported series alone covers two."""
-    window = RequestedWindow(kind="range", start_year=2024, end_year=2030)
+    window = RequestedWindow(
+        kind="range", start_year=2024, end_year=2030, include=frozenset({"projected"})
+    )
 
     choices = mint(PLACES, window=window).trace.to_dict()["choices"]
 
@@ -368,7 +376,9 @@ def test_each_series_continues_past_its_own_last_reported_year(
 ):
     from .test_accept_national_currency import _national_currency
 
-    window = RequestedWindow(kind="range", start_year=2020, end_year=end_year)
+    window = RequestedWindow(
+        kind="range", start_year=2020, end_year=end_year, include=frozenset({"projected"})
+    )
 
     result = call(
         PLACES, window=window, facet_bindings=_national_currency() if national_currency else None
@@ -397,7 +407,9 @@ def test_a_continuation_that_serves_no_row_is_left_out_of_the_series_read(group:
             year: value for year, value in values[(place, estimated)].items() if year != "2025"
         }
 
-    window = RequestedWindow(kind="range", start_year=2020, end_year=2025)
+    window = RequestedWindow(
+        kind="range", start_year=2020, end_year=2025, include=frozenset({"projected"})
+    )
 
     minted = (
         mint_group(

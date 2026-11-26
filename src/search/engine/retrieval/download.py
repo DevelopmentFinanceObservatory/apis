@@ -47,12 +47,14 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     dated_without_complete_dates,
     facet_dates,
+    opt_in,
     series_dates,
+    series_point_dates,
     series_points,
     year_of,
 )
 from search.engine.unit.conversion import CountConversion, CountedConversion, counted_exact
-from search.models import DownloadFacts, DownloadLicence, TimeWindow, in_window
+from search.models import DownloadFacts, DownloadLicence, TimeWindow
 from series_coverage.schema import ABSENT_ENTITY
 
 if TYPE_CHECKING:
@@ -166,7 +168,7 @@ def series_rows(
     if kept is None:
         return series_points(series, read), _points_exact(series, read)
     if not dated_without_complete_dates(series.group):
-        dates = {d for f in series.group for d in f.dates if read is None or in_window(d, read)}
+        dates = series_point_dates(series, read)
         return sum(1 for d in dates if year_of(d) in kept), True
     span = series_dates(series, years)
     first, last = (year_of(span[0]), year_of(span[1])) if span is not None else (None, None)
@@ -221,6 +223,7 @@ def _coverage_extent(
             if conversion is not None
             else None
         ),
+        include=opt_in(years),
     )
     if extent is None:
         return Extent(rows=0, series=0, window=None, exact=True)
@@ -289,6 +292,7 @@ def _served_entity_years(
         first_year=read.start_year if read is not None else None,
         last_year=read.end_year if read is not None else None,
         latest=latest,
+        include=opt_in(years),
     )
     if found is None or coverage_role is None:
         return
@@ -300,15 +304,12 @@ def _served_entity_years(
 
 
 def _series_years(series: PlanSeries, years: PlanYears) -> frozenset[int]:
-    """The years a standard series serves under `years`: its dates' years when its facets
-    carry them all, else every year of its span."""
+    """The years a standard series serves under `years`: its kept dates' years when its
+    facets carry them all (`series_point_dates`), else every year of its span."""
     if years != "latest" and not dated_without_complete_dates(series.group):
         read = years if isinstance(years, TimeWindow) else None
         return frozenset(
-            year
-            for f in series.group
-            for d in f.dates
-            if (read is None or in_window(d, read)) and (year := year_of(d)) is not None
+            year for d in series_point_dates(series, read) if (year := year_of(d)) is not None
         )
     span = series_dates(series, years)
     first, last = (year_of(span[0]), year_of(span[1])) if span is not None else (None, None)

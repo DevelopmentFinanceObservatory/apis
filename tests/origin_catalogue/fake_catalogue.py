@@ -288,7 +288,7 @@ def restrictive_catalogue(
     holds it. `arcs` are its arc tables, whose `dfo` nodes with arcs must be listed in
     `dfo_variables`, and its family tables are those of `arcs` and `un_mirror`. `successors` maps a superseded variable, which must be
     withheld, to the UN variable standing for it, or to `None`. `dataset_facts` defaults to empty facts
-    for every DFO and base row's entry (`empty_dataset_facts`),
+    for every row's entry (`empty_dataset_facts`),
     `source_documentation` to documentation covering no provenance for each
     (`empty_source_documentation`), and `build_id` to one naming its rows
     and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records. It carries
@@ -408,15 +408,15 @@ def un_mirror(
 
 
 def empty_dataset_facts(rows: Iterable[ProvenanceRow]) -> dict[str, CardFacts]:
-    """Empty `CardFacts` for the entry of every DFO and base row in `rows`, as
+    """Empty `CardFacts` for the entry of every row in `rows`, as
     `CatalogueTables` requires."""
-    return {entry_ref(row): CardFacts() for row in rows if row.data_commons != UN_SYSTEM}
+    return {entry_ref(row): CardFacts() for row in rows}
 
 
 def empty_source_documentation(rows: Iterable[ProvenanceRow]) -> dict[str, SourceDocumentation]:
-    """`SourceDocumentation` covering no provenance for the entry of every DFO
-    and base row in `rows`, as `CatalogueTables` requires."""
-    return {entry_ref(row): SourceDocumentation() for row in rows if row.data_commons != UN_SYSTEM}
+    """`SourceDocumentation` covering no provenance for the entry of every row
+    in `rows`, as `CatalogueTables` requires."""
+    return {entry_ref(row): SourceDocumentation() for row in rows}
 
 
 def provenance_row(

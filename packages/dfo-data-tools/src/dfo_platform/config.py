@@ -96,7 +96,8 @@ class CallerSettings(BaseSettings):
 
     `caller_principal` (`DFO_CALLER_PRINCIPAL`) is the secret the website and the Studio harness
     send in `x-dfo-caller-principal` beside the caller they name in `x-dfo-caller`: the website's
-    `ip:` address key, or the harness's `conversation:` key for one conversation. A request whose
+    `ip:` address key or, for a request made with an API key, its `user:` account key, or the
+    harness's `conversation:` key for one conversation. A request whose
     principal header does not match it, or arrives while it is empty, refuses `internal_error` (500,
     not retryable). Empty trusts no `x-dfo-caller`. `caller_hmac_key` (`DFO_CALLER_HMAC_KEY`) keys
     the caller digest of a request that reaches this service directly, and must equal the website's

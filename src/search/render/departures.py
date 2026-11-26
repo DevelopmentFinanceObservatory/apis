@@ -448,9 +448,15 @@ def _those_years(fact: DepartureFact) -> str:
 
 
 def _modelled_values(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
+    if fact.projected_years is not None:
+        first, last = fact.projected_years
+        years = str(first) if first == last else f"{first} to {last}"
+        sources = " and ".join(fact.sources)
+        projections = f"{sources} projections" if sources else "projections"
+        return f"Values for {years} are {projections}."
     return (
         "Some of these values are modelled estimates."
-        if fact.partial
+        if fact.some_series
         else "These values are modelled estimates."
     )
 

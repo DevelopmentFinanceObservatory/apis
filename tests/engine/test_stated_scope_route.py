@@ -127,3 +127,15 @@ def test_summed_provider_words_are_marked(client: TestClient) -> None:
 
 def test_the_read_runs_off_the_event_loop() -> None:
     assert not inspect.iscoroutinefunction(read_stated_scopes)
+
+
+def test_the_projection_chip_prompt_reads_as_a_projection_over_its_years(
+    client: TestClient,
+) -> None:
+    resp = client.post(
+        _ROUTE, json={"texts": ["Show projected external debt service for 2026 to 2030"]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    (reading,) = resp.json()["readings"]
+    assert (reading["named_years"], reading["projection"]) == ([2026, 2030], True)

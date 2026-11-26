@@ -425,7 +425,9 @@ def _identity_window(window: IdentityWindow) -> TimeWindow | None:
     """The years an identity's window asks for, `None` for every year or the latest."""
     if window.kind != "range":
         return None
-    return TimeWindow(start_year=window.start_year, end_year=window.end_year)
+    return TimeWindow(
+        start_year=window.start_year, end_year=window.end_year, include=window.include
+    )
 
 
 def _available_message(reading: WholeReading, *, dataset: str) -> str:
