@@ -66,10 +66,12 @@ from datasets_api.manifest_models import (
     DefinitionModel,
     DiagnosticModel,
     DimensionNoun,
+    HeldBack,
     IncompleteAfter,
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
+    ReportedShare,
     TransformationStepModel,
     WarningModel,
     YearCoverage,
@@ -96,6 +98,8 @@ from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
 from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
+from materialise.held_back import HeldKind, Judgement, judge, last_year_before, source_of
+from materialise.held_runs import HeldRun
 from materialise.partial_period import reaches, start_of
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
@@ -105,6 +109,7 @@ from materialise.provenance_doc import (
     coverage_facts_from_index,
     read_source_citations,
 )
+from materialise.reported_share import ReportedShareFigure, YearTotals, reported_share
 from materialise.series_conversion import (
     SeriesConversion,
     SeriesKey,
@@ -113,9 +118,8 @@ from materialise.series_conversion import (
 )
 from materialise.statistics import SeriesFigures
 from materialise.trace import ManifestTrace
-from materialise.window import Coverage
+from materialise.window import Coverage, RequestedWindow
 from origin_catalogue import Catalogue, CatalogueNotBound, current_catalogue
-from origin_catalogue.catalogue import Undocumented, partial_period_of
 from series_coverage.coverage_types import YearCount
 from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
@@ -208,26 +212,39 @@ def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> Coverage
 
 @dataclass(frozen=True)
 class JudgedIncompleteAfter:
-    """An `incomplete_after` record, `entries`, and the `built_at` of the origin catalogue
-    build that judged it, which orders the judgements of one version
-    (`version_store._refresh_incomplete_after`). A computed version's record carries the
-    newest build among the judgements it derives from, `None` when one names none
-    (`lineage_incomplete.derived_incomplete_after`)."""
+    """An `incomplete_after` record, `entries`, the `held_back` runs judged with it, and the
+    `built_at` of the origin catalogue build that judged them, which orders the judgements of
+    one version (`version_store._refresh_judged_record`). A dataset version's runs are its
+    `coverage.held_back` (`judged_record`), and `None` states none, as a computed version's
+    record does. A computed version's record carries the newest build among the judgements it
+    derives from, `None` when one names none (`lineage_incomplete.derived_incomplete_after`)."""
 
     entries: list[dict[str, object]]
     built_at: datetime | None
+    held_back: list[dict[str, object]] | None = None
 
 
 def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | None:
     """How complete the rows of the frame `result` holds are, judged per source against the
     origin catalogue bound to the mint, which joins the graph release the rows were read from
-    (`IncompleteAfter`), with that catalogue's `built_at`. The source of a `(provenance, stat_var)` pair is the composite
-    component serving the variable (`trace.components`), else the provenance itself. A pair
-    is `partial` when its rows reach the period its source's import holds only part of
-    (`origin_catalogue.partial_period_of`, `materialise.partial_period.reaches`), the latest
-    period any of its series reaches (`SeriesFigures.latest_by_source`), and `unknown` when
-    the catalogue does not document its source (`Undocumented`), its rows name no provenance,
-    or the frame grammar cannot read the mark or the period. A complete pair is left out, so an empty list is judged and complete.
+    (`IncompleteAfter`), with that catalogue's `built_at`. Every judgement is
+    `materialise.held_back.judge`'s, the one the mint's cut makes, so a frame records only
+    what its window opted in to. The source of a `(provenance, stat_var)` pair is the
+    composite component serving the variable (`trace.components`), else the provenance itself
+    (`held_back.source_of`).
+
+    A pair holding projected rows is `projected` from the earliest period they start
+    (`SeriesFigures.projected_by_source`). Its other rows are judged at the latest period they
+    reach (`SeriesFigures.actual_by_source`): `partial` when it reaches the period its source's
+    import holds only part of, `unknown` when the catalogue does not document its source
+    (`Undocumented`), its rows name no provenance, or the frame grammar cannot read the mark or
+    the period. A complete pair is left out, so an empty list is judged and complete.
+
+    A `partial` entry states how much of the year its mark starts in its source has reported,
+    against the year before (`reported_share.reported_share`), from the year sums the read
+    folded over the entry's variables before its window cut them
+    (`MaterialisationResult.year_totals`). It states none when the read held no series in the
+    year before.
 
     `None`, unknown as a whole, with no catalogue bound or when the catalogue judged no pair, so
     a stale catalogue's mint leaves a stored record standing (`version_store`)."""
@@ -241,15 +258,25 @@ def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | N
         if component.get("provenance") is not None
         for ref in cast("list[object]", component.get("stat_vars") or [])
     }
-    grouped = _grouped(
-        result.series_statistics.figures,
-        lambda provenance, stat_var, period: _judged(
-            provenance, stat_var, period, catalogue=catalogue, component_of=component_of
-        ),
-    )
-    judged = any(key is None or key[2] == "partial" for key in grouped)
-    entries = _entries(grouped)
-    if entries and not judged:
+    figures = result.series_statistics.figures
+
+    def judged(provenance: str | None, stat_var: str, _period: str) -> list[_Group | None]:
+        source = (
+            None
+            if provenance is None
+            else source_of(provenance, stat_var, component_of=component_of)
+        )
+        groups: list[_Group | None] = []
+        if (start := figures.projected_by_source.get((provenance, stat_var))) is not None:
+            groups.append((provenance, source, "projected", start))
+        if (actual := figures.actual_by_source.get((provenance, stat_var))) is not None:
+            groups.append(_judged(provenance, source, actual, catalogue=catalogue))
+        return groups
+
+    grouped = _grouped(figures, judged)
+    known = any(key is None or key[2] in ("partial", "projected") for key in grouped)
+    entries = _entries(grouped, shares=_reported_shares(grouped, result.year_totals))
+    if entries and not known:
         return None
     return JudgedIncompleteAfter(entries=entries, built_at=catalogue.built_at)
 
@@ -264,17 +291,23 @@ def collapsed_incomplete_after(
     pair whose variable `raw` names under its provenance takes those entries; any other pair is
     the sum of its provenance's raw cells, so it is partial from the earliest partial period
     among its provenance's raw entries that its rows reach (by start, ties broken by source),
-    else unknown when its provenance holds an unknown cell, else complete. `None` when `raw` is.
+    else unknown when its provenance holds an unknown cell, else complete, and projected as
+    well from the earliest projected period among its provenance's raw entries that its rows
+    reach. `None` when `raw` is.
+
+    An entry keeps the `reported_share` of the raw entry it takes when its basis is `value`:
+    the summed values of the collapse's rows are the raw rows' sums. A `series` share is left
+    out, since a collapse holds other series than its base and its stored rows need not hold
+    the year the share is counted against.
     """
     if raw is None:
         return None
     by_provenance: dict[object, list[Mapping[str, object]]] = {}
     for entry in raw:
         by_provenance.setdefault(entry.get("provenance"), []).append(entry)
+    shares: dict[_Group, Mapping[str, object] | None] = {}
 
-    def judged(
-        provenance: str | None, stat_var: str, period: str
-    ) -> tuple[str | None, str | None, str, str | None] | None:
+    def judged(provenance: str | None, stat_var: str, period: str) -> list[_Group | None]:
         held = by_provenance.get(provenance, [])
         named = [
             entry
@@ -282,37 +315,65 @@ def collapsed_incomplete_after(
             if bare_stat_var_ref(stat_var)
             in {bare_stat_var_ref(one) for one in cast("list[str]", entry["stat_vars"])}
         ]
-        if named:
-            entry = named[0]
-        else:
-            marked = [entry for entry in held if entry.get("status") == "partial"]
-            reached = [reaches(period, cast(str, entry["partial_period"])) for entry in marked]
-            partial = [entry for entry, hit in zip(marked, reached, strict=True) if hit]
-            unknown = [entry for entry in held if entry.get("status") == "unknown"] + [
-                {**entry, "status": "unknown", "partial_period": None}
-                for entry, hit in zip(marked, reached, strict=True)
-                if hit is None
-            ]
-            if partial:
-                entry = min(
-                    partial,
-                    key=lambda one: (
-                        start_of(cast(str, one["partial_period"])),
-                        cast(str, one["source"]),
-                    ),
-                )
-            elif unknown:
-                entry = unknown[0]
-            else:
-                return None
-        return (
-            provenance,
-            cast("str | None", entry.get("source")),
-            cast(str, entry["status"]),
-            cast("str | None", entry.get("partial_period")),
-        )
+        taken = named or _summed_entries(held, period=period)
+        groups: list[_Group | None] = []
+        for entry in taken:
+            group = (
+                provenance,
+                cast("str | None", entry.get("source")),
+                cast(str, entry["status"]),
+                cast("str | None", entry.get("partial_period")),
+            )
+            shares.setdefault(group, _value_share(entry))
+            groups.append(group)
+        return groups or [None]
 
-    return _entries(_grouped(figures, judged))
+    grouped = _grouped(figures, judged)
+    return _entries(grouped, shares=shares)
+
+
+def _summed_entries(
+    held: Sequence[Mapping[str, object]], *, period: str
+) -> list[Mapping[str, object]]:
+    """The entries of `held` (one provenance's raw `incomplete_after` entries) that a pair
+    summing every cell takes when its rows reach `period` (`collapsed_incomplete_after`).
+    It takes the earliest partial entry `period` reaches, or else an unknown one, plus the
+    earliest projected entry `period` reaches."""
+    marked = [entry for entry in held if entry.get("status") == "partial"]
+    reached = [reaches(period, cast(str, entry["partial_period"])) for entry in marked]
+    partial = [entry for entry, hit in zip(marked, reached, strict=True) if hit]
+    unknown = [entry for entry in held if entry.get("status") == "unknown"] + [
+        {**entry, "status": "unknown", "partial_period": None}
+        for entry, hit in zip(marked, reached, strict=True)
+        if hit is None
+    ]
+    projected = [
+        entry
+        for entry in held
+        if entry.get("status") == "projected"
+        and reaches(period, cast(str, entry["partial_period"]))
+    ]
+    taken: list[Mapping[str, object]] = []
+    if partial:
+        taken.append(min(partial, key=_by_period_and_source))
+    elif unknown:
+        taken.append(unknown[0])
+    if projected:
+        taken.append(min(projected, key=_by_period_and_source))
+    return taken
+
+
+def _by_period_and_source(entry: Mapping[str, object]) -> tuple[str, str]:
+    return start_of(cast(str, entry["partial_period"])), cast("str | None", entry["source"]) or ""
+
+
+def _value_share(entry: Mapping[str, object]) -> Mapping[str, object] | None:
+    """`entry`'s `reported_share` when its basis is `value`, which a collapse keeps."""
+    share = entry.get("reported_share")
+    if not isinstance(share, Mapping):
+        return None
+    held = cast("Mapping[str, object]", share)
+    return held if held.get("basis") == "value" else None
 
 
 type _Group = tuple[str | None, str | None, str, str | None]
@@ -321,65 +382,291 @@ type _Group = tuple[str | None, str | None, str, str | None]
 
 def _grouped(
     figures: SeriesFigures,
-    judge: Callable[[str | None, str, str], _Group | None],
+    judge: Callable[[str | None, str, str], Sequence[_Group | None]],
 ) -> dict[_Group | None, list[str]]:
-    """The variables of the `(provenance, stat_var)` pairs of `figures` under the group `judge`
-    gives each from its latest period (`SeriesFigures.latest_by_source`), `None` for a
-    complete pair."""
+    """The variables of the `(provenance, stat_var)` pairs of `figures` under each group `judge`
+    gives them from their latest period (`SeriesFigures.latest_by_source`), `None` for a
+    complete part of a pair."""
     grouped: dict[_Group | None, list[str]] = {}
     for (provenance, stat_var), period in sorted(
         figures.latest_by_source.items(),
         key=lambda item: (item[0][0] or "", item[0][1]),
     ):
-        stat_vars = grouped.setdefault(judge(provenance, stat_var, period), [])
-        if stat_var not in stat_vars:
-            stat_vars.append(stat_var)
+        for group in judge(provenance, stat_var, period):
+            stat_vars = grouped.setdefault(group, [])
+            if stat_var not in stat_vars:
+                stat_vars.append(stat_var)
     return grouped
 
 
-def _entries(grouped: Mapping[_Group | None, list[str]]) -> list[dict[str, object]]:
-    """The `IncompleteAfter` entries of `grouped`'s partial and unknown groups."""
+def _entries(
+    grouped: Mapping[_Group | None, list[str]],
+    *,
+    shares: Mapping[_Group, Mapping[str, object] | None] | None = None,
+) -> list[dict[str, object]]:
+    """The `IncompleteAfter` entries of `grouped`'s partial, projected and unknown groups,
+    each with its `reported_share` from `shares` where it holds one."""
     fields = ("provenance", "source", "status", "partial_period")
+    shares = shares or {}
     return [
         IncompleteAfter.model_validate(
-            {**dict(zip(fields, group, strict=True)), "stat_vars": stat_vars}
+            {
+                **dict(zip(fields, group, strict=True)),
+                "stat_vars": stat_vars,
+                "reported_share": shares.get(group),
+            }
         ).model_dump()
         for group, stat_vars in grouped.items()
         if group is not None
     ]
 
 
+def _reported_shares(
+    grouped: Mapping[_Group | None, list[str]],
+    year_totals: Mapping[tuple[str | None, str], YearTotals],
+) -> dict[_Group, Mapping[str, object] | None]:
+    """Each partial group's `reported_share`, read over its variables' year sums at the year
+    its mark starts in. A mark the frame grammar cannot read states none."""
+    shares: dict[_Group, Mapping[str, object] | None] = {}
+    for group, stat_vars in grouped.items():
+        if group is None or group[2] != "partial":
+            continue
+        against = last_year_before(Judgement(status="partial", partial_period=group[3]))
+        if against is None:
+            continue
+        totals = [held for stat_var in stat_vars if (held := year_totals.get((group[0], stat_var)))]
+        shares[group] = _share_entry(reported_share(totals, year=against + 1))
+    return shares
+
+
+def _share_entry(figure: ReportedShareFigure | None) -> Mapping[str, object] | None:
+    if figure is None:
+        return None
+    return {"basis": figure.basis, "share": figure.share, "against": figure.against}
+
+
 def _judged(
-    provenance: str | None,
-    stat_var: str,
-    period: str,
-    *,
-    catalogue: Catalogue,
-    component_of: Mapping[str, str],
+    provenance: str | None, source: str | None, period: str, *, catalogue: Catalogue
 ) -> _Group | None:
-    """The `(provenance, source, status, partial period)` group of one pair of
-    `incomplete_after`, `None` for a complete pair."""
+    """The `(provenance, source, status, partial period)` group of the actual rows of one pair
+    of `incomplete_after`, whose latest is `period` (`held_back.judge`), `None` when complete."""
     if provenance is None:
         return None, None, "unknown", None
-    source = component_of.get(bare_stat_var_ref(stat_var), provenance)
-    try:
-        mark = partial_period_of(catalogue, source)
-    except Undocumented:
-        return provenance, source, "unknown", None
-    if mark is None:
+    judgement = judge(source=source, method=None, period=period, catalogue=catalogue)
+    if judgement is None:
         return None
-    reached = reaches(period, mark)
-    if reached is None:
-        # The frame grammar reads the mark or the period not at all, so nothing says.
-        return provenance, source, "unknown", None
-    return (provenance, source, "partial", mark) if reached else None
+    return provenance, source, judgement.status, judgement.partial_period
 
 
 # The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
 _FULLEST_YEAR_SPAN = 10
 
 
+def held_back_coverage(
+    result: MaterialisationResult, *, requests: Sequence[MaterialisationRequest]
+) -> list[dict[str, object]]:
+    """The `held_back` runs of the frame `result` holds (`manifest_models.HeldBack`): every run
+    of partial and projected years the mint's read found its sources hold past their served
+    actual years, whatever the requests' window (`MaterialisationResult.held_runs`), by the
+    rules Search states them by (`materialise.held_runs`). A run is `served` when the window's
+    `include` names its kind and the window holds a year of it.
+
+    A partial run states the share of its first year its source has reported against the year
+    before, from the year sums the mint folded over the source's rows of the two years before
+    its window and held-back cuts (`MaterialisationResult.year_totals`,
+    `reported_share.reported_share`), whatever the window opts in to. It states none where the
+    read held no series of the year before.
+
+    Empty with no catalogue bound, which a mint refuses before it gets here."""
+    if not requests or not result.held_runs:
+        return []
+    try:
+        catalogue = current_catalogue()
+    except CatalogueNotBound:
+        return []
+    window = requests[0].window
+    return [
+        _stated_run(
+            result,
+            run=run,
+            served=run.kind in window.include and _window_holds(window, run),
+            catalogue=catalogue,
+        )
+        for run in result.held_runs
+    ]
+
+
+def _stated_run(
+    result: MaterialisationResult,
+    *,
+    run: HeldRun,
+    served: bool,
+    catalogue: Catalogue | None = None,
+) -> dict[str, object]:
+    """`run` as the frame `result` holds states it (`manifest_models.HeldBack`): `catalogue`,
+    by default the one bound, names its source, and a partial run carries its reported share
+    (`_reported_share`)."""
+    catalogue = catalogue or current_catalogue()
+    share = (
+        _reported_share(result, run=run, component_of=_component_of(result))
+        if run.kind == "partial"
+        else None
+    )
+    row = catalogue.provenance(run.source)
+    return HeldBack(
+        kind=run.kind,
+        served=served,
+        source=run.source,
+        source_name=None if row is None else row.name,
+        start_year=run.start_year,
+        end_year=run.end_year,
+        reported_share=None if share is None else ReportedShare.model_validate(share),
+    ).model_dump(mode="json")
+
+
+def _window_holds(window: RequestedWindow, run: HeldRun) -> bool:
+    """Whether a read of `window` holds a year of `run`: every date, `latest` (which serves
+    each series' newest year, a held run's when the window opts in to it), or a range
+    sharing a year with it."""
+    if window.kind != "range":
+        return True
+    return (window.end_year is None or window.end_year >= run.start_year) and (
+        window.start_year is None or window.start_year <= run.end_year
+    )
+
+
+def _component_of(result: MaterialisationResult) -> dict[str, str]:
+    """Each member variable of a composite's frame, bare, mapped to the provenance of the
+    component serving it (`trace.components`). Empty for any other frame."""
+    return {
+        bare_stat_var_ref(cast(str, ref)): cast(str, component["provenance"])
+        for component in result.trace.components
+        if component.get("provenance") is not None
+        for ref in cast("list[object]", component.get("stat_vars") or [])
+    }
+
+
+def _reported_share(
+    result: MaterialisationResult,
+    *,
+    run: HeldRun,
+    component_of: Mapping[str, str],
+) -> Mapping[str, object] | None:
+    """The share of a partial `run`'s first year reported against the year before, from the
+    year sums the mint folded over the rows of `run`'s source (`held_back_coverage`)."""
+    totals = [
+        held
+        for (provenance, stat_var), held in result.year_totals.items()
+        if provenance is not None
+        and source_of(provenance, stat_var, component_of=component_of) == run.source
+    ]
+    return _share_entry(reported_share(totals, year=run.start_year)) if totals else None
+
+
+def judged_record(
+    result: MaterialisationResult, *, requests: Sequence[MaterialisationRequest]
+) -> JudgedIncompleteAfter | None:
+    """The judged record of the frame `result` holds: its `incomplete_after`
+    (`incomplete_after`) with its `held_back` runs (`held_back_coverage`), judged under one
+    catalogue build and stored together (`version_store._refresh_judged_record`). Every
+    partial or projected entry lies in a served run of its kind and source
+    (`_reconciled_runs`), so a reader of the runs alone finds every year the frame serves held
+    back. `None` when `incomplete_after` judged nothing, so a stale catalogue's mint leaves
+    both stored members standing."""
+    judged = incomplete_after(result)
+    if judged is None:
+        return None
+    runs = _reconciled_runs(
+        held_back_coverage(result, requests=requests), judged.entries, result=result
+    )
+    return replace(judged, held_back=runs)
+
+
+def _reconciled_runs(
+    runs: Sequence[Mapping[str, object]],
+    entries: Sequence[Mapping[str, object]],
+    *,
+    result: MaterialisationResult,
+) -> list[dict[str, object]]:
+    """`runs`, the frame's `held_back`, with every partial or projected entry of `entries`,
+    its `incomplete_after`, inside a served run of the entry's kind and source. An entry
+    names rows the frame serves, so its run is served: a run of its kind and source is marked
+    served and widened to the year its `partial_period` starts in, and a missing one is added
+    from that year to the newest year the entry's rows reach
+    (`SeriesFigures.latest_by_source`), a partial one with its reported share
+    (`_reported_share`). Partial runs come first, then by source, as `merged_runs` orders
+    them."""
+    by_key = {(run["kind"], run["source"]): dict(run) for run in runs}
+    latest = result.series_statistics.figures.latest_by_source
+    for entry in entries:
+        kind, source = entry.get("status"), entry.get("source")
+        year = _year_of(entry.get("partial_period"))
+        if kind not in ("partial", "projected") or not isinstance(source, str) or year is None:
+            continue
+        known = by_key.get((kind, source))
+        if known is None:
+            provenance = cast("str | None", entry.get("provenance"))
+            reached = [
+                _year_of(latest.get((provenance, cast(str, stat_var))))
+                for stat_var in cast("list[object]", entry.get("stat_vars") or [])
+            ]
+            start, end = year, max([year, *(one for one in reached if one is not None)])
+        else:
+            start = min(cast(int, known["start_year"]), year)
+            end = max(cast(int, known["end_year"]), year)
+            if known["served"] and (start, end) == (known["start_year"], known["end_year"]):
+                continue
+        run = HeldRun(kind=cast("HeldKind", kind), source=source, start_year=start, end_year=end)
+        by_key[(kind, source)] = _stated_run(result, run=run, served=True)
+    return [by_key[key] for key in sorted(by_key, key=lambda k: (k[0] != "partial", str(k[1])))]
+
+
+def _year_of(period: object) -> int | None:
+    """The calendar year a `time_period` cell or mark starts in, `None` when the frame
+    grammar cannot read it."""
+    if not isinstance(period, str):
+        return None
+    try:
+        return int(start_of(period)[:4])
+    except ValueError:
+        return None
+
+
 def year_coverage(
+    result: MaterialisationResult,
+    *,
+    requests: Sequence[MaterialisationRequest],
+    index: CoverageIndex | None,
+    judged: JudgedIncompleteAfter | None,
+) -> dict[str, object]:
+    """The members of the `coverage` of the frame `result` holds that its mint counts once
+    and stores with the version: the year members (`year_members`) and the `held_back` runs
+    of `judged`, its judged record (`judged_record`), each absent when not stated. A mint
+    whose catalogue judged nothing (`judged` None) states the runs its read found
+    (`held_back_coverage`), projected runs included, which need no catalogue. A version
+    already on record keeps its stored runs over these (`serve._base_record`)."""
+    members = year_members(result, requests=requests, index=index)
+    runs = held_back_coverage(result, requests=requests) if judged is None else judged.held_back
+    if runs:
+        members["held_back"] = [dict(run) for run in runs]
+    return members
+
+
+def with_held_back(
+    coverage: Mapping[str, object], held: Sequence[Mapping[str, object]] | None
+) -> Mapping[str, object]:
+    """`coverage`, a version's stored `coverage`, stating the `held_back` runs `held` in place
+    of its own: without the member when `held` is empty, and as it stands when `held` is None,
+    a write that stated no runs."""
+    if held is None:
+        return coverage
+    refreshed = {key: value for key, value in coverage.items() if key != "held_back"}
+    if held:
+        refreshed["held_back"] = [dict(run) for run in held]
+    return refreshed
+
+
+def year_members(
     result: MaterialisationResult,
     *,
     requests: Sequence[MaterialisationRequest],
@@ -412,12 +699,17 @@ def year_coverage(
     of the three is the fullest, `elected_year` already names a year holding at least that
     share.
 
+    Every count leaves out the years the requests' window holds back unless it opts in to
+    them (`RequestedWindow.include`), as the read's own election does, so a `latest` frame's
+    `elected_year` is the year it serves.
+
     Each `role_counts` is keyed by the role's graph name, the `label` of the role's entry in
     `coverage.dimensions`.
     """
     window = result.coverage.window or {}
     year = window.get("start_year")
     asked = requests[0].window
+    include = asked.include
     latest = asked.kind == "latest"
     named = asked.kind == "range" and asked.start_year == asked.end_year and not asked.end_unstated
     if (
@@ -461,7 +753,7 @@ def year_coverage(
             elected[variable] = recorded.elected
     else:
         elected = index.elected_years(
-            variables=variables, bound=bound, served=served, excluded=excluded
+            variables=variables, bound=bound, served=served, excluded=excluded, include=include
         )
         if (
             any(variable not in elected for variable in variables)
@@ -471,7 +763,12 @@ def year_coverage(
         ):
             return {}
     counted = functools.partial(
-        index.headline, variables=variables, bound=bound, served=served, excluded=excluded
+        index.headline,
+        variables=variables,
+        bound=bound,
+        served=served,
+        excluded=excluded,
+        include=include,
     )
     headline = counted(elected=elected)
     recent = headline.recent_years if headline is not None else ()
@@ -499,6 +796,7 @@ def year_coverage(
         excluded=excluded,
         first_year=newest - _FULLEST_YEAR_SPAN + 1,
         last_year=newest,
+        include=include,
     )
     fullest_year = max(holding, key=lambda year: (holding[year], year))
     if fullest_year < recent[-1].year and held.series < ANCHOR_SHARE * holding[fullest_year]:
@@ -806,10 +1104,13 @@ def assemble_manifest(
         definition=definition,
         content_version=materialisation.content_version,
         prepared_at=prepared_at,
-        coverage=coverage_model(
-            materialisation.coverage,
-            family=minted_flow_family(stored.identity, trace, code_index=code_index),
-        ).model_copy(update=dict(year_coverage or {})),
+        coverage=CoverageModel.model_validate(
+            coverage_model(
+                materialisation.coverage,
+                family=minted_flow_family(stored.identity, trace, code_index=code_index),
+            ).model_dump(mode="json")
+            | dict(year_coverage or {})
+        ),
         citation=citation,
         trace=trace,
         warnings=warnings,
@@ -1109,8 +1410,11 @@ def definition_version_record(
     rendered under (`versions.rendering_stamp`) as `code_index_stamp`. A raw version passes none of
     them. `incomplete_after` is how complete the version's rows are (`incomplete_after`), `None`
     when unjudged, and `incomplete_after_built_at` the `built_at` of the catalogue build that
-    judged it. Only a raw version stores the per-series conversion records. A derived version's
-    rows are not those series, and the observations door, their reader, serves raw versions alone.
+    judged it. With the `held_back` runs of `manifest.coverage` they are the version's judged
+    record, which a later write refreshes together (`version_store._refresh_judged_record`).
+    A derived version's runs are its base call's, since runs are stated whatever the window.
+    Only a raw version stores the per-series conversion records. A derived version's rows are
+    not those series, and the observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -1224,7 +1528,9 @@ def record_collapsed_head_version(
     collapsed frame's, `code_index_stamp` the stamp of the code index and render format it was
     rendered under (`versions.rendering_stamp`), `incomplete_after` its record
     (`collapsed_incomplete_after`), and `incomplete_after_built_at` the `built_at` of the build
-    that judged the base's. The artifacts in `manifest`
+    that judged the base's. The `held_back` runs of `manifest.coverage` are the base's, which
+    a write of a version already on record stores with `incomplete_after`
+    (`version_store._refresh_judged_record`). The artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
     makes repeated writes idempotent. `describer_for` gives the describer that writes the
     version's description record in the same transaction, from the record this call stores;

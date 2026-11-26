@@ -67,19 +67,50 @@ class ProvenanceRef(GraphRef):
     )
 
 
+type HeldKind = Literal["partial", "projected"]
+"""A class of years a read holds back unless its window opts in to them: a source's partly
+reported period, and projected rows (`materialise.held_back`)."""
+
+
+def _absent(value: object) -> bool:
+    return value is None
+
+
 class TimeWindow(StrictModel):
-    """A date window. Absence of a bound means open-ended in that direction."""
+    """A date window. Absence of a bound means open-ended in that direction.
+
+    `include` is the window's opt-in to years a read holds back otherwise
+    (`materialise.held_back`), sorted and without repeats, absent when empty, so a window
+    without it serialises with no `include` key. A window Search reads or derives
+    for coverage carries the opt-in of the request it serves."""
 
     start_year: int | None = Field(default=None, description="absent means open-ended start")
     end_year: int | None = Field(
         default=None, description="absent means open-ended end (to latest)"
+    )
+    include: list[HeldKind] | None = Field(
+        default=None,
+        exclude_if=_absent,
+        description=(
+            'the held-back years this window serves: "partial" for a source\'s partly '
+            'reported period, "projected" for projected rows; absent serves neither'
+        ),
     )
 
     @model_validator(mode="after")
     def at_least_one_bound(self) -> TimeWindow:
         if self.start_year is None and self.end_year is None:
             raise ValueError("TimeWindow needs at least one of start_year or end_year.")
+        # Normal form: sorted, without repeats, absent when empty.
+        normal = sorted(set(self.include)) if self.include else None
+        if normal != self.include:
+            self.include = normal
         return self
+
+    @property
+    def opt_in(self) -> frozenset[HeldKind]:
+        """The kinds of held-back years this window serves (`include`)."""
+        return frozenset(self.include or ())
 
 
 RequestedWindow = TimeWindow | Literal["latest"]

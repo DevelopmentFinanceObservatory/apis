@@ -53,19 +53,30 @@ MAX_GROUPBY_CODE_LENGTH = 128
 _STAT_VAR_AXIS = "stat_var"
 
 
+type WindowInclude = Literal["partial", "projected"]
+
+_INCLUDE_DESCRIPTION = (
+    "the kinds of incomplete rows to serve: `partial` for a source's partially reported "
+    "periods, `projected` for projection rows. Absent serves neither"
+)
+
+
 class WindowAll(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["all"] = "all"
+    include: list[WindowInclude] | None = Field(default=None, description=_INCLUDE_DESCRIPTION)
 
 
 class WindowLatest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["latest"] = "latest"
+    include: list[WindowInclude] | None = Field(default=None, description=_INCLUDE_DESCRIPTION)
 
 
 class WindowRange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["range"] = "range"
+    include: list[WindowInclude] | None = Field(default=None, description=_INCLUDE_DESCRIPTION)
     start_year: int | None = None
     end_year: int | None = None
 

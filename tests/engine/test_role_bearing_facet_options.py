@@ -354,3 +354,48 @@ def test_an_option_is_offered_exactly_when_its_pin_is_not_refused(monkeypatch):
     }
     assert offered == pinnable - {("measurementMethod", None)}
     assert offered == {("provenance", _PROVENANCE), ("unit", _USD)}
+
+
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+
+@pytest.mark.parametrize(
+    ("years", "methods"),
+    [
+        pytest.param(None, None, id="every-date"),
+        pytest.param(TimeWindow(start_year=2020, end_year=2030), None, id="range"),
+        pytest.param(
+            TimeWindow(start_year=2020, end_year=2030, include=["projected"]),
+            ["Estimated", None],
+            id="opted-in",
+        ),
+    ],
+)
+def test_a_projection_pair_offers_no_option_a_read_without_its_opt_in_serves(
+    monkeypatch, years, methods
+):
+    """IDS declares `Estimated` a projection pair, so a read opting in to no projection
+    serves none of its points and the method axis offers only the reported series' missing
+    method, no choice. A window opting in to projections offers it with its points."""
+    index = build_coverage_index(
+        [
+            (_SV, "ids-rec", _WB, _KEN, list(_RECORDED_YEARS)),
+            (_SV, "ids-est", _WB, _KEN, list(_ESTIMATED_YEARS)),
+        ],
+        role_names={_SV: _ROLE_NAMES},
+        facet_metadata={
+            "ids-rec": FacetMetadata(provenance_id=_IDS, unit=_USD),
+            "ids-est": FacetMetadata(provenance_id=_IDS, measurement_method="Estimated", unit=_USD),
+        },
+    )
+
+    options = _facet_options(
+        [_SV],
+        _PAIR,
+        years=years,
+        graph=_graph_without_facet_reads(monkeypatch),
+        coverage=index,
+        deadline=None,
+    )
+
+    assert _refs(options).get("measurementMethod") == methods

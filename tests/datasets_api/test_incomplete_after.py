@@ -11,19 +11,28 @@ nothing.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from assembler.mint.provenance import _partial_period
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame
 from dataset_store.snapshot import ManifestFacts
-from datasets_api.manifest import incomplete_after, version_document
+from datasets_api.manifest import (
+    incomplete_after,
+    judged_record,
+    version_document,
+    year_coverage,
+)
 from datasets_api.manifest_models import Manifest
-from materialise import MaterialisationResult
+from materialise import MaterialisationRequest, MaterialisationResult
+from materialise.held_runs import HeldRun
 from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue, bound_catalogue
 from tests.origin_catalogue.fake_catalogue import (
@@ -33,11 +42,18 @@ from tests.origin_catalogue.fake_catalogue import (
     documenting,
 )
 
-from ._description_doubles import FAMILY_MEMBERS, GROUPBY_QUERY, datasets_client, mint_family
+from ._description_doubles import (
+    FAMILY_MEMBERS,
+    GROUPBY_OPTIONS,
+    GROUPBY_QUERY,
+    datasets_client,
+    mint_family,
+)
 from ._version_record_store import FakeVersionRecordDatasetStore
+from .test_definition_door_currency import _FakeHeadStore
 from .test_elected_year import _AID, _MALAWI, _MWI, _PROVENANCE, _Rig
 
-_ALL = RequestedWindow(kind="all")
+_ALL = RequestedWindow(kind="all", include=frozenset({"partial"}))
 _DAC2A = "provenance/OECDDAC2A"
 _DAC1 = "provenance/OECDDAC1"
 
@@ -95,6 +111,10 @@ _PARTIAL_2025 = [
         "partial_period": "2025",
     }
 ]
+# A mint reads 2024 too, where eight donors report against two in 2025, each a value of 1.
+_MINTED_2025 = [
+    {**_PARTIAL_2025[0], "reported_share": {"basis": "value", "share": 0.25, "against": 2024}}
+]
 
 
 def test_a_frame_reaching_its_source_s_partial_year_records_it(
@@ -105,7 +125,7 @@ def test_a_frame_reaching_its_source_s_partial_year_records_it(
     with bound_catalogue(_source_as(_DAC2A)):
         minted, _ = rig.mint(_ALL)
 
-    assert _recorded(rig, minted) == _PARTIAL_2025
+    assert _recorded(rig, minted) == _MINTED_2025
     assert _flagged(rig, minted)
 
 
@@ -166,14 +186,19 @@ def test_a_catalogue_that_does_not_document_the_source_records_nothing(
 
 
 def _result(latest_by_source: dict[tuple[str | None, str], str]) -> MaterialisationResult:
-    """A mint result whose series reach the periods `latest_by_source` gives, for asking the
-    record alone."""
+    """A mint result whose series reach the periods `latest_by_source` gives, every row
+    actual, for asking the record alone."""
     return cast(
         "MaterialisationResult",
         SimpleNamespace(
             trace=SimpleNamespace(components=()),
+            year_totals={},
             series_statistics=SimpleNamespace(
-                figures=SimpleNamespace(latest_by_source=latest_by_source)
+                figures=SimpleNamespace(
+                    latest_by_source=latest_by_source,
+                    actual_by_source=latest_by_source,
+                    projected_by_source={},
+                )
             ),
         ),
     )
@@ -242,6 +267,108 @@ def test_each_source_is_judged_on_its_own() -> None:
         assert incomplete_after(result) is None, "a catalogue judging no source records nothing"
 
 
+def _held_result(
+    *, actual: str | None, projected: str | None, runs: tuple[HeldRun, ...]
+) -> MaterialisationResult:
+    """A mint result whose `dcid:X` rows from CRS reach `actual` and are projected from
+    `projected`, the latest of them reached at 2027 when projected, whose read found `runs`."""
+    latest = {(_CRS, "dcid:X"): "2027" if projected is not None else str(actual)}
+    return cast(
+        "MaterialisationResult",
+        SimpleNamespace(
+            trace=SimpleNamespace(components=()),
+            year_totals={},
+            held_runs=runs,
+            series_statistics=SimpleNamespace(
+                figures=SimpleNamespace(
+                    latest_by_source=latest,
+                    actual_by_source={} if actual is None else {(_CRS, "dcid:X"): actual},
+                    projected_by_source={} if projected is None else {(_CRS, "dcid:X"): projected},
+                )
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "window", "runs"),
+    [
+        pytest.param(
+            _held_result(
+                actual="2025", projected=None, runs=(HeldRun("partial", _CRS, 2025, 2025),)
+            ),
+            RequestedWindow(kind="all", include=frozenset({"partial"})),
+            [("partial", True, 2025, 2025)],
+            id="agreeing",
+        ),
+        pytest.param(
+            _held_result(actual="2025", projected=None, runs=()),
+            RequestedWindow(kind="all", include=frozenset({"partial"})),
+            [("partial", True, 2025, 2025)],
+            id="run-missing",
+        ),
+        pytest.param(
+            _held_result(
+                actual="2025", projected=None, runs=(HeldRun("partial", _CRS, 2025, 2025),)
+            ),
+            RequestedWindow(kind="range", start_year=2020, end_year=2024),
+            [("partial", True, 2025, 2025)],
+            id="run-left-out",
+        ),
+        pytest.param(
+            _held_result(
+                actual=None, projected="2026", runs=(HeldRun("projected", _CRS, 2027, 2030),)
+            ),
+            RequestedWindow(kind="all", include=frozenset({"projected"})),
+            [("projected", True, 2026, 2030)],
+            id="run-starting-late",
+        ),
+        pytest.param(
+            _held_result(actual=None, projected="2026", runs=()),
+            RequestedWindow(kind="all", include=frozenset({"projected"})),
+            [("projected", True, 2026, 2027)],
+            id="projected-run-missing",
+        ),
+    ],
+)
+def test_every_held_entry_lies_in_a_served_run_of_its_kind_and_source(
+    result: MaterialisationResult, window: RequestedWindow, runs: list[tuple[object, ...]]
+) -> None:
+    """A reader of `held_back` alone finds every year the frame serves held back: a run the
+    read did not find, left out, or starting after the entry's period is added, served or
+    widened from the entry, to the newest year its rows reach when added."""
+    request = cast("MaterialisationRequest", SimpleNamespace(window=window))
+
+    with bound_catalogue(documenting({_CRS: dev_provenance_nodes()[_CRS]})):
+        judged = judged_record(result, requests=[request])
+
+    assert judged is not None and judged.held_back is not None
+    assert [
+        (run["kind"], run["served"], run["start_year"], run["end_year"]) for run in judged.held_back
+    ] == runs
+
+
+def test_a_catalogue_judging_nothing_states_the_runs_the_read_found() -> None:
+    """A catalogue documenting none of the frame's sources judges nothing, so no judged record
+    is stored, and a new version still states the projected run its read found, which needs
+    no catalogue."""
+    result = _held_result(
+        actual="2024", projected=None, runs=(HeldRun("projected", _CRS, 2026, 2030),)
+    )
+    cast(SimpleNamespace, result).coverage = SimpleNamespace(window=None)
+    request = cast("MaterialisationRequest", SimpleNamespace(window=RequestedWindow(kind="all")))
+
+    with bound_catalogue(FakeCatalogue()):
+        judged = judged_record(result, requests=[request])
+        members = year_coverage(result, requests=[request], index=None, judged=judged)
+
+    assert judged is None
+    held = cast("list[dict[str, object]]", members["held_back"])
+    assert [(run["kind"], run["served"], run["start_year"], run["end_year"]) for run in held] == [
+        ("projected", False, 2026, 2030)
+    ]
+
+
 def test_a_mark_the_frame_grammar_cannot_read_records_its_rows_unknown() -> None:
     """The CRS node states a quarter, which no frame period spells, so nothing says whether
     its 2025 rows reach it; DAC1's unmarked rows keep the record judged."""
@@ -290,22 +417,35 @@ def _stored_record(rig: _Rig) -> object:
     return row["incomplete_after"]
 
 
+def _stored_runs(rig: _Rig) -> object:
+    """The kind and years of each `held_back` run the version's stored `coverage` states."""
+    with rig.version_store.transaction() as tx:
+        row = tx.fetch_one("SELECT coverage FROM datasets.version_record")
+    assert row is not None
+    runs = cast("list[dict[str, object]]", row["coverage"].get("held_back", []))
+    return [(run["kind"], run["served"], run["start_year"], run["end_year"]) for run in runs]
+
+
 def test_a_later_mint_of_the_same_version_replaces_its_partial_years(
     version_store: FakeVersionRecordDatasetStore,
 ) -> None:
     """The full release completes 2025 while the frame's rows stay the same, so the mint
     after the head's day-long lifetime mints the same version again, and the store takes that
-    mint's judgement. A mint whose catalogue cannot judge it leaves the stored one."""
+    mint's judgement and its runs. A mint whose catalogue cannot judge it leaves both
+    standing."""
     rig = _Rig(version_store, indexed={_AID: _MALAWI})
     with bound_catalogue(_source_as(_DAC2A)):
         first, _ = rig.mint(_ALL)
-    assert _stored_record(rig) == _PARTIAL_2025
+    assert _stored_record(rig) == _MINTED_2025
+    assert _stored_runs(rig) == [("partial", True, 2025, 2025)]
 
     rig.clock.at += timedelta(hours=25)
     with bound_catalogue(FakeCatalogue()):
         unjudged, _ = rig.mint(_ALL)
     assert unjudged.trace["served_from"] == "materialise"
-    assert _stored_record(rig) == _PARTIAL_2025
+    assert unjudged.content_version == first.content_version
+    assert _stored_record(rig) == _MINTED_2025
+    assert _stored_runs(rig) == [("partial", True, 2025, 2025)]
 
     rig.clock.at += timedelta(hours=25)
     with bound_catalogue(_source_as(_DAC2A, marked=False)):
@@ -315,6 +455,7 @@ def test_a_later_mint_of_the_same_version_replaces_its_partial_years(
     assert second.content_version == first.content_version
     assert _stored_record(rig) == []
     assert _recorded(rig, second) == []
+    assert _stored_runs(rig) == []
 
 
 def test_a_mint_under_an_older_catalogue_build_leaves_a_newer_judgement_standing(
@@ -340,7 +481,7 @@ def test_a_mint_under_an_older_catalogue_build_leaves_a_newer_judgement_standing
     latest = replace(_source_as(_DAC2A), built_at=FAKE_BUILT_AT + timedelta(days=14))
     with bound_catalogue(latest):
         rig.mint(_ALL)
-    assert _stored_record(rig) == _PARTIAL_2025
+    assert _stored_record(rig) == _MINTED_2025
 
 
 def _marked(mark: str) -> dict[str, tuple[str, ...]]:
@@ -373,12 +514,15 @@ def _partial(stat_vars: list[str], mark: str) -> list[dict[str, object]]:
 def test_a_groupby_served_from_the_head_stores_the_judgement_of_its_base(
     serve_catalogue: Callable[[Catalogue], None],
 ) -> None:
-    """A plain mint primes the head, so the groupby read that follows collapses the head
-    (`current._record_head_hit_derived`), deriving its record from the base version's."""
+    """A plain mint opting in to partial periods primes the head, so the groupby read that
+    follows collapses the head (`current._record_head_hit_derived`), deriving its record
+    from the base version's."""
     serve_catalogue(documenting({"OECD_DAC2A": _marked("1900")}))
     store = FakeVersionRecordDatasetStore()
     client = datasets_client(store, fixture="family")
-    base = mint_family(client, options={"bundle": False})
+    base = mint_family(
+        client, options={"bundle": False}, window={"kind": "all", "include": ["partial"]}
+    )
     spec_id = base["definition"]["spec_id"]
 
     response = client.get(f"/api/datasets/{spec_id}?{GROUPBY_QUERY}")
@@ -402,3 +546,48 @@ def test_a_groupby_served_from_the_head_stores_the_judgement_of_its_base(
             )
         }
     assert built[collapsed["content_version"]] == built[base["content_version"]] == FAKE_BUILT_AT
+    runs = _stored_runs_of(store)
+    assert runs[collapsed["content_version"]] == runs[base["content_version"]] != "absent"
+    assert collapsed["coverage"]["held_back"] == base["coverage"]["held_back"]
+
+
+def _stored_runs_of(store: FakeVersionRecordDatasetStore) -> dict[str, object]:
+    """Each version's stored `held_back` runs by content version, `"absent"` when its
+    `coverage` states none."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all("SELECT content_version, coverage FROM datasets.version_record")
+    return {row["content_version"]: row["coverage"].get("held_back", "absent") for row in rows}
+
+
+def test_a_later_mint_refreshes_the_runs_of_its_collapse_with_its_base_s(
+    serve_catalogue: Callable[[Catalogue], None],
+) -> None:
+    """A collapse and its base stored without runs take the runs the next
+    mint of the collapse judges, the collapse a copy of its base's."""
+    serve_catalogue(documenting({"OECD_DAC2A": _marked("1900")}))
+    store = FakeVersionRecordDatasetStore()
+    heads = _FakeHeadStore()
+    client = datasets_client(store, fixture="family", head_store=heads)
+    window = {"kind": "all", "include": ["partial"]}
+    first = mint_family(client, options=GROUPBY_OPTIONS, window=window)
+    with store.transaction() as tx:
+        for row in tx.fetch_all("SELECT content_version, coverage FROM datasets.version_record"):
+            coverage = dict(row["coverage"])
+            coverage.pop("held_back")
+            tx.execute(
+                "UPDATE datasets.version_record SET coverage = %s WHERE content_version = %s",
+                (json.dumps(coverage), row["content_version"]),
+            )
+
+    heads.age_head(first["definition"]["spec_id"], age=timedelta(days=30))
+    again = mint_family(client, options=GROUPBY_OPTIONS, window=window)
+
+    assert again["trace"]["served_from"] == "materialise"
+    assert again["content_version"] == first["content_version"]
+    runs = _stored_runs_of(store)
+    assert len(runs) == 2
+    assert all(
+        held == [{**again["coverage"]["held_back"][0], "reported_share": None}]
+        for held in runs.values()
+    )
+    assert again["coverage"]["held_back"][0]["start_year"] == 1900

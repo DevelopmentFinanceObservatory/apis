@@ -314,7 +314,8 @@ def _outside(
 
 def _years(identity: BaseIdentity, facts: ScopeFacts) -> tuple[int, int] | None:
     """The first and last year the snapshot holds a series of `identity`'s variables at the
-    places it names (`series_span`), None where it holds none."""
+    places it names, less the years a read of its window holds back (`series_span`), None
+    where it holds none."""
     bound = {
         axis: dcids
         for role, dcids in identity.entities.items()
@@ -323,7 +324,20 @@ def _years(identity: BaseIdentity, facts: ScopeFacts) -> tuple[int, int] | None:
     variables = served_members(identity)
     if not variables:
         return None
-    return series_span(facts.coverage.index, variables=variables, bound=bound)
+    return series_span(
+        facts.coverage.index, variables=variables, bound=bound, window=_span(identity)
+    )
+
+
+def _span(identity: BaseIdentity) -> TimeWindow | None:
+    """`identity`'s requested years with their opt-in, as `series_held` reads them, None for
+    an `all` or `latest` window."""
+    window = identity.requested_window
+    if window.kind != "range":
+        return None
+    return TimeWindow(
+        start_year=window.start_year, end_year=window.end_year, include=window.include
+    )
 
 
 def _group_members(
@@ -372,13 +386,7 @@ def _availability(
         for role, dcids in whole.entities.items()
         if (axis := role_key_axis(role)) is not None
     }
-    window = whole.requested_window
-    span = (
-        TimeWindow(start_year=window.start_year, end_year=window.end_year)
-        if window.kind == "range"
-        else None
-    )
-    held = series_held(facts.coverage.index, variables=variables, bound=bound, window=span)
+    held = series_held(facts.coverage.index, variables=variables, bound=bound, window=_span(whole))
     if held is None:
         return OptionAvailability(
             status="unavailable", code="coverage_unknown", detail={"total": total}

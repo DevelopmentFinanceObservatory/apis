@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     Discriminator,
@@ -18,6 +18,7 @@ from pydantic_core import CoreSchema, PydanticCustomError
 from dfo_platform.named import named_capped
 
 from .base import StrictModel
+from .grammar import HeldKind
 from .vocab import _FACET_AXIS_SCHEMA_VERSION, SCHEMA_VERSION, RoleAxis
 
 # ---------------------------------------------------------------------------
@@ -281,19 +282,45 @@ class IdentitySlot(StrictModel):
     binding: IdentityBinding = Field(description="this slot's bound state")
 
 
-class IdentityWindowAll(StrictModel):
+def _absent(value: object) -> bool:
+    return value is None
+
+
+class _IdentityWindowOptIn(StrictModel):
+    """The opt-in every identity window kind carries: the held-back years the window
+    serves, in the identity core's normal form (sorted, without repeats, absent when
+    empty), so a window without it hashes with no `include` key."""
+
+    include: list[HeldKind] | None = Field(
+        default=None,
+        exclude_if=_absent,
+        description=(
+            'the held-back years this window serves: "partial" for a source\'s partly '
+            'reported period, "projected" for projected rows; absent serves neither'
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _normal_include(self) -> Self:
+        normal = sorted(set(self.include)) if self.include else None
+        if normal != self.include:
+            self.include = normal
+        return self
+
+
+class IdentityWindowAll(_IdentityWindowOptIn):
     """No date signal was requested at all."""
 
     kind: Literal["all"] = "all"
 
 
-class IdentityWindowLatest(StrictModel):
+class IdentityWindowLatest(_IdentityWindowOptIn):
     """An explicit latest-ask: re-resolve to whatever year is CURRENTLY latest."""
 
     kind: Literal["latest"] = "latest"
 
 
-class IdentityWindowRange(StrictModel):
+class IdentityWindowRange(_IdentityWindowOptIn):
     """A concrete requested date range; at least one bound is always present."""
 
     kind: Literal["range"] = "range"

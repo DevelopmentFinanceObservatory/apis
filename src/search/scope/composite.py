@@ -52,6 +52,7 @@ from materialise.composite import (
     read_component_years,
     spans,
     stacked_years,
+    window_include,
 )
 from materialise.enrichment import PartySplit, party_split
 from origin_catalogue import Catalogue, bound_catalogue, pinned_reads, scoped_reads
@@ -124,8 +125,10 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
     """The series of the family `identity` reads (`code_index.members.index_family`) under
     the places its entities bind, counted per year of its window in `facts`' coverage
     snapshot: every year of a range, clipped to the years the snapshot represents, and every
-    year up to its build year for an `all` or `latest` window. A `latest` window also elects
-    the year a read of it serves (`series_coverage.index.elected_year`). Empty for a family
+    year up to its build year for an `all` or `latest` window, less the held-back years its
+    window does not opt in to (`window_include`), as a mint of it cuts them. A `latest`
+    window also elects the year a read of it serves (`series_coverage.index.elected_year`).
+    Empty for a family
     the index does not decide, or one whose named dataset does not publish it. An identity
     that pins provenances reads under them, within the caller's source scope
     (`_pinned_reads`). A composite's component read clears that scope first
@@ -154,6 +157,7 @@ def _counted_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Year
         bound=bound_roles(identity),
         first_year=first,
         last_year=last,
+        include=window_include(identity),
     )
     latest = elected_year(counts) if window.get("kind") == "latest" else None
     settled = all(coverage.covers(variable) for variable in variables)
@@ -204,6 +208,7 @@ def _held_by_donor(
         bound=bound_roles(identity),
         first_year=first,
         last_year=last,
+        include=window_include(identity),
     )
     if found is None:
         return {}
@@ -838,7 +843,11 @@ def _with_data(
         return frozenset()
     with component_reads(item.component.identity):
         found = coverage.series_years(
-            variables=sorted(item.members), bound=bound, first_year=held[0], last_year=held[-1]
+            variables=sorted(item.members),
+            bound=bound,
+            first_year=held[0],
+            last_year=held[-1],
+            include=window_include(item.component.identity),
         )
     if found is None:
         return frozenset()
@@ -966,6 +975,7 @@ def _served_series(
             bound=bound_roles(item.component.identity),
             first_year=min(item.served),
             last_year=max(item.served),
+            include=window_include(item.component.identity),
         )
     if found is None:
         return
@@ -1014,7 +1024,11 @@ def _headline(
         for item in served:
             if year in item.served and item.members is not None:
                 identity = item.component.identity
-                key = (tuple(sorted(bound_roles(identity).items())), _pins(identity))
+                key = (
+                    tuple(sorted(bound_roles(identity).items())),
+                    _pins(identity),
+                    window_include(identity),
+                )
                 reads.setdefault(key, set()).update(item.members)
         found = _headline_year(coverage, reads, year)
         if found is not None:
@@ -1039,9 +1053,12 @@ def _pins(identity: Mapping[str, object]) -> frozenset[str] | None:
     return frozenset(pinned_refs(facets)) or None
 
 
-type _ReadKey = tuple[tuple[tuple[Role, frozenset[str]], ...], frozenset[str] | None]
-"""The places a component binds, as sorted items of `bound_roles`, and the provenances it
-pins (`_pins`). The components of one key read their series together."""
+type _ReadKey = tuple[
+    tuple[tuple[Role, frozenset[str]], ...], frozenset[str] | None, frozenset[str]
+]
+"""The places a component binds, as sorted items of `bound_roles`, the provenances it pins
+(`_pins`) and the held-back years its window opts in to (`window_include`). The components
+of one key read their series together."""
 
 
 def _headline_year(
@@ -1053,28 +1070,34 @@ def _headline_year(
     group, or across several the summed observations and series of each group's, whose
     StatVars differ, and the distinct parties on each role across all of their series in the
     year. None when no row holds `year`."""
-    found: list[tuple[CoverageHeadline, BoundRoles, frozenset[str] | None, list[str]]] = []
-    for (places, pins), members in reads.items():
+    found: list[
+        tuple[CoverageHeadline, BoundRoles, frozenset[str] | None, frozenset[str], list[str]]
+    ] = []
+    for (places, pins, include), members in reads.items():
         variables = sorted(members)
         bound: BoundRoles = dict(places)
         with pinned_reads(pins):
             held = coverage.headline(
-                variables=variables, bound=bound, first_year=year, last_year=year
+                variables=variables,
+                bound=bound,
+                first_year=year,
+                last_year=year,
+                include=include,
             )
         if held is not None and held.year == year:
-            found.append((held, bound, pins, variables))
+            found.append((held, bound, pins, include, variables))
     if not found:
         return None
-    names = coverage.role_names.get(found[0][3][0])
+    names = coverage.role_names.get(found[0][4][0])
     role_dcids = {} if names is None else {"donor": names.donor, "recipient": names.recipient}
     if len(found) == 1:
         role_counts = found[0][0].role_counts
     else:
-        role_counts = _distinct_parties(coverage, [(b, p, v) for _, b, p, v in found], year)
+        role_counts = _distinct_parties(coverage, [(b, p, i, v) for _, b, p, i, v in found], year)
     return HeadlineYear(
         year=year,
-        observations=sum(held.observations for held, _, _, _ in found),
-        series=sum(held.series for held, _, _, _ in found),
+        observations=sum(held.observations for held, *_ in found),
+        series=sum(held.series for held, *_ in found),
         role_counts={
             dcid: count
             for role, count in role_counts.items()
@@ -1085,17 +1108,21 @@ def _headline_year(
 
 def _distinct_parties(
     coverage: CoverageIndex,
-    reads: Sequence[tuple[BoundRoles, frozenset[str] | None, list[str]]],
+    reads: Sequence[tuple[BoundRoles, frozenset[str] | None, frozenset[str], list[str]]],
     year: int,
 ) -> dict[Role, int]:
     """The distinct donors and recipients of the series `reads` hold in `year`, each read
-    under its own bound and pins (`origin_catalogue.pinned_reads`), by coverage role; a role
-    no series carries a party on is left out."""
+    under its own bound, pins (`origin_catalogue.pinned_reads`) and opt-in, by coverage
+    role; a role no series carries a party on is left out."""
     parties: dict[Role, set[str]] = {"recipient": set(), "donor": set()}
-    for bound, pins, variables in reads:
+    for bound, pins, include, variables in reads:
         with pinned_reads(pins):
             found = coverage.series_years(
-                variables=variables, bound=bound, first_year=year, last_year=year
+                variables=variables,
+                bound=bound,
+                first_year=year,
+                last_year=year,
+                include=include,
             )
         if found is None:
             continue

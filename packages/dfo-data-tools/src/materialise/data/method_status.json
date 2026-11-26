@@ -4,6 +4,11 @@
     "Modelled": "estimated"
   },
   "reported_provenances": [
-    "provenance/IMFWorldEconomicOutlook"
-  ]
+    "provenance/IMFWorldEconomicOutlook",
+    "provenance/WorldBankInternationalDebtStatistics"
+  ],
+  "projection_methods": {
+    "provenance/IMFWorldEconomicOutlook": ["Estimated"],
+    "provenance/WorldBankInternationalDebtStatistics": ["Estimated"]
+  }
 }

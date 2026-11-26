@@ -16,6 +16,7 @@ import pytest
 import search.engine.region.related_read as related_read_module
 import search.engine.region.trailing as trailing_module
 import search.scope_window
+from origin_catalogue import bound_catalogue
 from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
@@ -28,13 +29,14 @@ from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.result import RegionResult
 from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
+from search.engine.retrieval.held_back import held_back, held_runs
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, plan_standard
 from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 from search.engine.retrieval.role_resolve import _zero_observation_carrier
 from search.engine.retrieval.standard import _newest_year_ahead, _no_data_in_years
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.conversion import ConversionPeriod
-from search.models import CoverageBare, Part, TimeWindow
+from search.models import CoverageBare, HeldKind, Part, TimeWindow
 from search.render.plan import render_sentence
 from search.scope_window import ScopeWindowSettings
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -45,6 +47,7 @@ from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snap
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes, documenting
 
 _PERSON = "Count_Person"
 _HOUSEHOLD = "Count_Household"
@@ -749,8 +752,8 @@ def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
     )
     # As `facets.filter_answer` narrows a plan to a unit elected for the first flow alone.
     admitted = plan.narrowed(lambda sv, _facet: sv == _FLOW).leaving_out({_FLOW_B})
-    filtered = FilteredAnswer(mat.coverage, None, admitted)
     request = _trailing("the last five years")
+    filtered = FilteredAnswer(mat.coverage, None, admitted, request)
 
     settled = settle_trailing(
         mat, filtered, date_request=request, coverage_index=empty_coverage_snapshot().index
@@ -760,6 +763,130 @@ def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
     assert settled.date_request.window == TimeWindow(start_year=2020, end_year=2024)
     assert settled.mat.sv_dcids == [_FLOW, _FLOW_B]
     assert settled.mat.population is not None and settled.mat.population.confirmed == 2
+
+
+def test_a_trailing_span_settles_on_the_newest_year_before_a_partial_period():
+    """A CRS flow held 2000 to 2025, with CRS marking 2025 partial, settles "the last two
+    years" on 2023 to 2024, as a mint of the range holds back 2025's rows."""
+    crs = "provenance/OECDCreditorReportingSystem"
+    facet = dataclasses.replace(_yearly(range(2000, 2026)), provenance_id=crs)
+    plan = PairPlan(
+        members=(_FLOW,),
+        years=TimeWindow(start_year=2000, end_year=2026),
+        declared=NO_DECLARED_POLICIES,
+        series=(
+            PlanSeries(
+                stat_var=_FLOW,
+                role_tuple=(("creditor", _CREDITOR), ("debtor", _ALAND)),
+                candidates=(facet,),
+                group=(facet,),
+            ),
+        ),
+    )
+    mat = Materialised(
+        sv_dcids=[_FLOW],
+        has_data=True,
+        coverage=CoverageBare(has_data=True),
+        read_plan=plan,
+        population=MemberPopulation(admitted=1, admitted_dcids=(_FLOW,), confirmed=1, exact=True),
+    )
+
+    request = _trailing("the last two years")
+    with bound_catalogue(documenting({crs: dev_provenance_nodes()[crs]})):
+        settled = settle_trailing(
+            mat,
+            FilteredAnswer(mat.coverage, None, plan, request),
+            date_request=request,
+            coverage_index=empty_coverage_snapshot().index,
+        )
+
+    assert settled is not None
+    assert settled.date_request.window == TimeWindow(start_year=2023, end_year=2024)
+
+
+_EVERY_KIND = frozenset({"partial", "projected"})
+
+
+@pytest.mark.parametrize(
+    ("reads_held", "deflators", "include", "served"),
+    [
+        pytest.param(_EVERY_KIND, (2012, 2025), ["partial"], True, id="keeping-the-partial-year"),
+        pytest.param(_EVERY_KIND, (2012, 2024), None, False, id="before-the-partial-year"),
+        pytest.param(
+            frozenset({"projected"}), (2012, 2025), None, False, id="posted-without-partial"
+        ),
+    ],
+)
+def test_a_conversion_narrowing_a_named_window_settles_its_opt_in_again(
+    reads_held: frozenset[HeldKind],
+    deflators: tuple[int, int],
+    include: list[str] | None,
+    served: bool,
+):
+    """ "Aid 2010 to 2025 in constant prices" over a CRS flow held 2000 to 2025, with CRS
+    marking 2025 partial. Deflators from 2012 narrow the answer, and the narrowed request
+    and plan state the same opt-in, so the identity and the plan both serve 2025. Deflators
+    ending in 2024 narrow it past the partial year, and the identity carries no opt-in. A
+    resubmitted identity whose `include` leaves out `partial` keeps 2025 held back."""
+    crs = "provenance/OECDCreditorReportingSystem"
+    facet = dataclasses.replace(_yearly(range(2000, 2026)), provenance_id=crs)
+    request = DateRequest(
+        window=TimeWindow(start_year=2010, end_year=2025), latest=False, reads_held=reads_held
+    )
+    assert request.read is not None
+    plan = PairPlan(
+        members=(_FLOW,),
+        years=request.read,
+        declared=NO_DECLARED_POLICIES,
+        series=(
+            PlanSeries(
+                stat_var=_FLOW,
+                role_tuple=(("creditor", _CREDITOR), ("debtor", _ALAND)),
+                candidates=(facet,),
+                group=(facet,),
+            ),
+        ),
+    )
+    mat = Materialised(
+        sv_dcids=[_FLOW],
+        has_data=True,
+        coverage=CoverageBare(has_data=True),
+        read_plan=plan,
+        population=MemberPopulation(admitted=1, admitted_dcids=(_FLOW,), confirmed=1, exact=True),
+    )
+    period = ConversionPeriod(served=(2010, 2025), years=deflators, limited_by="deflators")
+    state = SimpleNamespace(
+        unit_request=object(),
+        unit_elected_selections={},
+        date_request=request,
+        mat_result=mat,
+        coverage=SimpleNamespace(index=empty_coverage_snapshot().index),
+        depart=lambda _warning, _fact: None,
+    )
+
+    with (
+        bound_catalogue(documenting({crs: dev_provenance_nodes()[crs]})),
+        pytest.MonkeyPatch.context() as patch,
+    ):
+        patch.setattr(phase_answer, "current_conversion_catalogue", lambda: None)
+        patch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
+        patch.setattr(phase_answer, "unit_request_period", lambda *_a, **_k: period)
+        patch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
+        _mat, filtered = phase_answer._over_conversion_period(
+            state,
+            mat,
+            FilteredAnswer(mat.coverage, None, plan, request),
+            FacetAdmission(),
+            settled=None,
+        )
+        assert filtered.plan is not None
+        runs = held_back(filtered.plan, held_runs(filtered.plan, coverage_index=None))
+
+    window = TimeWindow(start_year=deflators[0], end_year=deflators[1], include=include)
+    assert state.date_request.window == window
+    assert filtered.date_request == state.date_request
+    assert filtered.plan is not None and filtered.plan.years == window
+    assert [(run.kind, run.served) for run in runs] == [("partial", served)]
 
 
 @pytest.mark.parametrize(
@@ -800,10 +927,11 @@ def test_a_trailing_span_a_passed_over_member_shortens_says_so(
     mat = dataclasses.replace(flows, read_plan=plan, passed_over_newest_year=passed_over)
     assert mat.read_plan is not None
 
+    request = _trailing("the last five years")
     settled = settle_trailing(
         mat,
-        FilteredAnswer(mat.coverage, None, mat.read_plan),
-        date_request=_trailing("the last five years"),
+        FilteredAnswer(mat.coverage, None, mat.read_plan, request),
+        date_request=request,
         coverage_index=empty_coverage_snapshot().index,
     )
 
@@ -932,7 +1060,7 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     request = _trailing("the last five years")
     settled = settle_trailing(
         mat,
-        FilteredAnswer(mat.coverage, None, mat.read_plan),
+        FilteredAnswer(mat.coverage, None, mat.read_plan, request),
         date_request=request,
         coverage_index=empty_coverage_snapshot().index,
     )
@@ -1001,7 +1129,10 @@ def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypa
     )
 
     phase_answer._over_answer_years(
-        state, mat, FilteredAnswer(mat.coverage, None, mat.read_plan), FacetAdmission()
+        state,
+        mat,
+        FilteredAnswer(mat.coverage, None, mat.read_plan, state.date_request),
+        FacetAdmission(),
     )
 
     assert windows == [TimeWindow(start_year=2020, end_year=2023)]

@@ -2261,6 +2261,28 @@ def test_a_series_elects_the_facet_holding_the_most_points_in_the_years_read() -
     assert [read_plan.points_in_years(f, window) for f in candidates] == [2, 3]
 
 
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+
+@pytest.mark.parametrize(
+    "years",
+    [
+        pytest.param("latest", id="latest"),
+        pytest.param(None, id="every-date"),
+        pytest.param(TimeWindow(start_year=2020, end_year=2030), id="range"),
+    ],
+)
+def test_a_projection_pair_counts_no_point_a_read_without_its_opt_in_serves(years) -> None:
+    """IDS's `Estimated` facet holds only projected points, which a read opting in to none
+    serves nothing of, so option coverage counts none under any window. Its reported facet
+    keeps every point in the years."""
+    reported = _facet("f-reported", range(2020, 2026), provenance=_IDS)
+    projected = _facet("f-estimated", range(2026, 2031), provenance=_IDS, method="Estimated")
+
+    assert read_plan.points_in_years(reported, years) == 6
+    assert read_plan.points_in_years(projected, years) == 0
+
+
 def test_a_plan_holding_only_unservable_series_still_answers() -> None:
     """A series holding points in the years but no facet id the preview can dispatch is
     unservable: the plan serves nothing yet keeps its answer, whose preview says why."""
@@ -2486,3 +2508,111 @@ def test_a_plan_read_in_years_keeps_a_series_by_its_group_or_its_filtered_candid
     assert narrowed is not None
     assert narrowed.years == TimeWindow(start_year=2016, end_year=2018)
     assert [s.stat_var for s in narrowed.series] == ["filtered", "group", "unservable"]
+
+
+@pytest.mark.parametrize("complete", [True, False], ids=["complete-dates", "span-only"])
+def test_a_monthly_facet_is_cut_at_its_source_partial_month(complete):
+    """A monthly source marked partial from June 2025 serves its facet through May 2025, as a
+    mint judging each row keeps 2025-01 to 2025-05 of a range and serves 2025-05 under
+    `latest`, whether the facet lists every date or only its span."""
+    from origin_catalogue import bound_catalogue
+    from tests.origin_catalogue.fake_catalogue import documenting
+
+    source = "provenance/SomeMonthlySource"
+    months = tuple(f"{year}-{month:02d}" for year in (2024, 2025) for month in range(1, 13))
+    months = months[: months.index("2025-09") + 1]
+    facet = Facet(
+        obs_count=len(months),
+        earliest_date=months[0],
+        latest_date=months[-1],
+        facet_id="fMonthly",
+        provenance_id=source,
+        dates=months,
+        values=(1.0,) * len(months),
+        dates_complete=complete,
+    )
+    series = PlanSeries(stat_var="Count_Person", role_tuple=(), candidates=(facet,), group=(facet,))
+    marked = {"lastDataRefreshDate": ("2026-10-29",), "partialObservationDate": ("2025-06",)}
+
+    with bound_catalogue(documenting({source: marked})):
+        assert read_plan.kept_dates(facet, (months[0], months[-1])) == ("2024-01", "2025-05")
+        assert series.latest_period == "2025-05"
+        assert read_plan.kept_points(facet, months, include=frozenset())[-1] == "2025-05"
+
+
+def test_a_continuation_starts_after_the_selection_s_last_year_its_partial_cut_keeps(
+    search_settings,
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` to 2025, a year CRS marks partial, and at `_BBB` to
+    2020, and `fE`, an estimate of CRS in the same unit, to 2026. A mint over 2015 to 2026
+    cuts `fM1`'s 2025 and every `fE` row from 2025, so `fM1` ends at `_AAA` in 2024 and `fE`
+    continues it with no row, and no continuation year is counted."""
+    from origin_catalogue import bound_catalogue
+    from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes, documenting
+
+    crs = "provenance/OECDCreditorReportingSystem"
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        (_FLOW, "fM1", ABSENT_ENTITY, _AAA, list(range(2015, 2026))),
+        (_FLOW, "fM1", ABSENT_ENTITY, _BBB, list(range(2015, 2021))),
+        (_FLOW, "fE", ABSENT_ENTITY, _AAA, list(range(2015, 2027))),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=crs,
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fE", "Estimated"))
+        },
+    )
+    with bound_catalogue(documenting({crs: dev_provenance_nodes()[crs]})):
+        plan = _role_plan(
+            [_FLOW],
+            member_facts={_FLOW: _Constraints()},
+            names={"destination": "debtor"},
+            subject_dcids=[_AAA, _BBB],
+            origin_dcids=[],
+            bound_roles={"recipient": frozenset({_AAA, _BBB})},
+            years=read_plan.role_years(
+                DateRequest(window=TimeWindow(start_year=2015, end_year=2026), latest=False),
+                index.horizon,
+            ),
+            coverage_index=index,
+            declared=NO_DECLARED_POLICIES,
+        )
+        assert isinstance(plan, BulkPlan)
+        assert (plan.facet_id, plan.continuing) == ("fM1", ("fE",))
+
+        assert sorted(plan.selected_ends(_FLOW).values()) == [2020, 2024]
+        assert list(plan.continued_years(_FLOW)) == []
+
+
+def test_a_download_counting_kept_years_leaves_out_the_partial_year():
+    """A CRS series to 2025, a year CRS marks partial, read from 2020 with a conversion
+    keeping 2020 to 2025 writes the five rows to 2024 a mint keeps, and serves those years."""
+    from origin_catalogue import bound_catalogue
+    from search.engine.retrieval.download import _series_years, series_rows
+    from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes, documenting
+
+    crs = "provenance/OECDCreditorReportingSystem"
+    dates = tuple(str(year) for year in range(2015, 2026))
+    facet = Facet(
+        obs_count=len(dates),
+        earliest_date=dates[0],
+        latest_date=dates[-1],
+        facet_id="fCrs",
+        provenance_id=crs,
+        dates=dates,
+        values=(1.0,) * len(dates),
+    )
+    series = PlanSeries(stat_var="Count_Person", role_tuple=(), candidates=(facet,), group=(facet,))
+    years = TimeWindow(start_year=2020)
+
+    with bound_catalogue(documenting({crs: dev_provenance_nodes()[crs]})):
+        assert series_rows(series, years, frozenset(range(2020, 2026))) == (5, True)
+        assert _series_years(series, years) == frozenset(range(2020, 2025))

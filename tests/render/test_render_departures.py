@@ -640,7 +640,7 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "These values are modelled estimates.",
     ),
     (
-        DepartureFact(code="modelled_values", binding_ref=None, partial=True),
+        DepartureFact(code="modelled_values", binding_ref=None, some_series=True),
         "aid",
         "Some of these values are modelled estimates.",
     ),
@@ -1178,7 +1178,7 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         "read World Bank WDI, which holds values for them.",
     ),
     (
-        DepartureFact(code="modelled_values", binding_ref=None, partial=True),
+        DepartureFact(code="modelled_values", binding_ref=None, some_series=True),
         "aid",
         "Some of these values are modelled estimates.",
     ),

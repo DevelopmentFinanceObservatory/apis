@@ -835,6 +835,28 @@ def test_the_bilateral_and_inclusive_edits_are_inverses():
     assert windowed.requested_window == IdentityWindowRange(start_year=2011, end_year=2024)
 
 
+def test_an_option_window_keeps_the_windows_opt_in():
+    """An option that sets its own window keeps the opt-in the part's window carries, so its
+    identity serves the held-back years its label names."""
+    base = _bilateral_identity().model_copy(
+        update={
+            "requested_window": IdentityWindowRange(
+                start_year=2020, end_year=2025, include=["partial"]
+            )
+        }
+    )
+
+    windowed = apply_binding(
+        base,
+        ProviderBinding(scope="inclusive", window=(2021, 2025), provenance=_INCLUSIVE_SOURCE),
+        [],
+    )
+
+    assert windowed.requested_window == IdentityWindowRange(
+        start_year=2021, end_year=2025, include=["partial"]
+    )
+
+
 _GBR = "country/GBR"
 _IDA = "InternationalDevelopmentAssociation"
 _EU = "EuropeanUnionInstitutions"

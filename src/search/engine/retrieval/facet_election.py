@@ -343,12 +343,18 @@ def role_n_obs(
     )
 
 
-def window_of(time_period: Sequence[str] | None) -> RequestedWindow | None:
-    """The year range `time_period` names, or None when the read is unwindowed."""
+def window_of(
+    time_period: Sequence[str] | None, *, include: frozenset[str] = frozenset()
+) -> RequestedWindow | None:
+    """The year range `time_period` names, opting in to the held-back years `include`
+    names, or None when the read is unwindowed."""
     if time_period is None:
         return None
     return RequestedWindow(
-        kind="range", start_year=int(time_period[0]), end_year=int(time_period[-1])
+        kind="range",
+        start_year=int(time_period[0]),
+        end_year=int(time_period[-1]),
+        include=include,
     )
 
 
@@ -484,15 +490,17 @@ def select_role_candidate(
     time_period: Sequence[str] | None,
     index_sourced: bool = False,
     policies: Mapping[str, FacetDefaultPolicy] | None = None,
+    include: frozenset[str] = frozenset(),
 ) -> RoleBulkCandidate | None:
     """The facet a bulk role read serves from `candidates`: the top of
-    `rank_role_candidates` over `time_period`'s window, the lead of the members' one group.
+    `rank_role_candidates` over `time_period`'s window opting in to `include`, the lead of
+    the members' one group.
     `read_plan.BulkPlan` elects through here, at build and again after a filter narrows it.
     None when `candidates` is empty."""
     ranked = rank_role_candidates(
         candidates,
         stat_vars=stat_vars,
-        window=window_of(time_period),
+        window=window_of(time_period, include=include),
         index_sourced=index_sourced,
         policies=policies,
     )
@@ -507,9 +515,11 @@ def role_group_selection(
     lead: str | None,
     index_sourced: bool = False,
     policies: Mapping[str, FacetDefaultPolicy] | None = None,
+    include: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """The one group a mint of `stat_vars` elects from `candidates`
-    (`materialise.group_facets.elect_group`), over `time_period`'s window and ranked as
+    (`materialise.group_facets.elect_group`), over `time_period`'s window opting in to
+    `include` and ranked as
     `rank_role_candidates` ranks them: each StatVar's facet ids its selection serves
     (`GroupElection.selected`), the facet `lead` first where the StatVar holds it, and the
     populated StatVars it leaves out (`GroupElection.unserved`), in `stat_vars` order. Under
@@ -517,7 +527,7 @@ def role_group_selection(
     another method's facet id serves that facet, as its mint dispatches it, unless
     `policies` declares a method the group holds, which then serves alone. A StatVar the
     group serves no facet of is absent from the first."""
-    window = window_of(time_period)
+    window = window_of(time_period, include=include)
     group = elect_group(
         _member_facets(candidates, stat_vars, window=window),
         stat_vars=stat_vars,

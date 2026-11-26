@@ -98,6 +98,20 @@ class YearCoverage(BaseModel):
     role_counts: dict[str, int]
 
 
+class ReportedShare(BaseModel):
+    """How much of a partial period its source has reported so far, against `against`, the
+    calendar year before it. `value`: the summed value at the partial period over the summed
+    value at `against`, for a currency measure with no denominator, whose values add. It is
+    0 or more, and above 1 when the partial period already exceeds `against`. `series`: the
+    series holding the partial period over the series holding `against`, for any other
+    measure. `share` is a fraction, 0.001 for 0.1%."""
+
+    model_config = ConfigDict(extra="forbid")
+    basis: Literal["value", "series"]
+    share: float
+    against: int
+
+
 class IncompleteAfter(BaseModel):
     """How complete a group of a frame's rows is: the rows whose `provenance` cell is
     `provenance` (`None` for rows with none) and whose `stat_var` cell is one of `stat_vars`.
@@ -107,16 +121,38 @@ class IncompleteAfter(BaseModel):
     own grain); `source` is the provenance cell itself, or for a composite the component
     serving those variables. `unknown`: no catalogue documented `source` (`None` when the rows
     name no provenance) or the frame grammar could not read the mark, so nothing says.
+    `projected`: the rows include rows under a method `source` uses only for years after its
+    last actual year (`materialise.method_status.projection_methods`), served because the
+    request's window opted in to them; `partial_period` holds the first period they start.
     `unmarked`: the pipeline marks no partial period the rows reach, listed only in a computed
     version's record, which names every cell of its rows. `partial_period` is set
-    only on a `partial` entry."""
+    only on a `partial` or `projected` entry. `reported_share` is set only on a `partial`
+    entry, when the read held the year before its partial period, and left out of a dumped
+    entry otherwise."""
 
     model_config = ConfigDict(extra="forbid")
     provenance: str | None
     stat_vars: list[str]
     source: str | None
-    status: Literal["partial", "unknown", "unmarked"]
+    status: Literal["partial", "projected", "unknown", "unmarked"]
     partial_period: str | None = None
+    reported_share: ReportedShare | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class HeldBack(BaseModel):
+    """One run of years a read holds back unless its window opts in to them
+    (`requested_window.include`): a source's partly reported period, or the projected years
+    after its newest actual year. `served` is true when the window opted in and the frame
+    holds these years. `reported_share` is set on a partial run alone, when known."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["partial", "projected"]
+    served: bool
+    source: str
+    source_name: str | None
+    start_year: int
+    end_year: int
+    reported_share: ReportedShare | None
 
 
 class CoverageModel(BaseModel):
@@ -159,6 +195,17 @@ class CoverageModel(BaseModel):
             "the year holding the most series of the ten calendar years ending at the "
             "newest of `recent_years`, stated when it is earlier than those three and the "
             "frame's year holds under the share of its series a latest window's year must hold"
+        ),
+    )
+    held_back: list[HeldBack] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "every run of partly reported or projected years the frame's sources hold, "
+            "whatever the frame's window. Each states whether the frame holds them "
+            "(`served`, when the window's `include` names their kind and the window holds a "
+            "year of them) or leaves them out. Absent when the sources hold none, and on a "
+            "version minted before versions stated them"
         ),
     )
 
