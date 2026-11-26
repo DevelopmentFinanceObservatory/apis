@@ -56,9 +56,15 @@ task samples and judges it as above, and returns its modal sample's scores, whic
 sample with every check's verdict, scored by ``answer`` and tagged with its case file. A
 case whose modal sample failed on infrastructure, or whose check could not read the graph
 or coverage, records an infra fault, which the results page leaves out of its scores.
-The record's id and revision are fixed before any case runs, and the record is written
-after the report, summary and responses. A case whose task or evaluator raises does not stop
-the others: once they finish, the run prints each failure's traceback and exits 2.
+The record's id, revision and directory are fixed before any case runs, and the record is
+written after the report, summary and responses. Every request is built before the first
+post. The first case whose task raises cancels the others, and the run exits 2 with that
+exception's traceback; an evaluator that raises exits 2 the same way.
+
+The record and the report can disagree on a case's ``answer``: the report passes a check
+that passes on any sample, while the record holds the modal sample alone, which can fail
+it. A case can therefore pass in the report and exit 0 while failing ``answer`` in the
+record. The report marks such a case unstable.
 
 ``--shard K/N`` (1 <= K <= N) runs the cases whose id hashes to K - 1 modulo N (the sha256
 of the id, so a case stays in its shard across runs and machines), intersected with ``--case`` and
@@ -79,14 +85,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextvars
+import functools
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import traceback
-from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,6 +130,7 @@ from search.eval.checks import (
     score_with_answer,
 )
 from search.eval.corpus_dataset import SUITE, CaseInputs, CorpusCase, corpus_dataset, corpus_digest
+from search.eval.evaluate import evaluate_or_raise
 from search.eval.evaluator import ScoredAnswer, SearchChecks
 from search.eval.gate import (
     CONTENT_CHECKS,
@@ -140,6 +149,7 @@ from search.eval.runner import (
     EVAL_HEADERS,
     CaseRun,
     Sample,
+    build_request,
     extend_run,
     fetch_schema,
     members_door_reader,
@@ -523,6 +533,17 @@ async def run_paired(
     return states
 
 
+async def _off_loop(
+    executor: Executor | None, fn: Callable[..., None], *args: Any, **kwargs: Any
+) -> None:
+    """Run ``fn`` on a thread of ``executor`` in a copy of this context, as
+    ``asyncio.to_thread`` does on the default pool."""
+    context = contextvars.copy_context()
+    await asyncio.get_running_loop().run_in_executor(
+        executor, functools.partial(context.run, fn, *args, **kwargs)
+    )
+
+
 async def _run_head(
     states: Sequence[CaseState],
     *,
@@ -532,12 +553,14 @@ async def _run_head(
     client: httpx.AsyncClient,
     ctx: ScoreContext,
     gate: asyncio.Semaphore | None = None,
+    executor: Executor | None = None,
 ) -> None:
     """Run and judge every case once at head, then give each case that
     ``wants_more_samples`` the rest of its ``samples`` and judge it on all of them.
 
     ``gate``, when given, bounds posts in flight across every call sharing it. Scoring runs
-    on a worker thread, so runs of other cases keep posting while one scores.
+    on a worker thread of ``executor`` (the event loop's default pool when None), so runs of
+    other cases keep posting while one scores.
     """
     first = await run_cases(
         [s.case for s in states],
@@ -547,7 +570,7 @@ async def _run_head(
         client=client,
         gate=gate,
     )
-    await asyncio.to_thread(_score_round, states, first, "head", ctx, workers=concurrency)
+    await _off_loop(executor, _score_round, states, first, "head", ctx, workers=concurrency)
     for state in states:
         state.judge()
     more = [s for s in states if s.wants_more_samples()]
@@ -562,7 +585,7 @@ async def _run_head(
         gate=gate,
     )
     runs = {s.case.id: extend_run(first[s.case.id], rest[s.case.id]) for s in more}
-    await asyncio.to_thread(_score_round, more, runs, "head", ctx, workers=concurrency)
+    await _off_loop(executor, _score_round, more, runs, "head", ctx, workers=concurrency)
     for state in more:
         state.judge()
 
@@ -615,41 +638,45 @@ async def run_single(
     """Run every eligible case on one app as head, sampling as the paired head does.
 
     The eligible cases run as the corpus dataset (``search.eval.corpus_dataset``), at most
-    ``concurrency`` at a time and sharing one bound of ``concurrency`` posts. Each case's
-    task runs and judges it alone and returns its modal sample's scores, which
-    ``SearchChecks`` labels.
+    ``concurrency`` at a time, sharing one bound of ``concurrency`` posts and a pool of
+    ``concurrency`` scoring threads. Each case's task runs and judges it alone and returns
+    its modal sample's scores, which ``SearchChecks`` labels. Every request is built before
+    the first post.
 
     Raises:
-        RuntimeError: A task or the evaluator raised, a fault in the driver.
+        Exception: The first exception a case's task raised, a fault in the driver; the
+            other cases are cancelled (``evaluate.evaluate_or_raise``).
+        RuntimeError: The evaluator raised.
     """
     dataset = corpus_dataset(cases, implemented_checks=CHECKS)
     dataset.add_evaluator(SearchChecks())
     by_id = {case.id: (case, stem) for stem, stem_cases in cases.items() for case in stem_cases}
+    # A case that cannot build its request raises here, before any post.
+    for eval_case in dataset.cases:
+        build_request(by_id[eval_case.inputs.case_id][0])
     ctx = reads.context(await fetch_schema(url, client=client), "head", url=url)
     gate = asyncio.Semaphore(concurrency)
     states: dict[str, CaseState] = {}
+    executor: Executor | None = None
 
     async def task(inputs: CaseInputs) -> ScoredAnswer:
         case, stem = by_id[inputs.case_id]
         state = states[case.id] = CaseState(case, stem, new_case=True)
         await _run_head(
-            [state], url=url, samples=samples, concurrency=1, client=client, ctx=ctx, gate=gate
+            [state],
+            url=url,
+            samples=samples,
+            concurrency=1,
+            client=client,
+            ctx=ctx,
+            gate=gate,
+            executor=executor,
         )
         return scored_answer(state)
 
-    report = await dataset.evaluate(task, name=SUITE, max_concurrency=concurrency, progress=False)
-    crashed = [(f.name, f.error_message, f.error_stacktrace) for f in report.failures] + [
-        (case.name, failure.error_message, failure.error_stacktrace)
-        for case in report.cases
-        for failure in case.evaluator_failures
-    ]
-    if crashed:
-        # Pydantic Evals keeps each failure's traceback as text, so print it where the
-        # raise below would otherwise hide it.
-        for name, _, stacktrace in crashed:
-            print(f"single mode crashed on case {name}:\n{stacktrace}", file=sys.stderr)
-        messages = [f"{name}: {message}" for name, message, _ in crashed]
-        raise RuntimeError(f"single mode crashed on {len(crashed)} case(s): {messages}")
+    with ThreadPoolExecutor(max_workers=concurrency) as scorers:
+        executor = scorers
+        report = await evaluate_or_raise(dataset, task, name=SUITE, max_concurrency=concurrency)
     return SingleRun(
         states=[states[eval_case.name] for eval_case in dataset.cases],
         report=report,
@@ -943,11 +970,18 @@ def _plan_record(args: argparse.Namespace, *, started_at: datetime) -> RecordPla
     """Fix the run record's id and revision before any case runs.
 
     Raises:
-        SetupError: The run directory already exists, or ``--revision`` is absent and git
-            cannot read HEAD.
+        SetupError: The records directory cannot be created or written, the run directory
+            already exists, or ``--revision`` is absent and git cannot read HEAD.
     """
     run_id = args.run_id or started_at.strftime("single-%Y%m%dT%H%M%SZ")
-    run_dir = args.records / SUITE / run_id
+    suite_dir = args.records / SUITE
+    try:
+        suite_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SetupError(f"cannot create the records directory {suite_dir}: {exc}") from exc
+    if not os.access(suite_dir, os.W_OK):
+        raise SetupError(f"cannot write the records directory {suite_dir}")
+    run_dir = suite_dir / run_id
     if run_dir.exists():
         raise SetupError(f"the run record {run_dir} already exists; pass another --run-id")
     revision = args.revision or _head_revision(args.corpus_dir)

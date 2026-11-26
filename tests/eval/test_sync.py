@@ -113,7 +113,9 @@ class FakeLangfuse:
     def get_dataset(self, name: str) -> SimpleNamespace:
         if name not in self.items:
             raise NotFoundError(body=name)
-        return SimpleNamespace(id=f"id-{name}", items=list(self.items[name].values()))
+        # Langfuse's get_dataset lists active items only.
+        active = [i for i in self.items[name].values() if i.status == DatasetStatus.ACTIVE]
+        return SimpleNamespace(id=f"id-{name}", items=active)
 
     def _list(self, *, page: int, limit: int) -> SimpleNamespace:
         rows = [SimpleNamespace(**d) for d in self.datasets.values()]
@@ -190,6 +192,23 @@ def test_a_sync_writes_only_the_items_that_changed(tmp_path):
     assert again.written == {"search-ken": []}
     assert unchanged_writes == []
     assert edited.written == {"search-ken": ["search-ken:search-case-ken-holdout"]}
+
+
+def test_a_restored_case_file_brings_its_archived_item_back(tmp_path):
+    """Langfuse returns active items only, so an archived item reads as missing and the
+    next sync writes it again as active."""
+    fake = FakeLangfuse()
+    corpus = tmp_path / "corpus"
+    item = "search-eth:search-case-eth"
+
+    m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+    m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    archived = _active(fake, "search-eth")
+    restored = m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+
+    assert archived == set()
+    assert restored.written["search-eth"] == [item]
+    assert _active(fake, "search-eth") == {item}
 
 
 def test_a_sync_without_a_project_id_exits_2(tmp_path, monkeypatch):
@@ -543,12 +562,18 @@ def _stub_nightly(monkeypatch, *, run_cases, graph, push_run) -> FakeLangfuse:
     [(ETHIOPIA, _ethiopia_run_cases, BuggyGraph()), (SLOW, _raising_run_cases, AllExist())],
     ids=["raising check", "raising task on a known task failure"],
 )
-def test_a_task_or_check_that_raises_exits_2(tmp_path, monkeypatch, corpus_text, run_cases, graph):
+def test_a_task_or_check_that_raises_exits_2(
+    tmp_path, monkeypatch, capsys, corpus_text, run_cases, graph
+):
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": corpus_text})
     _stub_nightly(monkeypatch, run_cases=run_cases, graph=graph, push_run=lambda **_: "exp")
 
     assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+    err = capsys.readouterr().err
+    # The first crash stops the run and is raised with its own traceback, once.
+    assert err.count("Traceback (most recent call last)") == 1
+    assert "a bug in the" in err.rstrip().splitlines()[-1]
 
 
 def test_main_writes_the_record_and_pushes_it_onto_the_synced_items(tmp_path, monkeypatch):
@@ -708,22 +733,65 @@ def _refused(**_):
 
 
 @pytest.mark.parametrize(
-    ("connect", "code"),
-    [(_unreachable, 3), (_down, 3), (_refused, 2)],
-    ids=["network", "5xx", "refused keys"],
+    ("connect", "corpus_text", "code"),
+    [(_unreachable, ETHIOPIA, 3), (_down, ETHIOPIA, 3), (_down, KENYA, 1)],
+    ids=["network", "5xx", "5xx with an unmarked failure"],
 )
-def test_a_langfuse_that_does_not_answer_at_start_is_infrastructure(
-    tmp_path, monkeypatch, connect, code
+def test_a_langfuse_down_at_the_start_still_runs_and_records_the_nightly(
+    tmp_path, monkeypatch, connect, corpus_text, code
 ):
-    """The project check runs before anything is read or written. Langfuse or the network
-    failing it is infrastructure; keys Langfuse refuses are a setup error."""
+    """The record outlives Langfuse, so an outage skips only the sync and the push."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": corpus_text})
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+    real_connect = m._connect
+    fake = _stub_nightly(
+        monkeypatch,
+        run_cases=_ethiopia_run_cases,
+        graph=AllExist(),
+        push_run=lambda **_: pytest.fail("pushed with no client"),
+    )
+    monkeypatch.setattr(m, "_connect", real_connect)
+    monkeypatch.setattr(m, "connect", connect)
+
+    argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
+    assert m.main([*argv, f"--summary={summary}"]) == code
+    assert "Langfuse did not answer at the start" in summary.read_text()
+    (written,) = (records / SUITE).iterdir()
+    assert written.name.startswith("nightly-")
+    assert fake.items == {}
+
+
+def test_keys_langfuse_refuses_stop_the_nightly_before_it_starts(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": ETHIOPIA})
     monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
-    monkeypatch.setattr(m, "connect", connect)
+    monkeypatch.setattr(m, "connect", _refused)
     monkeypatch.setattr(m, "_schema", lambda url: pytest.fail("the nightly ran past the check"))
 
-    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == code
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "code"), [(404, 2), (422, 2), (429, 3), (502, 3)], ids=["404", "422", "429", "502"]
+)
+def test_a_push_error_is_infrastructure_only_when_langfuse_is_at_fault(
+    tmp_path, monkeypatch, status, code
+):
+    """A 404 from an endpoint Langfuse removed repeats every night, so it is a crash."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    summary = tmp_path / "nightly.md"
+
+    def push_run(**_):
+        raise ApiError(status_code=status, body="refused")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+
+    assert (
+        m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--summary={summary}"]) == code
+    )
+    assert "the push did not complete" in summary.read_text()
 
 
 @pytest.mark.parametrize(
