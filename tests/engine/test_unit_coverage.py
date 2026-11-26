@@ -526,7 +526,7 @@ def test_an_answer_states_only_the_rows_left_once_unmapped_recipients_are_omitte
 
     answer, coverage = convertible_answer(
         mat,
-        FilteredAnswer(mat.coverage, mat.headline, plan),
+        FilteredAnswer(mat.coverage, mat.headline, plan, None),
         _elected("destination"),
         graph=_graph(),
         sdmx=_server(_KES_RATES).client(),

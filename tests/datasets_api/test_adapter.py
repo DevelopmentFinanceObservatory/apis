@@ -10,6 +10,7 @@ from dfo_spec_kit.identity import IdentityError, build_projection
 from code_index.shared import get_index
 from datasets_api.adapter import (
     build_identity_document,
+    identity_requested_window,
     provenance_pin,
     resolve_definition_members,
     to_materialisation_request,
@@ -20,8 +21,9 @@ from datasets_api.codes_materialise import (
     RoleIncompatible,
     SpecNotExportable,
 )
-from datasets_api.mint_models import FacetRefBinding, Scope, WindowRange
+from datasets_api.mint_models import FacetRefBinding, Scope, WindowAll, WindowLatest, WindowRange
 from datasets_api.shape import StatVarShape, resolve_shape
+from datasets_api.surgery import apply_scope_surgery
 from materialise.recipes import RoleAxisConflictError
 from spec_registry.identity import recompute_identity
 from statvar_members import MemberEnumerator
@@ -716,3 +718,58 @@ def test_to_materialisation_request_binds_a_null_ref_to_facets_without_the_axis(
 
     binding = request.facet_bindings["measurementMethod"]
     assert (binding.state, binding.ref, binding.request) == ("bound", None, None)
+
+
+# spec-kit vector `window-range-include-partial`: this document minted with that window.
+_INCLUDE_PARTIAL_VECTOR_ID = "spec_266c735108900fc680f9ae329013e96f"
+_VECTOR_IDENTITY: dict[str, object] = {
+    "identity_version": "spec1",
+    "shape": {"kind": "statvar_schema", "measured_property": "developmentFinanceFlow"},
+    "slots": [
+        {
+            "property": "DevelopmentFinancePurpose",
+            "binding": {"state": "value", "ref": "Malaria"},
+        }
+    ],
+    "entities": {"origin": ["country/FRA"]},
+    "requested_window": {"kind": "all"},
+}
+
+
+def test_a_scope_window_include_reaches_the_requested_window_and_the_spec_id():
+    scope = Scope(window=WindowRange(end_year=2010, include=["partial"]))
+
+    document = apply_scope_surgery(_VECTOR_IDENTITY, scope=scope)
+
+    assert identity_requested_window(document).include == {"partial"}
+    assert recompute_identity(document).spec_id == _INCLUDE_PARTIAL_VECTOR_ID
+
+
+def test_a_scope_window_without_include_mints_no_include_key():
+    document = apply_scope_surgery(
+        _VECTOR_IDENTITY, scope=Scope(window=WindowRange(end_year=2010, include=[]))
+    )
+
+    assert document["requested_window"] == {"kind": "range", "end_year": 2010}
+    assert identity_requested_window(document).include == frozenset()
+    assert recompute_identity(document).spec_id != _INCLUDE_PARTIAL_VECTOR_ID
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        pytest.param(WindowLatest(include=["projected"]), id="latest"),
+        pytest.param(WindowAll(include=["partial", "projected"]), id="all"),
+    ],
+)
+def test_a_latest_or_every_year_window_include_reaches_the_request(window):
+    """The get_data door serves an opt-in on every window kind, not only a range: Search
+    refuses one on `latest` or `all`, so a public client names it here."""
+    document = apply_scope_surgery(_VECTOR_IDENTITY, scope=Scope(window=window))
+
+    assert document["requested_window"] == {
+        "kind": window.kind,
+        "include": sorted(window.include),
+    }
+    assert identity_requested_window(document).include == frozenset(window.include)
+    assert identity_requested_window(document).kind == window.kind

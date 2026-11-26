@@ -60,6 +60,7 @@ from search.engine.retrieval.read_plan import (
     PlanSeries,
     ReadPlan,
     RoleYears,
+    opt_in,
     plan_pairs,
     role_election,
     series_probes,
@@ -247,6 +248,7 @@ def _merged_bulk(plans: Sequence[BulkPlan]) -> BulkPlan | None:
         read_years=first.read_years,
         index_sourced=index_sourced,
         declared=declared,
+        include=opt_in(first.years),
     )
     return BulkPlan(
         members=members,

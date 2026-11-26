@@ -38,8 +38,9 @@ if TYPE_CHECKING:
 def requested_window(date_request: DateRequest | None) -> TimeWindow | None:
     """The years a part judges whether data is held in before its answer settles, `None`
     when it names none or asks for the latest: for a trailing span, the years its newest
-    year may lie in (`extract.DateRequest.judged`)."""
-    return None if date_request is None or date_request.latest else date_request.judged.window
+    year may lie in (`extract.DateRequest.judged`). It opts in to every held-back year the
+    request may serve (`extract.DateRequest.read`), which `series_held` counts."""
+    return None if date_request is None or date_request.latest else date_request.judged.read
 
 
 def _held_query(
@@ -69,20 +70,21 @@ def series_held(
     window: TimeWindow | None,
 ) -> bool | None:
     """Whether `coverage` holds a series of one of `variables` at the places `bound` gives
-    each flow axis, within `window`. `None` when no flow axis binds a place or the coverage
-    index holds none of `variables`."""
+    each flow axis, serving a year within `window` once the years a read of it holds back
+    are cut (`CoverageIndex.series_years`, under `window`'s opt-in). `None` when no flow
+    axis binds a place or the coverage index holds none of `variables`."""
     query = _held_query(coverage, variables, bound)
     if query is None:
         return None
     covered, by_role = query
-    return bool(
-        coverage.filter_candidates(
-            variables=covered,
-            bound=by_role,
-            first_year=None if window is None else window.start_year,
-            last_year=None if window is None else window.end_year,
-        )
+    served = coverage.series_years(
+        variables=covered,
+        bound=by_role,
+        first_year=None if window is None else window.start_year,
+        last_year=None if window is None else window.end_year,
+        include=frozenset() if window is None else window.opt_in,
     )
+    return served is not None
 
 
 def series_span(
@@ -90,19 +92,25 @@ def series_span(
     *,
     variables: Iterable[str],
     bound: Mapping[RoleAxis, Collection[str]],
+    window: TimeWindow | None,
 ) -> tuple[int, int] | None:
     """The first and last year over every series of `variables` `coverage` holds at the
-    places `bound` gives each flow axis, whatever years a part asks for. `None` when it
-    holds no such series, no flow axis binds a place, or the coverage index holds none of
-    `variables`."""
+    places `bound` gives each flow axis, whatever years a part asks for, less the years a
+    read of `window` holds back, as `series_held` cuts them (`CoverageIndex.years_held`,
+    under `window`'s opt-in). `None` when it holds no such series, no flow axis binds a
+    place, or the coverage index holds none of `variables`."""
     query = _held_query(coverage, variables, bound)
     if query is None:
         return None
     covered, by_role = query
-    held = coverage.filter_candidates(variables=covered, bound=by_role)
-    if not held:
+    years = coverage.years_held(
+        variables=covered,
+        bound=by_role,
+        include=frozenset() if window is None else window.opt_in,
+    )
+    if not years:
         return None
-    return min(one.first_year for one in held), max(one.last_year for one in held)
+    return min(years), max(years)
 
 
 def _family_at(
@@ -171,4 +179,4 @@ def series_reach(
     held = series_held(coverage, variables=variables, bound=bound, window=window)
     if held is not False or window is None:
         return held, None
-    return held, series_span(coverage, variables=variables, bound=bound)
+    return held, series_span(coverage, variables=variables, bound=bound, window=window)

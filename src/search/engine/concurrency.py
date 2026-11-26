@@ -36,7 +36,7 @@ class RequestScope:
     reads the request's worker threads run at once where they cannot take a permit of the
     semaphore, since the part leg that starts them holds one. ``continuation_permits``
     bounds, at the same limit, the resolves that settle a composite's continuation from its
-    components' plans (`composite_answer.with_composite_continuation`) inside a part leg
+    components' plans (`composite_answer.with_composite_plans`) inside a part leg
     that holds a permit of the semaphore. Those resolves wait on no other permit, so a leg
     waiting on one cannot wait on itself.
     """

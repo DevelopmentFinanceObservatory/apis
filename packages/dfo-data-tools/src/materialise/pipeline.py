@@ -50,10 +50,12 @@ from materialise.generation import (
 )
 from materialise.graph import Facet, GraphReader
 from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
+from materialise.held_runs import HeldRun
 from materialise.member_conversion import decide_member_conversion, refuse_if_every_row_omitted
 from materialise.profile import OutputProfile
 from materialise.progress import RowProgress
 from materialise.rate_tables import RateTableCache
+from materialise.reported_share import YearTotals
 from materialise.reshape import TableLike
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
@@ -175,6 +177,13 @@ class MaterialisationResult:
     `unserved_members` are the `stat_var`s of a group's requests that hold no facet of the
     one group the election chose (`group_facets.GroupElection.unserved`): they dispatch no
     rows. Every one is listed, where `coverage_below_scope` names only the first five.
+    `year_totals` holds each `(provenance, stat_var)` pair's sums per calendar year over the
+    rows the read held of its sources' partial years and the years before them, before its
+    window and held-back cuts (`reported_share.fold_observations`), from which a partial
+    year's reported share is read; empty when not folded.
+    `held_runs` holds the runs of partial and projected years the read's sources hold past
+    its served actual years, whatever its window, one per kind and source
+    (`materialise.held_runs`): the runs the cut holds back unless the window opts in.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -197,6 +206,8 @@ class MaterialisationResult:
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
     countries_fallback: bool = False
     unserved_members: tuple[str, ...] = ()
+    year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
+    held_runs: tuple[HeldRun, ...] = ()
 
 
 @dataclass(frozen=True)

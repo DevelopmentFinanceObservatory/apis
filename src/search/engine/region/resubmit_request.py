@@ -136,13 +136,28 @@ def _identity_slots_to_wire(
 
 
 def _requested_window_from_identity(window: IdentityWindow) -> RequestedWindow | None:
-    """Translate the always-present identity window to engine request form."""
+    """Translate the always-present identity window to engine request form, a range keeping
+    its opt-in (`TimeWindow.include`).
+
+    Raises:
+        EngineInputError: `request_invalid` for a `latest` or every-year window carrying an
+            opt-in. Search reads held-back years on a range alone, and would otherwise
+            answer under another spec_id than the one posted.
+    """
+    if not isinstance(window, IdentityWindowRange) and window.include:
+        raise EngineInputError(
+            f"requested_window of kind {window.kind!r} carries include {window.include}; "
+            "Search reads held-back years on a range window alone, so name the years",
+            code="request_invalid",
+        )
     if isinstance(window, IdentityWindowAll):
         return None
     if isinstance(window, IdentityWindowLatest):
         return "latest"
     if isinstance(window, IdentityWindowRange):
-        return TimeWindow(start_year=window.start_year, end_year=window.end_year)
+        return TimeWindow(
+            start_year=window.start_year, end_year=window.end_year, include=window.include
+        )
     raise ValueError(f"unknown IdentityWindow kind: {type(window)!r}")  # pragma: no cover
 
 
@@ -325,13 +340,21 @@ def _date_request_for_resubmit(inp: ResubmitIdentityPayload) -> DateRequest | No
     """Build the materialisation window from the identity's requested window.
 
     An explicit `latest` sentinel resolves against the current latest year on
-    each resubmit. A concrete range is applied directly.
+    each resubmit. A concrete range is applied directly, reading the held-back years its
+    `include` names (`DateRequest.reads_held`). The posted `include` stands as posted
+    (`DateRequest.posted_opt_in`), so Search answers under the spec_id posted, including
+    once a partial year it names has completed; a window narrowed from it settles again.
     """
     requested_window = _requested_window_from_identity(inp.identity.requested_window)
     if requested_window == "latest":
         return DateRequest(window=None, latest=True)
     if requested_window is not None:
-        return DateRequest(window=requested_window, latest=False)
+        return DateRequest(
+            window=requested_window,
+            latest=False,
+            reads_held=requested_window.opt_in,
+            posted_opt_in=bool(requested_window.include),
+        )
     return None
 
 
