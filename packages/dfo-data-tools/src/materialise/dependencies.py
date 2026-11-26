@@ -13,6 +13,12 @@ unchanged definition, each member a token that exists today.
 - `latest_years`: for each member of a `latest` run, the year the coverage index elected for
   it and the year its rows hold, with the facets and omitted entities the election counted
   (`window.LatestYear`).
+- `held_back`: for each source, the horizon the read's held-back rule applied to it: its
+  partial mark in the bound origin catalogue (`partial:<ref>`, the mark text) and the
+  `measurementMethod`s declared its projections (`projected:<ref>`, the sorted methods joined by
+  commas). A source with no mark or declaration has no entry. The catalogue is built apart from
+  the graph, so a mark can move while `lastDataRefreshDate` holds, and this member moves the
+  head with it (`materialise.held_back`).
 - `composites`: for a composite run, the composite provenance with the digest of the
   declaration the run composed it by (`code_index.composites.composite_digest`).
 - `imported_data`: the bound graph release's digest of the import it copied and the serving
@@ -49,8 +55,10 @@ from materialise.convert import ConversionRecord
 from materialise.facets import ProvenanceRefresh, _probe_provenance_refresh
 from materialise.generation import bare_stat_var_ref, elected_latest_year
 from materialise.graph import GraphReader
+from materialise.method_status import projection_methods
 from materialise.window import LatestYear, RequestedWindow
-from origin_catalogue import current_catalogue
+from origin_catalogue import CatalogueNotBound, current_catalogue
+from origin_catalogue.catalogue import Undocumented, partial_period_of
 from origin_catalogue.origins import DFO
 
 if TYPE_CHECKING:
@@ -58,7 +66,7 @@ if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
     from series_coverage.index import CoverageIndex
 
-DEPENDENCIES_SCHEMA = 2
+DEPENDENCIES_SCHEMA = 3
 """The version of `Dependencies.as_json`'s shape. A stored fingerprint of another schema
 compares as changed (`dependency_changes`). A deploy that changes what the materialiser writes
 for unchanged inputs bumps it, since no member moves for a code change and a head keyed on an
@@ -69,6 +77,7 @@ _PAIR_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("sources", "ref", "token"),
     ("conversion_sources", "ref", "token"),
     ("recipes", "id", "digest"),
+    ("held_back", "ref", "horizon"),
 )
 
 # A `latest` member that elected no year, over no facet.
@@ -91,10 +100,11 @@ class Dependencies:
     latest_years: tuple[tuple[str, LatestYear], ...] = ()
     imported_data: str | None = None
     composites: tuple[tuple[str, str | None], ...] = ()
+    held_back: tuple[tuple[str, str | None], ...] = ()
 
     def as_json(self) -> dict[str, object]:
         """The stored shape, `{"schema", "members", "sources", "conversion_sources",
-        "recipes", "window"}`, with a JSON object per pair and `window` as
+        "recipes", "held_back", "window"}`, with a JSON object per pair and `window` as
         `{"start_year", "end_year"}` or null. A `latest` run adds `latest_years`, one
         `{"stat_var", "elected", "served", "facet_ids", "omitted"}` per member, `omitted` a
         list of `{"role", "entity"}`. A run keyed on an import adds `imported_data`, and a composite run `composites`, one
@@ -141,6 +151,32 @@ def members_digest(stat_vars: Iterable[str]) -> str:
 def _recipe_digest(recipe_id: str) -> str | None:
     fingerprint = recipe_dependency_fingerprint(recipe_id)
     return fingerprint[1] if fingerprint is not None else None
+
+
+def applied_horizons(sources: Iterable[str]) -> tuple[tuple[str, str | None], ...]:
+    """The held-back horizon of each of `sources` as sorted `(<kind>:<ref>, horizon)` pairs: a
+    `partial:` entry holding the source's partial mark in the bound origin catalogue, and a
+    `projected:` entry holding the sorted `measurementMethod`s declared its projections. A
+    source with neither has no entry, as one the catalogue does not document, and with no
+    catalogue bound no source has a mark."""
+    try:
+        catalogue = current_catalogue()
+    except CatalogueNotBound:
+        catalogue = None
+    horizons: dict[str, str] = {}
+    for ref in set(sources):
+        methods = projection_methods(ref)
+        if methods:
+            horizons[f"projected:{ref}"] = ",".join(sorted(methods))
+        if catalogue is None:
+            continue
+        try:
+            mark = partial_period_of(catalogue, ref)
+        except Undocumented:
+            continue
+        if mark is not None:
+            horizons[f"partial:{ref}"] = mark
+    return tuple(sorted(horizons.items()))
 
 
 def _clock_window(window: RequestedWindow) -> tuple[int | None, int | None] | None:
@@ -219,6 +255,7 @@ def build_dependencies(
         conversion_sources=tuple(sorted(conversion_sources.items())),
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
+        held_back=applied_horizons(sources),
         latest_years=tuple(sorted(_latest_members(requests, latest_years).items())),
         imported_data=(
             run_imported_data(
@@ -334,6 +371,7 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
         sources=pairs["sources"],
         conversion_sources=pairs["conversion_sources"],
         recipes=pairs["recipes"],
+        held_back=pairs["held_back"],
         window=window,
         latest_years=latest_years,
         imported_data=imported_data,
@@ -354,9 +392,11 @@ def refreshed_dependencies(
 
     The source and conversion-source refs keep `stored`'s, each with the `lastDataRefreshDate`
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
-    serves uncached. Each stored recipe takes the digest of its deployed body. `members` and
-    `window` come from `requests` as `build_dependencies` takes them, so an open window ends
-    at the year the requests were resolved in.
+    serves uncached. Each stored recipe takes the digest of its deployed body. `held_back` is
+    the horizon of each stored source under the bound catalogue (`applied_horizons`), so a
+    head rebuilds when the catalogue's mark for a source moves. `members` and `window` come
+    from `requests` as `build_dependencies` takes them, so an open window ends at the year
+    the requests were resolved in.
 
     Each `latest` request keeps the entry `stored` holds for it with the year `coverage`
     elects now over the entry's facets and omitted entities (`elected_latest_year`), read
@@ -409,6 +449,7 @@ def refreshed_dependencies(
         conversion_sources=tuple((ref, _token(ref)) for ref, _ in stored.conversion_sources),
         recipes=tuple((recipe_id, _recipe_digest(recipe_id)) for recipe_id, _ in stored.recipes),
         window=_clock_window(requests[0].window),
+        held_back=applied_horizons(ref for ref, _ in stored.sources),
         latest_years=tuple(
             sorted(
                 (request.stat_var, latest)
@@ -465,6 +506,7 @@ def dependency_changes(
     from `current`, sorted; empty when they agree.
 
     A member is `members`, `window`, `latest_years`, or a pair named `<field>:<ref>`, such as
+    `held_back:partial:provenance/OECDDAC2A` (a horizon present on one side only differs), or
     `sources:provenance/OECDDAC2A` or `composites:provenance/ONEBilateralAndImputedMultilateral`. A ref present on one side only differs. A source or
     conversion source whose current refresh date is `None` is unknown and never differs, so a
     source with no refresh date, or one whose date the graph stops serving, never rebuilds on
@@ -489,6 +531,7 @@ def dependency_changes(
 __all__ = [
     "DEPENDENCIES_SCHEMA",
     "Dependencies",
+    "applied_horizons",
     "build_dependencies",
     "decode_dependencies",
     "dependency_changes",

@@ -6,7 +6,7 @@ from pydantic import Field, model_validator
 
 from .base import StrictModel
 from .entity import _is_none
-from .grammar import TimeWindow
+from .grammar import HeldKind, TimeWindow
 
 # ---------------------------------------------------------------------------
 # Coverage arms
@@ -28,6 +28,64 @@ class BreadthDim(StrictModel):
             "dimension and where the role holds no residual member"
         ),
     )
+
+
+class ReportedShare(StrictModel):
+    """How much of a partly reported year its source has reported so far, against the
+    year before it."""
+
+    basis: Literal["value", "series"] = Field(
+        description=(
+            "'value': the year's summed reported value over the year before's, 0 or more "
+            "and above 1 when the year already exceeds the year before; 'series': the "
+            "series holding the year over those holding the year before"
+        )
+    )
+    share: float = Field(description="the share reported so far, e.g. 0.12")
+    against: int = Field(description="the year compared with, the year before")
+
+
+class HeldBack(StrictModel):
+    """One run of years a read holds back unless its window opts in to them
+    (`TimeWindow.include`): a source's partly reported period, or the projections
+    continuing a series past its newest actual year."""
+
+    kind: HeldKind = Field(
+        description=(
+            "'partial': years the source has reported only in part; 'projected': "
+            "projected years after the newest actual year"
+        )
+    )
+    served: bool = Field(
+        description=(
+            "true when the request's window opted in and these years are in the answer; "
+            "false when the answer leaves them out"
+        )
+    )
+    source: str = Field(description="the provenance dcid that marks or continues these years")
+    source_name: str | None = Field(
+        description="the provenance's display name, e.g. 'OECD CRS'; null when unknown"
+    )
+    start_year: int = Field(description="the first year of the run")
+    end_year: int = Field(description="the last year of the run")
+    reported_share: ReportedShare | None = Field(
+        description=(
+            "for a partial run, how much of its first year is reported so far, when known; "
+            "null for a projected run"
+        )
+    )
+
+
+def _no_held_back(value: object) -> bool:
+    return not value
+
+
+_HELD_BACK_DESCRIPTION = (
+    "every run of partly reported or projected years the answer's sources hold, whatever "
+    "the request's window. Each states whether the answer serves them (`served`, when the "
+    "window's `include` names their kind and the window holds a year of them) or leaves "
+    "them out; absent when the sources hold none"
+)
 
 
 class CoverageExact(StrictModel):
@@ -72,6 +130,9 @@ class CoverageExact(StrictModel):
     window: TimeWindow | None = Field(
         default=None, description="the date window this count applies to"
     )
+    held_back: list[HeldBack] | None = Field(
+        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+    )
 
 
 class CoverageBreadth(StrictModel):
@@ -85,6 +146,9 @@ class CoverageBreadth(StrictModel):
     window: TimeWindow | None = Field(
         default=None, description="the date window this breadth applies to"
     )
+    held_back: list[HeldBack] | None = Field(
+        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+    )
 
 
 class CoverageBare(StrictModel):
@@ -93,6 +157,9 @@ class CoverageBare(StrictModel):
     kind: Literal["bare"] = Field(default="bare", description="coverage kind discriminator")
     has_data: bool = Field(description="whether the region has any observations")
     window: TimeWindow | None = Field(default=None, description="the date window, when known")
+    held_back: list[HeldBack] | None = Field(
+        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+    )
 
 
 Coverage = Annotated[

@@ -56,6 +56,7 @@ from tests.code_index.aid_identity import (
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.materialise import test_composite as composite_test
 from tests.origin_catalogue.fake_catalogue import (
+    FakeCatalogue,
     dev_provenance_nodes,
     documenting,
     fake_catalogue_service,
@@ -796,11 +797,11 @@ def test_a_dac2a_inclusive_sum_serves_the_line_a_cell_holds_where_it_lacks_the_o
     }
 
 
-def test_a_composite_records_only_the_component_its_source_marks_partial():
-    """The imputed table stays partial after the CRS completes, as the pipeline keeps it
-    partial while either input still holds the year in part. The composite's rows carry one
-    provenance, so the variable alone tells a card drawing the bilateral component, complete,
-    from one drawing the imputed component, partial."""
+def _imputed_partial_2025() -> tuple[
+    FakeCatalogue, str, str, dict[str, tuple[str, int, tuple[int, ...]]]
+]:
+    """A catalogue marking the imputed table's 2025 partial and the CRS complete, the first
+    bilateral and imputed members, and both populated for 2023 to 2025."""
     nodes = dev_provenance_nodes()
     crs = {k: v for k, v in nodes[CRS_PROVENANCE].items() if k != "partialObservationDate"}
     catalogue = documenting({CRS_PROVENANCE: crs, IMPUTED_PROVENANCE: nodes[IMPUTED_PROVENANCE]})
@@ -811,10 +812,41 @@ def test_a_composite_records_only_the_component_its_source_marks_partial():
         bilateral: (_CRS_FACET, 100, (2023, 2024, 2025)),
         imputed: (_IMPUTED_FACET, 7, (2023, 2024, 2025)),
     }
+    return catalogue, bilateral, imputed, populated
+
+
+def test_a_default_composite_mint_holds_back_a_component_s_partial_year():
+    """The imputed table holds 2025 only in part, so a read opting in to nothing serves no
+    2025 row of it, neither its own rows nor zero rows filling its cells, and the stacked
+    composite, which serves the years every component's table covers, ends in 2024."""
+    catalogue, _bilateral, imputed, populated = _imputed_partial_2025()
+    with catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service(catalogue)):
+        artifacts, client = _composite_client(populated=populated)
+        minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    assert artifacts is not None
+    rows = _csv_rows(artifacts, minted.json())
+    assert {row["time_period"] for row in rows} == {"2023", "2024"}
+    assert {row["time_period"] for row in rows if row["stat_var"] == f"dcid:{imputed}"} == {
+        "2023",
+        "2024",
+    }
+
+
+def test_a_composite_records_only_the_component_its_source_marks_partial():
+    """The imputed table stays partial after the CRS completes, as the pipeline keeps it
+    partial while either input still holds the year in part. A read opting in to partial
+    years serves it. The composite's rows carry one provenance, so the variable alone tells
+    a card drawing the bilateral component, complete, from one drawing the imputed component,
+    partial."""
+    catalogue, bilateral, imputed, populated = _imputed_partial_2025()
+    identity = _identity()
+    identity["requested_window"] = {"kind": "all", "include": ["partial"]}
     store = FakeVersionRecordDatasetStore()
     with catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service(catalogue)):
         _artifacts, client = _composite_client(store, populated=populated)
-        minted = _mint(client)
+        minted = _mint(client, identity=identity)
 
     assert minted.status_code == 200, minted.text
     body = minted.json()

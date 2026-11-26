@@ -36,7 +36,13 @@ from dfo_frame_grammar import parse_time_period, unit_cell_to_json, unit_cells, 
 from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.continued_series import ContinuedSeries, continuation_leads
 from materialise.frame_build import Frame
-from materialise.method_status import StatusClass, method_status_classes, reported_provenances
+from materialise.held_back import source_of
+from materialise.method_status import (
+    StatusClass,
+    is_projection,
+    method_status_classes,
+    reported_provenances,
+)
 
 _STAT_VAR_COLUMN = "stat_var"
 _TIME_PERIOD_COLUMN = "time_period"
@@ -422,7 +428,12 @@ class SeriesFigures:
     and so do not order. `entities_by_role` and `by_source_unit` keep first-appearance
     order. Each entity counts the distinct variables holding data for it, not their
     series. `latest_by_source` maps each `(provenance cell, stat_var)` pair to the latest end
-    any of its series reaches, whatever the grains.
+    any of its series reaches, whatever the grains. `actual_by_source` maps each pair holding
+    a row under no projection method (`method_status.is_projection`) to the latest end its
+    rows under other methods reach, and `projected_by_source` each pair holding a row under
+    one to the earliest start its projected rows reach. A row is judged a projection by its
+    source (`held_back.source_of`), the composite component serving its variable in a
+    composite's frame, whose rows all carry the composite's provenance.
     """
 
     series: int
@@ -434,6 +445,8 @@ class SeriesFigures:
     by_source_unit: tuple[SourceUnitFigure, ...]
     status: StatusFigures
     latest_by_source: Mapping[tuple[str | None, str], str] = field(default_factory=dict)
+    actual_by_source: Mapping[tuple[str | None, str], str] = field(default_factory=dict)
+    projected_by_source: Mapping[tuple[str | None, str], str] = field(default_factory=dict)
 
 
 def _series_identity(
@@ -455,9 +468,11 @@ class _FiguresFold:
     variable, entities, unit and provenance under the method it continues
     (`continued_series.continuation_leads`): it adds its values and its latest period to that
     series and counts no series of its own. A continuing row with no such row is a series.
+    `component_of` maps a composite member's bare variable to its component's provenance.
     """
 
     continuing: Sequence[ContinuedSeries]
+    component_of: Mapping[str, str] = field(default_factory=dict)
     series: int = 0
     grains: set[str] = field(default_factory=set)
     start: str | None = None
@@ -466,6 +481,8 @@ class _FiguresFold:
     entities: dict[str, dict[str, set[str]]] = field(default_factory=dict)
     source_units: Counter[tuple[str | None, str]] = field(default_factory=Counter)
     source_ends: dict[tuple[str | None, str], str] = field(default_factory=dict)
+    actual_ends: dict[tuple[str | None, str], str] = field(default_factory=dict)
+    projected_starts: dict[tuple[str | None, str], str] = field(default_factory=dict)
     units: dict[str, str | dict[str, object] | None] = field(default_factory=dict)
     values_by_facet: Counter[tuple[str | None, str | None]] = field(default_factory=Counter)
 
@@ -516,9 +533,19 @@ class _FiguresFold:
                 held.setdefault(entity["ref"], set()).add(stat_var)
 
             provenance = cast("str | None", facet.get("provenance"))
-            self.values_by_facet[
-                (cast("str | None", facet.get("measurementMethod")), provenance)
-            ] += values
+            method = cast("str | None", facet.get("measurementMethod"))
+            self.values_by_facet[(method, provenance)] += values
+            pair = (provenance, stat_var)
+            source = (
+                None
+                if provenance is None
+                else source_of(provenance, stat_var, component_of=self.component_of)
+            )
+            if is_projection(source, method):
+                if (start := self.projected_starts.get(pair)) is None or first.start < start:
+                    self.projected_starts[pair] = first.start
+            elif (actual := self.actual_ends.get(pair)) is None or latest.end > actual:
+                self.actual_ends[pair] = latest.end
 
             if (end := series_ends.get(i)) is None:
                 continue
@@ -566,6 +593,8 @@ class _FiguresFold:
                 reported=reported_provenances(),
             ),
             latest_by_source=dict(self.source_ends),
+            actual_by_source=dict(self.actual_ends),
+            projected_by_source=dict(self.projected_starts),
         )
 
 
@@ -595,13 +624,20 @@ class SeriesStatisticsSink:
     selections or trace (`facets.selected_continued_series`,
     `continued_series.continued_series_of_trace`), a computed version's as it stores them, and
     empty when nothing continues them. The figures count a series and its continuation as one
-    series; the file keeps a row for each.
+    series; the file keeps a row for each. `component_of` maps each member variable of a
+    composite's frame, bare, to the provenance of the component serving it, so its projected
+    rows are judged by their component (`SeriesFigures.projected_by_source`); empty otherwise.
     """
 
-    def __init__(self, *, continuing: Sequence[ContinuedSeries]) -> None:
+    def __init__(
+        self,
+        *,
+        continuing: Sequence[ContinuedSeries],
+        component_of: Mapping[str, str] | None = None,
+    ) -> None:
         self._sink = io.BytesIO()
         self._writer: pq.ParquetWriter | None = None
-        self._figures = _FiguresFold(continuing=continuing)
+        self._figures = _FiguresFold(continuing=continuing, component_of=component_of or {})
 
     def write(self, table: pa.Table) -> None:
         if self._writer is None:

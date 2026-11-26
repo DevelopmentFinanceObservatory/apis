@@ -47,11 +47,13 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from code_index.scope_conventions import MeasureBasis
 from search.engine.bind_repair import occurrence_negated
 from search.engine.function_words import NEGATION_CUE
 from search.engine.response_cache_keys import normalise_query
+from search.engine.time_bind import fold_accents, scan_named_years
 from search.models import SCOPE_AXES, Entry, ScopeAxis, TextOrigin
 from search.scope.state import ScopeIntake
 from search.scope.vocabulary import measure_basis_option_id, provider_option_id
@@ -139,6 +141,22 @@ _MULTILATERAL_ROW = re.compile(
 )
 _TOTAL = re.compile(r"\btotal(?:s|led|ed|ling|ing)?\b", re.IGNORECASE)
 _CUE_REACH_WORDS = 3
+# Words that ask about the future or about projections, read with accents folded: English,
+# French and Spanish. "due" counts as a payment falling due, and "due to" (a cause) is excluded. French
+# "perspectives" is also English ("the perspectives of donors"), so it counts only beside a
+# French word: a determiner before it or a preposition or adjective after it.
+_PROJECTION = re.compile(
+    r"\b(?:projected|projections?|expected|forecasts?|forecasted|outlook"
+    r"|will\s+(?:pay|owe|be|receive|spend|need|cost)|due(?!\s+to\b)"
+    r"|projete(?:e|es|s)?|previsions?|prevu(?:e|es|s)?|attendu(?:e|es|s)?"
+    r"|(?:les|des|nos|vos|ses|leurs|quelles)\s+perspectives"
+    r"|perspectives\s+(?:de|du|des|pour|economiques|budgetaires|financieres)"
+    r"|perspectives\s+d['\u2019]"
+    r"|sera|seront|devra|devront"
+    r"|proyectad[oa]s?|proyecc?ion(?:es)?|previst[oa]s?|esperad[oa]s?|pronosticos?"
+    r"|perspectivas|seran|pagara|pagaran)(?:\b|(?<=['\u2019]))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,12 +169,16 @@ class StatedScope:
     axis stating two options without an entry ("bilateral aid as a share of aid including
     imputed multilateral" has no entry and mentions `provider:bilateral` and
     `provider:inclusive`); it is empty where a mention of a kind of provider leaves the axis
-    unstated. It is a reading for clients and does not enter the response cache key."""
+    unstated. `named_years` lists the calendar years the text names (`time_bind.scan_named_years`),
+    and `projection` is whether it asks about the future (`_PROJECTION`). All three are readings
+    for clients and do not enter the response cache key."""
 
     entries: tuple[Entry, ...] = ()
     total: bool = False
     sums_providers: bool = False
     mentions: tuple[str, ...] = ()
+    named_years: tuple[int, ...] = ()
+    projection: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +189,12 @@ class _Stated:
     sums: bool = False
 
 
-def read_stated_scope(text: str) -> StatedScope:
-    """The explicit scope entries and total intent `text` states (see the module
-    docstring)."""
+def read_stated_scope(text: str, *, current_year: int | None = None) -> StatedScope:
+    """The explicit scope entries, total intent, named years and projection intent `text`
+    states (see the module docstring). `current_year` resolves "last year" and its kin and
+    is the UTC year when omitted."""
+    if current_year is None:
+        current_year = datetime.now(UTC).year
     stated: dict[ScopeAxis, list[_Stated] | None] = {
         "measure_basis": _basis_stated(text),
         "provider": _provider_stated(text),
@@ -191,7 +216,12 @@ def read_stated_scope(text: str) -> StatedScope:
         dict.fromkeys(s.option_id for s in sorted(stated["provider"] or (), key=lambda s: s.start))
     )
     return StatedScope(
-        entries=tuple(entries), total=total, sums_providers=sums_providers, mentions=mentions
+        entries=tuple(entries),
+        total=total,
+        sums_providers=sums_providers,
+        mentions=mentions,
+        named_years=tuple(scan_named_years(text, current_year=current_year)),
+        projection=_PROJECTION.search(fold_accents(text)) is not None,
     )
 
 

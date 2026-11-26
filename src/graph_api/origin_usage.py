@@ -29,7 +29,7 @@ pattern's `constraint_properties` and adds no row to `constraint_values`. A base
 neither the release nor the arc tables hold has no row.
 
 `label` is the provenance row's name and `description` the `CardFacts.description` of the row's
-source-index entry (`entry_ref`). UN rows carry no card facts, so a UN description is null.
+source-index entry (`entry_ref`), null where the entry's graph states none.
 `facets` is empty for every provenance, since the coverage index covers DFO series alone.
 
 `terms` lists every node the patterns and constraint values name, with the types the
@@ -58,7 +58,7 @@ from graph_generation import GenerationStamp, RegistrationHandle
 from graph_generation.registry import CacheRegistry
 from origin_catalogue import CatalogueSnapshot, current_catalogue, entry_ref
 from origin_catalogue.families import VariableArcs
-from origin_catalogue.origins import UN_ID_PREFIX, UN_SYSTEM
+from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.un_mirror import UnArc
 
 type UsageOrigin = Literal["base", "un_system"]
@@ -260,11 +260,7 @@ def build_origin_usage(catalogue: CatalogueSnapshot, origin: UsageOrigin) -> Dat
     provenances: list[ProvenanceUsage] = []
     for ref, reads in sorted(grouped.items()):
         row = catalogue.provenance(ref)
-        facts = (
-            catalogue.dataset_facts(entry_ref(row))
-            if row is not None and row.data_commons != UN_SYSTEM
-            else None
-        )
+        facts = catalogue.dataset_facts(entry_ref(row)) if row is not None else None
         provenances.append(
             ProvenanceUsage(
                 ref=ref,

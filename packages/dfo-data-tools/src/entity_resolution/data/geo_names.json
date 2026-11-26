@@ -1,0 +1,1002 @@
+{
+  "AustraliaAndNewZealand": [
+    "Australia and New Zealand"
+  ],
+  "Caribbean": [
+    "Caribbean",
+    "Caribbean (DAC)"
+  ],
+  "CentralAmerica": [
+    "Central America",
+    "Central America (DAC)"
+  ],
+  "CentralAsia": [
+    "Central Asia"
+  ],
+  "EasternAfrica": [
+    "Eastern Africa"
+  ],
+  "EasternAsia": [
+    "Eastern Asia"
+  ],
+  "EasternEurope": [
+    "Eastern Europe"
+  ],
+  "EuropeanUnion": [
+    "EU",
+    "European Union"
+  ],
+  "GroupOfSeven": [
+    "G7",
+    "Group of Seven"
+  ],
+  "LatinAmericaAndCaribbean": [
+    "Latin America and the Caribbean"
+  ],
+  "Melanesia": [
+    "Melanesia",
+    "Melanesia (DAC)"
+  ],
+  "Micronesia": [
+    "Micronesia",
+    "Micronesia (DAC)"
+  ],
+  "MiddleAfrica": [
+    "Middle Africa"
+  ],
+  "NorthernAfrica": [
+    "Northern Africa"
+  ],
+  "NorthernEurope": [
+    "Northern Europe"
+  ],
+  "Polynesia": [
+    "Polynesia",
+    "Polynesia (DAC)"
+  ],
+  "SouthEasternAsia": [
+    "South-eastern Asia"
+  ],
+  "SouthernAfrica": [
+    "Southern Africa",
+    "Southern Africa (DAC)"
+  ],
+  "SouthernAsia": [
+    "Southern Asia"
+  ],
+  "SouthernEurope": [
+    "Southern Europe"
+  ],
+  "SubSaharanAfrica": [
+    "Sub-Saharan Africa"
+  ],
+  "WesternAfrica": [
+    "Western Africa"
+  ],
+  "WesternAsia": [
+    "Western Asia"
+  ],
+  "WesternEurope": [
+    "Western Europe"
+  ],
+  "africa": [
+    "Africa",
+    "Africa (DAC)",
+    "Afrika",
+    "Afrique",
+    "África",
+    "Африка",
+    "أفريقيا",
+    "非洲"
+  ],
+  "antarctica": [
+    "Antarctique",
+    "Antarktika",
+    "Antártica",
+    "Antártida",
+    "Антарктида",
+    "أنتاركتيكا",
+    "南极洲"
+  ],
+  "asia": [
+    "Asia",
+    "Asie",
+    "Asien",
+    "Ásia",
+    "Азия",
+    "آسيا",
+    "亚洲"
+  ],
+  "country/ABW": [
+    "Aruba"
+  ],
+  "country/AFG": [
+    "Afghanistan"
+  ],
+  "country/AGO": [
+    "Angola"
+  ],
+  "country/AIA": [
+    "Anguilla"
+  ],
+  "country/ALA": [
+    "Åland Islands"
+  ],
+  "country/ALB": [
+    "Albania"
+  ],
+  "country/AND": [
+    "Andorra"
+  ],
+  "country/ANT": [
+    "Netherlands Antilles"
+  ],
+  "country/ARE": [
+    "UAE",
+    "United Arab Emirates"
+  ],
+  "country/ARG": [
+    "Argentina"
+  ],
+  "country/ARM": [
+    "Armenia"
+  ],
+  "country/ATF": [
+    "French Southern Territories"
+  ],
+  "country/ATG": [
+    "Antigua and Barbuda"
+  ],
+  "country/ATN": [
+    "Dronning Maud Land"
+  ],
+  "country/AUS": [
+    "Australia"
+  ],
+  "country/AUT": [
+    "Austria"
+  ],
+  "country/AZE": [
+    "Azerbaijan"
+  ],
+  "country/BDI": [
+    "Burundi"
+  ],
+  "country/BEL": [
+    "Belgium"
+  ],
+  "country/BEN": [
+    "Benin"
+  ],
+  "country/BES": [
+    "Bonaire, Sint Eustatius and Saba"
+  ],
+  "country/BFA": [
+    "Burkina Faso"
+  ],
+  "country/BGD": [
+    "Bangladesh"
+  ],
+  "country/BGR": [
+    "Bulgaria"
+  ],
+  "country/BHR": [
+    "Bahrain"
+  ],
+  "country/BHS": [
+    "Bahamas"
+  ],
+  "country/BIH": [
+    "Bosnia and Herzegovina"
+  ],
+  "country/BLM": [
+    "Saint Barthélemy"
+  ],
+  "country/BLR": [
+    "Belarus"
+  ],
+  "country/BLZ": [
+    "Belize"
+  ],
+  "country/BMU": [
+    "Bermuda"
+  ],
+  "country/BOL": [
+    "Bolivia"
+  ],
+  "country/BRA": [
+    "Brazil"
+  ],
+  "country/BRB": [
+    "Barbados"
+  ],
+  "country/BRN": [
+    "Brunei"
+  ],
+  "country/BTN": [
+    "Bhutan"
+  ],
+  "country/BVT": [
+    "Bouvet Island"
+  ],
+  "country/BWA": [
+    "Botswana"
+  ],
+  "country/CAF": [
+    "Central African Republic"
+  ],
+  "country/CAN": [
+    "Canada"
+  ],
+  "country/CHE": [
+    "Switzerland"
+  ],
+  "country/CHL": [
+    "Chile"
+  ],
+  "country/CHN": [
+    "China"
+  ],
+  "country/CIV": [
+    "Côte d'Ivoire"
+  ],
+  "country/CMR": [
+    "Cameroon"
+  ],
+  "country/COD": [
+    "Congo [DRC]",
+    "DRC"
+  ],
+  "country/COG": [
+    "Congo [Republic]"
+  ],
+  "country/COK": [
+    "Cook Islands"
+  ],
+  "country/COL": [
+    "Colombia"
+  ],
+  "country/COM": [
+    "Comoros"
+  ],
+  "country/CPV": [
+    "Cape Verde"
+  ],
+  "country/CRI": [
+    "Costa Rica"
+  ],
+  "country/CSK": [
+    "Czechoslovakia"
+  ],
+  "country/CTE": [
+    "Canton and Enderbury Islands"
+  ],
+  "country/CUB": [
+    "Cuba"
+  ],
+  "country/CUW": [
+    "Curaçao"
+  ],
+  "country/CYM": [
+    "Cayman Islands"
+  ],
+  "country/CYP": [
+    "Cyprus"
+  ],
+  "country/CZE": [
+    "Czech Republic"
+  ],
+  "country/DEU": [
+    "Germany"
+  ],
+  "country/DJI": [
+    "Djibouti"
+  ],
+  "country/DMA": [
+    "Dominica"
+  ],
+  "country/DNK": [
+    "Denmark"
+  ],
+  "country/DOM": [
+    "Dominican Republic"
+  ],
+  "country/DZA": [
+    "Algeria"
+  ],
+  "country/ECU": [
+    "Ecuador"
+  ],
+  "country/EGY": [
+    "Egypt"
+  ],
+  "country/ERI": [
+    "Eritrea"
+  ],
+  "country/ESH": [
+    "Western Sahara"
+  ],
+  "country/ESP": [
+    "Spain"
+  ],
+  "country/EST": [
+    "Estonia"
+  ],
+  "country/ETH": [
+    "Ethiopia"
+  ],
+  "country/FIN": [
+    "Finland"
+  ],
+  "country/FJI": [
+    "Fiji"
+  ],
+  "country/FRA": [
+    "France"
+  ],
+  "country/FSM": [
+    "Federated States of Micronesia"
+  ],
+  "country/FXX": [
+    "Metropolitan France"
+  ],
+  "country/GAB": [
+    "Gabon"
+  ],
+  "country/GBR": [
+    "UK",
+    "United Kingdom"
+  ],
+  "country/GEO": [
+    "Georgia"
+  ],
+  "country/GGY": [
+    "Guernsey"
+  ],
+  "country/GHA": [
+    "Ghana"
+  ],
+  "country/GIB": [
+    "Gibraltar"
+  ],
+  "country/GIN": [
+    "Guinea"
+  ],
+  "country/GMB": [
+    "Gambia"
+  ],
+  "country/GNB": [
+    "Guinea-Bissau"
+  ],
+  "country/GNQ": [
+    "Equatorial Guinea"
+  ],
+  "country/GRC": [
+    "Greece"
+  ],
+  "country/GRD": [
+    "Grenada"
+  ],
+  "country/GTM": [
+    "Guatemala"
+  ],
+  "country/GUY": [
+    "Guyana"
+  ],
+  "country/HKG": [
+    "Hong Kong"
+  ],
+  "country/HND": [
+    "Honduras"
+  ],
+  "country/HRV": [
+    "Croatia"
+  ],
+  "country/HTI": [
+    "Haiti"
+  ],
+  "country/HUN": [
+    "Hungary"
+  ],
+  "country/IDN": [
+    "Indonesia"
+  ],
+  "country/IMN": [
+    "Isle of Man"
+  ],
+  "country/IND": [
+    "India"
+  ],
+  "country/IRL": [
+    "Ireland"
+  ],
+  "country/IRN": [
+    "Iran"
+  ],
+  "country/IRQ": [
+    "Iraq"
+  ],
+  "country/ISL": [
+    "Iceland"
+  ],
+  "country/ISR": [
+    "Israel"
+  ],
+  "country/ITA": [
+    "Italy"
+  ],
+  "country/JAM": [
+    "Jamaica"
+  ],
+  "country/JEY": [
+    "Jersey"
+  ],
+  "country/JOR": [
+    "Jordan"
+  ],
+  "country/JPN": [
+    "Japan"
+  ],
+  "country/KAZ": [
+    "Kazakhstan"
+  ],
+  "country/KEN": [
+    "Kenya"
+  ],
+  "country/KGZ": [
+    "Kyrgyzstan"
+  ],
+  "country/KHM": [
+    "Cambodia"
+  ],
+  "country/KIR": [
+    "Kiribati"
+  ],
+  "country/KNA": [
+    "Saint Kitts and Nevis"
+  ],
+  "country/KOR": [
+    "South Korea"
+  ],
+  "country/KWT": [
+    "Kuwait"
+  ],
+  "country/LAO": [
+    "Laos"
+  ],
+  "country/LBN": [
+    "Lebanon"
+  ],
+  "country/LBR": [
+    "Liberia"
+  ],
+  "country/LBY": [
+    "Libya"
+  ],
+  "country/LCA": [
+    "Saint Lucia"
+  ],
+  "country/LIE": [
+    "Liechtenstein"
+  ],
+  "country/LKA": [
+    "Sri Lanka"
+  ],
+  "country/LSO": [
+    "Lesotho"
+  ],
+  "country/LTU": [
+    "Lithuania"
+  ],
+  "country/LUX": [
+    "Luxembourg"
+  ],
+  "country/LVA": [
+    "Latvia"
+  ],
+  "country/MAC": [
+    "Macau"
+  ],
+  "country/MAF": [
+    "Saint Martin"
+  ],
+  "country/MAR": [
+    "Morocco"
+  ],
+  "country/MCO": [
+    "Monaco"
+  ],
+  "country/MDA": [
+    "Moldova"
+  ],
+  "country/MDG": [
+    "Madagascar"
+  ],
+  "country/MDV": [
+    "Maldives"
+  ],
+  "country/MEX": [
+    "Mexico"
+  ],
+  "country/MHL": [
+    "Marshall Islands"
+  ],
+  "country/MKD": [
+    "Macedonia [FYROM]"
+  ],
+  "country/MLI": [
+    "Mali"
+  ],
+  "country/MLT": [
+    "Malta"
+  ],
+  "country/MMR": [
+    "Myanmar"
+  ],
+  "country/MNE": [
+    "Montenegro"
+  ],
+  "country/MNG": [
+    "Mongolia"
+  ],
+  "country/MNP": [
+    "Northern Mariana Islands"
+  ],
+  "country/MOZ": [
+    "Mozambique"
+  ],
+  "country/MRT": [
+    "Mauritania"
+  ],
+  "country/MSR": [
+    "Montserrat"
+  ],
+  "country/MUS": [
+    "Mauritius"
+  ],
+  "country/MWI": [
+    "Malawi"
+  ],
+  "country/MYS": [
+    "Malaysia"
+  ],
+  "country/MYT": [
+    "Mayotte"
+  ],
+  "country/NAM": [
+    "Namibia"
+  ],
+  "country/NCL": [
+    "New Caledonia"
+  ],
+  "country/NER": [
+    "Niger"
+  ],
+  "country/NGA": [
+    "Nigeria"
+  ],
+  "country/NIC": [
+    "Nicaragua"
+  ],
+  "country/NIU": [
+    "Niue"
+  ],
+  "country/NLD": [
+    "Netherlands"
+  ],
+  "country/NOR": [
+    "Norway"
+  ],
+  "country/NPL": [
+    "Nepal"
+  ],
+  "country/NRU": [
+    "Nauru"
+  ],
+  "country/NZL": [
+    "New Zealand"
+  ],
+  "country/OMN": [
+    "Oman"
+  ],
+  "country/PAK": [
+    "Pakistan"
+  ],
+  "country/PAN": [
+    "Panama"
+  ],
+  "country/PER": [
+    "Peru"
+  ],
+  "country/PHL": [
+    "Philippines"
+  ],
+  "country/PLW": [
+    "Palau"
+  ],
+  "country/PNG": [
+    "Papua New Guinea"
+  ],
+  "country/POL": [
+    "Poland"
+  ],
+  "country/PRI": [
+    "Puerto Rico"
+  ],
+  "country/PRK": [
+    "North Korea"
+  ],
+  "country/PRT": [
+    "Portugal"
+  ],
+  "country/PRY": [
+    "Paraguay"
+  ],
+  "country/PSE": [
+    "Palestinian Territories"
+  ],
+  "country/PYF": [
+    "French Polynesia"
+  ],
+  "country/QAT": [
+    "Qatar"
+  ],
+  "country/ROU": [
+    "Romania"
+  ],
+  "country/RUS": [
+    "Russia"
+  ],
+  "country/RWA": [
+    "Rwanda"
+  ],
+  "country/SAU": [
+    "Saudi Arabia"
+  ],
+  "country/SDN": [
+    "Sudan"
+  ],
+  "country/SEN": [
+    "Senegal"
+  ],
+  "country/SGP": [
+    "Singapore"
+  ],
+  "country/SHN": [
+    "Saint Helena"
+  ],
+  "country/SJM": [
+    "Svalbard and Jan Mayen"
+  ],
+  "country/SLB": [
+    "Solomon Islands"
+  ],
+  "country/SLE": [
+    "Sierra Leone"
+  ],
+  "country/SLV": [
+    "El Salvador"
+  ],
+  "country/SMR": [
+    "San Marino"
+  ],
+  "country/SOM": [
+    "Somalia"
+  ],
+  "country/SPM": [
+    "Saint Pierre and Miquelon"
+  ],
+  "country/SRB": [
+    "Serbia"
+  ],
+  "country/SSD": [
+    "South Sudan"
+  ],
+  "country/STP": [
+    "São Tomé and Príncipe"
+  ],
+  "country/SUR": [
+    "Suriname"
+  ],
+  "country/SVK": [
+    "Slovakia"
+  ],
+  "country/SVN": [
+    "Slovenia"
+  ],
+  "country/SWE": [
+    "Sweden"
+  ],
+  "country/SWZ": [
+    "Eswatini"
+  ],
+  "country/SXM": [
+    "Sint Maarten"
+  ],
+  "country/SYC": [
+    "Seychelles"
+  ],
+  "country/SYR": [
+    "Syria"
+  ],
+  "country/TCA": [
+    "Turks and Caicos Islands"
+  ],
+  "country/TCD": [
+    "Chad"
+  ],
+  "country/TGO": [
+    "Togo"
+  ],
+  "country/THA": [
+    "Thailand"
+  ],
+  "country/TJK": [
+    "Tajikistan"
+  ],
+  "country/TKL": [
+    "Tokelau"
+  ],
+  "country/TKM": [
+    "Turkmenistan"
+  ],
+  "country/TLS": [
+    "East Timor"
+  ],
+  "country/TON": [
+    "Tonga"
+  ],
+  "country/TTO": [
+    "Trinidad and Tobago"
+  ],
+  "country/TUN": [
+    "Tunisia"
+  ],
+  "country/TUR": [
+    "Turkey"
+  ],
+  "country/TUV": [
+    "Tuvalu"
+  ],
+  "country/TWN": [
+    "Taiwan"
+  ],
+  "country/TZA": [
+    "Tanzania"
+  ],
+  "country/UGA": [
+    "Uganda"
+  ],
+  "country/UKR": [
+    "Ukraine"
+  ],
+  "country/URY": [
+    "Uruguay"
+  ],
+  "country/USA": [
+    "U.S.",
+    "US",
+    "USA",
+    "United States"
+  ],
+  "country/UZB": [
+    "Uzbekistan"
+  ],
+  "country/VAT": [
+    "Vatican City"
+  ],
+  "country/VCT": [
+    "Saint Vincent and the Grenadines"
+  ],
+  "country/VEN": [
+    "Venezuela"
+  ],
+  "country/VGB": [
+    "British Virgin Islands"
+  ],
+  "country/VIR": [
+    "U.S. Virgin Islands"
+  ],
+  "country/VNM": [
+    "Vietnam"
+  ],
+  "country/VUT": [
+    "Vanuatu"
+  ],
+  "country/WLF": [
+    "Wallis and Futuna"
+  ],
+  "country/WSM": [
+    "Samoa"
+  ],
+  "country/XKS": [
+    "Kosovo"
+  ],
+  "country/YEM": [
+    "Yemen"
+  ],
+  "country/YUG": [
+    "Yugoslavia"
+  ],
+  "country/ZAF": [
+    "South Africa"
+  ],
+  "country/ZMB": [
+    "Zambia"
+  ],
+  "country/ZWE": [
+    "Zimbabwe"
+  ],
+  "europe": [
+    "Europa",
+    "Europe",
+    "Европа",
+    "أوروبا",
+    "欧洲"
+  ],
+  "groups/ASEAN": [
+    "ASEAN",
+    "Association of Southeast Asian Nations"
+  ],
+  "groups/AU": [
+    "AU",
+    "African Union"
+  ],
+  "groups/BRIC": [
+    "BRIC"
+  ],
+  "groups/BRICS": [
+    "BRICS"
+  ],
+  "groups/Commonwealth": [
+    "Commonwealth of Nations"
+  ],
+  "groups/EEA": [
+    "European Economic Area"
+  ],
+  "groups/Eurozone": [
+    "Eurozone"
+  ],
+  "groups/G20": [
+    "G20",
+    "Group of Twenty"
+  ],
+  "groups/G8": [
+    "G8",
+    "Group of Eight"
+  ],
+  "groups/MERCOSUR": [
+    "Southern Common Market"
+  ],
+  "groups/NATO": [
+    "North Atlantic Treaty Organization"
+  ],
+  "groups/OECD.DAC": [
+    "OECD Development Assistance Committee"
+  ],
+  "groups/OECD.DAC.Region.America": [
+    "America (DAC)"
+  ],
+  "groups/OECD.DAC.Region.Asia": [
+    "Asia (DAC)"
+  ],
+  "groups/OECD.DAC.Region.CaribbeanAndCentralAmerica": [
+    "Caribbean and Central America (DAC)"
+  ],
+  "groups/OECD.DAC.Region.EasternAfrica": [
+    "Eastern Africa (DAC)"
+  ],
+  "groups/OECD.DAC.Region.Europe": [
+    "Europe (DAC)"
+  ],
+  "groups/OECD.DAC.Region.FarEastAsia": [
+    "Far East Asia (DAC)"
+  ],
+  "groups/OECD.DAC.Region.MiddleAfrica": [
+    "Middle Africa (DAC)"
+  ],
+  "groups/OECD.DAC.Region.MiddleEast": [
+    "Middle East (DAC)"
+  ],
+  "groups/OECD.DAC.Region.NorthOfSahara": [
+    "North of Sahara (DAC)"
+  ],
+  "groups/OECD.DAC.Region.NorthernAmerica": [
+    "Northern America (DAC)"
+  ],
+  "groups/OECD.DAC.Region.Oceania": [
+    "Oceania (DAC)"
+  ],
+  "groups/OECD.DAC.Region.SouthAmerica": [
+    "South America (DAC)"
+  ],
+  "groups/OECD.DAC.Region.SouthAndCentralAsia": [
+    "South and Central Asia (DAC)"
+  ],
+  "groups/OECD.DAC.Region.SouthOfSahara": [
+    "South of Sahara (DAC)"
+  ],
+  "groups/OECD.DAC.Region.WesternAfrica": [
+    "Western Africa (DAC)"
+  ],
+  "groups/OECD.NonDAC": [
+    "OECD Non-DAC Countries"
+  ],
+  "groups/OPEC": [
+    "OPEC",
+    "Organization of the Petroleum Exporting Countries"
+  ],
+  "groups/Schengen": [
+    "Schengen Area"
+  ],
+  "groups/UN": [
+    "United Nations"
+  ],
+  "groups/UN.LDC": [
+    "LDC",
+    "LDCs",
+    "Least Developed Countries"
+  ],
+  "groups/UN.LLDC": [
+    "LLDCs",
+    "Landlocked Developing Countries"
+  ],
+  "groups/UN.SIDS": [
+    "SIDS",
+    "Small Island Developing States"
+  ],
+  "groups/WB.IncomeGroup.High": [
+    "World Bank High-Income Countries"
+  ],
+  "groups/WB.IncomeGroup.Low": [
+    "World Bank Low-Income Countries"
+  ],
+  "groups/WB.IncomeGroup.LowerMiddle": [
+    "World Bank Lower-Middle-Income Countries"
+  ],
+  "groups/WB.IncomeGroup.UpperMiddle": [
+    "World Bank Upper-Middle-Income Countries"
+  ],
+  "northamerica": [
+    "América del Norte",
+    "América do Norte",
+    "Amérique du Nord",
+    "Nordamerika",
+    "North America",
+    "Северная Америка",
+    "أمريكا الشمالية",
+    "北美洲"
+  ],
+  "oceania": [
+    "Oceania",
+    "Oceanía",
+    "Océanie",
+    "Ozeanien",
+    "Океания",
+    "أوقيانوسيا",
+    "大洋洲"
+  ],
+  "southamerica": [
+    "América del Sur",
+    "América do Sul",
+    "Amérique du Sud",
+    "South America",
+    "Südamerika",
+    "Южная Америка",
+    "أمريكا الجنوبية",
+    "南美洲"
+  ],
+  "undata-geo/G00134000": [
+    "Americas",
+    "Amerika",
+    "América",
+    "Américas",
+    "Amérique",
+    "Америка",
+    "أمريكا",
+    "美洲"
+  ],
+  "undata-geo/G00406000": [
+    "Organisation for Economic Co-operation and Development"
+  ]
+}

@@ -1256,6 +1256,48 @@ def test_a_caller_the_website_vouches_for_pins_under_the_key_it_names(
     assert {key[0] for key in writer.records} == {named}
 
 
+def test_an_account_the_website_vouches_for_pins_under_its_key_and_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A request made with an API key spends the account's `pin` allowance, whatever its address."""
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    account = "user:" + "cd" * 16
+    writer = FakeArtifactReferenceWriter()
+    ledger = _ledger(pin=50)
+    client, location = _build_client(reference_writer=writer, allowances=ledger)
+
+    resp = _pin(
+        client,
+        location,
+        [("x-dfo-caller-principal", "website-secret"), ("x-dfo-caller", account)],
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {account}
+    assert _spent(ledger) == {
+        (account, "pin"): 1,
+        (BUDGET_KEY, "pin_budget"): 1,
+        (BUDGET_KEY, "open_pin_budget"): 1,
+    }
+
+
+def test_a_malformed_account_caller_the_website_vouches_for_refuses_400_and_pins_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(reference_writer=writer)
+
+    resp = _pin(
+        client,
+        location,
+        [("x-dfo-caller-principal", "website-secret"), ("x-dfo-caller", "user:" + "CD" * 16)],
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert not writer.records
+
+
 def test_pin_with_the_first_party_principal_succeeds():
     client, location = _build_client()
 

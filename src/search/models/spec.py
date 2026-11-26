@@ -14,7 +14,7 @@ from pydantic import (
 from dfo_platform.roles import FlowAccount
 
 from .base import StrictModel
-from .coverage import Coverage, Headline
+from .coverage import Coverage, Headline, HeldBack
 from .definition import SpecDefinition
 from .entity import EntityGroup, ResolvedEntity, _is_none
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
@@ -1104,6 +1104,10 @@ class ResolvedSpec(StrictModel):
     # each component that reads that same table previews, keyed by the component's spec_id
     # and those years (`ResolvedSpec.component_continued`).
     _component_continued: tuple[tuple[str, frozenset[int], bool], ...] = PrivateAttr(default=())
+    # For a composite answer, the held-back runs its own read plan states for each component
+    # that reads that same table, keyed by the component's spec_id
+    # (`ResolvedSpec.component_held_back`).
+    _component_held_back: tuple[tuple[str, tuple[HeldBack, ...]], ...] = PrivateAttr(default=())
     # The sets the request named whose every member a role binds, each with its role and
     # member dcids (`ResolvedSpec.named_sets`). The part's departures count a set's members
     # without values against it. `entity_groups` carries the one set a role's entities equal.
@@ -1322,6 +1326,24 @@ class ResolvedSpec(StrictModel):
         (`component_continued`)."""
         copy = self.model_copy()
         copy._component_continued = tuple(stated)
+        return copy
+
+    def component_held_back(self, spec_id: str) -> tuple[HeldBack, ...] | None:
+        """The held-back runs the composite answer's own read plan states for the component
+        whose preview resolves `spec_id`, or None where the answer read no such component
+        (`spec_build.build_spec`)."""
+        return next(
+            (runs for stated_id, runs in self._component_held_back if stated_id == spec_id),
+            None,
+        )
+
+    def stating_component_held_back(
+        self, stated: Iterable[tuple[str, Sequence[HeldBack]]]
+    ) -> ResolvedSpec:
+        """A copy stating `stated`, each a component's spec_id and the held-back runs the
+        answer's own read plan states for it (`component_held_back`)."""
+        copy = self.model_copy()
+        copy._component_held_back = tuple((spec_id, tuple(runs)) for spec_id, runs in stated)
         return copy
 
     def stating_members(self, members: Sequence[StatVar]) -> ResolvedSpec:

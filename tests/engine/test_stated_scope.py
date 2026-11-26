@@ -456,3 +456,41 @@ def test_words_summing_both_lines_with_no_imputed_share_are_marked(text, sums):
     (intake,) = part_scope_intakes(message=None, part_texts=[text])
 
     assert intake.sums_providers is sums
+
+
+@pytest.mark.parametrize(
+    ("text", "years", "projection"),
+    [
+        (
+            "How much has health ODA to sub-Saharan Africa dropped in the last couple of years?",
+            [],
+            False,
+        ),
+        (
+            "What is the expected cut to education aid from 2024 to 2028?",
+            [2024, 2028],
+            True,
+        ),
+        ("aid in 2025", [2025], False),
+        ("aid last year", [2025], False),
+        ("aid over the last year", [], False),
+        ("aid over the past 5 years", [], False),
+        ("debt service over the next 3 years", [2027, 2029], False),
+        ("2030 Agenda progress", [], False),
+        ("Agenda 2030 progress", [], False),
+        ("ayuda el año pasado", [2025], False),
+        ("projected principal repayments", [], True),
+        ("payments due to the war", [], False),
+        ("Show projected external debt service for 2026 to 2030", [2026, 2030], True),
+        ("aid from the perspectives of donors from 2020 to 2030", [2020, 2030], False),
+        ("quelles sont les perspectives de la dette du Kenya", [], True),
+        ("perspectives d'aide au Kenya", [], True),
+        ("perspectives économiques du Kenya", [], True),
+    ],
+)
+def test_named_years_and_projection_are_read_from_the_words(
+    text: str, years: list[int], projection: bool
+) -> None:
+    stated = read_stated_scope(text, current_year=2026)
+
+    assert (list(stated.named_years), stated.projection) == (years, projection)

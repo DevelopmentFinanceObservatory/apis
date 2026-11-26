@@ -298,6 +298,12 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
             [entities for entities, _warning in _cand_obs_entities],
         )
         _cand_filtered = [c.answer for c in converted]
+        # A conversion that omits rows settles the opt-in again (`facets.plan_answer`), and
+        # each candidate's Spec states the request its converted answer settled.
+        candidates = [
+            replace(cand, date_request=c.answer.date_request)
+            for cand, c in zip(candidates, converted, strict=True)
+        ]
         _cand_unit_coverage = [c.coverage for c in converted]
         _cand_unit_gate_reasons = [c.gate_reason for c in converted]
 
@@ -331,7 +337,8 @@ def _settled_trailing(
     state: ResolveState, candidates: list[_Candidate], filtered: list[FilteredAnswer]
 ) -> tuple[list[_Candidate], list[FilteredAnswer]]:
     """Each candidate read over the newest years its own filtered plan serves under a
-    trailing request (`trailing.settle_trailing`), so each Spec states its own range: the
+    trailing request (`trailing.settle_trailing`), so each Spec states its own range, and
+    each named window the opt-in its own plan settled (`facets.plan_answer`): the
     candidate carries its settled date request and the departure a stale newest year raises
     (`_Candidate.date_request`). A candidate the request does not settle keeps its answer and
     the part's date request. The elected shape's result stays the state's
@@ -339,6 +346,7 @@ def _settled_trailing(
     kept: list[_Candidate] = []
     answers: list[FilteredAnswer] = []
     for cand, answer in zip(candidates, filtered, strict=True):
+        cand = replace(cand, date_request=answer.date_request)
         settled = settle_trailing(
             cand.mat, answer, date_request=cand.date_request, coverage_index=state.coverage.index
         )

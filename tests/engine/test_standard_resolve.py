@@ -3408,7 +3408,7 @@ def test_a_trailing_answer_lists_the_members_its_settled_range_holds(
             {_SET_SV_B}
         )
     )
-    filtered = FilteredAnswer(trailing.coverage, trailing.headline, answered)
+    filtered = FilteredAnswer(trailing.coverage, trailing.headline, answered, request)
 
     settled = settle_trailing(
         trailing, filtered, date_request=request, coverage_index=empty_coverage_snapshot().index

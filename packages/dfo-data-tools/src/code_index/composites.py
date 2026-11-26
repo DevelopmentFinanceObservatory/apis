@@ -71,6 +71,17 @@ def components_sum(composite: CompositeDeclaration) -> bool:
     return composite.kind == "stacked"
 
 
+def components_splice(composite: CompositeDeclaration) -> bool:
+    """Whether a Datasets groupby whose `by` keeps no `stat_var` splices the members of
+    `composite`'s different components into one series per cell: true for a spliced
+    composite, whose components each serve their own years, so each cell takes the members of
+    the one component holding it and no two components' values are added. The mint refuses a
+    cell holding rows of two components (`datasets_api.groupby.SpliceCheck`). The mint
+    splices by it (`datasets_api.groupby.splices_components`) and Search serves it
+    (`ResolvedStatVars.splices_components`), so the two cannot disagree."""
+    return composite.kind == "spliced"
+
+
 def _jsonable(value: object) -> object:
     if isinstance(value, frozenset | set):
         return sorted(str(item) for item in value)
@@ -778,7 +789,8 @@ def _clipped_window(
     window: Mapping[str, object], periods: YearPeriod | None
 ) -> Mapping[str, object] | None:
     """`window` clipped to `periods`, or `None` when the two share no year. A `latest`
-    window passes unclipped, as does any window when `periods` is `None`."""
+    window passes unclipped, as does any window when `periods` is `None`. The clipped
+    window keeps `window`'s `include`."""
     if periods is None or window.get("kind") == "latest":
         return window
     start = cast("int | None", window.get("start_year")) if window.get("kind") == "range" else None
@@ -787,13 +799,15 @@ def _clipped_window(
     last = _earlier(end, periods.last)
     if first is not None and last is not None and first > last:
         return None
-    if first is None and last is None:
-        return {"kind": "all"}
     clipped: dict[str, object] = {"kind": "range"}
+    if first is None and last is None:
+        clipped = {"kind": "all"}
     if first is not None:
         clipped["start_year"] = first
     if last is not None:
         clipped["end_year"] = last
+    if "include" in window:
+        clipped["include"] = window["include"]
     return clipped
 
 

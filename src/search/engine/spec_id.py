@@ -197,7 +197,8 @@ def bound_facet_axes(
 
 
 def _requested_window_member(requested_window: RequestedWindow | None) -> dict:
-    """The identity core's `requested_window` tagged union."""
+    """The identity core's `requested_window` tagged union. A range carries its opt-in
+    (`TimeWindow.include`) in normal form, and no `include` key when it has none."""
     if requested_window is None:
         return {"kind": "all"}
     if requested_window == "latest":
@@ -214,6 +215,8 @@ def _requested_window_member(requested_window: RequestedWindow | None) -> dict:
         result["start_year"] = tw.start_year
     if tw.end_year is not None:
         result["end_year"] = tw.end_year
+    if tw.include:
+        result["include"] = list(tw.include)
     return result
 
 

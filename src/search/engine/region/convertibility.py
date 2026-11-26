@@ -52,6 +52,7 @@ from search.engine.departures import (
     deflator_omission_undecided_fact,
 )
 from search.engine.errors import GraphInfraError
+from search.engine.extract import DateRequest
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.codes import (
     CURRENCY_UNMAPPED_OMITTED,
@@ -102,7 +103,6 @@ from series_coverage.index import CoverageIndex
 
 if TYPE_CHECKING:
     from search.engine.clients.sdmx import RoleFacetCandidate
-    from search.engine.extract import DateRequest
     from search.engine.retrieval.retrieve import Materialised
     from search.heading.departure_fact import DepartureFact
 
@@ -1221,14 +1221,30 @@ def unit_request_period(
     return conversion_period(served=served, converted=converted)
 
 
-def over_conversion_period(mat: Materialised, period: ConversionPeriod) -> Materialised:
+def narrowed_request(date_request: DateRequest | None, period: ConversionPeriod) -> DateRequest:
+    """The request an answer narrowed to `period` reads: `period`'s window, which a request
+    whose words close its window still closes (`DateRequest.reads_held`). Its opt-in is
+    settled again over the narrowed window (`facets.plan_answer`)."""
+    return DateRequest(
+        window=period.window,
+        latest=False,
+        reads_held=date_request.reads_held if date_request is not None else frozenset(),
+    )
+
+
+def over_conversion_period(
+    mat: Materialised, period: ConversionPeriod, *, date_request: DateRequest
+) -> Materialised:
     """`mat` with its read plan read over `period`'s window (`ReadPlan.windowed`), the
-    answer the same request builds under that window. The door then filters the plan again
-    and states the answer from it."""
+    answer the same request builds under that window, read as `date_request`, the
+    narrowed request (`narrowed_request`), reads it (`DateRequest.read`). The door then
+    filters the plan again and states the answer from it."""
     plan = mat.read_plan
     if plan is None:
         return mat
-    return replace(mat, read_plan=replace(plan.windowed(period.window), request_filtered=True))
+    window = date_request.read
+    assert window is not None  # a narrowed request holds `period`'s window
+    return replace(mat, read_plan=replace(plan.windowed(window), request_filtered=True))
 
 
 def conversion_period_departure(

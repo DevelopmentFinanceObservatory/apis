@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from origin_catalogue import ORIGINS, UN_SYSTEM, CatalogueManifest, entry_ref
+from origin_catalogue import ORIGINS, CatalogueManifest, entry_ref
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.service import DEFAULT_MAX_RESIDENT_BYTES
 from scripts.stage_origin_catalogue_fixture import stage_fixture
@@ -58,7 +58,7 @@ def test_committed_eval_build_documents_every_listed_provenance(tmp_path: Path) 
     document when its entry's `source_documentation.provenances` omits it. Every non-UN row
     belongs to an entry that lists it."""
     tables = load_catalogue(stage_fixture(_EVAL_FIXTURE_DIR, tmp_path)).tables
-    rows = [row for row in tables.provenances.values() if row.data_commons != UN_SYSTEM]
+    rows = list(tables.provenances.values())
     assert rows
     unlisted = [
         row.id
