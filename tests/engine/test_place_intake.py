@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
-from entity_resolution import Admission, Entity, Resolved
+import pytest
+
+from entity_resolution import Admission, Entity, Group, Resolved
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -86,3 +88,23 @@ def test_a_region_is_what_the_policy_holds_or_omits_whatever_its_graph_type():
     assert (sets["Antarctica"].kind, sets["Antarctica"].members) == ("region", None)
     assert (sets["Unlisted"].kind, sets["Unlisted"].members) == ("place", None)
     assert lost.reads == []
+
+
+@pytest.mark.parametrize(
+    ("resolution", "read"),
+    [
+        (Resolved(entity=Entity("country/USA", "United States", "country", "Country")), ["US"]),
+        # A group with no usable members holds no place set, so it binds no party.
+        (Group(members=(), entity=None, dcid="country/USA", label="United States"), []),
+    ],
+)
+def test_the_variable_reads_only_a_party_a_place_set_binds(resolution, read):
+    """ "US" in "total US ODA" reads as the United States only where the name resolves to a
+    party the part binds as a place set."""
+    state = _state(FakeGraph(nodes=_NODES), ["United States"])
+    state.variable = "total US ODA"
+    state.rcl = Recall(candidates=[], resolutions={"United States": resolution})
+
+    asyncio.run(_phase_resolve_places(state))
+
+    assert [state.variable[start:end] for start, end in state.party_alias_spans] == read

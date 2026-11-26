@@ -210,11 +210,12 @@ def sample_catalogue(version: str = "20260930T000000Z-00000001") -> CatalogueArt
             aid=aid,
             by_origin=OriginCounts(
                 dfo=OriginSplit(indicators=4, datasets=1, publishers=1),
-                data_commons=OriginSplit(indicators=6, datasets=4, publishers=3),
+                data_commons=OriginSplit(indicators=4, datasets=3, publishers=2),
+                un=OriginSplit(indicators=2, datasets=1, publishers=1),
             ),
         ),
         provenances=OriginProvenances(
-            dfo=["provenance/CRS"], data_commons=["provenance/WDI", "provenance/WHO"]
+            dfo=["provenance/CRS"], data_commons=["provenance/WDI"], un=["provenance/WHO"]
         ),
         examples=[
             CatalogueExample(

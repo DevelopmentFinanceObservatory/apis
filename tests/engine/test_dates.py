@@ -128,13 +128,19 @@ def test_trailing_span_widens_its_read_window(
     carries its count of newest years. The reads confirming its members read every span
     ending in its judged years, `trailing_stale_years` before those calendar years
     (`read_window`), and its judgement reads the judged years alone. Any other request reads
-    the years it asks for."""
+    the years it asks for, opting in to every held-back year, since its words close it
+    (`DateRequest.reads_held`). The answer settles which of them it keeps
+    (`region.facets.settled_opt_in`)."""
     req = dates_to_request(dates)
     assert req is not None
-    assert read_window(req) == TimeWindow(start_year=read[0], end_year=read[1])
+    held = ["partial", "projected"] if trailing is None else None
+    assert read_window(req) == TimeWindow(start_year=read[0], end_year=read[1], include=held)
     assert (None if req.trailing is None else req.trailing.years) == trailing
+    assert req.reads_held == (
+        frozenset({"partial", "projected"}) if trailing is None else frozenset()
+    )
     if trailing is None:
-        assert req.window == read_window(req)
+        assert req.window == TimeWindow(start_year=read[0], end_year=read[1])
     else:
         assert req.window == TimeWindow(start_year=2026 - trailing + 1, end_year=2026)
         assert req.judged.window == TimeWindow(start_year=2026 - trailing - 2, end_year=2026)

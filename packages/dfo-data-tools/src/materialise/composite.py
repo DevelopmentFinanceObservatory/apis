@@ -87,7 +87,9 @@ from materialise.finish import (
     deflator_missing_omitted_warning,
 )
 from materialise.frame_build import ParquetFrameSink, build_frame
+from materialise.held_runs import merged_runs
 from materialise.profile import OutputProfileFold
+from materialise.reported_share import YearTotals
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
 from materialise.window import AppliedWindow, Coverage, RequestedWindow, compute_applied_window
@@ -195,9 +197,12 @@ def table_years(
 ) -> frozenset[int]:
     """The years the table a component `identity` reads covers: those any series of its
     index family (`family_variables`) holds in `coverage`, under any place
-    (`CoverageIndex.years_held`), under the source scope bound to the caller's context."""
+    (`CoverageIndex.years_held`), under the source scope bound to the caller's context, less
+    the years its window holds back unless it opts in to them (`window_include`)."""
     variables = family_variables(index, identity)
-    return coverage.years_held(variables=variables) if variables else frozenset()
+    if not variables:
+        return frozenset()
+    return coverage.years_held(variables=variables, include=window_include(identity))
 
 
 def held_years(
@@ -207,11 +212,21 @@ def held_years(
     (`family_variables`) holds in `coverage` under the places its entities bind
     (`bound_roles`), over the snapshot's whole horizon and under the source scope bound to
     the caller's context. These are the years `CoverageIndex.series_by_year` counts a series
-    in for the same binding."""
+    in for the same binding, less the years its window holds back unless it opts in to them
+    (`window_include`)."""
     variables = family_variables(index, identity)
     if not variables:
         return frozenset()
-    return coverage.years_held(variables=variables, bound=bound_roles(identity))
+    return coverage.years_held(
+        variables=variables, bound=bound_roles(identity), include=window_include(identity)
+    )
+
+
+def window_include(identity: Mapping[str, object]) -> frozenset[str]:
+    """The kinds of held-back rows the `requested_window` of `identity` opts in to
+    (`window.RequestedWindow.include`), empty for a window naming none."""
+    window = cast("Mapping[str, object]", identity.get("requested_window") or {})
+    return frozenset(cast("Sequence[str]", window.get("include") or ()))
 
 
 def component_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
@@ -380,7 +395,15 @@ def compose_components(
         for component in components
         for request in component.requests
     }
-    statistics = SeriesStatisticsSink(continuing=_continuations(components, composite=composite))
+    statistics = SeriesStatisticsSink(
+        continuing=_continuations(components, composite=composite),
+        component_of={
+            request.stat_var.removeprefix("dcid:"): provenance
+            for component in components
+            if (provenance := _component_provenance(component)) is not None
+            for request in component.requests
+        },
+    )
     profile = OutputProfileFold(role_columns=role_columns, parties=parties)
     sink = ParquetFrameSink()
     columns: list[tuple[str, ...]] = []
@@ -483,7 +506,23 @@ def compose_components(
         probe_empty=all(component.result.probe_empty for component in components),
         countries_fallback=fold.rows > 0
         and any(component.result.countries_fallback for component in components),
+        year_totals=_year_totals(components, composite=composite),
+        held_runs=merged_runs(
+            run for component in components for run in component.result.held_runs
+        ),
     )
+
+
+def _year_totals(
+    components: Sequence[ComponentResult], *, composite: CompositeDeclaration
+) -> dict[tuple[str | None, str], YearTotals]:
+    """Every component's year sums (`MaterialisationResult.year_totals`), keyed by the
+    composite provenance its rows carry in the composed frame."""
+    totals: dict[tuple[str | None, str], YearTotals] = {}
+    for component in components:
+        for (_provenance, stat_var), held in component.result.year_totals.items():
+            totals.setdefault((composite.provenance, stat_var), YearTotals()).add(held)
+    return totals
 
 
 def _check_components(
@@ -914,16 +953,22 @@ def _fold(
             fold.role_values.setdefault(column, set()).add(value)
 
 
-def _summary(component: ComponentResult, *, plan: _Plan, fold: _Fold) -> ComponentSummary:
-    facets = tuple(component.result.trace.facets)
-    provenance = next(
+def _component_provenance(component: ComponentResult) -> str | None:
+    """The provenance `component` was served from: its trace's provenance selection, else
+    its recipe's."""
+    return next(
         (
             cast("str | None", facet.get("ref"))
-            for facet in facets
+            for facet in component.result.trace.facets
             if facet.get("axis") == _PROVENANCE_AXIS
         ),
         component.recipe.provenance,
     )
+
+
+def _summary(component: ComponentResult, *, plan: _Plan, fold: _Fold) -> ComponentSummary:
+    facets = tuple(component.result.trace.facets)
+    provenance = _component_provenance(component)
     served_years = fold.years.get(component.role, set())
     return ComponentSummary(
         role=component.role,

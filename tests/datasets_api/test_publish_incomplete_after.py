@@ -44,6 +44,17 @@ def _entry(
     }
 
 
+def _projected(stat_vars: list[str], start: str = "2026") -> dict[str, object]:
+    """A `projected` entry of `_SOURCE`'s rows from `start`, as an opted-in IDS mint records."""
+    return {
+        "provenance": _SOURCE,
+        "stat_vars": stat_vars,
+        "source": _SOURCE,
+        "status": "projected",
+        "partial_period": start,
+    }
+
+
 def _unknown(stat_vars: list[str], *, source: str | None = _SOURCE) -> dict[str, object]:
     return {
         "provenance": _SOURCE,
@@ -181,6 +192,27 @@ def _published(*, recorded: list[object] | None, stat_var: str) -> tuple[FrameLi
             [_entry([_RATIO], source="provenance/A")],
             True,
             id="equal-marks-break-on-source",
+        ),
+        pytest.param(
+            [_projected([_PARTIAL])],
+            _RATIO,
+            [_projected([_RATIO])],
+            False,
+            id="a-ratio-over-a-projected-root",
+        ),
+        pytest.param(
+            [_projected([_PARTIAL])],
+            _PARTIAL,
+            [_projected([_PARTIAL])],
+            False,
+            id="a-kept-projected-cell-carries-its-entry",
+        ),
+        pytest.param(
+            [_entry([_PARTIAL]), _projected([_COMPLETE])],
+            _RATIO,
+            [_entry([_RATIO]), _projected([_RATIO])],
+            True,
+            id="a-ratio-over-partial-and-projected-cells-is-both",
         ),
         pytest.param(None, _RATIO, None, False, id="a-root-recorded-before-the-member"),
     ],

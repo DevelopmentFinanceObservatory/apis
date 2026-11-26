@@ -208,53 +208,49 @@ def _this_decade(_count: int, current_year: int) -> _Span:
 
 # Each row is a span measured from now, accents folded and leads removed, and the years
 # it covers. A row without a count covers one unit.
-_RELATIVE_SPANS: tuple[tuple[re.Pattern[str], _SpanYears], ...] = tuple(
-    (re.compile(rf"^(?:{pattern})$"), span_years)
-    for pattern, span_years in (
-        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+years?", _back(1)),
-        (rf"{_THE}(?:last|past)\s+decade", _back(_DECADE_YEARS)),
-        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+decades", _back(_DECADE_YEARS)),
-        (rf"{_THE}(?:recent\s+years|(?:last|past)\s+few\s+years)", _back(_RECENT_YEARS)),
-        (rf"{_THE}past\s+year|the\s+last\s+year", _back(1)),
-        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+months?", _months_back),
-        (r"this\s+decade", _this_decade),
-        (rf"{_THE}(?:next|coming)\s+{_COUNT}\s+years?", _ahead(1)),
-        (rf"ultimos\s+{_COUNT}\s+anos", _back(1)),
-        (r"ultima\s+decada", _back(_DECADE_YEARS)),
-        (rf"ultimas\s+{_COUNT}\s+decadas", _back(_DECADE_YEARS)),
-        (r"ultimos\s+anos|anos\s+recientes", _back(_RECENT_YEARS)),
-        (r"ultimo\s+ano", _back(1)),
-        (rf"ultimos\s+{_COUNT}\s+meses", _months_back),
-        (r"esta\s+decada", _this_decade),
-        (rf"proximos\s+{_COUNT}\s+anos", _ahead(1)),
-        (rf"{_COUNT}\s+(?:dernieres\s+annees|derniers\s+ans)", _back(1)),
-        (rf"dernieres\s+{_COUNT}\s+annees", _back(1)),
-        (rf"derniers\s+{_COUNT}\s+ans", _back(1)),
-        (r"derniere\s+decennie", _back(_DECADE_YEARS)),
-        (rf"{_COUNT}\s+dernieres\s+decennies", _back(_DECADE_YEARS)),
-        (r"dernieres\s+annees|annees\s+recentes", _back(_RECENT_YEARS)),
-        (r"derniere\s+annee", _back(1)),
-        (rf"{_COUNT}\s+derniers\s+mois", _months_back),
-        (r"cette\s+decennie", _this_decade),
-        (rf"{_COUNT}\s+prochaines\s+annees", _ahead(1)),
-    )
+_SPAN_ROWS: tuple[tuple[str, _SpanYears], ...] = (
+    (rf"{_THE}(?:last|past)\s+{_COUNT}\s+years?", _back(1)),
+    (rf"{_THE}(?:last|past)\s+decade", _back(_DECADE_YEARS)),
+    (rf"{_THE}(?:last|past)\s+{_COUNT}\s+decades", _back(_DECADE_YEARS)),
+    (rf"{_THE}(?:recent\s+years|(?:last|past)\s+few\s+years)", _back(_RECENT_YEARS)),
+    (rf"{_THE}past\s+year|the\s+last\s+year", _back(1)),
+    (rf"{_THE}(?:last|past)\s+{_COUNT}\s+months?", _months_back),
+    (r"this\s+decade", _this_decade),
+    (rf"{_THE}(?:next|coming)\s+{_COUNT}\s+years?", _ahead(1)),
+    (rf"ultimos\s+{_COUNT}\s+anos", _back(1)),
+    (r"ultima\s+decada", _back(_DECADE_YEARS)),
+    (rf"ultimas\s+{_COUNT}\s+decadas", _back(_DECADE_YEARS)),
+    (r"ultimos\s+anos|anos\s+recientes", _back(_RECENT_YEARS)),
+    (r"ultimo\s+ano", _back(1)),
+    (rf"ultimos\s+{_COUNT}\s+meses", _months_back),
+    (r"esta\s+decada", _this_decade),
+    (rf"proximos\s+{_COUNT}\s+anos", _ahead(1)),
+    (rf"{_COUNT}\s+(?:dernieres\s+annees|derniers\s+ans)", _back(1)),
+    (rf"dernieres\s+{_COUNT}\s+annees", _back(1)),
+    (rf"derniers\s+{_COUNT}\s+ans", _back(1)),
+    (r"derniere\s+decennie", _back(_DECADE_YEARS)),
+    (rf"{_COUNT}\s+dernieres\s+decennies", _back(_DECADE_YEARS)),
+    (r"dernieres\s+annees|annees\s+recentes", _back(_RECENT_YEARS)),
+    (r"derniere\s+annee", _back(1)),
+    (rf"{_COUNT}\s+derniers\s+mois", _months_back),
+    (r"cette\s+decennie", _this_decade),
+    (rf"{_COUNT}\s+prochaines\s+annees", _ahead(1)),
 )
+_RELATIVE_SPANS = tuple((re.compile(rf"^(?:{p})$"), f) for p, f in _SPAN_ROWS)
 # Each row is a single year measured from now, read like the spans, and its offset
 # from the current year.
-_RELATIVE_YEARS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
-    (re.compile(rf"^(?:{pattern})$"), offset)
-    for pattern, offset in (
-        (r"last\s+year", -1),
-        (r"(?:so\s+far\s+)?this\s+year(?:\s+so\s+far)?", 0),
-        (r"next\s+year", 1),
-        (r"ano\s+pasado", -1),
-        (r"este\s+ano|lo\s+que\s+va\s+del?\s+ano", 0),
-        (r"proximo\s+ano|ano\s+(?:proximo|que\s+viene)", 1),
-        (r"l'\s*(?:annee\s+(?:derniere|passee)|an\s+dernier)", -1),
-        (r"cette\s+annee|depuis\s+le\s+debut\s+de\s+l'\s*annee", 0),
-        (r"l'\s*(?:annee\s+prochaine|an\s+prochain)", 1),
-    )
+_YEAR_ROWS: tuple[tuple[str, int], ...] = (
+    (r"last\s+year", -1),
+    (r"(?:so\s+far\s+)?this\s+year(?:\s+so\s+far)?", 0),
+    (r"next\s+year", 1),
+    (r"ano\s+pasado", -1),
+    (r"este\s+ano|lo\s+que\s+va\s+del?\s+ano", 0),
+    (r"proximo\s+ano|ano\s+(?:proximo|que\s+viene)", 1),
+    (r"l'\s*(?:annee\s+(?:derniere|passee)|an\s+dernier)", -1),
+    (r"cette\s+annee|depuis\s+le\s+debut\s+de\s+l'\s*annee", 0),
+    (r"l'\s*(?:annee\s+prochaine|an\s+prochain)", 1),
 )
+_RELATIVE_YEARS = tuple((re.compile(rf"^(?:{p})$"), o) for p, o in _YEAR_ROWS)
 
 _WARN_SEVERITY: WarningSeverity = "warn"
 
@@ -284,7 +280,7 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
         )
         return (dates, None) if dates else ([], _not_parsed_warning(text))
 
-    relative = _RELATIVE_LEADS_RE.sub("", _fold_accents(normalised), count=1)
+    relative = _RELATIVE_LEADS_RE.sub("", fold_accents(normalised), count=1)
     for pattern, span_years in _RELATIVE_SPANS:
         if span_match := pattern.match(relative):
             token = span_match.groupdict().get("count")
@@ -309,7 +305,60 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
     return [], _not_parsed_warning(text)
 
 
-def _fold_accents(text: str) -> str:
+# A calendar year written in free text: 1900 to 2099, outside a longer number or an amount
+# ("5,2025", "2025.5"), so the year a bounded phrase starts or ends at (`_BOUNDED_RE`) reads
+# alone.
+_TEXT_YEAR_RE = re.compile(r"(?<![\d.,])(?:19|20)\d{2}(?!\d|[.,]\d)")
+_THE_BEFORE_RE = re.compile(r"\bthe\s+$")
+# "2030 Agenda" and "Agenda 2030" name a programme, not a year.
+_AGENDA_BEFORE_RE = re.compile(r"\bagenda\s+$")
+_AGENDA_AFTER_RE = re.compile(r"^\s+agenda\b")
+
+
+def _in_text(pattern: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<!\w)(?:{pattern})(?!\w)")
+
+
+_RELATIVE_SPANS_IN_TEXT = tuple((_in_text(p), f) for p, f in _SPAN_ROWS)
+_RELATIVE_YEARS_IN_TEXT = tuple((_in_text(p), o) for p, o in _YEAR_ROWS)
+
+
+def scan_named_years(text: str, *, current_year: int) -> list[int]:
+    """The calendar years free text names, ascending and without repeats: each four-digit
+    year, which is a point or the end of a range ("2024 to 2028" names 2024 and 2028 only),
+    "last year", "this year" and "next year" resolved against ``current_year``, and the
+    first and last years of a span ahead ("the next 3 years" from 2026 names 2027 and
+    2029). "2030 Agenda" and "Agenda 2030" name none. A span back ("the last couple of
+    years", "the past 5 years") and "the last year" name none, since they ask for the
+    newest years the data holds. The relative wording reads in the languages
+    `parse_time_text` accepts."""
+    folded = fold_accents(text.casefold())
+    years = {
+        int(m.group())
+        for m in _TEXT_YEAR_RE.finditer(folded)
+        if not (
+            _AGENDA_BEFORE_RE.search(folded[: m.start()])
+            or _AGENDA_AFTER_RE.search(folded[m.end() :])
+        )
+    }
+    for pattern, offset in _RELATIVE_YEARS_IN_TEXT:
+        for m in pattern.finditer(folded):
+            # "the last year" is a span back, not the previous calendar year.
+            if not _THE_BEFORE_RE.search(folded[: m.start()]):
+                years.add(current_year + offset)
+    for pattern, span_years in _RELATIVE_SPANS_IN_TEXT:
+        for m in pattern.finditer(folded):
+            token = m.groupdict().get("count")
+            count = 1 if token is None else _resolve_span_count(token)
+            if count is None:
+                continue
+            span = span_years(count, current_year)
+            if span.start > current_year:
+                years.update((span.start, span.end))
+    return sorted(years)
+
+
+def fold_accents(text: str) -> str:
     """`text` with combining accents dropped and a typographic apostrophe made plain, so
     "últimos años" reads as "ultimos anos" and "l’année" as "l'annee"."""
     decomposed = unicodedata.normalize("NFKD", text.replace("\u2019", "'"))

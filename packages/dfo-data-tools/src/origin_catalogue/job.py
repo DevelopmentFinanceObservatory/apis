@@ -43,7 +43,9 @@ A run:
 8. refuses to publish on any `Refusal`, naming each in the log and exiting
    non-zero, so the execution shows failed;
 9. reads the UN stage: a row per registered agency, read from the UN
-   deployment together with its root group `undata/g/<segment>`, the
+   deployment together with its root group `undata/g/<segment>`, with its
+   licence and its entry's card facts and documentation facts computed as
+   for an orphan base row, the
    scan-set countries the UN front door refuses to have named in an
    observation GET, so the origin client never pays to find them, and the
    UN tables (`origin_catalogue.un_mirror`): every member variable of every
@@ -56,9 +58,10 @@ A run:
    that differs from the UN deployment's own, a variable naming no series,
    a topic answering no arcs, a topic tree yielding no topic, tables that do
    not hold together),
-   the build carries the published build's UN rows, refused places and UN
-   tables forward whole and records it in the manifest, so a UN outage
-   delays no DFO or base update and no build holds a partial UN table. With
+   the build carries the published build's UN rows and their facts,
+   refused places and UN tables forward whole and records it in the
+   manifest, so a UN outage delays no DFO or base update and no build holds
+   a partial UN table. With
    no published build to carry from, it fails. A UN row the checks reject,
    an excluded series the agency does not hold and a carried table that
    disagrees with the registry on excluded series or agencies refuse the
@@ -1085,15 +1088,18 @@ def sources_without_variables(
 
 @dataclass(frozen=True, slots=True)
 class UnStage:
-    """The UN rows of the provenance table, the scan-set countries the UN
-    front door refuses to have named in an observation GET, and the UN
-    tables. `carried_forward` is set when all three come from an earlier
-    build. `mirror_source` says where the UN tables come from: enumerated by
+    """The UN rows of the provenance table, the card facts and documentation
+    facts of each row's entry (keyed by `entry_ref`), the scan-set countries
+    the UN front door refuses to have named in an observation GET, and the
+    UN tables. `carried_forward` is set when all of them come from an
+    earlier build. `mirror_source` says where the UN tables come from: enumerated by
     this build, copied from the published build under an unchanged
     `un_mirror_key`, or carried forward after a failed UN read or an
     incomplete enumeration."""
 
     rows: Mapping[str, ProvenanceRow]
+    dataset_facts: Mapping[str, CardFacts]
+    source_documentation: Mapping[str, SourceDocumentation]
     blocked_places: frozenset[str]
     mirror: UnMirror = EMPTY_UN_MIRROR
     mirror_source: Literal["enumerated", "copied", "carried"] = "enumerated"
@@ -1115,24 +1121,39 @@ def read_un_stage(
     published_mirror: Callable[[], UnMirror | None] | None = None,
     deadline: float | None = None,
 ) -> UnStage:
-    """Reads the UN rows, appending a refusal for each row the checks reject,
-    then, when none is refused, probes the UN front door over the scan-set
-    countries and reads the UN tables: `published_mirror`'s when it returns
-    them, and `build_un_mirror`'s otherwise. A fault the registry causes is
+    """Reads the UN rows with their entries' facts (`_un_rows`), appending a
+    refusal for each row the checks reject, then, when none is refused,
+    probes the UN front door over the scan-set countries and reads the UN
+    tables: `published_mirror`'s when it returns them, and
+    `build_un_mirror`'s otherwise. A fault the registry causes is
     a refusal, and beside one every other fault is too, so one run names
     them all. Raises `UnReadError` when a UN read fails, when `deadline`, an
     absolute `time.monotonic()` value, passes, and when every fault is an
     incomplete enumeration."""
     try:
         found: list[Refusal] = []
-        rows = _un_rows(registry, un_graph=un_graph, refusals=found)
+        rows, dataset_facts, source_documentation = _un_rows(
+            registry, un_graph=un_graph, refusals=found
+        )
         refusals.extend(found)
         if found:
-            return UnStage(rows=rows, blocked_places=frozenset())
+            return UnStage(
+                rows=rows,
+                dataset_facts=dataset_facts,
+                source_documentation=source_documentation,
+                blocked_places=frozenset(),
+            )
         blocked = probe_un_blocked_places(un_graph, scan_places)
         copied = published_mirror() if published_mirror is not None else None
         if copied is not None:
-            return UnStage(rows=rows, blocked_places=blocked, mirror=copied, mirror_source="copied")
+            return UnStage(
+                rows=rows,
+                dataset_facts=dataset_facts,
+                source_documentation=source_documentation,
+                blocked_places=blocked,
+                mirror=copied,
+                mirror_source="copied",
+            )
         built = build_un_mirror(
             registry, graph=un_graph, group_counts=un_group_counts, deadline=deadline
         )
@@ -1147,7 +1168,13 @@ def read_un_stage(
         Refusal(kind=fault.kind, subject=fault.subject, detail=fault.detail)
         for fault in built.faults
     )
-    return UnStage(rows=rows, blocked_places=blocked, mirror=built.mirror or EMPTY_UN_MIRROR)
+    return UnStage(
+        rows=rows,
+        dataset_facts=dataset_facts,
+        source_documentation=source_documentation,
+        blocked_places=blocked,
+        mirror=built.mirror or EMPTY_UN_MIRROR,
+    )
 
 
 def un_registry_refusals(
@@ -1218,13 +1245,22 @@ def successor_refusals(successors: Successors, mirror: UnMirror) -> list[Refusal
 
 def _un_rows(
     registry: Registry, *, un_graph: CatalogueGraph, refusals: list[Refusal]
-) -> dict[str, ProvenanceRow]:
+) -> tuple[dict[str, ProvenanceRow], dict[str, CardFacts], dict[str, SourceDocumentation]]:
     """UN rows, each agency provenance serving as its own source and named
     by the registry's label, as the agency's parent Dataset on the UN
-    deployment is the UN Statistics Division for every agency. An agency
-    whose root group `undata/g/<segment>` is absent is refused."""
+    deployment is the UN Statistics Division for every agency, with each
+    row's licence and its entry's card facts and documentation facts read
+    from the UN deployment (`_citation_facts`). Each row has no `dataset`,
+    so each agency is its own entry and its publisher is the `name` of its
+    `source` arc on the UN deployment (`undata/s/UN`). An agency whose
+    root group `undata/g/<segment>` is absent is refused, and beside a
+    refusal the facts are not read, so a failed facts read cannot hide it:
+    the rows come back with empty facts."""
+    refused_before = len(refusals)
     groups = {agency.provenance: un_root_group(agency) for agency in registry.un_system}
-    arcs = un_graph.node_arcs_many([*groups, *groups.values()], properties=("typeOf", "url"))
+    arcs = without_unresolved(
+        un_graph.node_arcs_many([*groups, *groups.values()], properties=_PROVENANCE_PROPERTIES)
+    )
     rows: dict[str, ProvenanceRow] = {}
     for agency in registry.un_system:
         group = groups[agency.provenance]
@@ -1247,7 +1283,9 @@ def _un_rows(
         )
         if row is not None:
             rows[agency.provenance] = row
-    return rows
+    if len(refusals) > refused_before:
+        return rows, {}, {}
+    return _citation_facts(un_graph, rows, arcs, parents={})
 
 
 def probe_un_blocked_places(un_graph: UnGraph, scan_places: Sequence[str]) -> frozenset[str]:
@@ -1298,11 +1336,14 @@ def _read_published(root: str) -> tuple[CataloguePointer | None, str | None]:
 
 @dataclass(frozen=True, slots=True)
 class _CarriedUn:
-    """The published build's UN rows and refused places, a reader of its UN
+    """The published build's UN rows, the card facts and documentation facts
+    it holds for their entries, its refused places, a reader of its UN
     tables, their `un_mirror_key` (`None` when that build carried them
-    forward), and the build that last read all three from the UN deployment."""
+    forward), and the build that last read them from the UN deployment."""
 
     rows: Mapping[str, ProvenanceRow]
+    dataset_facts: Mapping[str, CardFacts]
+    source_documentation: Mapping[str, SourceDocumentation]
     blocked_places: frozenset[str]
     read_mirror: Callable[[], UnMirror]
     mirror_key: str | None
@@ -1322,9 +1363,12 @@ class _CarriedUn:
     def stage(self, registry: Registry, *, reason: str, refusals: list[Refusal]) -> UnStage:
         """The carried rows of the agencies `registry` still lists, each
         keeping its own segment and taking the registry's current label,
-        with the carried refused places and the carried UN tables, whole. A
-        carried row whose segment is not the registry's is refused, since no
-        UN read has checked the new segment's root group. Carried UN tables
+        with their entries' carried card facts and documentation facts, the
+        carried refused places and the carried UN tables, whole. An entry
+        the source build holds no facts for gets empty `CardFacts` and a
+        `SourceDocumentation` covering no provenance, so it reads as
+        undocumented. A carried row whose segment is not the registry's is
+        refused, since no UN read has checked the new segment's root group. Carried UN tables
         whose excluded series are not the registry's are refused, since
         their variables were admitted under other exclusions, and so are
         carried UN tables holding an agency segment the registry no longer
@@ -1387,8 +1431,13 @@ class _CarriedUn:
             for segment in sorted(mirror.agencies)
             if listed.get(segment) is None or listed[segment] != carried_provenance.get(segment)
         )
+        refs = [entry_ref(row) for row in rows.values()]
         return UnStage(
             rows=rows,
+            dataset_facts={ref: self.dataset_facts.get(ref, CardFacts()) for ref in refs},
+            source_documentation={
+                ref: self.source_documentation.get(ref, SourceDocumentation()) for ref in refs
+            },
             blocked_places=self.blocked_places,
             mirror=mirror,
             mirror_source="carried",
@@ -1480,10 +1529,15 @@ def _carried_base(
 
 
 def _carried_un(base_uri: str, manifest: CatalogueManifest, tables: CatalogueTables) -> _CarriedUn:
-    """The published build's UN rows, refused places and UN tables."""
+    """The published build's UN rows, their entries' card facts and
+    documentation facts, refused places and UN tables."""
     earlier = manifest.un_carried_forward
+    rows = {pid: row for pid, row in tables.provenances.items() if row.data_commons == UN_SYSTEM}
+    refs = {entry_ref(row) for row in rows.values()}
     return _CarriedUn(
-        rows={pid: row for pid, row in tables.provenances.items() if row.data_commons == UN_SYSTEM},
+        rows=rows,
+        dataset_facts={ref: tables.dataset_facts[ref] for ref in refs},
+        source_documentation={ref: tables.source_documentation[ref] for ref in refs},
         blocked_places=tables.un_blocked_places,
         read_mirror=lambda: read_un_mirror(base_uri, manifest),
         mirror_key=_published_un_mirror_key(manifest),
@@ -1628,8 +1682,9 @@ def _un_stage_or_carried(
 
 def _carried_from_build(build_uri: str) -> tuple[_CarriedUn, str]:
     """The UN stage of the build directory at `build_uri`, of any format,
-    to carry forward whole, and the reason the manifest records for it: the
-    build id and format, without the local path, which means nothing beside
+    with the UN facts it holds (`read_build_un_tables`), to carry forward
+    whole, and the reason the manifest records for it: the build id and
+    format, without the local path, which means nothing beside
     the published build. Neither the build's format nor its ISO week is
     checked, so a local build can reuse UN tables without reading the UN
     deployment."""
@@ -1639,6 +1694,8 @@ def _carried_from_build(build_uri: str) -> tuple[_CarriedUn, str]:
         raise CatalogueBuildError(f"--carry-un-from {build_uri!r}: {exc}") from exc
     carried = _CarriedUn(
         rows=found.rows,
+        dataset_facts=found.dataset_facts,
+        source_documentation=found.source_documentation,
         blocked_places=found.blocked_places,
         read_mirror=lambda: found.mirror,
         mirror_key=None,
@@ -1928,8 +1985,8 @@ def _build(
             topics=base.topics,
             scan_places=base.scan_places,
             scan_levels=base.scan_levels,
-            dataset_facts=stage.dataset_facts,
-            source_documentation=stage.source_documentation,
+            dataset_facts={**stage.dataset_facts, **un.dataset_facts},
+            source_documentation={**stage.source_documentation, **un.source_documentation},
             un_blocked_places=un.blocked_places,
             superseded=successors.rows,
         )

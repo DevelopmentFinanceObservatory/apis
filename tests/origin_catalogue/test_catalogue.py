@@ -320,11 +320,21 @@ def test_is_stale_after_fourteen_days() -> None:
         ({"provenances": {WDI: provenance_row(WDI, BASE, segment="wb")}}, "segment"),
         ({"provenances": {UN_WHO: provenance_row(UN_WHO, UN_SYSTEM)}}, "segment"),
         ({"provenances": {"x": provenance_row(WDI, BASE)}}, "is keyed as"),
-        ({"dataset_facts": {}}, "dataset facts miss 3"),
-        ({"source_documentation": {}}, "source documentation miss 3"),
+        ({"dataset_facts": {}}, "dataset facts miss 4"),
+        ({"source_documentation": {}}, "source documentation miss 4"),
         (
-            {"dataset_facts": {**sample_tables().dataset_facts, UN_WHO: CardFacts()}},
+            {"dataset_facts": {**sample_tables().dataset_facts, "dc/d/Unlisted": CardFacts()}},
             "hold 1 unknown",
+        ),
+        (
+            {
+                "dataset_facts": {
+                    ref: facts
+                    for ref, facts in sample_tables().dataset_facts.items()
+                    if ref != UN_WHO
+                }
+            },
+            "miss 1 entry ref",
         ),
         ({"topics": {"undata/topic/who/X": ("undata/who/X",)}}, "at least one leaf"),
         ({"topics": {"dc/topic/Empty": ()}}, "at least one leaf"),

@@ -51,7 +51,9 @@ from search.engine.retrieval.bound_values import (
     walk_key,
 )
 from search.engine.retrieval.coverage import answer_coverage, answer_headline
+from search.engine.retrieval.held_back import merged_held_back
 from search.engine.retrieval.merged_plan import merged_read_plan
+from search.engine.retrieval.read_plan import opted_in
 from search.engine.spec_build import (
     RoleAxisFactInput,
     answer_identity,
@@ -70,6 +72,7 @@ from search.models import (
     ProvenanceRef,
     SlotValue,
     StatVar,
+    TimeWindow,
 )
 from statvar_members import MemberFamily
 
@@ -92,6 +95,7 @@ if TYPE_CHECKING:
         GraphRef,
         Headline,
         PartScope,
+        RequestedWindow,
         ResolvedFacet,
         ResolvedQualifier,
         RoleAxis,
@@ -769,11 +773,14 @@ def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
     versions, or request-bound facet values, and a composite answer beside one that is not
     (`_binds_composite`).
 
-    These fields become group-wide after merging, so a difference would be lost.
+    These fields become group-wide after merging, so a difference would be lost. The
+    windows are compared without their opt-in (`TimeWindow.include`), which each member
+    settles from the runs its own read holds, and which the merge settles again for the
+    union (`_merged_window`).
     """
+    base_window = _without_opt_in(base_spec.resolved.trace.requested_window)
     if any(
-        r.spec.resolved.trace.requested_window != base_spec.resolved.trace.requested_window
-        for r in group[1:]
+        _without_opt_in(r.spec.resolved.trace.requested_window) != base_window for r in group[1:]
     ):
         raise _RefuseMerge
     if any(r.spec.resolved.scope != base_spec.resolved.scope for r in group[1:]):
@@ -1126,10 +1133,49 @@ class _MergedCounts(NamedTuple):
     coverage_index: CoverageIndex
 
 
+def _without_opt_in(window: RequestedWindow | None) -> RequestedWindow | None:
+    """`window` without its opt-in (`TimeWindow.include`): the years it asks for."""
+    return window.model_copy(update={"include": None}) if isinstance(window, TimeWindow) else window
+
+
+def _merged_window(group: list[RegionResult]) -> RequestedWindow | None:
+    """The window the merged answer of `group` requests: the years every member asks for,
+    which the merge gate holds them to (`_check_merge_gates`), opting in to each kind some
+    member's window opts in to. Each member settled its opt-in as the kinds of the runs its
+    read holds inside the window that the request may serve (`facets.settled_opt_in`), so
+    their union is the opt-in the union of the members' runs settles."""
+    window = group[0].spec.resolved.trace.requested_window
+    if not isinstance(window, TimeWindow):
+        return window
+    kinds = {
+        kind
+        for region in group
+        if isinstance(member := region.spec.resolved.trace.requested_window, TimeWindow)
+        for kind in member.include or ()
+    }
+    return window.model_copy(update={"include": sorted(kinds) or None})
+
+
+def _with_merged_held_back(spec: Spec, group: list[RegionResult]) -> Spec:
+    """`spec`, the merged answer of `group` with no merged read plan, stating the runs its
+    members state (`Coverage.held_back`), merged per kind and source and each served as the
+    merged identity's window serves it (`held_back.merged_held_back`): the runs the union of
+    the members' reads holds, as a composite's runs merge its components'."""
+    stated = [held for region in group for held in region.spec.resolved.coverage.held_back or ()]
+    if not stated:
+        return spec
+    held = merged_held_back(spec.definition.identity.requested_window, stated)
+    coverage = spec.resolved.coverage.model_copy(update={"held_back": held})
+    return spec.model_copy(
+        update={"resolved": spec.resolved.model_copy(update={"coverage": coverage})}
+    )
+
+
 def _merged_counts(
     group: list[RegionResult],
     base_spec: Spec,
     *,
+    window: RequestedWindow | None,
     diff_key: tuple[str, str | None] | None,
     reads: ComponentReads | None,
 ) -> _MergedCounts | None:
@@ -1147,9 +1193,12 @@ def _merged_counts(
     identity facet binding, and a resolve of the merged identity keeps a facet by that
     binding, which keeps exactly the facets each member's narrowing kept.
 
-    The result is None, and the merged spec states the coverage, unserved entities and
-    members, data years and continuation the members state (`_merge_coverage`,
-    `_merged_unserved`) and no download, where
+    The plans are read under `window`, the merged answer's (`_merged_window`), whose opt-in
+    each states (`read_plan.opted_in`).
+
+    The result is None, and the merged spec states the coverage, held-back runs, unserved
+    entities and members, data years and continuation the members state (`_merge_coverage`,
+    `_with_merged_held_back`, `_merged_unserved`) and no download, where
 
     - `reads`, the request's clients, is absent;
     - the merge is a composite, which states its components' download and years
@@ -1173,12 +1222,15 @@ def _merged_counts(
         return None
     read = group if diff_key is not None else group[:1]
     coverage_index = reads.coverage.index
+    # Each member's plan was read under every held-back kind its request may serve and states
+    # the opt-in its own runs settle, so it states the merged window's alike.
+    include = (window.include or ()) if isinstance(window, TimeWindow) else ()
     plan = merged_read_plan(
-        [region.served_plans[0] for region in read], coverage_index=coverage_index
+        [opted_in(region.served_plans[0], include) for region in read],
+        coverage_index=coverage_index,
     )
     if plan is None:
         return None
-    window = base_spec.resolved.trace.requested_window
     date_request = (
         None
         if window is None
@@ -1734,10 +1786,18 @@ def _merge_group(
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
     read_members = _read_members(group, merged_slots, diff_key)
+    # The members share the years they ask for and opt in to the kinds any of them does.
+    requested_window = _merged_window(group)
     counted = (
         None
         if read_members is None
-        else _merged_counts(read_members, base_spec, diff_key=diff_key, reads=preview_reads)
+        else _merged_counts(
+            read_members,
+            base_spec,
+            window=requested_window,
+            diff_key=diff_key,
+            reads=preview_reads,
+        )
     )
     text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
@@ -1754,8 +1814,6 @@ def _merge_group(
     identity_entities = _union_identity_entities(group)
     # The merge gate holds every member to the base's open roles.
     open_roles = base_spec.definition.identity.open_roles or ()
-    # All members share this request window; use the base's hashed value.
-    requested_window = base_spec.resolved.trace.requested_window
     # Shared identity facets pass through. build_spec derives provenance from merged slots.
     facet_bindings = base_spec.definition.identity.facets
     facets = _merge_resolved_facets(group, bound_facet_axes)
@@ -1843,7 +1901,9 @@ def _merge_group(
         )
         if composite is None:
             resolved = resolved.stating_data_years(_merged_data_years(group))
-        merged_spec = merged_spec.model_copy(update={"resolved": resolved})
+        merged_spec = _with_merged_held_back(
+            merged_spec.model_copy(update={"resolved": resolved}), group
+        )
 
     merged_spec, merged_probe, facet_warning = _merge_facet_options(
         group, merged_spec, facet_options_for

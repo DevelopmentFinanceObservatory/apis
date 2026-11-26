@@ -699,8 +699,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dfo-spec-kit", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
-    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
+    { name = "dfo-spec-kit", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
+    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
     { name = "pyarrow", specifier = ">=24" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "rfc8785", specifier = ">=0.1.4" },
@@ -777,11 +777,11 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["generation"], marker = "extra == 'resolve'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'formats'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-spec-kit", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
-    { name = "dfo-spec-kit-components", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
-    { name = "dfo-spec-kit-descriptions", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
-    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
-    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
+    { name = "dfo-spec-kit", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
+    { name = "dfo-spec-kit-components", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
+    { name = "dfo-spec-kit-descriptions", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
+    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
+    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
     { name = "fastapi", marker = "extra == 'surface'", specifier = ">=0.138" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'generation'", specifier = ">=2.55" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'sdmx'", specifier = ">=2.55" },
@@ -811,7 +811,7 @@ source = { git = "https://github.com/DevelopmentFinanceObservatory/evals.git?rev
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-evals", version = "2.67.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.15'" },
-    { name = "pydantic-evals", version = "2.74.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
+    { name = "pydantic-evals", version = "2.75.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
 ]
 
 [package.optional-dependencies]
@@ -823,7 +823,7 @@ langfuse = [
 [[package]]
 name = "dfo-spec-kit"
 version = "0.2.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -831,12 +831,12 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-client-contract"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fclient-contract&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fclient-contract&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 
 [[package]]
 name = "dfo-spec-kit-components"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 dependencies = [
     { name = "dfo-spec-kit-descriptions" },
 ]
@@ -844,7 +844,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-descriptions"
 version = "0.2.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -852,7 +852,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-frame-grammar"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 dependencies = [
     { name = "dfo-spec-kit" },
     { name = "pyarrow" },
@@ -862,7 +862,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-provenance-docs"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=2a091441c84093db1751da0914a3d24ded1a88f2#2a091441c84093db1751da0914a3d24ded1a88f2" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1#5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" }
 dependencies = [
     { name = "markdown-it-py" },
 ]
@@ -2534,7 +2534,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "2.74.0"
+version = "2.75.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*'",
@@ -2548,12 +2548,13 @@ dependencies = [
     { name = "httpx2" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
-    { name = "pydantic-graph", version = "2.74.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pydantic-graph", version = "2.75.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/9e/075923c7c0ba8b2f5b7f425ec4f3517ec0cc17ca9ab786a57132b1f20b7f/pydantic_ai_slim-2.74.0.tar.gz", hash = "sha256:e268b3a2b6ab88301c885cfc877c31adcb2b59e326edb46bd91c006fa6a01f36", size = 2762215, upload-time = "2026-11-25T00:00:53.689Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/eb/9116a780abeddce11ea2b5fa3ca8e8a1280650f039b07ee942ab4e573871/pydantic_ai_slim-2.75.0.tar.gz", hash = "sha256:343ed2f1dfa675b64d3cad3ed5d67a9325c50086fb598c366f2d2f732e70445d", size = 2795925, upload-time = "2026-11-25T18:44:10.51Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/77/3864c9883c76280b6f15699b8e8ae528847fe01ab61a49174570e2fb7da7/pydantic_ai_slim-2.74.0-py3-none-any.whl", hash = "sha256:2da94fca2a6b7ac776688654e02b57bdff56ffe09c15b4ea414d23aea575aa73", size = 3166598, upload-time = "2026-11-25T00:00:42.299Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/b8/d13d2e32f4c63080d7c8cb4d62cee6f16e5bacebc6a257d85cf169b2526a/pydantic_ai_slim-2.75.0-py3-none-any.whl", hash = "sha256:eb51d50faf201ea63c8a0243523e21286d535c5cbc956628d6a3eac4afbf429f", size = 3200691, upload-time = "2026-11-25T18:43:58.53Z" },
 ]
 
 [[package]]
@@ -2653,7 +2654,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-evals"
-version = "2.74.0"
+version = "2.75.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*'",
@@ -2664,13 +2665,13 @@ dependencies = [
     { name = "anyio" },
     { name = "logfire-api" },
     { name = "pydantic" },
-    { name = "pydantic-ai-slim", version = "2.74.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pydantic-ai-slim", version = "2.75.0", source = { registry = "https://pypi.org/simple" } },
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/04/e3/0e8615b971d0adad6240fa30eb0dd1f3ff59ca58a68530997e4173f874e4/pydantic_evals-2.74.0.tar.gz", hash = "sha256:30fd68e4676c544c58d97ec5c7a19991ae6dbe40746708ee0f1f9f9caff89d41", size = 103281, upload-time = "2026-11-25T00:00:56.099Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/eb/b0794d81ef0e4ffcd468b80b5d614264e79b81a420136ce356b7bae10a66/pydantic_evals-2.75.0.tar.gz", hash = "sha256:65a355c77dad2917016600b1745d16153c0cf0af9bb85589e828c94a66f752d2", size = 103279, upload-time = "2026-11-25T18:44:12.898Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/39/ee5501bd5d27b286f820609515eaebe3c20dc7b875af6ac74439d03e4f62/pydantic_evals-2.74.0-py3-none-any.whl", hash = "sha256:5a1d8a585aa0ec28dade0c00188aa5c1b97e73e639328ffbc6a94f44213fa007", size = 119259, upload-time = "2026-11-25T00:00:45.657Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/21/4ba39394c5beea335a142a436957d45e4a021ba818dedaefaa5753039143/pydantic_evals-2.75.0-py3-none-any.whl", hash = "sha256:9bbf73fb62eb4bef575ff33b0ccad4548b043cc3bf242e35c0f786e759eda785", size = 119259, upload-time = "2026-11-25T18:44:01.369Z" },
 ]
 
 [[package]]
@@ -2693,7 +2694,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "2.74.0"
+version = "2.75.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*'",
@@ -2706,9 +2707,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/5d/76a99868c6c88e525ea4e207c0d6542109c715ac1ae4429c4b065c2bb3f8/pydantic_graph-2.74.0.tar.gz", hash = "sha256:5ffc0111305657fb1df1a5efc094ed968175838b8ac3731363d10318c754a383", size = 47714, upload-time = "2026-11-25T00:00:57.221Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/e0/53bccd2dbbfe28be45edea5eaadb09eabb1bef3c682381942a3df03bb056/pydantic_graph-2.75.0.tar.gz", hash = "sha256:f5db1e6d31664227564bb936d75f89d9e22b4de0faa567c2c4d3b4e53c336d73", size = 47716, upload-time = "2026-11-25T18:44:13.943Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/50/c4cecfc4f2018d831c3e9af80a46d9bab6bf0b4a349f6874fbb789d97afa/pydantic_graph-2.74.0-py3-none-any.whl", hash = "sha256:fca5f536a6eed8566b10a3d1c761e3c0549638edd03988ffb8d92acc7326697c", size = 54879, upload-time = "2026-11-25T00:00:47.171Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/34/3be28e71d7f2380c39107922a71fcee9667f884919778220992dd518bf98/pydantic_graph-2.75.0-py3-none-any.whl", hash = "sha256:ef4b16e54b7e7613b54dfb3c8d47307833de920c9469576960befea7c12316a9", size = 54878, upload-time = "2026-11-25T18:44:02.771Z" },
 ]
 
 [[package]]
@@ -3217,7 +3218,7 @@ eval = [
     { name = "jsonschema" },
     { name = "langfuse" },
     { name = "pydantic-evals", version = "2.67.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.15'" },
-    { name = "pydantic-evals", version = "2.74.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
+    { name = "pydantic-evals", version = "2.75.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
     { name = "pyyaml" },
 ]
 graph = [
@@ -3262,7 +3263,7 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'sdmx'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["surface", "resolve", "coverage", "sdmx"], marker = "extra == 'engine'", editable = "packages/dfo-data-tools" },
     { name = "dfo-evals", extras = ["langfuse"], marker = "extra == 'eval'", git = "https://github.com/DevelopmentFinanceObservatory/evals.git?rev=732a431e186ca4ee549273fea19f9ec3ea698e07" },
-    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
+    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.138" },
     { name = "google-auth", marker = "extra == 'datasets'", specifier = ">=2.34" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'eval'", specifier = ">=2.34" },
@@ -3297,7 +3298,7 @@ lint = [
 ]
 test = [
     { name = "dfo-analysis-engine", editable = "packages/dfo-analysis-engine" },
-    { name = "dfo-spec-kit-client-contract", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fclient-contract&rev=2a091441c84093db1751da0914a3d24ded1a88f2" },
+    { name = "dfo-spec-kit-client-contract", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fclient-contract&rev=5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1" },
     { name = "frictionless", specifier = ">=5.19.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-split", specifier = ">=0.10.0" },
