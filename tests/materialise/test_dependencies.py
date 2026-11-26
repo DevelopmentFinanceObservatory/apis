@@ -25,6 +25,7 @@ from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
 from materialise.dependencies import (
     Dependencies,
+    applied_horizons,
     build_dependencies,
     decode_dependencies,
     dependency_changes,
@@ -40,7 +41,12 @@ from origin_catalogue.origins import BASE, DFO, UN_SYSTEM
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.code_index.support import INDEX_FIXTURE
 from tests.engine._fake_coverage import build_coverage_index
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
+from tests.origin_catalogue.fake_catalogue import (
+    FakeCatalogue,
+    dev_provenance_nodes,
+    documenting,
+    provenance_row,
+)
 
 from .conftest import FakeGraphReader
 
@@ -82,6 +88,7 @@ def _stored(**changes: Any) -> dict[str, object]:
         pytest.param(_BASE.as_json(), (), id="identical"),
         pytest.param(None, ("schema",), id="no-stored-fingerprint"),
         pytest.param({**_BASE.as_json(), "schema": 1}, ("schema",), id="earlier-schema"),
+        pytest.param({**_BASE.as_json(), "schema": 2}, ("schema",), id="schema-two"),
         pytest.param({"schema": 2, "members": "x"}, ("schema",), id="malformed"),
         pytest.param({**_BASE.as_json(), "imported_data": 7}, ("schema",), id="non-text-import"),
         pytest.param(_stored(members=members_digest(["A"])), ("members",), id="members"),
@@ -345,6 +352,35 @@ def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
     assert dependency_changes(stored.as_json(), current) == (f"composites:{DAC2A_BILATERAL}",)
 
 
+_MARKED = (("partial:provenance/OECDDAC2A", "2025"),)
+
+
+@pytest.mark.parametrize(
+    ("stored_horizon", "current_horizon", "expected"),
+    [
+        pytest.param(_MARKED, (), ("held_back:partial:provenance/OECDDAC2A",), id="mark-to-none"),
+        pytest.param((), _MARKED, ("held_back:partial:provenance/OECDDAC2A",), id="mark-appears"),
+        pytest.param(_MARKED, _MARKED, (), id="equal-horizons"),
+    ],
+)
+def test_a_moved_partial_mark_changes_the_fingerprint_while_the_sources_hold(
+    stored_horizon, current_horizon, expected
+):
+    stored = replace(_BASE, held_back=stored_horizon).as_json()
+    assert dependency_changes(stored, replace(_BASE, held_back=current_horizon)) == expected
+
+
+def test_applied_horizons_records_marks_and_declared_projections():
+    crs = "provenance/OECDCreditorReportingSystem"
+    imf = "provenance/IMFWorldEconomicOutlook"
+    with bound_catalogue(documenting({crs: dev_provenance_nodes()[crs]})):
+        assert applied_horizons([crs, imf, "provenance/Unlisted"]) == (
+            (f"partial:{crs}", "2025"),
+            (f"projected:{imf}", "Estimated"),
+        )
+    assert applied_horizons([crs]) == ()
+
+
 def test_a_source_with_no_date_on_both_sides_is_unchanged():
     current = replace(_BASE, sources=(("provenance/IMF", None),))
     assert dependency_changes(current.as_json(), current) == ()
@@ -399,7 +435,7 @@ def test_build_dependencies_records_what_the_run_dispatched():
     assert dependencies.recipes == (recipe_dependency_fingerprint(_RECIPE_ID),)
     assert dependencies.window == (2015, 2026)
     assert dependencies.as_json() == {
-        "schema": 2,
+        "schema": 3,
         "members": members_digest(["A", "B"]),
         "sources": [
             {"ref": "provenance/W", "token": None},
@@ -407,6 +443,7 @@ def test_build_dependencies_records_what_the_run_dispatched():
         ],
         "conversion_sources": [{"ref": "provenance/Tables", "token": "2026-09-30"}],
         "recipes": [{"id": _RECIPE_ID, "digest": recipe_dependency_fingerprint(_RECIPE_ID)[1]}],
+        "held_back": [],
         "window": {"start_year": 2015, "end_year": 2026},
     }
 

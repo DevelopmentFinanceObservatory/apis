@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -46,7 +45,7 @@ from materialise.provenance_doc import (
     read_provenance_doc,
     read_source_citations,
 )
-from origin_catalogue import BASE, UN_SYSTEM, SourceRef
+from origin_catalogue import BASE, UN_SYSTEM, DatasetRef, SourceRef
 from origin_catalogue.card_facts import DOCUMENT_PROPERTIES, LICENCE_PROPERTIES
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
@@ -262,37 +261,38 @@ class TestOrigin:
     def test_a_provenance_in_a_dataset_uses_its_own_row_not_its_siblings(self):
         graph = FakeGraphReader(
             arcs={
-                "undata/p/SDG": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/UN",)},
-                "dc/d/UN": {"typeOf": ("Dataset",)},
+                "dc/base/Child1": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/Dataset1",)},
+                "dc/d/Dataset1": {"typeOf": ("Dataset",)},
             },
             subjects={
-                ("dc/d/UN", "isPartOf"): SubjectPage(
-                    dcids=("undata/p/SDG", "undata/p/Unlisted"), truncated=False
+                ("dc/d/Dataset1", "isPartOf"): SubjectPage(
+                    dcids=("dc/base/Child1", "dc/base/Child2"), truncated=False
                 )
             },
         )
-        # The admitted sibling is its own source, so the Dataset's two children disagree.
+        # Both rows name the Dataset, so the child climbs to it, and their sources disagree.
+        dataset = DatasetRef(ref="dc/d/Dataset1", label="Dataset1")
         catalogue = restrictive_catalogue(
             provenances=[
-                provenance_row("undata/p/SDG", UN_SYSTEM, segment="sdg"),
-                provenance_row("undata/p/Unlisted", UN_SYSTEM, segment="unlisted"),
+                provenance_row("dc/base/Child1", BASE, source="dc/s/WorldBank", dataset=dataset),
+                provenance_row("dc/base/Child2", BASE, source="dc/s/OECD", dataset=dataset),
             ]
         )
 
-        doc = read_provenance_doc(graph, "undata/p/SDG", catalogue=catalogue)
-        dataset_doc = read_provenance_doc(graph, "dc/d/UN", catalogue=catalogue)
+        doc = read_provenance_doc(graph, "dc/base/Child1", catalogue=catalogue)
+        dataset_doc = read_provenance_doc(graph, "dc/d/Dataset1", catalogue=catalogue)
 
-        assert doc.source == SourceRef(ref="undata/p/SDG", label="undata/p/SDG")
-        assert doc.data_commons == UN_SYSTEM
-        assert dataset_doc.provenances == ("undata/p/SDG", "undata/p/Unlisted")
+        assert doc.provenances == ("dc/base/Child1", "dc/base/Child2")
+        assert doc.source == SourceRef(ref="dc/s/WorldBank", label="dc/s/WorldBank")
+        assert doc.data_commons == BASE
         assert dataset_doc.source is None
         assert "details.source" in dataset_doc.gaps
 
     def test_a_provenance_with_a_catalogue_row_is_named_from_the_row(self):
         graph = FakeGraphReader(
             arcs={
-                "undata/p/WHO": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/UN",)},
-                "undata/p/Withheld": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/UN",)},
+                "dc/base/WHO": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/UN",)},
+                "dc/base/Withheld": {"typeOf": ("Provenance",), "isPartOf": ("dc/d/UN",)},
                 "dc/d/UN": {
                     "typeOf": ("Dataset",),
                     "name": ("United Nations Statistics Division",),
@@ -300,24 +300,92 @@ class TestOrigin:
             },
             subjects={
                 ("dc/d/UN", "isPartOf"): SubjectPage(
-                    dcids=("undata/p/WHO", "undata/p/Withheld"), truncated=False
+                    dcids=("dc/base/WHO", "dc/base/Withheld"), truncated=False
                 )
             },
         )
-        row = replace(
-            provenance_row("undata/p/WHO", UN_SYSTEM, segment="who"),
+        # The row names the Dataset, so the door climbs to it and its name competes.
+        row = provenance_row(
+            "dc/base/WHO",
+            BASE,
+            dataset=DatasetRef(ref="dc/d/UN", label="United Nations Statistics Division"),
             name="World Health Organization (WHO)",
         )
         catalogue = restrictive_catalogue(provenances=[row])
 
-        doc = read_provenance_doc(graph, "undata/p/WHO", catalogue=catalogue)
+        doc = read_provenance_doc(graph, "dc/base/WHO", catalogue=catalogue)
         dataset_doc = read_provenance_doc(graph, "dc/d/UN", catalogue=catalogue)
         # The catalogue withholds this sibling, so it has no row to be named from.
-        rowless = read_provenance_doc(graph, "undata/p/Withheld", catalogue=catalogue)
+        rowless = read_provenance_doc(graph, "dc/base/Withheld", catalogue=catalogue)
 
         assert doc.name_of_source == "World Health Organization (WHO)"
         assert dataset_doc.name_of_source == "United Nations Statistics Division"
         assert rowless.name_of_source == "United Nations Statistics Division"
+
+    @pytest.mark.parametrize(
+        ("origin", "dataset", "provenances", "source_url", "subject_reads"),
+        [
+            # A UN agency is `isPartOf` the UNSD Dataset yet catalogued as its own entry.
+            pytest.param(
+                UN_SYSTEM, None, ("undata/p/WHO",), "https://www.who.int/data", 0, id="own-entry"
+            ),
+            pytest.param(
+                BASE,
+                DatasetRef(ref="undata/d/UNSD", label="UNSD"),
+                ("undata/p/WHO", "undata/p/ILO"),
+                "https://unstats.un.org/",
+                1,
+                id="dataset-entry",
+            ),
+        ],
+    )
+    def test_a_provenance_takes_its_entry_shape_from_its_catalogue_row(
+        self, origin, dataset, provenances, source_url, subject_reads
+    ):
+        graph = FakeGraphReader(
+            arcs={
+                "undata/p/WHO": {
+                    "typeOf": ("Provenance",),
+                    "isPartOf": ("undata/d/UNSD",),
+                    "source": ("undata/s/UN",),
+                    "url": ("https://www.who.int/data",),
+                },
+                "undata/p/ILO": {
+                    "typeOf": ("Provenance",),
+                    "isPartOf": ("undata/d/UNSD",),
+                    "url": ("https://ilostat.ilo.org/",),
+                },
+                "undata/d/UNSD": {
+                    "typeOf": ("Dataset",),
+                    "isPartOf": ("undata/s/UN",),
+                    "url": ("https://unstats.un.org/",),
+                },
+                "undata/s/UN": {"name": ("United Nations",)},
+            },
+            subjects={
+                ("undata/d/UNSD", "isPartOf"): SubjectPage(
+                    dcids=("undata/p/WHO", "undata/p/ILO"), truncated=False
+                )
+            },
+        )
+        catalogue = restrictive_catalogue(
+            provenances=[
+                provenance_row(
+                    f"undata/p/{agency}",
+                    origin,
+                    segment=agency.lower() if origin == UN_SYSTEM else None,
+                    dataset=dataset,
+                )
+                for agency in ("WHO", "ILO")
+            ]
+        )
+
+        doc = read_provenance_doc(graph, "undata/p/WHO", catalogue=catalogue)
+
+        assert doc.provenances == provenances
+        assert doc.source_url == source_url
+        assert doc.publisher == "United Nations"
+        assert graph.calls["node_subjects"] == subject_reads
 
     def test_with_the_un_origin_off_a_un_provenance_is_not_labelled(self):
         graph = FakeGraphReader(arcs={"undata/p/SDG": {"typeOf": ("Provenance",)}})

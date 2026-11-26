@@ -600,10 +600,13 @@ def _offers_headline(identity: BaseIdentity, dataset: str) -> bool:
 
 
 def identity_window(identity: BaseIdentity) -> TimeWindow | Literal["all", "latest"]:
-    """`identity`'s requested window in the form `window_class` reads."""
+    """`identity`'s requested window in the form `window_class` reads, a range keeping its
+    opt-in (`TimeWindow.include`)."""
     window = identity.requested_window
     if isinstance(window, IdentityWindowRange):
-        return TimeWindow(start_year=window.start_year, end_year=window.end_year)
+        return TimeWindow(
+            start_year=window.start_year, end_year=window.end_year, include=window.include
+        )
     return window.kind
 
 

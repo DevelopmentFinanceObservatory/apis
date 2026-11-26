@@ -22,12 +22,16 @@ class RequestedWindow:
     year `election_window` ends it at. Election and the row filter read `end_year` alike.
     The applied window reads the mark, so data ending before `end_year` is the whole of
     what the definition asked for (`compute_applied_window`).
+
+    `include` is the identity window's opt-in: the kinds of incomplete rows the read serves,
+    `"partial"` and `"projected"`. Empty serves neither.
     """
 
     kind: Literal["all", "latest", "range"]
     start_year: int | None = None
     end_year: int | None = None
     end_unstated: bool = False
+    include: frozenset[str] = frozenset()
 
 
 def current_year() -> int:

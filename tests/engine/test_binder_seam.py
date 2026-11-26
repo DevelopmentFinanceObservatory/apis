@@ -35,15 +35,18 @@ from search.engine.binders.jev_client import JevError
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.errors import GraphInfraError
 from search.engine.interpret import Recall
 from search.engine.interpretation import Interpretation
-from search.engine.qualifier_match import declared_measures_named
+from search.engine.qualifier_match import CodedQualifier, declared_measures_named
+from search.engine.quantity import serves_every_form
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, phase_rank_bind
 from search.engine.region.candidate_collapse import _record_unheld_values, _unheld_requirement
 from search.engine.region.phase_rank_bind import (
     _logged_verdicts,
     _phase_bind,
+    _read_quantity_answer,
     _read_stated_quantity,
     _stand_in_declined,
     judge_value_requirements,
@@ -58,7 +61,7 @@ from search.engine.region.state import (
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.source_code import SeriesCodeMembers
-from search.models import GraphRef, ResolvedQualifier
+from search.models import GraphRef, Operation, ResolvedQualifier
 from tests.engine._assemble_fixtures import _make_spec
 from tests.engine._binders import FakeAsk, FixedBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -113,14 +116,24 @@ class _NoCallLLM:
         raise AssertionError(f"no model call expected; got {schema.__name__!r}")
 
 
-def _state(*, llm: SupportsLLM, binder: Binder | None = None) -> ResolveState:
-    """A part whose seated menu is `_MENU`. The services bind does not read are unset."""
+def _state(
+    *,
+    llm: SupportsLLM,
+    binder: Binder | None = None,
+    variable: str = "female population",
+    operations: tuple[Operation, ...] = (),
+    qualifiers: tuple[CodedQualifier, ...] | None = None,
+) -> ResolveState:
+    """A part whose seated menu is `_MENU`, asking for `variable` under `operations`. The
+    services bind does not read are unset."""
     state = ResolveState(
-        variable="female population",
+        variable=variable,
         entities=[],
         date_request=None,
-        detect_query="female population",
-        role_query="female population",
+        detect_query=variable,
+        role_query=variable,
+        operations=operations,
+        qualifiers=qualifiers,
         pac=True,
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
@@ -320,6 +333,184 @@ class _QuantityRecordingBinder(GeminiBinder):
     async def read_quantity(self, request, *, llm):
         self.quantity_requests.append(request)
         return NO_QUANTITY
+
+
+_GNI_REF = GraphRef(ref="GrossNationalIncome", label="Gross national income")
+_LISTED = [_GNI_REF]
+# ODA, and ODA divided by GNI, whose denominator the quantity read lists.
+_FLOW_SHAPES = [
+    dataclasses.replace(_shape("oda"), pop_type_dcid="FinancialFlow", meas_prop_dcid="amount"),
+    dataclasses.replace(
+        _shape("oda_per_gni"),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_denom_dcid=_GNI_REF.ref,
+    ),
+]
+
+
+def _read(form: str | None = None, base: str | None = None, index: int | None = None):
+    return QuantityOutput(stated_form=form, base_words=base, denominator_index=index)
+
+
+def _share_of(phrase: str) -> tuple[Operation, ...]:
+    return (Operation(verb="share_of", phrase=phrase),)
+
+
+@pytest.mark.parametrize(
+    ("variable", "operations", "read", "named", "denominator"),
+    [
+        pytest.param(
+            "share of bilateral ODA",
+            _share_of("share of bilateral ODA"),
+            _read("share"),
+            set(),
+            None,
+            id="share-of-the-whole-variable",
+        ),
+        pytest.param(
+            "Share of  bilateral ODA",
+            _share_of("share of bilateral ODA"),
+            _read(),
+            set(),
+            None,
+            id="casing-and-spacing-aside",
+        ),
+        pytest.param(
+            "the share of bilateral ODA",
+            _share_of("share of bilateral ODA"),
+            _read("share"),
+            set(),
+            None,
+            id="joining-words-aside",
+        ),
+        pytest.param(
+            "share of aid from China",
+            _share_of("share of aid to China"),
+            _read("share"),
+            {"share"},
+            None,
+            id="flow-cue-kept",
+        ),
+        pytest.param(
+            "share of bilateral ODA",
+            _share_of("share of bilateral ODA"),
+            _read("share", "ODA", 1),
+            set(),
+            None,
+            id="base-quoted-in-the-whole-variable",
+        ),
+        pytest.param(
+            "aid in total aid",
+            _share_of("aid in total aid"),
+            _read("share"),
+            set(),
+            None,
+            id="stated-share-with-no-base",
+        ),
+        # A share_of over part of the variable, and a growth, keep the read's form and
+        # denominator.
+        pytest.param(
+            "ODA as a share of GNI",
+            _share_of("share of GNI"),
+            _read("share", "GNI", 0),
+            {"share"},
+            _GNI_REF,
+            id="partial-phrase",
+        ),
+        pytest.param(
+            "growth rate of ODA",
+            (Operation(verb="growth", phrase="growth rate of ODA"),),
+            _read("rate"),
+            {"rate"},
+            None,
+            id="growth",
+        ),
+    ],
+)
+def test_a_share_of_spanning_the_variable_reads_it_as_the_numerator_measure(
+    variable: str,
+    operations: tuple[Operation, ...],
+    read: QuantityOutput,
+    named: set[str],
+    denominator: GraphRef | None,
+):
+    """A `share_of` whose phrase is the whole variable names the share and its whole, so
+    the series is held to no share or rate, the read's share and base are not read, and the
+    part reads as its measure's level. Any other operation phrase owns nothing."""
+    state = _state(llm=_NoCallLLM(), variable=variable, operations=operations)
+
+    assert _read_quantity_answer(state, read, _LISTED, _FLOW_SHAPES)
+
+    assert set(state.quantity_requirement.named) == named
+    named_denominator = state.named_denominator
+    assert (named_denominator.ref if named_denominator is not None else None) == denominator
+
+
+@pytest.mark.parametrize(
+    ("operations", "well_formed"),
+    [
+        pytest.param(_share_of("share of bilateral ODA"), False, id="spanning"),
+        pytest.param((), True, id="ungrounded-without-an-operation"),
+    ],
+)
+def test_a_denominator_index_outside_the_list_is_malformed_under_a_spanning_share_of(
+    operations: tuple[Operation, ...], well_formed: bool
+):
+    """A spanning `share_of` sets the read's base aside, but an index past "none of these"
+    is a malformed output first, and the part refuses ``variable_not_resolved``. Without the
+    operation an index on no quoted base is dropped as ungrounded."""
+    state = _state(llm=_NoCallLLM(), variable="share of bilateral ODA", operations=operations)
+
+    assert _read_quantity_answer(state, _read("share", None, 5), _LISTED, _FLOW_SHAPES) is (
+        well_formed
+    )
+
+
+def test_a_share_of_spanning_the_variable_keeps_the_forms_its_qualifiers_name():
+    """Only the variable's own share wording is the operation's: a qualifier phrase beside
+    it ("as a percentage of GNI") still names a share."""
+    variable = "share of bilateral ODA"
+    state = _state(
+        llm=_NoCallLLM(),
+        variable=variable,
+        operations=_share_of(variable),
+        qualifiers=(CodedQualifier(phrase="as a percentage of GNI", spans=(), matches=()),),
+    )
+
+    assert state.quantity_requirement.named == {"share"}
+
+
+def test_a_share_of_the_whole_variable_leaves_its_measure_nouns_judged():
+    """A base the read quotes in a share_of spanning "share of GDP" names no denominator,
+    so "GDP" stays a measure noun admissibility judges."""
+    variable = "share of GDP"
+    state = _state(llm=_NoCallLLM(), variable=variable, operations=_share_of(variable))
+
+    assert _read_quantity_answer(state, _read("share", "GDP", 1), _LISTED, _FLOW_SHAPES)
+
+    assert state.named_denominator is None
+    assert phase_rank_bind._named_measure_nouns(state, declared_measures_named(variable))
+
+
+def test_a_failed_denominator_read_is_not_raised_for_the_share_of_s_own_base(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Under a share_of spanning the variable nothing about the series is judged on the
+    denominators, so a failed read of them is held and the level is admitted."""
+
+    def failing_read(*_args, **_kwargs):
+        raise GraphInfraError("graph down")
+
+    monkeypatch.setattr(phase_rank_bind, "read_denominators", failing_read)
+    variable = "share of bilateral ODA"
+    state = _state(llm=_NoCallLLM(), variable=variable, operations=_share_of(variable))
+    asyncio.run(phase_rank_bind._read_denominators(state, _FLOW_SHAPES))
+    denominators = phase_rank_bind._quantity_denominators(state, _FLOW_SHAPES)
+
+    # The failed read lists no denominator, so index 0 is "none of these".
+    assert _read_quantity_answer(state, _read("share", "ODA", 0), denominators, _FLOW_SHAPES)
+    assert serves_every_form(state.quantity_requirement, _FLOW_SHAPES[0])
 
 
 def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():

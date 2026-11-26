@@ -172,11 +172,13 @@ def sdmx(
     *,
     variables: Sequence[str] = (GDP,),
     rates: Rates | None = None,
+    honour_periods: bool = False,
 ) -> SdmxClient:
     """Serves every recorded observation of the facets, variables and places a read names,
     each of `variables` holding the same observations, and the default place scope's
     availability from the same pairs. Given `rates`, it serves the IMF recipe's exchange
-    rate table from them."""
+    rate table from them. With `honour_periods` it serves only the periods a read's
+    `c[TIME_PERIOD]` asks for, `LATEST` as each series' newest, as the SDMX route does."""
     availability = graph(facets_by_place, currencies={}, variables=variables).scope_availability()
     by_id = {
         candidate.facet_id: candidate for facets in facets_by_place.values() for candidate in facets
@@ -188,6 +190,15 @@ def sdmx(
         wanted = set(str(request.url.params.get("c[facetId]", "")).split(","))
         places = str(request.url.params.get("c[observationAbout]", "")).split(",")
         named = str(request.url.params.get("c[variableMeasured]", "")).split(",")
+        asked = request.url.params.get("c[TIME_PERIOD]") if honour_periods else None
+
+        def served(series: Mapping[str, float]) -> list[tuple[str, float]]:
+            if asked is None:
+                return list(series.items())
+            if asked == "LATEST":
+                return [max(series.items())] if series else []
+            return [(year, value) for year, value in series.items() if year in asked.split(",")]
+
         rows = [
             f"dataflow,DC:DF_OBS(1.0.0),I,{variable},{place},{by_id[facet_id].unit or _NONE},"
             f"{by_id[facet_id].measurement_method or _NONE},P1Y,{by_id[facet_id].provenance_id},{year},{value!r},,"
@@ -196,7 +207,7 @@ def sdmx(
             if variable in named
             for (place, facet_id), series in values.items()
             if place in places and facet_id in wanted and facet_id in by_id
-            for year, value in series.items()
+            for year, value in served(series)
         ]
         return httpx.Response(
             200,

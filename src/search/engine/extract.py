@@ -28,6 +28,7 @@ from entity_resolution.pack import (
     is_stored_name,
     longest_stored_name_tokens,
 )
+from materialise.held_back import HELD_KINDS
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
@@ -66,6 +67,7 @@ from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
 from search.models import (
     MAX_FORECAST_TARGET_YEAR,
+    HeldKind,
     Operation,
     OperationAxis,
     OperationVerb,
@@ -308,11 +310,26 @@ class DateRequest:
     answer can settle on (`read_window`), so the span it settles on was confirmed in full.
     The answer then reads the newest years its series hold and states them as a plain range
     (`region.trailing.settle_trailing`).
+
+    `reads_held` holds the kinds of held-back year the request may serve, which its read
+    serves (`read`) until the answer settles which of them its window holds
+    (`region.facets.settled_opt_in`): every kind for a window the request's own words close,
+    a point or a range with an end year, and the posted `include` for a resubmitted
+    identity. It survives narrowing (`region.convertibility.narrowed_request`), so a
+    narrowed window settles again. `window.include` is the settled opt-in, the one the
+    request's identity carries, and is not copied from one request to another.
+
+    `posted_opt_in` marks a resubmitted range whose posted `include` stands as it was
+    posted, whatever runs its window holds, so Search answers under the posted spec_id
+    and a stored identity keeps resolving once its partial year completes. A window
+    narrowed from it (`region.convertibility.narrowed_request`) settles again.
     """
 
     window: TimeWindow | None
     latest: bool
     trailing: TrailingSpan | None = None
+    reads_held: frozenset[HeldKind] = frozenset()
+    posted_opt_in: bool = False
 
     def __post_init__(self) -> None:
         # A request carries exactly one of `window` or `latest`.
@@ -326,6 +343,18 @@ class DateRequest:
             or self.window.end_year - self.window.start_year + 1 != self.trailing.years
         ):
             raise ValueError("DateRequest: a trailing span needs a window of its years")
+        if self.reads_held and (self.window is None or self.trailing is not None):
+            raise ValueError("DateRequest: only a window that does not trail reads held years")
+        if self.posted_opt_in and (self.window is None or self.trailing is not None):
+            raise ValueError("DateRequest: only a window that does not trail posts an opt-in")
+
+    @property
+    def read(self) -> TimeWindow | None:
+        """The window a read of this request reads: `window`, opting in to the held-back
+        years `reads_held` names."""
+        if not self.reads_held or self.window is None:
+            return self.window
+        return self.window.model_copy(update={"include": sorted(self.reads_held)})
 
     @property
     def judged(self) -> DateRequest:
@@ -347,10 +376,10 @@ class DateRequest:
 def read_window(date_request: DateRequest | None) -> TimeWindow | None:
     """The years a read confirming an answer's members reads for `date_request`: for a
     trailing span, every span of its count ending in its judged years (`DateRequest.judged`),
-    the judged years widened back by `TrailingSpan.years - 1`; otherwise its `window`. None
-    for a latest or dateless request."""
+    the judged years widened back by `TrailingSpan.years - 1`; otherwise the window it reads
+    (`DateRequest.read`). None for a latest or dateless request."""
     if date_request is None or date_request.trailing is None:
-        return None if date_request is None else date_request.window
+        return None if date_request is None else date_request.read
     judged = date_request.judged.window
     assert judged is not None and judged.start_year is not None
     return TimeWindow(
@@ -372,7 +401,9 @@ def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
     """Combine extracted dates. Bounds take precedence over `latest`.
 
     A lone span counted back from now (`ExtractedDate.trailing_years`) yields a trailing
-    request over the calendar years its words cover (`DateRequest.trailing`). Return
+    request over the calendar years its words cover (`DateRequest.trailing`). Any other
+    window with an end year reads every held-back year until the answer settles its opt-in
+    (`DateRequest.reads_held`). Return
     `None` when no date bound parses and no `latest` entry exists.
     """
     if not dates:
@@ -406,6 +437,7 @@ def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
                 end_year=max(ends) if ends else None,
             ),
             latest=False,
+            reads_held=HELD_KINDS if ends else frozenset(),
         )
     if has_latest:
         return DateRequest(window=None, latest=True)

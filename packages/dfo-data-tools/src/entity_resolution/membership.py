@@ -3,8 +3,11 @@
 Every membership names its authority, whether that authority dates its rows, the entity classes
 it admits, and the projections it records. A projection splits the members by class:
 
-- `countries`, the default: countries that exist today and belong to the United Nations at the
-  date asked. Resolvekit's curated, dated UN membership is the authority for this class.
+- `countries`, the default: countries that exist today whose United Nations membership has not
+  ended by the date asked and which were sovereign by then. A country is sovereign from
+  resolvekit's `valid_from` where it records one, else from the policy file's `sovereign_from`,
+  else from its UN entry. Resolvekit's curated, dated UN membership is the authority for this
+  class.
 - `other_states`: states outside the UN, from the declared list in `data/membership_policy.json`,
   which names the source of the class.
 - `territories`: every other country that exists today, which leaves dependent territories.
@@ -25,6 +28,7 @@ can read."""
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import json
 from collections.abc import Iterable, Iterator, Mapping
@@ -58,6 +62,8 @@ REGION_CLASSES: tuple[RegionClass, ...] = get_args(RegionClass)
 GEO_DOMAIN = "geo"
 MEMBERSHIP_INCOMPLETE = "membership_incomplete"
 _POLICY_FILE = "membership_policy.json"
+# Names the rule `Sovereignty.classify` applies; change it with the rule.
+CLASSING_RULE = "sovereign-and-un-unended"
 
 
 class Projection(StrEnum):
@@ -134,6 +140,7 @@ class PolicyData:
     root: str
     compositions: Mapping[str, tuple[str, ...]]
     other_states: frozenset[str]
+    sovereign_from: Mapping[str, date]
     incomplete_region_projections: frozenset[Projection]
 
 
@@ -148,6 +155,10 @@ def policy_data() -> PolicyData:
             row["region"]: tuple(row["members_from"]) for row in raw["region_compositions"]
         },
         other_states=frozenset(raw["other_states"]["members"]),
+        sovereign_from={
+            member: date.fromisoformat(day)
+            for member, day in raw["sovereign_from"]["members"].items()
+        },
         incomplete_region_projections=frozenset(
             Projection(name) for name in raw["region_gaps"]["projections"]
         ),
@@ -169,23 +180,40 @@ class Row:
             self.valid_until is None or day < self.valid_until
         )
 
+    def unended(self, day: date) -> bool:
+        """Whether the row has not ended by `day`: unbounded or ending after it."""
+        return self.valid_until is None or day < self.valid_until
+
 
 @dataclass(frozen=True, slots=True)
 class Sovereignty:
     """Classes a country member into exactly one of the four country projections.
 
-    `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, and `other_states`
-    the declared states outside the UN."""
+    A member is a country on a day when its UN membership has not ended by then (some UN row has
+    no `valid_until` or one after the day) and the day is on or after its sovereign start. The
+    start is `starts[member]` where one is recorded, else the member's UN entry. Switzerland,
+    which joined in 2002, is a country in 1995 because `starts` dates it from 1945. The rule
+    never reads today's date.
+
+    `states` holds the UN rows, `dissolved` resolvekit's dissolved countries, `other_states`
+    the declared states outside the UN, and `starts` the day each state became sovereign where
+    that is before its UN entry."""
 
     states: Mapping[str, tuple[Row, ...]]
     dissolved: frozenset[str]
     other_states: frozenset[str]
+    starts: Mapping[str, date] = field(default_factory=dict)
 
     def classify(self, member: str, day: date) -> Projection:
         """The country projection `member` falls in on `day`."""
         if member in self.dissolved:
             return Projection.FORMER_STATES
-        if any(row.active(day) for row in self.states.get(member, ())):
+        rows = self.states.get(member, ())
+        start = self.starts.get(member)
+        if start is None:
+            if any(row.active(day) for row in rows):
+                return Projection.COUNTRIES
+        elif start <= day and any(row.unended(day) for row in rows):
             return Projection.COUNTRIES
         if member in self.other_states:
             return Projection.OTHER_STATES
@@ -274,17 +302,20 @@ class Membership:
     def effective_date(self, as_of: date | None = None) -> date | None:
         """The latest membership change on or before `as_of` (today when `None`).
 
+        A change is a row bound, or for a country member in the group on `as_of` its sovereign
+        start or a bound of its UN rows, since those move which projection it falls in.
         `None` for an undated membership, whose composition carries no date."""
         day = self._day(as_of)
         if not self.dated:
             return None
-        bounds = (
-            bound
-            for row in self.rows
-            for bound in (row.valid_from, row.valid_until)
-            if bound is not None and bound <= day
-        )
-        return max(bounds, default=None)
+        bounds = [bound for row in self.rows for bound in (row.valid_from, row.valid_until)]
+        for row in self.rows:
+            if row.member_class != COUNTRY_CLASS or not row.active(day):
+                continue
+            bounds.append(self.sovereignty.starts.get(row.member))
+            for un_row in self.sovereignty.states.get(row.member, ()):
+                bounds.extend((un_row.valid_from, un_row.valid_until))
+        return max((b for b in bounds if b is not None and b <= day), default=None)
 
     def _day(self, as_of: date | None) -> date:
         if as_of is None:
@@ -411,11 +442,26 @@ class MembershipPolicy:
 
 
 def authority(resolver: Resolver, name: str) -> Authority:
-    """An authority read from the resolver's bundled data."""
+    """An authority read from the resolver's bundled data.
+
+    The version names the resolvekit data, the classing rule (`CLASSING_RULE`), and a digest of
+    the bytes of `data/membership_policy.json`, so it moves when any input to a member's class
+    moves."""
     return Authority(
         name=name,
-        version=f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}",
+        version=(
+            f"resolvekit {resolvekit.__version__}, data {resolver.data_version_summary()}, "
+            f"classing {CLASSING_RULE} policy {_policy_digest()}"
+        ),
     )
+
+
+def _policy_bytes() -> bytes:
+    return (importlib.resources.files("entity_resolution") / "data" / _POLICY_FILE).read_bytes()
+
+
+def _policy_digest() -> str:
+    return hashlib.sha256(_policy_bytes()).hexdigest()[:8]
 
 
 def to_dcid(entity_id: str) -> str:

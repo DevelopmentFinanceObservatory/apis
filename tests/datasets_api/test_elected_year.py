@@ -29,7 +29,7 @@ from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader, ManifestFacts
 from datasets_api.adapter import build_identity_document, to_materialisation_request
 from datasets_api.current import DefinitionDeps, serve_current, serve_current_head
-from datasets_api.manifest import version_document, year_coverage
+from datasets_api.manifest import version_document, year_members
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions, Scope
 from datasets_api.shape import resolve_shape
@@ -645,6 +645,7 @@ def test_a_range_head_records_no_series_read_and_holds(version_store, window: Re
         "conversion_sources",
         "recipes",
         "window",
+        "held_back",
     }
     rig.past_recheck()
 
@@ -771,7 +772,7 @@ def _counted(
         read_series={request.stat_var: ReadSeries(facet_ids=("usd",))},
         latest_years={request.stat_var: LatestYear(elected=None, served=year)},
     )
-    return year_coverage(cast("MaterialisationResult", result), requests=[request], index=index)
+    return year_members(cast("MaterialisationResult", result), requests=[request], index=index)
 
 
 @pytest.mark.parametrize(

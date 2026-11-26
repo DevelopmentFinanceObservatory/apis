@@ -16,14 +16,15 @@ its own pin alone (`ComponentReads.catalogue`), as the mint reads a component
 (`datasets_api.serve`), whatever source scope the part's own reads ran under. The previews are
 composed under the composite's rules (`scope.composite.compose_observations`).
 
-A streamed request reads the preview in a trailing task (`CompositeRelaunch`),
-launched once the answer is minted, so it adds nothing before the `response` event. A
-buffered request reads it inline (`with_composite_observations`). The composite's continuation
-(`modelled_values`) is then the reads' (`SpecObservations.continued`). A request reading no
-preview states the continuation the components' read plans serve in the years each serves
-(`with_composite_continuation`): a component that reads the table the answer read takes the
-answer's own plan, and each other resolves its plan with no row read, as its preview's
-resolve elects it.
+Before any preview is read, the answer states the held-back runs its components' read
+plans state (`with_composite_plans`): a component that reads the table the answer read
+takes the answer's own plan, and each other resolves its plan with no row read, as its preview's
+resolve elects it. Every path states the same runs from that one step. A streamed request
+then reads the preview in a trailing task (`CompositeRelaunch`), so the `response` event
+waits on the plan resolves and on no preview read. A buffered request reads it inline
+(`with_composite_observations`), whose continuation (`modelled_values`) is then the reads'
+(`SpecObservations.continued`). A request reading no preview states the continuation the
+plans serve in the years each component serves and drops the closure (`settled_composite`).
 
 A same-shape merged answer previews the read of its merged identity
 (`same_shape._with_merged_preview`). A merge of composite answers is minted as the
@@ -49,6 +50,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise import GraphReader
+from materialise.held_runs import HeldRun, merged_runs
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import Catalogue, bound_catalogue, recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
@@ -93,10 +95,12 @@ from search.engine.region.result import (
 from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import un_unavailable_warning
 from search.engine.response_cache_keys import is_region_storable
+from search.engine.retrieval.held_back import window_held_back
 from search.models import (
     BaseIdentity,
     EntityGroup,
     EntityRoleKey,
+    HeldBack,
     ResolvedSpec,
     ResubmitIdentityPayload,
     Spec,
@@ -268,6 +272,17 @@ async def _read_component(
     return read
 
 
+@dataclass(frozen=True, slots=True)
+class ComponentPlans:
+    """What a composite's components' read plans settle with no preview read
+    (`read_composite_plans`): whether the composite serves a continuation, None where no plan
+    serves one and some resolve states none, and the held-back runs the plans state, each
+    component's runs as its own answer states them (`ResolvedSpec.coverage.held_back`)."""
+
+    continued: bool | None
+    runs: tuple[HeldRun, ...]
+
+
 async def read_composite_continuation(
     *,
     served: Sequence[ServedComponent],
@@ -276,17 +291,36 @@ async def read_composite_continuation(
     semaphore: asyncio.Semaphore | None,
 ) -> bool | None:
     """Whether the composite whose components are `served` and whose answer states
-    `resolved` serves a continuation in the years they serve, settled with no preview read.
+    `resolved` serves a continuation in the years they serve (`read_composite_plans`)."""
+    plans = await read_composite_plans(
+        served=served, resolved=resolved, reads=reads, semaphore=semaphore
+    )
+    return plans.continued
+
+
+async def read_composite_plans(
+    *,
+    served: Sequence[ServedComponent],
+    resolved: ResolvedSpec,
+    reads: ComponentReads,
+    semaphore: asyncio.Semaphore | None,
+) -> ComponentPlans:
+    """What the read plans of the composite whose components are `served` and whose answer
+    states `resolved` settle, with no preview read (`ComponentPlans`).
+
     A component previewing a year (`ServedComponent.preview_years`) whose preview resolves
     the table the answer read states the continuation the answer's own plan serves in those
-    years (`ResolvedSpec.component_continued`). Each other one resolves its read plan as its
-    preview's resolve elects it (`_component_continuation`). The composite serves one when
-    any plan narrowed to its component's years does (`read_plan.serves_continuation`), none
-    when every plan serves none, and states nothing (None) when no plan serves one and a
-    component's resolve states none, as `compose_observations` settles it from the reads.
-    A resolve that was lost marks the answer degraded, so no cache stores it. A resolve that
-    refused the identity or answered no definite Spec states no claim and leaves the answer
-    cacheable (`_component_continuation`).
+    years (`ResolvedSpec.component_continued`) and the runs that plan states
+    (`ResolvedSpec.component_held_back`). Each other one resolves its read plan as its
+    preview's resolve elects it (`_component_plan`), so its runs are those of the facets its
+    election dispatches, as a mint of the component states them. The composite serves a
+    continuation when any plan narrowed to its component's years does
+    (`read_plan.serves_continuation`), none when every plan serves none, and states nothing
+    (None) when no plan serves one and a component's resolve states none, as
+    `compose_observations` settles it from the reads. A resolve that was lost marks the
+    answer degraded, so no cache stores it. A resolve that refused the identity or answered
+    no definite Spec states no claim and no run and leaves the answer cacheable
+    (`_component_plan`).
 
     The resolves run together, each holding a permit of `semaphore` when one is given, and
     read no row. Cancelling the caller cancels every resolve still running."""
@@ -294,11 +328,11 @@ async def read_composite_continuation(
     previewing = [item for item in served if item.preview_years]
     if resolved.states_component_continued:
         # Hashing each component's identity is CPU work, kept off the event loop.
-        stated, resolving = await asyncio.to_thread(_held_continuations, previewing, resolved)
+        stated, resolving = await asyncio.to_thread(_held_plans, previewing, resolved)
     else:
         stated, resolving = [], previewing
     tasks = [
-        asyncio.create_task(_component_continuation(item, groups, reads=reads, semaphore=semaphore))
+        asyncio.create_task(_component_plan(item, groups, reads=reads, semaphore=semaphore))
         for item in resolving
     ]
     try:
@@ -306,38 +340,54 @@ async def read_composite_continuation(
     finally:
         for task in tasks:
             task.cancel()
-    if any(stated):
-        return True
-    return False if all(one is False for one in stated) else None
+    continuations = [continued for continued, _held in stated]
+    runs = merged_runs(_run_of(held) for _continued, stated_held in stated for held in stated_held)
+    if any(continuations):
+        return ComponentPlans(continued=True, runs=runs)
+    continued = False if all(one is False for one in continuations) else None
+    return ComponentPlans(continued=continued, runs=runs)
 
 
-def _held_continuations(
+type _PlanFacts = tuple[bool | None, tuple[HeldBack, ...]]
+"""One component plan's continuation and the held-back runs its answer states."""
+
+
+def _run_of(held: HeldBack) -> HeldRun:
+    """The run `held` states, whatever window served it."""
+    return HeldRun(
+        kind=held.kind, source=held.source, start_year=held.start_year, end_year=held.end_year
+    )
+
+
+def _held_plans(
     previewing: Sequence[ServedComponent], resolved: ResolvedSpec
-) -> tuple[list[bool | None], list[ServedComponent]]:
-    """The continuation `resolved` states for each of `previewing` whose preview resolves the
-    table the answer read (`ResolvedSpec.component_continued`), and the others, which are
-    resolved."""
-    stated: list[bool | None] = []
+) -> tuple[list[_PlanFacts], list[ServedComponent]]:
+    """The continuation and the runs `resolved` states for each of `previewing` whose
+    preview resolves the table the answer read (`ResolvedSpec.component_continued`,
+    `ResolvedSpec.component_held_back`), and the others, which are resolved."""
+    stated: list[_PlanFacts] = []
     resolving: list[ServedComponent] = []
     for item in previewing:
-        held = resolved.component_continued(component_spec_id(item), item.preview_years)
-        if held is None:
+        spec_id = component_spec_id(item)
+        continued = resolved.component_continued(spec_id, item.preview_years)
+        if continued is None:
             resolving.append(item)
         else:
-            stated.append(held)
+            stated.append((continued, resolved.component_held_back(spec_id) or ()))
     return stated, resolving
 
 
-async def _component_continuation(
+async def _component_plan(
     item: ServedComponent,
     groups: Mapping[EntityRoleKey, EntityGroup] | None,
     *,
     reads: ComponentReads,
     semaphore: asyncio.Semaphore | None,
-) -> bool | None:
+) -> _PlanFacts:
     """Whether `item`'s component answer, resolved with no preview over the identity and
     years `component_preview` names (`_resubmit`), serves a continuation in those years
-    (`ResolvedSpec.continued`), or None when its resolve states none.
+    (`ResolvedSpec.continued`), None when its resolve states none, and the held-back runs it
+    states (`Coverage.held_back`), none when its resolve states none.
 
     A resolve lost to `degraded_reads.LOST_READ_ERRORS` is transient. `_resubmit` notes and
     logs it at WARNING, so the answer is degraded and no cache stores it and no INFO line
@@ -372,8 +422,9 @@ async def _component_continuation(
                     }
                 },
             )
-        return None
-    return region.spec.resolved.continued
+        return None, ()
+    resolved = region.spec.resolved
+    return resolved.continued, tuple(resolved.coverage.held_back or ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,15 +638,15 @@ class CompositeRelaunch:
             semaphore=semaphore,
         )
 
-    async def continuation(self, *, semaphore: asyncio.Semaphore | None) -> bool | None:
-        """Whether the composite serves a continuation, settled from its components' read
-        plans with no preview read (`read_composite_continuation`)."""
+    async def plans(self, *, semaphore: asyncio.Semaphore | None) -> ComponentPlans:
+        """What the composite's components' read plans settle with no preview read
+        (`read_composite_plans`)."""
         served = self.served
         if served is None:
             served = await asyncio.to_thread(
                 composite_served, self.spec.definition.identity, reads=self.reads
             )
-        return await read_composite_continuation(
+        return await read_composite_plans(
             served=served, resolved=self.spec.resolved, reads=self.reads, semaphore=semaphore
         )
 
@@ -750,31 +801,77 @@ async def with_composite_observations(
     )
 
 
-async def with_composite_continuation(
-    region: RegionResult, *, semaphore: asyncio.Semaphore | None
+async def with_composite_plans(
+    region: RegionResult, *, semaphore: asyncio.Semaphore | None, continuation: bool
 ) -> RegionResult:
-    """`region`, a composite answer whose request reads no preview, stating whether it serves
-    a continuation (`ResolvedSpec.continued`) as its components' read plans settle it
-    (`CompositeRelaunch.continuation`): the answer's own plan for a component whose preview
-    resolves the read the answer made, a resolve with no preview for each other one. Its
-    relaunch closure is dropped. A composite whose
+    """`region`, a composite answer, stating the held-back runs its components hold
+    (`Coverage.held_back`) and, with `continuation`, whether it serves a continuation
+    (`ResolvedSpec.continued`), as its components' read plans settle them
+    (`CompositeRelaunch.plans`): the answer's own plan for a component whose preview
+    resolves the read the answer made, a resolve with no preview for each other one. The
+    runs are merged per kind and source as the mint of the composite merges its components'
+    runs (`materialise.composite.compose_components`), each served as the composite's window
+    serves it (`held_back.window_held_back`). Its relaunch closure is kept, so a streamed or
+    embedded preview reads after it and every path states the same runs. A path reading a
+    preview passes no `continuation`, since the preview's reads state it
+    (`SpecObservations.continued`), streamed in the late departures. A composite whose
     plans settle nothing states none. A resolve that was lost or swallowed a read
-    (`note_degraded_read`) marks it `degraded`, so no cache stores it. The resolves are timed
-    as the `composite_continuation` step."""
+    (`note_degraded_read`) marks it `degraded`, so no cache stores it.
+
+    The resolves are timed as the `composite_plans` step and logged at INFO with
+    `composite_plans_ms`, the time they add before a streamed answer's `response` event."""
     started = now_ms()
     relaunch = region.observations_relaunch
     assert isinstance(relaunch, CompositeRelaunch)
     with recording_degraded_reads() as lost:
-        continued = await relaunch.continuation(semaphore=semaphore)
+        plans = await relaunch.plans(semaphore=semaphore)
     spec = region.spec
-    spec = spec.model_copy(update={"resolved": spec.resolved.stating_continued(continued is True)})
+    resolved = spec.resolved
+    if continuation:
+        resolved = resolved.stating_continued(plans.continued is True)
+    with bound_catalogue(relaunch.reads.catalogue):
+        stated = window_held_back(spec.definition.identity.requested_window, plans.runs)
+    if stated:
+        resolved = resolved.model_copy(
+            update={"coverage": resolved.coverage.model_copy(update={"held_back": stated})}
+        )
+    spec = spec.model_copy(update={"resolved": resolved})
+    elapsed = now_ms() - started
+    logger.info(
+        "composite plans: settled in %d ms",
+        elapsed,
+        extra={JSON_FIELDS_ATTR: {"spec_id": spec.spec_id, "composite_plans_ms": elapsed}},
+    )
     return dataclasses.replace(
         region,
         specs=(spec, *region.specs[1:]),
         degraded=region.degraded or lost.degraded,
-        observations_relaunch=None,
-        timing_by_step={**region.timing_by_step, "composite_continuation": now_ms() - started},
+        timing_by_step={**region.timing_by_step, "composite_plans": elapsed},
     )
+
+
+async def settled_composite(
+    region: RegionResult,
+    *,
+    stream: bool,
+    embed: bool,
+    plans_semaphore: asyncio.Semaphore | None,
+    preview_semaphore: asyncio.Semaphore | None,
+) -> RegionResult:
+    """`region`, a composite answer, with its component plans' runs settled
+    (`with_composite_plans`, under `plans_semaphore`), then: with `stream`, carrying its
+    relaunch closure for the caller to launch after the `response` event; with `embed`,
+    embedding the preview read inline under `preview_semaphore`
+    (`with_composite_observations`); else with its closure dropped. Every door that answers
+    a composite branches here, so each path states the runs the plans state."""
+    settled = await with_composite_plans(
+        region, semaphore=plans_semaphore, continuation=not (stream or embed)
+    )
+    if stream:
+        return settled
+    if embed:
+        return await with_composite_observations(settled, semaphore=preview_semaphore)
+    return dataclasses.replace(settled, observations_relaunch=None)
 
 
 def _keyed(warnings: Sequence[Warning], spec_id: str) -> list[Warning]:

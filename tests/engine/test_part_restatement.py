@@ -162,14 +162,24 @@ class TestDateRequestToTimeText:
     @pytest.mark.parametrize(
         "date_request",
         [
-            DateRequest(window=TimeWindow(start_year=2020, end_year=2020), latest=False),
-            DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False),
+            DateRequest(
+                window=TimeWindow(start_year=2020, end_year=2020),
+                latest=False,
+                reads_held=frozenset({"partial", "projected"}),
+            ),
+            DateRequest(
+                window=TimeWindow(start_year=2015, end_year=2020),
+                latest=False,
+                reads_held=frozenset({"partial", "projected"}),
+            ),
             DateRequest(window=TimeWindow(start_year=2010, end_year=None), latest=False),
             DateRequest(window=None, latest=True),
         ],
     )
     def test_round_trips_through_parse_time_text(self, date_request):
-        """The parsed door reconstructs the same `DateRequest` from this text."""
+        """The parsed door reconstructs the same `DateRequest` from this text, a window its
+        words close reading the held-back years its answer then settles
+        (`DateRequest.reads_held`)."""
         text = _date_request_to_time_text(date_request)
         assert text is not None
         dates, warning = parse_time_text(text, current_year=2024)

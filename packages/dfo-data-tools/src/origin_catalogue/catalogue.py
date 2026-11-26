@@ -109,8 +109,8 @@ class Licence:
 class ProvenanceRow:
     """One admitted provenance. `segment` is the UN agency's id segment and
     is set on UN rows only. `dataset` is the provenance's parent Dataset,
-    `None` on UN rows and on rows with no `isPartOf` arc. `licence` is empty
-    on UN rows, which our graph does not hold."""
+    `None` on UN rows and on rows with no `isPartOf` arc. `licence` is what
+    the provenance's own arcs state, on the UN deployment for a UN row."""
 
     id: str
     data_commons: DataCommons
@@ -273,8 +273,8 @@ class CatalogueTables:
     (`topic_walk.walk_topics`, uncapped). `scan_places` orders the places the
     variable bitsets index. `scan_levels` records, per source ref, the
     levels the job scanned beyond every country, Earth and the regional
-    aggregates. `dataset_facts` maps the `entry_ref` of every DFO and base
-    row to its entry's `CardFacts`; UN entries carry none.
+    aggregates. `dataset_facts` maps the `entry_ref` of every row to its
+    entry's `CardFacts`, read from the UN deployment for a UN row.
     `source_documentation` maps the same entry refs to each entry's
     `SourceDocumentation`. `superseded` maps
     every withheld variable of a base provenance a UN agency supersedes to
@@ -301,8 +301,8 @@ class CatalogueTables:
     variable naming it holds, a variable both in
     `base_variables` and `withheld_variables`, a UN row with no segment
     or a non-UN row with one, a UN topic or a topic with no leaves,
-    `dataset_facts` or `source_documentation` keys other than the DFO and
-    base rows' entry refs, and
+    `dataset_facts` or `source_documentation` keys other than the rows'
+    entry refs, and
     a superseded variable that is not withheld or that DFO holds, and a
     successor that is not a UN id.
     """
@@ -339,9 +339,7 @@ class CatalogueTables:
                     f"provenance {provenance_id!r} ({row.data_commons.id}) has segment "
                     f"{row.segment!r}; UN rows carry a segment and no others do"
                 )
-        entry_refs = {
-            entry_ref(row) for row in self.provenances.values() if row.data_commons != UN_SYSTEM
-        }
+        entry_refs = {entry_ref(row) for row in self.provenances.values()}
         for table, keyed in (
             ("dataset facts", self.dataset_facts),
             ("source documentation", self.source_documentation),
@@ -539,7 +537,7 @@ class Catalogue(Protocol):
 
     def source_documentation(self, ref: str) -> SourceDocumentation | None:
         """The documentation facts of the source-index entry `ref` (an
-        `entry_ref`), or `None` for a UN entry or one the build does not list."""
+        `entry_ref`), or `None` for one the build does not list."""
         ...
 
     def provenance(self, provenance_id: str) -> ProvenanceRow | None:
@@ -552,7 +550,7 @@ class Catalogue(Protocol):
 
     def dataset_facts(self, ref: str) -> CardFacts | None:
         """The facts of the source-index entry `ref` (an `entry_ref`), or
-        `None` for a UN entry or one the build does not list."""
+        `None` for one the build does not list."""
         ...
 
     @property

@@ -70,6 +70,22 @@ class StatedScopeReading(StrictModel):
             "own option, provider:contributions on DAC1"
         )
     )
+    named_years: list[int] = Field(
+        description=(
+            "each calendar year the text names as a point or as a range end, ascending, "
+            'without repeats; "last year", "this year" and "next year" resolve against the '
+            'current UTC year, and a span ahead ("the next 3 years") names its first and '
+            'last years. A span back ("the last couple of years") names none, and the '
+            "interior years of a range or a span are not listed"
+        )
+    )
+    projection: bool = Field(
+        description=(
+            "whether the text asks about the future or about projections (projected, "
+            "expected, forecast, outlook, will pay, due, and their French and Spanish "
+            "counterparts)"
+        )
+    )
 
 
 class StatedScopeResponse(StrictModel):

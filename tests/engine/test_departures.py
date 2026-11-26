@@ -339,7 +339,7 @@ def test_modelled_values_when_some_series_are_modelled(methods, projected, model
 
     facts = spec_departure_facts(spec, operations=())
 
-    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    expected = DepartureFact(code="modelled_values", binding_ref=None, some_series=True)
     assert facts == ([expected] if modelled else [])
 
 
@@ -367,7 +367,7 @@ def test_modelled_values_when_estimates_continue_the_reported_series(end_year, m
 
     facts = spec_departure_facts(spec, operations=())
 
-    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    expected = DepartureFact(code="modelled_values", binding_ref=None, some_series=True)
     assert facts == ([expected] if modelled else [])
 
 
@@ -397,7 +397,7 @@ def test_modelled_values_follow_the_continuation_the_preview_s_reads_state(
 
     facts = spec_departure_facts(spec, operations=())
 
-    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    expected = DepartureFact(code="modelled_values", binding_ref=None, some_series=True)
     assert facts == ([expected] if modelled else [])
 
 

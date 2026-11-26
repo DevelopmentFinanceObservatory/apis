@@ -92,13 +92,16 @@ def read_range(
     `clock_year` reads projection years. An open end takes the end a datasets read of the same
     identity takes (`materialise.window.election_window`): `clock_year`, or for a window
     starting after it `last_year`, and every later year without a horizon. A None
-    `clock_year` reads the datasets clock (`materialise.window.current_year`).
+    `clock_year` reads the datasets clock (`materialise.window.current_year`). The range
+    keeps `window`'s opt-in (`TimeWindow.include`).
     """
     start = window.start_year
     if first_year is not None:
         start = first_year if start is None else max(start, first_year)
     end = election_window(
-        RequestedWindow(kind="range", start_year=start, end_year=window.end_year),
+        RequestedWindow(
+            kind="range", start_year=start, end_year=window.end_year, include=window.opt_in
+        ),
         clock_year=clock_year,
         last_year=last_year,
     ).end_year
@@ -106,7 +109,7 @@ def read_range(
         end = min(end, last_year)
     if start is not None and end is not None and start > end:
         return None
-    return TimeWindow(start_year=start, end_year=end)
+    return TimeWindow(start_year=start, end_year=end, include=window.include)
 
 
 class WindowTooLong(Exception):

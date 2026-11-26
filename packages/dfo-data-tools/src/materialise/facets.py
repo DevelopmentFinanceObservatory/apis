@@ -52,7 +52,7 @@ from materialise.graph import (
     GraphReadError,
     ProvenanceRefresh,
 )
-from materialise.method_status import status_of
+from materialise.method_status import is_projection, status_of
 from materialise.place_scope import (
     AvailabilityReader,
     DefaultPlaceScope,
@@ -470,7 +470,7 @@ def role_bearing_facets(
     bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
     if bound is None:
         return None
-    return _coverage_facets(
+    return bound_coverage_facets(
         stat_var=stat_var,
         bound=bound,
         coverage=coverage,
@@ -497,7 +497,7 @@ def role_bearing_facet_candidates(
     bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
     if bound is None:
         return None
-    return _coverage_facets(
+    return bound_coverage_facets(
         stat_var=stat_var,
         bound=bound,
         coverage=coverage,
@@ -514,13 +514,16 @@ def role_bearing_facet_candidates_of(
     coverage: CoverageIndex,
     first_year: int | None = None,
     last_year: int | None = None,
+    include: frozenset[str] | None = None,
 ) -> dict[str, list[Facet]]:
     """`role_bearing_facet_candidates` of each of `stat_vars`, read in one pass over the
     coverage index per distinct set of bound roles rather than once per variable.
 
     Each value equals `role_bearing_facet_candidates` for its variable, `[]` where that
     reads no row, in the order of `stat_vars`. A variable it answers `None` for, one without
-    `RoleNames`, is left out."""
+    `RoleNames`, is left out. With `include`, each facet holds only the years a read opting
+    in to `include` serves, and one left with none is left out
+    (`CoverageIndex.filter_facet_candidates`)."""
     groups: dict[frozenset[tuple[Role, frozenset[str]]], tuple[BoundRoles, list[str]]] = {}
     for stat_var in dict.fromkeys(stat_vars):
         bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
@@ -531,7 +534,11 @@ def role_bearing_facet_candidates_of(
         facets_by_variable = {
             variable_coverage.variable: variable_coverage.facets
             for variable_coverage in coverage.filter_facet_candidates(
-                variables=members, bound=bound, first_year=first_year, last_year=last_year
+                variables=members,
+                bound=bound,
+                first_year=first_year,
+                last_year=last_year,
+                include=include,
             )
         }
         for stat_var in members:
@@ -566,7 +573,7 @@ def role_bearing_facet_candidates_by_donor(
     return by_donor
 
 
-def _coverage_facets(
+def bound_coverage_facets(
     *,
     stat_var: str,
     bound: BoundRoles,
@@ -575,7 +582,9 @@ def _coverage_facets(
     last_year: int | None = None,
     facet_candidates: bool = False,
 ) -> list[Facet]:
-    """`stat_var`'s served rows or pin-validation candidates, as ranked facets."""
+    """`stat_var`'s facets under `bound`, ranked: the coverage rows a read binding
+    `bound` serves, or with `facet_candidates` the candidates that validate a facet pin
+    there, within `[first_year, last_year]` when given."""
     coverage_filter = (
         coverage.filter_facet_candidates if facet_candidates else coverage.filter_candidates
     )
@@ -597,7 +606,7 @@ def _ranked_coverage_facets(
 def coverage_probe(*, stat_var: str, bound: BoundRoles, coverage: CoverageIndex) -> MemberProbe:
     """A role-bearing member's probe from coverage under `bound`, in coverage's role labels:
     its candidates across every bound role tuple and every year, ranked
-    (`_coverage_facets`), and each facet's series count for a window's years
+    (`bound_coverage_facets`), and each facet's series count for a window's years
     (`CoverageIndex.series_counts`), one series per donor and recipient pair holding data
     there. A mint probes here (`probe_facets`), and a Search read plan elects each member's
     group from the same probe, so both rank the same candidates by the same counts."""
@@ -627,7 +636,7 @@ def coverage_probe(*, stat_var: str, bound: BoundRoles, coverage: CoverageIndex)
         else CoverageAdmission()
     )
     return MemberProbe(
-        candidates=tuple(_coverage_facets(stat_var=stat_var, bound=bound, coverage=coverage)),
+        candidates=tuple(bound_coverage_facets(stat_var=stat_var, bound=bound, coverage=coverage)),
         admission=admission,
         breadth=breadth,
     )
@@ -2170,6 +2179,30 @@ def continuation(
     return tuple(c for c in continuing if c.measurement_method == method)
 
 
+def continues_series(
+    candidate: Facet,
+    *,
+    provenance: str | None,
+    units: set[str | None],
+    after: int | None,
+    serves: Callable[[str], bool],
+) -> bool:
+    """Whether `candidate` can continue a series under `provenance` in one of `units` that ends
+    in the year `after`, whatever window reads it: it shares the provenance and a unit, sits at
+    the served cadence (`serves`, by facet id), holds estimated values
+    (`method_status.status_of`) and reaches a later year than `after`. It reads facet metadata
+    alone (`Facet.latest_date`), so it costs no observation read. `after` None sets no lower
+    bound, for a series whose end is unknown."""
+    return (
+        candidate.provenance_id == provenance
+        and candidate.unit in units
+        and status_of(candidate.measurement_method, candidate.provenance_id) == "estimated"
+        and (after is None or (_leading_year(candidate.latest_date) or 0) > after)
+        and candidate.facet_id is not None
+        and serves(candidate.facet_id)
+    )
+
+
 def continuing_candidates(
     candidates: Sequence[Facet],
     *,
@@ -2182,12 +2215,12 @@ def continuing_candidates(
 ) -> list[Facet]:
     """The `candidates` that can continue a series of `method` under `provenance` in one of
     `units` that ends in the year `after` (`continuation`), in candidate order: those that
-    share the provenance and a unit, sit at the served cadence (`serves`, by facet id), hold
-    estimated values (`method_status.status_of`), reach a later year than `after` and hold a
-    point in the window. An empty list under a window that is not a range with an end year,
-    for an estimated `method`, or when `after` reaches the window's end. The units share one value
-    except under a national-currency binding, where each place's admission keeps its own.
-    `after` None sets no lower bound, for a series whose end is unknown."""
+    continue it whatever the window (`continues_series`) and hold a point in the window. An
+    empty list under a window that is not a range with an end year, for an estimated `method`,
+    or when `after` reaches the window's end. A projection pair (`method_status.is_projection`)
+    continues only a window whose `include` names `"projected"`, since the mint holds back its
+    every row otherwise (`columnar.held_back_mask`). The units share one value except under a
+    national-currency binding, where each place's admission keeps its own."""
     if window is None or window.kind != "range" or window.end_year is None:
         return []
     if status_of(method, provenance) == "estimated":
@@ -2197,13 +2230,12 @@ def continuing_candidates(
     return [
         c
         for c in candidates
-        if c.provenance_id == provenance
-        and c.unit in units
-        and status_of(c.measurement_method, c.provenance_id) == "estimated"
-        and (after is None or (_leading_year(c.latest_date) or 0) > after)
-        and c.facet_id is not None
-        and serves(c.facet_id)
+        if continues_series(c, provenance=provenance, units=units, after=after, serves=serves)
         and overlaps_window(c, window=window)
+        and (
+            "projected" in window.include
+            or not is_projection(c.provenance_id, c.measurement_method)
+        )
     ]
 
 

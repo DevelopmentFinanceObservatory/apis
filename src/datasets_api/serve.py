@@ -92,6 +92,7 @@ from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.manifest import (
+    JudgedIncompleteAfter,
     assemble_manifest,
     collapsed_citation,
     collapsed_head_manifest,
@@ -99,13 +100,14 @@ from datasets_api.manifest import (
     coverage_facts_of,
     definition_version_record,
     healed_citation,
-    incomplete_after,
+    judged_record,
     manifest_output_options,
     persisted_manifest,
     provenance_refs_of,
     reshape_warning_models,
     source_refs_of,
     stored_manifest_facts,
+    with_held_back,
     year_coverage,
 )
 from datasets_api.manifest_models import (
@@ -552,11 +554,10 @@ class DefinitionPrewrite:
     # The year members of the version's `coverage` (`manifest.year_coverage`), counted here
     # from the index the run elected over and joined to every manifest the write half builds.
     year_coverage: Mapping[str, object] = field(default_factory=dict)
-    # How complete the rows are, judged per source (`manifest.incomplete_after`) against the
-    # catalogue bound to the mint, `None` when it could not be judged, and that catalogue's
-    # `built_at`, `None` with it.
-    incomplete_after: list[dict[str, object]] | None = None
-    incomplete_after_built_at: datetime | None = None
+    # How complete the rows are, judged per source against the catalogue bound to the mint,
+    # with the `held_back` runs judged with it and that catalogue's `built_at`
+    # (`manifest.judged_record`); `None` when it could not be judged.
+    judged: JudgedIncompleteAfter | None = None
 
 
 def _documentation_complete(source_citations: Mapping[str, SourceCitation]) -> bool:
@@ -953,8 +954,8 @@ def prewrite_definition(
             "spec_id": stored.spec_id,
             "identity": stored.identity,
         }
-        years = year_coverage(result, requests=requests, index=coverage_index)
-        judged = incomplete_after(result)
+        judged = judged_record(result, requests=requests)
+        years = year_coverage(result, requests=requests, index=coverage_index, judged=judged)
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -985,8 +986,7 @@ def prewrite_definition(
             documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
             year_coverage=years,
-            incomplete_after=None if judged is None else judged.entries,
-            incomplete_after_built_at=None if judged is None else judged.built_at,
+            judged=judged,
         )
 
 
@@ -1098,33 +1098,51 @@ def _base_record(
     """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
     `describer`. It takes the stored body when the version is on record (`persisted`), else
     this call's. A stored body whose year coverage was never counted
-    (`year_coverage_counted`) takes this call's `coverage`, and every stored body takes this
-    call's `incomplete_after` and the build that judged it when this call judged one, which the
-    write stores on the version unless an older build judged it than the one that judged the
-    stored record (`VersionRecordWriter.write_version`)."""
+    (`year_coverage_counted`) takes this call's year members, and every stored body takes this
+    call's judged record (`_judged_facts`), which the write stores on the version unless an
+    older build judged it than the one that judged the stored record
+    (`VersionRecordWriter.write_version`)."""
+    judged = prewrite.judged
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
         materialisation=prewrite.result,
         artifacts=[],
         record_only_artifacts=artifacts,
-        incomplete_after=prewrite.incomplete_after,
-        incomplete_after_built_at=prewrite.incomplete_after_built_at,
+        incomplete_after=None if judged is None else judged.entries,
+        incomplete_after_built_at=None if judged is None else judged.built_at,
     )
     record = replace(record, describer=describer)
     if persisted is None:
         return record
     facts = persisted.version.facts
-    if isinstance(facts, ManifestFacts) and not year_coverage_counted(facts.coverage):
+    if not isinstance(facts, ManifestFacts):
+        return replace(record, facts=facts)
+    if not year_coverage_counted(facts.coverage):
         assert isinstance(record.facts, ManifestFacts)
-        facts = replace(facts, coverage=record.facts.coverage)
-    if isinstance(facts, ManifestFacts) and prewrite.incomplete_after is not None:
-        facts = replace(
-            facts,
-            incomplete_after=prewrite.incomplete_after,
-            incomplete_after_built_at=prewrite.incomplete_after_built_at,
+        stored_runs = facts.coverage.get("held_back")
+        coverage = with_held_back(
+            record.facts.coverage,
+            cast("Sequence[Mapping[str, object]]", stored_runs or []),
         )
-    return replace(record, facts=facts)
+        facts = replace(facts, coverage=coverage)
+    return replace(record, facts=_judged_facts(facts, judged))
+
+
+def _judged_facts(facts: ManifestFacts, judged: JudgedIncompleteAfter | None) -> ManifestFacts:
+    """`facts`, a stored version's, stating `judged`, this call's judged record, in place of
+    their own `incomplete_after`, the build that judged it and `coverage.held_back`, as they
+    stand when this call judged none. The frame's rows can be the same while its sources'
+    partial marks moved, so a version stored before versions stated runs, or under an earlier
+    mark, states this call's."""
+    if judged is None:
+        return facts
+    return replace(
+        facts,
+        coverage=with_held_back(facts.coverage, judged.held_back or []),
+        incomplete_after=judged.entries,
+        incomplete_after_built_at=judged.built_at,
+    )
 
 
 def _describers(
@@ -1596,8 +1614,11 @@ def _render_pass(
             code_index=deps.code_index,
             settings=deps.settings,
         )
+        base = persisted.version
+        if isinstance(base.facts, ManifestFacts):
+            base = replace(base, facts=_judged_facts(base.facts, prewrite.judged))
         manifest = collapsed_head_manifest(
-            manifest=persisted_manifest(stored=persisted.version, served=prewrite.manifest),
+            manifest=persisted_manifest(stored=base, served=prewrite.manifest),
             derived=derived,
             artifact=artifact,
             statistics_artifact=derived_statistics_artifact,
@@ -1622,9 +1643,12 @@ def _render_pass(
             frame_summed=derived.summed,
             code_index_stamp=rendering_stamp(deps.code_index.stamp.content_hash),
             incomplete_after=collapsed_incomplete_after(
-                prewrite.incomplete_after, derived_statistics.figures
+                None if prewrite.judged is None else prewrite.judged.entries,
+                derived_statistics.figures,
             ),
-            incomplete_after_built_at=prewrite.incomplete_after_built_at,
+            incomplete_after_built_at=(
+                None if prewrite.judged is None else prewrite.judged.built_at
+            ),
         ),
         collapsed_figures=derived_statistics.figures,
         collapsed_summed=derived.summed,

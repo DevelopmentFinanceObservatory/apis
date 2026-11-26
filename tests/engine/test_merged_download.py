@@ -140,9 +140,16 @@ def _flow_reader() -> FakeGraphReader:
     )
 
 
-def _flow_identity(sector: str, recipient: str, *, latest: bool = False) -> BaseIdentity:
+def _flow_identity(
+    sector: str,
+    recipient: str,
+    *,
+    latest: bool = False,
+    include: list[str] | None = None,
+) -> BaseIdentity:
     """Germany's grant amount to `recipient` for `sector` on the fixture index's `_SOLE`
-    five-tuple, which `_BROAD` alone publishes."""
+    five-tuple, which `_BROAD` alone publishes. `include` posts the opt-in of a range over
+    2019 to 2021."""
     identity = grid._first_resolve(grid._SOLE, None, "donor-recipient", {"sector": sector}).identity
     assert identity is not None
     return identity.model_validate(
@@ -150,6 +157,18 @@ def _flow_identity(sector: str, recipient: str, *, latest: bool = False) -> Base
             **identity.model_dump(mode="json"),
             "entities": {"origin": [_DEU], "destination": [recipient]},
             **({"requested_window": {"kind": "latest"}} if latest else {}),
+            **(
+                {
+                    "requested_window": {
+                        "kind": "range",
+                        "start_year": 2019,
+                        "end_year": 2021,
+                        "include": include,
+                    }
+                }
+                if include is not None
+                else {}
+            ),
         }
     )
 
@@ -161,8 +180,15 @@ def _rows(spec: Spec) -> int | None:
 
 @pytest.mark.usefixtures("index")
 @pytest.mark.parametrize("mode", ["buffered", "streamed"])
+@pytest.mark.parametrize(
+    "includes",
+    [
+        pytest.param((None, None), id="no-window"),
+        pytest.param(([], ["partial"]), id="members-opting-in-differently"),
+    ],
+)
 def test_a_merge_whose_parts_elect_different_facets_counts_the_one_group_it_elects(
-    monkeypatch, mode
+    monkeypatch, mode, includes
 ):
     """Sector A's grants sit in a USD facet over three years, sector B's in a EUR facet over
     two. Each part serves its own facet, five rows between them. The merged answer elects
@@ -182,7 +208,10 @@ def test_a_merge_whose_parts_elect_different_facets_counts_the_one_group_it_elec
     )
 
     merged, alone = _merged_and_resubmitted(
-        [_flow_identity("A", _KEN), _flow_identity("B", _KEN)],
+        [
+            _flow_identity(sector, _KEN, include=include)
+            for sector, include in zip("AB", includes, strict=True)
+        ],
         graph=_flow_graph(),
         mode=mode,
         materialise_graph=_flow_reader(),

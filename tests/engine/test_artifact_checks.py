@@ -190,7 +190,7 @@ def test_drift_on_a_served_variable_warns_naming_it_and_its_aspects(caplog):
     assert warning.code == CATALOGUE_INDEX_DRIFT
     assert "Count_Person (roles)" in warning.message
     assert "catalogue-build" in warning.message
-    (record,) = caplog.records
+    (record,) = [r for r in caplog.records if r.name == "search.engine.artifact_checks"]
     assert record.getMessage().startswith("catalogue_index_drift ")
 
 
@@ -218,7 +218,11 @@ def test_silencing_the_drift_warning_keeps_its_log_line(caplog):
     with caplog.at_level(logging.WARNING, logger="search.engine.artifact_checks"):
         warning = index_drift_warning(response, catalogue=catalogue, index=_index(row), warn=False)
     assert warning is None
-    assert [r.getMessage().split()[0] for r in caplog.records] == ["catalogue_index_drift"]
+    assert [
+        r.getMessage().split()[0]
+        for r in caplog.records
+        if r.name == "search.engine.artifact_checks"
+    ] == ["catalogue_index_drift"]
 
 
 # ---------------------------------------------------------------------------

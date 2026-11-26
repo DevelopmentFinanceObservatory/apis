@@ -546,9 +546,13 @@ async def _stream_one_variable(
         return words, recall_text(words, qualifiers)
 
     def pass_variable(reading: LegReading) -> str:
-        """The variable the pass of `reading` resolves: its measure words less the words a
-        scope phrase states, or the whole words where the phrases fill them."""
-        words = texts(reading)[0]
+        """The variable the pass of `reading` resolves (`measure_text`)."""
+        return measure_text(v, reading)
+
+    def measure_text(text: str, reading: LegReading) -> str:
+        """`text` less the words `reading`'s sources and code state (`_measure_words`) and
+        the words a scope phrase states, or those words whole where the phrases fill them."""
+        words = _measure_words(text, reading.source_scope, reading.source_code)
         return without_scope_phrases(words, scope_intake) or words
 
     def detect_text(reading: LegReading) -> str:
@@ -591,6 +595,7 @@ async def _stream_one_variable(
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             exclusions=exclusions,
             operations=operations,
+            measure_words=lambda text: measure_text(text, reading),
             open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text and (without_scope_phrases(query_text, scope_intake) or None),
             unclaimed=unclaimed,

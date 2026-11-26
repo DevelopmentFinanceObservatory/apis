@@ -825,7 +825,9 @@ def test_an_every_date_span_read_of_a_facet_with_no_known_end_reads_the_whole_wi
 def test_a_span_read_ranks_every_facet_it_dispatches_at_each_series():
     """Kenya's series holds the contested facets "1" and "2", Uganda's only "1". The read of
     both dispatches both, so Uganda's ranks name "2" too, with no rows, and a row of "2"
-    SDMX returns at Uganda never ranks by its rows beside "1" ranked over the window."""
+    SDMX returns at Uganda never ranks by its rows beside "1" ranked over the window. The
+    span opts in to partial years, and the years it fetches keep that opt-in, so the preview
+    masks its rows as the mint does (`materialise.columnar.selected_mask`)."""
     first, second = _facet("contested", "1"), _facet("contested", "2")
     uga = (("observationAbout", "country/UGA"),)
     series = (
@@ -842,10 +844,13 @@ def test_a_span_read_ranks_every_facet_it_dispatches_at_each_series():
     )
 
     span = region_fetch._span_read(
-        dispatch, served=TimeWindow(start_year=2011, end_year=2024), selected=frozenset({"1"})
+        dispatch,
+        served=TimeWindow(start_year=2011, end_year=2024, include=["partial"]),
+        selected=frozenset({"1"}),
     )
 
     assert span.fetched is not None
+    assert span.fetched.include == span.served.include == frozenset({"partial"})
     assert span.ranks is not None
     assert {key: set(ranks) for key, ranks in span.ranks.items()} == {
         ("country/KEN",): {"1", "2"},
