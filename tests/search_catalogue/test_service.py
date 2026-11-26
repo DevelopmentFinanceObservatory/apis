@@ -102,7 +102,8 @@ def test_logs_the_counts_once_per_loaded_build(
     assert logged[0]["counts"] == published.counts.model_dump(mode="json")
     assert logged[0]["provenances"] == {
         "dfo": ["provenance/CRS"],
-        "data_commons": ["provenance/WDI", "provenance/WHO"],
+        "data_commons": ["provenance/WDI"],
+        "un": ["provenance/WHO"],
     }
 
 
