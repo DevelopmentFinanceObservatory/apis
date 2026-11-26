@@ -3,8 +3,9 @@
 A run evaluates the corpus dataset (``search.eval.corpus_dataset``) with a task that returns
 each case's modal sample as a ``ScoredAnswer``. Its record holds one trial per case, tagged
 with the case file, scored by the ``answer`` check, and carrying the trace id the sample's
-response holds. A sample that failed on infrastructure, or whose check could not read the
-graph or coverage, records an infra fault, which the results page leaves out of its scores.
+response holds. A sample that failed on infrastructure, or whose ``answer`` is not a definite
+failure and lost a read of the graph or coverage (``evaluator.answer_is_infra``), records an
+infra fault, which the results page leaves out of its scores.
 """
 
 from __future__ import annotations
