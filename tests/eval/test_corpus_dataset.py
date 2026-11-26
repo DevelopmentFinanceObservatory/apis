@@ -158,3 +158,17 @@ def test_the_digest_moves_with_a_case_s_known_failures():
 
     assert expectation_hash(plain) == expectation_hash(known)
     assert len({digest(plain), digest(known), digest(other)}) == 3
+
+
+def test_the_digest_moves_when_a_case_changes_file():
+    """A run's results are grouped by case file, so moving a case moves both files' rates."""
+    a, b, c = make_case(id="a"), make_case(id="b"), make_case(id="c")
+
+    before = corpus_digest(
+        corpus_dataset({"dac": [a, b], "crs": [c]}, implemented_checks=ALL_CHECKS)
+    )
+    after = corpus_digest(
+        corpus_dataset({"dac": [a], "crs": [b, c]}, implemented_checks=ALL_CHECKS)
+    )
+
+    assert before != after
