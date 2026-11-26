@@ -55,7 +55,7 @@ class CorpusCase(BaseModel):
 
         It names the file as the repository's ``corpus/`` holds it, whatever directory the
         cases were loaded from, since run records tag results with it across runs. It is a
-        property, so a dump of the model carries ``file`` and not ``source``, and loads back.
+        property, so a dump of the model carries ``file`` and not ``source``.
         """
         return f"corpus/{self.file}.yaml"
 

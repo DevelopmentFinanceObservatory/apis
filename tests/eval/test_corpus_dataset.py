@@ -22,7 +22,6 @@ from search.eval.checks.base import CHECKS
 from search.eval.corpus_dataset import (
     SUITE,
     CaseInputs,
-    CorpusCase,
     case_inputs,
     corpus_dataset,
     corpus_digest,
@@ -139,15 +138,16 @@ def test_every_case_s_inputs_survive_a_json_round_trip_with_their_digest():
         assert input_digest(stored) == input_digest(inputs), case.id
 
 
-def test_the_corpus_metadata_round_trips_through_a_dump():
+def test_a_dump_of_the_corpus_metadata_carries_the_file_not_the_path():
     case = make_case(id="kenya")
     (eval_case,) = corpus_dataset({"dac": [case]}, implemented_checks=ALL_CHECKS).cases
     assert eval_case.metadata is not None
 
-    reloaded = CorpusCase.model_validate(eval_case.metadata.model_dump())
+    dumped = eval_case.metadata.model_dump()
 
-    assert reloaded == eval_case.metadata
-    assert reloaded.source == "corpus/dac.yaml"
+    assert dumped["file"] == "dac"
+    assert "source" not in dumped
+    assert eval_case.metadata.source == "corpus/dac.yaml"
 
 
 def test_the_digest_refuses_a_case_without_corpus_metadata():
