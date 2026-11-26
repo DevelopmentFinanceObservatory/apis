@@ -16,8 +16,10 @@ on:
 permissions:
   contents: read
 
+# Shared with eval-nightly.yml: both write the Langfuse datasets, and a sync
+# during the nightly would change the item inputs its push checks.
 concurrency:
-  group: eval-sync
+  group: eval-langfuse
   cancel-in-progress: false
 
 env:
