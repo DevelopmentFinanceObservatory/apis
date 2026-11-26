@@ -128,7 +128,7 @@ The Search API evaluation scores the engine's answers to a set of cases. Each ca
 
 `corpus/README.md` describes the case format. Scoring needs a running app and live credentials (see `.env.example`).
 
-A run record holds one trial per case, its modal sample, with every check's verdict, scored by the derived `answer` check and tagged with its case file. A case whose modal sample failed on infrastructure, or whose check could not read the graph or coverage, records an infra fault, which scores leave out.
+A run record holds one trial per case, its modal sample, with every check's verdict, scored by the derived `answer` check and tagged with its case file. A case whose modal sample failed on infrastructure, or whose `answer` is not a definite failure and lost a read of the graph or coverage, records an infra fault, which the results page leaves out of its scores; a definite `answer` failure stays a finding. Langfuse still scores every case the nightly pushes, so a run that failed on infrastructure shows there as a failed `task_outcome` and `answer`.
 
 ```bash
 just corpus-check                                  # validate cases, list those that cannot gate
@@ -140,7 +140,7 @@ just eval-paired http://127.0.0.1:8100 http://127.0.0.1:8101 <base-sha>   # head
 
 ### The paired gate
 
-A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case takes one sample at head, and the rest of its `--samples` (three in all by default) when a check outside its `known_failure` did not pass or passed only because no sample reached it, or when a check in its `known_failure` passed, which is reported fixed only if it passes on every sample. A case the verdict needs base for takes `--samples` there, and a candidate regression one more sample on each side in a confirm round. A case that sets `repeat` takes at least `repeat` samples in each of those batches, so with the default `--samples` a `repeat: 5` case takes five at head, ten when it needs a second batch, five at base and five on each side of the confirm round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
+A change under `src/search/` is scored by the eval gate. The gate runs every eligible case in `corpus/*.yaml` on two running apps, head (the pull request's merge commit) and base (its first parent), and compares them check by check. Each case takes one sample at head, and the rest of its `--samples` (three in all by default) when a check outside its `known_failure` did not pass, other than one lost to infrastructure, or passed only because no sample reached it, or when a check in its `known_failure` passed, which is reported fixed only if it passes on every sample. A case the verdict needs base for takes `--samples` there, and a candidate regression one more sample on each side in a confirm round. A case that sets `repeat` takes at least `repeat` samples in each of those batches, so with the default `--samples` a `repeat: 5` case takes five at head, ten when it needs a second batch, five at base and five on each side of the confirm round. A check that passes on any head sample passes. A check that passes on no head sample blocks the merge when:
 
 - the case is new or its expectation changed;
 - the check passes on every base sample and again in a confirm round (a regression);
@@ -152,7 +152,7 @@ A check that fails at base too is reported as pre-existing and does not block. A
 
 The eval jobs need repository secrets, so they skip on pull requests from forks and on drafts.
 
-A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items whose case changed. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service (`repeat` samples for a case that sets it), writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
+A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items Langfuse lacks or holds differently. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service (`repeat` samples for a case that sets it), writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
 ## CI workflows
 
