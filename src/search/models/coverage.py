@@ -280,6 +280,45 @@ class Headline(StrictModel):
         return self
 
 
+def _no_years(value: object) -> bool:
+    return not value
+
+
+class YearsWithData(StrictModel):
+    """The calendar years an answer's served series hold data, over each series' whole
+    span, whatever window the request named. A client offering the reader other years of
+    the same answer reads them here.
+
+    The series are those the answer serves: its StatVars, entities, constraints and facets,
+    each counted in every year it holds, inside the request's window or outside it. The
+    years are those a request naming no window would be served: a source's partly reported
+    period and projected years are left out (`coverage.held_back` lists them), whether or
+    not this request opted in to them, and under a unit request a year the conversion
+    cannot convert is left out, as the download leaves it out. A role-bearing answer reads
+    them from the coverage artifact (`CoverageIndex.series_years`), and any other answer
+    from its series' facet metadata, where a facet listing no complete dates counts every
+    year of its span."""
+
+    start_year: int = Field(description="the first year any served series holds data")
+    end_year: int = Field(description="the last year any served series holds data")
+    gap_years: list[int] | None = Field(
+        default=None,
+        exclude_if=_no_years,
+        description=(
+            "the years after start_year and before end_year that no served series holds, "
+            "in order; absent when every year between them holds data"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _gaps_inside_the_span(self) -> YearsWithData:
+        if self.end_year < self.start_year:
+            raise ValueError(f"end_year {self.end_year} precedes start_year {self.start_year}")
+        if any(not self.start_year < year < self.end_year for year in self.gap_years or ()):
+            raise ValueError("gap_years lie strictly between start_year and end_year")
+        return self
+
+
 def coverage_is_empty(coverage: Coverage) -> bool:
     """Return true when an exact count is zero or ``has_data`` is false."""
     return (isinstance(coverage, CoverageExact) and coverage.observation_count == 0) or (

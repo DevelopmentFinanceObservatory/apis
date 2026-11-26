@@ -14,7 +14,7 @@ from pydantic import (
 from dfo_platform.roles import FlowAccount
 
 from .base import StrictModel
-from .coverage import Coverage, Headline, HeldBack
+from .coverage import Coverage, Headline, HeldBack, YearsWithData
 from .definition import SpecDefinition
 from .entity import EntityGroup, ResolvedEntity, _is_none
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
@@ -738,6 +738,18 @@ class ResolvedSpec(StrictModel):
             "exact latest-year summary for a role-bearing answer (see Headline); "
             "None for a non-role-bearing Spec, which coverage above already answers exactly "
             "or approximately enough that no separate latest-year summary is computed"
+        ),
+    )
+    years_with_data: YearsWithData | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the first and last year the answer's served series hold data, and the years "
+            "between them that none holds, over each series' whole span, whatever window the "
+            "request named, as a request naming no window would be served: partly reported "
+            "and projected years left out (see YearsWithData). Absent for a composite "
+            "answer, an answer with no read plan, a role-bearing answer whose StatVars the "
+            "coverage artifact does not all hold, and an answer whose series hold no year"
         ),
     )
     download: DownloadFacts | None = Field(

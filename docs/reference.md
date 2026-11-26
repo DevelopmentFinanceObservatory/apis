@@ -10,6 +10,8 @@ Every API surface mounts onto the shared platform app. The public deployment ser
 
 Search queries resolve against the Data Commons graph. Observation previews and candidate coverage are computed in memory via the `materialise` bridge.
 
+A resolve answer states the years its served series hold data in `resolved.years_with_data`: `start_year`, `end_year`, and `gap_years` for the years between them with none. The years run over each series' whole span, whatever window the request named, and leave out partly reported and projected years as a request naming no window does. A client offering the reader other years of the same answer reads them there (conformance C202).
+
 | Method | Endpoint                   | Description                                                                                                                                                                    |
 | :----- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/api/search/resolve`      | Resolves natural-language queries into structured specifications with observation previews. Accepts `Accept: text/event-stream` for Server-Sent Events (SSE) or standard JSON. |

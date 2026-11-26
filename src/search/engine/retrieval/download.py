@@ -27,6 +27,10 @@ conversion keeps only some of the years they span. The window is null when a cou
 last year unknown, since the file's years could then run past either bound. The licence is
 the one served provenance's source-index entry's, as the origin catalogue holds it
 (`origin_catalogue.CardFacts`), so stating it reads nothing over the network.
+
+The years with data (`ResolvedSpec.years_with_data`, `answer_years`) read the same sources
+over every date of the series the plan holds, with no opt-in, so they reach past the
+identity's window.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from origin_catalogue import current_catalogue, entry_ref
 from search.engine.retrieval.coverage import (
     counted_rows,
     coverage_exclusions,
+    held_rows,
     latest_election,
 )
 from search.engine.retrieval.read_plan import (
@@ -54,7 +59,7 @@ from search.engine.retrieval.read_plan import (
     year_of,
 )
 from search.engine.unit.conversion import CountConversion, CountedConversion, counted_exact
-from search.models import DownloadFacts, DownloadLicence, TimeWindow
+from search.models import DownloadFacts, DownloadLicence, TimeWindow, YearsWithData
 from series_coverage.schema import ABSENT_ENTITY
 
 if TYPE_CHECKING:
@@ -233,6 +238,57 @@ def _coverage_extent(
         window=TimeWindow(start_year=extent.first_year, end_year=extent.last_year),
         exact=True,
     )
+
+
+def answer_years(
+    plan: ReadPlan, coverage_index: CoverageIndex, *, conversion: CountConversion
+) -> YearsWithData | None:
+    """The years the series `plan` holds have data over their whole span (`YearsWithData`):
+    the series it holds before a `latest` window reduces them, each read under every date,
+    unclipped by the plan's window and with no opt-in, so a source's partial period and
+    projected facets hold no year. Under a unit request each series keeps the years
+    `conversion` keeps, as the download counts them.
+
+    - A role-bearing plan reads the coverage index (`CoverageIndex.series_years`) over the
+      rows it holds (`coverage.held_rows`) less those a conversion leaves out
+      (`coverage.coverage_exclusions`). None when the index lacks a member the plan reads.
+    - A standard plan reads its held series' facet metadata (`_series_years`): the years of
+      the dates a facet lists when it lists them all, else every year of its span.
+
+    None when no series holds a year."""
+    kept = conversion if isinstance(conversion, CountedConversion) else None
+    if isinstance(plan, PairPlan) and plan.roles is None:
+        years: set[int] = set()
+        for s in plan.held:
+            held = _series_years(s, None)
+            allowed = kept.kept_years(dict(s.role_tuple)) if kept is not None else None
+            years.update(held if allowed is None else held & allowed)
+        return _years_with_data(years)
+    if plan.roles is None or not all(coverage_index.covers(sv) for sv in plan.members):
+        return None
+    found = coverage_index.series_years(
+        variables=plan.members,
+        bound=plan.roles.bound,
+        served=held_rows(plan),
+        excluded=coverage_exclusions(plan),
+        kept_years=(coverage_kept_years(kept, plan.roles.role_names) if kept is not None else None),
+    )
+    if found is None:
+        return None
+    bits = 0
+    for series_bits in found.year_bits():
+        bits |= series_bits
+    epoch = coverage_index.horizon.epoch_year
+    return _years_with_data({epoch + i for i in range(bits.bit_length()) if bits >> i & 1})
+
+
+def _years_with_data(years: set[int]) -> YearsWithData | None:
+    """`years` as their first and last year and the years between them missing from it."""
+    if not years:
+        return None
+    first, last = min(years), max(years)
+    gaps = sorted(set(range(first, last + 1)) - years)
+    return YearsWithData(start_year=first, end_year=last, gap_years=gaps or None)
 
 
 @dataclass(frozen=True)

@@ -466,7 +466,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -553,7 +553,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9908b00f9cc2780390087fe7f0efab67"
     }
@@ -1225,7 +1229,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1307,7 +1311,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_372f483c9e478fe2a30ad20b0a0422b7"
     },
@@ -1512,7 +1520,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1599,7 +1607,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9908b00f9cc2780390087fe7f0efab67"
     }
@@ -2140,7 +2152,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2222,7 +2234,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_372f483c9e478fe2a30ad20b0a0422b7"
     }
@@ -2393,7 +2409,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2933,7 +2949,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -3537,7 +3553,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4524,7 +4540,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4611,7 +4627,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_7c3e35a805375f66d577caf558ef518b"
     },
@@ -4816,7 +4836,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4903,7 +4923,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_b9ebae41ea4d3a8948a537079a8264c6"
     }
@@ -5560,7 +5584,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5651,7 +5675,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_6a7b840dfa2afc8a01c8fbf756284b24"
     },
@@ -5876,7 +5904,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5971,7 +5999,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_7b713899f629aa3f0ed7e3617cae8520"
     }
@@ -6555,7 +6587,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6642,7 +6674,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_b9ebae41ea4d3a8948a537079a8264c6"
     },
@@ -6884,7 +6920,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6971,7 +7007,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_7c3e35a805375f66d577caf558ef518b"
     }
@@ -7393,7 +7433,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7462,7 +7502,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_305c0a170ef3d757de0863687a29ae26"
     }
@@ -7986,7 +8030,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8055,7 +8099,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_29e8a6cad614c01d7d8b8a0454252e1c"
     }
@@ -8632,7 +8680,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8701,7 +8749,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_305c0a170ef3d757de0863687a29ae26"
     },
@@ -8882,7 +8934,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8951,7 +9003,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_1fbee150e82b3f4ff2ca5b2739a0ccca"
     }
@@ -9076,7 +9132,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10032,7 +10088,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10101,7 +10157,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_29e8a6cad614c01d7d8b8a0454252e1c"
     }
@@ -10639,7 +10699,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10708,7 +10768,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_29e8a6cad614c01d7d8b8a0454252e1c"
     }
@@ -11362,7 +11426,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11431,7 +11495,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_29e8a6cad614c01d7d8b8a0454252e1c"
     },
@@ -11612,7 +11680,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11681,7 +11749,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_1cb4d5717f660b5e57f324f8d6bc9091"
     }
@@ -12221,7 +12293,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12306,7 +12378,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_4c6a67120777427227383ef14ac1b7fe"
     }
@@ -12860,7 +12936,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12953,7 +13029,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_a7f22fe379f23323ef7e76b5a94ff9c6"
     }
@@ -13612,7 +13692,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -13697,7 +13777,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_296d6b2d9682d86962f2e82a18dbf3c5"
     }
@@ -14153,7 +14237,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14230,7 +14314,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ab9d3f1755a051bc7c71f8ae670f2d58"
     }
@@ -14355,7 +14443,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15061,7 +15149,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15120,7 +15208,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -15599,7 +15691,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15658,7 +15750,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -16074,7 +16170,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16133,7 +16229,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -16536,7 +16636,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16595,7 +16695,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -17011,7 +17115,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17070,7 +17174,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -17519,7 +17627,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17578,7 +17686,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -17981,7 +18093,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -18040,7 +18152,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -18205,7 +18321,7 @@
       "served_count": 1
      },
      "trace": {
-      "capability_version": "cap_5a4896a2c6d35680",
+      "capability_version": "cap_023b8ae4c275f83c",
       "conversion": null,
       "default_reading": {
        "applied": true,
@@ -18264,7 +18380,11 @@
       "stated_form": null
      },
      "unit_conversion": null,
-     "unresolved_slots": []
+     "unresolved_slots": [],
+     "years_with_data": {
+      "end_year": 2022,
+      "start_year": 2015
+     }
     },
     "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
    },
@@ -19109,7 +19229,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19168,7 +19288,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     },
@@ -19339,7 +19463,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19398,7 +19522,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
     }
@@ -19945,7 +20073,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20004,7 +20132,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     },
@@ -20175,7 +20307,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20234,7 +20366,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
     }
@@ -20714,7 +20850,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20773,7 +20909,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -21178,7 +21318,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21237,7 +21377,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -21642,7 +21786,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21701,7 +21845,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     }
@@ -21815,7 +21963,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22528,7 +22676,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22587,7 +22735,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     }
@@ -23094,7 +23246,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23153,7 +23305,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     }
@@ -23707,7 +23863,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23766,7 +23922,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     }
@@ -24417,7 +24577,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24476,7 +24636,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -24647,7 +24811,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24706,7 +24870,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -25377,7 +25545,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25436,7 +25604,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -25607,7 +25779,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25666,7 +25838,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
     }
@@ -26264,7 +26440,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26323,7 +26499,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     }
@@ -26992,7 +27172,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27051,7 +27231,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -27229,7 +27413,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27288,7 +27472,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
     }
@@ -27408,7 +27596,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28330,7 +28518,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28389,7 +28577,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -28560,7 +28752,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28619,7 +28811,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -29333,7 +29529,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29392,7 +29588,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -29563,7 +29763,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29622,7 +29822,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -29742,7 +29946,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30611,7 +30815,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30670,7 +30874,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     }
@@ -30814,7 +31022,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31738,7 +31946,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31815,7 +32023,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     },
@@ -32049,7 +32261,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32126,7 +32338,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     }
@@ -32770,7 +32986,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32847,7 +33063,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     },
@@ -33081,7 +33301,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33158,7 +33378,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     }
@@ -33792,7 +34016,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33869,7 +34093,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     }
@@ -34534,7 +34762,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34593,7 +34821,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -34764,7 +34996,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34823,7 +35055,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -35488,7 +35724,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35547,7 +35783,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -35718,7 +35958,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35777,7 +36017,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -36414,7 +36658,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36473,7 +36717,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_9dc2f56995b89c00b4d8dc3246ac70d1"
     },
@@ -36644,7 +36892,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36703,7 +36951,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_fc05e644829bc3547d60a13944176f34"
     }
@@ -37119,7 +37371,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37196,7 +37448,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     }
@@ -37777,7 +38033,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37854,7 +38110,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
@@ -38049,7 +38309,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38126,7 +38386,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     }
@@ -38711,7 +38975,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38788,7 +39052,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
@@ -38983,7 +39251,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -39060,7 +39328,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     }
@@ -40045,7 +40317,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40122,7 +40394,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
@@ -40317,7 +40593,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40394,7 +40670,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     }
@@ -40930,7 +41210,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41007,7 +41287,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     },
@@ -41241,7 +41525,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41318,7 +41602,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2020
+      }
      },
      "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     }
@@ -41865,7 +42153,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41924,7 +42212,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_ba182d8e8b151c461cf0149e3b6aebe1"
     },
@@ -42095,7 +42387,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_5a4896a2c6d35680",
+       "capability_version": "cap_023b8ae4c275f83c",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -42154,7 +42446,11 @@
        "stated_form": null
       },
       "unit_conversion": null,
-      "unresolved_slots": []
+      "unresolved_slots": [],
+      "years_with_data": {
+       "end_year": 2022,
+       "start_year": 2015
+      }
      },
      "spec_id": "spec_76172fe9202fe526ebda8146f977d157"
     }

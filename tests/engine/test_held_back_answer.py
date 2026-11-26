@@ -182,6 +182,8 @@ def test_a_named_partial_year_opts_in_and_states_it_served():
     assert (window.start_year, window.end_year, window.include) == (2025, 2025, ["partial"])
     assert spec.resolved.coverage.window == TimeWindow(start_year=2025, end_year=2025)
     assert _held(spec) == [("partial", True, _CRS, "OECD CRS", 2025, 2025, None)]
+    # The years with data are those a request naming no window is served, without 2025.
+    assert _years_with_data(spec) == (2000, 2024, None)
     unnamed = _spec(_answer(_PARTIAL, _request("2024")))
     assert unnamed.spec_id != spec.spec_id
 
@@ -215,6 +217,7 @@ def test_an_open_read_states_the_projections_it_holds_back():
     assert spec.resolved.coverage.window.end_year == 2025
     assert _held(spec) == [("projected", False, _IDS, "World Bank IDS", 2026, 2030, None)]
     assert "projections" not in render_sentence(spec)
+    assert _years_with_data(spec) == (2000, 2025, None)
 
 
 @pytest.mark.parametrize(
@@ -427,6 +430,116 @@ def test_a_role_answer_states_the_years_it_holds_back(monkeypatch, search_settin
 
     assert _held(projected) == [("projected", False, _IDS, "World Bank IDS", 2026, 2030, None)]
     assert _held(partial) == [("partial", False, _CRS, "OECD CRS", 2025, 2025, None)]
+    # The years with data are those a request naming no window is served.
+    assert _years_with_data(projected) == (2000, 2025, None)
+    assert _years_with_data(partial) == (2000, 2024, None)
+
+
+def _years_with_data(spec: Spec) -> tuple[int, int, list[int] | None] | None:
+    years = spec.resolved.years_with_data
+    return None if years is None else (years.start_year, years.end_year, years.gap_years)
+
+
+_GAPPED = [*range(2000, 2006), *range(2008, 2016)]
+
+
+@pytest.mark.parametrize(
+    ("years", "stated"),
+    [(range(2000, 2016), (2000, 2015, None)), (_GAPPED, (2000, 2015, [2006, 2007]))],
+    ids=["whole", "gap"],
+)
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_role_answer_states_every_year_its_series_hold(
+    monkeypatch, search_settings, bulk, years, stated
+):
+    """A creditor's flows to Aland asked for 2010 to 2012. The answer serves those three
+    years and states the years its series hold outside them too, and the years between
+    them it holds none, on the wire as in the model."""
+    from series_coverage.schema import FacetMetadata
+
+    spec = _role_answer(
+        monkeypatch,
+        search_settings,
+        [("f1", years)],
+        {"f1": FacetMetadata(provenance_id=_IDS, observation_period="P1Y")},
+        bulk=bulk,
+        date_request=_request("2010 to 2012"),
+    )
+
+    download = spec.resolved.download
+    assert download is not None and download.window == TimeWindow(start_year=2010, end_year=2012)
+    assert _years_with_data(spec) == stated
+    wire = spec.resolved.model_dump(mode="json")["years_with_data"]
+    first, last, gaps = stated
+    assert wire == {"start_year": first, "end_year": last, **({"gap_years": gaps} if gaps else {})}
+
+
+@pytest.mark.parametrize(
+    ("years", "stated"),
+    [(range(2000, 2016), (2000, 2015, None)), (_GAPPED, (2000, 2015, [2006, 2007]))],
+    ids=["whole", "gap"],
+)
+def test_a_standard_answer_states_every_year_its_series_hold(years, stated):
+    """The population of Zeta asked for 2010 to 2012, a series at one place with no
+    directional role, states the years its series holds outside them too, and its gap."""
+    spec = _spec(_answer([_facet("fIds", _IDS, years)], _request("2010 to 2012")))
+
+    assert spec.resolved.coverage.window == TimeWindow(start_year=2010, end_year=2012)
+    assert _years_with_data(spec) == stated
+
+
+def test_a_resubmitted_role_identity_states_the_years_the_parsed_answer_states(
+    monkeypatch, search_settings
+):
+    """The identity of a parsed answer reading 2010 to 2012, resubmitted as it stands with no
+    parse, states the same years with data, its gap included."""
+    from search.engine.region import resolve_spec_resubmit
+    from search.models import ResubmitIdentityPayload
+    from series_coverage.schema import FacetMetadata, RoleNames
+    from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
+    from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
+    from tests.engine._harness import walk_options
+
+    parsed = _role_answer(
+        monkeypatch,
+        search_settings,
+        [("f1", _GAPPED)],
+        {"f1": FacetMetadata(provenance_id=_CRS, observation_period="P1Y")},
+        bulk=False,
+        date_request=_request("2010 to 2012"),
+    )
+    graph = FakeGraph(
+        nodes={
+            "country/AAA": {"label": "Aland", "type": "Country"},
+            role_bearing._SV_DCID: {
+                "label": "Test flow",
+                "arcs": role_bearing._declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+            _CRS: {"label": "CRS"},
+        },
+        detect={},
+        resolve={},
+        obs={},
+    )
+    index = patch_coverage(
+        monkeypatch,
+        [(role_bearing._SV_DCID, "f1", "country/CRA", "country/AAA", list(_GAPPED))],
+        role_names={role_bearing._SV_DCID: RoleNames(donor="creditor", recipient="debtor")},
+        facet_metadata={"f1": FacetMetadata(provenance_id=_CRS, observation_period="P1Y")},
+    )
+    with bound_catalogue(_catalogue()):
+        result = resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload(identity=parsed.definition.identity),
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=FakeCoverageService(index).snapshot(),
+            options=walk_options(graph),
+        )
+    resubmitted = _spec(result)
+
+    assert resubmitted.spec_id == parsed.spec_id
+    assert _years_with_data(parsed) == (2000, 2015, [2006, 2007])
+    assert resubmitted.resolved.years_with_data == parsed.resolved.years_with_data
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
@@ -449,6 +562,8 @@ def test_a_named_partial_year_counts_its_headline_on_that_year(monkeypatch, sear
     headline = spec.resolved.headline
     assert headline is not None
     assert (headline.year, headline.series) == (2025, 1)
+    # The years with data are those a request naming no window is served, without 2025.
+    assert _years_with_data(spec) == (2000, 2024, None)
 
 
 def _counting_runs(monkeypatch) -> list[object]:
