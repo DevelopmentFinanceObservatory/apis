@@ -1047,6 +1047,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("paired mode needs --base-url and --base-ref")
     if args.head_url and (args.records or args.run_id or args.revision):
         parser.error("--records, --run-id and --revision are single mode's")
+    if (args.run_id or args.revision) and not args.records:
+        parser.error("--run-id and --revision describe the run record, so they need --records")
     if args.samples < 1:
         parser.error("--samples must be at least 1")
     # A crash must not read as a blocking verdict (1) or infrastructure (3), which the
