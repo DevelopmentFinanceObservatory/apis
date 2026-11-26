@@ -34,7 +34,7 @@ from search.engine.assemble import with_scope_choices
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.binders.base import Binder
-from search.engine.departures import served_datasets
+from search.engine.departures import served_datasets, spec_departure_facts
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, candidate_grounding, pipeline
 from search.engine.region.codes import (
@@ -46,7 +46,7 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.spec_id import identity_spec_id
-from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.stated_words_read import WORDS_HEADER, StatedWord, StatedWordsOutput
 from search.engine.unit.conversion import with_unit_conversion
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
@@ -65,6 +65,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityShapeSchema,
     IdentityWindowRange,
+    Operation,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -112,6 +113,7 @@ from tests.materialise.conftest import FakeGraphReader
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _USA = "country/USA"
+_G7 = "GroupOfSeven"
 _KEN = "country/KEN"
 _DAC1 = "provenance/OECDDAC1"
 _DAC2A = "provenance/OECDDAC2A"
@@ -124,6 +126,14 @@ _DAC1_MEMBERS = (
     "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal",
     "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal",
 )
+# DAC1's bilateral ODA, aid type 1015, beside its total ODA, aid type 1010.
+_DAC1_BILATERAL = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1015_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1015_Nominal",
+    "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1015_Nominal",
+)
+_TOTAL_ODA = "DAC1AidType1010"
+_BILATERAL_ODA = "DAC1AidType1015"
 _DAC2A_MEMBERS = (
     "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
     "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
@@ -206,35 +216,53 @@ def _member_node(dcid: str) -> dict:
 
 
 def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
-    """The United States, Kenya and `members`, which recall returns for `variable`."""
+    """The United States, Kenya, the G7 and `members`, which recall returns for
+    `variable`."""
     return FakeGraph(
         nodes={
             _USA: {"label": "United States", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
+            _G7: {"label": "Group of Seven", "type": "Place"},
             **{dcid: _member_node(dcid) for dcid in members},
         },
         detect={variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
-        resolve={"United States": _USA, "Kenya": _KEN},
+        resolve={"United States": _USA, "Kenya": _KEN, "G7": _G7},
     )
 
 
 _MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
+_WORD_LINE = re.compile(r"^  (\d+): ", re.MULTILINE)
 
 
 class _PickingLLM:
     """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
-    shape, so the whole menu is the house policies' pool; reads no quantity and rates no
-    word. It drafts `bindings` on its pick."""
+    shape, so the whole menu is the house policies' pool; reads `quantity`, no quantity by
+    default, and rates no word, or with `unstated` every word it is asked about as one the
+    series does not state. It drafts `bindings` on its pick."""
 
-    def __init__(self, pick: int = 0, bindings: Sequence[SlotBindingDraft] = ()) -> None:
+    def __init__(
+        self,
+        pick: int = 0,
+        bindings: Sequence[SlotBindingDraft] = (),
+        quantity: QuantityOutput | None = None,
+        *,
+        unstated: bool = False,
+    ) -> None:
         self.pick = pick
         self.bindings = bindings
+        self.quantity = quantity
+        self.unstated = unstated
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
-            return NO_QUANTITY
+            return NO_QUANTITY if self.quantity is None else (self.quantity, None)
         if schema is StatedWordsOutput:
-            return NO_RATING
+            if not self.unstated:
+                return NO_RATING
+            words = _WORD_LINE.findall(prompt.split(WORDS_HEADER)[-1])
+            return StatedWordsOutput(
+                words=[StatedWord(index=int(number), stated=False) for number in words]
+            ), None
         match = _MENU_SIZE.search(prompt)
         assert match is not None, prompt[:400]
         size = int(match.group(1))
@@ -248,16 +276,22 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     _cover(monkeypatch, _DAC1_MEMBERS)
 
 
-def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...], *, unit: str = "USD") -> None:
-    """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
-    the DAC1 members `dac1`, which may hold members of other DAC1 aid types, all in
-    `unit`."""
+def _cover(
+    monkeypatch: pytest.MonkeyPatch,
+    dac1: tuple[str, ...],
+    *,
+    unit: str = "USD",
+    donors: tuple[str, ...] = (_USA,),
+) -> None:
+    """Series for the United States over 2005 to 2024 in every DAC2a and CRS member, and
+    for `donors` in the DAC1 members `dac1`, which may hold members of other DAC1 aid
+    types, all in `unit`."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
         [
-            *((dcid, "dac1", _USA, ABSENT_ENTITY, _YEARS) for dcid in dac1),
+            *((dcid, "dac1", donor, ABSENT_ENTITY, _YEARS) for dcid in dac1 for donor in donors),
             *((dcid, "dac2a", _USA, _KEN, _YEARS) for dcid in _DAC2A_MEMBERS),
             *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
         ],
@@ -282,11 +316,12 @@ def _resolve_part(
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
+    llm: _PickingLLM | None = None,
 ) -> DefinitePart:
     response = offline_resolve(
         request,
         graph=_graph(variable, members),
-        llm=_PickingLLM(pick),
+        llm=_PickingLLM(pick) if llm is None else llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     assert isinstance(response, Resolution), response
@@ -927,7 +962,7 @@ def test_the_options_are_the_bases_the_parts_dataset_publishes():
         ("measure_basis:net", "net disbursements, current USD", "available", None),
         (
             "measure_basis:grant_equivalent",
-            "grant equivalents (OECD headline), current USD",
+            "grant equivalents, current USD",
             "unavailable",
             "basis_not_published",
         ),
@@ -1736,6 +1771,158 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     assert "provenance" not in (spec.definition.identity.facets or {})
     assert _served_basis(spec) == _NET_DAC1
     assert scope.compiled.spec_id == spec.spec_id == scope.base.spec_id
+
+
+@pytest.mark.parametrize(
+    ("donor", "covered"),
+    [
+        pytest.param("United States", (_USA,), id="country"),
+        pytest.param("G7", (_G7,), id="group-total"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("carried", "option", "provenance"),
+    [
+        pytest.param(None, "measure_basis:oecd_headline", "default", id="convention"),
+        pytest.param("measure_basis:net", "measure_basis:net", "carried", id="carried-net"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("variable", "quantity", "aid_type"),
+    [
+        pytest.param("share of aid", None, _TOTAL_ODA, id="worded-share"),
+        # A share_of whose phrase repeats a variable naming an aid type.
+        pytest.param("share of bilateral ODA", None, _BILATERAL_ODA, id="planner-payload"),
+        # A read quoting the measure, or a word of it, as the base leaves it the measure.
+        pytest.param(
+            "share of bilateral ODA",
+            QuantityOutput(stated_form="share", base_words="bilateral ODA", denominator_index=0),
+            _BILATERAL_ODA,
+            id="measure-quoted-as-base",
+        ),
+        pytest.param(
+            "share of bilateral ODA",
+            QuantityOutput(stated_form="share", base_words="ODA", denominator_index=0),
+            _BILATERAL_ODA,
+            id="measure-noun-quoted-as-base",
+        ),
+        pytest.param(
+            "aid in total aid",
+            QuantityOutput(stated_form="share", base_words="total aid", denominator_index=0),
+            _TOTAL_ODA,
+            id="stated-share-on-a-base",
+        ),
+        pytest.param(
+            "aid in total aid",
+            QuantityOutput(stated_form="share"),
+            _TOTAL_ODA,
+            id="stated-share",
+        ),
+    ],
+)
+def test_a_share_of_a_donor_total_is_counted_on_the_basis_of_the_total(
+    monkeypatch: pytest.MonkeyPatch,
+    donor: str,
+    covered: tuple[str, ...],
+    carried: str | None,
+    option: str,
+    provenance: str,
+    variable: str,
+    quantity: QuantityOutput | None,
+    aid_type: str,
+):
+    """A `share_of` whose phrase is the whole variable reads the variable as the share's
+    numerator measure: the share its words or the quantity read name, and any base the read
+    quotes, are the operation's, so the part's series is the aid, a level, and no shape is
+    refused for holding no share. A donor's window crossing 2018 is then counted on the
+    OECD headline per year, or on the basis a carried entry asks for, and the answer
+    departs only in leaving the share to its client."""
+    _cover(monkeypatch, (*_DAC1_MEMBERS, *_DAC1_BILATERAL), donors=covered)
+    entries = (
+        [
+            Entry(
+                axis="measure_basis",
+                option_id=carried,
+                provenance="carried",
+                origin=ChoiceOrigin(choice_id="earlier:measure_basis"),
+            )
+        ]
+        if carried is not None
+        else None
+    )
+    operations = [Operation(verb="share_of", phrase=variable)]
+
+    part = _resolve_part(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text=donor, role_text="from")],
+                        time_text="2015-2023",
+                        operations=operations,
+                    )
+                ],
+                carried_entries=entries,
+            )
+        ),
+        variable,
+        members=(*_ALL_MEMBERS, *_DAC1_BILATERAL),
+        llm=_PickingLLM(quantity=quantity, unstated=True),
+    )
+
+    spec = part.spec
+    assert _basis_choice(spec)[:2] == (option, provenance)
+    assert _served_basis(spec) == _NET_DAC1
+    assert [e.ref for e in spec.resolved.entities] == list(covered)
+    (served_aid_type,) = (
+        s.binding for s in spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    assert served_aid_type == IdentityBindingValue(ref=aid_type)
+    assert "query_qualifier_dropped" not in {warning.code for warning in part.warnings}
+    assert [fact.code for fact in spec_departure_facts(spec, operations=operations)] == [
+        "operation_not_applied"
+    ]
+
+
+def test_a_share_of_spanning_a_variable_that_names_its_source_reads_the_measure(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue
+):
+    """A `share_of` phrase quotes the part's words, its source among them, while the leg
+    resolves the variable less the source's words: the phrase still spans the variable, so
+    the share the read states is the operation's and the bilateral level answers."""
+    bind_catalogue(
+        FakeCatalogue(provenances={ref: provenance_row(ref, BASE) for ref in (_DAC1, _DAC2A)})
+    )
+    _cover(monkeypatch, (*_DAC1_MEMBERS, *_DAC1_BILATERAL), donors=(_USA,))
+    variable = "share of bilateral ODA in DAC1"
+    operations = [Operation(verb="share_of", phrase=variable)]
+
+    part = _resolve_part(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2015-2023",
+                        sources=[SourceMention(text="DAC1")],
+                        operations=operations,
+                    )
+                ]
+            )
+        ),
+        "share of bilateral ODA in",
+        members=(*_ALL_MEMBERS, *_DAC1_BILATERAL),
+        llm=_PickingLLM(quantity=QuantityOutput(stated_form="share"), unstated=True),
+    )
+
+    spec = part.spec
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [_DAC1]
+    (served_aid_type,) = (
+        s.binding for s in spec.definition.identity.slots if s.property == "dac1AidType"
+    )
+    assert served_aid_type == IdentityBindingValue(ref=_BILATERAL_ODA)
 
 
 @pytest.mark.parametrize(

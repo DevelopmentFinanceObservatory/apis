@@ -263,7 +263,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit cf45930, which lists the `params.why` reasons of
+# The pin is spec-kit 5cf5406, which lists the `params.why` reasons of
 # `bilateral_reading_unavailable` (`WARNING_REASONS`), registers that warning on
 # search.resolve and the organisation reading codes,
 # defining the tie between them by the role the query's reading states,
@@ -296,7 +296,8 @@ dfo-analysis-engine = { workspace = true }
 # and its steps schema's `simple_unit` and components catalogue's `structured_unit`
 # carry `deflation_basis` too, under components catalogue release 2026.11.0. It also adds the
 # `order` member, under catalogue release 2026.11.1. Its description schema adds
-# `freshness.partial_periods`, under catalogue release 2026.11.2.
+# `freshness.partial_periods`, under catalogue release 2026.11.2. Its identity core
+# accepts an optional `include` (`partial`, `projected`) on every `requested_window` kind.
 # It maps the share routes' refusals on presentation.shares at the statuses the
 # presentation write and components routes use, adds `payload_too_large` (413)
 # for a share body over the routes' limit, maps `timeout` (504) on
@@ -339,8 +340,8 @@ dfo-analysis-engine = { workspace = true }
 # `origin` and `destination` flow axes that `dfo_platform.roles.ROLE_AXES` reads.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2a091441c84093db1751da0914a3d24ded1a88f2", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5cf54062933cbc0e1d793abe16d4a4a0d6c66ca1", subdirectory = "python/client-contract" }
 # Pinned to an evals dev commit until v0.1.0 is tagged after the first nightly
 # run record; then the pin moves to the tag.
 dfo-evals = { git = "https://github.com/DevelopmentFinanceObservatory/evals.git", rev = "732a431e186ca4ee549273fea19f9ec3ea698e07" }
@@ -389,7 +390,8 @@ python = ".venv"
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
 # "chanel" is the CHANEL Foundation, a private donor in the code index, and "ans"
 # is French for "years" in the relative-date phrases time_bind reads.
-skip = "tests/render/heading_words_specs.json"
+# geo_names.json is the resolver's export of place names, in several languages.
+skip = "tests/render/heading_words_specs.json,packages/dfo-data-tools/src/entity_resolution/data/geo_names.json"
 ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel,ans"
 
 [tool.ruff]

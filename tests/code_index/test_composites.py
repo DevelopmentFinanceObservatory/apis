@@ -416,3 +416,18 @@ def test_a_composite_binding_destinations_a_party_cannot_read_refuses(
         declared_composite_reads()
 
     assert (refused.value.code, refused.value.composite) == (code, composite.provenance)
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        {"kind": "range", "start_year": 2000, "end_year": 2030, "include": ["partial"]},
+        {"kind": "range", "start_year": 2000, "include": ["partial"]},
+        {"kind": "all", "include": ["projected"]},
+    ],
+)
+def test_clipping_a_window_to_a_components_periods_keeps_its_include(window):
+    clipped = composites_module._clipped_window(window, YearPeriod(first=2010, last=2020))
+
+    assert clipped is not None
+    assert clipped["include"] == window["include"]

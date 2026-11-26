@@ -50,10 +50,7 @@ from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
-from search.engine.region.composite_answer import (
-    with_composite_continuation,
-    with_composite_observations,
-)
+from search.engine.region.composite_answer import CompositeRelaunch, settled_composite
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -171,6 +168,7 @@ async def resolve_variable(
     dropped_qualifier_phrases: list[str] | None = None,
     exclusions: PartExclusions | None = None,
     operations: Sequence[Operation] = (),
+    measure_words: Callable[[str], str] = str,
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
     unclaimed: tuple[str, ...] = (),
@@ -210,7 +208,9 @@ async def resolve_variable(
     `dropped_qualifier_phrases` are the request's match text, plus on the raw-text door this
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
     admitted operations; one over `category` opens the slots its phrase names on the
-    elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
+    elected shape whether or not bind claims them. `measure_words` is the cut that took the
+    leg's source, series-code and scope phrase words out of `variable`
+    (`ResolveState.measure_words`). `open_axes` are the flow axes the leg
     asks every member of (`ResolveState.open_axes`). `exclusions` are the stretches of the
     request that leave something out and qualify this part, with the requirements judging
     its answers on them (`state.exclusion_requirements`); the result names those every
@@ -321,6 +321,7 @@ async def resolve_variable(
             requirements=exclusions.requirements,
             exclusions=exclusions.stretches,
             operations=tuple(operations),
+            measure_words=measure_words,
             open_axes=open_axes,
             query_text=query_text,
             unclaimed=unclaimed,
@@ -647,25 +648,31 @@ def _with_decided_scope(result: RegionResult, decision: ScopeDecision) -> Region
 
 
 async def _with_composite_preview(result: RegionResult, state: ResolveState) -> RegionResult:
-    """`result` with the preview of the composite it answers, which `_with_scope_choices`
-    leaves unlaunched. It launches as a trailing task where
-    the request streams observations, so the `response` event waits on nothing new, and reads
-    inline where the request embeds them. A request reading no preview states the
-    continuation its components' read plans serve instead
-    (`composite_answer.with_composite_continuation`). Any other result returns unchanged.
+    """`result` with the component plans and preview of the composite it answers, which
+    `_with_scope_choices` leaves unlaunched (`composite_answer.settled_composite`). The plans
+    settle first on every path, so the answer states the continuation and held-back runs they
+    serve whether it streams, embeds or reads no preview. The preview then launches as a
+    trailing task where the request streams observations, so the `response` event waits on
+    the plan resolves alone, and reads inline where the request embeds them. Any other result
+    returns unchanged.
 
     The inline reads take no permit of the request semaphore, since the part's own leg holds
     one while it resolves (`fanout`), and a request whose legs held every permit would wait
-    on itself. The continuation's resolves hold a permit of the request's own bound for them
+    on itself. The plan resolves hold a permit of the request's own bound for them
     (`concurrency.continuation_semaphore`), which nothing holding one waits on."""
     relaunch = result.observations_relaunch
-    if relaunch is None or result.observations_task is not None:
+    if not isinstance(relaunch, CompositeRelaunch) or result.observations_task is not None:
         return result
+    settled = await settled_composite(
+        result,
+        stream=state.stream_observations,
+        embed=state.include_observations,
+        plans_semaphore=continuation_semaphore(),
+        preview_semaphore=None,
+    )
     if state.stream_observations:
-        return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
-    if state.include_observations:
-        return await with_composite_observations(result, semaphore=None)
-    return await with_composite_continuation(result, semaphore=continuation_semaphore())
+        return dataclasses.replace(settled, observations_task=relaunch(settled.spec.spec_id))
+    return settled
 
 
 def merged_scope_choices(

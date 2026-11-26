@@ -23,6 +23,8 @@ from search.models import (
     EntityOptions,
     EntityRoleDirectional,
     GraphRef,
+    HeldBack,
+    HeldKind,
     RoleAxis,
     RoleAxisFact,
     Shape,
@@ -31,6 +33,7 @@ from search.models import (
     SlotOption,
     SlotValue,
     StatVar,
+    TimeWindow,
 )
 from tests.engine._conjoin_fixtures import _region
 from tests.engine.test_conjoin_measure_merge import _RECIPIENT_PROP, _gr, _recipient_only_shape
@@ -543,3 +546,117 @@ def test_a_merged_answer_keeps_the_total_its_members_reading_leaves_aside():
 
     assert (merged.spec.resolved.entity_groups or {}).get("origin") == EntityGroup(label="G7")
     assert merged.spec.resolved.group_totals == {"origin": "GroupOfSeven"}
+
+
+_CRS = "dc/base/OECD_CRS"
+_IDS = "dc/base/WB_IDS"
+
+
+def _held(kind: str, source: str, start: int, end: int, *, served: bool) -> HeldBack:
+    return HeldBack.model_validate(
+        {
+            "kind": kind,
+            "served": served,
+            "source": source,
+            "source_name": source.rsplit("/", 1)[-1],
+            "start_year": start,
+            "end_year": end,
+            "reported_share": None,
+        }
+    )
+
+
+def _windowed_region(
+    recipient_dcid: str,
+    *,
+    include: list[HeldKind] | None,
+    held: list[HeldBack],
+    earliest_index: int,
+) -> RegionResult:
+    """One recipient's answer for 2020 to 2025, opting in to `include`, its coverage
+    stating the runs `held`."""
+    shape = _recipient_only_shape()
+    spec = build_spec(
+        composite=None,
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=shape,
+        slots=[
+            Slot(
+                key=SlotKey(axis="where", property=_gr(_RECIPIENT_PROP), label="recipient"),
+                binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
+            )
+        ],
+        stat_vars=[
+            StatVar(
+                ref=_gr(f"sv_{recipient_dcid}"),
+                shape_id=shape.shape_id,
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+        entities=[
+            Entity(
+                ref=_gr(recipient_dcid),
+                role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
+            )
+        ],
+        requested_window=TimeWindow(start_year=2020, end_year=2025, include=include),
+        coverage=CoverageBare(has_data=True, held_back=held or None),
+    )
+    return _region(spec, f"aid to {recipient_dcid}", earliest_index=earliest_index)
+
+
+_PARTIAL_SERVED = _held("partial", _CRS, 2025, 2025, served=True)
+_PROJECTED = _held("projected", _IDS, 2026, 2030, served=False)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "include", "held"),
+    [
+        pytest.param(
+            (["partial"], [_PARTIAL_SERVED]),
+            (["partial"], [_held("partial", _CRS, 2024, 2025, served=True), _PROJECTED]),
+            ["partial"],
+            [_held("partial", _CRS, 2024, 2025, served=True), _PROJECTED],
+            id="union-of-runs",
+        ),
+        # A member whose read holds no partial year in the window settles no opt-in, as a
+        # lagging reporter's does, and still merges with one that settled it.
+        pytest.param(
+            (["partial"], [_PARTIAL_SERVED]),
+            (None, []),
+            ["partial"],
+            [_PARTIAL_SERVED],
+            id="opt-ins-differ",
+        ),
+        pytest.param(
+            (None, []),
+            (["partial"], [_PARTIAL_SERVED]),
+            ["partial"],
+            [_PARTIAL_SERVED],
+            id="the-later-member-opts-in",
+        ),
+    ],
+)
+def test_a_merged_answer_states_the_union_of_its_members_runs_under_their_opt_in(
+    first: tuple[list[HeldKind] | None, list[HeldBack]],
+    second: tuple[list[HeldKind] | None, list[HeldBack]],
+    include: list[HeldKind],
+    held: list[HeldBack],
+) -> None:
+    """Two recipients' answers over one range merge into one, whatever opt-in each settled
+    from its own runs. The merged window opts in to every kind a member's does, and the
+    merged answer states the members' runs merged per kind and source, each served as the
+    merged window serves it."""
+    (merged,), residual = collapse_same_shape(
+        [
+            _windowed_region("country/KEN", include=first[0], held=first[1], earliest_index=0),
+            _windowed_region("country/UGA", include=second[0], held=second[1], earliest_index=1),
+        ]
+    )
+
+    assert residual == []
+    window = merged.spec.definition.identity.requested_window
+    assert (window.kind, window.include) == ("range", include)
+    assert merged.spec.resolved.coverage.held_back == held

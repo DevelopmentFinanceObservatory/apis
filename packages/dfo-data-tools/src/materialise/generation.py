@@ -13,8 +13,9 @@ import time
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 from functools import cache, partial
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -100,6 +101,7 @@ from materialise.group_facets import (
     group_variable_breadth,
     select_group_facets,
 )
+from materialise.held_runs import HeldRun, read_runs
 from materialise.member_conversion import (
     MemberConversionPlan,
     apply_member_conversion,
@@ -115,6 +117,7 @@ from materialise.place_scope import NO_DEFAULT_SCOPE, AvailabilityReader, Defaul
 from materialise.progress import RowProgress
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import EntityCurrencies, NonCurrencyUnitError
+from materialise.reported_share import YearTotals, fold_observations
 from materialise.series_conversion import SeriesConversion, SeriesKey, series_key
 from materialise.statistics import (
     SeriesStatisticsFile,
@@ -130,6 +133,7 @@ from materialise.window import (
     compute_applied_window,
     latest_period,
 )
+from origin_catalogue import CatalogueNotBound, current_catalogue
 from origin_catalogue.graph import is_un_dcid
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 
@@ -192,20 +196,42 @@ class _RawRowBudget:
             return self._used
 
 
+type Grains = frozenset[Literal["year", "month", "day"]]
+"""The period grains a read of one year asks for (`_time_period_for_window`)."""
+
+_YEAR_GRAIN: Grains = frozenset({"year"})
+
+
 def _time_period_for_window(
-    window: RequestedWindow, *, year: int | None = None
+    window: RequestedWindow, *, year: int | None = None, grains: Grains = _YEAR_GRAIN
 ) -> Literal["LATEST"] | list[str] | None:
     """Uses server-side `LATEST` for latest windows and no time filter otherwise. With
-    `year`, the year a latest read's member elected, the exact period of that year.
+    `year`, a year a latest read's member reads again, every period of that year at each of
+    `grains`: its four digits, its twelve months, its days.
 
     The client still selects the member's one period because SDMX returns one latest row
     per matched series. SDMX takes exact period strings alone, so a year is asked for by
     its four digits, the period a yearly facet dates it by. A member elects a year only
-    when no facet of its states a period finer than a year.
+    when no facet of its states a period finer than a year, so an election reads the year
+    alone. A partial cut reads a sub-annual series' year at its own grain
+    (`_without_held_back`).
     """
     if year is not None:
-        return [str(year)]
+        periods = [str(year)] if "year" in grains else []
+        if "month" in grains:
+            periods += [f"{year}-{month:02d}" for month in range(1, 13)]
+        if "day" in grains:
+            first = date(year, 1, 1)
+            periods += [
+                (first + timedelta(days=offset)).isoformat()
+                for offset in range((date(year + 1, 1, 1) - first).days)
+            ]
+        return periods
     return "LATEST" if window.kind == "latest" else None
+
+
+type _YearRead = Callable[[int, Grains], pa.Table]
+"""A `latest` read of one member's rows again at one year, at the given period grains."""
 
 
 type _Election = Callable[[Sequence[tuple[str, str]]], int | None]
@@ -224,7 +250,7 @@ class _ElectedRead:
     that leaves its own omissions out, as Search's plan does."""
 
     elect: _Election
-    read: Callable[[int], pa.Table]
+    read: _YearRead
     counted: Callable[[str], Sequence[str]] | None = None
 
 
@@ -242,6 +268,9 @@ def elected_latest_year(
     other than `latest`, a subject-only request, one read without coverage or dispatching
     no facet, and a StatVar the index cannot elect for, which all serve the newest period
     any series holds.
+
+    The years the request's window holds back unless it opts in to them
+    (`RequestedWindow.include`) elect nothing, as the mint cuts their rows.
 
     A mint calls it once per member and records the year with `facet_ids` and `omitted`
     (`window.LatestYear`), so a later call with those arguments tells whether the index
@@ -261,6 +290,7 @@ def elected_latest_year(
             for role, entity in omitted
             if role in coverage_role
         ],
+        include=request.window.include,
     ).get(stat_var)
 
 
@@ -284,6 +314,7 @@ def elected_entities(
         variables=[stat_var],
         bound=bound,
         served=[(stat_var, facet_id, None, None) for facet_id in facet_ids],
+        include=request.window.include,
     )
     if position is None or found is None:
         return ()
@@ -380,6 +411,10 @@ class _MemberOutcome:
     `coverage_gaps` holds the places a national-currency unit binding serves no row at
     (`_national_currency_probe`). `latest_years` holds the member's year under a `latest`
     window (`_latest_years`), and `read_series` the series its read holds under any window.
+    `year_totals` holds the year sums a partial year's reported share is read from
+    (`_share_totals`), whatever the window opts in to. `held_runs` holds the runs of partial
+    and projected years the member's sources hold past its served actual years, whatever its
+    window (`held_runs.read_runs`).
     """
 
     frame: Frame
@@ -397,6 +432,8 @@ class _MemberOutcome:
     coverage_gaps: tuple[CoverageGap, ...] = ()
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
+    year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
+    held_runs: tuple[HeldRun, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -420,7 +457,8 @@ class _GroupOutcome:
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
     hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
-    holds under any window.
+    holds under any window. `year_totals` is every member's `_MemberOutcome.year_totals`, and
+    `held_runs` every member's `_MemberOutcome.held_runs`, merged per kind and source.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -445,6 +483,8 @@ class _GroupOutcome:
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
+    year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
+    held_runs: tuple[HeldRun, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -884,7 +924,7 @@ def _most_recent_rows(table: pa.Table, limit: int) -> pa.Table:
 
 
 def _with_elected_year(
-    table: pa.Table, *, year: int, admission: RowAdmission, read: Callable[[int], pa.Table]
+    table: pa.Table, *, year: int, admission: RowAdmission, read: _YearRead
 ) -> pa.Table:
     """`table`, a `LATEST` read's rows of one member, holding every row of the member in
     `year`, the year it elected.
@@ -902,7 +942,7 @@ def _with_elected_year(
     if bounds is None or bounds[1] <= year:
         return table
 
-    again = read(year)
+    again = read(year, _YEAR_GRAIN)
     return pa.concat_tables(
         [
             table.filter(pc.invert(columnar.year_mask(table, year=year))),
@@ -935,6 +975,63 @@ def _apply_latest_reduction(
     return table.filter(
         columnar.survivor_mask(table, selections=selections, window=window, admission=admission)
     )
+
+
+def _without_held_back(
+    table: pa.Table,
+    *,
+    window: RequestedWindow,
+    selections: Mapping[str, FacetSelection],
+    admission: RowAdmission,
+    elected: _ElectedRead | None,
+) -> tuple[pa.Table, _ElectedRead | None]:
+    """A `latest` read's rows less those its window holds back (`columnar.held_back_mask`), and
+    `elected` with its reads of a year cut alike.
+
+    A `LATEST` read holds each series at its newest period, so a series whose newest row is
+    held back holds no row of the periods before it. When a served row (one the selection and
+    admission keep) of a source's partial period is held back, the member is read again
+    through `elected` at the newest year before that period (`columnar.held_back_through`), at
+    the grains of the held-back rows, and those rows replace the ones `table` holds in that
+    year, so every series reaching it serves it there. A held-back row finer than a year also
+    reads the next year, the mark's own, whose periods before the mark are complete. A
+    projected row is held back with no read again: its method holds no actual year, so its
+    series serves only what other rows hold. With no `elected` the kept rows are served as
+    they are."""
+
+    def kept(rows: pa.Table) -> pa.Table:
+        return rows.filter(pc.invert(columnar.held_back_mask(rows, include=window.include)))
+
+    if elected is not None:
+        read = elected.read
+        elected = replace(elected, read=lambda year, grains: kept(read(year, grains)))
+    held = columnar.held_back_mask(table, include=window.include)
+    if not pc.any(held).as_py():
+        return table, elected
+    served_held = table.filter(
+        pc.and_(
+            held,
+            pc.and_(
+                columnar.selection_mask(table, selections=selections),
+                columnar.admission_mask(table, admission=admission),
+            ),
+        )
+    )
+    table = table.filter(pc.invert(held))
+    through = columnar.held_back_through(served_held)
+    if through is None or elected is None:
+        return table, elected
+    grains = columnar.period_grains(served_held)
+    years = (through,) if grains == _YEAR_GRAIN else (through, through + 1)
+    for year in years:
+        again = elected.read(year, grains)
+        table = pa.concat_tables(
+            [
+                table.filter(pc.invert(columnar.year_mask(table, year=year))),
+                again.filter(columnar.year_mask(again, year=year)),
+            ]
+        )
+    return table, elected
 
 
 def _servable_rows(
@@ -975,7 +1072,15 @@ def _servable_rows(
     `OverCeilingError` wins, then the failure re-raises. Those are the rows that would serve
     had no entity been omitted. A latest window converts before its ceiling check, so its
     failure raises as it is.
+
+    A latest window's rows, and those `elected` reads, first lose the rows the window holds
+    back (`_without_held_back`). Other windows' rows arrive without them
+    (`columnar.selected_mask`).
     """
+    if window.kind == "latest":
+        table, elected = _without_held_back(
+            table, window=window, selections=selections, admission=admission, elected=elected
+        )
     served = (
         table.filter(
             pc.and_(
@@ -1027,6 +1132,185 @@ def _servable_rows(
     )
     rows = table.filter(columnar.continuation_mask(table, selections=selections))
     return rows, currencies, year, _omitted_rows(conversion_plan, currencies, also=left_out)
+
+
+def _row_pass_mask(
+    table: pa.Table,
+    *,
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow,
+    observed: pa.BooleanArray | None = None,
+) -> tuple[pa.BooleanArray, pa.BooleanArray | None]:
+    """The rows a mint's row pass keeps, as two masks over `table`: the selected, observed
+    rows (`columnar.selection_mask`, `columnar.observed_mask`) that `window` serves
+    (`_window_mask`, as `columnar.selected_mask` keeps them), and the other selected,
+    observed rows that a partial year's reported share is counted over (`_share_mask`), so a
+    share is counted whether or not the read serves the year. The second mask is `None` with
+    no origin catalogue bound, when no share is counted. Only the first mask's rows are
+    served, counted against the ceiling or warned over; the second's go to their own buffer
+    (`_ShareRows`). `observed` is `columnar.observed_mask(table)`, computed here when not
+    given."""
+    if observed is None:
+        observed = columnar.observed_mask(table)
+    selected = pc.and_(columnar.selection_mask(table, selections=selections), observed)
+    serves = _window_mask(table, window=window)
+    served = pc.and_(selected, serves)
+    share = _share_mask(table)
+    if share is None:
+        return served, None
+    return served, pc.and_(pc.and_(selected, share), pc.invert(serves))
+
+
+def _share_mask(table: pa.Table) -> pa.BooleanArray | None:
+    """The rows of a partial year and the year before it (`columnar.share_year_mask`) under
+    the origin catalogue bound to the read; `None` with none bound, when no share is
+    counted."""
+    try:
+        catalogue = current_catalogue()
+    except CatalogueNotBound:
+        return None
+    return columnar.share_year_mask(table, catalogue=catalogue)
+
+
+def _window_mask(table: pa.Table, *, window: RequestedWindow) -> pa.BooleanArray:
+    """Which rows `window` serves: those its held-back cut keeps (`columnar.held_back_mask`)
+    and, for a range, those in its years."""
+    mask = pc.invert(columnar.held_back_mask(table, include=window.include))
+    if window.kind == "range":
+        mask = pc.and_(mask, columnar.range_window_mask(table, window=window))
+    return mask
+
+
+@dataclass
+class _ShareRows:
+    """One member's rows read only to count a partial year's reported share (`_row_pass_mask`),
+    held apart from the rows it serves. It holds at most `cap` rows, the mint's row ceiling.
+    Past it the rows held are let go, and it keeps only the `provenance` cells of every row
+    it was given, `dropped`, whose pairs then state no share (`_share_totals`)."""
+
+    cap: int
+    tables: list[pa.Table] = field(default_factory=list)
+    rows: int = 0
+    dropped: set[str | None] | None = None
+
+    def add(self, rows: pa.Table | pa.RecordBatch) -> None:
+        """Holds `rows`, or notes their provenances once past `cap`."""
+        if rows.num_rows == 0:
+            return
+        table = rows if isinstance(rows, pa.Table) else pa.Table.from_batches([rows])
+        if self.dropped is None:
+            self.rows += table.num_rows
+            if self.rows <= self.cap:
+                self.tables.append(table)
+                return
+            self.dropped = set()
+            for held in self.tables:
+                self.dropped.update(_provenances(held))
+            self.tables = []
+        self.dropped.update(_provenances(table))
+
+
+# The raw observation column a share's pair is named by (`reported_share.fold_observations`).
+_RAW_PROVENANCE_COLUMN: Final = "provenance"
+
+
+def _provenances(rows: pa.Table) -> list[str | None]:
+    return cast("list[str | None]", pc.unique(rows[_RAW_PROVENANCE_COLUMN]).to_pylist())
+
+
+# Keeps every row a held-back cut judges, for rows read only to count a share.
+_UNCUT: Final = RequestedWindow(kind="all", include=frozenset({"partial", "projected"}))
+
+
+@dataclass
+class _ReadLog:
+    """A member's read at a year (`_ElectedRead.read`) that keeps the rows each call read, as
+    they arrived, by year, so a `latest` read's share counts the year before its partial year
+    from the read its held-back cut made (`_without_held_back`)."""
+
+    read: _YearRead
+    tables: dict[int, pa.Table] = field(default_factory=dict)
+
+    def __call__(self, year: int, grains: Grains) -> pa.Table:
+        table = self.read(year, grains)
+        self.tables[year] = table
+        return table
+
+
+def _share_totals(
+    request: MaterialisationRequest,
+    rows: pa.Table,
+    *,
+    share: _ShareRows | None,
+    selections: Mapping[str, FacetSelection],
+    admission: RowAdmission,
+    reads: _ReadLog | None,
+) -> dict[tuple[str | None, str], YearTotals]:
+    """The year sums a partial year's reported share is read from
+    (`reported_share.fold_observations`), over the rows a member read of its sources' partial
+    years and the years before them (`columnar.share_year_mask`), unconverted and under the
+    facet, admission, observed-value and continuing-method rules a served row passes, before
+    any window or held-back cut.
+
+    A range or `all` read's `rows` are the rows its row pass serves, and `share` the rows it
+    read only to count the share (`_row_pass_mask`). When `share` let its rows go past the
+    mint's row ceiling, each pair of a provenance it let go of is marked `capped`, so it
+    states no share (`reported_share.reported_share`). A `latest` read's `rows` hold each
+    series' newest row, so the year before a partial year comes from `reads`, the member's
+    read of that year: the one its held-back cut made, or, when its window opts in to partial
+    years, one read here. That read replaces the rows `rows` hold in the year, so no series
+    counts twice, and states no share when no read of the year was made. Either read counts
+    on the value basis where its rows state one currency (`reported_share.reported_share`).
+    Empty with no origin catalogue bound."""
+    if request.window.kind == "latest":
+        rows = rows.filter(
+            columnar.survivor_mask(rows, selections=selections, window=_UNCUT, admission=admission)
+        )
+        prior = _latest_prior_rows(rows, window=request.window, reads=reads)
+        if prior is None:
+            return {}
+        through, read = prior
+        read = read.filter(
+            columnar.survivor_mask(read, selections=selections, window=_UNCUT, admission=admission)
+        )
+        rows = pa.concat_tables(
+            [rows.filter(pc.invert(columnar.year_mask(rows, year=through))), read]
+        )
+    elif share is not None and share.tables:
+        rows = pa.concat_tables([rows, *share.tables])
+    mask = _share_mask(rows)
+    if mask is None:
+        return {}
+    rows = rows.filter(mask)
+    rows = rows.filter(columnar.continuation_mask(rows, selections=selections))
+    totals = fold_observations(rows, stat_var=request.stat_var, roles=request.declared_roles)
+    if share is not None and share.dropped is not None:
+        for provenance in share.dropped:
+            totals.setdefault((provenance, request.stat_var), YearTotals()).capped = True
+    return totals
+
+
+def _latest_prior_rows(
+    rows: pa.Table, *, window: RequestedWindow, reads: _ReadLog | None
+) -> tuple[int, pa.Table] | None:
+    """The newest year before the partial periods a `latest` read's `rows` reach
+    (`columnar.held_back_through`) and the read's rows of it, from `reads`; `None` when they
+    reach none, no catalogue is bound, or no read of that year was made and the window does
+    not opt in to partial years."""
+    if reads is None:
+        return None
+    try:
+        through = columnar.held_back_through(rows)
+    except CatalogueNotBound:
+        return None
+    if through is None:
+        return None
+    if through not in reads.tables:
+        if "partial" not in window.include:
+            return None
+        reads(through, _YEAR_GRAIN)
+    prior = reads.tables[through]
+    return through, prior.filter(columnar.year_mask(prior, year=through))
 
 
 def _holding_a_value(
@@ -1165,9 +1449,13 @@ def _fetch_member_batches(
     progress: RowProgress | None = None,
     streaming_ceiling: int | None,
     year: int | None = None,
+    grains: Grains = _YEAR_GRAIN,
+    share: _ShareRows | None = None,
 ) -> tuple[pa.Schema, list[pa.RecordBatch]]:
-    """Fetches one member under a raw-row cap of `20 * ceiling`. With `year`, the year a
-    `latest` read's member elected, it fetches the member's rows at that year alone.
+    """Fetches one member under a raw-row cap of `20 * ceiling`. With `year`, a year a
+    `latest` read's member reads again, it fetches the member's rows in that year alone, at
+    `grains` (`_time_period_for_window`). A non-latest read's rows read only to count a
+    partial year's reported share go to `share` (`_collect_surviving_batches`).
 
     Checks header roles before consuming batches. Coverage supplies roles and
     an exhaustive entity filter for unbound role requests. A subject-only
@@ -1195,7 +1483,7 @@ def _fetch_member_batches(
             variables=[bare_stat_var],
             entities=entities,
             facet_ids=dispatch_ids,
-            time_period=_time_period_for_window(request.window, year=year),
+            time_period=_time_period_for_window(request.window, year=year, grains=grains),
             roles=dispatch_roles,
             max_rows=raw_guard,
             deadline=deadline,
@@ -1214,6 +1502,7 @@ def _fetch_member_batches(
                     ceiling=streaming_ceiling,
                     stat_var=request.stat_var,
                     progress=progress,
+                    share=share,
                 )
     except SdmxCapExceededError as exc:
         raise _raw_fetch_guard_error(request, exc, raw_guard=raw_guard, ceiling=ceiling) from exc
@@ -1426,6 +1715,8 @@ def _generate_member(
     )
     dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
     elected: _ElectedRead | None = None
+    reads: _ReadLog | None = None
+    share = _ShareRows(cap=ceiling) if request.window.kind != "latest" else None
     if dispatch_ids:
         fetch = partial(
             _fetch_member_batches,
@@ -1442,10 +1733,15 @@ def _generate_member(
             progress=progress,
             streaming_ceiling=_streaming_ceiling(conversion_plan, selections, ceiling),
         )
-        schema, batches = fetch()
+        schema, batches = fetch(share=share)
+        reads = _ReadLog(
+            lambda year, grains: pa.Table.from_batches(
+                fetch(year=year, grains=grains)[1], schema=schema
+            )
+        )
         elected = _ElectedRead(
             elect=partial(elected_latest_year, request, coverage=coverage, facet_ids=dispatch_ids),
-            read=lambda year: pa.Table.from_batches(fetch(year=year)[1], schema=schema),
+            read=reads,
             counted=partial(elected_entities, request, coverage=coverage, facet_ids=dispatch_ids),
         )
     else:
@@ -1461,9 +1757,9 @@ def _generate_member(
         schema = observation_schema(request.declared_roles)
         batches = []
 
-    fetched = pa.Table.from_batches(batches, schema=schema)
+    survivors = pa.Table.from_batches(batches, schema=schema)
     table, currencies, year, omitted = _servable_rows(
-        fetched,
+        survivors,
         window=request.window,
         selections=selections,
         admission=probe.admission,
@@ -1477,14 +1773,23 @@ def _generate_member(
         ),
         elected=elected,
     )
+    served = columnar.elected_rows(table, year=year)
     outcome = _finish_member_table(
         request,
         selections,
-        columnar.elected_rows(table, year=year),
+        served,
         ceiling=ceiling,
         conversion_plan=conversion_plan,
         currencies=currencies,
         default_scope=probe.scope,
+        year_totals=_share_totals(
+            request,
+            survivors,
+            share=share,
+            selections=selections,
+            admission=probe.admission,
+            reads=reads,
+        ),
     )
     read = _read_series(
         dispatch_ids, continuing_facet_ids(probe.candidates, election, member=0), omitted
@@ -1498,6 +1803,7 @@ def _generate_member(
             request, elected=year, applied_window=outcome.applied_window, read=read
         ),
         read_series={request.stat_var: read},
+        held_runs=read_runs([(probe.candidates, frozenset(dispatch_ids))]),
     )
 
 
@@ -1528,20 +1834,28 @@ def _collect_surviving_batches(
     ceiling: int | None,
     stat_var: str,
     progress: RowProgress | None = None,
+    share: _ShareRows | None = None,
 ) -> list[pa.RecordBatch]:
-    """Keeps each batch's survivors (`_surviving_tables`).
+    """Keeps each batch's survivors, the rows its row pass serves (`_row_pass_mask`) that
+    `admission` admits.
 
     Raises `OverCeilingError` as soon as survivors exceed `ceiling`, with up
     to one batch of overshoot, and so stops pulling batches from the read. A `None`
     ceiling keeps every survivor (`_streaming_ceiling`).
+    The admitted rows read only to count a partial year's reported share go to `share`,
+    and are dropped with none given; the ceiling and progress never count them.
     Progress, when supplied, counts each batch's surviving rows. Latest windows
     are reduced after buffering the response.
     """
     survivors: list[pa.RecordBatch] = []
     survivor_count = 0
-    for survivor_table in _surviving_tables(
-        batches, schema=schema, window=window, selections=selections, admission=admission
-    ):
+    for batch in batches:
+        table = pa.Table.from_batches([batch], schema=schema)
+        served, share_only = _row_pass_mask(table, selections=selections, window=window)
+        admitted = columnar.admission_mask(table, admission=admission)
+        survivor_table = table.filter(pc.and_(served, admitted))
+        if share is not None and share_only is not None:
+            share.add(table.filter(pc.and_(share_only, admitted)))
         survivor_count += survivor_table.num_rows
         survivors.extend(survivor_table.to_batches())
         if progress is not None:
@@ -1563,10 +1877,12 @@ def _finish_member_table(
     conversion_plan: MemberConversionPlan | None,
     currencies: EntityCurrencies | None,
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
+    year_totals: Mapping[tuple[str | None, str], YearTotals] | None = None,
 ) -> _MemberOutcome:
     """Converts an already-filtered member table (`_servable_rows`) in one batched call that
     also records each series' conversion (`_convert_by_series`), summarises it, then builds
-    its `Frame`.
+    its `Frame`. `year_totals` holds the sums a partial year's reported share is read
+    from (`_share_totals`), recorded as they are.
 
     Duplicate identity facets collapse before conversion because collapse
     reads `unit` as a string. A missing plan skips arithmetic. Coverage and
@@ -1611,6 +1927,7 @@ def _finish_member_table(
         conversion_recipe_id=conversion_recipe_id,
         default_scope=default_scope,
         series_conversions=series_conversions,
+        year_totals=dict(year_totals or {}),
     )
 
 
@@ -1758,14 +2075,16 @@ def _build_shape_chunk(
 class _MemberFetchResult:
     """One routed member table, using the chunk header's schema.
 
-    Non-latest tables hold survivors. Latest tables hold raw rows for later
-    reduction. Members with no rows still receive an empty, typed table. `read_year` reads
-    a fetched `latest` member's rows at one year (`_ElectedRead.read`), and is None for
-    every other member.
+    Non-latest tables hold survivors, and `share` the rows read only to count a partial
+    year's reported share (`_row_pass_mask`). Latest tables hold raw rows for later
+    reduction, with no `share`. Members with no rows still receive an empty, typed table.
+    `read_year` reads a fetched `latest` member's rows at one year (`_ElectedRead.read`), and
+    is None for every other member.
     """
 
     table: pa.Table
-    read_year: Callable[[int], pa.Table] | None = None
+    read_year: _YearRead | None = None
+    share: _ShareRows | None = None
 
 
 def _generate_chunk(
@@ -1840,6 +2159,7 @@ def _generate_chunk(
     # always either every member in `chunk` or none of them.
     time_period = "LATEST" if latest_indices else None
     parts: dict[int, list[pa.RecordBatch]] = {i: [] for i in chunk.member_indices}
+    shares = {i: _ShareRows(cap=ceiling) for i in chunk.member_indices if i not in latest_indices}
     survivor_counts: dict[int, int] = dict.fromkeys(chunk.member_indices, 0)
     streaming_ceilings = {
         i: _streaming_ceiling(plans[i].conversion_plan, plans[i].selections, ceiling)
@@ -1900,14 +2220,16 @@ def _generate_chunk(
         deadline=deadline,
     )
 
-    def read_year(index: int, schema: pa.Schema, year: int) -> pa.Table:
-        """Member `index`'s rows at `year`, under its own dispatch ids."""
+    def read_year(index: int, schema: pa.Schema, year: int, grains: Grains) -> pa.Table:
+        """Member `index`'s rows in `year` at `grains`, under its own dispatch ids."""
         plan = plans[index]
         try:
             with stream(
                 variables=[bare_stat_var_ref(member_requests[index].stat_var)],
                 facet_ids=plan.dispatch_ids,
-                time_period=_time_period_for_window(member_requests[index].window, year=year),
+                time_period=_time_period_for_window(
+                    member_requests[index].window, year=year, grains=grains
+                ),
             ) as (_roles, sdmx_batches):
                 batches: list[pa.RecordBatch] = []
                 for batch in sdmx_batches:
@@ -1931,9 +2253,10 @@ def _generate_chunk(
                 _check_role_divergence(roles, member_requests[i])
             schema = observation_schema(roles)
 
-            def admit(index: int, member_batches: list[pa.RecordBatch]) -> None:
-                """Adds one member's survivors and checks its streaming ceiling."""
-                parts[index].extend(member_batches)
+            def admit(index: int, rows: _PassedRows) -> None:
+                """Adds one member's survivors and share rows, and checks its streaming
+                ceiling against its survivors."""
+                parts[index].extend(rows.served)
                 if index in latest_indices:
                     # Raw, pre-reduction rows for a `"latest"` member:
                     # bounded by the shared `raw_budget` draw alone.
@@ -1941,7 +2264,9 @@ def _generate_chunk(
                     # to its single latest period and checks the
                     # resulting coverage against `ceiling` afterward.
                     return
-                survivor_counts[index] += sum(part.num_rows for part in member_batches)
+                for batch in rows.share:
+                    shares[index].add(batch)
+                survivor_counts[index] += sum(part.num_rows for part in rows.served)
                 member_ceiling = streaming_ceilings[index]
                 if member_ceiling is not None and survivor_counts[index] > member_ceiling:
                     message, detail = _mid_stream_ceiling_message(
@@ -1980,6 +2305,7 @@ def _generate_chunk(
                 i: _MemberFetchResult(
                     table=pa.Table.from_batches(parts[i], schema=schema),
                     read_year=partial(read_year, i, schema) if i in latest_indices else None,
+                    share=shares.get(i),
                 )
                 for i in chunk.member_indices
             }
@@ -2008,10 +2334,17 @@ def _generate_chunk(
 _ROUTE_BATCH_ROWS = 1 << 14
 
 
-type _Survivors = Callable[[pa.RecordBatch], Iterable[tuple[int, list[pa.RecordBatch]]]]
+@dataclass(frozen=True)
+class _PassedRows:
+    """One member's rows of a batch its row pass keeps (`_row_pass_mask`): `served`, its
+    survivors, and `share`, the rows read only to count a partial year's reported share. A
+    `latest` member's rows are raw, all in `served`."""
+
+    served: list[pa.RecordBatch]
+    share: list[pa.RecordBatch] = field(default_factory=list)
 
 
-class _BatchRouter:
+class _BatchRouter[T]:
     """Routes a chunk's SDMX batches in runs of up to `_ROUTE_BATCH_ROWS` rows, with the result
     routing each batch on arrival gives: the same survivors, draws, ceiling trip and refusal.
 
@@ -2029,8 +2362,8 @@ class _BatchRouter:
 
     def __init__(
         self,
-        survivors: _Survivors,
-        admit: Callable[[int, list[pa.RecordBatch]], None],
+        survivors: Callable[[pa.RecordBatch], Iterable[tuple[int, T]]],
+        admit: Callable[[int, T], None],
         *,
         ceilings: Sequence[tuple[int, int]],
         survivor_counts: Mapping[int, int],
@@ -2095,9 +2428,9 @@ class _BatchRouter:
         finally:
             self.seconds += time.perf_counter() - started
 
-    def _admit_all(self, survivors: Iterable[tuple[int, list[pa.RecordBatch]]]) -> None:
-        for index, member_batches in survivors:
-            self._admit(index, member_batches)
+    def _admit_all(self, survivors: Iterable[tuple[int, T]]) -> None:
+        for index, rows in survivors:
+            self._admit(index, rows)
 
 
 def _batch_survivors(
@@ -2108,7 +2441,7 @@ def _batch_survivors(
     requests: Mapping[int, MaterialisationRequest],
     latest: Collection[int],
     schema: pa.Schema,
-) -> Iterator[tuple[int, list[pa.RecordBatch]]]:
+) -> Iterator[tuple[int, _PassedRows]]:
     """Each served member's rows of one SDMX `batch`, in `split_by_variable`'s member order:
     the rows `_member_survivors` keeps. A role-bearing member dispatching no facet serves
     nothing and is skipped: its admission mask keeps every row, so a row naming no facet would
@@ -2162,13 +2495,13 @@ def _survivors_by_member(
     requests: Mapping[int, MaterialisationRequest],
     latest: Collection[int],
     schema: pa.Schema,
-) -> dict[int, list[pa.RecordBatch]]:
+) -> dict[int, _PassedRows]:
     """`_batch_survivors` with the batch-wide masks, `members` in order."""
     table = pa.Table.from_batches([batch], schema=schema)
     targets = columnar.member_indices(batch, index_by_bare_stat_var=index_by_bare_stat_var)
     observed: pa.BooleanArray | None = None
-    shared: list[tuple[tuple[object, ...], pa.BooleanArray]] = []
-    survivors: dict[int, list[pa.RecordBatch]] = {}
+    shared: list[tuple[tuple[object, ...], tuple[pa.BooleanArray, pa.BooleanArray | None]]] = []
+    survivors: dict[int, _PassedRows] = {}
     for index in members:
         plan, request = plans[index], requests[index]
         mine = array_kernel(
@@ -2180,22 +2513,27 @@ def _survivors_by_member(
         selected = pc.and_(mine, dispatched)
         rows = batch.filter(selected)
         if index in latest:
-            survivors[index] = [rows]
+            survivors[index] = _PassedRows([rows])
             continue
         key = (plan.selections, request.window)
-        row_mask = next((mask for shared_key, mask in shared if shared_key == key), None)
-        if row_mask is None:
+        masks = next((found for shared_key, found in shared if shared_key == key), None)
+        if masks is None:
             if observed is None:
                 observed = columnar.observed_mask(table)
-            row_mask = columnar.selected_mask(
+            masks = _row_pass_mask(
                 table, selections=plan.selections, window=request.window, observed=observed
             )
-            shared.append((key, row_mask))
+            shared.append((key, masks))
+        served, share_only = masks
         admitted = columnar.admission_mask(
             pa.Table.from_batches([rows], schema=schema), admission=plan.admission
         )
-        keep = pc.and_(row_mask.filter(selected), admitted)
-        survivors[index] = [rows.filter(keep)]
+        survivors[index] = _PassedRows(
+            [rows.filter(pc.and_(served.filter(selected), admitted))],
+            [rows.filter(pc.and_(share_only.filter(selected), admitted))]
+            if share_only is not None
+            else [],
+        )
     return survivors
 
 
@@ -2206,16 +2544,18 @@ def _member_survivors(
     request: MaterialisationRequest,
     latest: bool,
     schema: pa.Schema,
-) -> list[pa.RecordBatch]:
-    """The rows of `rows` a member with `plan` and `request` serves (`_batch_survivors`)."""
+) -> _PassedRows:
+    """The rows of `rows` a member with `plan` and `request` keeps (`_batch_survivors`)."""
     rows = columnar.dispatched_rows(rows, facet_ids=plan.dispatch_ids, admission=plan.admission)
     if latest:
-        return [rows]
+        return _PassedRows([rows])
     table = pa.Table.from_batches([rows], schema=schema)
-    mask = columnar.survivor_mask(
-        table, selections=plan.selections, window=request.window, admission=plan.admission
+    served, share_only = _row_pass_mask(table, selections=plan.selections, window=request.window)
+    admitted = columnar.admission_mask(table, admission=plan.admission)
+    return _PassedRows(
+        table.filter(pc.and_(served, admitted)).to_batches(),
+        table.filter(pc.and_(share_only, admitted)).to_batches() if share_only is not None else [],
     )
-    return table.filter(mask).to_batches()
 
 
 def _absent_stat_vars(
@@ -2595,8 +2935,9 @@ def _order_group_by_dcid(
 
 @dataclass(frozen=True)
 class _ConvertedMember:
-    """One group member's converted rows and records, and the year its `latest` read
-    elected less the `omitted` rows (`_omitted_rows`), from its chunk's pool worker."""
+    """One group member's converted rows and records, the year its `latest` read
+    elected less the `omitted` rows (`_omitted_rows`), and its year sums (`_share_totals`),
+    from its chunk's pool worker."""
 
     table: pa.Table
     conversion_record: ConversionRecord | None
@@ -2604,6 +2945,7 @@ class _ConvertedMember:
     series_conversions: dict[SeriesKey, SeriesConversion]
     elected_year: int | None = None
     omitted: tuple[tuple[str, str], ...] = ()
+    year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
 
 
 class _GroupRowStreamer:
@@ -2663,6 +3005,7 @@ class _GroupRowStreamer:
         self.totals = _PooledCoverageTotals(shared_roles=shared_roles)
         self.parquet_sink = ParquetFrameSink()
         self.statistics_sink = SeriesStatisticsSink(continuing=continuing)
+        self.year_totals: dict[tuple[str | None, str], YearTotals] = {}
 
     def _generate_one_chunk(self, chunk: _ShapeChunk) -> dict[int, _ConvertedMember]:
         """Runs entirely inside one pool worker: `_generate_chunk` is this
@@ -2695,6 +3038,7 @@ class _GroupRowStreamer:
         for index, fetch_result in fetch_results.items():
             request = self._dcid_requests[index][1]
             plan = self._dcid_plans[index]
+            reads = _ReadLog(fetch_result.read_year) if fetch_result.read_year is not None else None
             table, currencies, year, omitted = _servable_rows(
                 fetch_result.table,
                 window=request.window,
@@ -2716,7 +3060,7 @@ class _GroupRowStreamer:
                             coverage=self._coverage_index,
                             facet_ids=plan.dispatch_ids,
                         ),
-                        read=fetch_result.read_year,
+                        read=reads,
                         counted=partial(
                             elected_entities,
                             request,
@@ -2724,7 +3068,7 @@ class _GroupRowStreamer:
                             facet_ids=plan.dispatch_ids,
                         ),
                     )
-                    if fetch_result.read_year is not None
+                    if reads is not None
                     else None
                 ),
             )
@@ -2745,6 +3089,14 @@ class _GroupRowStreamer:
                 if plan.conversion_plan is not None and plan.conversion_plan.recipe is not None
                 else None
             )
+            year_totals = _share_totals(
+                request,
+                fetch_result.table,
+                share=fetch_result.share,
+                selections=plan.selections,
+                admission=plan.admission,
+                reads=reads,
+            )
             outcomes[index] = _ConvertedMember(
                 table=table,
                 conversion_record=conversion_record,
@@ -2752,6 +3104,7 @@ class _GroupRowStreamer:
                 series_conversions=series_conversions,
                 elected_year=year,
                 omitted=omitted,
+                year_totals=year_totals,
             )
         return outcomes
 
@@ -2813,6 +3166,8 @@ class _GroupRowStreamer:
         self.conversion_records[request.stat_var] = member.conversion_record
         self.conversion_recipe_ids[request.stat_var] = member.recipe_id
         self.series_conversions.update(member.series_conversions)
+        for pair, totals in member.year_totals.items():
+            self.year_totals.setdefault(pair, YearTotals()).add(totals)
         plan = self._dcid_plans[index]
         read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
         self.read_series[request.stat_var] = read
@@ -3016,6 +3371,7 @@ def _assemble_group_outcome(
         method_periods=streamer.method_periods,
         latest_years=streamer.latest_years,
         read_series=streamer.read_series,
+        year_totals=streamer.year_totals,
     )
 
 
@@ -3128,6 +3484,10 @@ def _generate_group(
         provenance_refresh=provenance_refresh,
         candidate_provenances=frozenset(
             candidate.provenance_id for member in probed for candidate in member.candidates
+        ),
+        held_runs=read_runs(
+            (member.candidates, frozenset(plan.dispatch_ids))
+            for member, plan in zip(probed, group_plan.plans, strict=True)
         ),
     )
 
@@ -3306,7 +3666,7 @@ def _prepare_preview_member(
     )
 
     dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
-    read_year: Callable[[int], pa.Table] | None = None
+    read_year: _YearRead | None = None
     counted: Callable[[str], Sequence[str]] | None = None
 
     if dispatch_ids:
@@ -3362,8 +3722,10 @@ def _prepare_preview_member(
                     for batch in table.to_batches()
                 ]
 
-        def read_year(year: int) -> pa.Table:
-            with stream(time_period=_time_period_for_window(request.window, year=year)) as (
+        def read_year(year: int, grains: Grains) -> pa.Table:
+            with stream(
+                time_period=_time_period_for_window(request.window, year=year, grains=grains)
+            ) as (
                 _roles,
                 year_batches,
             ):
@@ -3402,11 +3764,11 @@ def _prepare_preview_member(
         none = table.slice(0, 0)
 
         @cache
-        def series_rows_at(year: int) -> dict[tuple[str, ...], pa.Table]:
-            """Each series' rows at `year`, from one read of the member however many
-            series end after it."""
+        def series_rows_at(year: int, grains: Grains) -> dict[tuple[str, ...], pa.Table]:
+            """Each series' rows in `year` at `grains`, from one read of the member however
+            many series end after it."""
             assert read_year is not None  # a table with rows was fetched
-            return dict(_split_by_roles(read_year(year), series_roles))
+            return dict(_split_by_roles(read_year(year, grains), series_roles))
 
         prepared_tables: list[pa.Table] = []
         for key, rows in _split_by_roles(table, series_roles):
@@ -3418,7 +3780,8 @@ def _prepare_preview_member(
                 conversion_plan=conversion_plan,
                 elected=(
                     _ElectedRead(
-                        elect=elect, read=lambda at, key=key: series_rows_at(at).get(key, none)
+                        elect=elect,
+                        read=lambda at, grains, key=key: series_rows_at(at, grains).get(key, none),
                     )
                     if elect is not None
                     else None

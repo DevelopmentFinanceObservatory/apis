@@ -830,18 +830,28 @@ def _folded(first: DepartureFact, other: DepartureFact) -> DepartureFact:
 
 
 def _modelled_fact(spec: Spec) -> DepartureFact | None:
-    """`modelled_values` when the served method is modelled or estimated. Otherwise it fires
-    with `partial` set when the answer serves the estimates continuing a reported series
-    past its last period (`ResolvedSpec.continued`, or the preview's
+    """`modelled_values` when the served method is modelled or estimated. Otherwise, when
+    the answer serves projected years its window opted in to (`HeldBack.served` on
+    `resolved.coverage.held_back`), it fires with those years (`projected_years`) and the
+    sources projecting them. Otherwise it fires with `some_series` set when the answer serves
+    the estimates continuing a reported series past its last period (`ResolvedSpec.continued`, or the preview's
     `SpecObservations.continued` where it states one, as a composite's component reads
     do), with or without observations, or when
     any series in the Spec's observations is modelled, serves a point whose own method is
     classed estimated (`ObservationSeries.holds_estimates`), or holds points converted with
     a projected exchange rate or deflator (`ObservationSeriesConversion.projected_count`,
-    the `deflator_projected` warning), which are estimates too."""
+    the `deflator_projected` warning), which are estimates too.
+
+    A window holding projected years alone (`_shows_only_projected`) names them whatever its
+    method, since the method a projection-only read elects is the projection's own."""
+    projected = _projected_fact(spec)
+    if projected is not None and _shows_only_projected(spec, projected):
+        return projected
     method = spec.resolved.facets.get("measurementMethod")
     if method is not None and method.ref in MODELLED_MEASUREMENT_METHODS:
         return DepartureFact(code="modelled_values", binding_ref=None, shown=method.label)
+    if projected is not None:
+        return projected
     observations = spec.resolved.observations
     series = observations.series if observations is not None else []
     continued = spec.resolved.continued
@@ -849,7 +859,40 @@ def _modelled_fact(spec: Spec) -> DepartureFact | None:
         continued = observations.continued
     if not continued and not any(_holds_estimates(one) for one in series):
         return None
-    return DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    return DepartureFact(code="modelled_values", binding_ref=None, some_series=True)
+
+
+def _projected_fact(spec: Spec) -> DepartureFact | None:
+    """`modelled_values` naming the projected years `spec` serves and the sources projecting
+    them, from its coverage's served projected runs clipped to the coverage's window (a run
+    spans every projected year its source holds, whatever the window), or None when it
+    serves none."""
+    coverage = spec.resolved.coverage
+    runs = [run for run in coverage.held_back or [] if run.kind == "projected" and run.served]
+    if not runs:
+        return None
+    first = min(r.start_year for r in runs)
+    last = max(r.end_year for r in runs)
+    if (window := coverage.window) is not None:
+        first = max(first, window.start_year) if window.start_year is not None else first
+        last = min(last, window.end_year) if window.end_year is not None else last
+    return DepartureFact(
+        code="modelled_values",
+        binding_ref=None,
+        projected_years=(first, last),
+        sources=tuple(dict.fromkeys(r.source_name for r in runs if r.source_name)),
+    )
+
+
+def _shows_only_projected(spec: Spec, projected: DepartureFact) -> bool:
+    """Whether every year of `spec`'s coverage window is one of the projected years
+    `projected` names (`_projected_fact`): the window starts at or after the first of them
+    and ends at or before the last, or is open after them."""
+    window = spec.resolved.coverage.window
+    if window is None or window.start_year is None or projected.projected_years is None:
+        return False
+    first, last = projected.projected_years
+    return window.start_year == first and (window.end_year is None or window.end_year == last)
 
 
 def _holds_estimates(series: ObservationSeries) -> bool:

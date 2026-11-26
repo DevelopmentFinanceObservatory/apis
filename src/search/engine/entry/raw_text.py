@@ -695,7 +695,9 @@ async def _discarded_usage(
     return sum_usage(first or {UNCOUNTED_CALLS: 1}, unread_second)
 
 
-async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:
+async def _read_and_extract(
+    query: str, *, llm: SupportsLLM, deadline: float, extract_llm: SupportsLLM | None = None
+) -> _DoorRead:
     """Read what `query` asks to leave out and extract the query without it.
 
     A read the extraction store holds decides first, so a repeated query waits on neither
@@ -721,19 +723,26 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     A failed read raises as a failed extraction does and fails the query, and the speculative
     parse goes with it: a query the read could not check for what it leaves out gets no
     answer that may state the opposite of what it asked.
+
+    The read calls `llm` and both parses call `extract_llm`, `llm` when None, which only a
+    parser replay sets (`EntryParams.extract_llm`).
     """
+    if extract_llm is None:
+        extract_llm = llm
     if (stored := stored_exclusion_read(query, llm=llm)) is not None:
         reading = admit_exclusions(query, stored)
         result, usage, timing_extract = await _run_extract_phase(
-            reading.text, llm=llm, deadline=deadline
+            reading.text, llm=extract_llm, deadline=deadline
         )
         timing = {"extract": timing_extract, "exclusion_read": 0}
         return _DoorRead(result, usage, reading, timing, agreed=(result.agreed,))
 
     t0 = now_ms()
-    holder = held_by(llm)
+    holder = held_by(extract_llm)
     speculative_samples = SecondSamples() if holder is not None else None
-    speculative_llm = speculative_samples.bind(llm) if speculative_samples is not None else llm
+    speculative_llm = (
+        speculative_samples.bind(extract_llm) if speculative_samples is not None else extract_llm
+    )
     speculative = asyncio.create_task(
         _run_extract_phase(query, llm=speculative_llm, deadline=deadline)
     )
@@ -750,7 +759,7 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         else:
             discarded = await _discarded_usage(speculative, speculative_samples)
             result, usage, timing_extract = await _run_extract_phase(
-                reading.text, llm=llm, deadline=deadline
+                reading.text, llm=extract_llm, deadline=deadline
             )
             usage = sum_usage(usage, discarded)
     finally:
@@ -2118,7 +2127,16 @@ async def handle(
         return
 
     door_llm = scope.hold_samples(llm) if scope is not None else llm
-    door_read = await _read_and_extract(query, llm=door_llm, deadline=params.deadline)
+    # `hold_samples` notes whether its client stores readings, so a replay's own extraction
+    # client is held second, and only when there is one.
+    extract_llm = door_llm
+    if params.extract_llm is not None:
+        extract_llm = (
+            scope.hold_samples(params.extract_llm) if scope is not None else params.extract_llm
+        )
+    door_read = await _read_and_extract(
+        query, llm=door_llm, extract_llm=extract_llm, deadline=params.deadline
+    )
     extract_result, extract_usage, timing = (
         door_read.extract_result,
         door_read.usage,

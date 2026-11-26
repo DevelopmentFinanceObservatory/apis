@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import date
 
 import pytest
 
-from entity_resolution.groups import GroupRegistry, build_group_registry
+from entity_resolution import membership as membership_module
+from entity_resolution.groups import (
+    GroupRegistry,
+    InvalidSovereignFrom,
+    build_group_registry,
+)
 from entity_resolution.membership import (
+    COUNTRY_CLASS,
     COUNTRY_PROJECTIONS,
     MEMBERSHIP_INCOMPLETE,
     AsOfNotRecorded,
@@ -21,7 +29,9 @@ from entity_resolution.membership import (
     Row,
     Sovereignty,
     UnknownMembership,
+    authority,
     build_policy,
+    policy_data,
 )
 from entity_resolution.shared import SharedResolver
 
@@ -29,6 +39,14 @@ _AUTHORITY = Authority(name="test authority", version="1")
 _SOVEREIGNTY = Sovereignty(
     states={
         "country/AAA": (Row(member="country/AAA", member_class="geo.country"),),
+        "country/NEW": (Row(member="country/NEW", member_class="geo.country"),),
+        "country/LATE": (
+            Row(
+                member="country/LATE",
+                member_class="geo.country",
+                valid_from=date(2002, 1, 1),
+            ),
+        ),
         "country/LFT": (
             Row(
                 member="country/LFT",
@@ -39,6 +57,7 @@ _SOVEREIGNTY = Sovereignty(
     },
     dissolved=frozenset({"country/OLD"}),
     other_states=frozenset({"country/OTH", "country/LFT"}),
+    starts={"country/NEW": date(1971, 1, 1), "country/LATE": date(1945, 1, 1)},
 )
 _CONTINENTS = ("africa", "asia", "europe", "northamerica", "southamerica", "oceania")
 
@@ -96,6 +115,11 @@ def test_a_row_holds_over_a_half_open_window(
         ("country/LFT", date(1999, 1, 1), Projection.COUNTRIES),
         # UN membership outranks the declared list of states outside it.
         ("country/LFT", date(2000, 1, 1), Projection.OTHER_STATES),
+        # A state with a sovereign start before its UN entry is a country from that start.
+        ("country/LATE", date(1995, 1, 1), Projection.COUNTRIES),
+        # A country with a recorded start is a territory until that start, whatever its UN row says.
+        ("country/NEW", date(1970, 1, 1), Projection.TERRITORIES),
+        ("country/NEW", date(1971, 1, 1), Projection.COUNTRIES),
         ("country/OTH", date(2020, 1, 1), Projection.OTHER_STATES),
         ("country/TER", date(2020, 1, 1), Projection.TERRITORIES),
         ("country/OLD", date(1980, 1, 1), Projection.FORMER_STATES),
@@ -312,3 +336,102 @@ def test_a_membership_names_each_member_by_its_canonical_name(
     membership = policy.get(ref)
     assert membership.member_labels[member] == label
     assert set(_listed(membership.members())) <= set(membership.member_labels)
+
+
+_OECD = "undata-geo/G00406000"
+
+
+def test_a_dated_group_counts_a_member_that_joins_the_un_later_as_a_country(
+    policy: MembershipPolicy,
+) -> None:
+    # Switzerland joined the UN in 2002 and West Germany in 1973; both were sovereign before.
+    in_1995 = policy.members(_OECD, as_of=date(1995, 6, 1)).members
+    in_1965 = policy.members(_OECD, as_of=date(1965, 6, 1)).members
+    assert "country/CHE" in _listed(in_1995)
+    assert "country/DEU" in _listed(in_1965)
+    assert "country/CHE" not in _listed(
+        policy.members(_OECD, projection=Projection.TERRITORIES, as_of=date(1995, 6, 1)).members
+    )
+
+
+def test_a_member_with_a_sovereign_start_is_a_country_from_it(
+    policy: MembershipPolicy,
+) -> None:
+    def countries(day: date) -> tuple[str, ...]:
+        return _listed(policy.members("groups/OPEC", as_of=day).members)
+
+    # The United Arab Emirates formed on 2 December 1971 and joined the UN on 9 December.
+    assert "country/ARE" not in countries(date(1969, 6, 1))
+    assert "country/ARE" in countries(date(1971, 12, 5))
+    # Kuwait became independent on 19 June 1961 and joined the UN in 1963.
+    assert "country/KWT" not in countries(date(1961, 1, 1))
+    assert "country/KWT" in countries(date(1962, 1, 1))
+
+
+def test_the_effective_date_counts_a_members_sovereign_start(policy: MembershipPolicy) -> None:
+    effective = policy.members("groups/OPEC", as_of=date(1962, 1, 1)).effective_date
+    assert effective is not None
+    assert effective >= date(1961, 6, 19)
+
+
+def test_the_authority_version_moves_with_the_policy_file(
+    _shared_resolvekit_pack: SharedResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolver = _shared_resolvekit_pack.resolver
+    before = authority(resolver, "x").version
+    raw = json.loads(membership_module._policy_bytes())
+    raw["other_states"]["members"].append("country/ZZZ")
+    monkeypatch.setattr(membership_module, "_policy_bytes", lambda: json.dumps(raw).encode("utf-8"))
+    assert authority(resolver, "x").version != before
+
+
+@pytest.mark.parametrize("key", ["country/ZZZ", "country/MNE"])
+def test_a_sovereign_from_key_must_be_an_undated_resolvekit_country(
+    _shared_resolvekit_pack: SharedResolver, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    shared = _shared_resolvekit_pack
+    edited = replace(
+        policy_data(), sovereign_from={**policy_data().sovereign_from, key: date(1900, 1, 1)}
+    )
+    monkeypatch.setattr("entity_resolution.groups.policy_data", lambda: edited)
+    with pytest.raises(InvalidSovereignFrom):
+        shared.run(build_group_registry, shared.resolver).result()
+
+
+def test_every_member_row_that_begins_before_its_un_entry_has_a_sovereign_start(
+    policy: MembershipPolicy,
+) -> None:
+    undeclared = set()
+    for group in policy:
+        if group.kind != "group" or not group.dated:
+            continue
+        starts = group.sovereignty.starts
+        for row in group.rows:
+            un_entries = [r.valid_from for r in group.sovereignty.states.get(row.member, ())]
+            if row.member_class != COUNTRY_CLASS or row.member in starts or not un_entries:
+                continue
+            if any(entry is not None for entry in un_entries) and (
+                row.valid_from is None or row.valid_from < min(e for e in un_entries if e)
+            ):
+                undeclared.add((group.ref, row.member))
+    assert not undeclared
+
+
+def test_every_sovereign_start_falls_on_or_before_the_members_earliest_un_row(
+    policy: MembershipPolicy,
+) -> None:
+    sovereignty = next(iter(policy)).sovereignty
+    late = {
+        member: (start, entry)
+        for member, start in sovereignty.starts.items()
+        if member not in sovereignty.dissolved
+        and (
+            entry := min(
+                (r.valid_from for r in sovereignty.states.get(member, ()) if r.valid_from),
+                default=None,
+            )
+        )
+        is not None
+        and start > entry
+    }
+    assert not late

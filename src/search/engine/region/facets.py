@@ -17,6 +17,7 @@ from code_index.labels import PRICE_BASIS_AXIS, PricesKind
 from code_index.shared import get_index
 from materialise.facets import nominal_currency
 from search.engine.clients.graph import Facet
+from search.engine.extract import DateRequest
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.coverage import (
@@ -24,9 +25,11 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
+from search.engine.retrieval.held_back import contained_kinds, held_runs
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     facets_served,
+    opted_in,
     populated_members,
     series_facets,
 )
@@ -47,7 +50,6 @@ from search.models import (
 from search.observations import CURRENCY_DCID_PREFIX, currency_unit_ref, series_facet_map
 
 if TYPE_CHECKING:
-    from search.engine.extract import DateRequest
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
@@ -515,12 +517,14 @@ class _TrackedAdmission:
 @dataclass(frozen=True)
 class FilteredAnswer:
     """An answer under a request's facet filter: the preview's read plan narrowed by the
-    filter, and the coverage and headline that plan states. Grounding cites the plan's
-    served facets (`cited_facets`)."""
+    filter, the coverage and headline that plan states, and the request it answers, stating
+    the opt-in its window settled (`plan_answer`), which the answer reads from here on.
+    Grounding cites the plan's served facets (`cited_facets`)."""
 
     coverage: Coverage
     headline: Headline | None
     plan: ReadPlan | None
+    date_request: DateRequest | None
 
 
 def cited_facets(plan: ReadPlan | None) -> list[Facet]:
@@ -556,9 +560,19 @@ def filter_answer(
     does not state. The unit elections (`elected_units`) leave it unmarked. They decide the
     identity's own unit request (`identity.facets["unit"]`) over the members, years,
     coverage and probes a resolve of the identity reads, so that resolve elects them again.
+
+    A request whose words close its window settles its opt-in here, filtered or not
+    (`plan_answer`).
     """
-    if not admission or mat.read_plan is None or mat.coverage_form is None:
-        return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
+    if mat.read_plan is None:
+        return FilteredAnswer(mat.coverage, mat.headline, None, date_request)
+    if not admission or mat.coverage_form is None:
+        if date_request is None or not date_request.reads_held:
+            plan = with_held_runs(mat.read_plan, coverage_index=coverage_index)
+            return FilteredAnswer(mat.coverage, mat.headline, plan, date_request)
+        return plan_answer(
+            mat, mat.read_plan, date_request=date_request, coverage_index=coverage_index
+        )
     admits = _TrackedAdmission(admission)
     narrowed = mat.read_plan.narrowed(admits)
     if admits.axes_narrowed:
@@ -579,15 +593,55 @@ def plan_answer(
 ) -> FilteredAnswer:
     """The answer `plan` serves: its coverage stated in `mat`'s form and its headline, built
     from the plan as resolve built them (`coverage.answer_coverage`,
-    `coverage.answer_headline`). A carrier with no coverage form keeps its own coverage and
-    headline."""
+    `coverage.answer_headline`), under the request with its opt-in settled
+    (`settled_opt_in`). The plan holds the runs of held-back years its sources hold, read
+    here once for the answer (`with_held_runs`), which every later reader of the plan
+    takes (`held_back.plan_runs`). A carrier with no coverage form keeps its own coverage
+    and headline."""
+    plan = with_held_runs(plan, coverage_index=coverage_index)
+    plan, date_request = settled_opt_in(plan, date_request)
     if mat.coverage_form is None:
-        return FilteredAnswer(mat.coverage, mat.headline, plan)
+        return FilteredAnswer(mat.coverage, mat.headline, plan, date_request)
     return FilteredAnswer(
         coverage=answer_coverage(plan, mat.coverage_form),
         headline=answer_headline(plan, coverage_index, date_request=date_request),
         plan=plan,
+        date_request=date_request,
     )
+
+
+def with_held_runs(plan: ReadPlan, *, coverage_index: CoverageIndex) -> ReadPlan:
+    """`plan` holding the runs of held-back years its sources hold (`ReadPlan.held_runs`),
+    read for it (`held_back.held_runs`)."""
+    return replace(plan, held_runs=held_runs(plan, coverage_index=coverage_index))
+
+
+def settled_opt_in(
+    plan: ReadPlan, date_request: DateRequest | None
+) -> tuple[ReadPlan, DateRequest | None]:
+    """`plan` and `date_request` stating the opt-in their window needs: the kinds the
+    request may serve (`DateRequest.reads_held`) that a held-back run of the plan's sources
+    holds a year of inside the window (`held_back.contained_kinds`). The window states them
+    as its `include`, so its identity carries them, and the plan states them as its range's
+    (`read_plan.opted_in`). The plan was read under every kind the request may serve
+    (`DateRequest.read`), and a kind the window holds no year of serves nothing in it, so
+    its reads stand. Runs are stated whatever the window, so this holds for any window the
+    plan is read over, a narrowed one included. A request that may serve no held-back year,
+    such as a trailing span or `latest`, keeps both as they are. A resubmitted range's
+    posted opt-in stands as posted (`DateRequest.posted_opt_in`), which the plan states.
+    `plan` holds its runs (`with_held_runs`)."""
+    if date_request is None or not date_request.reads_held:
+        return plan, date_request
+    window = date_request.window
+    assert window is not None  # `DateRequest.reads_held` holds a window
+    if date_request.posted_opt_in:
+        return opted_in(plan, window.opt_in), date_request
+    assert plan.held_runs is not None  # `plan_answer` reads them first
+    kinds = contained_kinds(window, plan.held_runs) & date_request.reads_held
+    settled = replace(
+        date_request, window=window.model_copy(update={"include": sorted(kinds) or None})
+    )
+    return opted_in(plan, kinds), settled
 
 
 class FacetsBySvRequiredError(Exception):

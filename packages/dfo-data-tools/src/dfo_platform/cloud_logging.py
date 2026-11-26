@@ -21,6 +21,9 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from dfo_platform.trace import get_cloud_trace_id
@@ -28,6 +31,44 @@ from dfo_platform.trace import get_cloud_trace_id
 PROJECT_ENV = "GOOGLE_CLOUD_PROJECT"
 TRACE_FIELD = "logging.googleapis.com/trace"
 JSON_FIELDS_ATTR = "json_fields"
+_SUPPRESS_REPLAY_LOGS: ContextVar[bool] = ContextVar("suppress_replay_logs", default=False)
+
+
+class ReplayLogFilter(logging.Filter):
+    """Drop every record emitted inside ``suppress_replay_logs(enabled=True)``.
+
+    A parser replay runs production queries, and any record its pipeline writes can quote
+    the query or carry an exception chain that does. The replay's ``resolve`` record is
+    written after the suppressed block ends and holds no query. A shared flight the replay
+    starts logs as usual (``end_replay_log_suppression``).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _SUPPRESS_REPLAY_LOGS.get()
+
+
+def replay_log_filter() -> ReplayLogFilter:
+    """Construct the replay privacy filter for ``logging.config.dictConfig``."""
+    return ReplayLogFilter()
+
+
+def end_replay_log_suppression() -> None:
+    """Let the current context's records through ``ReplayLogFilter`` again.
+
+    A shared flight serves every request that joins it, so the context it runs in
+    (``request_deadline.detached_context``) logs whichever request started it."""
+    _SUPPRESS_REPLAY_LOGS.set(False)
+
+
+@contextmanager
+def suppress_replay_logs(*, enabled: bool) -> Iterator[None]:
+    """Drop the records the current context emits inside the block when ``enabled``
+    (``ReplayLogFilter``)."""
+    token = _SUPPRESS_REPLAY_LOGS.set(enabled)
+    try:
+        yield
+    finally:
+        _SUPPRESS_REPLAY_LOGS.reset(token)
 
 
 def log_event(

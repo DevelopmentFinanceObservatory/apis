@@ -15,6 +15,7 @@ from search.models import (
     ConversionCurrency,
     Entry,
     GraphRef,
+    HeldBack,
     IdentityFacetValueAbsent,
     LedgerStep,
     RoleAxisFact,
@@ -33,6 +34,15 @@ _NULL_INSTANCES: dict[type[BaseModel], BaseModel] = {
         constant_years=None,
         base_year_min=None,
         base_year_max=None,
+    ),
+    HeldBack: HeldBack(
+        kind="projected",
+        served=False,
+        source="provenance/WorldBankInternationalDebtStatistics",
+        source_name=None,
+        start_year=2026,
+        end_year=2030,
+        reported_share=None,
     ),
     IdentityFacetValueAbsent: IdentityFacetValueAbsent(ref=None),
     LedgerStep: LedgerStep(

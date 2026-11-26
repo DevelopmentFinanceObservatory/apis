@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from search.engine.binders import Binder
+from search.engine.clients.llm import SupportsLLM
 from series_coverage.shared import CoverageSnapshot
 from skills_index import SkillsIndex
 
@@ -48,3 +49,7 @@ class EntryParams:
     # The binder the request was routed to (`binders.configured_binder`), which every part
     # of every door reads its quantity and binds through, and the cache keys name.
     binder: Binder
+
+    # The client both raw-text parses call, None for the request's own LLM. Only a parser
+    # replay (`search.engine.parser_replay`) sets it.
+    extract_llm: SupportsLLM | None = None

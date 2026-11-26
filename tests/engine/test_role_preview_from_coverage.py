@@ -263,3 +263,45 @@ def test_dominated_candidate_never_appears_beside_its_dominating_sibling(monkeyp
 # The standard (observationAbout) branch's own equivalent regression guard --
 # proving it, too, never calls enumerate_members -- lives in
 # tests/engine/test_group_preview_membership.py, alongside its other tests.
+
+
+def test_a_bulk_role_preview_holds_back_its_source_partial_year(monkeypatch):
+    """A dateless bulk read of CRS flows to 2025, which the dev catalogue marks partial from
+    2025, previews 2023 and 2024 alone, as a mint of the same identity cuts its 2025 rows
+    (`materialise.columnar.selected_mask`)."""
+    from dataclasses import replace
+
+    from origin_catalogue import bound_catalogue
+    from series_coverage.schema import FacetMetadata
+    from tests.engine import test_held_back_answer as held_back_answer
+
+    crs = held_back_answer._CRS
+    years = ["2023", "2024", "2025"]
+    index = patch_coverage(
+        monkeypatch,
+        [(_TOTAL_SV, "F1", _DONOR, r, [int(y) for y in years]) for r in _RECIPIENTS],
+        role_names={_TOTAL_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={"F1": FacetMetadata(provenance_id=crs)},
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _TOTAL_SV: {
+                _role_tuple(r): [replace(_facet(dates=years), provenance_id=crs)]
+                for r in _RECIPIENTS
+            }
+        }
+    )
+    with bound_catalogue(held_back_answer._catalogue()):
+        observations, _warn = build_observations_planned(
+            [_TOTAL_SV],
+            _obs_entities(_RECIPIENTS),
+            graph=_GRAPH,
+            materialise_graph=FakeMemberArcReader(arcs=_MEMBER_ARC_FAMILY),
+            materialise_sdmx=None,
+            sdmx=sdmx,
+            member_facts={_TOTAL_SV: _member_facts({})},
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+
+    assert observations is not None and observations.series
+    assert {tuple(p.date for p in s.points) for s in observations.series} == {("2023", "2024")}

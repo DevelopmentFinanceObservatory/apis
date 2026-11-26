@@ -41,6 +41,7 @@ from .test_exports import (
 _LOGGER = "datasets_api.delivery"
 _PRINCIPAL = "website-secret"
 _CONVERSATION = "conversation:" + "cd" * 16
+_ACCOUNT = "user:" + "ef" * 16
 # No forwarded-for entry. A vouched conversation is keyed on itself.
 _STUDIO_HEADERS = {
     "x-dfo-caller-principal": _PRINCIPAL,
@@ -169,6 +170,17 @@ def test_a_background_mint_logs_admission_background(
             "vouched",
             id="conversation-overrules-vouched-api",
         ),
+        pytest.param(
+            {
+                "x-dfo-caller-principal": _PRINCIPAL,
+                "x-dfo-caller": _ACCOUNT,
+                "x-dfo-surface": "api",
+            },
+            "api",
+            _ACCOUNT,
+            "vouched",
+            id="vouched-account",
+        ),
     ],
 )
 @pytest.mark.usefixtures("vouching")
@@ -221,8 +233,12 @@ def test_the_line_carries_the_turn_a_studio_caller_names(
 
 @pytest.mark.parametrize(
     ("caller", "mcp_client"),
-    [("ip:" + "ab" * 16, "Anthropic/ClaudeAI"), (_CONVERSATION, None)],
-    ids=["public-caller", "conversation"],
+    [
+        ("ip:" + "ab" * 16, "Anthropic/ClaudeAI"),
+        (_ACCOUNT, "Anthropic/ClaudeAI"),
+        (_CONVERSATION, None),
+    ],
+    ids=["public-caller", "account", "conversation"],
 )
 @pytest.mark.usefixtures("vouching")
 def test_the_line_names_the_mcp_client_a_public_caller_used(

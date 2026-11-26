@@ -19,6 +19,7 @@ from tests.origin_catalogue.support import (
     EUROSTAT_GDP,
     GDP,
     SCAN_PLACES,
+    UN_VARIABLE,
     UN_WHO,
     WDI,
     sample_un_mirror,
@@ -51,9 +52,10 @@ def counted(tmp_path):
 
 
 def test_provenance_ids_group_by_origin(counted):
-    # CRS is the DFO provenance; WDI, Eurostat (base) and WHO (UN) go with Data Commons.
+    # CRS is the DFO provenance, WDI and Eurostat the base ones, WHO the UN one.
     assert counted.provenances.dfo == [CRS]
-    assert counted.provenances.data_commons == sorted([WDI, EUROSTAT_GDP, UN_WHO])
+    assert counted.provenances.data_commons == sorted([WDI, EUROSTAT_GDP])
+    assert counted.provenances.un == [UN_WHO]
 
 
 def test_global_counts(counted):
@@ -73,18 +75,18 @@ def test_global_counts(counted):
 
 def test_counts_split_by_origin(counted):
     split = counted.counts.by_origin
-    # CRS is the one DFO provenance. WDI under its Dataset, Eurostat and WHO on
-    # the UN are the Data Commons rows.
-    assert (split.dfo.datasets, split.dfo.publishers) == (1, 1)
-    assert (split.data_commons.datasets, split.data_commons.publishers) == (3, 3)
+    groups = (split.dfo, split.data_commons, split.un)
+    # CRS is the one DFO provenance, WDI under its Dataset and Eurostat the base rows, and WHO
+    # the UN row.
+    assert [(group.datasets, group.publishers) for group in groups] == [(1, 1), (2, 2), (1, 1)]
     # The fixture has no source shared across the groups, so datasets and publishers sum to the
     # global figure.
-    assert split.dfo.datasets + split.data_commons.datasets == counted.counts.datasets
-    assert split.dfo.publishers + split.data_commons.publishers == counted.counts.publishers
-    # Two DFO and four coverage variables (all on CRS) against two base and two UN ones.
+    assert sum(group.datasets for group in groups) == counted.counts.datasets
+    assert sum(group.publishers for group in groups) == counted.counts.publishers
+    # Two DFO and four coverage variables (all on CRS), two base variables and two UN ones.
     # Count_Person is both a base and a DFO variable, so it counts in each group.
-    assert (split.dfo.indicators, split.data_commons.indicators) == (6, 4)
-    assert split.dfo.indicators + split.data_commons.indicators == counted.counts.indicators + 1
+    assert [group.indicators for group in groups] == [6, 2, 2]
+    assert sum(group.indicators for group in groups) == counted.counts.indicators + 1
 
 
 def test_a_coverage_variable_under_a_base_provenance_counts_as_data_commons(tmp_path):
@@ -96,8 +98,41 @@ def test_a_coverage_variable_under_a_base_provenance_counts_as_data_commons(tmp_
     )
     split = counted.counts.by_origin
     # The DFO group keeps its two DFO variables. The four coverage variables join the two
-    # base and two UN ones.
-    assert (split.dfo.indicators, split.data_commons.indicators) == (2, 8)
+    # base ones.
+    assert (split.dfo.indicators, split.data_commons.indicators, split.un.indicators) == (2, 6, 2)
+    assert counted.counts.indicators == 9
+
+
+def test_a_coverage_variable_under_a_un_provenance_counts_as_un(tmp_path):
+    counted = catalogue_counts(
+        catalogue=replace(origin_snapshot(tmp_path), un=UnTables(mirror=sample_un_mirror())),
+        coverage=build_test_index(provenance=UN_WHO),
+        datasets=set(),
+        parties={},
+    )
+    split = counted.counts.by_origin
+    # The four coverage variables join the two UN ones.
+    assert (split.dfo.indicators, split.data_commons.indicators, split.un.indicators) == (2, 2, 6)
+    assert counted.counts.indicators == 9
+
+
+def test_a_statvar_in_the_base_and_un_groups_counts_once_globally(tmp_path):
+    snapshot = origin_snapshot(tmp_path)
+    tables = replace(
+        snapshot.tables,
+        base_variables={
+            **snapshot.tables.base_variables,
+            UN_VARIABLE: BaseVariable(provenances=(WDI,), places=0),
+        },
+    )
+    counted = catalogue_counts(
+        catalogue=replace(snapshot, tables=tables, un=UnTables(mirror=sample_un_mirror())),
+        coverage=build_test_index(),
+        datasets=set(),
+        parties={},
+    )
+    split = counted.counts.by_origin
+    assert (split.data_commons.indicators, split.un.indicators) == (3, 2)
     assert counted.counts.indicators == 9
 
 
@@ -108,14 +143,15 @@ def test_without_the_un_system_origin_the_un_variables_and_publisher_drop_out(tm
     on = catalogue_counts(catalogue=enabled, **kwargs).counts
     off = catalogue_counts(catalogue=disabled, **kwargs).counts
     assert off.indicators == on.indicators - 2
-    assert off.by_origin.data_commons.indicators == on.by_origin.data_commons.indicators - 2
     # WHO is the UN's publisher.
     assert off.publishers == on.publishers - 1
-    assert off.by_origin.data_commons.publishers == on.by_origin.data_commons.publishers - 1
-    # A provenance the catalogue does not admit is in neither group.
+    assert on.by_origin.un.model_dump() == {"indicators": 2, "datasets": 1, "publishers": 1}
+    assert off.by_origin.un.model_dump() == {"indicators": 0, "datasets": 0, "publishers": 0}
+    assert off.by_origin.data_commons == on.by_origin.data_commons
+    # A provenance the catalogue does not admit is in no group.
     off_provenances = catalogue_counts(catalogue=disabled, **kwargs).provenances
+    assert off_provenances.un == []
     assert UN_WHO not in off_provenances.dfo + off_provenances.data_commons
-    assert off_provenances.data_commons == sorted([WDI, EUROSTAT_GDP])
 
 
 def test_a_publisher_with_a_dfo_and_a_base_provenance_counts_in_both_groups(tmp_path):
@@ -133,7 +169,7 @@ def test_a_publisher_with_a_dfo_and_a_base_provenance_counts_in_both_groups(tmp_
         parties={},
     )
     split = counted.counts.by_origin
-    assert (split.dfo.publishers, split.data_commons.publishers) == (1, 3)
+    assert (split.dfo.publishers, split.data_commons.publishers) == (1, 2)
     assert counted.counts.publishers == 3
 
 
@@ -430,7 +466,7 @@ def test_the_trust_funds_count_as_a_donor_in_a_table_the_index_does_not_list_the
     assert counted.counts.aid.donors == 1
 
 
-def test_a_facet_without_a_provenance_adds_to_neither_origin_group(tmp_path):
+def test_a_facet_without_a_provenance_adds_to_no_origin_group(tmp_path):
     table, horizon = coverage_table([(V1, FACET_ACTUALS, "country/FRA", "country/ETH", [2018])])
     coverage = CoverageIndex(
         table,
@@ -444,3 +480,4 @@ def test_a_facet_without_a_provenance_adds_to_neither_origin_group(tmp_path):
     split = counted.counts.by_origin
     assert split.dfo.indicators == len(tables.dfo_variables)
     assert split.data_commons.indicators == len(tables.base_variables)
+    assert split.un.indicators == 0

@@ -44,6 +44,7 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     dated_without_complete_dates,
     facets_served,
+    opt_in,
     series_points,
     served_dates,
     year_of,
@@ -110,7 +111,10 @@ def stated_window(plan: ReadPlan) -> TimeWindow | None:
         if (year := year_of(date)) is not None
     ]
     if not years:
-        return plan.years if isinstance(plan.years, TimeWindow) else None
+        # The years alone: the window's opt-in is the identity's, stated on its trace.
+        if isinstance(plan.years, TimeWindow):
+            return TimeWindow(start_year=plan.years.start_year, end_year=plan.years.end_year)
+        return None
     return TimeWindow(start_year=min(years), end_year=max(years))
 
 
@@ -324,6 +328,7 @@ def plan_election(coverage_index: CoverageIndex) -> Election:
             bound=plan.roles.bound,
             served=held_rows(plan),
             excluded=coverage_exclusions(plan),
+            include=opt_in(plan.years),
         )
 
     return elect
@@ -425,8 +430,10 @@ def headline_from_coverage_index(
     which a read plan sets to the years it reads (`answer_headline`). `named_window` is
     the request's window, a single year, a range or an open range, and `year_named` is
     true whenever there is one; both are unset for a `latest` request and for no
-    request.
+    request. The counts leave out the years the request's window does not opt in to
+    (`CoverageIndex.headline`); `named_window` states its years alone.
     """
+    named_window = date_request.window if date_request is not None else None
     result = coverage_index.headline(
         variables=variables,
         bound=bound,
@@ -435,6 +442,7 @@ def headline_from_coverage_index(
         first_year=first_year,
         last_year=last_year,
         elected=elected,
+        include=named_window.opt_in if named_window is not None else frozenset(),
     )
     if result is None:
         return None
@@ -446,11 +454,12 @@ def headline_from_coverage_index(
             if coverage_role in role_dcid_by_coverage_role
         }
 
-    named_window = date_request.window if date_request is not None else None
     return Headline(
         year=result.year,
         year_named=named_window is not None,
-        named_window=named_window,
+        named_window=None
+        if named_window is None
+        else TimeWindow(start_year=named_window.start_year, end_year=named_window.end_year),
         observations=result.observations,
         series=result.series,
         role_counts=role_dcid_counts(result.role_counts),
