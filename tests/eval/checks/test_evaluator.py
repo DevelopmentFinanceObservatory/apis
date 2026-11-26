@@ -15,9 +15,9 @@ from pydantic_evals import Dataset
 from search.eval import evaluator as evaluator_module
 from search.eval.cases import Case, expectation_hash
 from search.eval.checks import ANSWER, ScoreContext
-from search.eval.checks.base import Result, Verdict, score_with_answer
+from search.eval.checks.base import Result, Verdict, answer_result, infra_error, score_with_answer
 from search.eval.corpus_dataset import SUITE, CaseInputs, CorpusCase, case_inputs
-from search.eval.evaluator import ScoredAnswer, SearchChecks, check_label
+from search.eval.evaluator import ScoredAnswer, SearchChecks, answer_is_infra, check_label
 from tests.eval.checks.conftest import make_case, panel
 
 CRS_032_ENTITIES = [
@@ -145,3 +145,41 @@ def test_a_labelling_error_is_a_grader_fault_on_the_headline(
     ).results
 
     assert result.fault is FaultClass.GRADER
+
+
+def scored_results(known: frozenset[str] = frozenset(), **checks: Result) -> dict[str, Result]:
+    """Check results with ``answer`` derived from them as the registry derives it."""
+    return {**checks, ANSWER: answer_result(checks, known=known)}
+
+
+LOST_READ = infra_error("graph read failed")
+PASSED = Result(Verdict.PASS)
+
+
+@pytest.mark.parametrize(
+    ("results", "run_failed", "infra"),
+    [
+        (scored_results(entities=PASSED), True, True),
+        (
+            scored_results(entities=Result(Verdict.FAIL, "got KEN"), groundedness=LOST_READ),
+            False,
+            False,
+        ),
+        (scored_results(entities=PASSED, groundedness=LOST_READ), False, True),
+        (
+            scored_results(frozenset({"groundedness"}), entities=PASSED, groundedness=LOST_READ),
+            False,
+            False,
+        ),
+        (scored_results(entities=PASSED), False, False),
+    ],
+    ids=[
+        "the run failed",
+        "a definite failure beside a lost read",
+        "a lost read on a counted check",
+        "a lost read on a known-failure check",
+        "nothing lost",
+    ],
+)
+def test_a_sample_is_infra_only_when_it_measures_the_environment(results, run_failed, infra):
+    assert answer_is_infra(results, run_failed=run_failed) is infra

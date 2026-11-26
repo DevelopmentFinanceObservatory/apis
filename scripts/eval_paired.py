@@ -60,7 +60,9 @@ results page leaves out of its scores. A definite ``answer`` failure stays a fin
 The record's id, revision and directory are fixed before any case runs, and the record is
 written after the report, summary and responses. Every request is built before the first
 post. The first case whose task raises cancels the others, and the run exits 2 with that
-exception's traceback; an evaluator that raises exits 2 the same way.
+exception's traceback. An evaluator that raises does not cancel the others: once every case
+has run, the run prints each evaluator failure's traceback and exits 2. Either way no
+report, summary or record is written.
 
 The record and the report can disagree on a case's ``answer``: the report passes a check
 that passes on any sample, while the record holds the modal sample alone, which can fail
