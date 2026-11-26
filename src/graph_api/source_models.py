@@ -249,8 +249,9 @@ class DatasetEntry(ResponseModel):
     The card facts (`description`, `licence_type`, `update_cadence`,
     `years_covered`, `source_url`) equal the same members of
     `GET /api/graph/documentation/{ref}` for the graph the loaded catalogue
-    build read. They are null on UN System Data Commons entries. `license_type` is the
-    deprecated spelling of `licence_type` and holds the same value."""
+    build read. A UN agency is its own entry, with the facts the UN deployment states for
+    its Provenance. `license_type` is the deprecated spelling of `licence_type` and holds
+    the same value."""
 
     model_config = ConfigDict(json_schema_extra=optional_in_schema("licence_type"))
 

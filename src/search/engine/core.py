@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing, asynccontextmanager
@@ -50,7 +51,7 @@ from search.engine.assemble import (
 from search.engine.binders import Binder, Fallbacks, configured_binder, recording_fallbacks
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
-from search.engine.clients.llm import LLM, SupportsLLM, sum_usage
+from search.engine.clients.llm import LLM, Agreement, SupportsLLM, agreement_verdict, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
@@ -65,6 +66,7 @@ from search.engine.envelope import (
 )
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.parser_replay import ReplayRecord
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.resolve_trace import (
@@ -133,6 +135,8 @@ class ResolveRecord:
     line's `llm_usage` adds. `pre_ms` is the time from the platform middleware receiving the
     request to the route body having passed its input checks, and `refresh_ms` is the part of
     it spent in the generation refresh; both stay None when the route does not set them.
+    `parser_replay` is a dev parser replay's record (`search.engine.parser_replay`), None
+    for every other request.
     """
 
     cache: str = "inactive"
@@ -146,6 +150,7 @@ class ResolveRecord:
     refresh_ms: int | None = None
     extraction_agreed: bool | None = None
     second_sample_usage: dict | None = None
+    parser_replay: ReplayRecord | None = None
 
 
 @asynccontextmanager
@@ -193,13 +198,18 @@ async def resolve_line(
         may_wait = isinstance(exc, Exception)
         raise
     finally:
-        trace, pending = queue_resolve_trace(
-            trace_id=trace_id,
-            inp=request.input,
-            response=record.response,
-            error_code=record.error_code,
-            surface=identity.surface.value,
-        )
+        if record.parser_replay is not None:
+            # A replay sends production queries, so it exports no trace, and its log line
+            # names it by the opaque replay id alone.
+            trace, pending = TraceOutcome.skipped, None
+        else:
+            trace, pending = queue_resolve_trace(
+                trace_id=trace_id,
+                inp=request.input,
+                response=record.response,
+                error_code=record.error_code,
+                surface=identity.surface.value,
+            )
         task = asyncio.current_task()
         try:
             if pending is not None and may_wait and task is not None and not task.cancelling():
@@ -262,6 +272,11 @@ def _log_resolve(
     (`ResolveRecord.extraction_agreed`), the part memo's hits and misses, the envelope's
     `timing_ms` total and `by_step`, and each part's own `by_step`.
 
+    `parser_replay` is null on every request but a dev parser replay, which logs its
+    `ReplayRecord.log_fields` there. A replay's `extraction_agreed` is the served
+    extraction's verdict that `ReplayRecord.extraction_agreed` holds, since a replay keeps
+    no response cache and settles no agreement of its own, and its `query_hmac` is null.
+
     `outcome` is the response's `status` for a resolution and its `kind` otherwise.
     `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
     `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
@@ -279,10 +294,10 @@ def _log_resolve(
 
     `query_hmac` is the HMAC-SHA-256 hex of `normalise_query(query).casefold()` for a raw_text
     query, the text the response cache keys on with case folded, under `SEARCH_QUERY_HMAC_KEY`.
-    It is null for other input kinds and when the key is unset. It counts repeats within a
-    deployment: digests do not compare across deployments, guessing a query offline needs the
-    key, and rotating the key breaks repeat counts across the rotation. The line carries no
-    query text.
+    It is null for other input kinds, on a parser replay and when the key is unset. It counts
+    repeats within a deployment: digests do not compare across deployments, guessing a query
+    offline needs the key, and rotating the key breaks repeat counts across the rotation. The
+    line carries no query text.
 
     Every response-derived field is null, and every list empty, when the request ended before
     its response event.
@@ -329,7 +344,11 @@ def _log_resolve(
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
                 "cache": record.cache,
-                "extraction_agreed": record.extraction_agreed,
+                "extraction_agreed": (
+                    record.parser_replay.extraction_agreed
+                    if record.parser_replay is not None
+                    else record.extraction_agreed
+                ),
                 "memo_hits": record.memo_hits,
                 "memo_misses": record.memo_misses,
                 "pre_ms": record.pre_ms,
@@ -359,10 +378,13 @@ def _log_resolve(
                     if response is not None
                     else None
                 ),
+                "parser_replay": (
+                    record.parser_replay.log_fields() if record.parser_replay is not None else None
+                ),
                 "error_code": record.error_code,
                 "timed_out": timed_out,
                 "degraded_leg": done.degraded_leg if done is not None else None,
-                "query_hmac": _query_hmac(inp),
+                "query_hmac": _query_hmac(inp) if record.parser_replay is None else None,
                 "trace": trace,
             }
         ),
@@ -419,6 +441,7 @@ async def resolve_events(
     resolver: EntityResolver | None = None,
     admission: Admission | None = None,
     llm: SupportsLLM | None = None,
+    extract_llm: SupportsLLM | None = None,
     sdmx: EngineSdmxClient | None = None,
     stream_slot_options: bool = False,
     materialise_graph: GraphReader | None = None,
@@ -479,6 +502,11 @@ async def resolve_events(
 
     ``binder`` reads the quantity and binds every part. ``None`` takes the one the request
     routes to (``binders.configured_binder``). The cache key reads it.
+
+    ``extract_llm`` is a parser replay's extraction client (``parser_replay``), which both
+    raw-text parses call in place of ``llm`` (``EntryParams.extract_llm``). Before ``done``,
+    a replay waits for its served extraction's agreement until ``finalise_grace_s`` before
+    the hard deadline and records the verdict in ``record.parser_replay``.
     """
     if budget is None:
         budget = request_budget(kind=request.input.kind)
@@ -526,10 +554,12 @@ async def resolve_events(
                     resolver=_resolver,
                     admission=_admission,
                     llm=_llm,
+                    extract_llm=extract_llm,
                     sdmx=_sdmx,
                     binder=binder,
                     start_ms=start_ms,
                     deadline=budget.soft,
+                    hard_deadline=budget.hard,
                     stream_slot_options=stream_slot_options,
                     materialise_graph=materialise_graph,
                     materialise_sdmx=materialise_sdmx,
@@ -660,10 +690,12 @@ async def _resolve_pipeline_events(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    extract_llm: SupportsLLM | None = None,
     sdmx: EngineSdmxClient,
     binder: Binder | None,
     start_ms: int,
     deadline: float,
+    hard_deadline: float,
     stream_slot_options: bool = False,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -777,6 +809,7 @@ async def _resolve_pipeline_events(
         skills_index=skills_index,
         coverage=coverage_snapshot,
         binder=binder,
+        extract_llm=extract_llm,
     )
 
     if inp.kind == "dataset_resubmit":
@@ -896,6 +929,10 @@ async def _resolve_pipeline_events(
             async for ev in events:
                 ev = _with_index_drift_warning(ev, warn=warn_index_drift)
                 await scope.observe(ev)
+                if isinstance(ev, DoneEvent) and record.parser_replay is not None:
+                    await _settle_replay_agreement(
+                        scope, record.parser_replay, hard_deadline=hard_deadline
+                    )
                 if isinstance(ev, ResponseEvent) and scope.active and lookup_ms is not None:
                     ev = ResponseEvent(
                         response=with_step_timing(ev.response, "cache_lookup", lookup_ms)
@@ -904,10 +941,30 @@ async def _resolve_pipeline_events(
     finally:
         record.cache = scope.outcome
         record.extraction_agreed = scope.extraction_agreed
+        if record.parser_replay is not None:
+            record.parser_replay.fallback_reasons = list(fallbacks.reasons)
         try:
             await scope.release()
         finally:
             record.second_sample_usage = scope.second_sample_usage()
+
+
+async def _settle_replay_agreement(
+    scope: CacheScope, replay: ReplayRecord, *, hard_deadline: float
+) -> None:
+    """Record the served extraction's agreement in `replay`, waiting for its second sample
+    until `finalise_grace_s` before `hard_deadline` at most, so the `done` frame still lands
+    before the hard cap ends the stream. A sample still running then reads as None. The wait
+    leaves the sample running, so `scope.release` still cancels one that has not ended. The
+    sample's own bound, `llm_second_sample_settle_s` after the first was read, usually ends
+    it first."""
+    agreement = scope.extraction_agreement
+    if agreement is None:
+        return
+    if isinstance(agreement, Agreement):
+        wait_until = hard_deadline - config.settings().finalise_grace_s
+        await asyncio.wait([agreement.task], timeout=max(0.0, wait_until - time.monotonic()))
+    replay.extraction_agreed = agreement_verdict(agreement)
 
 
 async def resolve_async(
@@ -917,6 +974,7 @@ async def resolve_async(
     resolver: EntityResolver | None = None,
     admission: Admission | None = None,
     llm: SupportsLLM | None = None,
+    extract_llm: SupportsLLM | None = None,
     sdmx: EngineSdmxClient | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -937,7 +995,7 @@ async def resolve_async(
     diagnostics so buffered callers can detect a partial result. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
-    ``budget``, ``record`` and ``binder`` reach ``resolve_events``.
+    ``budget``, ``record``, ``binder`` and ``extract_llm`` reach ``resolve_events``.
 
     Returns a ``ResolveResponse``: a ``Resolution`` carries one part per requested
     variable.
@@ -950,6 +1008,7 @@ async def resolve_async(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        extract_llm=extract_llm,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,

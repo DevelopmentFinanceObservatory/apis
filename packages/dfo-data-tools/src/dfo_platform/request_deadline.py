@@ -12,11 +12,12 @@ caller's context, and pool threads only through `submit_with_context` or
 
 A shared flight, a read one request starts and other requests or doors join, runs detached
 from any one request's deadline. It runs in `detached_context`, a copy of the caller's context
-that keeps the bound origin catalogue and binds the flight's own deadline in place of the
-request's. `submit_detached` submits a function in such a context with the deadline cleared,
-for a flight that passes its deadline explicitly. `SingleFlightCache` runs every fetch it
-shares in one that binds the flight's deadline. Each request, the one that started the flight
-included, stops waiting at its own deadline while the flight runs on.
+that keeps the bound origin catalogue, binds the flight's own deadline in place of the
+request's, and logs even when a parser replay started it. `submit_detached` submits a
+function in such a context with the deadline cleared, for a flight that passes its deadline
+explicitly. `SingleFlightCache` runs every fetch it shares in one that binds the flight's
+deadline. Each request, the one that started the flight included, stops waiting at its own
+deadline while the flight runs on.
 
 httpx applies a timeout per transport phase, and its read timeout to each socket read, so a
 response that trickles bytes can outlive the deadline by up to one read timeout.
@@ -28,6 +29,8 @@ import contextvars
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor, Future
 from contextlib import contextmanager
+
+from dfo_platform.cloud_logging import end_replay_log_suppression
 
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "dfo_request_deadline", default=None
@@ -56,10 +59,13 @@ def bounded_deadline(deadline: float | None) -> float | None:
 
 def detached_context(*, deadline: float | None = None) -> contextvars.Context:
     """A copy of the caller's context with the request deadline bound to `deadline`, or cleared
-    when it is None. Every other context variable, such as the bound origin catalogue, carries
-    over as `submit_with_context` (`dfo_platform.executor`) carries it."""
+    when it is None, and parser replay log suppression off, since the flight serves every
+    request that joins it (`cloud_logging.end_replay_log_suppression`). Every other context
+    variable, such as the bound origin catalogue, carries over as `submit_with_context`
+    (`dfo_platform.executor`) carries it."""
     context = contextvars.copy_context()
     context.run(_deadline.set, deadline)
+    context.run(end_replay_log_suppression)
     return context
 
 

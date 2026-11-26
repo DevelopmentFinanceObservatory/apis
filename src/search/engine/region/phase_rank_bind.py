@@ -114,6 +114,7 @@ from search.engine.qualifier_match import (
 )
 from search.engine.quantity import (
     PER_HEAD_RATE_BASE_RE,
+    SHARE_FORMS,
     DenominatorKind,
     DenominatorRead,
     NamedDenominator,
@@ -541,20 +542,43 @@ def _read_quantity_answer(
     joined to the requirement when no phrase named one (`quantity.with_stated_form`), and
     the denominator it chose from ``denominators``, the last index meaning "none of these".
     The denominator stands only when the read quotes the phrase's words that name it
-    (`_names_base`, over `shapes`, the shapes whose denominators the list holds); otherwise the phrase names no base, whatever the index. A stated
-    rate or share is a division by a base, so a quote that names none drops it too:
-    "debt service to private creditors" read as a rate on "private creditors", a
-    qualifier, states no form. An unquoted rate or share stands, since a share of people
-    quotes no base by design ("HIV prevalence among young women" reads as a share), as
-    does a per-person, per-head or per-area form. Return whether the output is well
-    formed: a grounded index outside the list is a malformed output, as an out-of-range
-    shape index is, and the part refuses ``variable_not_resolved``. When the denominator
-    read failed (``state.denominator_read_failure``), a stated form or any grounded
-    index, "none of these" included, would be judged on reads that are missing, so the
-    read's error is raised.
+    (`_names_base`, over `shapes`, the shapes whose denominators the list holds); otherwise
+    the phrase names no base, whatever the index. A stated rate or share is a division by a
+    base, so a quote that names none drops it too: "debt service to private creditors" read
+    as a rate on "private creditors", a qualifier, states no form. An unquoted rate or share
+    stands, since a share of people quotes no base by design ("HIV prevalence among young
+    women" reads as a share), as does a per-person, per-head or per-area form. A part whose
+    `share_of` spans the whole variable (`ResolveState.share_spans_variable`) reads as the
+    share's numerator measure, so the read's share or rate and any base it quotes are the
+    operation's and are not read. Return whether the output is well formed: an index
+    outside the list is malformed, with or without a spanning `share_of`, as an
+    out-of-range shape index is, and the part refuses ``variable_not_resolved``. Outside
+    a spanning `share_of`, an index on no quoted base is dropped before that check. When
+    the denominator read failed (``state.denominator_read_failure``), a stated form or any
+    grounded index, "none of these" included, would be judged on reads that are missing, so
+    the read's error is raised.
     """
     index = quantity.denominator_index
     stated_form = quantity.stated_form
+    if state.share_spans_variable:
+        if index is not None and not 0 <= index <= len(denominators):
+            logger.warning(
+                "quantity read returned denominator_index %d outside %d entries",
+                index,
+                len(denominators) + 1,
+            )
+            return False
+        set_aside: dict[str, object] = {}
+        if index is not None:
+            set_aside |= {"denominator_index": index, "base_words": quantity.base_words}
+            index = None
+        if stated_form in SHARE_FORMS:
+            set_aside["stated_form"] = stated_form
+            stated_form = None
+        if set_aside:
+            logger.info(
+                "quantity read set aside under a share_of spanning the variable: %s", set_aside
+            )
     if not _names_base(state, quantity.base_words, shapes):
         if index is not None:
             logger.info(

@@ -136,7 +136,7 @@ curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {ref, stat_var_count, patterns: (.patterns | length)}'
 ```
 
-`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance (no description for a UN agency) and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`. Retrying does not help.
+`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`. Retrying does not help.
 
 ## Check StatVar definitions
 

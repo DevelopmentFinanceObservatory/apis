@@ -238,7 +238,9 @@ def incomplete_after(result: MaterialisationResult) -> JudgedIncompleteAfter | N
     reach (`SeriesFigures.actual_by_source`): `partial` when it reaches the period its source's
     import holds only part of, `unknown` when the catalogue does not document its source
     (`Undocumented`), its rows name no provenance, or the frame grammar cannot read the mark or
-    the period. A complete pair is left out, so an empty list is judged and complete.
+    the period. Its actual rows are complete when its source's documentation states no
+    `partialObservationDate`, whatever the source's origin, a UN System agency included. A
+    complete pair is left out, so an empty list is judged and complete.
 
     A `partial` entry states how much of the year its mark starts in its source has reported,
     against the year before (`reported_share.reported_share`), from the year sums the read

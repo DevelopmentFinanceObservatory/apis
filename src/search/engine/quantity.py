@@ -33,13 +33,14 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from search.engine.function_words import FUNCTION_WORDS
+from code_index.tokens import word_tokens
+from search.engine.function_words import FUNCTION_WORDS, JOINING_WORDS
 from search.engine.measure_verdict import shape_pairs
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.bound_values import ratio_twins_of, shape_five_tuple
 from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
 from search.engine.shape import ShapeDraft, counts_persons, is_role_bearing, measures_count
-from search.models import GraphRef, QuantityForm
+from search.models import GraphRef, Operation, QuantityForm
 from unit_words.unit_class import is_per_head_denominator
 
 if TYPE_CHECKING:
@@ -202,7 +203,7 @@ def read_denominators(
 
 # Measured properties whose plain values are amounts. A shape on one with no denominator
 # arc and a plain stat type is a level.
-_LEVEL_PROPERTIES = frozenset({"count", "amount", "valueAdded"})
+_LEVEL_PROPERTIES = frozenset({"count", "amount", "grantEquivalent", "valueAdded"})
 _LEVEL_STAT_TYPES = frozenset({"measuredValue", ""})
 # Add new per-head nouns here. The regex reads this tuple.
 _PER_HEAD_NOUNS = ("capita", "person", "head", "inhabitant", "resident", "citizen")
@@ -451,6 +452,48 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
     return QuantityRequirement(
         named=frozenset().union(*(query_normalisation(p, strong=True) for p in phrases)),
         framing=frozenset().union(*(query_normalisation(p, strong=False) for p in phrases)),
+    )
+
+
+# The forms a `share_of` computes: the share or ratio of its whole.
+SHARE_FORMS: frozenset[NamedNormalisation] = frozenset({"share", "rate"})
+
+
+def share_spans_variable(variable: str, operations: Iterable[Operation]) -> bool:
+    """Whether a `share_of` among `operations` has `variable` itself as its phrase, their
+    words equal once casing, spacing and joining words (`JOINING_WORDS`) are set aside
+    (`code_index.tokens.word_tokens`): "the share of bilateral ODA" spans "share of
+    bilateral ODA". Flow cues, conjunctions and "per" stay, so "share of aid to China" does
+    not span "share of aid from China". The variable then names the share, and the part
+    reads as the share's numerator measure: "share of bilateral ODA" asks for bilateral
+    ODA."""
+    words = _content_words(variable)
+    return any(
+        operation.verb == "share_of" and _content_words(operation.phrase) == words
+        for operation in operations
+    )
+
+
+def _content_words(text: str) -> list[str]:
+    """The casefolded words of `text` other than joining words."""
+    return [
+        word for token in word_tokens(text) if (word := token.text.casefold()) not in JOINING_WORDS
+    ]
+
+
+def share_numerator_requirement(
+    variable: str, qualifier_phrases: Iterable[str]
+) -> QuantityRequirement:
+    """The requirement of a part whose `share_of` spans its `variable`
+    (`share_spans_variable`): the variable's own forms less the share and rate the operation
+    computes (`SHARE_FORMS`), and every form its `qualifier_phrases` name, as
+    `quantity_requirement` reads them. "share of bilateral ODA" names none, and a qualifier
+    "as a percentage of GNI" beside it still names a share."""
+    own = quantity_requirement([variable])
+    beside = quantity_requirement(qualifier_phrases)
+    return QuantityRequirement(
+        named=(own.named - SHARE_FORMS) | beside.named,
+        framing=(own.framing - SHARE_FORMS) | beside.framing,
     )
 
 
