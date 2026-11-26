@@ -106,7 +106,7 @@ class ReportedShare(BaseModel):
     series holding the partial period over the series holding `against`, for any other
     measure. `share` is a fraction, 0.001 for 0.1%."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", title="DatasetsReportedShare")
     basis: Literal["value", "series"]
     share: float
     against: int
@@ -145,14 +145,14 @@ class HeldBack(BaseModel):
     after its newest actual year. `served` is true when the window opted in and the frame
     holds these years. `reported_share` is set on a partial run alone, when known."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", title="DatasetsHeldBack")
     kind: Literal["partial", "projected"]
     served: bool
     source: str
-    source_name: str | None
+    source_name: str | None = Field(default=None, exclude_if=_is_none)
     start_year: int
     end_year: int
-    reported_share: ReportedShare | None
+    reported_share: ReportedShare | None = Field(default=None, exclude_if=_is_none)
 
 
 class CoverageModel(BaseModel):

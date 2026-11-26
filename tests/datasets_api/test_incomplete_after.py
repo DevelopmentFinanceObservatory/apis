@@ -602,8 +602,5 @@ def test_a_later_mint_refreshes_the_runs_of_its_collapse_with_its_base_s(
     assert again["content_version"] == first["content_version"]
     runs = _stored_runs_of(store)
     assert len(runs) == 2
-    assert all(
-        held == [{**again["coverage"]["held_back"][0], "reported_share": None}]
-        for held in runs.values()
-    )
+    assert all(held == again["coverage"]["held_back"] for held in runs.values())
     assert again["coverage"]["held_back"][0]["start_year"] == 1900
