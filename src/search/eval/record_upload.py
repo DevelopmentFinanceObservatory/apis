@@ -10,7 +10,8 @@ exists and refuses otherwise, without the account reading anything. ``gcloud sto
 reads the destination before it writes, which that account may not do. An object the bucket
 already holds stops the upload with an error: the writer cannot read it to check it is the
 same run, and a manifest written beside another run's results would join two runs into one.
-Run ids carry their start time to the second, so a conflict means a run id was reused.
+Run ids carry their start time to the second, so a conflict means a run id was reused, or a
+create whose response was lost and that the client retried.
 """
 
 from __future__ import annotations
@@ -80,7 +81,10 @@ def upload_runs(*, bucket: Bucket, root: Path) -> list[str]:
             except PreconditionFailed as exc:
                 raise ObjectExistsError(
                     f"{object_name} already exists, so run {run_dir.name!r} is not uploaded "
-                    f"past it; created so far: {created}"
+                    f"past it; created so far: {created}. Either the run id was reused, or "
+                    "an earlier attempt created the object and its response was lost, which "
+                    "the writer cannot tell apart since it may not read the object. The "
+                    "record is kept in the workflow's eval-records artifact."
                 ) from exc
             created.append(object_name)
             logger.info("created %s", object_name)

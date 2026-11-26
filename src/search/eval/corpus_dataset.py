@@ -106,13 +106,14 @@ def corpus_dataset(
 
 
 def corpus_digest(dataset: CorpusDataset) -> str:
-    """Digest the dataset's cases for a run's manifest: each case's id, ``expectation_hash``
-    and known-failure checks.
+    """Digest the dataset's cases for a run's manifest: each case's id, file,
+    ``expectation_hash`` and known-failure checks.
 
-    Two runs share a digest exactly when they ran the same cases with the same requests and
-    expectations and scored ``answer`` by the same rule. ``answer`` leaves a case's
-    known-failure checks out, so they join the digest; the gate's ``expectation_hash``
-    leaves them out on purpose and stays as it is.
+    Two runs share a digest exactly when they ran the same cases, filed the same way, with the
+    same requests and expectations, and scored ``answer`` by the same rule. A run's results
+    are grouped by case file, so a case moving between files changes the digest. ``answer``
+    leaves a case's known-failure checks out, so they join the digest; the gate's
+    ``expectation_hash`` leaves them out on purpose and stays as it is.
 
     Raises:
         ValueError: A case has no metadata.
@@ -125,6 +126,7 @@ def corpus_digest(dataset: CorpusDataset) -> str:
         rows.append(
             [
                 eval_case.inputs.case_id,
+                eval_case.metadata.file,
                 eval_case.metadata.expectation_hash,
                 sorted(known.checks) if known else [],
             ]
