@@ -99,7 +99,7 @@ from search.eval.corpus_dataset import (
 from search.eval.dataset import item_id_for_case
 from search.eval.evaluator import ScoredAnswer, SearchChecks
 from search.eval.gate import Judgement, Observation, Outcome, exit_code, judge
-from search.eval.run_record import record_manifest, run_record
+from search.eval.run_record import parse_run_id, record_manifest, run_record
 from search.eval.runner import (
     EVAL_HEADERS,
     SCHEMA_PATH,
@@ -127,6 +127,8 @@ _DEFAULT_LANGFUSE_BASE_URL: Final = "https://cloud.langfuse.com"
 _EXIT_FAILURE: Final = 1
 _EXIT_INFRA: Final = 3
 
+# Langfuse answers at or above this status when it, not the request, is at fault.
+_SERVER_ERROR: Final = 500
 # What a push raises when Langfuse or the network, not the run, is at fault.
 _PUSH_INFRA_ERRORS = (PushIncompleteError, PushTimeoutError, ApiError, httpx.HTTPError)
 
@@ -482,15 +484,31 @@ def _project_id() -> str:
 
 
 def _connect(project_id: str) -> Langfuse:
-    """A Langfuse client for ``project_id``, from the environment's keys and base URL."""
-    return connect(
-        public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
-        secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
-        base_url=os.environ.get("LANGFUSE_BASE_URL")
-        or os.environ.get("LANGFUSE_HOST")
-        or _DEFAULT_LANGFUSE_BASE_URL,
-        project_id=project_id,
-    )
+    """A Langfuse client for ``project_id``, from the environment's keys and base URL.
+
+    The client sends on a tracer provider of its own, so ``LANGFUSE_SAMPLE_RATE`` does not
+    thin what it writes, and ``connect`` refuses keys of another project and
+    ``LANGFUSE_TRACING_ENABLED=false``.
+
+    Raises:
+        _InfraError: Langfuse did not answer the project check: the network failed or it
+            answered 5xx. Keys it refuses, or keys of another project, raise as they are.
+    """
+    try:
+        return connect(
+            public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
+            secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
+            base_url=os.environ.get("LANGFUSE_BASE_URL")
+            or os.environ.get("LANGFUSE_HOST")
+            or _DEFAULT_LANGFUSE_BASE_URL,
+            project_id=project_id,
+        )
+    except httpx.HTTPError as exc:
+        raise _InfraError(f"Langfuse did not answer: {type(exc).__name__}: {exc}") from exc
+    except ApiError as exc:
+        if exc.status_code is not None and exc.status_code < _SERVER_ERROR:
+            raise
+        raise _InfraError(f"Langfuse answered {exc.status_code}: {exc.body}") from exc
 
 
 class _InfraError(Exception):
@@ -574,7 +592,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="write the nightly's run record under this root, as <root>/apis-search/<run id>/",
     )
     parser.add_argument(
-        "--run-id", help="the nightly run record's id (default: nightly-<UTC start time>)"
+        "--run-id",
+        type=parse_run_id,
+        help="the nightly run record's id (default: nightly-<UTC start time>)",
     )
     args = parser.parse_args(argv)
     if (args.records or args.run_id) and not args.nightly:
@@ -604,12 +624,27 @@ def _main(args: argparse.Namespace) -> int:
 def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]]) -> int:
     """Sync, run the nightly, record and push it, and write its summary.
 
+    One Langfuse client, checked against ``LANGFUSE_PROJECT_ID`` before anything is read or
+    written, syncs the datasets and pushes the run, so keys of another project write nothing.
+
     Returns:
-        The nightly's exit code: 3 when the schema or the release does not load.
+        The nightly's exit code: 3 when Langfuse, the schema or the release does not answer.
     """
-    # Read before any case runs, so a nightly that could not push its run stops first.
-    project_id = _project_id()
-    langfuse = _client()
+    try:
+        langfuse = _connect(_project_id())
+    except _InfraError as exc:
+        print(f"eval infrastructure error: {exc}", file=sys.stderr)
+        return _EXIT_INFRA
+    try:
+        return _nightly_with(args, by_file, langfuse)
+    finally:
+        langfuse.shutdown()
+
+
+def _nightly_with(
+    args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]], langfuse: Langfuse
+) -> int:
+    """``_main_nightly``'s body, on a connected client."""
     started_at = datetime.now(UTC)
     try:
         # The app's schema loads first, so an outage of the app reads as one.
@@ -620,8 +655,6 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     except _InfraError as exc:
         print(f"eval infrastructure error: {exc}", file=sys.stderr)
         return _EXIT_INFRA
-    finally:
-        langfuse.flush()
 
     manifest = record_manifest(
         run_id=args.run_id or started_at.strftime("nightly-%Y%m%dT%H%M%SZ"),
@@ -640,17 +673,14 @@ def _main_nightly(args: argparse.Namespace, by_file: Mapping[str, Sequence[Case]
     # network refused, is infrastructure, which an unmarked failure outranks. Any other push
     # error is a crash, raised once the summary is written.
     experiment, push_error, crash = None, None, None
-    client = _connect(project_id)
     try:
-        experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=client)
+        experiment = push_nightly(record, by_file=by_file, outputs=run.outputs, client=langfuse)
     except _PUSH_INFRA_ERRORS as exc:
         push_error = f"{type(exc).__name__}: {exc}"
         code = _EXIT_FAILURE if code == _EXIT_FAILURE else _EXIT_INFRA
     except Exception as exc:
         push_error = f"{type(exc).__name__}: {exc}"
         crash = exc
-    finally:
-        client.shutdown()
 
     markdown = nightly_markdown(
         run.states, experiment=experiment, record=path, push_error=push_error

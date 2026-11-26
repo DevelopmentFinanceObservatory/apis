@@ -93,8 +93,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from dfo_evals.records import SafeName, write_run
-from pydantic import TypeAdapter, ValidationError
+from dfo_evals.records import write_run
 from pydantic_evals.reporting import EvaluationReport
 
 from graph_release.context import bound_served_release
@@ -136,7 +135,7 @@ from search.eval.gate import (
     judge,
 )
 from search.eval.live_clients import score_clients
-from search.eval.run_record import record_manifest, run_record
+from search.eval.run_record import parse_run_id, record_manifest, run_record
 from search.eval.runner import (
     EVAL_HEADERS,
     CaseRun,
@@ -156,9 +155,6 @@ if TYPE_CHECKING:
 
 type Side = Literal["head", "base"]
 type Round = Literal["head", "base", "confirm_head", "confirm_base"]
-
-# A run id names the run record's directory, so it follows dfo-evals' safe-name rule.
-_RUN_ID: TypeAdapter[str] = TypeAdapter(SafeName)
 
 # Above the engine's 45-second request deadline, as in search.eval.runner.
 _TIMEOUT_S = 90.0
@@ -815,21 +811,6 @@ def write_responses(states: Sequence[CaseState], path: Path) -> None:
                         "body": score.sample.body,
                     }
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def parse_run_id(value: str) -> str:
-    """Check a ``--run-id`` is a name a run record's directory can take.
-
-    Raises:
-        argparse.ArgumentTypeError: The value does not match ``dfo-evals``' safe-name rule.
-    """
-    try:
-        return _RUN_ID.validate_python(value)
-    except ValidationError as exc:
-        raise argparse.ArgumentTypeError(
-            f"run id {value!r} must start with a letter or digit and hold only letters, "
-            "digits, '.', '_' and '-'"
-        ) from exc
 
 
 def _parser() -> argparse.ArgumentParser:

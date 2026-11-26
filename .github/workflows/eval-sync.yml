@@ -20,6 +20,9 @@ permissions:
 concurrency:
   group: eval-langfuse
   cancel-in-progress: false
+  # Keeps every pending run in order. By default a group holds one pending run,
+  # and a newer one cancels it, so a corpus sync could drop a waiting nightly.
+  queue: max
 
 env:
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
