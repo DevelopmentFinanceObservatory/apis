@@ -7,8 +7,9 @@ the derived ``answer`` included, from ``checks.score_with_answer``. ``SearchChec
 returns those results as labels named after their checks, each with its verdict and
 detail, so the report holds the scores the run judged by and no sample is scored twice.
 
-The evaluator's own name is ``answer``, so when it raises, ``dfo-evals`` records a grader
-fault against the headline check and leaves the trial out of the scores.
+The evaluator's own name is ``answer``, so a run that let an evaluator error stand would
+have ``dfo-evals`` record a grader fault against the headline check. Single mode and the
+nightly instead treat any evaluator error as a crash (``evaluate.evaluate_or_raise``).
 """
 
 from __future__ import annotations

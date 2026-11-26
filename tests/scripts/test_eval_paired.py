@@ -437,8 +437,26 @@ def test_a_check_that_raises_in_single_mode_exits_2_with_its_traceback(
 
     assert m.main(["--single-url=http://head", f"--corpus-dir={corpus}"]) == 2
     err = capsys.readouterr().err
-    assert "single mode crashed on case eth-health" in err
+    # The first crash cancels the other cases and is raised with its own traceback, once.
+    assert err.count("Traceback (most recent call last)") == 1
     assert "raise self.error" in err
+    assert err.rstrip().endswith("ValueError: a bug")
+
+
+def test_a_case_that_cannot_build_its_request_stops_single_mode_before_any_post(
+    corpus, tmp_path, monkeypatch
+):
+    real = m.build_request
+
+    def build_request(case: Case) -> dict:
+        if case.id == "eth-steady":
+            raise ValueError("dataset_resubmit needs an identity definition")
+        return real(case)
+
+    monkeypatch.setattr(m, "build_request", build_request)
+
+    with pytest.raises(ValueError, match="needs an identity definition"):
+        run_driver(["--single-url=http://head", f"--corpus-dir={corpus}"])
 
 
 @pytest.mark.parametrize("run_id", ["night 1", "-night", "a/b"])
@@ -455,6 +473,13 @@ def test_a_run_record_that_exists_stops_the_run_before_any_post(corpus, tmp_path
     (tmp_path / "runs" / "apis-search" / "night-1").mkdir(parents=True)
 
     with pytest.raises(m.SetupError, match="already exists"):
+        run_driver(single_record_args(corpus, tmp_path))
+
+
+def test_a_records_path_that_is_a_file_stops_the_run_before_any_post(corpus, tmp_path):
+    (tmp_path / "runs").write_text("not a directory")
+
+    with pytest.raises(m.SetupError, match="cannot create the records directory"):
         run_driver(single_record_args(corpus, tmp_path))
 
 
