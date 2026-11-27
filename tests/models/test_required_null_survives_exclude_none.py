@@ -21,6 +21,7 @@ from search.models import (
     RoleAxisFact,
     ShapeBinding,
     StatVar,
+    StudioRoute,
 )
 from search.models.base import required_nullable_fields
 
@@ -64,6 +65,7 @@ _NULL_INSTANCES: dict[type[BaseModel], BaseModel] = {
         slot_values=[],
         constraint_properties=None,
     ),
+    StudioRoute: StudioRoute(mode="auto", probability=None),
 }
 
 

@@ -74,6 +74,8 @@ from search.engine.events import (
     Event,
     InterpretationEvent,
     LateDepartures,
+    ResponseEvent,
+    RouteEvent,
     StepEvent,
 )
 from search.engine.exclusion_read import (
@@ -159,6 +161,7 @@ from search.engine.source_scope import (
 )
 from search.engine.source_spans import read_sources, unclaimed_stretches, unclaimed_words
 from search.engine.stated_scope import part_scope_intakes, without_scope_phrases
+from search.engine.studio_router import JevRead, RouteRecord, decide
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
@@ -172,6 +175,7 @@ from search.models import (
     Scope,
     SourceMention,
     Spec,
+    StudioRoute,
     Warning,
 )
 from search.render.assumptions import NameCorrection
@@ -2099,6 +2103,15 @@ async def _handle_multi_variable(
             yield event
 
 
+def _with_route(event: Event, *, route: StudioRoute | None, routed: bool) -> Event:
+    """A response event of a routed request carrying `route`, None included, so a layer-2
+    entry stored for another wording never replays that wording's route. Any other event,
+    and every event of a request that is not routed, passes through unchanged."""
+    if not routed or not isinstance(event, ResponseEvent):
+        return event
+    return ResponseEvent(response=event.response.model_copy(update={"route": route}))
+
+
 async def handle(
     inp: RawTextInput,
     *,
@@ -2115,7 +2128,17 @@ async def handle(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     scope: CacheScope | None = None,
+    route_record: RouteRecord | None = None,
 ) -> AsyncGenerator[Event]:
+    """The raw_text door's events for `inp`.
+
+    Under `params.studio_routing` the router's Jev read starts beside the door read
+    (`studio_router.JevRead`) and the route is decided when the door read returns
+    (`studio_router.decide`), recorded in `route_record`. An `auto` route answers as a
+    requires-analysis question does, a declined answer; an `offer` route sends its `route`
+    event after the extract step and the run goes on. Every response a routed request
+    sends carries its route, or none, whatever a layer-2 entry stored.
+    """
     query: str = inp.query
 
     if not query.strip():
@@ -2134,6 +2157,8 @@ async def handle(
         extract_llm = (
             scope.hold_samples(params.extract_llm) if scope is not None else params.extract_llm
         )
+    routing = params.studio_routing
+    jev_read = JevRead.start(query, routing=routing) if routing is not None else None
     door_read = await _read_and_extract(
         query, llm=door_llm, extract_llm=extract_llm, deadline=params.deadline
     )
@@ -2148,6 +2173,21 @@ async def handle(
     # Record extraction once before the per-variable fan-out.
     yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing["extract"])
     extraction = extract_result.extraction
+
+    route = None
+    if routing is not None and jev_read is not None:
+        outcome = jev_read.outcome()
+        route = decide(extraction.kind, outcome, routing=routing)
+        if route_record is not None:
+            route_record.note(extraction.kind, outcome, route)
+        if outcome.status == "late" and extraction.kind == "resolution" and scope is not None:
+            scope.note_route_unsettled()
+        if route is not None and route.mode == "offer":
+            yield RouteEvent.of(route, trace_id=get_trace_id())
+        elif route is not None and extraction.kind == "resolution":
+            # Moved to Studio: answered as the parse answers a question requiring analysis.
+            extraction = extraction.model_copy(update={"kind": "requires_analysis"})
+    stamp = functools.partial(_with_route, route=route, routed=routing is not None)
 
     # An answer with no part says what the query asked to leave out and it did not apply,
     # beside the disposition the rest of the query reads as: text left without a measure once
@@ -2175,7 +2215,7 @@ async def handle(
             )
         ) as events:
             async for ev in events:
-                yield ev
+                yield stamp(ev)
         return
 
     if not extraction.variables:
@@ -2190,7 +2230,7 @@ async def handle(
             )
         ) as events:
             async for ev in events:
-                yield ev
+                yield stamp(ev)
         return
 
     extraction = extraction.model_copy(
@@ -2274,7 +2314,7 @@ async def handle(
             )
         ) as hit:
             async for ev in hit:
-                yield ev
+                yield stamp(ev)
         return
 
     if len(prep.unique) == 1:
@@ -2300,7 +2340,7 @@ async def handle(
             )
         ) as events:
             async for ev in events:
-                yield ev
+                yield stamp(ev)
         return
 
     async with aclosing(
@@ -2325,4 +2365,4 @@ async def handle(
         )
     ) as events:
         async for ev in events:
-            yield ev
+            yield stamp(ev)

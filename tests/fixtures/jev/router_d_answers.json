@@ -1,0 +1,59 @@
+{
+ "source": "Jev jev-1.14.0 answers to router D (studio_router.ROUTER_QUESTIONS, router-d-1), recorded by the router eval on corpus queries, with the studio score the eval reported for each, to two places.",
+ "records": [
+  {
+   "query": "Why did aid to Ethiopia fall in 2023?",
+   "answers": {
+    "route": {
+     "type": "choice",
+     "choice": "analysis",
+     "confidence": 1.0,
+     "probabilities": {
+      "retrieval": 0.0,
+      "analysis": 1.0
+     }
+    },
+    "wants_analysis": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "in_scope": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "needs_synthesis": {
+     "type": "noul",
+     "noul": 0.95
+    }
+   },
+   "eval_score": 0.98
+  },
+  {
+   "query": "population policy and administrative management",
+   "answers": {
+    "route": {
+     "type": "choice",
+     "choice": "retrieval",
+     "confidence": 0.96,
+     "probabilities": {
+      "retrieval": 0.98,
+      "analysis": 0.02
+     }
+    },
+    "wants_analysis": {
+     "type": "noul",
+     "noul": 0.34
+    },
+    "in_scope": {
+     "type": "noul",
+     "noul": 0.85
+    },
+    "needs_synthesis": {
+     "type": "noul",
+     "noul": 0.6
+    }
+   },
+   "eval_score": 0.32
+  }
+ ]
+}

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from search.engine.binders import Binder
 from search.engine.clients.llm import SupportsLLM
+from search.engine.studio_router import StudioRouting
 from series_coverage.shared import CoverageSnapshot
 from skills_index import SkillsIndex
 
@@ -53,3 +54,7 @@ class EntryParams:
     # The client both raw-text parses call, None for the request's own LLM. Only a parser
     # replay (`search.engine.parser_replay`) sets it.
     extract_llm: SupportsLLM | None = None
+
+    # The routing a raw_text request that asked for it runs under
+    # (`studio_router.routing_for`), None for every other request.
+    studio_routing: StudioRouting | None = None

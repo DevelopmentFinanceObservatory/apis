@@ -80,6 +80,7 @@ from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import held_family_memo
+from search.engine.studio_router import RouteRecord, routing_for
 from search.models import (
     DatasetResubmitInput,
     NoDataPart,
@@ -136,7 +137,8 @@ class ResolveRecord:
     request to the route body having passed its input checks, and `refresh_ms` is the part of
     it spent in the generation refresh; both stay None when the route does not set them.
     `parser_replay` is a dev parser replay's record (`search.engine.parser_replay`), None
-    for every other request.
+    for every other request. `studio_route` is what a routed request decided
+    (`studio_router.RouteRecord`), None for a request that is not routed.
     """
 
     cache: str = "inactive"
@@ -151,6 +153,7 @@ class ResolveRecord:
     extraction_agreed: bool | None = None
     second_sample_usage: dict | None = None
     parser_replay: ReplayRecord | None = None
+    studio_route: RouteRecord | None = None
 
 
 @asynccontextmanager
@@ -272,6 +275,11 @@ def _log_resolve(
     (`ResolveRecord.extraction_agreed`), the part memo's hits and misses, the envelope's
     `timing_ms` total and `by_step`, and each part's own `by_step`.
 
+    `studio_route` is null on every request but a raw_text one routed to Studio
+    (`studio_router.routing_for`), which logs its decision, the probability it decided on,
+    the first parse's kind, and how the router's Jev call stood when the parse returned with
+    its failure kind and wall time (`studio_router.RouteRecord.log_fields`).
+
     `parser_replay` is null on every request but a dev parser replay, which logs its
     `ReplayRecord.log_fields` there. A replay's `extraction_agreed` is the served
     extraction's verdict that `ReplayRecord.extraction_agreed` holds, since a replay keeps
@@ -380,6 +388,9 @@ def _log_resolve(
                 ),
                 "parser_replay": (
                     record.parser_replay.log_fields() if record.parser_replay is not None else None
+                ),
+                "studio_route": (
+                    record.studio_route.log_fields() if record.studio_route is not None else None
                 ),
                 "error_code": record.error_code,
                 "timed_out": timed_out,
@@ -776,6 +787,12 @@ async def _resolve_pipeline_events(
     # routes to. The cache key reads it and every part binds with it (`EntryParams.binder`).
     binder = binder if binder is not None else configured_binder(_routing_text(inp))
 
+    # A raw_text request that asked for Studio routing, while the router is on. Its routing
+    # joins the cache key, so routed and unrouted answers never serve each other.
+    studio_routing = routing_for(inp)
+    if studio_routing is not None:
+        record.studio_route = RouteRecord()
+
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the
     # response event lacks the trailing ones.
@@ -795,6 +812,7 @@ async def _resolve_pipeline_events(
         generation=generation,
         coverage=coverage_snapshot,
         trailing=_trailing or _obs_trailing,
+        studio_routing=studio_routing.key_document() if studio_routing is not None else None,
     )
 
     params = EntryParams(
@@ -810,6 +828,7 @@ async def _resolve_pipeline_events(
         coverage=coverage_snapshot,
         binder=binder,
         extract_llm=extract_llm,
+        studio_routing=studio_routing,
     )
 
     if inp.kind == "dataset_resubmit":
@@ -871,6 +890,8 @@ async def _resolve_pipeline_events(
             cached = await scope.lookup_raw(inp.query)
             lookup_ms = now_ms() - lookup_t0
             if cached is not None:
+                if record.studio_route is not None:
+                    record.studio_route.note_cached(cached.route)
                 async with aclosing(
                     scope.hit_events(
                         cached,
@@ -885,6 +906,7 @@ async def _resolve_pipeline_events(
                             coverage=coverage_snapshot,
                             population_memo=population_memo,
                         ),
+                        route_frame=True,
                     )
                 ) as hit:
                     async for ev in hit:
@@ -905,6 +927,7 @@ async def _resolve_pipeline_events(
                 population_memo=population_memo,
                 place_options_pool=place_options_pool,
                 scope=scope,
+                route_record=record.studio_route,
             )
         else:
             # A parsed request looks up layer 2 by its whole input before any work.

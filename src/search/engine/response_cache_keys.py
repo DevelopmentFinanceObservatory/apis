@@ -133,6 +133,7 @@ def scope_document(
     origin_catalogue: str,
     un_system_enabled: bool,
     bundle: bool = False,
+    studio_routing: Mapping[str, object] | None = None,
 ) -> dict:
     """Build shared key material from caller-supplied values.
 
@@ -151,7 +152,10 @@ def scope_document(
     captured once and invalidates both layers when it changes. `bundle` marks a request
     that streams trailing events: its entry is the event bundle (`to_bundle`), which a
     buffered request's entry is not. Without trailing events both transports answer the
-    same response and share one entry.
+    same response and share one entry. `studio_routing` is the routing a routed request runs
+    under (`studio_router.StudioRouting.key_document`), None for any other request, so a
+    routed answer is never served to a request that did not ask for routing, nor to one
+    routed under other thresholds or questions.
     """
     return {
         "schema_version": schema_version,
@@ -171,6 +175,7 @@ def scope_document(
         "origin_catalogue": origin_catalogue,
         "un_system_enabled": un_system_enabled,
         "bundle": bundle,
+        "studio_routing": dict(studio_routing) if studio_routing is not None else None,
     }
 
 

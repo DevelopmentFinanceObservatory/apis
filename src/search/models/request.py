@@ -43,6 +43,17 @@ class RawTextInput(StrictModel):
         default="raw_text", description="discriminator for natural-language query input"
     )
     query: str = Field(description="the user's natural-language request")
+    studio_routing: bool = Field(
+        default=False,
+        description=(
+            "when true, the engine may route the question to Studio, the conversational "
+            "analyst, once the first parse returns: a question that needs analysis ends as "
+            "a declined answer with reason 'requires_analysis' and a `route` of mode "
+            "'auto', and a question that may need it streams a `route` event of mode "
+            "'offer' before `interpretation` and runs on, its final response carrying the "
+            "same `route`. False or absent answers as it would without routing"
+        ),
+    )
 
     @field_validator("query")
     @classmethod

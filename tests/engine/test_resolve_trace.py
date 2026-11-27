@@ -204,6 +204,7 @@ def test_a_resolve_sends_one_trace_under_its_own_trace_id(exported, worked_examp
     assert json.loads(attributes["langfuse.observation.input"]) == {
         "kind": "raw_text",
         "query": query[:500],
+        "studio_routing": False,
     }
     definite = response.parts[0]
     assert json.loads(attributes["langfuse.observation.output"]) == {

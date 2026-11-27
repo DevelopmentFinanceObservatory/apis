@@ -26,6 +26,7 @@ from search.models import (
     SlotOption,
     SlotOptions,
     SpecObservations,
+    StudioRoute,
     Warning,
     departures_in_precedence_order,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "ObservationsEvent",
     "PlaceOptionsEvent",
     "ResponseEvent",
+    "RouteEvent",
     "SentenceEvent",
     "ShapeEvent",
     "SlotOptionsEvent",
@@ -180,6 +182,35 @@ class StepEvent(BaseModel):
     step: PipelineStepName
     ran: bool
     ms: int | None = None
+
+
+class RouteEvent(BaseModel):
+    """The router's offer to send the question to Studio (`StudioRoute`, mode 'offer').
+
+    Fires at most once, on a raw_text request that set `studio_routing`, after the extract
+    step and before `interpretation`, and the run goes on to its answer, whose response
+    carries the same route. A layer-1 cache hit on such an answer sends it before
+    `response`. An 'auto' route sends no event: the response it ends with carries it."""
+
+    model_config = ConfigDict(frozen=True)
+    kind: Literal["route"] = "route"
+    target: Literal["studio"] = "studio"
+    mode: Literal["offer"] = "offer"
+    probability: float = Field(ge=0.0, le=1.0)
+    trace_id: str = Field(
+        description="the request's trace id, the one its response states as diagnostics.trace_id"
+    )
+
+    @classmethod
+    def of(cls, route: StudioRoute, *, trace_id: str) -> RouteEvent:
+        """The event announcing the offer `route` of the request traced as `trace_id`.
+
+        Raises:
+            ValueError: `route` is not an offer, or carries no probability.
+        """
+        if route.mode != "offer" or route.probability is None:
+            raise ValueError(f"not an offer with a probability: {route!r}")
+        return cls(probability=route.probability, trace_id=trace_id)
 
 
 class ResponseEvent(BaseModel):
@@ -513,6 +544,7 @@ Event = Annotated[
     | ShapeEvent
     | SentenceEvent
     | StepEvent
+    | RouteEvent
     | ResponseEvent
     | SlotOptionsEvent
     | EntityOptionsEvent
