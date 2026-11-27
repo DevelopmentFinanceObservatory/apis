@@ -494,7 +494,10 @@ def _elected(provenance: str | None) -> MaterialisationRequest:
     if provenance is None:
         return request
     return dataclasses.replace(
-        request, dataset=ElectedDataset(provenance=provenance, member_provenances=(provenance,))
+        request,
+        dataset=ElectedDataset(
+            provenance=provenance, provenances=(provenance,), recorded_provenances=(provenance,)
+        ),
     )
 
 

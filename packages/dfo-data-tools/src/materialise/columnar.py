@@ -238,8 +238,9 @@ def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection])
     """For every axis in `selections`, the row's cell in that axis's own
     column (`provenance`, `measurementMethod`, or `unit`, the axis name is
     already the contract column name, see `materialise.facets.FACET_AXES`)
-    equals `selection.ref`, a null cell equal to a `None` ref, or the selection's
-    `continued_by`. A national-currency selection matches every row on its axis, since the
+    equals `selection.ref`, a null cell equal to a `None` ref, one of the selection's member
+    `provenances`, or its `continued_by`, as `FacetSelection.admits` matches a facet. A
+    national-currency selection matches every row on its axis, since the
     probe's place admission (`admission_mask`) holds each place to its own currency. All
     given axes must agree (an AND across axes). No axes given means every row matches.
     """
@@ -249,6 +250,9 @@ def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection])
             continue
         column = table[axis]
         axis_mask = _equal_mask(column, selection.ref)
+        if selection.provenances:
+            members = pc.is_in(column, value_set=pa.array(selection.provenances, type=pa.string()))
+            axis_mask = _as_boolean_array(pc.or_(axis_mask, pc.fill_null(members, _FALSE_SCALAR)))
         if selection.continued_by is not None:
             axis_mask = _as_boolean_array(
                 pc.or_(axis_mask, _equal_mask(column, selection.continued_by))

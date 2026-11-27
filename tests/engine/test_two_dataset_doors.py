@@ -124,7 +124,11 @@ def _mint_request(
         declared_roles=world.declared_roles,
         facet_bindings={},
         window=RequestedWindow(kind="all"),
-        dataset=ElectedDataset(provenance=provenance, member_provenances=tuple(sorted(recorded))),
+        dataset=ElectedDataset(
+            provenance=provenance,
+            provenances=(provenance,),
+            recorded_provenances=tuple(sorted(recorded)),
+        ),
     )
 
 

@@ -15,7 +15,11 @@ _SV = "sv"
 _ELECTED = "provenance/Elected"
 _OTHER = "provenance/Other"
 _UNRECORDED = "provenance/Unrecorded"
-_DATASETS = {_SV: ElectedDataset(provenance=_ELECTED, member_provenances=(_ELECTED, _OTHER))}
+_DATASETS = {
+    _SV: ElectedDataset(
+        provenance=_ELECTED, provenances=(_ELECTED,), recorded_provenances=(_ELECTED, _OTHER)
+    )
+}
 
 
 def _facet(facet_id: str, provenance: str) -> Facet:

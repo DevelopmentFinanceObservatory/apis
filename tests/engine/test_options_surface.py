@@ -859,7 +859,8 @@ class TestObservationAboutFacetBoundMembership:
                     datasets={
                         _LIFE_EXPECTANCY_SV: ElectedDataset(
                             provenance=elected,
-                            member_provenances=("dc/base/Other", "dc/base/WHO"),
+                            provenances=(elected,),
+                            recorded_provenances=("dc/base/Other", "dc/base/WHO"),
                         )
                     },
                 ),

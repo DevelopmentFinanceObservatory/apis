@@ -681,7 +681,9 @@ def _select_member_facets(
 
     A member of an index-resolved family selects among the candidates its elected
     dataset publishes (`facets.dataset_candidates`), so the selected provenance is that
-    dataset's.
+    dataset's. A dataset of several member provenances elects as one table, its id the
+    selected provenance, and the selection admits every member's facets
+    (`facets.ElectedDataset.admitting_members`), so the dispatch serves them all.
     """
     # The candidates its dispatch reads, each merged across places with the AND of its
     # places' annual evidence (`Facet.reads_annual`).
@@ -768,7 +770,10 @@ def _select_member_facets(
         breadth=breadth,
         variable_breadth=variable_breadth,
     )
-    return continued_election(election, [candidates], window=request.window, breadth=breadth)
+    election = continued_election(election, [candidates], window=request.window, breadth=breadth)
+    if request.dataset is None:
+        return election
+    return request.dataset.admitting_members(election)
 
 
 def _validate_empty_member_probe(
@@ -1558,16 +1563,19 @@ def reads_absent_as_zero(
     selections: Mapping[str, FacetSelection], absent_reads_zero: Callable[[str], bool] | None
 ) -> bool:
     """Whether a group's members holding no observation in the requested years go unreported:
-    `selections` dispatch one provenance and `absent_reads_zero` says it reads an absent
-    member as zero (`code_index.members.absent_member_reads_zero`). Without
-    `absent_reads_zero` every provenance reads unknown. The mint (`pipeline.materialise_group`)
+    `selections` dispatch one dataset and `absent_reads_zero` says it reads an absent member
+    as zero (`code_index.members.absent_member_reads_zero`). The provenance selection's ref
+    is the dataset's id, for a dataset of several member provenances as for a plain table
+    (`facets.ElectedDataset.admitting_members`), so every member reads the one declaration.
+    Without `absent_reads_zero` every dataset reads unknown. The mint (`pipeline.materialise_group`)
     and the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
     served = dispatched_provenances(selections)
     return absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
 
 
 def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
-    """The sorted provenance refs `selections` dispatch."""
+    """The sorted provenance refs `selections` dispatch: provenances, or the id of an elected
+    dataset of several member provenances (`facets.ElectedDataset.admitting_members`)."""
     return sorted(
         {
             selection.ref

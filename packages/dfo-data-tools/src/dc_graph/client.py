@@ -237,6 +237,11 @@ class Facet:
     holds: a merge across places or StatVars (`materialise.facets.merge_facets`) keeps the
     earliest of theirs, and a coverage facet its earliest row's. `None` when every series
     the facet holds ends at `latest_date` (`earliest_series_end`), as on a facet of one.
+
+    `dataset_id` is the id of the elected dataset of several member provenances whose
+    election reads the facet (`materialise.facets.ElectedDataset.read_as_dataset`), and the
+    value the facet carries on the provenance axis (`materialise.facets.facet_axis_value`).
+    `None` on a facet as read, and on a plain table's, whose provenance is its dataset.
     """
 
     obs_count: int
@@ -257,6 +262,7 @@ class Facet:
     dates_coarsened: bool = False
     annual_evidence: bool | None = None
     first_series_end: str | None = None
+    dataset_id: str | None = None
 
     @property
     def earliest_series_end(self) -> str | None:

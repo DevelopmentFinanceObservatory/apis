@@ -1205,7 +1205,11 @@ _TWO_METHOD_ROWS = [
     [
         _Constraints(),
         _Constraints(
-            dataset=ElectedDataset(provenance=_ONE_CLIMATE, member_provenances=(_ONE_CLIMATE,))
+            dataset=ElectedDataset(
+                provenance=_ONE_CLIMATE,
+                provenances=(_ONE_CLIMATE,),
+                recorded_provenances=(_ONE_CLIMATE,),
+            )
         ),
     ],
     ids=["recalled", "indexed"],

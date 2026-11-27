@@ -334,7 +334,8 @@ class TestStandardOptionCoverage:
             datasets={
                 _MALE_SV: ElectedDataset(
                     provenance="provenance/Elected",
-                    member_provenances=(
+                    provenances=("provenance/Elected",),
+                    recorded_provenances=(
                         "dc/base/WorldDevelopmentIndicators",
                         "provenance/Elected",
                     ),

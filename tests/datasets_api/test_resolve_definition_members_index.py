@@ -276,7 +276,11 @@ def test_under_cap_indexed_spec_derives_members_equal_to_the_walk():
         dataclasses.replace(shape, dataset=None) for shape in indexed.shapes
     ) == frozenset(walked.shapes)
     assert {shape.dataset for shape in indexed.shapes} == {
-        ElectedDataset(provenance="provenance/Test", member_provenances=("provenance/Test",))
+        ElectedDataset(
+            provenance="provenance/Test",
+            provenances=("provenance/Test",),
+            recorded_provenances=("provenance/Test",),
+        )
     }
     assert {shape.stat_var for shape in indexed.shapes} == {"dcid:Person"}
     # Both paths report the family before reduction, the members the root dominates included.
@@ -815,7 +819,9 @@ def test_every_request_of_an_index_family_carries_the_elected_dataset(
     ]
 
     assert {request.dataset for request in requests} == {
-        ElectedDataset(provenance=provenance, member_provenances=(provenance,))
+        ElectedDataset(
+            provenance=provenance, provenances=(provenance,), recorded_provenances=(provenance,)
+        )
     }
 
 
@@ -832,7 +838,9 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
     requests[0] = dataclasses.replace(
         requests[0],
         dataset=ElectedDataset(
-            provenance=CRS_PROVENANCE, member_provenances=(CRS_PROVENANCE, IMPUTED_PROVENANCE)
+            provenance=CRS_PROVENANCE,
+            provenances=(CRS_PROVENANCE,),
+            recorded_provenances=(CRS_PROVENANCE, IMPUTED_PROVENANCE),
         ),
     )
     imputed_only = Facet(

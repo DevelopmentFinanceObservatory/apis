@@ -211,30 +211,62 @@ class FacetBinding:
 class ElectedDataset:
     """The dataset elected for an index-resolved family, as one member carries it.
 
-    `provenance` is the elected dataset's, shared by every member of the family.
-    `member_provenances` holds every dataset the code index records the member under."""
+    `provenance` is the elected dataset's id, shared by every member of the family, and
+    `provenances` its member provenances (`code_index.query.CodeIndex.provenances_of`): the
+    dataset itself for a plain table, or the provenances that are part of a graph `Dataset`.
+    `recorded_provenances` holds the member provenances of every dataset the code index
+    records the member under. `of` builds one from the index's member map."""
 
     provenance: str
-    member_provenances: tuple[str, ...]
+    provenances: tuple[str, ...]
+    recorded_provenances: tuple[str, ...]
+
+    @classmethod
+    def of(
+        cls,
+        dataset: str,
+        *,
+        recorded: Iterable[str],
+        provenances_of: Callable[[str], Sequence[str]],
+    ) -> ElectedDataset:
+        """The election of `dataset` for a member the code index records under the datasets
+        `recorded`, each dataset's member provenances read through `provenances_of`
+        (`code_index.query.CodeIndex.provenances_of`)."""
+        return cls(
+            provenance=dataset,
+            provenances=tuple(provenances_of(dataset)),
+            recorded_provenances=tuple(
+                dict.fromkeys(
+                    p for recorded_dataset in recorded for p in provenances_of(recorded_dataset)
+                )
+            ),
+        )
+
+    @property
+    def several_members(self) -> bool:
+        """Whether the dataset is served by more than one provenance, whose facets elect as
+        one table (`read_as_dataset`)."""
+        return len(self.provenances) > 1
 
     def publishes(self, provenance_id: str | None) -> bool:
-        """Whether a facet of `provenance_id` is the elected dataset's. The mint
-        (`dataset_candidates`) and a Search read plan
+        """Whether a facet of `provenance_id` is the elected dataset's: its provenance is one
+        of the dataset's members. The mint (`dataset_candidates`) and a Search read plan
         (`search.engine.retrieval.read_plan.in_elected_datasets`) both keep a member's
         candidates by this test before any ranking, so they elect within one dataset."""
-        return provenance_id == self.provenance
+        return provenance_id in self.provenances
 
     def published[C: DatasetCandidate](self, stat_var: str, candidates: Iterable[C]) -> list[C]:
         """The `candidates` of member `stat_var` this dataset publishes, in order: every one
-        the member holds at the bound entities.
+        the member holds at the bound entities, from any of the dataset's provenances.
 
         A member the code index also records under another dataset can hold observations
         under that one alone, and is then unpopulated. Raises `DatasetDisagreementError`
-        when no dispatchable candidate is this dataset's and one carries a provenance the
-        code index does not record for the member. The mint (`dataset_candidates`) keeps
-        candidates through this method, and Search runs it over the members a mint of its
-        answer serves (`search.engine.retrieval.elected_dataset.check_elected_datasets`), so
-        both refuse the same members."""
+        when no dispatchable candidate is this dataset's and one carries a provenance that is
+        a member of no dataset the code index records for the member. The mint
+        (`dataset_candidates`) keeps candidates through this method, and Search runs it over
+        the members a mint of its answer serves
+        (`search.engine.retrieval.elected_dataset.check_elected_datasets`), so both refuse
+        the same members."""
         candidates = list(candidates)
         kept = [c for c in candidates if self.publishes(c.provenance_id)]
         if not any(c.facet_id is not None for c in kept):
@@ -244,18 +276,51 @@ class ElectedDataset:
                     for c in candidates
                     if c.facet_id is not None
                     and c.provenance_id is not None
-                    and c.provenance_id not in self.member_provenances
+                    and c.provenance_id not in self.recorded_provenances
                 }
             )
             if unrecorded:
                 raise DatasetDisagreementError(
                     f"{stat_var!r} is a member of dataset {self.provenance!r}, and the "
-                    f"code index records it under {list(self.member_provenances)!r}; its "
+                    f"code index records it under {list(self.recorded_provenances)!r}; its "
                     f"observations at the bound entities are published by {unrecorded!r} alone",
                     dataset=self.provenance,
                     stat_var=stat_var,
                 )
         return kept
+
+    def read_as_dataset(self, candidates: Iterable[Facet]) -> list[Facet]:
+        """`candidates` in order, each facet of a member provenance of a dataset of several
+        members carrying the dataset's id as its `dataset_id`, so the election reads the
+        dataset as one table (`facet_axis_value`). A plain table's facets, and any facet of
+        another provenance, are returned as they are."""
+        if not self.several_members:
+            return list(candidates)
+        return [
+            replace(c, dataset_id=self.provenance) if self.publishes(c.provenance_id) else c
+            for c in candidates
+        ]
+
+    def admitting_members(self, election: FacetElection) -> FacetElection:
+        """`election` with its provenance selection admitting every member provenance of a
+        dataset of several members (`FacetSelection.provenances`), so a dispatch over the
+        member's facets as probed serves each provenance's (`joint_dispatch_facet_ids`).
+        Unchanged for a plain table, and for a selection of another ref."""
+        selection = election.selections.get("provenance")
+        if (
+            not self.several_members
+            or selection is None
+            or selection.ref != self.provenance
+            or selection.provenances == self.provenances
+        ):
+            return election
+        return replace(
+            election,
+            selections={
+                **election.selections,
+                "provenance": replace(selection, provenances=self.provenances),
+            },
+        )
 
 
 class DatasetCandidate(Protocol):
@@ -270,18 +335,20 @@ class DatasetCandidate(Protocol):
 
 def dataset_candidates(request: MaterialisationRequest, candidates: Sequence[Facet]) -> list[Facet]:
     """Returns the candidates the request's elected dataset publishes
-    (`ElectedDataset.published`), or every candidate for a request with no elected dataset.
+    (`ElectedDataset.published`), read as the dataset's (`ElectedDataset.read_as_dataset`),
+    or every candidate for a request with no elected dataset.
 
-    Selection reads only these and takes the provenance it selects from one of them, and
-    rows are filtered to the selection, so a member of an index-resolved family is served
-    from the elected dataset alone and a member with no candidate under it is unpopulated.
+    Selection reads only these and takes the provenance it selects from one of them, the
+    dataset's id for a dataset of several members, and rows are filtered to the selection,
+    so a member of an index-resolved family is served from the elected dataset alone and a
+    member with no candidate under it is unpopulated.
 
     Raises `DatasetDisagreementError` when no dispatchable candidate is the elected
     dataset's and one carries a provenance the code index does not record for the member."""
     dataset = request.dataset
     if dataset is None:
         return list(candidates)
-    return dataset.published(request.stat_var, candidates)
+    return dataset.read_as_dataset(dataset.published(request.stat_var, candidates))
 
 
 @dataclass(frozen=True)
@@ -329,13 +396,18 @@ class FacetSelection:
     # Under `most_observations_over_disagreement`, each distinct value on this axis in rank
     # order, the selected one first. Empty under every other reason.
     ranked_values: tuple[RankedValue, ...] = ()
+    # On the `provenance` axis of an elected dataset of several members, whose id `ref`
+    # holds, the member provenances (`ElectedDataset.admitting_members`). Empty otherwise.
+    provenances: tuple[str, ...] = ()
 
     def admits(self, value: str | None) -> bool:
         """Whether a facet or row carrying `value` on this axis matches the selection: its
-        ref, its `continued_by`, or any value under a national-currency binding."""
+        ref, one of its member `provenances`, its `continued_by`, or any value under a
+        national-currency binding."""
         return (
             self.national_currency is not None
             or value == self.ref
+            or (value is not None and value in self.provenances)
             or (self.continued_by is not None and value == self.continued_by)
         )
 
@@ -1862,10 +1934,12 @@ def _selection_key(
     facet: Facet, *, cadence_of: Mapping[str, Cadence], national_currency: bool
 ) -> _SelectionKey:
     """The selection `facet` belongs to: the provenance, method and unit an election taking
-    it as its top would select, and the cadence its dispatch would serve. Under a
+    it as its top would select, and the cadence its dispatch would serve. The provenance is
+    the axis value (`facet_axis_value`), the dataset's id for a facet of an elected dataset
+    of several members, so those members' facets form one selection. Under a
     national-currency unit binding the unit is each place's own, so it leaves the key."""
     return (
-        facet.provenance_id,
+        facet_axis_value(facet, "provenance"),
         facet.measurement_method,
         None if national_currency else facet.unit,
         cadence_of.get(facet.facet_id or ""),
@@ -2056,7 +2130,12 @@ def _axes_breadth_decides(
     lead = key(joined[0])
     tied = [c for c in joined if key(c) == lead]
     axes = {
-        (c.provenance_id, c.measurement_method, None if national_currency else c.unit) for c in tied
+        (
+            facet_axis_value(c, "provenance"),
+            c.measurement_method,
+            None if national_currency else c.unit,
+        )
+        for c in tied
     }
     return [c.facet_id or "" for c in tied] if len(axes) > 1 else []
 
@@ -2166,7 +2245,7 @@ def continuation(
         return ()
     continuing = continuing_candidates(
         candidates,
-        provenance=head.provenance_id,
+        provenance=facet_axis_value(head, "provenance"),
         method=head.measurement_method,
         units={f.unit for f in served},
         after=min(ends),
@@ -2188,13 +2267,14 @@ def continues_series(
     serves: Callable[[str], bool],
 ) -> bool:
     """Whether `candidate` can continue a series under `provenance` in one of `units` that ends
-    in the year `after`, whatever window reads it: it shares the provenance and a unit, sits at
+    in the year `after`, whatever window reads it: it shares the provenance (`facet_axis_value`,
+    the dataset's id for a facet of an elected dataset of several members) and a unit, sits at
     the served cadence (`serves`, by facet id), holds estimated values
     (`method_status.status_of`) and reaches a later year than `after`. It reads facet metadata
     alone (`Facet.latest_date`), so it costs no observation read. `after` None sets no lower
     bound, for a series whose end is unknown."""
     return (
-        candidate.provenance_id == provenance
+        facet_axis_value(candidate, "provenance") == provenance
         and candidate.unit in units
         and status_of(candidate.measurement_method, candidate.provenance_id) == "estimated"
         and (after is None or (_leading_year(candidate.latest_date) or 0) > after)
@@ -3159,7 +3239,11 @@ def _matches_refs(candidate: Facet, refs: Mapping[str, str | None]) -> bool:
 
 def facet_axis_value(facet: Facet, axis: str) -> str | None:
     """`facet`'s value on one of `FACET_AXES`, or `None` when the facet declares none. A
-    bound ref selects the candidates whose value equals it."""
+    bound ref selects the candidates whose value equals it. On the `provenance` axis a facet
+    an elected dataset of several members reads (`ElectedDataset.read_as_dataset`) carries
+    the dataset's id, so its members' facets share one value."""
+    if axis == "provenance" and facet.dataset_id is not None:
+        return facet.dataset_id
     return getattr(facet, _AXIS_FIELDS[axis])
 
 

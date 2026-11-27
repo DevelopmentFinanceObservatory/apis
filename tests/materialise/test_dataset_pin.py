@@ -73,7 +73,10 @@ def _member(stat_var: str, *, recorded: tuple[str, ...] = (_ELECTED,), pinned: b
     if not pinned:
         return request
     return dataclasses.replace(
-        request, dataset=ElectedDataset(provenance=_ELECTED, member_provenances=recorded)
+        request,
+        dataset=ElectedDataset(
+            provenance=_ELECTED, provenances=(_ELECTED,), recorded_provenances=recorded
+        ),
     )
 
 
@@ -253,7 +256,9 @@ def test_excluding_crs_on_a_role_bearing_member_serves_no_crs_facet():
     )
     request = dataclasses.replace(
         _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
-        dataset=ElectedDataset(provenance=_DAC2A, member_provenances=(_CRS, _DAC2A)),
+        dataset=ElectedDataset(
+            provenance=_DAC2A, provenances=(_DAC2A,), recorded_provenances=(_CRS, _DAC2A)
+        ),
     )
 
     with bound_catalogue(FakeCatalogue().scoped(frozenset({_DAC2A}))):

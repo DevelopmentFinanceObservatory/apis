@@ -11,7 +11,7 @@ contribute zero rows. The members the group serves must pass joint checks.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from materialise.errors import (
@@ -68,9 +68,10 @@ if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
 
 
-# Index-sourced groups agree on provenance and unit. The index declares one
-# CRS provenance, and CRS can split a shared population across facet IDs that
-# differ only in measurement method. Other groups require an exact facet ID.
+# Index-sourced groups agree on provenance and unit. CRS can split a shared
+# population across facet IDs that differ only in measurement method, and a
+# dataset of several member provenances across its members. Other groups require
+# an exact facet ID.
 _GROUP_AGREEMENT_AXES: frozenset[str] = frozenset({"provenance", "unit"})
 
 
@@ -92,10 +93,10 @@ def _facet_id_key(candidate: Facet) -> object:
 
 
 def _agreement_key(candidate: Facet) -> object:
-    """Index-sourced groups agree on `(provenance_id, unit)`.
-    Merging still requires the same `facet_id`.
-    """
-    return (candidate.provenance_id, candidate.unit)
+    """Index-sourced groups agree on the provenance axis value and the unit: the dataset's id
+    for a facet of an elected dataset of several members (`facets.facet_axis_value`), so the
+    members' facets form one group. Merging still requires the same `facet_id`."""
+    return (facet_axis_value(candidate, "provenance"), candidate.unit)
 
 
 class _Identified(Protocol):
@@ -183,7 +184,8 @@ def _group_pool(
 
     Each member's dispatchable candidates are narrowed to the bound refs jointly
     (`facets._narrow_by_bound_axes_only`). An index-sourced group's candidates agree on
-    `(provenance_id, unit)`, allowing different `measurementMethod` values under one source,
+    `(provenance, unit)` (`_agreement_key`), allowing different `measurementMethod` values
+    under one source,
     and any other group's on `facet_id`. The pool keeps the candidates whose key the most
     members hold, so a key every populated member holds wins whenever one exists, and
     otherwise the keys serving the most members compete. A member left with no candidate
@@ -722,7 +724,11 @@ def select_group_facets(
     publishes (`facets.dataset_candidates`), so the group's provenance is the elected one and
     its ranking reads only that dataset's facets, and a member holding observations under
     another dataset alone is unpopulated. `DatasetDisagreementError` reports a member the
-    probe finds only under provenances the code index does not record for it.
+    probe finds only under provenances the code index does not record for it. The facets of
+    a dataset of several member provenances elect as one table
+    (`facets.ElectedDataset.read_as_dataset`), so they form one group whichever member holds
+    them, and the group's provenance selection admits every member
+    (`facets.ElectedDataset.admitting_members`).
 
     Raises `FacetNotAvailableError` when a populated member lacks an observation on a bound
     axis (`_check_bound_axes`), when no member holds a candidate carrying the bound refs
@@ -734,9 +740,15 @@ def select_group_facets(
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
     ]
+    members = [
+        member_candidates
+        if request.dataset is None
+        else request.dataset.read_as_dataset(member_candidates)
+        for request, member_candidates in zip(requests, candidates, strict=True)
+    ]
     _check_bound_axes(requests, electable, graph=graph)
     group = elect_group(
-        candidates,
+        members,
         stat_vars=[request.stat_var for request in requests],
         window=requests[0].window,
         index_sourced=_group_is_index_sourced(requests),
@@ -751,7 +763,11 @@ def select_group_facets(
         raise _no_group_refusal(electable, graph=graph)
     if group.incoherent:
         raise _coherence_refusal(requests, electable, group.incoherent, graph=graph)
-    return group
+    election = group.election
+    for request in requests:
+        if request.dataset is not None:
+            election = request.dataset.admitting_members(election)
+    return replace(group, election=election)
 
 
 def group_election(

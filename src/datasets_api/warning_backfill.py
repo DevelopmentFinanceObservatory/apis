@@ -1254,8 +1254,9 @@ def _request(
     row = readers.code_index.statvar_by_dcid(stat_var.removeprefix("dcid:"))
     return replace(
         request,
-        dataset=ElectedDataset(
-            provenance=provenances[0],
-            member_provenances=row.datasets if row is not None else (),
+        dataset=ElectedDataset.of(
+            provenances[0],
+            recorded=row.datasets if row is not None else (),
+            provenances_of=readers.code_index.provenances_of,
         ),
     )
