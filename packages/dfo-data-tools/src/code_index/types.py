@@ -369,7 +369,11 @@ no flow axis (`recipient`), or only donors (`donor`). Each kind has one house de
 
 @dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
-    """One published table, keyed by `id`, the provenance its observations carry.
+    """One published table, keyed by `id`: the provenance its observations carry, or a
+    graph `Dataset` whose member provenances carry them. The export resolves the members from
+    the provenances whose `isPartOf` names the Dataset
+    (`code_index.export.resolve_dataset_members`), and `CodeIndex.provenances_of` and
+    `CodeIndex.dataset_of` read them. A plain table is its own sole member.
 
     `label` is the name a sentence uses for the dataset. Its words must describe
     every row the table serves: a phrase the bind model leaves unplaced reads as

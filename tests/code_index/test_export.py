@@ -2591,6 +2591,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(
             "rank": 10,
             "invariants": {},
             **written,
+            "members": [_OPT_IN_PROVENANCE],
         }
     ]
     out = tmp_path / "with_datasets.json"
@@ -2693,7 +2694,7 @@ def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenanc
     assert uncovered_row["stamp"]["content_hash"] != base["stamp"]["content_hash"]
 
 
-def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_parties_or_stamp():
+def test_export_graph_blocks_holds_the_documents_blocks_without_datasets_members_parties_or_stamp():
     graph = _two_system_graph()
     blocks = export_graph_blocks(
         graph,
@@ -2707,12 +2708,17 @@ def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_part
 
     assert set(blocks) == set(document) - {"stamp", "parties"}
     assert all("datasets" not in row for row in blocks["statvars"])
+    assert all("members" not in row for row in blocks["datasets"])
     for block, rows in blocks.items():
-        if block != "statvars":
+        if block not in {"statvars", "datasets"}:
             assert rows == document[block], block
     assert blocks["statvars"] == [
         {key: value for key, value in row.items() if key != "datasets"}
         for row in document["statvars"]
+    ]
+    assert blocks["datasets"] == [
+        {key: value for key, value in row.items() if key != "members"}
+        for row in document["datasets"]
     ]
     with pytest.raises(IndexFormatError):
         parse_index({"stamp": document["stamp"], **blocks})

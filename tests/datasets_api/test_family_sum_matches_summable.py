@@ -539,7 +539,7 @@ def test_a_spliced_row_with_no_stat_var_is_refused_unless_absence_reads_zero():
 
 _STRAY = _net_copy(
     "StrayNet",
-    provenances=("provenance/OECDDAC2A",),
+    datasets=("provenance/OECDDAC2A",),
     constraint_properties={
         **_net_copy("StrayNet").constraint_properties,
         "dac1AidType": "DAC1AidType1015",

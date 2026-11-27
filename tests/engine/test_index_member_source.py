@@ -652,7 +652,7 @@ def _plain_aid_identity() -> BaseIdentity:
 
 def _index_with_an_edited_dataset_declaration():
     document = json.loads(gzip.decompress(INDEX_FIXTURE.read_bytes()))
-    imputed = next(d for d in document["datasets"] if d["provenance"] == IMPUTED_PROVENANCE)
+    imputed = next(d for d in document["datasets"] if d["id"] == IMPUTED_PROVENANCE)
     imputed["label"] = f"{imputed['label']} (edited)"
     blocks = {key: value for key, value in document.items() if key != "stamp"}
     document["stamp"]["content_hash"] = content_hash(blocks)

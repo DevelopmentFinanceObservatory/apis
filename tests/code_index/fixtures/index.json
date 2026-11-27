@@ -69,7 +69,10 @@
       "absent_observation": "zero",
       "account": "provider",
       "rank": 0,
-      "invariants": {}
+      "invariants": {},
+      "members": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
     }
   ],
   "codes": [

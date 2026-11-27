@@ -13,6 +13,7 @@ parameters, so a test can pass any object with `execute_sql`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -114,6 +115,13 @@ WHERE t.object_id = 'AgentSkill' AND t.predicate = 'typeOf'
   AND e.predicate IN ('typeOf', 'skillAppliesTo', 'skillAppliesToProvenance',
     'agentSkillReferences', 'url')"""
 
+# The `isPartOf` edges of the provenances the facets name, which tie a provenance to the
+# Dataset it is part of (`code_index.export.resolve_dataset_members`).
+PROVENANCE_EDGES_SQL: Final[str] = """SELECT e.subject_id, e.predicate, e.object_id, e.provenance
+FROM UNNEST(@provenances) AS v
+JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e
+  ON e.subject_id = v AND e.predicate = 'isPartOf'"""
+
 TARGET_EDGES_SQL: Final[str] = """SELECT e.subject_id, e.predicate, e.object_id, e.provenance
 FROM UNNEST(@subjects) AS v
 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = v"""
@@ -186,8 +194,8 @@ class RawInputs:
 
     `import_key` is the key the snapshot re-read first, `None` when `IngestionHistory` is
     empty. `edges_raw` is every edge read, deduplicated: the live variables', the code enum
-    members', the `AgentSkill` nodes', and those of the typed targets and constraint-value
-    ancestors the variables reach. `nodes_raw` holds the `Node` rows of every subject and object
+    members', the `AgentSkill` nodes', the `isPartOf` edges of the provenances the facets
+    name, and those of the typed targets and constraint-value ancestors the variables reach. `nodes_raw` holds the `Node` rows of every subject and object
     in `edges_raw` and of every live variable.
     """
 
@@ -225,7 +233,7 @@ def snapshot_at(database: Any, *, read_timestamp: datetime) -> AbstractContextMa
 
 def read_inputs(snapshot: Snapshot) -> RawInputs:
     """Runs every statement in `snapshot`, which must be multi-use: the import key's three, then
-    the live variables, the edge reads, the nodes, facets, series and imports."""
+    the live variables, the facets, the edge reads, the nodes, series and imports."""
     import_key = read_import_key(_Tagged(snapshot, action="import_key"))
 
     live = _stream(snapshot, LIVE_VARIABLES_SQL, action="live_variables", schema=RAW_LIVE_VARIABLES)
@@ -246,6 +254,14 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
         params={"enums": CODE_ENUMS},
     )
     skill_edges = _stream(snapshot, SKILL_EDGES_SQL, action="skill_edges", schema=RAW_EDGES)
+    facets = _stream(snapshot, FACETS_SQL, action="facets", schema=RAW_FACETS)
+    provenance_edges = _stream(
+        snapshot,
+        PROVENANCE_EDGES_SQL,
+        action="provenance_edges",
+        schema=RAW_EDGES,
+        params={"provenances": _facet_provenances(facets)},
+    )
     children = _specialized(snapshot, _constraint_values(variable_edges))
     read_subjects = pa.chunked_array(
         [
@@ -267,13 +283,18 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
     )
     edges = _distinct(
         pa.concat_tables(
-            [variable_edges.drop_columns(["target_typed"]), code_edges, skill_edges, target_edges]
+            [
+                variable_edges.drop_columns(["target_typed"]),
+                code_edges,
+                skill_edges,
+                provenance_edges,
+                target_edges,
+            ]
         )
     )
 
     node_ids = _unique([edges["subject_id"], edges["object_id"], live_ids])
     nodes = _stream(snapshot, NODES_SQL, action="nodes", schema=RAW_NODES, params={"ids": node_ids})
-    facets = _stream(snapshot, FACETS_SQL, action="facets", schema=RAW_FACETS)
     series = _stream(snapshot, SERIES_SQL, action="series", schema=RAW_SERIES)
     imports = _stream(snapshot, IMPORTS_SQL, action="imports", schema=RAW_IMPORTS)
     return RawInputs(
@@ -301,6 +322,20 @@ def read_ingested_imports(snapshot: Snapshot, *, execution_id: str) -> tuple[str
     for (imports,) in rows:
         return tuple(str(name) for name in cast("Sequence[object]", imports or ()))
     raise LookupError(f"IngestionHistory has no row {execution_id!r}")
+
+
+def _facet_provenances(facets: pa.Table) -> list[str]:
+    """The distinct provenances the facets' JSON names, sorted. A facet whose JSON is malformed
+    or names none adds nothing; `graph_release.platform` refuses it."""
+    found: set[str] = set()
+    for text in cast("list[str | None]", facets["facet_min"].to_pylist()):
+        try:
+            facet = json.loads(text) if text is not None else None
+        except ValueError:
+            continue
+        if isinstance(facet, dict) and isinstance(provenance := facet.get("provenance"), str):
+            found.add(provenance)
+    return sorted(found)
 
 
 def _constraint_values(variable_edges: pa.Table) -> list[str]:
@@ -433,6 +468,7 @@ __all__ = [
     "LIVE_VARIABLES_SQL",
     "NODES_SQL",
     "PARENTS_SQL",
+    "PROVENANCE_EDGES_SQL",
     "RAW_EDGES",
     "RAW_FACETS",
     "RAW_IMPORTS",

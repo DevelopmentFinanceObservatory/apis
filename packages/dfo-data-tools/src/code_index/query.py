@@ -426,9 +426,11 @@ class CodeIndex:
         "_codes_by_tokens",
         "_codes_by_word",
         "_composites",
+        "_dataset_by_provenance",
         "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
+        "_provenances_by_dataset",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
         "_whole_sets_by_phrase",
@@ -474,6 +476,7 @@ class CodeIndex:
         codes: Iterable[CodeRow],
         statvars: Iterable[StatVarRow],
         datasets: Iterable[DatasetDeclaration] = (),
+        dataset_members: Mapping[str, Sequence[str]] | None = None,
         party_types: Mapping[str, PartyKind | None] | None = None,
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
@@ -547,6 +550,19 @@ class CodeIndex:
             d.code_system: d for d in declarations
         }
         self.datasets: dict[str, DatasetDeclaration] = {d.id: d for d in datasets}
+        members = dataset_members or {}
+        self._provenances_by_dataset: dict[str, tuple[str, ...]] = {
+            dataset: tuple(sorted(members.get(dataset, (dataset,)))) for dataset in self.datasets
+        }
+        self._dataset_by_provenance: dict[str, str] = {}
+        for dataset, provenances in self._provenances_by_dataset.items():
+            for provenance in provenances:
+                holder = self._dataset_by_provenance.setdefault(provenance, dataset)
+                if holder != dataset:
+                    raise DuplicateDcid(
+                        f"provenance {provenance!r} is a member of datasets {holder!r} and "
+                        f"{dataset!r}"
+                    )
         self.party_types: dict[str, PartyKind | None] = dict(party_types or {})
         """The kind each graph type gives a party (`code_index.types.party_kind`), for every
         type a party of a declared dataset carries. A type mapped to `None` gives no kind of
@@ -767,6 +783,17 @@ class CodeIndex:
             if not any(other.properties < family.properties for other in holding)
         ]
         return fewest[0] if len(fewest) == 1 else None
+
+    def dataset_of(self, provenance: str) -> str:
+        """The id of the declared dataset `provenance` is a member of, or `provenance` itself
+        when no declared dataset holds it. A plain table is its own sole member; a Dataset
+        node's members are the provenances that are part of it (`provenances_of`)."""
+        return self._dataset_by_provenance.get(provenance, provenance)
+
+    def provenances_of(self, dataset: str) -> tuple[str, ...]:
+        """The member provenances of the declared dataset `dataset`, sorted, or `(dataset,)`
+        when no declared dataset has that id."""
+        return self._provenances_by_dataset.get(dataset, (dataset,))
 
     def code_by_dcid(self, dcid: str) -> CodeRow | None:
         """The code row for `dcid`, or `None` if this index holds no such

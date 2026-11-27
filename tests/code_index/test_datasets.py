@@ -66,6 +66,7 @@ def _with_imputed_dataset() -> dict:
             "account": "provider",
             "rank": 10,
             "invariants": {"crsTypeOfFlow": "CRSTypeOfFlow10"},
+            "members": [_IMPUTED_PROVENANCE],
         }
     )
     imputed = payload["statvars"][-1]
@@ -144,6 +145,63 @@ def test_loader_rejects_a_duplicate_provenance():
         parse_index(payload)
 
 
+_LEDGER = "dataset/Ledger"
+_LEDGER_MEMBERS = ["provenance/LedgerNorth", "provenance/LedgerSouth"]
+
+
+def _with_ledger_dataset() -> dict:
+    """The fixture with its one dataset declared as the Dataset `_LEDGER`, whose observations
+    two provenances carry."""
+    payload = _fixture()
+    payload["datasets"][0].update(id=_LEDGER, members=list(_LEDGER_MEMBERS))
+    for row in payload["statvars"]:
+        row["datasets"] = [_LEDGER]
+    return payload
+
+
+def test_loader_reads_the_member_provenances_of_each_dataset():
+    index = parse_index(_with_ledger_dataset())
+
+    assert index.provenances_of(_LEDGER) == tuple(_LEDGER_MEMBERS)
+    assert [index.dataset_of(member) for member in _LEDGER_MEMBERS] == [_LEDGER, _LEDGER]
+    assert index.dataset_of(_CRS_PROVENANCE) == _CRS_PROVENANCE
+    assert index.provenances_of(_CRS_PROVENANCE) == (_CRS_PROVENANCE,)
+    assert {row.datasets for row in index.statvars} == {(_LEDGER,)}
+    assert {
+        dataset
+        for families in index.families_by_five_tuple.values()
+        for family in families
+        for dataset in family.datasets
+    } == {_LEDGER}
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [],
+        "provenance/LedgerNorth",
+        ["provenance/LedgerSouth", "provenance/LedgerNorth"],
+        ["provenance/LedgerNorth", "provenance/LedgerNorth"],
+        ["provenance/LedgerNorth", ""],
+    ],
+    ids=["empty", "not-a-list", "unsorted", "repeated", "empty-member"],
+)
+def test_loader_rejects_a_members_list_that_is_malformed(members: object):
+    payload = _with_ledger_dataset()
+    payload["datasets"][0]["members"] = members
+
+    with pytest.raises(IndexFormatError, match="members="):
+        parse_index(payload)
+
+
+def test_loader_rejects_a_provenance_two_datasets_list_as_a_member():
+    payload = _with_imputed_dataset()
+    payload["datasets"][-1]["members"] = [_CRS_PROVENANCE]
+
+    with pytest.raises(IndexFormatError, match=rf"{_CRS_PROVENANCE}.*member of datasets"):
+        parse_index(payload)
+
+
 def test_loader_rejects_two_datasets_of_one_rank():
     payload = _with_imputed_dataset()
     payload["datasets"][-1]["rank"] = payload["datasets"][0]["rank"]
@@ -163,6 +221,7 @@ def test_loader_rejects_two_datasets_of_one_rank():
         "account",
         "rank",
         "invariants",
+        "members",
     ],
 )
 def test_loader_rejects_a_dataset_missing_a_field(field: str):

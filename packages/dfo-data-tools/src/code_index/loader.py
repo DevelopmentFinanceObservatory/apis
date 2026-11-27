@@ -8,7 +8,7 @@ import itertools
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import cast, get_args
+from typing import TypeGuard, cast, get_args
 
 from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
@@ -159,7 +159,7 @@ def parse_index(
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
         codes = [_parse_code(row) for row in payload["codes"]]
         statvars = [_parse_statvar(row) for row in payload["statvars"]]
-        datasets = _parse_datasets(payload["datasets"])
+        datasets, dataset_members = _parse_datasets(payload["datasets"])
         party_types = _parse_party_types(payload.get("party_types", ()))
         parties = [_parse_party(row) for row in payload.get("parties", ())]
         listed_statvars = [_parse_statvar(row) for row in payload.get("listed_statvars", ())]
@@ -195,6 +195,7 @@ def parse_index(
         codes=codes,
         statvars=statvars,
         datasets=datasets,
+        dataset_members=dataset_members,
         party_types=party_types,
         parties=parties,
         listed_statvars=listed_statvars,
@@ -821,8 +822,13 @@ def _parse_where(provenance: str, word: str, where: Mapping) -> dict:
     return where
 
 
-def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
-    """Parses `datasets` rows, failing closed on a row missing a field, an
+def _parse_datasets(
+    rows: Sequence[Mapping],
+) -> tuple[list[DatasetDeclaration], dict[str, tuple[str, ...]]]:
+    """Parses `datasets` rows into the declarations and each dataset's member provenances
+    (`members`, `CodeIndex.provenances_of`), failing closed on a row missing a field, a
+    `members` that is not a non-empty sorted list of distinct strings, a provenance two rows
+    list as a member, an
     `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
@@ -834,10 +840,13 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
+    members: dict[str, tuple[str, ...]] = {}
+    claimed: dict[str, str] = {}
     seen: set[str] = set()
     ranks: dict[int, str] = {}
     for row in rows:
         try:
+            listed = row["members"]
             dataset = DatasetDeclaration(
                 id=row["id"],
                 label=row["label"],
@@ -897,12 +906,28 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"provenance {dataset.id!r} is declared more than once in datasets"
             )
         seen.add(dataset.id)
+        if not _is_member_list(listed) or not listed or listed != sorted(set(listed)):
+            raise IndexFormatError(
+                f"datasets row for {dataset.id!r} carries members={listed!r}, which is not a "
+                "non-empty sorted list of distinct provenances"
+            )
+        for member in listed:
+            if (holder := claimed.setdefault(member, dataset.id)) != dataset.id:
+                raise IndexFormatError(
+                    f"provenance {member!r} is a member of datasets {holder!r} and {dataset.id!r}"
+                )
+        members[dataset.id] = tuple(listed)
         if (holder := ranks.setdefault(dataset.rank, dataset.id)) != dataset.id:
             raise IndexFormatError(
                 f"datasets rows for {holder!r} and {dataset.id!r} share rank {dataset.rank!r}"
             )
         datasets.append(dataset)
-    return datasets
+    return datasets, members
+
+
+def _is_member_list(value: object) -> TypeGuard[list[str]]:
+    """Whether `value` is a list of non-empty strings."""
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
 
 
 def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[StatVarRow]) -> None:

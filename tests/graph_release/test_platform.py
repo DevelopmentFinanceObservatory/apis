@@ -23,6 +23,7 @@ import pytest
 from artifact_publication.jobs import ImportKey
 from graph_release import reads
 from graph_release.authored import AUTHORED, AUTHORED_PROVENANCE, literal_id
+from graph_release.dfo import ReleaseGraphReader
 from graph_release.format import EDGES, FACETS, IMPORTS, NODES, SERIES
 from graph_release.platform import (
     PlatformParts,
@@ -129,6 +130,9 @@ class _RecordedSpanner:
             return [
                 (e[0], e[2]) for e in self.edges if e[1] == "specializationOf" and e[0] in codes
             ]
+        if action == "provenance_edges":
+            provenances = set(params["provenances"])
+            return [e for e in self.edges if e[0] in provenances and e[1] == "isPartOf"]
         if action == "target_edges":
             subjects = set(params["subjects"])
             return [e for e in self.edges if e[0] in subjects]
@@ -160,6 +164,7 @@ def test_read_inputs_runs_every_read_tagged_in_one_snapshot(raw, monkeypatch):
             "variable_edges",
             "code_edges",
             "skill_edges",
+            "provenance_edges",
             "specialization_parents",
             "target_edges",
             "nodes",
@@ -213,6 +218,50 @@ def test_read_inputs_walks_the_specialization_chain_to_its_top_and_stops_at_a_cy
     ]
     assert levels[-1] == [chain[-1]]
     assert sum(code == chain[3] for level in levels for code in level) == 1
+
+
+def test_read_inputs_reads_the_isPartOf_edges_of_the_facets_provenances(raw):
+    """A facet provenance's `isPartOf` edge reaches the release reader with its Dataset's
+    type; its other edges stay out, as do the `isPartOf` edges of a provenance no facet
+    names."""
+    crs = "provenance/OECDCreditorReportingSystem"
+    ledger, unfaceted = "dataset/Ledger", "provenance/NoFacet"
+    added = [
+        (crs, "isPartOf", ledger, "provenance/DFOOntology"),
+        (crs, "source", ledger, "provenance/DFOOntology"),
+        (unfaceted, "isPartOf", ledger, "provenance/DFOOntology"),
+    ]
+    nodes = pa.Table.from_pylist(
+        [
+            {"subject_id": ledger, "value": None, "name": "Ledger", "types": ["Dataset"]},
+            {"subject_id": unfaceted, "value": None, "name": "No facet", "types": ["Provenance"]},
+        ],
+        schema=reads.RAW_NODES,
+    )
+    spanner = _RecordedSpanner(
+        dataclasses.replace(
+            raw,
+            edges_raw=pa.concat_tables([raw.edges_raw, _edges(added)]),
+            nodes_raw=pa.concat_tables([raw.nodes_raw, nodes]),
+        )
+    )
+
+    parts = build_platform_parts(read_inputs(spanner), authored=AUTHORED)
+    reader = ReleaseGraphReader(edges=parts.edges, nodes=parts.nodes)
+
+    (provenances,) = [params for action, params in spanner.calls if action == "provenance_edges"]
+    assert provenances == {
+        "provenances": sorted(
+            {json.loads(text)["provenance"] for text in raw.facets["facet_min"].to_pylist()}
+        )
+    }
+    assert reader.node_arcs_many([crs, unfaceted], properties=["isPartOf", "source"]) == {
+        crs: {"isPartOf": (ledger,), "source": ()},
+        unfaceted: None,
+    }
+    assert reader.node_arcs_many([ledger], properties=["typeOf"]) == {
+        ledger: {"typeOf": ("Dataset",)}
+    }
 
 
 def test_snapshot_at_refuses_a_naive_timestamp():
