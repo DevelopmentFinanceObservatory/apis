@@ -139,13 +139,29 @@ def _source_and_origin(row: ProvenanceRow) -> tuple[SourceRef, DataCommonsRef]:
 
 def provenance_ref(dcid: str, labels: Mapping[str, str]) -> ProvenanceRef | None:
     """The provenance ref for `dcid`, with the catalogue row's name, source and Data Commons.
-    A provenance the catalogue does not list takes its name from `labels`, which holds what
+    A dataset of several member provenances (`CodeIndex.provenances_of`), which an answer
+    cites by its id, takes its name from `labels`, else its declared label, and the source
+    and Data Commons its members' catalogue rows share. Any other provenance the catalogue
+    does not list takes its name from `labels`, which holds what
     `materialise.provenance_doc.provenance_names` gives it, and has no source or Data Commons.
     `None` when neither names it."""
-    row = current_catalogue().provenance(dcid)
+    catalogue = current_catalogue()
+    row = catalogue.provenance(dcid)
     if row is not None:
         source, origin = _source_and_origin(row)
         return ProvenanceRef(ref=dcid, label=row.name, source=source, data_commons=origin)
+    index = get_index()
+    members = index.provenances_of(dcid)
+    if len(members) > 1:
+        declared = index.datasets.get(dcid)
+        label = labels.get(dcid) or (declared.label if declared is not None else None)
+        rows = [member for member in map(catalogue.provenance, members) if member is not None]
+        if label is None:
+            return None
+        if not rows or len({(r.source.ref, r.data_commons.id) for r in rows}) != 1:
+            return ProvenanceRef(ref=dcid, label=label)
+        source, origin = _source_and_origin(rows[0])
+        return ProvenanceRef(ref=dcid, label=label, source=source, data_commons=origin)
     label = labels.get(dcid)
     return None if label is None else ProvenanceRef(ref=dcid, label=label)
 

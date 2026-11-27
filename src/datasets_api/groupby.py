@@ -10,8 +10,8 @@ label stay two rows. `groupby.levels` rewrites a kept hierarchical axis's decode
 codes to their ancestors at one depth (`roll_up_levels`), so the sum groups each
 code under its ancestor's dcid.
 
-The guards refuse ambiguous measures, unknown axes, decode gaps, and mixed
-provenance. They use code-index declarations and frame data. The reshape engine
+The guards refuse ambiguous measures, unknown axes, decode gaps, and rows of
+several datasets. They use code-index declarations and frame data. The reshape engine
 performs the sum.
 """
 
@@ -658,17 +658,19 @@ def refuse_decode_gaps(
 
 def refuse_provenance_disagreement(*, provenance_refs: Sequence[str]) -> None:
     """Raise `RollupNotSummableError` (`rollup_not_summable`,
-    `provenance_disagreement`) when the frame spans multiple sources.
+    `provenance_disagreement`) when the frame spans multiple datasets.
 
-    Each provenance declares whether absent observations count as zero or stay
-    unknown. Mixed sources can disagree, so refuse before selecting a rule. A materialised group
-    carries one provenance, so this guards other callers.
+    `provenance_refs` are dataset ids: the render reads each provenance ref as the dataset it
+    is a member of (`code_index.query.CodeIndex.dataset_of`), so the member provenances of one
+    dataset agree. Each dataset declares whether absent observations count as zero or stay
+    unknown. Mixed datasets can disagree, so refuse before selecting a rule. A materialised
+    group carries one dataset, so this guards other callers.
     """
     distinct = sorted(set(provenance_refs))
     if len(distinct) > 1:
         raise RollupNotSummableError(
             f"groupby refused: this frame's rows come from {len(distinct)} distinct "
-            f"provenances ({', '.join(distinct)}), and whether an absent member counts as "
+            f"datasets ({', '.join(distinct)}), and whether an absent member counts as "
             "zero is a per-source declaration -- a summed group spanning sources that could "
             "disagree on it cannot be resolved to one answer",
             axis="provenance",

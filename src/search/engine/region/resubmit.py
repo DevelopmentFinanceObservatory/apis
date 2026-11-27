@@ -150,7 +150,7 @@ def resolve_spec_resubmit(
         with (
             recording_degraded_reads() as lost,
             recording_un_blocked_places() as un_blocked,
-            pinned_provenance_scope(inp.identity.facets),
+            pinned_provenance_scope(inp.identity.facets, code_index=get_index()),
         ):
             result = _resolve_standard_promote(
                 inp,

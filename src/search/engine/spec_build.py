@@ -593,11 +593,13 @@ def elected_sources(sources: list[ProvenanceRef], identity: BaseIdentity) -> lis
     """Narrow an answer's sources to the dataset elected for its family.
 
     A family the index resolves holds one dataset's members (`identity_dataset`), and its
-    read serves that dataset's facets alone (`read_plan.in_elected_datasets`), so the
-    answer names that dataset's ref among `sources`, under its declared label, the label a
-    bound source slot carries. The ref keeps its source and Data Commons. An answer that
-    served nothing from the dataset names no source. `sources` is returned unchanged when
-    the index elects no dataset.
+    read serves that dataset's facets alone (`read_plan.in_elected_datasets`), citing a
+    dataset of several member provenances by its id (`coverage.citable_source_ids`), so
+    the answer names that dataset's ref among `sources`, under the label a bound source
+    slot carries (`source_scope.source_label`): its declared label, or for a provenance the
+    index publishes without declaring it, its catalogue name. The ref keeps its source and
+    Data Commons. An answer that served nothing from the dataset names no source.
+    `sources` is returned unchanged when the index elects no dataset.
     """
     dataset = identity_dataset(identity)
     if dataset is None:
@@ -605,7 +607,7 @@ def elected_sources(sources: list[ProvenanceRef], identity: BaseIdentity) -> lis
     observed = next((source for source in sources if source.ref == dataset), None)
     if observed is None:
         return []
-    return [observed.model_copy(update={"label": get_index().datasets[dataset].label})]
+    return [observed.model_copy(update={"label": source_label(dataset)})]
 
 
 def shape_data_commons(members: Iterable[str]) -> list[DataCommonsRef]:

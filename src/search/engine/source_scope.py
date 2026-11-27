@@ -1,4 +1,4 @@
-"""Compile a part's source mentions into the provenances it may answer from.
+"""Compile a part's source mentions into the datasets it may answer from.
 
 A mention names a source by its words or by a reference. Words match whole against a
 dictionary built from the origin catalogue's admitted rows: each provenance's name, its
@@ -12,13 +12,17 @@ ignores case, punctuation and a leading "the".
 A mention resolves to one reference: a provenance, a Dataset, a Source, or a collection
 that an alias of several references names. Words that match several references resolve
 to the one that contains all the others, as a Source contains its Datasets and
-provenances; otherwise they are ambiguous. A provenance expands to itself. A Dataset or
-Source expands to its admitted provenances, and an included one leaves out the code index's
-opt-in products, unless it publishes nothing else. A collection expands to the union of
-its members' expansions.
+provenances; otherwise they are ambiguous. A provenance expands to the dataset it is a
+member of (`CodeIndex.dataset_of`): itself for a plain table, and the declared Dataset for
+a provenance that is part of one, so a mention of one publisher's provenance stands for its
+whole dataset. A Dataset or Source expands to the datasets of its admitted provenances, and
+an included one leaves out the code index's opt-in datasets, unless it publishes nothing
+else. A collection expands to the union of its members' expansions.
 
-The part's scope is the union of its included expansions, or every admitted provenance
-when it includes none, less the union of its excluded expansions. `named` records
+The part's scope is the union of its included expansions, or the dataset of every
+admitted provenance when it includes none, less the union of its excluded expansions. A
+read under the scope admits the member provenances of its datasets
+(`SourceScope.provenances`). `named` records
 whether it includes any. An excluded mention whose words match nothing removes nothing:
 it stays in the scope's mentions with no reference and an empty expansion, so the part
 warns that the exclusion was not applied. Included words that match nothing refuse.
@@ -30,7 +34,7 @@ import functools
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -70,13 +74,14 @@ type NamedSource = SourceReference | SourceCollection
 
 @dataclass(frozen=True, slots=True)
 class SourceScope:
-    """The provenances a part may answer from.
+    """The datasets a part may answer from, by the ids the code index keys them by
+    (`CodeIndex.dataset_of`), which a shape's datasets are compared with.
 
     `named` is true when the part includes a source, so election may serve an opt-in
     product the scope allows. `mentions` are the part's mentions in posted order, each
     carrying the ref it resolved to (none for a collection, which keeps its words, or for
     an excluded mention whose words match nothing), `references` what they resolved to
-    (`None` for such an excluded mention), and `expansions` the provenances each stands
+    (`None` for such an excluded mention), and `expansions` the datasets each stands
     for under its polarity, empty for an excluded mention that resolved to nothing. `idle` holds the
     positions of the excluded mentions that remove nothing from the shapes the part
     recalled (`region.source_choice.with_idle_exclusions`), empty until candidacy reads
@@ -89,6 +94,25 @@ class SourceScope:
     references: tuple[NamedSource | None, ...] = ()
     expansions: tuple[frozenset[str], ...] = ()
     idle: frozenset[int] = frozenset()
+
+    @property
+    def provenances(self) -> frozenset[str]:
+        """The provenances a read under this scope admits (`read_provenances`), under the
+        bound code index the scope was compiled against."""
+        return read_provenances(self.allowed, code_index=get_index())
+
+
+def read_provenances(refs: Iterable[str], *, code_index: CodeIndex) -> frozenset[str]:
+    """The provenances a read naming `refs` admits under `code_index`, the unit the origin
+    catalogue scopes its reads by (`origin_catalogue.scoped_reads`): every member provenance
+    (`CodeIndex.provenances_of`) of each ref's dataset (`CodeIndex.dataset_of`). A plain
+    table, and a provenance the index declares no dataset for, admit themselves alone; a
+    declared Dataset, or one of its member provenances, admits all its members."""
+    return frozenset(
+        provenance
+        for ref in refs
+        for provenance in code_index.provenances_of(code_index.dataset_of(ref))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +224,7 @@ def _aliases() -> tuple[Alias, ...]:
 
 @per_index
 def _opt_in_products(index: CodeIndex) -> frozenset[str]:
-    """The provenances `index` declares opt-in."""
+    """The datasets `index` declares opt-in."""
     return frozenset(ref for ref, dataset in index.datasets.items() if dataset.opt_in)
 
 
@@ -299,19 +323,22 @@ def match_source_words(
 
 
 def _expand(dictionary: SourceDictionary, named: NamedSource, *, include: bool) -> frozenset[str]:
-    """The provenances `named` stands for. An included Dataset or Source leaves out its
-    opt-in products unless it publishes nothing else."""
+    """The datasets `named` stands for: the dataset of each provenance it names
+    (`CodeIndex.dataset_of`). An included Dataset or Source leaves out its opt-in datasets
+    unless it publishes nothing else."""
     if isinstance(named, SourceCollection):
         return frozenset().union(
             *(_expand(dictionary, member, include=include) for member in named.members)
         )
     reference = named
-    provenances = dictionary.provenances.get(reference.ref, (reference.ref,))
+    index = get_index()
+    datasets = frozenset(
+        map(index.dataset_of, dictionary.provenances.get(reference.ref, (reference.ref,)))
+    )
     if not include or reference.kind == "provenance":
-        return frozenset(provenances)
-    opt_in = _opt_in_products(get_index())
-    default = frozenset(p for p in provenances if p not in opt_in)
-    return default or frozenset(provenances)
+        return datasets
+    default = datasets - _opt_in_products(index)
+    return default or datasets
 
 
 def _pinned_reference(dictionary: SourceDictionary, ref: str, *, pointer: str) -> SourceReference:
@@ -445,7 +472,11 @@ def compile_sources(
         if mention.polarity == "include"
     ]
     named = bool(included)
-    allowed = frozenset().union(*included) if named else dictionary.every
+    allowed = (
+        frozenset().union(*included)
+        if named
+        else frozenset(map(get_index().dataset_of, dictionary.every))
+    )
     for mention, reference, expansion, pointer in zip(
         mentions, references, expansions, pointers, strict=True
     ):

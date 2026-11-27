@@ -11,6 +11,7 @@ import json
 import httpx
 import pytest
 
+from code_index.shared import get_index
 from datasets_api.adapter import pinned_provenance_scope
 from dc_sdmx import SdmxClient
 from materialise import FacetBinding, MaterialisationRequest, probe_collection_facets
@@ -95,7 +96,7 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
         transport=httpx.MockTransport(_three_facets),
     )
 
-    with client, pinned_provenance_scope(identity):
+    with client, pinned_provenance_scope(identity, code_index=get_index()):
         probe = probe_collection_facets(
             (request,), graph=client, availability=_sdmx_never_read(), settle=True
         )

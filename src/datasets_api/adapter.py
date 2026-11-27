@@ -488,23 +488,38 @@ def identity_requested_window(
     )
 
 
-def provenance_pin(identity: Mapping[str, object]) -> frozenset[str] | None:
+def provenance_pin(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> frozenset[str] | None:
     """The provenances `identity`'s `facets.provenance` binds, as a `ref` or a set of
-    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none."""
+    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none. A ref naming a
+    dataset of several member provenances binds its members
+    (`code_index.query.CodeIndex.provenances_of`), whose facets the catalogue admits; any
+    other ref binds itself."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-    return frozenset(pinned_refs(facets)) or None
+    return (
+        frozenset(
+            provenance
+            for ref in pinned_refs(facets)
+            for provenance in code_index.provenances_of(ref)
+        )
+        or None
+    )
 
 
-def pinned_provenance_scope(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+def pinned_provenance_scope(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> AbstractContextManager[object]:
     """Bind the request's catalogue narrowed to `identity`'s pinned provenances
     (`provenance_pin`, `origin_catalogue.scoped_reads`) for every read of a mint of it, so
     a pinned source is admitted before DFO precedence and a base pin serves at a place
-    where a DFO table also holds data. Binds nothing for an identity that pins no provenance.
+    where a DFO table also holds data. A pinned dataset of several member provenances
+    admits each member. Binds nothing for an identity that pins no provenance.
 
     A composite identity's pin names no table, so a caller derives its components first
     (`composite_components`) and scopes each component's reads by its component identity.
     Handed a composite, `provenance_pin` raises `code_index.composites.CompositeProvenanceRead`."""
-    return scoped_reads(provenance_pin(identity))
+    return scoped_reads(provenance_pin(identity, code_index=code_index))
 
 
 def composite_components(
@@ -631,7 +646,7 @@ def definition_read_scope(
     (`CompositeWindowUnsupported`), so it reads the same unscoped."""
     if composite_components(identity, code_index=code_index) is not None:
         return nullcontext()
-    return pinned_provenance_scope(identity)
+    return pinned_provenance_scope(identity, code_index=code_index)
 
 
 def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:

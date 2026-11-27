@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from typing import cast
 
 import httpx
@@ -17,7 +18,7 @@ from dfo_frame_grammar import Frame
 
 import datasets_api.serve as serve_module
 import materialise.generation as generation_module
-from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
+from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from origin_catalogue import Catalogue
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -639,3 +640,173 @@ def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
     assert summed["frame_summed"]
     assert raw["incomplete_after"] == _partial([f"dcid:{_MEMBER_A}", f"dcid:{_MEMBER_B}"], "2020")
     assert summed["incomplete_after"] == _partial([f"dcid:{spec_id}"], "2020")
+
+
+# A dataset of several member provenances: `dataset/Ledger` files member A's series under one
+# provenance and member B's under another, as a register filed by publisher does.
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+_LEDGER_FACETS = {_NORTH: "facetNorth", _SOUTH: "facetSouth"}
+_LEDGER_ROWS = ((_MEMBER_A, _NORTH, 1000), (_MEMBER_B, _SOUTH, 500))
+
+
+def _ledger_code_index() -> CodeIndex:
+    base = _code_index()
+    return CodeIndex(
+        stamp=base.stamp,
+        declarations=tuple(base.declarations.values()),
+        codes=base.codes,
+        statvars=tuple(replace(row, datasets=(_LEDGER,)) for row in base.statvars),
+        datasets=(
+            DatasetDeclaration(
+                id=_LEDGER,
+                label="Ledger",
+                description="A test register filed by publisher.",
+                opt_in=False,
+                absent_observation="unknown",
+                account="provider",
+                rank=0,
+            ),
+        ),
+        dataset_members={_LEDGER: (_NORTH, _SOUTH)},
+    )
+
+
+def _ledger_graph(*, dataset_refreshed: str | None = None) -> FakeMintGraphReader:
+    """The members' arcs, and each member provenance's refresh date, the South one newer. The
+    Dataset node states `dataset_refreshed` as its own when given."""
+    graph = _graph()
+    return FakeMintGraphReader(
+        arcs={
+            **{member: graph._arcs[member] for member in (_MEMBER_A, _MEMBER_B)},
+            _LEDGER: {
+                "typeOf": ("Dataset",),
+                "name": ("Ledger",),
+                **({"lastDataRefreshDate": (dataset_refreshed,)} if dataset_refreshed else {}),
+            },
+            _NORTH: {"typeOf": ("Provenance",), "lastDataRefreshDate": ("2026-03-01",)},
+            _SOUTH: {"typeOf": ("Provenance",), "lastDataRefreshDate": ("2026-05-01",)},
+        },
+        labels={_LEDGER: "Ledger", _RECIPIENT: "Kenya"},
+    )
+
+
+def _ledger_sdmx_transport() -> httpx.MockTransport:
+    body = _CSV_HEADER + "".join(
+        f"dataflow,DC:DF_OBS(1.0.0),I,{member},{_RECIPIENT},USD,GrantEquivalent,"
+        f"NotApplicable,{provenance},2020,{value},,{_LEDGER_FACETS[provenance]}\r\n"
+        for member, provenance, value in _LEDGER_ROWS
+    )
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
+        )
+    )
+
+
+def _ledger_coverage_service() -> FakeCoverageService:
+    index = build_coverage_index(
+        [
+            (member, _LEDGER_FACETS[provenance], ABSENT_ENTITY, _RECIPIENT, [2020])
+            for member, provenance, _value in _LEDGER_ROWS
+        ],
+        role_names={
+            member: RoleNames(donor=None, recipient="recipient")
+            for member in (_MEMBER_A, _MEMBER_B)
+        },
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=provenance,
+                measurement_method=_MEASUREMENT_METHOD,
+                unit=_UNIT,
+                observation_period="P1Y",
+            )
+            for provenance, facet_id in _LEDGER_FACETS.items()
+        },
+    )
+    return FakeCoverageService(index)
+
+
+def _ledger_client(*, dataset_refreshed: str | None = None):
+    return _client(
+        graph=_ledger_graph(dataset_refreshed=dataset_refreshed),
+        sdmx_transport=_ledger_sdmx_transport(),
+        version_store=FakeVersionRecordDatasetStore(),
+        code_index=_ledger_code_index(),
+        coverage=_ledger_coverage_service(),
+    )
+
+
+def _ledger_spec(pin: dict | None = None) -> tuple[str, dict]:
+    identity = _IDENTITY if pin is None else {**_IDENTITY, "facets": {"provenance": pin}}
+    recomputed = recompute_identity(identity)
+    return recomputed.spec_id, {
+        "schema_version": 1,
+        "spec_id": recomputed.spec_id,
+        "identity": identity,
+    }
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [None, {"state": "value", "ref": _LEDGER}, {"state": "set", "refs": [_LEDGER]}],
+    ids=["unpinned", "pinned", "pinned_set"],
+)
+def test_a_mint_of_a_dataset_of_two_member_provenances_serves_both_members(pin):
+    """The read of an identity pinning the dataset is scoped to its member provenances
+    (`adapter.provenance_pin`), so it serves what the unpinned identity serves."""
+    spec_id, sidecar = _ledger_spec(pin)
+
+    manifest = _mint(_ledger_client(), spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+
+    counts = {
+        entry["ref"]: entry["observation_count"]
+        for entry in manifest["trace"]["resolved_stat_vars"]
+    }
+    assert counts == {f"dcid:{_MEMBER_A}": 1, f"dcid:{_MEMBER_B}": 1}
+    assert [
+        entry["ref"] for entry in manifest["trace"]["facets"] if entry["axis"] == "provenance"
+    ] == [_LEDGER]
+    assert "coverage_below_scope" not in {w["code"] for w in manifest["warnings"]}
+
+
+@pytest.mark.parametrize(
+    ("dataset_refreshed", "token"),
+    [(None, "2026-05-01"), ("2026-06-01", "2026-06-01")],
+    ids=["newest_member", "dataset_node"],
+)
+def test_a_dataset_of_two_member_provenances_cites_its_id_with_one_refresh_date(
+    dataset_refreshed, token
+):
+    """The source token of a dataset of several members is its Dataset node's refresh date,
+    else the newest member's (`facets._probe_provenance_refresh`)."""
+    spec_id, sidecar = _ledger_spec()
+
+    manifest = _mint(
+        _ledger_client(dataset_refreshed=dataset_refreshed),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False},
+    )
+
+    assert manifest["trace"]["source_revisions"] == [{"source": _LEDGER, "revision": token}]
+
+
+@pytest.mark.parametrize("target_rows", [100_000, 1], ids=["one_chunk", "chunk_per_member"])
+def test_a_sum_over_two_member_provenances_of_one_dataset_folds_to_one_total(
+    target_rows, monkeypatch: pytest.MonkeyPatch
+):
+    """The members' rows carry different provenances of one dataset, which agree
+    (`render._reshape_groupby_collapse`), so the sum is one row for the recipient."""
+    monkeypatch.setattr(generation_module, "_FRAME_CHUNK_TARGET_ROWS", target_rows)
+    spec_id, sidecar = _ledger_spec()
+
+    collapsed = _mint(
+        _ledger_client(),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    assert collapsed["coverage"]["rows"] == 1

@@ -7,6 +7,10 @@ provenance refuses.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.shared import get_index
 from code_index.types import StatVarRow
@@ -214,6 +218,70 @@ def test_two_distinct_provenance_refs_refuse_before_any_declaration_lookup():
         assert exc.precondition == "provenance_disagreement"
     else:
         raise AssertionError("expected RollupNotSummableError")
+
+
+# --- Two member provenances of one dataset agree ----------------------------
+
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+
+
+def _ledger_index() -> CodeIndex:
+    """`_index`'s members under `dataset/Ledger`, whose series two member provenances hold."""
+    base = _index(declares_crs_zero=False)
+    return CodeIndex(
+        stamp=_STAMP,
+        declarations=_DECLARATIONS,
+        codes=(_PURPOSE_HEALTH, _PURPOSE_MALARIA),
+        statvars=tuple(replace(row, datasets=(_LEDGER,)) for row in base.statvars),
+        datasets=(
+            DatasetDeclaration(
+                id=_LEDGER,
+                label="Ledger",
+                description="A test register filed by publisher.",
+                opt_in=False,
+                absent_observation="unknown",
+                account="provider",
+                rank=0,
+            ),
+        ),
+        dataset_members={_LEDGER: (_NORTH, _SOUTH)},
+    )
+
+
+@pytest.mark.parametrize(
+    "provenance_refs", [(_LEDGER,), (_NORTH, _SOUTH)], ids=["dataset_ref", "member_refs"]
+)
+def test_rows_of_two_member_provenances_of_one_dataset_sum_to_one_total(provenance_refs):
+    """Each member's row carries its own provenance. The refs read as the dataset, and the
+    sum reads each row's provenance as the dataset's id, so it neither refuses
+    `provenance_disagreement` nor `facet_homogeneity`, and the total cites the dataset."""
+    table = Table(
+        columns=_TABLE_COLUMNS,
+        rows=(
+            ("dcid:SV_health", "country/USA", "country/KEN", "2022", 10.0, "USD", _NORTH),
+            ("dcid:SV_malaria", "country/USA", "country/KEN", "2022", 4.0, "USD", _SOUTH),
+        ),
+    )
+
+    reshaped = _reshape(
+        table,
+        options=_options(),
+        entity_columns=_ENTITY_COLUMNS,
+        reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
+        code_index=_ledger_index(),
+        resolved_stat_var_refs=_RESOLVED_REFS,
+        provenance_refs=provenance_refs,
+        subject_id="spec_ledger",
+        pivot_max_output_cells=5_000_000,
+    )
+
+    columns = reshaped.table.columns
+    assert [
+        (row[columns.index("value")], row[columns.index("provenance")])
+        for row in reshaped.table.rows
+    ] == [(14.0, _LEDGER)]
 
 
 # --- Declaration lookup uses the injected index -----------------------------

@@ -543,6 +543,8 @@ def _frame_rows(columns: tuple[str, ...], table: pa.Table) -> Table:
 def _stream_first_axis_collapse(
     frame_chunks: Iterable[Table],
     *,
+    dataset: str | None = None,
+    members: frozenset[str] = frozenset(),
     axis: str,
     classification: ColumnClassification,
     summable_axes: frozenset[str],
@@ -562,6 +564,8 @@ def _stream_first_axis_collapse(
     input and 75 MiB of Python)."""
     return _fold_frame_slices(
         [cast(_FrameSlice, chunk) for chunk in frame_chunks],
+        dataset=dataset,
+        members=members,
         axis=axis,
         classification=classification,
         summable_axes=summable_axes,
@@ -698,6 +702,8 @@ def _known_frame_rows(
 def _fold_frame_slices(
     slices: Sequence[_FrameSlice],
     *,
+    dataset: str | None = None,
+    members: frozenset[str] = frozenset(),
     axis: str,
     classification: ColumnClassification,
     summable_axes: frozenset[str],
@@ -713,7 +719,8 @@ def _fold_frame_slices(
     With `selection`, a `groupby.codes` selection by axis, each decoded slice keeps only the
     rows whose `stat_var_<axis>` cell is one of that axis's codes, so the fold and its checks
     read the selected groups alone. The decode, its warnings and the distinct StatVars read
-    every row, as without a selection."""
+    every row, as without a selection. The `provenance` cell of a row of one of `members`, the
+    member provenances of the frame's `dataset`, reads as `dataset` (`_dataset_rows`)."""
     distinct_dcids: set[str] = set()
     warnings: list[MaterialisationWarning] = []
     decoded_slices: list[pa.Table] = []
@@ -729,8 +736,11 @@ def _fold_frame_slices(
         if selection is not None:
             decoded = decoded.filter(_selected_mask(decoded, selection))
         decoded_slices.append(decoded)
+    folded = pa.concat_tables(decoded_slices)
+    if dataset is not None and members:
+        folded = _dataset_provenance_table(folded, dataset=dataset, members=members)
     outcome = fold_groupby_sum_table(
-        pa.concat_tables(decoded_slices),
+        folded,
         axis=axis,
         classification=classification,
         summable_axes=summable_axes,
@@ -772,7 +782,11 @@ def _reshape_groupby_collapse(
     selection: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
-    selection on axes the frame decodes, a sum checks the groups it sums. The checks before
+    selection on axes the frame decodes, a sum checks the groups it sums. `provenance_refs`
+    agree when they name one dataset (`code_index.query.CodeIndex.dataset_of`), and the rows
+    of a dataset of several member provenances keep their member's `provenance` cell up to the
+    folds, which read each as the dataset's id (`_dataset_rows`), so a total over rows of
+    several members carries the dataset's id. The checks before
     the folds read every row: provenance disagreement, decode gaps (which refuse a level
     roll-up's missing ancestor), StatVar collision and, for a spliced composite's components,
     a StatVar no one component serves or a cell holding rows of two components
@@ -794,11 +808,13 @@ def _reshape_groupby_collapse(
     it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
     returns any unconsumed decode plan. A grammar frame requires `subject_id` unless one member
     contributed and `kept` is empty."""
-    refuse_provenance_disagreement(provenance_refs=provenance_refs)
-    # `refuse_provenance_disagreement` leaves one provenance at most: the dataset the frame
-    # was served from, which is the elected one for an index-resolved family, or the
-    # composite its components were composed into.
-    dataset = next(iter(set(provenance_refs)), None)
+    datasets = [code_index.dataset_of(ref) for ref in provenance_refs]
+    refuse_provenance_disagreement(provenance_refs=datasets)
+    # `refuse_provenance_disagreement` leaves one dataset at most: the one the frame was served
+    # from, which is the elected one for an index-resolved family, or the composite its
+    # components were composed into.
+    dataset = next(iter(set(datasets)), None)
+    members = _several_members(code_index, dataset)
     composite = _frame_composite(code_index, provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     missing_declared_as_zero = absent_member_reads_zero(code_index, dataset)
@@ -873,7 +889,11 @@ def _reshape_groupby_collapse(
     with _fold_permit(deadline):
         # Arrow from a fold over frame slices until the last axis sums. A grammar frame is built
         # from that output (`collapse_frame`), any other output read as tuple rows.
-        collapsed: GroupedTable = cast(ReshapeTable, current)
+        collapsed: GroupedTable = (
+            cast(ReshapeTable, current)
+            if dataset is None or frame_chunks is not None
+            else _dataset_rows(cast(ReshapeTable, current), dataset=dataset, members=members)
+        )
         for axis_index, axis in enumerate(collapse_columns):
             positions = tuple(population_columns.index(c) for c in remaining_columns)
             projected_members = frozenset(
@@ -901,6 +921,8 @@ def _reshape_groupby_collapse(
                 )
                 outcome, streaming_contributors, decode_warnings = _stream_first_axis_collapse(
                     frame_chunks if splice is None else _noting_splice(frame_chunks, splice),
+                    dataset=dataset,
+                    members=members,
                     axis=axis,
                     classification=classification,
                     summable_axes=summable_columns,
@@ -2900,6 +2922,48 @@ def _probe_groupby_collapse(
         composite=_frame_composite(code_index, provenance_refs),
     )
     return sums, decode_plan
+
+
+def _several_members(code_index: CodeIndex, dataset: str | None) -> frozenset[str]:
+    """The member provenances of `dataset` when it has several
+    (`code_index.query.CodeIndex.provenances_of`), else none."""
+    if dataset is None:
+        return frozenset()
+    provenances = code_index.provenances_of(dataset)
+    return frozenset(provenances) if len(provenances) > 1 else frozenset()
+
+
+def _dataset_rows(table: ReshapeTable, *, dataset: str, members: frozenset[str]) -> ReshapeTable:
+    """`table` with the `provenance` cell of each row of one of `members` reading `dataset`,
+    so a sum over rows of several member provenances of one dataset keeps one provenance and
+    the total carries the dataset's id. `table` itself when `members` is empty or it has no
+    `provenance` column."""
+    if not members or PROVENANCE_COLUMN not in table.columns:
+        return table
+    at = table.columns.index(PROVENANCE_COLUMN)
+    return ReshapeTable(
+        columns=table.columns,
+        rows=tuple(
+            (*row[:at], dataset, *row[at + 1 :]) if row[at] in members else tuple(row)
+            for row in table.rows
+        ),
+    )
+
+
+def _dataset_provenance_table(
+    table: pa.Table, *, dataset: str, members: frozenset[str]
+) -> pa.Table:
+    """`_dataset_rows` over an Arrow table."""
+    if PROVENANCE_COLUMN not in table.column_names:
+        return table
+    at = table.column_names.index(PROVENANCE_COLUMN)
+    column = table.column(at)
+    is_member = pc.fill_null(
+        pc.is_in(column, value_set=pa.array(sorted(members), type=pa.string())), pa.scalar(False)
+    )
+    return table.set_column(
+        at, PROVENANCE_COLUMN, pc.if_else(is_member, pa.scalar(dataset, pa.string()), column)
+    )
 
 
 def _frame_composite(

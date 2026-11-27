@@ -58,7 +58,7 @@ from materialise.graph import GraphReader
 from materialise.method_status import projection_methods
 from materialise.window import LatestYear, RequestedWindow
 from origin_catalogue import CatalogueNotBound, current_catalogue
-from origin_catalogue.catalogue import Undocumented, partial_period_of
+from origin_catalogue.catalogue import Catalogue, Undocumented, partial_period_of
 from origin_catalogue.origins import DFO
 
 if TYPE_CHECKING:
@@ -153,16 +153,24 @@ def _recipe_digest(recipe_id: str) -> str | None:
     return fingerprint[1] if fingerprint is not None else None
 
 
-def applied_horizons(sources: Iterable[str]) -> tuple[tuple[str, str | None], ...]:
+def applied_horizons(
+    sources: Iterable[str], *, members: Mapping[str, Sequence[str]] | None = None
+) -> tuple[tuple[str, str | None], ...]:
     """The held-back horizon of each of `sources` as sorted `(<kind>:<ref>, horizon)` pairs: a
     `partial:` entry holding the source's partial mark in the bound origin catalogue, and a
     `projected:` entry holding the sorted `measurementMethod`s declared its projections. A
     source with neither has no entry, as one the catalogue does not document, and with no
-    catalogue bound no source has a mark."""
+    catalogue bound no source has a mark.
+
+    `members` maps the id of a dataset of several member provenances among `sources` to those
+    members (`code_index.query.CodeIndex.provenances_of`). Such a dataset holds back every
+    period any member marks partial, so its `partial:` entry holds its members' distinct
+    marks, sorted and joined by commas; a member the catalogue does not document adds none."""
     try:
         catalogue = current_catalogue()
     except CatalogueNotBound:
         catalogue = None
+    members = members or {}
     horizons: dict[str, str] = {}
     for ref in set(sources):
         methods = projection_methods(ref)
@@ -170,13 +178,23 @@ def applied_horizons(sources: Iterable[str]) -> tuple[tuple[str, str | None], ..
             horizons[f"projected:{ref}"] = ",".join(sorted(methods))
         if catalogue is None:
             continue
-        try:
-            mark = partial_period_of(catalogue, ref)
-        except Undocumented:
-            continue
-        if mark is not None:
-            horizons[f"partial:{ref}"] = mark
+        marks = {
+            mark
+            for provenance in members.get(ref, (ref,))
+            if (mark := _partial_mark(catalogue, provenance)) is not None
+        }
+        if marks:
+            horizons[f"partial:{ref}"] = ",".join(sorted(marks))
     return tuple(sorted(horizons.items()))
+
+
+def _partial_mark(catalogue: Catalogue, provenance: str) -> str | None:
+    """The partial mark `catalogue` gives `provenance` (`partial_period_of`), `None` where it
+    marks none or documents no such provenance."""
+    try:
+        return partial_period_of(catalogue, provenance)
+    except Undocumented:
+        return None
 
 
 def _clock_window(window: RequestedWindow) -> tuple[int | None, int | None] | None:
@@ -255,7 +273,14 @@ def build_dependencies(
         conversion_sources=tuple(sorted(conversion_sources.items())),
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
-        held_back=applied_horizons(sources),
+        held_back=applied_horizons(
+            sources,
+            members={
+                request.dataset.provenance: request.dataset.provenances
+                for request in requests
+                if request.dataset is not None and request.dataset.several_members
+            },
+        ),
         latest_years=tuple(sorted(_latest_members(requests, latest_years).items())),
         imported_data=(
             run_imported_data(
@@ -392,11 +417,13 @@ def refreshed_dependencies(
 
     The source and conversion-source refs keep `stored`'s, each with the `lastDataRefreshDate`
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
-    serves uncached. Each stored recipe takes the digest of its deployed body. `held_back` is
-    the horizon of each stored source under the bound catalogue (`applied_horizons`), so a
-    head rebuilds when the catalogue's mark for a source moves. `members` and `window` come
-    from `requests` as `build_dependencies` takes them, so an open window ends at the year
-    the requests were resolved in.
+    serves uncached. A dataset of several member provenances takes its Dataset node's date,
+    else its newest member's, as the run's did (`generation._dispatch_refresh`). Each stored
+    recipe takes the digest of its deployed body. `held_back` is the horizon of each stored
+    source under the bound catalogue (`applied_horizons`), so a head rebuilds when the
+    catalogue's mark for a source moves. `members` and `window` come from `requests` as
+    `build_dependencies` takes them, so an open window ends at the year the requests were
+    resolved in.
 
     Each `latest` request keeps the entry `stored` holds for it with the year `coverage`
     elects now over the entry's facets and omitted entities (`elected_latest_year`), read
@@ -419,7 +446,10 @@ def refreshed_dependencies(
     refs = sorted(
         {ref for ref, _ in stored.sources} | {ref for ref, _ in stored.conversion_sources}
     )
-    refresh = _probe_provenance_refresh(refs, graph=graph)
+    members = {
+        ref: provenances for ref in refs if len(provenances := code_index.provenances_of(ref)) > 1
+    }
+    refresh = _probe_provenance_refresh(refs, graph=graph, members=members)
 
     def _token(ref: str) -> str | None:
         return refresh[ref].last_data_refresh_date
@@ -449,7 +479,7 @@ def refreshed_dependencies(
         conversion_sources=tuple((ref, _token(ref)) for ref, _ in stored.conversion_sources),
         recipes=tuple((recipe_id, _recipe_digest(recipe_id)) for recipe_id, _ in stored.recipes),
         window=_clock_window(requests[0].window),
-        held_back=applied_horizons(ref for ref, _ in stored.sources),
+        held_back=applied_horizons((ref for ref, _ in stored.sources), members=members),
         latest_years=tuple(
             sorted(
                 (request.stat_var, latest)

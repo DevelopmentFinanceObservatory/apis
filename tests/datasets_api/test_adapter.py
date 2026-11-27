@@ -475,7 +475,7 @@ def test_to_materialisation_request_binds_a_provenance_set_of_one_and_leaves_a_w
     assert (None if binding is None else (binding.state, binding.ref)) == (
         None if bound is None else ("bound", bound)
     )
-    assert provenance_pin(identity) == frozenset(refs)
+    assert provenance_pin(identity, code_index=get_index()) == frozenset(refs)
 
 
 def test_to_materialisation_request_translates_an_axis_alias_entity_role_to_the_declared_role():

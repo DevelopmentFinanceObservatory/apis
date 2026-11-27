@@ -756,7 +756,7 @@ def _materialise_components(
         part = [request for request in requests if request.component == component.role]
         if not part:
             continue
-        with pinned_provenance_scope(component.identity):
+        with pinned_provenance_scope(component.identity, code_index=code_index):
             result, un_blocked = materialise(part, ceiling=remaining, precomputed_probe=None)
         runs.append(
             _ComponentRun(
@@ -795,14 +795,18 @@ def _materialise_components(
 
 
 def _component_findings(
-    runs: Sequence[_ComponentRun], *, graph: GraphReader, deadline: float | None
+    runs: Sequence[_ComponentRun],
+    *,
+    graph: GraphReader,
+    code_index: CodeIndex,
+    deadline: float | None,
 ) -> _OriginFindings:
     """The origin findings of a composite's component runs, each read under its component
     identity's pinned provenances, its warnings once each and its gaps in run order."""
     warnings: list[WarningModel] = []
     gaps: list[OriginGap] = []
     for run in runs:
-        with pinned_provenance_scope(run.identity):
+        with pinned_provenance_scope(run.identity, code_index=code_index):
             findings = _origin_findings(
                 run.requests,
                 probe_empty=run.probe_empty,
@@ -890,7 +894,11 @@ def prewrite_definition(
         progress=progress,
         code_index=code_index,
     )
-    with pinned_provenance_scope(stored.identity) if components is None else nullcontext():
+    with (
+        pinned_provenance_scope(stored.identity, code_index=code_index)
+        if components is None
+        else nullcontext()
+    ):
         if components is None:
             result, un_blocked = materialise(
                 requests, ceiling=ceiling, precomputed_probe=precomputed_probe
@@ -930,7 +938,9 @@ def prewrite_definition(
         if persisted is not None:
             origin = _NO_ORIGIN_FINDINGS
         elif runs is not None:
-            origin = _component_findings(runs, graph=graph, deadline=deadline)
+            origin = _component_findings(
+                runs, graph=graph, code_index=code_index, deadline=deadline
+            )
         else:
             origin = _origin_findings(
                 requests,

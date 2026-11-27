@@ -81,11 +81,14 @@ def binding_admits_value(
 
 
 class _AxisFacetCandidate(Protocol):
-    """A facet's provenance, method and unit, read-only. Facets and bulk candidates satisfy
-    it structurally."""
+    """A facet's provenance, method and unit, read-only, and the elected dataset of several
+    members that reads it (`elected_dataset.read_in_datasets`). Facets and bulk candidates
+    satisfy it structurally."""
 
     @property
     def provenance_id(self) -> str | None: ...
+    @property
+    def dataset_id(self) -> str | None: ...
     @property
     def measurement_method(self) -> str | None: ...
     @property
@@ -408,6 +411,7 @@ def facet_admitted(
             provenance_id=facet.provenance_id,
             measurement_method=facet.measurement_method,
             unit=facet.unit,
+            dataset_id=facet.dataset_id,
         )
     )
     return all(af.predicate(stub) for af in facet_filter.values())

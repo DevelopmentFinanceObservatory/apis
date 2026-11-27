@@ -135,7 +135,8 @@ def scope_served(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The facet ids a mint of the answer's Spec serves when it elects `lead`, each facet
     merged across every place: its selection, the facets of `candidates` sharing `lead`'s
-    provenance, method and unit at its cadence (`materialise.facets.cadences_by_member`),
+    provenance (`materialise.facets.facet_axis_value`, the dataset's id for a facet of an
+    elected dataset of several members), method and unit at its cadence (`materialise.facets.cadences_by_member`),
     `lead` first, as `materialise.facets.joint_matches` admits them; then the facets
     continuing the selection's series in `window`, each past its own place's last year
     (`materialise.facets.continuation`). Several qualifying methods rank by the places each
@@ -150,15 +151,16 @@ def scope_served(
         return at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of)
 
     head = by_id[lead.facet_id]
-    axes = (head.provenance_id, head.measurement_method, head.unit)
+
+    def axes(facet: Facet) -> tuple[str | None, ...]:
+        return (facet_axis_value(facet, "provenance"), facet.measurement_method, facet.unit)
+
     selection = [
         head,
         *(
             f
             for facet_id, f in by_id.items()
-            if facet_id != lead.facet_id
-            and serves(facet_id)
-            and (f.provenance_id, f.measurement_method, f.unit) == axes
+            if facet_id != lead.facet_id and serves(facet_id) and axes(f) == axes(head)
         ),
     ]
     continuing = continuation(
@@ -183,7 +185,9 @@ class RoleBulkCandidate:
     Metadata is shared by facet id in the coverage index. `lifetime` holds each StatVar's
     observation count, span and first series' end over every year under the same bound
     roles (`CoverageIndex.facet_spans`), the values a mint ranks and continues the facet by;
-    it is empty for candidates built outside coverage.
+    it is empty for candidates built outside coverage. `dataset_id` is its StatVars'
+    candidates' (`RoleFacetCandidate.dataset_id`), which the facet it ranks as carries
+    (`ranked_facet`).
     """
 
     facet_id: str
@@ -195,6 +199,7 @@ class RoleBulkCandidate:
     unit: str | None = None
     observation_period: str | None = None
     lifetime: dict[str, FacetSpan] = field(default_factory=dict)
+    dataset_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,6 +323,7 @@ def merge_role_candidates(
                     measurement_method=c.measurement_method,
                     unit=c.unit,
                     observation_period=c.observation_period,
+                    dataset_id=c.dataset_id,
                 )
                 merged[c.facet_id] = candidate
             candidate.by_sv.setdefault(sv, []).append(c)
@@ -455,6 +461,7 @@ def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None
         observation_period=candidate.observation_period,
         # Coverage's years, whatever the facet's cadence, so no evidence that it is annual.
         dates_coarsened=True,
+        dataset_id=candidate.dataset_id,
     )
 
 

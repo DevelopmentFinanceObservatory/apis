@@ -306,21 +306,26 @@ class ElectedDataset:
         dataset of several members (`FacetSelection.provenances`), so a dispatch over the
         member's facets as probed serves each provenance's (`joint_dispatch_facet_ids`).
         Unchanged for a plain table, and for a selection of another ref."""
-        selection = election.selections.get("provenance")
+        selections = self.admitting(election.selections)
+        if selections is election.selections:
+            return election
+        return replace(election, selections=selections)
+
+    def admitting(self, selections: dict[str, FacetSelection]) -> dict[str, FacetSelection]:
+        """`selections` with the provenance selection admitting every member provenance of a
+        dataset of several members, as `admitting_members` widens an election's, so a
+        selection rebuilt from a stored trace entry (`FacetSelection.of_trace_entry`) admits
+        what the mint's did. `selections` itself for a plain table, and for a selection of
+        another ref."""
+        selection = selections.get("provenance")
         if (
             not self.several_members
             or selection is None
             or selection.ref != self.provenance
             or selection.provenances == self.provenances
         ):
-            return election
-        return replace(
-            election,
-            selections={
-                **election.selections,
-                "provenance": replace(selection, provenances=self.provenances),
-            },
-        )
+            return selections
+        return {**selections, "provenance": replace(selection, provenances=self.provenances)}
 
 
 class DatasetCandidate(Protocol):
@@ -1634,21 +1639,40 @@ def _probe_at_own_places(
 
 
 def _probe_provenance_refresh(
-    provenance_ids: Sequence[str], *, graph: GraphReader
+    provenance_ids: Sequence[str],
+    *,
+    graph: GraphReader,
+    members: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, ProvenanceRefresh]:
     """Fetches each provenance's `lastDataRefreshDate` in one graph batch. A missing node or
     arc yields `ProvenanceRefresh(None)`, a source token with no date. Empty `provenance_ids`
-    returns `{}` without a network call."""
+    returns `{}` without a network call.
+
+    `members` maps the id of a dataset of several member provenances among `provenance_ids`
+    to those members (`code_index.query.CodeIndex.provenances_of`), which the same batch
+    reads. Such a dataset's date is its Dataset node's own, else the newest of its members'."""
     if not provenance_ids:
         return {}
-    arcs_by_id = graph.node_arcs_many(provenance_ids, properties=_PROVENANCE_REFRESH_PROPERTIES)
+    members = members or {}
+    read = list(
+        dict.fromkeys(
+            [*provenance_ids, *(p for ref in provenance_ids for p in members.get(ref, ()))]
+        )
+    )
+    arcs_by_id = graph.node_arcs_many(read, properties=_PROVENANCE_REFRESH_PROPERTIES)
+
+    def own_date(dcid: str) -> str | None:
+        arcs = arcs_by_id.get(dcid)
+        last_values = arcs.get("lastDataRefreshDate", ()) if arcs is not None else ()
+        return last_values[0] if last_values else None
+
     refresh_by_id: dict[str, ProvenanceRefresh] = {}
     for provenance_id in provenance_ids:
-        arcs = arcs_by_id.get(provenance_id)
-        last_values = arcs.get("lastDataRefreshDate", ()) if arcs is not None else ()
-        refresh_by_id[provenance_id] = ProvenanceRefresh(
-            last_data_refresh_date=last_values[0] if last_values else None
-        )
+        date = own_date(provenance_id)
+        if date is None:
+            member_dates = [d for p in members.get(provenance_id, ()) if (d := own_date(p))]
+            date = max(member_dates, default=None)
+        refresh_by_id[provenance_id] = ProvenanceRefresh(last_data_refresh_date=date)
     return refresh_by_id
 
 

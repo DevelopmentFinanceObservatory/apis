@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from code_index.shared import get_index
 from materialise.enrichment import party_split
+from materialise.facets import facet_axis_value
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -89,12 +90,18 @@ class CoverageForm:
 
 
 def citable_source_ids(facets: Sequence[Facet]) -> list[str]:
-    """Return ordered distinct `provenance_id` values.
+    """Return ordered distinct provenance axis values (`materialise.facets.facet_axis_value`):
+    a facet's `provenance_id`, or the dataset's id for a facet of an elected dataset of
+    several member provenances, so the answer cites the dataset.
 
     Facets without one contribute nothing. Duplicates, including facets with
     different `facet_id` values, count as one source.
     """
-    return list(dict.fromkeys(f.provenance_id for f in facets if f.provenance_id))
+    return list(
+        dict.fromkeys(
+            provenance for f in facets if (provenance := facet_axis_value(f, "provenance"))
+        )
+    )
 
 
 def stated_window(plan: ReadPlan) -> TimeWindow | None:

@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import NamedTuple, get_args
 
+from code_index.shared import get_index
 from dfo_platform import Alternative
 from dfo_platform.named import named_capped
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -55,9 +56,30 @@ facet_satisfies_bindings below)."""
 
 
 def _axis_value(axis: str, facet: Facet) -> str | None:
+    """`facet`'s value on `axis`. On the provenance axis it is the dataset of the facet's
+    source (`CodeIndex.dataset_of`), so a facet of any member provenance of a dataset of
+    several reads as the dataset, stamped by its election or not."""
     if axis == "provenance":
-        return _facet_source_dcid(facet)
+        source = _facet_source_dcid(facet)
+        return None if source is None else get_index().dataset_of(source)
     return facet.measurement_method if axis == "measurementMethod" else facet.unit
+
+
+def _pin_admits(
+    axis: str,
+    binding: IdentityBindingValue | IdentityBindingSet | IdentityFacetValueAbsent,
+    facet: Facet,
+) -> bool:
+    """Whether `binding` admits `facet` on `axis` (`binding_admits_value`). A provenance pin
+    reads each ref as its dataset (`CodeIndex.dataset_of`), as `_axis_value` reads the
+    facet, so a pin of the dataset or of any one member provenance admits every member's
+    facets."""
+    if axis == "provenance" and isinstance(binding, IdentityBindingValue):
+        binding = IdentityBindingValue(ref=get_index().dataset_of(binding.ref))
+    elif axis == "provenance" and isinstance(binding, IdentityBindingSet):
+        index = get_index()
+        binding = IdentityBindingSet(refs=sorted({index.dataset_of(ref) for ref in binding.refs}))
+    return binding_admits_value(binding, _axis_value(axis, facet))
 
 
 def _unit_request_admits(
@@ -101,7 +123,7 @@ def _binding_admits(
     exclude one axis's own binding when checking its members (see
     _other_axes_satisfied)."""
     if isinstance(binding, IdentityBindingValue | IdentityBindingSet | IdentityFacetValueAbsent):
-        return binding_admits_value(binding, _axis_value(axis, facet))
+        return _pin_admits(axis, binding, facet)
     if isinstance(binding, IdentityFacetValueRequest):
         # ResubmitIdentityPayload's own model validator already refuses the
         # request form anywhere but the unit axis, so axis == "unit" here
@@ -198,7 +220,7 @@ def _member_present(
     return all(
         any(
             facet.obs_count > 0
-            and binding_admits_value(member, _axis_value(axis, facet))
+            and _pin_admits(axis, member, facet)
             and _other_axes_satisfied(
                 graph, facet, relevant, axis, sv=sv, elected_units=elected_units, deadline=deadline
             )
@@ -604,6 +626,7 @@ def role_index_facets(role_index_by_sv: RoleFacetIndex) -> dict[str, list[Facet]
                 unit=candidate.unit,
                 scaling_factor=candidate.scaling_factor,
                 facet_id=candidate.facet_id,
+                dataset_id=candidate.dataset_id,
             )
             for candidate in candidates
         ]

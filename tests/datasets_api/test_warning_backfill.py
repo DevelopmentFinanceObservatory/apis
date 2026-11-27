@@ -432,6 +432,50 @@ def test_a_member_holding_only_another_dataset_is_unpopulated_under_the_elected_
     assert "unserved_members" not in stored
 
 
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+
+
+def _ledger_code_index() -> CodeIndex:
+    """An index declaring `dataset/Ledger`, whose series two member provenances hold, and a row
+    for each member under it."""
+    fixture = _code_index(indexed=True)
+    return CodeIndex(
+        stamp=fixture.stamp,
+        declarations=(),
+        codes=(),
+        statvars=tuple(replace(row, datasets=(_LEDGER,)) for row in fixture.statvars),
+        datasets=(replace(fixture.datasets[_PROVENANCE], id=_LEDGER, label="Ledger"),),
+        dataset_members={_LEDGER: (_NORTH, _SOUTH)},
+    )
+
+
+def test_a_member_held_under_another_provenance_of_the_elected_dataset_is_not_unserved():
+    """The mint served Var_Served from one member provenance of the ledger and elected the
+    dataset, whose id the trace records. Var_In holds the requested years under the other
+    member, so it is off cadence, as for a plain table."""
+    facets = {
+        (_SERVED, _KEN): [_facet("f-served", "2015", provenance=_NORTH)],
+        (_IN, _KEN): [_facet("f-in", "2015", provenance=_SOUTH)],
+    }
+    row = _row(_warning([_IN]), zero=[_IN])
+    row["trace"]["facets"][0]["ref"] = _LEDGER
+    store = _Store([row])
+    readers = Readers(
+        graph=FakeGraphReader(facets=facets),
+        availability=ScopeAvailability(data=()),
+        code_index=_ledger_code_index(),
+        coverage=None,
+    )
+
+    assert _run(store, readers=readers) == 0
+
+    stored = _stored(store)
+    assert stored["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_In"]}
+    assert "unserved_members" not in stored
+
+
 def test_an_open_range_closes_at_the_year_the_row_was_recorded():
     # Var_Late holds 2026, past the recorded year 2025, so at the mint it held nothing in
     # the window; under a window closed at today's year it would be off cadence.

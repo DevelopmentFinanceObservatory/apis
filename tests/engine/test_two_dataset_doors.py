@@ -21,7 +21,7 @@ from materialise.errors import MaterialisationError
 from materialise.facets import ElectedDataset, FacetBinding
 from materialise.rate_tables import RateTableCache
 from materialise.window import RequestedWindow
-from search.engine import spec_build
+from search.engine import source_scope, spec_build
 from search.engine.region.option_coverage import _maybe_build_facet_options
 from search.engine.retrieval import bound_values
 from search.models import IdentityBindingValue, Spec
@@ -96,6 +96,8 @@ def _electing(
 
     declaring = _DeclaringBoth()
     monkeypatch.setattr(spec_build, "get_index", lambda: declaring)
+    # The answer's source and its bound source slot take the declared label from here.
+    monkeypatch.setattr(source_scope, "get_index", lambda: declaring)
     return world
 
 

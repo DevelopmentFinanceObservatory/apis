@@ -693,6 +693,13 @@ class PartyRow:
     `types` holds the party's graph types (`typeOf`), sorted and each once, as the export read
     them. It is empty for a party whose `PARTY_KIND_OVERRIDES` row sets its kind everywhere and
     whose node carries no type.
+
+    `member_of` maps each member provenance of a dataset of several members the row names to
+    that dataset (`code_index.query.CodeIndex.dataset_of`), which `CodeIndex` sets from its
+    dataset rows; it is empty otherwise, and no reader compares or stores it. A frame row
+    carries the member provenance it was published under, and every reader of a dataset or a
+    provenance (`publishes`, `marker`, `marker_over`, `kind_in`, `kinds_over`) reads it as its
+    dataset (`dataset_of`), so a member row takes the kinds and markers of its dataset.
     """
 
     dcid: str
@@ -706,12 +713,27 @@ class PartyRow:
     whole: tuple[WholeMarker, ...] = ()
     dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
     types: tuple[str, ...] = ()
+    member_of: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False, repr=False
+    )
+
+    def dataset_of(self, provenance: str) -> str:
+        """The dataset `provenance` is a member of (`member_of`), else `provenance` itself."""
+        return self.member_of.get(provenance, provenance)
+
+    def _read_datasets(self, datasets: Collection[str]) -> frozenset[str]:
+        """`datasets` each read as its dataset (`dataset_of`), then each declared composite as
+        its component tables."""
+        if not self.member_of:
+            return _component_datasets(datasets)
+        return _component_datasets(frozenset(self.dataset_of(ref) for ref in datasets))
 
     def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
         """Whether one of `datasets` publishes the party on `axis`, or any dataset does for
-        `ANY_DATASET`. A declared composite among `datasets` reads as its component tables
+        `ANY_DATASET`. A member provenance among `datasets` reads as its dataset
+        (`dataset_of`), and a declared composite as its component tables
         (`code_index.composites.provenance_datasets`). Empty `datasets` publish nothing."""
-        tables = None if datasets is ANY_DATASET else _component_datasets(datasets)
+        tables = None if datasets is ANY_DATASET else self._read_datasets(datasets)
         return any(
             published_axis == axis and (tables is None or dataset in tables)
             for dataset, published_axis in self.published
@@ -729,7 +751,9 @@ class PartyRow:
         return axes.pop()
 
     def marker(self, dataset: str) -> WholeMarker | None:
-        """The marker for `dataset`, or `None` where the party is an ordinary total."""
+        """The marker for `dataset`, a member provenance read as its dataset (`dataset_of`), or
+        `None` where the party is an ordinary total."""
+        dataset = self.dataset_of(dataset)
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
 
     def marker_over(self, provenance: str) -> WholeMarker | None:
@@ -741,7 +765,9 @@ class PartyRow:
         population that drops the destinations off that side, so a recipient's marker, which
         covers the table's whole population, holds there only for the bound population's total
         (`CompositeRead.bound_total`); a donor's marker holds unchanged. `None` where it has
-        none there, or the composite reads none."""
+        none there, or the composite reads none. A member provenance reads as its dataset
+        (`dataset_of`)."""
+        provenance = self.dataset_of(provenance)
         read = declared_composite_reads().get(provenance)
         if read is None:
             return self.marker(provenance)
@@ -753,7 +779,9 @@ class PartyRow:
         return None if self.publishes("destination", (read.marker_table,)) else marker
 
     def kind_in(self, dataset: str) -> PartyKind:
-        """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
+        """The party's kind in `dataset`, a member provenance read as its dataset
+        (`dataset_of`): its `dataset_kinds` entry there, else `kind`."""
+        dataset = self.dataset_of(dataset)
         return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
 
     def kinds_over(
@@ -763,7 +791,8 @@ class PartyRow:
         either axis for `ANY_AXIS`), or in every dataset that publishes it there for an empty
         `datasets`, a reader that serves every dataset. A declared composite among `datasets`
         reads as its component tables (`code_index.composites.provenance_datasets`), since a
-        composite's rows carry its provenance and no dataset publishes it. A party no dataset
+        composite's rows carry its provenance and no dataset publishes it, and a member
+        provenance as its dataset (`dataset_of`). A party no dataset
         publishes on `axis` takes no kind there. A row without `dataset_kinds` takes `kind`
         alone wherever some dataset publishes it on `axis`, whether or not one of `datasets`
         does, since every dataset gives it that kind. A row with `dataset_kinds` takes no kind
@@ -779,7 +808,7 @@ class PartyRow:
         # needs a read dataset that publishes it, or it would borrow another dataset's kind.
         if not self.dataset_kinds:
             return frozenset((self.kind,)) if publishing else frozenset()
-        named = publishing & _component_datasets(datasets) if datasets else publishing
+        named = publishing & self._read_datasets(datasets) if datasets else publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
     def kind_over(

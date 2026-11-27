@@ -313,14 +313,16 @@ class _Outage(Exception):
 
 @dataclass(frozen=True)
 class _Member:
-    """One member's probe and the candidates its elected dataset publishes."""
+    """One member's probe, its candidates as the mint's election read them, and those its
+    elected dataset publishes.
+
+    The candidates of a member of a dataset of several member provenances carry the
+    dataset's id (`facets.ElectedDataset.read_as_dataset`), so they match the trace's
+    provenance selection, whose ref is that id."""
 
     probe: MemberProbe
+    candidates: tuple[Facet, ...]
     electable: tuple[Facet, ...]
-
-    @property
-    def candidates(self) -> tuple[Facet, ...]:
-        return self.probe.candidates
 
 
 @dataclass
@@ -933,6 +935,7 @@ def _split(
     selections = _selections(trace)
     probed = _probed(row, identity, resolved, window=window, selections=selections, readers=readers)
     members = probed.members
+    selections = _admitting_members(selections, readers=readers)
     _continuation_stated(selections, probed)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
@@ -981,6 +984,21 @@ def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
         continued_by = continued[0].method if axis == _METHOD_AXIS and continued else None
         selections[axis] = FacetSelection.of_trace_entry(entry, continued_by=continued_by)
     return selections
+
+
+def _admitting_members(
+    selections: dict[str, FacetSelection], *, readers: Readers
+) -> dict[str, FacetSelection]:
+    """`selections` with a provenance selection of a dataset of several member provenances
+    admitting every member (`facets.ElectedDataset.admitting`), as the mint's selection did.
+    A stored trace entry records the dataset's id alone (`FacetSelection.of_trace_entry`)."""
+    provenance = selections.get("provenance")
+    if provenance is None or provenance.ref is None:
+        return selections
+    dataset = ElectedDataset.of(
+        provenance.ref, recorded=(), provenances_of=readers.code_index.provenances_of
+    )
+    return dataset.admitting(selections)
 
 
 def _continuation_stated(selections: Mapping[str, FacetSelection], probed: _Probed) -> None:
@@ -1163,6 +1181,11 @@ def _probe(
         return {
             request.stat_var: _Member(
                 probe=probe,
+                candidates=(
+                    probe.candidates
+                    if request.dataset is None
+                    else tuple(request.dataset.read_as_dataset(probe.candidates))
+                ),
                 electable=tuple(dataset_candidates(request, probe.candidates)),
             )
             for request, probe in zip(requests, probes, strict=True)

@@ -60,7 +60,14 @@ from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
 from search.engine.extract import read_window
 from search.engine.reading_coverage import CoverageYears, ReadingCoverage, observed_years
-from search.engine.retrieval.elected_dataset import elected_datasets, publishes
+from search.engine.retrieval.elected_dataset import (
+    NO_DATASETS,
+    ElectedDatasets,
+    elected_datasets,
+    provenance_axis,
+    publishes,
+    read_in_datasets,
+)
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
     merge_scope_candidates,
@@ -914,21 +921,24 @@ class PairPlan:
             held_runs=None,
         )
 
-    def narrowed(self, admits: Admits) -> PairPlan:
+    def narrowed(self, admits: Admits, *, datasets: ElectedDatasets = NO_DATASETS) -> PairPlan:
         """This plan under a request's facet filter: each series and each member's probe
-        keep the candidates `admits` accepts, and every group is elected again from them."""
+        keep the candidates `admits` accepts, each read as its member's elected dataset of
+        `datasets` reads it (`elected_dataset.read_in_datasets`), and every group is elected
+        again from them."""
+
+        def kept(sv: str, candidates: Iterable[Facet]) -> tuple[Facet, ...]:
+            return tuple(read_in_datasets(datasets, sv, c) for c in candidates if admits(sv, c))
+
         narrowed = plan_pairs(
-            [
-                replace(s, candidates=tuple(c for c in s.candidates if admits(s.stat_var, c)))
-                for s in self.series
-            ],
+            [replace(s, candidates=kept(s.stat_var, s.candidates)) for s in self.series],
             members=self.members,
             years=self.years,
             scope=self.scope,
             roles=self.roles,
             places=self.places,
             probes={
-                sv: replace(probe, candidates=tuple(c for c in probe.candidates if admits(sv, c)))
+                sv: replace(probe, candidates=kept(sv, probe.candidates))
                 for sv, probe in self.probes.items()
             }
             or None,
@@ -1325,16 +1335,17 @@ class BulkPlan:
             default=0,
         )
 
-    def narrowed(self, admits: Admits) -> BulkPlan:
+    def narrowed(self, admits: Admits, *, datasets: ElectedDatasets = NO_DATASETS) -> BulkPlan:
         """This plan under a request's facet filter: each candidate keeps the pairs of the
-        members whose facet `admits` accepts, and the read serves the top of the survivors'
-        ranking, as a plan built from the admitted candidates would."""
+        members whose facet `admits` accepts, each read as its member's elected dataset of
+        `datasets` reads it (`elected_dataset.read_in_datasets`), and the read serves the top
+        of the survivors' ranking, as a plan built from the admitted candidates would."""
         candidates: dict[str, RoleBulkCandidate] = {}
         for facet_id, candidate in self.candidates.items():
             by_sv = {
                 sv: kept
                 for sv, per_sv in candidate.by_sv.items()
-                if (kept := [c for c in per_sv if admits(sv, c)])
+                if (kept := [read_in_datasets(datasets, sv, c) for c in per_sv if admits(sv, c)])
             }
             if by_sv == candidate.by_sv:
                 candidates[facet_id] = candidate
@@ -1347,6 +1358,7 @@ class BulkPlan:
                     latest_date=max(
                         (c.latest_date for c in kept_all if c.latest_date), default=None
                     ),
+                    dataset_id=kept_all[0].dataset_id,
                 )
         election = role_election(
             candidates,
@@ -1799,9 +1811,12 @@ def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
 
 def served_provenances(plan: ReadPlan | None) -> tuple[str, ...]:
     """The distinct provenances of the series `plan` serves (`series_facets`), in serving
-    order."""
+    order, each read on the provenance axis (`elected_dataset.provenance_axis`): the
+    dataset's id for a facet of an elected dataset of several members."""
     return tuple(
-        dict.fromkeys(facet.provenance_id for facet in series_facets(plan) if facet.provenance_id)
+        dict.fromkeys(
+            provenance for facet in series_facets(plan) if (provenance := provenance_axis(facet))
+        )
     )
 
 
@@ -2081,10 +2096,12 @@ def plan_declared_defaults(
 
 def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts]) -> ReadPlan:
     """`plan` with each member of an index-resolved family keeping only the candidates its
-    elected dataset publishes (`elected_dataset.publishes`), and every group and bulk facet
-    elected again from them (`narrowed`), under the defaults its populated members then
-    declare (`declared_defaults`). A mint filters a member's candidates by the same test
-    before it ranks (`materialise.facets.dataset_candidates`) and agrees on declared defaults
+    elected dataset publishes (`elected_dataset.publishes`), read as the dataset's
+    (`elected_dataset.read_in_datasets`), and every group and bulk facet elected again from
+    them (`narrowed`), under the defaults its populated members then declare
+    (`declared_defaults`). A mint filters a member's candidates by the same test and reads
+    them the same way before it ranks (`materialise.facets.dataset_candidates`), so the
+    member provenances of a dataset of several elect as one table, and agrees on declared defaults
     over the members still populated (`materialise.group_facets._group_declared_policies`),
     so an answer and a mint of its Spec elect within one dataset and under one method, and a
     member holding data under another dataset alone serves nothing. Every resolver passes
@@ -2097,7 +2114,9 @@ def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts])
     if not datasets:
         return plan
     indexed = replace(plan, index_sourced=all(sv in datasets for sv in plan.members))
-    return indexed.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
+    return indexed.narrowed(
+        lambda sv, candidate: publishes(datasets, sv, candidate), datasets=datasets
+    )
 
 
 def preview_years(plan: ReadPlan | None) -> PlanYears:

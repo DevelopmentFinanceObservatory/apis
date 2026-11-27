@@ -113,13 +113,13 @@ def not_held(code: str, *, cause: NotHeldCause, index: CodeIndex) -> SourceCodeR
 
 
 def compile_part_code(code: str, *, scope: SourceScope | None, index: CodeIndex) -> PartCode:
-    """The StatVars the series code `code` names under the one provenance holding it that
-    `scope` allows (every provenance when `scope` is `None`), or the refusal the module
-    docstring describes."""
+    """The StatVars the series code `code` names under the one provenance holding it whose
+    dataset (`CodeIndex.dataset_of`) `scope` allows (every provenance when `scope` is
+    `None`), or the refusal the module docstring describes."""
     holding = {
         provenance: dcids
         for provenance, dcids in index.source_code_members(code).items()
-        if scope is None or provenance in scope.allowed
+        if scope is None or index.dataset_of(provenance) in scope.allowed
     }
     if not holding:
         cause = "excluded" if index.source_code_members(code) else "unknown"

@@ -32,7 +32,12 @@ from materialise.dependencies import (
     members_digest,
     refreshed_dependencies,
 )
-from materialise.facets import FacetBinding, ProvenanceRefresh, probe_collection_facets
+from materialise.facets import (
+    ElectedDataset,
+    FacetBinding,
+    ProvenanceRefresh,
+    probe_collection_facets,
+)
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.window import LatestYear, RequestedWindow, election_window
@@ -379,6 +384,53 @@ def test_applied_horizons_records_marks_and_declared_projections():
             (f"projected:{imf}", "Estimated"),
         )
     assert applied_horizons([crs]) == ()
+
+
+@pytest.mark.parametrize(
+    ("north", "south", "horizon"),
+    [
+        pytest.param("2026", None, (("partial:dataset/Ledger", "2026"),), id="one-member"),
+        pytest.param("2026", "2026", (("partial:dataset/Ledger", "2026"),), id="both-agree"),
+        pytest.param("2026", "2025", (("partial:dataset/Ledger", "2025,2026"),), id="both-differ"),
+        pytest.param(None, None, (), id="none"),
+    ],
+)
+def test_a_dataset_of_two_member_provenances_holds_back_each_period_a_member_marks(
+    north, south, horizon
+):
+    """`dataset/Ledger`'s series sit under two member provenances, which the catalogue
+    documents, and the dataset holds back every period either marks partial."""
+    ledger = "dataset/Ledger"
+    crs = dev_provenance_nodes()["provenance/OECDCreditorReportingSystem"]
+    unmarked = {prop: values for prop, values in crs.items() if prop != "partialObservationDate"}
+    nodes = {
+        provenance: unmarked if mark is None else {**unmarked, "partialObservationDate": (mark,)}
+        for provenance, mark in (
+            ("provenance/LedgerNorth", north),
+            ("provenance/LedgerSouth", south),
+        )
+    }
+
+    request = replace(
+        _request(_STAT_VAR, RequestedWindow(kind="all")),
+        dataset=ElectedDataset(
+            provenance=ledger, provenances=tuple(nodes), recorded_provenances=tuple(nodes)
+        ),
+    )
+
+    with bound_catalogue(documenting(nodes)):
+        assert applied_horizons([ledger], members={ledger: tuple(nodes)}) == horizon
+        assert applied_horizons([ledger]) == ()
+        dependencies = build_dependencies(
+            [request],
+            source_refs=[ledger],
+            provenance_refresh={},
+            conversion_records=(),
+            latest_years={},
+            candidate_provenances=(),
+            scope_settled=True,
+        )
+    assert dependencies.held_back == horizon
 
 
 def test_a_source_with_no_date_on_both_sides_is_unchanged():

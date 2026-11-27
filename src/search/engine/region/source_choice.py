@@ -207,19 +207,22 @@ def _dropped_warning(message: str) -> Warning:
 def _may_publish(
     shape: ShapeDraft, provenances: frozenset[str], index: CodeIndex, catalogue: Catalogue
 ) -> bool:
-    """Whether one of `provenances` may publish `shape`, read as candidacy reads a shape's
+    """Whether one of `provenances`, datasets as a scope holds them
+    (`SourceScope.expansions`), may publish `shape`, read as candidacy reads a shape's
     publishers (`phase_rank_bind._in_scope`): the datasets publishing its family
-    (`shape_datasets`), else the provenances holding the rows the index lists for its
-    five-tuple (`shape_listed_rows`), else the provenances the catalogue knows to hold one
-    of its members (`Catalogue.variable_provenances`). Where none of these is known, any
-    provenance but a dataset the index declares may, since a declared dataset publishes
-    only the index's rows."""
+    (`shape_datasets`), else the datasets holding the rows the index lists for its
+    five-tuple (`shape_listed_rows`), else the datasets of the provenances the catalogue
+    knows to hold one of its members (`Catalogue.variable_provenances`,
+    `CodeIndex.dataset_of`). Where none of these is known, any dataset but one the index
+    declares may, since a declared dataset publishes only the index's rows."""
     if datasets := shape_datasets(shape, index):
         return not provenances.isdisjoint(datasets)
     if listed := shape_listed_rows(shape, index):
         return any(not provenances.isdisjoint(row.datasets) for row in listed)
     known = frozenset(
-        row.id for sv in shape.sv_arc_facts or () for row in catalogue.variable_provenances(sv)
+        index.dataset_of(row.id)
+        for sv in shape.sv_arc_facts or ()
+        for row in catalogue.variable_provenances(sv)
     )
     if not known:
         return not provenances <= index.datasets.keys()
@@ -241,7 +244,7 @@ def allows_un_system(scope: SourceScope | None) -> bool:
     catalogue = current_catalogue()
     return any(
         row is not None and row.data_commons == UN_SYSTEM
-        for row in map(catalogue.provenance, scope.allowed)
+        for row in map(catalogue.provenance, scope.provenances)
     )
 
 
@@ -545,7 +548,7 @@ async def read_organisations(
             ], None
         if code is not None:
             return [], None
-        with scoped_reads(scope.allowed if isinstance(scope, SourceScope) else None):
+        with scoped_reads(scope.provenances if isinstance(scope, SourceScope) else None):
             detected = await detect_measure(graph, text, variable=variable)
         return detected.candidates, detected
 
@@ -645,16 +648,19 @@ def _recalled(
 ) -> list[RecalledFamily]:
     """The family each series of `hits` stands for, in their order, with its hit's score; a
     topic stands for none. An index row's family is published by its family's datasets
-    (`CodeIndex.family_by_dcid`), else by the row's provenances, and declares the flow axes
-    of the row's roles. Any other series is published by the provenances the catalogue
-    knows to hold it, else by `unrecorded`, and declares no axis the index records."""
+    (`CodeIndex.family_by_dcid`), else by the row's datasets, and declares the flow axes
+    of the row's roles. Any other series is published by the datasets of the provenances
+    the catalogue knows to hold it (`CodeIndex.dataset_of`), else by `unrecorded`, and
+    declares no axis the index records."""
     recalled: list[RecalledFamily] = []
     for hit in hits:
         if is_topic_candidate(hit.dcid, hit.type_of):
             continue
         row = index.statvar_by_dcid(hit.dcid)
         if row is None:
-            provenances = frozenset(p.id for p in catalogue.variable_provenances(hit.dcid))
+            provenances = frozenset(
+                index.dataset_of(p.id) for p in catalogue.variable_provenances(hit.dcid)
+            )
             recalled.append(
                 RecalledFamily(
                     datasets=provenances or unrecorded, axes=frozenset(), score=hit.score

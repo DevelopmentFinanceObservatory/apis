@@ -57,6 +57,7 @@ from search.engine.region.codes import (
     OBSERVATIONS_BULK_FETCH_FAILED,
     OBSERVATIONS_TIMED_OUT,
 )
+from search.engine.retrieval.elected_dataset import provenance_axis
 from search.models import SpecObservations, Warning, omitted_observations
 from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED, currency_unit_ref
 
@@ -76,13 +77,16 @@ _MAX_NAMED_OMITTED = 5
 
 class ServedFacet(Protocol):
     """The facet a bulk read serves: a role read's `RoleBulkCandidate` or a scope read's
-    graph `Facet`. Its unit picks the StatVar's elected selection, and its provenance is
-    the one the rows convert under (`convertibility.facet_selections`)."""
+    graph `Facet`. Its unit picks the StatVar's elected selection, and its provenance axis
+    value (`elected_dataset.provenance_axis`) is the one the rows convert under
+    (`convertibility.facet_selections`)."""
 
     @property
     def facet_id(self) -> str | None: ...
     @property
     def provenance_id(self) -> str | None: ...
+    @property
+    def dataset_id(self) -> str | None: ...
     @property
     def unit(self) -> str | None: ...
 
@@ -142,7 +146,7 @@ class BulkConversion:
         from search.engine.region.convertibility import facet_selections
 
         selections = facet_selections(
-            self.elected.get(stat_var, ()), (facet.unit, facet.provenance_id)
+            self.elected.get(stat_var, ()), (facet.unit, provenance_axis(facet))
         )
         return selections is not None and combination_converts(selections)
 
@@ -207,7 +211,7 @@ def convert_pairs(
     omitted: dict[Pair, str] = {}
     for stat_var, pairs in by_stat_var.items():
         selections = facet_selections(
-            conversion.elected.get(stat_var, ()), (facet.unit, facet.provenance_id)
+            conversion.elected.get(stat_var, ()), (facet.unit, provenance_axis(facet))
         )
         if selections is None:
             logger.warning(
