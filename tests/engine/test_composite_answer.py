@@ -329,6 +329,8 @@ def test_a_buffered_composite_answer_embeds_the_composed_preview(monkeypatch, do
     assert spec.resolved.coverage.evidence == "observed"
     keyed = [(w.code, w.spec_id) for w in part.warnings if w.code == _PARTIAL.code]
     assert keyed == [(_PARTIAL.code, spec.spec_id)]
+    # The table identity's series are one component's, so the composite states no years.
+    assert spec.resolved.years_with_data is None
 
 
 def test_a_composite_resubmit_reads_its_table_identity_with_no_preview(monkeypatch):

@@ -1086,7 +1086,8 @@ class CoverageIndex:
         self, rows: pa.Table, excluded: Iterable[tuple[str, Role, str]]
     ) -> np.ndarray:
         """Whether each of `rows` binds, for its variable, an `excluded` dcid on that role.
-        Each role's dictionary is tested once per variable naming it."""
+        Each role's column is tested once per distinct set of dcids its variables exclude, so
+        a conversion leaving the same entities out of every variable tests it once."""
         by_role: dict[Role, dict[int, set[str]]] = {}
         for variable, role, dcid in excluded:
             if (code := self._variable_codes.get(variable)) is not None:
@@ -1098,9 +1099,12 @@ class CoverageIndex:
         variables = _codes(rows[VARIABLE_COLUMN])
         for role, by_variable in by_role.items():
             column = rows[_ROLE_COLUMNS[role]]
+            by_dcids: dict[frozenset[str], list[int]] = {}
             for code, dcids in by_variable.items():
+                by_dcids.setdefault(frozenset(dcids), []).append(code)
+            for dcids, codes in by_dcids.items():
                 hit = _key_is_in(column, dcids).to_numpy(zero_copy_only=False)
-                mask |= (variables == code) & hit
+                mask |= np.isin(variables, np.array(codes, dtype=variables.dtype)) & hit
         return mask
 
     def _filtered(

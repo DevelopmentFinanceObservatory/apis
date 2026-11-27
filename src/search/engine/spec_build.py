@@ -42,7 +42,7 @@ from search.engine.retrieval.bound_values import (
     stated_members,
 )
 from search.engine.retrieval.derive import upstream_source
-from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.download import answer_years, download_facts
 from search.engine.retrieval.held_back import held_back, plan_runs
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
@@ -73,7 +73,7 @@ from search.engine.spec_id import (
     entity_role_key,
     slots_in_identity_order,
 )
-from search.engine.unit.conversion import counted_conversion
+from search.engine.unit.conversion import counted_conversion, rate_years
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     SCHEMA_VERSION,
@@ -85,6 +85,7 @@ from search.models import (
     Coverage,
     DataCommonsRef,
     DateRange,
+    DownloadFacts,
     Entity,
     EntityGroup,
     EntityOptions,
@@ -126,6 +127,7 @@ from search.models import (
     StatVarSlotValue,
     TimeWindow,
     TraceDefaultReading,
+    YearsWithData,
     served_date_range,
 )
 from search.scope.basis import identity_window
@@ -1627,21 +1629,28 @@ def build_spec(
     )
 
     provenance = (facets or {}).get("provenance")
-    download = (
-        composite.download()
-        if composite is not None
-        else download_facts(
+    download: DownloadFacts | None = None
+    years_with_data: YearsWithData | None = None
+    if composite is not None:
+        download = composite.download()
+    elif plan is not None:
+        conversion = counted_conversion(
+            plan, identity_doc.facets, catalogue=current_conversion_catalogue()
+        )
+        if coverage_index is not None:
+            download = download_facts(
+                plan,
+                coverage_index,
+                requested_window=requested_window,
+                conversion=conversion,
+                provenance=provenance.ref if provenance is not None else None,
+            )
+        years_with_data = answer_years(
             plan,
             coverage_index,
-            requested_window=requested_window,
-            conversion=counted_conversion(
-                plan, identity_doc.facets, catalogue=current_conversion_catalogue()
-            ),
-            provenance=provenance.ref if provenance is not None else None,
+            conversion=conversion,
+            rates=rate_years(plan, identity_doc.facets, catalogue=current_conversion_catalogue()),
         )
-        if plan is not None and coverage_index is not None
-        else None
-    )
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))
     resolved_stat_vars = _resolved_stat_vars(
@@ -1701,6 +1710,7 @@ def build_spec(
             entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,
+            years_with_data=years_with_data,
             download=download,
             coverage_stamp=coverage_stamp,
             scope=scope,

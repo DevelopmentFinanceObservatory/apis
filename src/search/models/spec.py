@@ -14,7 +14,7 @@ from pydantic import (
 from dfo_platform.roles import FlowAccount
 
 from .base import StrictModel
-from .coverage import Coverage, Headline, HeldBack
+from .coverage import Coverage, Headline, HeldBack, YearsWithData
 from .definition import SpecDefinition
 from .entity import EntityGroup, ResolvedEntity, _is_none
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
@@ -738,6 +738,27 @@ class ResolvedSpec(StrictModel):
             "exact latest-year summary for a role-bearing answer (see Headline); "
             "None for a non-role-bearing Spec, which coverage above already answers exactly "
             "or approximately enough that no separate latest-year summary is computed"
+        ),
+    )
+    years_with_data: YearsWithData | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the first and last year the answer's series hold data, and the years between "
+            "them that none holds, over each series' whole span, whatever window the request "
+            "named. The series are those the answer holds before a latest window reduces them, "
+            "each holding a point under the window, so under latest a series whose data ended "
+            "long ago sets start_year although the answer serves only its newest year. The "
+            "facets are those the read elected under the request's window, the ones facets "
+            "states; a resubmit with another window elects again unless the identity binds its "
+            "provenance, measurementMethod and unit facets. The years are those a request naming no "
+            "window would be served, which leave out partly reported and projected years and, "
+            "under a unit request, years the conversion or its exchange rates leave out (see "
+            "YearsWithData). Absent for a composite answer, an answer with no read plan, a "
+            "unit request whose conversion or exchange rates cannot be read in memory, a "
+            "role-bearing answer with no coverage artifact or one lacking a served StatVar, a "
+            "standard answer whose facets leave a first or last date unknown, and an answer "
+            "whose series hold no year"
         ),
     )
     download: DownloadFacts | None = Field(

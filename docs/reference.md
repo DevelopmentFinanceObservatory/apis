@@ -10,6 +10,8 @@ Every API surface mounts onto the shared platform app. The public deployment ser
 
 Search queries resolve against the Data Commons graph. Observation previews and candidate coverage are computed in memory via the `materialise` bridge.
 
+A resolve answer states the years its series hold data in `resolved.years_with_data`: `start_year`, `end_year`, and `gap_years` for the years between them with none. The years run over each series' whole span, whatever window the request named, counting every series the answer holds under its window before a `latest` window reduces them, and leave out partly reported and projected years as a request naming no window does, and under a unit request the years without a conversion or an exchange rate. They describe the facets the read elected under the request's window, the ones `resolved.facets` states. A resubmit with another window elects again unless its identity binds the `provenance`, `measurementMethod` and `unit` facets to those values. Conformance clause C202 lists the answers that omit the member.
+
 | Method | Endpoint                   | Description                                                                                                                                                                    |
 | :----- | :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/api/search/resolve`      | Resolves natural-language queries into structured specifications with observation previews. Accepts `Accept: text/event-stream` for Server-Sent Events (SSE) or standard JSON. |

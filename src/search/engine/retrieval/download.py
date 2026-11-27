@@ -27,17 +27,24 @@ conversion keeps only some of the years they span. The window is null when a cou
 last year unknown, since the file's years could then run past either bound. The licence is
 the one served provenance's source-index entry's, as the origin catalogue holds it
 (`origin_catalogue.CardFacts`), so stating it reads nothing over the network.
+
+The years with data (`ResolvedSpec.years_with_data`, `answer_years`) read the same sources
+over every date of the series the plan holds, with no opt-in, so they reach past the
+identity's window.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+import numpy as np
 
 from origin_catalogue import current_catalogue, entry_ref
 from search.engine.retrieval.coverage import (
     counted_rows,
     coverage_exclusions,
+    held_rows,
     latest_election,
 )
 from search.engine.retrieval.read_plan import (
@@ -47,21 +54,28 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     dated_without_complete_dates,
     facet_dates,
+    kept_points,
     opt_in,
     series_dates,
     series_point_dates,
     series_points,
     year_of,
 )
-from search.engine.unit.conversion import CountConversion, CountedConversion, counted_exact
-from search.models import DownloadFacts, DownloadLicence, TimeWindow
-from series_coverage.schema import ABSENT_ENTITY
+from search.engine.unit.conversion import (
+    UNDECIDED,
+    CountConversion,
+    CountedConversion,
+    counted_exact,
+)
+from search.models import DownloadFacts, DownloadLicence, TimeWindow, YearsWithData
+from series_coverage.schema import ABSENT_ENTITY, MASK_WORD_BITS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
+    from search.engine.clients.graph import Facet
     from search.models import RequestedWindow
-    from series_coverage.index import CoverageIndex, KeptYears
+    from series_coverage.index import CoverageIndex, KeptYears, SeriesYears
     from series_coverage.index import Role as CoverageRole
 
 
@@ -233,6 +247,127 @@ def _coverage_extent(
         window=TimeWindow(start_year=extent.first_year, end_year=extent.last_year),
         exact=True,
     )
+
+
+def answer_years(
+    plan: ReadPlan,
+    coverage_index: CoverageIndex | None,
+    *,
+    conversion: CountConversion,
+    rates: frozenset[int] | Literal["undecided"] | None,
+) -> YearsWithData | None:
+    """The years the series `plan` holds have data in (`YearsWithData`). The series are those
+    holding a point under the plan's window, with the facets it elected there, before a
+    `latest` window reduces them. Each is read under every date, unclipped by the window and
+    with no opt-in, so a source's partly reported period and projected facets hold no year.
+    Under a unit request each series keeps the years `conversion` keeps, as the download
+    counts them, and only the years `rates` holds (`unit.conversion.rate_years`), since a
+    year without a rate serves no converted row.
+
+    - A role-bearing plan reads the coverage index (`CoverageIndex.series_years`) over the
+      rows it holds (`coverage.held_rows`) less those a conversion leaves out
+      (`coverage.coverage_exclusions`). Under a range it keeps the series holding a point
+      inside the range, so a bulk plan, whose rows name every pair of its facets, counts the
+      series a per-pair plan holds (`_series_in_window`).
+    - A standard plan reads its held series' facet metadata alone (`_facet_years`), so it
+      needs no coverage index.
+
+    None when the conversion's effect or its rates cannot be read in memory (`UNDECIDED`), for
+    a role-bearing plan with no coverage index or one lacking a member the plan reads, for a
+    standard plan with a data-bearing facet whose first or last date is unknown, and when no
+    series holds a year."""
+    if conversion == UNDECIDED or rates == UNDECIDED:
+        return None
+    kept = conversion if isinstance(conversion, CountedConversion) else None
+    if isinstance(plan, PairPlan) and plan.roles is None:
+        years: set[int] = set()
+        for s in plan.held:
+            allowed = kept.kept_years(dict(s.role_tuple)) if kept is not None else None
+            for facet in s.group:
+                held = _facet_years(facet)
+                if held is None:
+                    return None
+                years.update(held if allowed is None else held & allowed)
+        return _years_with_data(years if rates is None else years & rates)
+    if (
+        plan.roles is None
+        or coverage_index is None
+        or not all(coverage_index.covers(sv) for sv in plan.members)
+    ):
+        return None
+    served = held_rows(plan)
+    excluded = coverage_exclusions(plan)
+    found = coverage_index.series_years(
+        variables=plan.members,
+        bound=plan.roles.bound,
+        served=served,
+        excluded=excluded,
+        kept_years=(coverage_kept_years(kept, plan.roles.role_names) if kept is not None else None),
+    )
+    if found is None:
+        return None
+    masks = found.masks
+    if isinstance(plan.years, TimeWindow):
+        inside = coverage_index.series_years(
+            variables=plan.members,
+            bound=plan.roles.bound,
+            served=served,
+            excluded=excluded,
+            first_year=plan.years.start_year,
+            last_year=plan.years.end_year,
+            include=opt_in(plan.years),
+        )
+        if inside is None:
+            return None
+        masks = masks[_series_in_window(found, inside)]
+    epoch = coverage_index.horizon.epoch_year
+    held_words = np.bitwise_or.reduce(masks, axis=0).tolist() if masks.shape[0] else []
+    found_years = {
+        epoch + MASK_WORD_BITS * word + bit
+        for word, value in enumerate(held_words)
+        for bit in range(int(value).bit_length())
+        if int(value) >> bit & 1
+    }
+    return _years_with_data(found_years if rates is None else found_years & rates)
+
+
+def _series_in_window(found: SeriesYears, inside: SeriesYears) -> np.ndarray:
+    """Whether each series of `found` is one of `inside`'s, the series holding a point in
+    the window, matched on `(variable, recipient, donor)`."""
+    held = set(inside.keys())
+    series = found.keys()
+    return np.array([key in held for key in series], dtype=bool)
+
+
+def _facet_years(facet: Facet) -> frozenset[int] | None:
+    """The years `facet` holds under every date with no opt-in. These are the years of the
+    dates it keeps (`kept_points`) when it lists them all, else every year of its kept span
+    (`facet_dates`). Empty for a facet holding no point, and None when its span has an
+    unknown bound."""
+    if facet.obs_count <= 0:
+        return frozenset()
+    if facet.dates and facet.dates_complete:
+        return frozenset(
+            year
+            for d in kept_points(facet, facet.dates, include=frozenset())
+            if (year := year_of(d)) is not None
+        )
+    span = facet_dates(facet, None)
+    if span is None:
+        return frozenset()
+    first, last = year_of(span[0]), year_of(span[1])
+    if first is None or last is None:
+        return None
+    return frozenset(range(first, last + 1))
+
+
+def _years_with_data(years: set[int]) -> YearsWithData | None:
+    """`years` as their first and last year and the years between them missing from it."""
+    if not years:
+        return None
+    first, last = min(years), max(years)
+    gaps = sorted(set(range(first, last + 1)) - years)
+    return YearsWithData(start_year=first, end_year=last, gap_years=gaps or None)
 
 
 @dataclass(frozen=True)

@@ -49,6 +49,7 @@ from search.models import (
     ResubmitIdentityEntry,
     ResubmitIdentityPayload,
     Warning,
+    YearsWithData,
 )
 from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE
 from series_coverage.shared import CoverageSnapshot
@@ -849,6 +850,8 @@ def test_a_rate_gap_shortens_the_period_to_the_years_the_rates_cover():
         "exchange_rates",
         "2020",
     )
+    # The pound has no rate in 2019, so no answer in pounds serves it.
+    assert spec.resolved.years_with_data == YearsWithData(start_year=2020, end_year=2020)
 
     unbound = _run(include_observations=True, rates=rates, years=years, currency="GBP")
     assert unbound.no_data_reason == "rate_coverage_gap"

@@ -20,6 +20,7 @@ from .coverage import (
     HeadlineYear,
     HeldBack,
     ReportedShare,
+    YearsWithData,
     coverage_is_empty,
 )
 from .departure import (
@@ -539,6 +540,7 @@ __all__ = [
     "WarningSeverity",
     "WholeRequest",
     "YearSpan",
+    "YearsWithData",
     "asked_open_axes",
     "coverage_is_empty",
     "departures_in_precedence_order",

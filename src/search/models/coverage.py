@@ -76,7 +76,7 @@ class HeldBack(StrictModel):
     )
 
 
-def _no_held_back(value: object) -> bool:
+def _is_empty(value: object) -> bool:
     return not value
 
 
@@ -131,7 +131,7 @@ class CoverageExact(StrictModel):
         default=None, description="the date window this count applies to"
     )
     held_back: list[HeldBack] | None = Field(
-        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+        default=None, exclude_if=_is_empty, description=_HELD_BACK_DESCRIPTION
     )
 
 
@@ -147,7 +147,7 @@ class CoverageBreadth(StrictModel):
         default=None, description="the date window this breadth applies to"
     )
     held_back: list[HeldBack] | None = Field(
-        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+        default=None, exclude_if=_is_empty, description=_HELD_BACK_DESCRIPTION
     )
 
 
@@ -158,7 +158,7 @@ class CoverageBare(StrictModel):
     has_data: bool = Field(description="whether the region has any observations")
     window: TimeWindow | None = Field(default=None, description="the date window, when known")
     held_back: list[HeldBack] | None = Field(
-        default=None, exclude_if=_no_held_back, description=_HELD_BACK_DESCRIPTION
+        default=None, exclude_if=_is_empty, description=_HELD_BACK_DESCRIPTION
     )
 
 
@@ -277,6 +277,55 @@ class Headline(StrictModel):
             and (window.end_year is None or self.year <= window.end_year)
         ):
             raise ValueError(f"year {self.year} lies outside the named window {window!r}")
+        return self
+
+
+class YearsWithData(StrictModel):
+    """The calendar years an answer's series hold data, over each series' whole span,
+    whatever window the request named.
+
+    The series are those the answer holds before a `latest` window reduces them: its
+    StatVars, entities and constraints, each series holding a point under its window, each
+    counted in every year it holds, inside the window or outside it. Under `latest` that is
+    every series with data, so for "latest ODA to Kenya" a donor whose series ended in 1995
+    sets `start_year` within that donor's span, although the answer serves only its newest
+    year. Under a range a series with no point inside the range counts no year, however the
+    preview reads.
+
+    The facets are those the read elected under the request's window: the provenance,
+    measurement method and unit `facets` states, which the identity pins only where it binds
+    them. A resubmit with another window elects again, so another window can serve other
+    facets and other years; binding the identity's `provenance`, `measurementMethod` and
+    `unit` facets to the values `facets` states keeps them. A window holding projected years alone
+    elects the projection facet, whose years are held back, and states no years.
+
+    The years are those a request naming no window would be served. A source's partly
+    reported period and projected years are left out (`coverage.held_back` lists them),
+    whether or not this request opted in to them. Under a unit request a year the conversion
+    leaves out is left out, as the download leaves it out, and so is a year the exchange-rate
+    table holds no rate for that the conversion reads. A role-bearing answer reads them from
+    the coverage artifact (`CoverageIndex.series_years`), and any other answer from its
+    series' facet metadata. A facet listing all its dates counts the years of those dates, a
+    facet listing none counts every year of its own span, and the answer's years are their
+    union, so a gap is stated only where no facet covers it."""
+
+    start_year: int = Field(description="the first year any held series holds data")
+    end_year: int = Field(description="the last year any held series holds data")
+    gap_years: list[int] | None = Field(
+        default=None,
+        exclude_if=_is_empty,
+        description=(
+            "the years after start_year and before end_year that no held series holds, "
+            "in order. Absent when every year between them holds data"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _gaps_inside_the_span(self) -> YearsWithData:
+        if self.end_year < self.start_year:
+            raise ValueError(f"end_year {self.end_year} precedes start_year {self.start_year}")
+        if any(not self.start_year < year < self.end_year for year in self.gap_years or ()):
+            raise ValueError("gap_years lie strictly between start_year and end_year")
         return self
 
 

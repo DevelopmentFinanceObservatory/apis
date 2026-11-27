@@ -348,6 +348,77 @@ def counted_conversion(
     )
 
 
+def target_currencies(
+    plan: ReadPlan,
+    unit_request: IdentityUnitRequest,
+    declared_roles: tuple[str, ...],
+    catalogue: ConversionCatalogue,
+) -> frozenset[str]:
+    """The currencies `unit_request` converts the plan's rows into: its ISO code, or each
+    national currency of the entities the plan serves on the role it names
+    (`graph_role_for_spec_role`), leaving out an entity no single currency names, whose
+    rows the conversion omits. Raises `RecipeNotDeclaredError` for a role the members do
+    not declare."""
+    currency = unit_request.currency
+    if isinstance(currency, str):
+        return frozenset({currency})
+    role = graph_role_for_spec_role(spec_role=currency.role, declared_roles=declared_roles)
+    return frozenset(
+        code
+        for entity in served_role_entities(plan, role)
+        if (code := catalogue.national_currencies.get(entity)) is not None
+    )
+
+
+def rate_years(
+    plan: ReadPlan | None,
+    facets: Mapping[str, IdentityFacetBinding] | None,
+    *,
+    catalogue: ConversionCatalogue | None,
+) -> frozenset[int] | Literal["undecided"] | None:
+    """The years in which the exchange-rate table holds every rate term the identity's unit
+    request converts the plan's rows with (`ConversionAvailability.converted_years`): each
+    native currency's and each target currency's rate, and at constant prices the target's
+    rate in the base year, without which no year converts. A year outside them serves no
+    converted row.
+
+    None when no rate bounds a year: no unit request, or one every served facet satisfies
+    natively at current prices. `UNDECIDED` where `counted_conversion` cannot read the
+    conversion, and when the request names no target currency the tables can be read for."""
+    binding = (facets or {}).get("unit")
+    if plan is None or not isinstance(binding, IdentityFacetValueRequest):
+        return None
+    request: IdentityUnitRequest = binding.request
+    keys = served_facet_keys(plan)
+    natives = {nominal_currency(unit) for unit, _provenance in keys}
+    natively = isinstance(request.currency, str) and natives == {request.currency}
+    if not keys or (request.prices == "current" and natively):
+        return None
+    recipes = {catalogue.recipe(p) if p else None for _u, p in keys} if catalogue else {None}
+    recipe = next(iter(recipes)) if len(recipes) == 1 else None
+    if catalogue is None or recipe is None or None in natives:
+        return UNDECIDED
+    try:
+        targets = target_currencies(plan, request, plan_roles(plan), catalogue)
+    except RecipeNotDeclaredError:
+        return UNDECIDED
+    if not targets:
+        return UNDECIDED
+    tables = catalogue.tables[recipe.recipe_id]
+    availability = ConversionAvailability.of(
+        tables,
+        recipe,
+        natives=[code for code in natives if code is not None],
+        deflator_entities=(),
+    )
+    return availability.converted_years(
+        years=tables.years,
+        targets=targets,
+        prices=request.prices,
+        base_year=request.base_year,
+    ).rates
+
+
 def merged_conversion(conversions: Sequence[CountConversion]) -> CountConversion:
     """The conversion of answers merged into one, whose counts read each answer's: the one
     they share, that one reading every answer's native currencies when only those differ,
