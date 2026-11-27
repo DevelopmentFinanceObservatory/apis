@@ -676,10 +676,17 @@ def _fetch_arcs_many(
 
 def _build_code_row(config: CodeSystemConfig, dcid: str, arcs: dict[str, tuple[str, ...]]) -> dict:
     """One code row of `config`'s system. A value of a system declaring classification codes
-    must carry one, and a value of a system declaring none must carry none
-    (`CodeSystemConfig.classification_codes`)."""
+    must carry one, except a dcid in `config.uncoded`, which must carry none, and a value of a
+    system declaring none must carry none (`CodeSystemConfig.classification_codes`)."""
     codes = arcs.get("classificationCode", ())
-    if config.classification_codes:
+    if dcid in config.uncoded:
+        if codes:
+            raise ExportRefused(
+                f"{dcid} is declared uncoded in {config.code_system} but carries "
+                f"classificationCode {codes[0]!r} -- drop it from CodeSystemConfig.uncoded"
+            )
+        code = None
+    elif config.classification_codes:
         code = _single_value(dcid, "classificationCode", codes)
     elif codes:
         raise ExportRefused(
@@ -985,6 +992,12 @@ def export_code_system(
     Derive `hierarchical` from parent arcs and reject disagreement with the configured value or
     parents outside the enumerated system.
     """
+    if config.uncoded and not config.classification_codes:
+        raise ExportRefused(
+            f"{config.code_system} declares uncoded codes {sorted(config.uncoded)} but no "
+            "classification codes -- set classification_codes on its CodeSystemConfig or drop "
+            "uncoded"
+        )
     page = reader.node_subjects(config.enum_dcid, property="typeOf", max_results=max_results)
     if page.truncated:
         raise ExportRefused(
