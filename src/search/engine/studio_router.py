@@ -11,20 +11,25 @@ runs on to its end in the background and leaves its verdict in the memo, keyed b
 normalised query and the question set, so the next request of the wording routes on it
 whatever the parse caches hold.
 
-The router's calls take a Jev lane of their own (`jev_client.JevLane`), so a router failure
-never opens the binder's breaker or takes its slots.
+The router's calls take a Jev lane of their own (`jev_client.JevLane`), with
+`Settings.studio_router_max_concurrency` slots per loop, so a router failure never opens the
+binder's breaker and router load never takes the binder's slots or its pool connections.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
+
+from pydantic import ValidationError
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from search.engine.binders import jev_client
@@ -51,17 +56,28 @@ class Signal(NamedTuple):
 class RouterQuestions:
     """The Jev request the router sends and how its answers read as one studio probability.
 
-    `version` names the set; it joins the memo key and the response cache key, so a change to
-    the wording, the model or the signals starts fresh entries. `surfaces` is the state's
-    description of each surface, beside the query. The studio probability is the mean of the
-    `studio_signals` answers.
+    `surfaces` is the state's description of each surface, beside the query. The studio
+    probability is the mean of the `studio_signals` answers. `version` is a digest of the
+    model, the surfaces, the questions and the signals, and joins the memo key and the
+    response cache key, so any change to them starts fresh entries.
     """
 
-    version: str
     model: str
     surfaces: Mapping[str, str]
     questions: Mapping[str, JevQuestion]
     studio_signals: tuple[Signal, ...]
+    version: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        document = {
+            "model": self.model,
+            "surfaces": self.surfaces,
+            "questions": self.questions,
+            "studio_signals": [list(signal) for signal in self.studio_signals],
+        }
+        canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+        object.__setattr__(self, "version", digest)
 
     def state(self, query: str) -> JSONContent:
         """The request state for `query`."""
@@ -79,7 +95,6 @@ class RouterQuestions:
 
 
 ROUTER_QUESTIONS = RouterQuestions(
-    version="router-d-1",
     model="jev-1.14.0",
     surfaces={
         "search": "Finds and filters datasets, indicators and countries in the platform's catalogue, and returns data tables and charts. Answers 'show me', 'list', 'download', 'which datasets' requests.",
@@ -126,9 +141,12 @@ ROUTER_QUESTIONS = RouterQuestions(
         Signal("needs_synthesis"),
     ),
 )
-"""The router's Jev request, fitted on labelled Get Data queries and the corpus. The first
-parse decides scope, so the `in_scope` answer routes nothing; it stays so the request matches
-the one the thresholds were fitted on."""
+"""The router's Jev request. Studio takes a question that asks for a cause, a judgement, a
+forecast, or a brief, overview or summary in words; search keeps one that asks to show, find,
+list, compare or download data, a trend over time included. The studio probability averages
+the route choice's `analysis` option, `wants_analysis` and `needs_synthesis`. The first parse
+decides scope, so the `in_scope` answer routes nothing; it stays in the request the
+`SEARCH_STUDIO_ROUTER_AUTO` and `SEARCH_STUDIO_ROUTER_OFFER` defaults were set on."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -147,17 +165,19 @@ class StudioRouting:
             "auto": self.auto,
             "offer": self.offer,
             "version": self.questions.version,
-            "model": self.questions.model,
         }
 
 
+def asks_for_routing(inp: ResolveInput) -> bool:
+    """Whether `inp` is raw text that set `studio_routing`."""
+    return isinstance(inp, RawTextInput) and inp.studio_routing
+
+
 def routing_for(inp: ResolveInput) -> StudioRouting | None:
-    """The routing `inp` runs under: None unless it is raw text that set `studio_routing`
+    """The routing `inp` runs under: None unless it asks for routing (`asks_for_routing`)
     while `Settings.studio_router` is ``on``."""
     settings = config.settings()
-    if not isinstance(inp, RawTextInput) or not inp.studio_routing:
-        return None
-    if settings.studio_router != "on":
+    if not asks_for_routing(inp) or settings.studio_router != "on":
         return None
     return StudioRouting(auto=settings.studio_router_auto, offer=settings.studio_router_offer)
 
@@ -176,9 +196,18 @@ class Ask(Protocol):
     ) -> Awaitable[JevResponse]: ...
 
 
+def _router_slots(settings: SearchSettings) -> int:
+    return settings.studio_router_max_concurrency
+
+
+def router_lane() -> JevLane:
+    """A fresh Jev lane for the router's calls, `studio_router_max_concurrency` slots a loop."""
+    return JevLane.fresh(slots=_router_slots)
+
+
 # The router's Jev call. Tests replace it with a fake.
 _ask: Ask = jev_client.ask
-_LANE = JevLane.fresh()
+_LANE = router_lane()
 
 MEMO_SIZE = 4096
 
@@ -189,16 +218,16 @@ class _VerdictMemo:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._values: OrderedDict[tuple[str, str, str], float] = OrderedDict()
+        self._values: OrderedDict[tuple[str, str], float] = OrderedDict()
 
-    def get(self, key: tuple[str, str, str]) -> float | None:
+    def get(self, key: tuple[str, str]) -> float | None:
         with self._lock:
             value = self._values.get(key)
             if value is not None:
                 self._values.move_to_end(key)
             return value
 
-    def put(self, key: tuple[str, str, str], value: float) -> None:
+    def put(self, key: tuple[str, str], value: float) -> None:
         with self._lock:
             self._values[key] = value
             self._values.move_to_end(key)
@@ -220,8 +249,8 @@ def clear_memo() -> None:
     _MEMO.clear()
 
 
-def _memo_key(query: str, questions: RouterQuestions) -> tuple[str, str, str]:
-    return (normalise_query(query), questions.version, questions.model)
+def _memo_key(query: str, questions: RouterQuestions) -> tuple[str, str]:
+    return (normalise_query(query), questions.version)
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,15 +274,24 @@ class JevOutcome:
 
     `status` is ``memo`` for a verdict the memo held, ``answered`` for a call that had
     answered, ``late`` for one still running, and ``failed`` for one that gave no answer,
-    with its `JevError` kind as `error`. `probability` is the studio probability, None unless
-    `status` is ``memo`` or ``answered``. `ms` is the call's wall time, None for a memo
-    verdict or a call still running.
+    with its kind as `error`: a `JevError` kind, ``too_large`` for a state over the request
+    budget, ``invalid_response`` for an answer that failed validation, or ``error``.
+    `probability` is the studio probability, None unless `status` is ``memo`` or
+    ``answered``. `ms` is the call's wall time, None for a memo verdict or a call still
+    running.
     """
 
     status: JevStatus
     probability: float | None = None
     ms: int | None = None
     error: str | None = None
+
+    @property
+    def unsettled(self) -> bool:
+        """Whether a later request may route the wording otherwise: the call was still
+        running, or failed in a way that may pass. A missing key fails every call until the
+        configuration changes, so it settles the route."""
+        return self.status == "late" or (self.status == "failed" and self.error != "no_key")
 
 
 class JevRead:
@@ -289,7 +327,7 @@ class JevRead:
 
 
 async def _read(
-    query: str, *, key: tuple[str, str, str], questions: RouterQuestions
+    query: str, *, key: tuple[str, str], questions: RouterQuestions
 ) -> _Answered | _Failed:
     """Jev's studio probability for `query`, stored in the memo, or how the call failed. A
     failure is returned, so a call no request reads any more leaves no unretrieved error."""
@@ -309,6 +347,10 @@ async def _read(
         probability = questions.studio_probability(response)
     except JevError as exc:
         return _Failed(exc.kind, elapsed())
+    except ValidationError:
+        # A `ValueError` too, so it is caught first: a malformed answer, not a long query.
+        logger.warning("studio router: Jev's answer failed validation", exc_info=True)
+        return _Failed("invalid_response", elapsed())
     except ValueError:
         # `ask` refuses a state over the request budget; a query that long routes nothing.
         return _Failed("too_large", elapsed())
@@ -346,39 +388,51 @@ class RouteRecord:
     """What a routed request's `resolve` log line reports of its routing.
 
     `decision` is the route's mode, ``none`` when it routed nothing; `probability` the
-    route's, or Jev's studio probability when it routed nothing; `extract_kind` the first
-    parse's kind, None on a cache hit or before the parse returned. `jev` is the Jev call's
-    `JevOutcome.status`, ``cached`` on a layer-1 hit, which asks Jev nothing, and None before
-    the parse returned; `jev_error` its failure kind and `jev_ms` its wall time.
+    route's, None without one; `jev_probability` Jev's studio probability, None when Jev
+    gave none. `extract_kind` is the first parse's kind, None on a cache hit or before the
+    parse returned. `jev` is the Jev call's `JevOutcome.status`; ``cached`` on a layer-1 hit
+    on a stored answer and ``shared`` on a layer-1 follower given a leader's answer it did
+    not store, neither of which asks Jev; ``off`` on a request that set `studio_routing`
+    while `Settings.studio_router` is ``off``; None before the parse returned. `jev_error` is
+    the call's failure kind and `jev_ms` its wall time.
     """
 
     decision: Decision | None = None
     probability: float | None = None
+    jev_probability: float | None = None
     extract_kind: str | None = None
-    jev: JevStatus | Literal["cached"] | None = None
+    jev: JevStatus | Literal["cached", "shared", "off"] | None = None
     jev_error: str | None = None
     jev_ms: int | None = None
+
+    @classmethod
+    def router_off(cls) -> RouteRecord:
+        """The record of a request that asked for routing while the router is off."""
+        return cls(decision="none", jev="off")
 
     def note(self, kind: str, outcome: JevOutcome, route: StudioRoute | None) -> None:
         """Record the decision `route` the router took on `kind` and `outcome`."""
         self.decision = route.mode if route is not None else "none"
-        self.probability = route.probability if route is not None else outcome.probability
+        self.probability = route.probability if route is not None else None
+        self.jev_probability = outcome.probability
         self.extract_kind = kind
         self.jev = outcome.status
         self.jev_error = outcome.error
         self.jev_ms = outcome.ms
 
-    def note_cached(self, route: StudioRoute | None) -> None:
-        """Record the route a layer-1 hit replays."""
+    def note_cached(self, route: StudioRoute | None, *, shared: bool) -> None:
+        """Record the route a layer-1 hit replays, `shared` when a leader's answer that was
+        not stored served it."""
         self.decision = route.mode if route is not None else "none"
         self.probability = route.probability if route is not None else None
-        self.jev = "cached"
+        self.jev = "shared" if shared else "cached"
 
     def log_fields(self) -> dict[str, object]:
         """The record as the `resolve` line's `studio_route` object."""
         return {
             "decision": self.decision,
             "probability": self.probability,
+            "jev_probability": self.jev_probability,
             "extract_kind": self.extract_kind,
             "jev": self.jev,
             "jev_error": self.jev_error,

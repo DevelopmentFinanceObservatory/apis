@@ -110,6 +110,10 @@ SEARCH_MAX_UNIT_ALTERNATIVES: int = 10
 # Distinguishes an unset derived default from an explicit value.
 _UNSET_DERIVED_DEFAULT = -1
 
+# Connections the Jev client's one pool holds (`binders.jev_client._LIMITS`). Every Jev lane
+# shares it, so the lanes' slots together stay below it (`_validate_bounds`).
+JEV_POOL_CONNECTIONS = 100
+
 
 class SearchSettings(BaseSettings):
     """Engine configuration, read from `SEARCH_*` environment variables.
@@ -217,6 +221,12 @@ class SearchSettings(BaseSettings):
     # answer (`offer`). Both join the response cache key of a routed request.
     studio_router_auto: float = 0.6
     studio_router_offer: float = 0.3
+
+    # Router Jev requests in flight per event loop, on the router's own lane
+    # (`studio_router`). With `jev_max_concurrency` it stays below the Jev client's shared
+    # pool (`JEV_POOL_CONNECTIONS`), so neither lane's calls wait in the pool, where a cut
+    # call fails as `timeout` and counts against its breaker.
+    studio_router_max_concurrency: int = 16
 
     # -- Graph ------------------------------------------------------------
     # Bare host of the Data Commons service, from SEARCH_GRAPH_BASE. Required, so
@@ -925,6 +935,17 @@ class SearchSettings(BaseSettings):
         if self.jev_shadow_max_inflight < 1:
             raise ValueError(
                 f"SEARCH_JEV_SHADOW_MAX_INFLIGHT must be >= 1; got {self.jev_shadow_max_inflight!r}"
+            )
+        if self.studio_router_max_concurrency < 1:
+            raise ValueError(
+                "SEARCH_STUDIO_ROUTER_MAX_CONCURRENCY must be >= 1; "
+                f"got {self.studio_router_max_concurrency!r}"
+            )
+        if self.jev_max_concurrency + self.studio_router_max_concurrency >= JEV_POOL_CONNECTIONS:
+            raise ValueError(
+                "SEARCH_JEV_MAX_CONCURRENCY plus SEARCH_STUDIO_ROUTER_MAX_CONCURRENCY must stay "
+                f"below the Jev client's {JEV_POOL_CONNECTIONS}-connection pool; got "
+                f"{self.jev_max_concurrency!r} + {self.studio_router_max_concurrency!r}"
             )
         if not 0.0 <= self.studio_router_offer <= self.studio_router_auto <= 1.0:
             raise ValueError(

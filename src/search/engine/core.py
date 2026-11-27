@@ -80,7 +80,7 @@ from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import held_family_memo
-from search.engine.studio_router import RouteRecord, routing_for
+from search.engine.studio_router import RouteRecord, asks_for_routing, routing_for
 from search.models import (
     DatasetResubmitInput,
     NoDataPart,
@@ -276,9 +276,11 @@ def _log_resolve(
     `timing_ms` total and `by_step`, and each part's own `by_step`.
 
     `studio_route` is null on every request but a raw_text one routed to Studio
-    (`studio_router.routing_for`), which logs its decision, the probability it decided on,
-    the first parse's kind, and how the router's Jev call stood when the parse returned with
-    its failure kind and wall time (`studio_router.RouteRecord.log_fields`).
+    (`studio_router.routing_for`), which logs its decision, the route's probability and
+    Jev's own, the first parse's kind, and how the router's Jev call stood when the parse
+    returned with its failure kind and wall time (`studio_router.RouteRecord.log_fields`).
+    A raw_text request that set `studio_routing` while the router is off logs `decision`
+    ``none`` and `jev` ``off``.
 
     `parser_replay` is null on every request but a dev parser replay, which logs its
     `ReplayRecord.log_fields` there. A replay's `extraction_agreed` is the served
@@ -792,6 +794,8 @@ async def _resolve_pipeline_events(
     studio_routing = routing_for(inp)
     if studio_routing is not None:
         record.studio_route = RouteRecord()
+    elif asks_for_routing(inp):
+        record.studio_route = RouteRecord.router_off()
 
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the
@@ -891,7 +895,7 @@ async def _resolve_pipeline_events(
             lookup_ms = now_ms() - lookup_t0
             if cached is not None:
                 if record.studio_route is not None:
-                    record.studio_route.note_cached(cached.route)
+                    record.studio_route.note_cached(cached.route, shared=scope.served_unstored)
                 async with aclosing(
                     scope.hit_events(
                         cached,

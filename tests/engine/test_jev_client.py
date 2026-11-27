@@ -345,6 +345,29 @@ def test_a_lane_of_its_own_keeps_its_failures_off_the_binders_breaker(jev: _Jev)
     assert jev.requests[-1]["model"] == jev.settings.jev_model
 
 
+def test_a_lane_holds_its_own_slot_count(jev: _Jev) -> None:
+    """A lane of one slot sends one call at a time whatever the binder's slot count, so the
+    second call waits for the slot and fails as `slot_wait`, which no breaker counts."""
+
+    async def hangs(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(10)
+        return _answers(request)
+
+    jev.serve(hangs, jev_ceiling_s=0.05)
+    lane = JevLane.fresh(slots=lambda settings: 1)
+
+    async def run() -> list[BaseException | JevResponse]:
+        return await asyncio.gather(
+            *(ask(_STATE, _QUESTIONS, settings=jev.settings, lane=lane) for _ in range(2)),
+            return_exceptions=True,
+        )
+
+    failures = asyncio.run(run())
+
+    assert sorted(getattr(f, "kind", "answered") for f in failures) == ["slot_wait", "timeout"]
+    assert len(jev.requests) == 1
+
+
 def test_a_failed_probe_opens_the_breaker_again(jev: _Jev) -> None:
     jev.serve(_unhealthy(BREAKER_FAILURES + 1))
     _fail(jev, BREAKER_FAILURES)

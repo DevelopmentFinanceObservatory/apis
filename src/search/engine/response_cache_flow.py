@@ -275,9 +275,10 @@ class CacheScope:
     app wiring.
     `studio_routing` is the routing a routed request runs under
     (`studio_router.StudioRouting.key_document`), None for any other, and joins the scope.
-    A routed request whose router answered after its parse returned decided without it
+    A routed request whose router had not answered when its parse returned, or failed in a
+    way that may pass (`studio_router.JevOutcome.unsettled`), decided without it
     (`note_route_unsettled`), so layer 1 stores nothing under its query, and the next
-    request of the wording routes on the verdict the router memoised.
+    request of the wording asks again or routes on the verdict the router memoised.
     """
 
     def __init__(
@@ -643,6 +644,11 @@ class CacheScope:
         """Mark the request as routed without the router's answer, which keeps its answer
         out of layer 1 (`_publish`)."""
         self._route_unsettled = True
+
+    @property
+    def served_unstored(self) -> bool:
+        """Whether a lookup served a leader's answer that the leader did not store."""
+        return not self._served_storable
 
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.

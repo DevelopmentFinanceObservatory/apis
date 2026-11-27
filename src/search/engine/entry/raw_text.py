@@ -2177,10 +2177,14 @@ async def handle(
     route = None
     if routing is not None and jev_read is not None:
         outcome = jev_read.outcome()
-        route = decide(extraction.kind, outcome, routing=routing)
+        # A resolution naming no variable refuses as `variable_not_resolved` below; Studio
+        # gets no route for it, whatever Jev said.
+        routed_resolution = extraction.kind == "resolution" and bool(extraction.variables)
+        if routed_resolution or extraction.kind != "resolution":
+            route = decide(extraction.kind, outcome, routing=routing)
         if route_record is not None:
             route_record.note(extraction.kind, outcome, route)
-        if outcome.status == "late" and extraction.kind == "resolution" and scope is not None:
+        if routed_resolution and outcome.unsettled and scope is not None:
             scope.note_route_unsettled()
         if route is not None and route.mode == "offer":
             yield RouteEvent.of(route, trace_id=get_trace_id())

@@ -1,5 +1,5 @@
 {
- "source": "Jev jev-1.14.0 answers to router D (studio_router.ROUTER_QUESTIONS, router-d-1), recorded by the router eval on corpus queries, with the studio score the eval reported for each, to two places.",
+ "source": "Jev jev-1.14.0 answers to the Studio router's request (studio_router.ROUTER_QUESTIONS) for two queries, each with the studio probability those answers were scored at, to two places.",
  "records": [
   {
    "query": "Why did aid to Ethiopia fall in 2023?",
@@ -26,7 +26,7 @@
      "noul": 0.95
     }
    },
-   "eval_score": 0.98
+   "studio_probability": 0.98
   },
   {
    "query": "population policy and administrative management",
@@ -53,7 +53,7 @@
      "noul": 0.6
     }
    },
-   "eval_score": 0.32
+   "studio_probability": 0.32
   }
  ]
 }

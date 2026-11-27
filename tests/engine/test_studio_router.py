@@ -8,6 +8,7 @@ cache keeps routed and unrouted answers apart and replays an offer's `route` eve
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import Mapping
 from datetime import date
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter, ValidationError
 
 from search.engine import studio_router
 from search.engine.binders.jev_client import JevError, JevLane, JevResponse, JevUsage
@@ -43,6 +45,17 @@ from tests.engine._search_app import search_app
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM, make_resolver
 
 _QUERY = "fertility rate in Kenya"
+
+
+def _validation_error() -> ValidationError:
+    try:
+        TypeAdapter(int).validate_python("not a number")
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("validation passed")
+
+
+_INVALID_ANSWER = _validation_error()
 
 
 class _RouterAsk:
@@ -89,16 +102,24 @@ class _RouterAsk:
 
 
 class _KindLLM(FakeLLM):
-    """The recorded fake, whose extraction of every query reads as `kind` with nothing named."""
+    """The recorded fake, whose extraction of every query reads as `kind` with nothing named,
+    holding `operations` as the model wrote them."""
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, *, operations: list[dict] | None = None) -> None:
         super().__init__()
         self._kind = kind
+        self._operations = operations or []
 
     async def generate_structured(self, *, prompt: str, system: str, schema):
         if schema is Extraction:
             await asyncio.sleep(0)
-            extraction = {"kind": self._kind, "variables": [], "entities": [], "dates": []}
+            extraction = {
+                "kind": self._kind,
+                "variables": [],
+                "entities": [],
+                "dates": [],
+                "operations": self._operations,
+            }
             usage = {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
             return Extraction.model_validate(extraction), usage
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
@@ -108,7 +129,7 @@ class _KindLLM(FakeLLM):
 def _fresh_router(monkeypatch: pytest.MonkeyPatch):
     """A fresh memo and lane for every test."""
     studio_router.clear_memo()
-    monkeypatch.setattr(studio_router, "_LANE", JevLane.fresh())
+    monkeypatch.setattr(studio_router, "_LANE", studio_router.router_lane())
     yield
     studio_router.clear_memo()
 
@@ -162,11 +183,15 @@ def _kinds(events: list[Event]) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("routed", "router"), [(False, "on"), (True, "off")], ids=["not-asked", "router-off"]
+    ("routed", "router", "logged"),
+    [(False, "on", None), (True, "off", "off")],
+    ids=["not-asked", "router-off"],
 )
 def test_a_request_that_does_not_route_asks_jev_nothing_and_carries_no_route(
-    monkeypatch, search_settings, routed: bool, router: str
+    monkeypatch, search_settings, routed: bool, router: str, logged: str | None
 ):
+    """A request routes only when it asks while the router is on; one that asks under the
+    kill switch still logs that it asked."""
     search_settings(studio_router=router)
     ask = _install(monkeypatch, _RouterAsk(0.75))
     record = ResolveRecord()
@@ -178,7 +203,11 @@ def test_a_request_that_does_not_route_asks_jev_nothing_and_carries_no_route(
     response = _response(events)
     assert isinstance(response, Resolution)
     assert response.route is None
-    assert record.studio_route is None
+    if logged is None:
+        assert record.studio_route is None
+    else:
+        assert record.studio_route is not None
+        assert (record.studio_route.decision, record.studio_route.jev) == ("none", logged)
 
 
 @pytest.mark.parametrize(
@@ -207,7 +236,8 @@ def test_a_resolution_routes_on_the_studio_probability(
     assert record.studio_route is not None
     assert record.studio_route.log_fields() == {
         "decision": expected.mode if expected is not None else "none",
-        "probability": probability,
+        "probability": expected.probability if expected is not None else None,
+        "jev_probability": probability,
         "extract_kind": "resolution",
         "jev": "answered",
         "jev_error": None,
@@ -266,8 +296,9 @@ def test_a_parse_kind_other_than_resolution_routes_on_the_parse_alone(
     [
         (None, True, "late", None),
         (JevError(429, "rate_limited"), False, "failed", "rate_limited"),
+        (_INVALID_ANSWER, False, "failed", "invalid_response"),
     ],
-    ids=["late", "failed"],
+    ids=["late", "failed", "invalid-answer"],
 )
 def test_a_jev_call_without_an_answer_when_the_parse_returns_routes_nothing(
     monkeypatch, fail: Exception | None, gated: bool, jev: str, jev_error: str | None
@@ -286,30 +317,96 @@ def test_a_jev_call_without_an_answer_when_the_parse_returns_routes_nothing(
     assert record.studio_route.decision == "none"
 
 
-def test_a_late_verdict_reaches_the_memo_and_routes_the_repeat_layer1_did_not_store(
+@pytest.mark.parametrize(
+    ("fail", "gated", "first_jev", "second_cache", "second_jev", "calls", "second_route"),
+    [
+        (None, True, "late", "miss", "memo", 1, StudioRoute(mode="auto", probability=0.75)),
+        (
+            JevError(503, "server"),
+            False,
+            "failed",
+            "miss",
+            "answered",
+            2,
+            StudioRoute(mode="auto", probability=0.75),
+        ),
+        (JevError(None, "no_key"), False, "failed", "hit layer1", "cached", 1, None),
+    ],
+    ids=["late", "failed", "no-key"],
+)
+def test_layer1_stores_no_route_decided_without_jevs_answer_unless_the_key_is_missing(
     monkeypatch,
+    fail: Exception | None,
+    gated: bool,
+    first_jev: str,
+    second_cache: str,
+    second_jev: str,
+    calls: int,
+    second_route: StudioRoute | None,
 ):
-    """The first run decides without Jev, so layer 1 stores nothing under the query; Jev's
-    answer, landing after, routes the repeat without a second call."""
-    gate = asyncio.Event()
-    ask = _install(monkeypatch, _RouterAsk(0.75, gate=gate))
+    """A first run Jev had not answered, or failed for a reason that may pass, decides
+    without Jev, so layer 1 stores nothing under the query and the repeat routes on Jev's
+    answer, from the memo or a second call. A missing key fails every call, so its unrouted
+    answer is stored."""
+    gate = asyncio.Event() if gated else None
+    ask = _install(monkeypatch, _RouterAsk(0.75, fail=fail, gate=gate))
     cache = ResponseCache()
     first, second = ResolveRecord(), ResolveRecord()
 
     async def scenario() -> tuple[list[Event], list[Event]]:
-        late = await _collect(_request(), cache=cache, record=first)
-        gate.set()
-        await asyncio.gather(*studio_router._BACKGROUND)
-        return late, await _collect(_request(), cache=cache, record=second)
+        undecided = await _collect(_request(), cache=cache, record=first)
+        if gate is not None:
+            gate.set()
+            await asyncio.gather(*studio_router._BACKGROUND)
+        ask.fail = None
+        return undecided, await _collect(_request(), cache=cache, record=second)
 
-    late, repeat = _run(scenario())
+    undecided, repeat = _run(scenario())
 
-    assert _response(late).route is None
-    assert first.studio_route is not None and first.studio_route.jev == "late"
-    assert second.cache == "miss", "a run routed without Jev's answer is not stored in layer 1"
-    assert second.studio_route is not None and second.studio_route.jev == "memo"
-    assert _response(repeat).route == StudioRoute(mode="auto", probability=0.75)
-    assert len(ask.calls) == 1
+    assert _response(undecided).route is None
+    assert first.studio_route is not None and first.studio_route.jev == first_jev
+    assert second.cache == second_cache
+    assert second.studio_route is not None and second.studio_route.jev == second_jev
+    assert _response(repeat).route == second_route
+    assert len(ask.calls) == calls
+
+
+@pytest.mark.parametrize("probability", [0.75, 0.5], ids=["auto", "offer"])
+def test_a_resolution_naming_no_variable_gets_no_route(monkeypatch, probability: float):
+    _install(monkeypatch, _RouterAsk(probability))
+    record = ResolveRecord()
+
+    # An operation keeps the reading a resolution, and names no variable admission keeps.
+    llm = _KindLLM("resolution", operations=[{"verb": "rank", "variable": 0, "phrase": "rate"}])
+
+    events = _run(_collect(_request(), llm=llm, record=record))
+
+    response = _response(events)
+    assert isinstance(response, Resolution)
+    assert response.parts[0].status == "no_data"
+    assert response.route is None
+    assert "route" not in _kinds(events)
+    assert record.studio_route is not None and record.studio_route.decision == "none"
+
+
+def test_a_follower_given_an_unstored_leader_answer_logs_it_as_shared(monkeypatch):
+    """The leader decides without Jev's answer and stores nothing in layer 1; the request
+    that waited on it is served that answer and says so."""
+    _install(monkeypatch, _RouterAsk(0.75, gate=asyncio.Event()))
+    cache = ResponseCache()
+    leader, follower = ResolveRecord(), ResolveRecord()
+
+    async def scenario() -> None:
+        await asyncio.gather(
+            _collect(_request(), cache=cache, record=leader),
+            _collect(_request(), cache=cache, record=follower),
+        )
+
+    _run(scenario())
+
+    assert leader.studio_route is not None and leader.studio_route.jev == "late"
+    assert follower.cache == "hit layer1"
+    assert follower.studio_route is not None and follower.studio_route.jev == "shared"
 
 
 def test_layer1_keeps_routed_and_unrouted_answers_apart_and_replays_the_offer(
@@ -415,15 +512,15 @@ def test_a_layer2_hit_carries_its_own_requests_route(monkeypatch):
     assert _response(events).route == StudioRoute(mode="offer", probability=0.5)
 
 
-_RECORDED_D = json.loads(
-    (Path(__file__).parents[1] / "fixtures" / "jev" / "router_d_answers.json").read_text()
+_RECORDED = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "jev" / "studio_router_answers.json").read_text()
 )["records"]
 
 
-@pytest.mark.parametrize("record", _RECORDED_D, ids=[r["query"] for r in _RECORDED_D])
-def test_a_recorded_jev_answer_scores_as_the_router_eval_scored_it(record: dict):
+@pytest.mark.parametrize("record", _RECORDED, ids=[r["query"] for r in _RECORDED])
+def test_a_recorded_jev_answer_scores_its_recorded_studio_probability(record: dict):
     """The route choice's `analysis`, `wants_analysis` and `needs_synthesis` average to the
-    studio probability the eval reported, and `in_scope` takes no part."""
+    studio probability recorded for the answer, and `in_scope` takes no part."""
     answers = record["answers"]
     response = JevResponse(
         nouls={qid: a["noul"] for qid, a in answers.items() if a["type"] == "noul"},
@@ -436,5 +533,15 @@ def test_a_recorded_jev_answer_scores_as_the_router_eval_scored_it(record: dict)
 
     probability = studio_router.ROUTER_QUESTIONS.studio_probability(response)
 
-    assert round(probability, 2) == record["eval_score"]
+    assert round(probability, 2) == record["studio_probability"]
     assert set(answers) == set(studio_router.ROUTER_QUESTIONS.questions)
+
+
+def test_the_question_set_version_follows_its_content():
+    questions = studio_router.ROUTER_QUESTIONS
+    route = dict(questions.questions["route"])
+    reworded = {**questions.questions, "route": {**route, "instructions": "Which surface?"}}
+
+    assert dataclasses.replace(questions).version == questions.version
+    assert dataclasses.replace(questions, questions=reworded).version != questions.version
+    assert dataclasses.replace(questions, model="jev-x").version != questions.version
