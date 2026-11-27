@@ -456,8 +456,8 @@ def test_a_role_answer_states_every_year_its_series_hold(
     monkeypatch, search_settings, bulk, years, stated
 ):
     """A creditor's flows to Aland asked for 2010 to 2012. The answer serves those three
-    years and states the years its series hold outside them too, and the years between
-    them it holds none, on the wire as in the model."""
+    years and states the years its series hold outside them too, with any years between
+    them that none holds, on the wire as in the model."""
     from series_coverage.schema import FacetMetadata
 
     spec = _role_answer(
@@ -483,8 +483,8 @@ def test_a_role_answer_states_every_year_its_series_hold(
     ids=["whole", "gap"],
 )
 def test_a_standard_answer_states_every_year_its_series_hold(years, stated):
-    """The population of Zeta asked for 2010 to 2012, a series at one place with no
-    directional role, states the years its series holds outside them too, and its gap."""
+    """The population of Zeta (a series at one place with no directional role) asked for
+    2010 to 2012 states the years its series holds outside them too, and its gap."""
     spec = _spec(_answer([_facet("fIds", _IDS, years)], _request("2010 to 2012")))
 
     assert spec.resolved.coverage.window == TimeWindow(start_year=2010, end_year=2012)

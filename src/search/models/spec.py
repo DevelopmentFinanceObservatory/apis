@@ -749,7 +749,7 @@ class ResolvedSpec(StrictModel):
             "named. The series are those the answer holds before a latest window reduces them, "
             "so under latest a series whose data ended long ago sets start_year although the "
             "answer serves only its newest year. The years are those a request naming no "
-            "window would be served: partly reported and projected years left out (see "
+            "window would be served, which leave out partly reported and projected years (see "
             "YearsWithData). Absent for a composite answer, an answer with no read plan, a "
             "unit request whose conversion cannot be counted in memory, a role-bearing answer "
             "with no coverage artifact or one lacking a served StatVar, a standard answer "

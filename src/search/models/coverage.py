@@ -294,12 +294,12 @@ class YearsWithData(StrictModel):
     holding projected years alone elects the projection facet, whose years are held back,
     and states no years.
 
-    The years are those a request naming no window would be served: a source's partly
+    The years are those a request naming no window would be served. A source's partly
     reported period and projected years are left out (`coverage.held_back` lists them),
     whether or not this request opted in to them, and under a unit request a year the
     conversion leaves out is left out, as the download leaves it out. A role-bearing answer
     reads them from the coverage artifact (`CoverageIndex.series_years`), and any other
-    answer from its series' facet metadata: a facet listing all its dates counts the years
+    answer from its series' facet metadata. A facet listing all its dates counts the years
     of those dates, a facet listing none counts every year of its own span, and the
     answer's years are their union, so a gap is stated only where no facet covers it."""
 
@@ -310,7 +310,7 @@ class YearsWithData(StrictModel):
         exclude_if=_is_empty,
         description=(
             "the years after start_year and before end_year that no held series holds, "
-            "in order; absent when every year between them holds data"
+            "in order. Absent when every year between them holds data"
         ),
     )
 

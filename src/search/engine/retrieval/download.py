@@ -252,11 +252,11 @@ def _coverage_extent(
 def answer_years(
     plan: ReadPlan, coverage_index: CoverageIndex | None, *, conversion: CountConversion
 ) -> YearsWithData | None:
-    """The years the series `plan` holds have data in (`YearsWithData`): the series it holds
-    under its window before a `latest` window reduces them (`PairPlan.held`), each read under
-    every date, unclipped by the window and with no opt-in, so a source's partial period and
-    projected facets hold no year. Under a unit request each series keeps the years
-    `conversion` keeps, as the download counts them.
+    """The years the series `plan` holds have data in (`YearsWithData`). The series are those
+    it holds under its window before a `latest` window reduces them (`PairPlan.held`), each
+    read under every date, unclipped by the window and with no opt-in, so a source's partly
+    reported period and projected facets hold no year. Under a unit request each series keeps the
+    years `conversion` keeps, as the download counts them.
 
     - A role-bearing plan reads the coverage index (`CoverageIndex.series_years`) over the
       rows it holds (`coverage.held_rows`) less those a conversion leaves out
@@ -309,9 +309,10 @@ def answer_years(
 
 
 def _facet_years(facet: Facet) -> frozenset[int] | None:
-    """The years `facet` holds under every date with no opt-in: those of the dates it keeps
-    (`kept_points`) when it lists them all, else every year of its kept span (`facet_dates`).
-    Empty for a facet holding no point; None when its span has an unknown bound."""
+    """The years `facet` holds under every date with no opt-in. These are the years of the
+    dates it keeps (`kept_points`) when it lists them all, else every year of its kept span
+    (`facet_dates`). Empty for a facet holding no point, and None when its span has an
+    unknown bound."""
     if facet.obs_count <= 0:
         return frozenset()
     if facet.dates and facet.dates_complete:
