@@ -129,4 +129,4 @@ class IndexMemberFacts:
         (`datasets_api.adapter.resolve_definition_members`)."""
         if self.dataset is None:
             return None
-        return ElectedDataset(provenance=self.dataset, member_provenances=self.row.provenances)
+        return ElectedDataset(provenance=self.dataset, member_provenances=self.row.datasets)

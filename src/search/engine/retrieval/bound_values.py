@@ -869,7 +869,7 @@ def _measure_family_rows(
     matched = tuple(
         row
         for row in index.filter(constraints)
-        if not datasets.isdisjoint(row.provenances)
+        if not datasets.isdisjoint(row.datasets)
         and row.constraint_properties.keys()
         <= (own_keys if row_five_tuple(row) == query.five_tuple else sibling_keys)
         and all(
@@ -2581,7 +2581,7 @@ def _published_by(
     """The rows of `rows` one of `datasets` publishes, or all of them for `None`."""
     if datasets is None:
         return rows
-    return tuple(row for row in rows if any(dataset in row.provenances for dataset in datasets))
+    return tuple(row for row in rows if any(dataset in row.datasets for dataset in datasets))
 
 
 def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:

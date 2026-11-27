@@ -274,7 +274,7 @@ class DatasetFamily:
     """The dataset elected for a query and the rows that form its family."""
 
     provenance: str | None
-    """The elected dataset's provenance, or `None` when no row survives."""
+    """The elected dataset's id, or `None` when no row survives."""
     rows: tuple[StatVarRow, ...]
     """The elected dataset's rows of the elected role class before antichain reduction, in
     the order given. They declare one role set unless the election tied (`tied`)."""
@@ -462,7 +462,7 @@ def _declared_roles(
     rows = tuple(
         row
         for row in family.rows
-        if (dataset in row.provenances if dataset is not None else not row.provenances)
+        if (dataset in row.datasets if dataset is not None else not row.datasets)
     )
     declared = frozenset(
         admitting_roles(
@@ -563,7 +563,7 @@ def elect_dataset(
     published = {
         dataset: dataset_rows
         for dataset in (eligible_datasets(index, query) if among is None else among)
-        if (dataset_rows := tuple(row for row in rows if dataset in row.provenances))
+        if (dataset_rows := tuple(row for row in rows if dataset in row.datasets))
     }
     if not published:
         return DatasetFamily(provenance=None, rows=(), role_keys=query.role_keys)
@@ -649,7 +649,7 @@ def _five_tuple_rows(index: CodeIndex) -> _FiveTupleRows:
         for row in index.statvars:
             five_tuple = row_five_tuple(row)
             rows[five_tuple].append(row)
-            for dataset in row.provenances:
+            for dataset in row.datasets:
                 carried[dataset, five_tuple].update(row.constraint_properties)
         cached = _FiveTupleRows(
             rows={five_tuple: tuple(found) for five_tuple, found in rows.items()},
@@ -722,7 +722,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
     serving = eligible_datasets(index, query)
     if len(serving) > 1:
         rows = _slot_open_rows(index, query, prop)
-        matching = [d for d in serving if any(d in row.provenances for row in rows)]
+        matching = [d for d in serving if any(d in row.datasets for row in rows)]
         facts = _rows_facts(index, query.five_tuple, rows)
         readings = absent_readings(index)
         role_keys = _serving_role_keys(
@@ -730,7 +730,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
             (
                 electing_role_keys(
                     facts,
-                    [row.dcid for row in rows if d in row.provenances],
+                    [row.dcid for row in rows if d in row.datasets],
                     role_keys=query.role_keys,
                     open_role_keys=query.open_role_keys,
                     readings=readings,
@@ -742,8 +742,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
             d
             for d in matching
             if any(
-                d in row.provenances and role_class_covers(_row_roles(row), role_keys)
-                for row in rows
+                d in row.datasets and role_class_covers(_row_roles(row), role_keys) for row in rows
             )
         ]
         serving = tuple(covering or matching or serving)

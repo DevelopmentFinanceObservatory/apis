@@ -867,7 +867,7 @@ def _index_carrying_the_shape() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("creditor", "debtor"),
                 constraint_properties={},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
         ],
     )
@@ -971,7 +971,7 @@ def _index_row(dcid: str, roles: tuple[str, ...]) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties={},
-        provenances=(FIXTURE_PROVENANCE,),
+        datasets=(FIXTURE_PROVENANCE,),
     )
 
 
@@ -1105,7 +1105,7 @@ def _index_carrying_the_nearest_real_shape() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("creditor", "debtor"),
                 constraint_properties={_NEAREST_REAL_PROP: _NEAREST_REAL_VAL},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
         ],
     )

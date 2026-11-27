@@ -1130,7 +1130,7 @@ def _named_wholes(
     if not state.whole_named or not is_role_bearing(shape):
         return assignment
     declared = role_names_by_axis(shape)
-    datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+    datasets = [dataset.id for dataset in declared_datasets(shape, get_index())]
     parties = get_index().parties
     covered: dict[RoleAxis, bool] = {}
     for dcids in state.whole_named.values():
@@ -1224,7 +1224,7 @@ def whole_total_candidates(
     )
     if not state.whole_sets or not is_role_bearing(shape) or marked_axes & assignment.sets.keys():
         return ()
-    datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+    datasets = [dataset.id for dataset in declared_datasets(shape, get_index())]
     declared = role_names_by_axis(shape)
     years = requested_years(state.date_request, horizon=state.coverage.index.horizon)
 

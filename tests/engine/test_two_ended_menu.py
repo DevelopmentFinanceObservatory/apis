@@ -93,7 +93,7 @@ _PROVIDER_ROW = StatVarRow(
     measurement_denominator=None,
     observation_properties=("financingProvider",),
     constraint_properties={"flowType": "Disbursement"},
-    provenances=(_ONE_END_DATASET,),
+    datasets=(_ONE_END_DATASET,),
 )
 _RECIPIENT_ROW = StatVarRow(
     dcid="TESTFIXTURE/TwoEndedMenu/ReceivedByRecipient",
@@ -104,7 +104,7 @@ _RECIPIENT_ROW = StatVarRow(
     measurement_denominator=None,
     observation_properties=("financingRecipient",),
     constraint_properties={"flowType": "Disbursement"},
-    provenances=(_ONE_END_DATASET,),
+    datasets=(_ONE_END_DATASET,),
 )
 
 
@@ -124,7 +124,7 @@ def _one_end_index() -> CodeIndex:
         statvars=(_PROVIDER_ROW, _RECIPIENT_ROW),
         datasets=(
             DatasetDeclaration(
-                provenance=_ONE_END_DATASET,
+                id=_ONE_END_DATASET,
                 label=_ONE_END_DATASET,
                 description="A test table.",
                 opt_in=False,

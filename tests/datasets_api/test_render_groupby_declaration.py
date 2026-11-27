@@ -93,7 +93,7 @@ def _index(*, declares_crs_zero: bool) -> CodeIndex:
         datasets=(
             (
                 DatasetDeclaration(
-                    provenance=_CRS_PROVENANCE,
+                    id=_CRS_PROVENANCE,
                     label="OECD Creditor Reporting System (CRS)",
                     description="A test table.",
                     opt_in=False,

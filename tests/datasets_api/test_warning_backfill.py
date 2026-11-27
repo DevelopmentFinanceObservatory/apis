@@ -90,7 +90,7 @@ def _code_index(*, absent_reads_zero: bool = False, indexed: bool = False) -> Co
             measurement_denominator=None,
             observation_properties=(),
             constraint_properties={},
-            provenances=(_PROVENANCE, "PROV2"),
+            datasets=(_PROVENANCE, "PROV2"),
         )
         for member in (_SERVED, _IN, _OUT, _GONE, _MOVED)
     )
@@ -107,7 +107,7 @@ def _code_index(*, absent_reads_zero: bool = False, indexed: bool = False) -> Co
         statvars=rows if indexed else (),
         datasets=(
             DatasetDeclaration(
-                provenance=_PROVENANCE,
+                id=_PROVENANCE,
                 label="Fixture table",
                 description="Amounts by place.",
                 opt_in=False,

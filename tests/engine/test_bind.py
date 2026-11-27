@@ -234,7 +234,7 @@ def _debt_row(dcid: str, population_type: str, provenance: str, **constraints: s
         measurement_denominator=None,
         observation_properties=("financingRecipient",),
         constraint_properties=constraints,
-        provenances=(provenance,),
+        datasets=(provenance,),
     )
 
 

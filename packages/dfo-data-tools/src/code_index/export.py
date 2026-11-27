@@ -1119,11 +1119,7 @@ def _complete_systems(
     dataset: DatasetDeclaration, code_systems: Sequence[CodeSystemConfig]
 ) -> list[CodeSystemConfig]:
     """Return the code systems every StatVar of `dataset` declares."""
-    return [
-        config
-        for config in code_systems
-        if dataset.provenance in config.declared_by_every_statvar_of
-    ]
+    return [config for config in code_systems if dataset.id in config.declared_by_every_statvar_of]
 
 
 def _choose_spine(
@@ -1138,7 +1134,7 @@ def _choose_spine(
     if not eligible:
         raise ExportRefused(
             f"no code system in the table is declared by every StatVar of dataset "
-            f"{dataset.provenance!r} -- cannot choose an enumeration spine"
+            f"{dataset.id!r} -- cannot choose an enumeration spine"
         )
     return max(eligible, key=lambda config: len(code_rows_by_system[config.code_system]))
 
@@ -2162,7 +2158,7 @@ def _noted_word_to_dict(noted: NotedWord) -> dict:
 
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
-        "provenance": dataset.provenance,
+        "id": dataset.id,
         "label": dataset.label,
         "description": dataset.description,
         "opt_in": dataset.opt_in,
@@ -2208,11 +2204,11 @@ def verify_complete_systems(
         complete_in = set(config.declared_by_every_statvar_of)
         for row in statvars:
             if (
-                complete_in.intersection(row["provenances"])
+                complete_in.intersection(row["datasets"])
                 and config.code_system not in row["constraint_properties"]
             ):
                 raise ExportRefused(
-                    f"{row['dcid']} belongs to {row['provenances']!r} and does not declare "
+                    f"{row['dcid']} belongs to {row['datasets']!r} and does not declare "
                     f"{config.code_system!r}, which is configured as declared by every StatVar "
                     f"of {sorted(complete_in)!r}"
                 )
@@ -2300,7 +2296,7 @@ def export_graph_blocks(
     return {
         "declarations": declarations,
         "datasets": sorted(
-            (_dataset_to_dict(dataset) for dataset in datasets), key=lambda row: row["provenance"]
+            (_dataset_to_dict(dataset) for dataset in datasets), key=lambda row: row["id"]
         ),
         "codes": codes,
         "statvars": statvars,
@@ -2397,7 +2393,7 @@ def export_index(
     )
     for block in ("statvars", "listed_statvars"):
         for row in blocks[block]:
-            row["provenances"] = sorted(coverage.provenances.get(row["dcid"], ()))
+            row["datasets"] = sorted(coverage.provenances.get(row["dcid"], ()))
     verify_complete_systems(blocks["statvars"], code_systems)
     blocks["parties"] = export_parties(
         party_reader,
@@ -2414,7 +2410,7 @@ def export_index(
         **stamp_counts(blocks),
         "content_hash": content_hash(blocks),
         "coverage_build": None,
-        "statvars_without_coverage": sum(not row["provenances"] for row in blocks["statvars"]),
+        "statvars_without_coverage": sum(not row["datasets"] for row in blocks["statvars"]),
     }
     return {"stamp": stamp, **blocks}
 

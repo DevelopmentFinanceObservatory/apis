@@ -413,7 +413,7 @@ def table_identity(index: CodeIndex, identity: Mapping[str, object]) -> TableIde
 
 def component_of(composite: CompositeDeclaration, row: StatVarRow) -> ComponentRole | None:
     """The role of the one component of `composite` that serves `row`: its table publishes
-    `row` (`StatVarRow.provenances`), its recipe sets no measure or the measure `row` has, and
+    `row` (`StatVarRow.datasets`), its recipe sets no measure or the measure `row` has, and
     `row` holds every code the recipe binds (`ComponentRecipe.bind`). `None` when no component
     or more than one serves it, so a row two components could each have read is no member of
     either. DAC2a's inclusive composite reads both components from DAC2a, and only the aid type
@@ -421,7 +421,7 @@ def component_of(composite: CompositeDeclaration, row: StatVarRow) -> ComponentR
     roles = [
         recipe.role
         for recipe in composite.components
-        if recipe.dataset in row.provenances
+        if recipe.dataset in row.datasets
         and _recipe_measure(recipe) in (None, row.measured_property)
         and all(row.constraint_properties.get(prop) == code for prop, code in recipe.bind.items())
     ]
@@ -777,7 +777,7 @@ def _population_variables(index: CodeIndex, dataset: str) -> tuple[str, ...]:
     return tuple(
         row.dcid
         for row in index.statvars
-        if dataset in row.provenances
+        if dataset in row.datasets
         and any(
             all(row.constraint_properties.get(prop) == code for prop, code in bind.items())
             for bind in binds

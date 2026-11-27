@@ -102,7 +102,7 @@ def _index_where_the_imputed_dataset_declares_no_absence_reading() -> CodeIndex:
         statvars=index.statvars,
         datasets=tuple(
             dataclasses.replace(dataset, absent_observation="unknown")
-            if dataset.provenance == IMPUTED_PROVENANCE
+            if dataset.id == IMPUTED_PROVENANCE
             else dataset
             for dataset in index.datasets.values()
         ),

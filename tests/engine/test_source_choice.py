@@ -863,7 +863,7 @@ _EXCLUSION_CATALOGUE = FakeCatalogue(
 
 def _index_shape(provenance: str) -> ShapeDraft:
     """A shape derived from three code-index rows of the dataset `provenance` publishes."""
-    rows = [row for row in get_index().statvars if provenance in row.provenances][:3]
+    rows = [row for row in get_index().statvars if provenance in row.datasets][:3]
     return _derive_one({row.dcid: _crs_arcs(row) for row in rows})
 
 

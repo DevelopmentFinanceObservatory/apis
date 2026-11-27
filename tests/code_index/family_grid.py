@@ -47,7 +47,7 @@ def five_tuple_rows(index: CodeIndex, five_tuple: FiveTuple) -> FiveTupleRows:
     by_keys: dict[frozenset[str], list[StatVarRow]] = defaultdict(list)
     for row in rows:
         by_keys[frozenset(row.constraint_properties)].append(row)
-        for dataset in row.provenances:
+        for dataset in row.datasets:
             carried[dataset].update(row.constraint_properties)
     return FiveTupleRows(
         rows=rows,
@@ -80,7 +80,7 @@ def _bindings(published: FiveTupleRows, keys: frozenset[str]) -> Iterator[dict[s
     shared = sorted(keys.intersection(*carried.values()))
     seen: set[tuple[str, ...]] = set()
     for dataset in sorted(carried):
-        first = next(row for row in rows if dataset in row.provenances)
+        first = next(row for row in rows if dataset in row.datasets)
         values = tuple(first.constraint_properties.get(prop, "") for prop in shared)
         if shared and all(values) and values not in seen:
             seen.add(values)
@@ -186,7 +186,7 @@ def asked_family(published: FiveTupleRows, query: FamilyQuery) -> Asked:
     fitting = [
         row for row_keys, rows in published.by_keys.items() if row_keys <= keys for row in rows
     ]
-    fits = {dataset: [row for row in fitting if dataset in row.provenances] for dataset in carried}
+    fits = {dataset: [row for row in fitting if dataset in row.datasets] for dataset in carried}
     selected = _selected(carried, fits, keys)
     decided = selected is not None and any(fits[dataset] for dataset in selected)
     source = query.source

@@ -62,7 +62,7 @@ def _electing(
         measurement_denominator=None,
         observation_properties=world.declared_roles,
         constraint_properties={},
-        provenances=tuple(sorted(recorded)),
+        datasets=tuple(sorted(recorded)),
     )
     family = DatasetFamily(provenance=provenance, rows=(row,))
     monkeypatch.setattr(bound_values, "index_family", lambda _index, _query: family)
@@ -75,7 +75,7 @@ def _electing(
         **real.datasets,
         **{
             declared: DatasetDeclaration(
-                provenance=declared,
+                id=declared,
                 label=labels[declared],
                 description="A test table.",
                 opt_in=False,

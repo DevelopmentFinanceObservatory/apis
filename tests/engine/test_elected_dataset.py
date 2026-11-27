@@ -86,7 +86,7 @@ def _population_row(dcid: str, constraints: dict[str, str]):
         measurement_denominator=None,
         observation_properties=("observationAbout",),
         constraint_properties=constraints,
-        provenances=(_P,),
+        datasets=(_P,),
     )
 
 

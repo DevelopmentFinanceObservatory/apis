@@ -97,7 +97,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=("recipient",),
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -110,7 +110,7 @@ def _dataset(
     invariants: dict[str, str] | None = None,
 ) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=opt_in,
@@ -469,7 +469,7 @@ def test_a_row_with_two_provenances_joins_the_family_of_either(source: str):
 
     assert family.provenance == source
     assert "both" in _dcids(family.rows)
-    assert {row.dcid for row in index.statvars if source in row.provenances} == _dcids(family.rows)
+    assert {row.dcid for row in index.statvars if source in row.datasets} == _dcids(family.rows)
 
 
 def _excluding(*refs: str) -> DatasetScope:
@@ -988,8 +988,8 @@ def test_an_election_among_given_datasets_is_the_election_of_an_index_holding_th
     datasets = (_dataset(_PLAIN, rank=1), _dataset(_TABLES, rank=0))
     index = _index(*rows, datasets=datasets)
     alone = _index(
-        *(row for row in rows if set(row.provenances) & set(among)),
-        datasets=tuple(dataset for dataset in datasets if dataset.provenance in among),
+        *(row for row in rows if set(row.datasets) & set(among)),
+        datasets=tuple(dataset for dataset in datasets if dataset.id in among),
     )
     query = dataclasses.replace(_asks_roles(*role_keys), slots={"sector": ("unbound",)})
 
@@ -1503,7 +1503,7 @@ def test_the_education_family_on_amount_is_the_crs_rows(
     rows = _minimal(index, _education_aid_slots(index, aid_type=aid_type))
 
     assert len(rows) == count
-    assert {row.provenances for row in rows} == provenances
+    assert {row.datasets for row in rows} == provenances
 
 
 def test_the_education_members_without_a_modality_stay():
@@ -1525,7 +1525,7 @@ def test_the_education_family_on_attributed_amount_is_the_imputed_rows(aid_type:
     )
 
     assert len(rows) == IMPUTED_MEMBER_COUNT
-    assert {row.provenances for row in rows} == {(IMPUTED_PROVENANCE,)}
+    assert {row.datasets for row in rows} == {(IMPUTED_PROVENANCE,)}
 
 
 _DAC2A_PROVENANCE = "provenance/OECDDAC2A"
@@ -1558,7 +1558,7 @@ def test_the_keys_on_attributed_amount_decide_the_imputed_or_dac2a_table(
 
     assert family is not None
     assert (family.provenance, len(family.rows)) == (provenance, count)
-    assert {row.provenances for row in family.rows} == {(provenance,)}
+    assert {row.datasets for row in family.rows} == {(provenance,)}
     if not sector:
         assert {row.constraint_properties[AID_TYPE] for row in family.rows} == {
             IMPUTED_MULTILATERAL

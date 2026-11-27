@@ -94,7 +94,7 @@ _INDEX = CodeIndex(
             ("crsCooperationModality", "modality"),
         )
     ),
-    datasets=tuple(dataset for dataset in DATASETS if dataset.provenance == CRS),
+    datasets=tuple(dataset for dataset in DATASETS if dataset.id == CRS),
     # Purpose 130 is a code no StatVar holds, so a selection can list a code no row carries.
     codes=(*_PURPOSES, _purpose("130", None), *_FINANCES, _MODALITY),
     statvars=tuple(

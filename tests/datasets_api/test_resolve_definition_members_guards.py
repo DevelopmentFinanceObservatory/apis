@@ -1041,7 +1041,7 @@ def _ids_twin_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=roles,
                 constraint_properties=_IDS_CONSTRAINTS,
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             )
             for dcid, roles in _IDS_ROLES.items()
         ),

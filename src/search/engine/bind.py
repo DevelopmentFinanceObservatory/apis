@@ -1287,7 +1287,7 @@ def _without_partly_stated_values(
             continue
         asserted |= held
         row = index.statvar_by_dcid(sv)
-        provenances = row.provenances if row is not None else ()
+        provenances = row.datasets if row is not None else ()
         stated_in_full |= {
             pair
             for pair in held

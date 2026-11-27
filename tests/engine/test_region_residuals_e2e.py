@@ -50,7 +50,7 @@ _SECTOR_VARIABLE = "education aid"
 _DAC2A_NET = next(
     row.dcid
     for row in get_index().statvars
-    if row.provenances == (_DAC2A,)
+    if row.datasets == (_DAC2A,)
     and (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
     and row.measurement_denominator is None
     and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"

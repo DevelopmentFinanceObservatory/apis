@@ -14,7 +14,7 @@ from dc_graph import ArcTarget
 def _index_provenances(index: CodeIndex) -> dict[str, tuple[str, ...]]:
     """Keyed on the index object (hashed by identity), so a test that swaps in a synthetic
     index gets its own map and the fixture index's is untouched."""
-    return {row.dcid: row.provenances for row in index.statvars}
+    return {row.dcid: row.datasets for row in index.statvars}
 
 
 def index_provenance(stat_var: str) -> str | None:

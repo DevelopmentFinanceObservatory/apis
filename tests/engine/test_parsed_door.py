@@ -307,7 +307,7 @@ class TestPartProvenance:
         order, carrying its label, description and opt-in flag from its declaration."""
         declared = [
             DatasetDeclaration(
-                provenance=f"provenance/Table{rank}",
+                id=f"provenance/Table{rank}",
                 label=f"Table {rank}",
                 description=f"What table {rank} measures.",
                 opt_in=rank == 1,
@@ -344,7 +344,7 @@ class TestPartProvenance:
         field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]
         (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
         assert {(value["const"], value["x-opt-in"]) for value in named["oneOf"]} == {
-            (dataset.provenance, dataset.opt_in) for dataset in DATASETS
+            (dataset.id, dataset.opt_in) for dataset in DATASETS
         }
 
     @pytest.mark.parametrize("provenance", [None, "declared"], ids=["absent", "declared"])

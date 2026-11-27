@@ -253,7 +253,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -335,7 +335,7 @@ _OPT_IN = frozenset({_ALONE, _BESIDE})
 def _invariants(rows: tuple[StatVarRow, ...], provenance: str) -> dict[str, str]:
     """The constraint values every row of `provenance` in `rows` holds, which the fixture
     declares as the dataset's invariants (`DatasetDeclaration.invariants`)."""
-    held = [row.constraint_properties for row in rows if provenance in row.provenances]
+    held = [row.constraint_properties for row in rows if provenance in row.datasets]
     if not held:
         return {}
     return {
@@ -397,7 +397,7 @@ def _index(
         statvars=rows,
         datasets=tuple(
             DatasetDeclaration(
-                provenance=provenance,
+                id=provenance,
                 label=provenance,
                 description="A test table.",
                 opt_in=provenance in opt_in,
@@ -2176,7 +2176,7 @@ def test_resubmitting_a_picked_option_elects_the_table_its_coverage_read(
         dcid: ElectedDataset(provenance=_BROAD, member_provenances=recorded)
         for dcid, recorded in members.items()
     }
-    assert {row.dcid: row.provenances for row in families[value].rows} == members
+    assert {row.dcid: row.datasets for row in families[value].rows} == members
     _assert_doors_agree(picked, index)
 
 
@@ -3187,7 +3187,7 @@ def _named_part_shape(part: NamedPart) -> ShapeDraft:
     if part.recorded_in is None:
         return _derived_shape(_SHARED, index_rows=part.rows)
     recorded = next(row for row in part.rows if row.dcid == part.recorded_in)
-    shape = _derived_shape(_SHARED, index_rows=part.rows, family_of=recorded.provenances[0])
+    shape = _derived_shape(_SHARED, index_rows=part.rows, family_of=recorded.datasets[0])
     return dataclasses.replace(
         shape,
         slot_keys=tuple(key for key in shape.slot_keys if key.property_dcid != "channel"),
@@ -3206,7 +3206,7 @@ def _rows_held(
     return {
         row.dcid
         for row in rows
-        if set(row.provenances) & set(tables)
+        if set(row.datasets) & set(tables)
         and row.constraint_properties.keys() <= keys
         and all(row.constraint_properties.get(prop) == code for prop, code in codes.items())
     }

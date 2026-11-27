@@ -222,7 +222,7 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
         "coverage_build": None,
         "statvars_without_coverage": 0,
     }
-    assert {(row["dcid"].split("_")[0], *row["provenances"]) for row in blocks["statvars"]} == {
+    assert {(row["dcid"].split("_")[0], *row["datasets"]) for row in blocks["statvars"]} == {
         ("Amount", _CRS),
         ("AttributedAmount", "provenance/ONEImputedMultilateralSectors"),
     }
@@ -356,8 +356,8 @@ def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings()
 
     assert [row.get("ratio_base_axis") for row in document["datasets"]] == ["destination", None]
     assert "ratio_base_axis" not in document["datasets"][1]
-    assert index.datasets[crs.provenance].ratio_base_axis == "destination"
-    assert index.datasets[imputed.provenance].ratio_base_axis is None
+    assert index.datasets[crs.id].ratio_base_axis == "destination"
+    assert index.datasets[imputed.id].ratio_base_axis is None
     assert index.shape_slot_defaults == code_index_declarations.SHAPE_SLOT_DEFAULTS
     assert index.broad_readings == code_index_declarations.BROAD_READINGS
     assert built.declarations == declarations.declarations_json()

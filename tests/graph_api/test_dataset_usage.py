@@ -55,7 +55,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=observation_properties,
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -71,7 +71,7 @@ _ROWS = (
 )
 
 _DECLARATION = DatasetDeclaration(
-    provenance=_CRS,
+    id=_CRS,
     label="Creditor Reporting System",
     description="Aid by project.",
     opt_in=False,

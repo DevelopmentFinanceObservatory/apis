@@ -1269,7 +1269,7 @@ def _debt_index(*dcids: str) -> CodeIndex:
                     n["dcid"] for n in _DEBT_NODES[dcid]["arcs"]["observationProperties"]["nodes"]
                 ),
                 constraint_properties={"positionType": "AmountOutstanding"},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
             for dcid in dcids
         ],

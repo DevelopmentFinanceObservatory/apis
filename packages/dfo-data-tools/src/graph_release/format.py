@@ -19,7 +19,8 @@ names and columns it does not know and reads an absent optional column as
 null, so a new column, part or manifest field ships without a format change.
 A changed type, key, sort order or mask definition, a removed part, or a
 field a reader newly requires bumps `FORMAT`. Format 3 requires `types` on
-every code index party row.
+every code index party row. Format 4 keys a code index dataset row by `id`
+and lists the datasets of a StatVar row under `datasets`.
 
 `write_part` and `write_blob_part` stage files locally and upload nothing;
 `graph_release.publish` is the only code that writes to the bucket.
@@ -50,7 +51,7 @@ from dfo_platform.executor import map_in_threads
 
 logger = logging.getLogger(__name__)
 
-FORMAT: Final[int] = 3
+FORMAT: Final[int] = 4
 
 FETCH_WORKERS: Final[int] = 8
 """Parts `open_release` downloads at once. Each download streams one GCS object to a file

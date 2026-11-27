@@ -144,7 +144,7 @@ def _validated(
 ) -> tuple[RatioTwins | None, str]:
     """The family of one bucket's `five_tuples`, or None and the condition it fails
     (`ratio_twins`)."""
-    provenances = {frozenset(row.provenances) for f in five_tuples for row in rows_by_five_tuple[f]}
+    provenances = {frozenset(row.datasets) for f in five_tuples for row in rows_by_five_tuple[f]}
     if len(provenances) != 1:
         return None, "the classes' rows are held by different provenances"
     classes: list[RatioClass] = []

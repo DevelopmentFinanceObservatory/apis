@@ -99,7 +99,7 @@ def _row(dcid: str, *, provenance: str = _DATASET, **constraints: str) -> StatVa
         measurement_denominator=None,
         observation_properties=("financingProvider",),
         constraint_properties=constraints,
-        provenances=(provenance,),
+        datasets=(provenance,),
     )
 
 
@@ -118,7 +118,7 @@ def _use_index(monkeypatch: pytest.MonkeyPatch, *rows: StatVarRow) -> None:
         statvars=rows,
         datasets=tuple(
             DatasetDeclaration(
-                provenance=provenance,
+                id=provenance,
                 label=provenance,
                 description="A test table.",
                 opt_in=False,

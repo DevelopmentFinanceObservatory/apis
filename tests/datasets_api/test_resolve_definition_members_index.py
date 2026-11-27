@@ -117,7 +117,7 @@ def _over_cap_index(count: int) -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("recipient",),
                 constraint_properties={"scheme": f"Code{i}"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             )
             for i in range(count)
         ),
@@ -179,7 +179,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Male",
@@ -190,7 +190,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Male"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Female",
@@ -201,7 +201,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Female"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
         ),
     )
@@ -303,7 +303,7 @@ def _degenerate_observation_properties_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("observationAbout",),
                 constraint_properties={},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
         ),
     )
@@ -443,7 +443,7 @@ def _education_aid_members(identity: dict, code_index: CodeIndex) -> ResolvedMem
 
 def _provenances(shapes: tuple[StatVarShape, ...], code_index: CodeIndex) -> set[tuple[str, ...]]:
     members = {shape.stat_var.removeprefix("dcid:") for shape in shapes}
-    return {row.provenances for row in code_index.statvars if row.dcid in members}
+    return {row.datasets for row in code_index.statvars if row.dcid in members}
 
 
 def test_the_plain_aid_identity_resolves_the_crs_members():
@@ -533,7 +533,7 @@ def _imputed_member_graph(code_index: CodeIndex) -> FakeMintGraphReader:
         arcs={
             row.dcid: _member_arcs(row)
             for row in code_index.statvars
-            if IMPUTED_PROVENANCE in row.provenances
+            if IMPUTED_PROVENANCE in row.datasets
         }
     )
 
@@ -762,7 +762,7 @@ def _source_facet(shape: StatVarShape, code_index: CodeIndex) -> Facet:
     row = next(
         row for row in code_index.statvars if row.dcid == shape.stat_var.removeprefix("dcid:")
     )
-    (provenance,) = row.provenances
+    (provenance,) = row.datasets
     return Facet(
         obs_count=10,
         earliest_date="2000",
@@ -896,13 +896,13 @@ def _person_row(dcid: str, constraints: dict[str, str], *provenances: str) -> St
         measurement_denominator=None,
         observation_properties=("recipient",),
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
 def _dataset(provenance: str) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=False,

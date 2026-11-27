@@ -28,7 +28,7 @@ def _listed(dcid: str, *provenances: str) -> dict:
         "measurement_denominator": None,
         "observation_properties": ["financingRecipient"],
         "constraint_properties": {"financialFlowType": "ServicingPayment"},
-        "provenances": list(provenances),
+        "datasets": list(provenances),
     }
 
 

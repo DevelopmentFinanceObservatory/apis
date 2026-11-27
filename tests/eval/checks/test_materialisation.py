@@ -968,7 +968,7 @@ _DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
 _DAC2A_GROSS_ODA = next(
     row.dcid
     for row in get_index().statvars
-    if row.provenances == (_DAC2A,)
+    if row.datasets == (_DAC2A,)
     and row.measured_property == "amount"
     and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"
     and row.constraint_properties.get("nettingBasis") == "Gross"

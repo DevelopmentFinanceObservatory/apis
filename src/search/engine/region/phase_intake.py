@@ -652,7 +652,7 @@ def _prune_shapes_by_listing(
     total_kept = bool(stated) and stated[0].option_id == CONTRIBUTIONS
 
     def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
-        datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+        datasets = [dataset.id for dataset in declared_datasets(shape, get_index())]
         if all(bilateral_side_total(dcid) for dcid in listed[name]):
             lists = lists_bilateral_destinations(datasets, total_kept=total_kept)
             return set() if lists else None

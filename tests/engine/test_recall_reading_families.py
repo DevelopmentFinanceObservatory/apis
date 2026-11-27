@@ -71,7 +71,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties=constraints,
-        provenances=(provenance,),
+        datasets=(provenance,),
     )
 
 
@@ -191,7 +191,7 @@ _LABELS = {
 
 def _dataset(provenance: str, rank: int) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=_LABELS[provenance],
         description="A test table.",
         opt_in=False,
@@ -455,7 +455,7 @@ def _coverage(rows: tuple[StatVarRow, ...] = _ROWS) -> FakeCoverageService:
             [
                 (
                     row.dcid,
-                    row.provenances[0],
+                    row.datasets[0],
                     _DEU,
                     _KEN if "financingRecipient" in row.observation_properties else ABSENT_ENTITY,
                     [2021, 2022],

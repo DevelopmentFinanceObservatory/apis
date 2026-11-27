@@ -133,7 +133,7 @@ def test_the_key_follows_the_dataset_the_election_reads():
     bare = query_for(shape, {})
     (opt_in,) = (d for d in index.datasets.values() if d.opt_in)
 
-    named = dataclasses.replace(bare, source=opt_in.provenance)
+    named = dataclasses.replace(bare, source=opt_in.id)
     keys = {
         measure_family_cache_key(shape, axes, dataclasses.replace(bare, source=source))
         for source in (None, *index.datasets)

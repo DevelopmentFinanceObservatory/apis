@@ -90,8 +90,7 @@ def test_a_crs_sample_declares_the_slots_of_its_own_five_tuples_rows_alone():
     five_tuple_properties = {
         prop
         for other in index.statvars
-        if row_five_tuple(other) == row_five_tuple(row)
-        and set(other.provenances) == set(row.provenances)
+        if row_five_tuple(other) == row_five_tuple(row) and set(other.datasets) == set(row.datasets)
         for prop in other.constraint_properties
     }
     assert "dac1AidType" not in five_tuple_properties

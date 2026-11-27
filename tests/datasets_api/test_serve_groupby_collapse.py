@@ -172,7 +172,7 @@ def _code_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("recipient",),
                 constraint_properties={"testAxis": "TestAxisA"},
-                provenances=("OECD_DAC2A",),
+                datasets=("OECD_DAC2A",),
             ),
             StatVarRow(
                 dcid=_MEMBER_B,
@@ -183,7 +183,7 @@ def _code_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("recipient",),
                 constraint_properties={"testAxis": "TestAxisB"},
-                provenances=("OECD_DAC2A",),
+                datasets=("OECD_DAC2A",),
             ),
         ),
     )

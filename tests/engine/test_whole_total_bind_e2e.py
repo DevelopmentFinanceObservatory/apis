@@ -799,7 +799,7 @@ def test_official_donors_covering_the_alternate_alone_refuses_with_the_alternate
 
     def recording(state: Any, shape: Any, assignment: Any) -> Any:
         result = named(state, shape, assignment)
-        datasets = tuple(row.provenance for row in declared_datasets(shape, get_index()))
+        datasets = tuple(row.id for row in declared_datasets(shape, get_index()))
         sets = result.sets.get("origin")
         origins[datasets] = None if sets is None else sorted(s.node.dcid for s in sets)
         return result
@@ -4151,7 +4151,7 @@ def test_developing_countries_bind_dac2a_s_own_total_and_leave_the_crs_unnamed(
 
     def recording(state: Any, shape: Any, assignment: Any) -> Any:
         result = named(state, shape, assignment)
-        datasets = tuple(row.provenance for row in declared_datasets(shape, get_index()))
+        datasets = tuple(row.id for row in declared_datasets(shape, get_index()))
         sets = result.sets.get("destination")
         destinations[datasets] = None if sets is None else sorted(s.node.dcid for s in sets)
         return result

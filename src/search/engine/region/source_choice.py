@@ -217,7 +217,7 @@ def _may_publish(
     if datasets := shape_datasets(shape, index):
         return not provenances.isdisjoint(datasets)
     if listed := shape_listed_rows(shape, index):
-        return any(not provenances.isdisjoint(row.provenances) for row in listed)
+        return any(not provenances.isdisjoint(row.datasets) for row in listed)
     known = frozenset(
         row.id for sv in shape.sv_arc_facts or () for row in catalogue.variable_provenances(sv)
     )
@@ -664,7 +664,7 @@ def _recalled(
         family = index.family_by_dcid.get(hit.dcid)
         recalled.append(
             RecalledFamily(
-                datasets=frozenset(family.datasets if family is not None else row.provenances),
+                datasets=frozenset(family.datasets if family is not None else row.datasets),
                 axes=frozenset(roles_by_axis(row.observation_properties)),
                 score=hit.score,
             )

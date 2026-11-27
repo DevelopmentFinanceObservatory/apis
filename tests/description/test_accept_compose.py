@@ -1559,7 +1559,7 @@ def _ids_words() -> Vocabulary:
             constraint_properties={
                 _CREDITOR: _CREDITOR_OF.get(dcid, f"IDSCreditorType{dcid[-2:]}")
             },
-            provenances=(_IDS,),
+            datasets=(_IDS,),
         )
         for dcid in _IDS_CODES
     ]

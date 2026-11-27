@@ -846,7 +846,7 @@ def _resolve_index_members(
             population_type=five_tuple.population_type,
             # A family with a row has an elected provenance.
             dataset=ElectedDataset(
-                provenance=cast(str, elected.provenance), member_provenances=row.provenances
+                provenance=cast(str, elected.provenance), member_provenances=row.datasets
             ),
             family=stated,
         )

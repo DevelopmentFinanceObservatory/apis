@@ -1385,7 +1385,7 @@ def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bo
         return bool(part_datasets(shape, scope, index))
     listed = shape_listed_rows(shape, index)
     if listed:
-        return any(not scope.allowed.isdisjoint(row.provenances) for row in listed)
+        return any(not scope.allowed.isdisjoint(row.datasets) for row in listed)
     return not scope.allowed <= index.datasets.keys()
 
 
@@ -1839,9 +1839,7 @@ def _serving_datasets(families: Sequence[IndexFamily], index: CodeIndex) -> list
             (index.datasets[dataset] for dataset in family.datasets if dataset in index.datasets),
             key=lambda dataset: dataset.rank,
         )
-        for provenance in eligible_among(
-            index, [dataset.provenance for dataset in declared], scope=None
-        ):
+        for provenance in eligible_among(index, [dataset.id for dataset in declared], scope=None):
             served.setdefault(
                 provenance, GraphRef(ref=provenance, label=index.datasets[provenance].label)
             )

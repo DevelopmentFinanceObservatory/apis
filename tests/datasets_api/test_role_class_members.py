@@ -363,7 +363,7 @@ def _row(dcid: str, roles: tuple[str, ...], **constraints: str) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties={"positionType": "AmountOutstanding", **constraints},
-        provenances=(_PROVENANCE,),
+        datasets=(_PROVENANCE,),
     )
 
 
@@ -381,7 +381,7 @@ def _debt_index(*rows: StatVarRow) -> CodeIndex:
         statvars=rows,
         datasets=(
             DatasetDeclaration(
-                provenance=_PROVENANCE,
+                id=_PROVENANCE,
                 label="Debt",
                 description="A test table.",
                 opt_in=False,

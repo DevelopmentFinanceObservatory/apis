@@ -654,7 +654,7 @@ def _dataset_member(dataset: str | None) -> IndexMemberFacts:
             measurement_denominator=None,
             observation_properties=("debtor",),
             constraint_properties={},
-            provenances=(_ELECTED, _OTHER),
+            datasets=(_ELECTED, _OTHER),
         ),
         dataset=dataset,
     )

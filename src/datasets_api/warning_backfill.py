@@ -1256,6 +1256,6 @@ def _request(
         request,
         dataset=ElectedDataset(
             provenance=provenances[0],
-            member_provenances=row.provenances if row is not None else (),
+            member_provenances=row.datasets if row is not None else (),
         ),
     )

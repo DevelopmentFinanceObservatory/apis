@@ -58,7 +58,7 @@ def _with_imputed_dataset() -> dict:
     payload = _fixture()
     payload["datasets"].append(
         {
-            "provenance": _IMPUTED_PROVENANCE,
+            "id": _IMPUTED_PROVENANCE,
             "label": "ONE Imputed Multilateral Sectors",
             "description": "A test table.",
             "opt_in": True,
@@ -69,7 +69,7 @@ def _with_imputed_dataset() -> dict:
         }
     )
     imputed = payload["statvars"][-1]
-    imputed["provenances"] = [_IMPUTED_PROVENANCE]
+    imputed["datasets"] = [_IMPUTED_PROVENANCE]
     imputed["measured_property"] = "attributedAmount"
     return payload
 
@@ -77,7 +77,7 @@ def _with_imputed_dataset() -> dict:
 def test_loader_parses_a_dataset_declaration(code_index: CodeIndex):
     assert code_index.datasets == {
         _CRS_PROVENANCE: DatasetDeclaration(
-            provenance=_CRS_PROVENANCE,
+            id=_CRS_PROVENANCE,
             label="OECD Creditor Reporting System (CRS)",
             description="A test table.",
             opt_in=False,
@@ -89,7 +89,7 @@ def test_loader_parses_a_dataset_declaration(code_index: CodeIndex):
 
 
 def test_loader_reads_each_rows_provenances_and_the_coverage_stamp(code_index: CodeIndex):
-    assert {row.provenances for row in code_index.statvars} == {(_CRS_PROVENANCE,)}
+    assert {row.datasets for row in code_index.statvars} == {(_CRS_PROVENANCE,)}
     assert code_index.stamp.coverage_build == "fixture-coverage-build"
     assert code_index.stamp.statvars_without_coverage == 0
 
@@ -155,7 +155,7 @@ def test_loader_rejects_two_datasets_of_one_rank():
 @pytest.mark.parametrize(
     "field",
     [
-        "provenance",
+        "id",
         "label",
         "description",
         "opt_in",
@@ -398,11 +398,11 @@ def test_loader_rejects_a_document_missing_the_datasets_block():
         parse_index(payload)
 
 
-def test_loader_rejects_a_row_missing_its_provenances():
+def test_loader_rejects_a_row_missing_its_datasets():
     payload = _fixture()
-    del payload["statvars"][0]["provenances"]
+    del payload["statvars"][0]["datasets"]
 
-    with pytest.raises(IndexFormatError, match="provenances"):
+    with pytest.raises(IndexFormatError, match="datasets"):
         parse_index(payload)
 
 
@@ -435,7 +435,7 @@ def _sharing_one_five_tuple(*, crs_rank: int, imputed_rank: int) -> CodeIndex:
     payload["datasets"][0]["rank"] = crs_rank
     payload["datasets"][-1]["rank"] = imputed_rank
     payload["statvars"][-1]["measured_property"] = payload["statvars"][0]["measured_property"]
-    payload["statvars"][_SHARED_ROW]["provenances"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
+    payload["statvars"][_SHARED_ROW]["datasets"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
     return parse_index(payload)
 
 
@@ -453,7 +453,7 @@ def test_two_datasets_on_one_five_tuple_load_in_rank_order(
     index = _sharing_one_five_tuple(crs_rank=crs_rank, imputed_rank=imputed_rank)
 
     shared = index.statvars[_SHARED_ROW]
-    assert shared.provenances == (_CRS_PROVENANCE, _IMPUTED_PROVENANCE)
+    assert shared.datasets == (_CRS_PROVENANCE, _IMPUTED_PROVENANCE)
     assert index.datasets_by_five_tuple[row_five_tuple(shared)] == order
 
 
@@ -475,7 +475,7 @@ def test_each_dataset_pins_its_own_rows_of_a_shared_five_tuple():
 
 def test_loader_rejects_a_provenance_no_dataset_declares():
     payload = _fixture()
-    payload["statvars"][0]["provenances"] = [_CRS_PROVENANCE, "provenance/ThirdSource"]
+    payload["statvars"][0]["datasets"] = [_CRS_PROVENANCE, "provenance/ThirdSource"]
 
     with pytest.raises(IndexFormatError, match=r"provenance/ThirdSource.*no dataset declares"):
         parse_index(payload)
@@ -483,7 +483,7 @@ def test_loader_rejects_a_provenance_no_dataset_declares():
 
 def test_loader_rejects_a_declared_dataset_with_no_row():
     payload = _with_imputed_dataset()
-    payload["statvars"][-1]["provenances"] = []
+    payload["statvars"][-1]["datasets"] = []
 
     with pytest.raises(IndexFormatError, match=rf"{_IMPUTED_PROVENANCE}.*no StatVar row"):
         parse_index(payload)
@@ -493,7 +493,7 @@ def test_loader_rejects_a_declared_dataset_with_no_row():
 def test_loader_rejects_a_row_without_its_datasets_declared_invariant(held: str | None):
     """An absent property fails the invariant whatever the code system's absent reading."""
     payload = _with_imputed_dataset()
-    payload["statvars"][_SHARED_ROW]["provenances"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
+    payload["statvars"][_SHARED_ROW]["datasets"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
     constraints = payload["statvars"][_SHARED_ROW]["constraint_properties"]
     if held is None:
         del constraints["crsTypeOfFlow"]
@@ -508,11 +508,11 @@ def test_loader_rejects_a_row_without_its_datasets_declared_invariant(held: str 
 
 def test_loader_accepts_a_row_with_no_provenance():
     payload = _fixture()
-    payload["statvars"][0]["provenances"] = []
+    payload["statvars"][0]["datasets"] = []
 
     index = parse_index(payload)
 
-    assert index.statvars[0].provenances == ()
+    assert index.statvars[0].datasets == ()
 
 
 def test_absent_observation_returns_zero_for_crs(code_index: CodeIndex):
@@ -626,15 +626,15 @@ def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
     index = load_index(INDEX_FIXTURE)
 
     assert index.stamp.coverage_build
-    uncovered = [row for row in index.statvars if not row.provenances]
+    uncovered = [row for row in index.statvars if not row.datasets]
     assert len(uncovered) == index.stamp.statvars_without_coverage
     for row in index.statvars:
-        assert row.provenances == tuple(sorted(row.provenances))
+        assert row.datasets == tuple(sorted(row.datasets))
         family = index.family_of(row_five_tuple(row), row.constraint_properties.keys())
         assert family is not None, row.dcid
         assert row in family.rows, row.dcid
-        if row.provenances:
-            assert row.provenances == tuple(sorted(family.datasets)), row.dcid
+        if row.datasets:
+            assert row.datasets == tuple(sorted(family.datasets)), row.dcid
     shared = {
         tuple(family.datasets for family in families)
         for families in index.families_by_five_tuple.values()
@@ -690,7 +690,7 @@ def test_a_dataset_read_as_zero_reports_explicit_zeros_beside_absent_cells(evide
     (five_tuple,) = five_tuples
     members = {row.dcid for row in index.statvars if row_five_tuple(row) == five_tuple}
 
-    assert {row.provenances for row in observed} == {(evidence["provenance"],)}
+    assert {row.datasets for row in observed} == {(evidence["provenance"],)}
     assert 0.0 in {observation["value"] for observation in evidence["observations"]}
     assert members - {row.dcid for row in observed}
     assert index.absent_observation(evidence["provenance"]) == "zero"
@@ -719,7 +719,7 @@ def _ids_row(dcid: str, *, measured_property: str, resource: str | None) -> dict
         "measurement_denominator": None,
         "observation_properties": [],
         "constraint_properties": constraints,
-        "provenances": [_IDS_PROVENANCE],
+        "datasets": [_IDS_PROVENANCE],
     }
 
 

@@ -226,11 +226,11 @@ def _check_composites(
     that overlap or leave a year between them. A served stacked composite whose component
     tables' rows declare different role sets is refused too, since the composed frame holds
     one set of role columns. A composite naming a table `datasets` does not declare is not served."""
-    declared = {dataset.provenance for dataset in datasets}
+    declared = {dataset.id for dataset in datasets}
     role_sets: dict[str, set[tuple[str, ...]]] = {}
     for row in statvars:
-        for provenance in row.provenances:
-            role_sets.setdefault(provenance, set()).add(row.observation_properties)
+        for dataset_id in row.datasets:
+            role_sets.setdefault(dataset_id, set()).add(row.observation_properties)
     served: list[CompositeDeclaration] = []
     for composite in composites:
         _check_composite_declaration(composite, declared)
@@ -839,7 +839,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     for row in rows:
         try:
             dataset = DatasetDeclaration(
-                provenance=row["provenance"],
+                id=row["id"],
                 label=row["label"],
                 description=row["description"],
                 opt_in=row["opt_in"],
@@ -847,9 +847,9 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 account=row["account"],
                 rank=row["rank"],
                 invariants=dict(row["invariants"]),
-                stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
-                party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
-                noted_words=_parse_noted_words(row["provenance"], row.get("noted_words", ())),
+                stated_words=_parse_stated_words(row["id"], row.get("stated_words", ())),
+                party_words=_parse_party_words(row["id"], row.get("party_words", ())),
+                noted_words=_parse_noted_words(row["id"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
             )
@@ -857,52 +857,49 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
         if dataset.absent_observation not in _ABSENT_OBSERVATION_VALUES:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"absent_observation={dataset.absent_observation!r}, outside the vocabulary "
                 f"{sorted(_ABSENT_OBSERVATION_VALUES)!r}"
             )
         if dataset.account not in _FLOW_ACCOUNTS:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"account={dataset.account!r}, outside the vocabulary "
                 f"{sorted(_FLOW_ACCOUNTS)!r}"
             )
         if not isinstance(dataset.opt_in, bool):
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries opt_in={dataset.opt_in!r}, "
+                f"datasets row for {dataset.id!r} carries opt_in={dataset.opt_in!r}, "
                 "which is not a boolean"
             )
         if not isinstance(dataset.rank, int) or isinstance(dataset.rank, bool):
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries rank={dataset.rank!r}, "
+                f"datasets row for {dataset.id!r} carries rank={dataset.rank!r}, "
                 "which is not an integer"
             )
         if not set(dataset.house_default_for) <= _HOUSE_DEFAULT_CASES:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"house_default_for={list(dataset.house_default_for)!r}, outside the "
                 f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
             )
         if dataset.ratio_base_axis is not None and dataset.ratio_base_axis not in AXIS_LABELS:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"ratio_base_axis={dataset.ratio_base_axis!r}, outside {sorted(AXIS_LABELS)!r}"
             )
         if not dataset.label:
-            raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
+            raise IndexFormatError(f"datasets row for {dataset.id!r} carries no label")
         if not dataset.description:
+            raise IndexFormatError(f"datasets row for {dataset.id!r} carries no description")
+        if dataset.id in seen:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries no description"
+                f"provenance {dataset.id!r} is declared more than once in datasets"
             )
-        if dataset.provenance in seen:
+        seen.add(dataset.id)
+        if (holder := ranks.setdefault(dataset.rank, dataset.id)) != dataset.id:
             raise IndexFormatError(
-                f"provenance {dataset.provenance!r} is declared more than once in datasets"
-            )
-        seen.add(dataset.provenance)
-        if (holder := ranks.setdefault(dataset.rank, dataset.provenance)) != dataset.provenance:
-            raise IndexFormatError(
-                f"datasets rows for {holder!r} and {dataset.provenance!r} share "
-                f"rank {dataset.rank!r}"
+                f"datasets rows for {holder!r} and {dataset.id!r} share rank {dataset.rank!r}"
             )
         datasets.append(dataset)
     return datasets
@@ -923,47 +920,46 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     claimed: dict[str, str] = {}
     for dataset in datasets:
         for case in dataset.house_default_for:
-            if (holder := claimed.setdefault(case, dataset.provenance)) != dataset.provenance:
+            if (holder := claimed.setdefault(case, dataset.id)) != dataset.id:
                 raise IndexFormatError(
-                    f"datasets {holder!r} and {dataset.provenance!r} both claim "
-                    f"house_default_for {case!r}"
+                    f"datasets {holder!r} and {dataset.id!r} both claim house_default_for {case!r}"
                 )
-    invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
+    invariants = {dataset.id: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     measured: dict[str, set[str]] = {}
     for row in statvars:
-        for provenance in row.provenances:
-            if provenance not in invariants:
+        for dataset_id in row.datasets:
+            if dataset_id not in invariants:
                 raise IndexFormatError(
-                    f"StatVar {row.dcid!r} carries provenance {provenance!r}, which no "
+                    f"StatVar {row.dcid!r} carries provenance {dataset_id!r}, which no "
                     f"dataset declares (declared: {sorted(invariants)!r})"
                 )
-            for prop, code in invariants[provenance].items():
+            for prop, code in invariants[dataset_id].items():
                 if row.constraint_properties.get(prop) != code:
                     raise IndexFormatError(
-                        f"StatVar {row.dcid!r} of dataset {provenance!r} carries "
+                        f"StatVar {row.dcid!r} of dataset {dataset_id!r} carries "
                         f"{prop}={row.constraint_properties.get(prop)!r}, but the dataset "
                         f"declares {prop}={code!r} as an invariant"
                     )
-            populated.add(provenance)
-            measured.setdefault(provenance, set()).add(row.measured_property)
+            populated.add(dataset_id)
+            measured.setdefault(dataset_id, set()).add(row.measured_property)
     empty = sorted(invariants.keys() - populated)
     if empty:
         raise IndexFormatError(f"declared dataset(s) {empty!r} have no StatVar row")
     for dataset in datasets:
         for stated in dataset.stated_words:
-            if stated.measured_property not in measured[dataset.provenance]:
+            if stated.measured_property not in measured[dataset.id]:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} states {stated.word!r} of "
+                    f"dataset {dataset.id!r} states {stated.word!r} of "
                     f"{stated.measured_property!r}, a measured property none of its rows has "
-                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                    f"(has: {sorted(measured[dataset.id])!r})"
                 )
         for named in dataset.party_words:
-            if named.measured_property not in measured[dataset.provenance]:
+            if named.measured_property not in measured[dataset.id]:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} names a party for {named.word!r} of "
+                    f"dataset {dataset.id!r} names a party for {named.word!r} of "
                     f"{named.measured_property!r}, a measured property none of its rows has "
-                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                    f"(has: {sorted(measured[dataset.id])!r})"
                 )
 
 
@@ -975,9 +971,9 @@ def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence
     for dataset in datasets:
         for named in dataset.party_words:
             party = by_dcid.get(named.party)
-            if party is None or (dataset.provenance, named.axis) not in party.published:
+            if party is None or (dataset.id, named.axis) not in party.published:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} names {named.party!r} for {named.word!r} "
+                    f"dataset {dataset.id!r} names {named.party!r} for {named.word!r} "
                     f"on {named.axis!r}, which the parties block does not list for that "
                     "dataset and axis"
                 )
@@ -1044,7 +1040,7 @@ def _parse_statvar(payload: Mapping) -> StatVarRow:
         measurement_denominator=payload["measurement_denominator"],
         observation_properties=tuple(payload["observation_properties"]),
         constraint_properties=dict(payload["constraint_properties"]),
-        provenances=tuple(payload["provenances"]),
+        datasets=tuple(payload["datasets"]),
     )
 
 
@@ -1072,7 +1068,7 @@ def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVa
     `(provenance, code)` pair on two rows, a row naming no StatVar, and a dcid that is no
     StatVar row of the index or whose row does not carry the code's provenance.
     Search answers a code with these rows, so each must be a StatVar it serves from that source."""
-    provenances = {row.dcid: row.provenances for row in statvars}
+    provenances = {row.dcid: row.datasets for row in statvars}
     seen: set[tuple[str, str]] = set()
     for row in rows:
         if not row.code or row.code != row.code.strip().upper():

@@ -817,7 +817,7 @@ def _absent_reads_zero_code_index() -> CodeIndex:
         statvars=base.statvars,
         datasets=(
             DatasetDeclaration(
-                provenance=collapse_fixture._PROVENANCE,
+                id=collapse_fixture._PROVENANCE,
                 label="OECD DAC2a",
                 description="Aid disbursements by recipient.",
                 opt_in=False,

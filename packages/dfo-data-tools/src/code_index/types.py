@@ -56,7 +56,7 @@ class StatVarRow:
     outside that mapping. `observation_properties` holds declared roles.
     CRS StatVars carry no `unit` arc, so this row has no unit field.
 
-    `provenances` holds the provenance of every dataset that publishes
+    `datasets` holds the id of every dataset that publishes
     observations of this StatVar, sorted. The export joins it from a series
     coverage build. A StatVar with no coverage row carries `()` and belongs to
     no dataset.
@@ -70,7 +70,7 @@ class StatVarRow:
     measurement_denominator: str | None
     observation_properties: tuple[str, ...]
     constraint_properties: Mapping[str, str]
-    provenances: tuple[str, ...] = ()
+    datasets: tuple[str, ...] = ()
 
 
 AbsentReading = Literal["not_declared", "aggregate"]
@@ -369,7 +369,7 @@ no flow axis (`recipient`), or only donors (`donor`). Each kind has one house de
 
 @dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
-    """One published table, keyed by the provenance its observations carry.
+    """One published table, keyed by `id`, the provenance its observations carry.
 
     `label` is the name a sentence uses for the dataset. Its words must describe
     every row the table serves: a phrase the bind model leaves unplaced reads as
@@ -395,8 +395,8 @@ class DatasetDeclaration:
     (`dfo_platform.roles.FlowAccount`). It names the two parties of a
     role-bearing series and says which one leads a heading.
 
-    A StatVar row belongs to the dataset when `StatVarRow.provenances` names
-    its `provenance`.
+    A StatVar row belongs to the dataset when `StatVarRow.datasets` names
+    its `id`.
 
     `invariants` maps a constraint property to the code every row the dataset
     publishes carries explicitly. The loader refuses an index with a row of the
@@ -441,7 +441,7 @@ class DatasetDeclaration:
     release exported without the field.
     """
 
-    provenance: str
+    id: str
     label: str
     description: str
     opt_in: bool
@@ -938,7 +938,7 @@ class IndexStamp:
     gives the same stamp for identical exported rows.
 
     `coverage_build` is the build id of the series coverage build the export
-    joined `StatVarRow.provenances` from, and `statvars_without_coverage`
+    joined `StatVarRow.datasets` from, and `statvars_without_coverage`
     counts the rows that build holds no series for. An index built in memory
     names no build.
     """

@@ -243,9 +243,7 @@ def stage_dfo_parts(parts: DfoParts, *, staging_dir: Path, execution_id: str) ->
 
 
 def _party_datasets(declarations: Declarations) -> set[str]:
-    return {dataset.provenance for dataset in declarations.datasets} | set(
-        declarations.listed_datasets
-    )
+    return {dataset.id for dataset in declarations.datasets} | set(declarations.listed_datasets)
 
 
 def _release_held(reader: ReleaseGraphReader, party: str) -> bool:

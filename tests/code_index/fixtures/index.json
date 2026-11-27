@@ -62,7 +62,7 @@
   ],
   "datasets": [
     {
-      "provenance": "provenance/OECDCreditorReportingSystem",
+      "id": "provenance/OECDCreditorReportingSystem",
       "label": "OECD Creditor Reporting System (CRS)",
       "description": "A test table.",
       "opt_in": false,
@@ -4435,7 +4435,7 @@
         "financialFlowType": "Disbursement",
         "nettingBasis": "Gross"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4457,7 +4457,7 @@
         "financialFlowType": "Disbursement",
         "nettingBasis": "Gross"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4479,7 +4479,7 @@
         "financialFlowType": "Disbursement",
         "nettingBasis": "Net"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4501,7 +4501,7 @@
         "financialFlowType": "Disbursement",
         "nettingBasis": "Net"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4522,7 +4522,7 @@
         "crsTypeOfFlow": "CRSTypeOfFlow21",
         "financialObligationType": "Commitment"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4543,7 +4543,7 @@
         "crsTypeOfFlow": "CRSTypeOfFlow21",
         "financialObligationType": "Commitment"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4565,7 +4565,7 @@
         "financialFlowType": "Disbursement",
         "nettingBasis": "Gross"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4588,7 +4588,7 @@
         "nettingBasis": "Gross",
         "crsCooperationModality": "CRSCooperationModalityA01"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     },
@@ -4611,7 +4611,7 @@
         "nettingBasis": "Gross",
         "crsCooperationModality": "CRSCooperationModalityB01"
       },
-      "provenances": [
+      "datasets": [
         "provenance/OECDCreditorReportingSystem"
       ]
     }

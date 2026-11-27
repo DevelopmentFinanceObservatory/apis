@@ -28,7 +28,7 @@ _DECLARATIONS = _ROOTS[-1] / "declarations.py"
 
 
 def _dataset_names(index: CodeIndex) -> set[str]:
-    provenances = {dataset.provenance for dataset in DATASETS} | set(index.datasets)
+    provenances = {dataset.id for dataset in DATASETS} | set(index.datasets)
     return provenances | {provenance.removeprefix("provenance/") for provenance in provenances}
 
 
@@ -37,7 +37,7 @@ def _single_dataset_codes(index: CodeIndex) -> set[str]:
     carriers: dict[str, set[str]] = defaultdict(set)
     for row in index.statvars:
         for value in row.constraint_properties.values():
-            carriers[value].update(row.provenances)
+            carriers[value].update(row.datasets)
     codes = {value for value, provenances in carriers.items() if len(provenances) == 1}
     return codes | {f"dcid:{code}" for code in codes}
 

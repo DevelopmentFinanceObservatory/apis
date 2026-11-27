@@ -60,7 +60,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=(),
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -68,7 +68,7 @@ def _dataset(
     provenance: str, *, rank: int, invariants: dict[str, str], opt_in: bool = False
 ) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=opt_in,

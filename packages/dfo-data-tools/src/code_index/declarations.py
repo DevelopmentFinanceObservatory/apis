@@ -342,7 +342,7 @@ _MULTILATERAL_PROVIDER = PartyWord(
 )
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
-        provenance=CRS,
+        id=CRS,
         label="OECD Creditor Reporting System (CRS)",
         description=(
             "Development finance that providers report to the OECD activity by activity, by"
@@ -359,7 +359,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         house_default_for=("sector",),
     ),
     DatasetDeclaration(
-        provenance=_IMPUTED_MULTILATERAL_SECTORS,
+        id=_IMPUTED_MULTILATERAL_SECTORS,
         label="ONE Imputed Multilateral Sectors",
         description=(
             "The share of each multilateral organisation's spending attributed back to a"
@@ -373,7 +373,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         invariants={"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"},
     ),
     DatasetDeclaration(
-        provenance=DAC1,
+        id=DAC1,
         label="OECD DAC1",
         description=(
             "Donors' aggregate official and private flows reported to the OECD, as totals by"
@@ -387,7 +387,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ratio_base_axis="origin",
     ),
     DatasetDeclaration(
-        provenance=DAC2A,
+        id=DAC2A,
         label="OECD DAC2a",
         description=(
             "Donors' official development assistance disbursements reported to the OECD, by"
@@ -407,7 +407,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ratio_base_axis="destination",
     ),
     DatasetDeclaration(
-        provenance=_DAC2B,
+        id=_DAC2B,
         label="OECD DAC2b",
         description=(
             "Other official flows and officially supported export credits that providers report"
@@ -425,7 +425,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         party_words=(_MULTILATERAL_PROVIDER,),
     ),
     DatasetDeclaration(
-        provenance=_ONE_CLIMATE_FINANCE,
+        id=_ONE_CLIMATE_FINANCE,
         label="ONE Data Climate Finance",
         description=(
             "Climate finance each provider committed and paid out, by recipient, as ONE Data"
@@ -441,7 +441,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
     ),
     DatasetDeclaration(
-        provenance=_OECD_CRDF,
+        id=_OECD_CRDF,
         label="OECD Climate-related Development Finance",
         description=(
             "Climate-related development finance commitments the OECD publishes by provider"
@@ -458,7 +458,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
     ),
     DatasetDeclaration(
-        provenance=_UNFCCC_BTR,
+        id=_UNFCCC_BTR,
         label="UNFCCC Biennial Transparency Reports",
         description=(
             "Bilateral climate finance each party reports to the UNFCCC in its Biennial"
