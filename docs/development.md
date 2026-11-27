@@ -154,6 +154,8 @@ The eval jobs need repository secrets, so they skip on pull requests from forks 
 
 A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case file, and writes only the items Langfuse lacks or holds differently. The sync and the nightly need `LANGFUSE_PROJECT_ID`, the project the keys must name. `.github/workflows/eval-nightly.yml` scores one sample per case against the deployed `dfo-dev` service (`repeat` samples for a case that sets it), writes a `dfo-evals` run record, pushes it to Langfuse as one experiment per case file, and copies it to the eval runs bucket under `apis-search/<run id>/`.
 
+The bucket holds the raw nightly records. If the upload exhausts its retries, dispatch the nightly again from `dev`.
+
 ## CI workflows
 
 GitHub Actions validate pull requests and pushes to `dev`. A draft pull request runs nothing until it is marked ready for review. A push to `main` runs no CI, since `main` only moves to a commit `dev` has already tested. The jobs that need repository secrets skip on pull requests from forks.

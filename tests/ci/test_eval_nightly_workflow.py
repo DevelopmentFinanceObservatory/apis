@@ -1,7 +1,7 @@
 """Check the eval-nightly run record steps without running an evaluation.
 
-The nightly writes its run record under ``$RUNNER_TEMP/eval-records`` and two steps after
-it copy the record to the eval runs bucket as the eval runs writer, whatever the run's exit
+The nightly writes its run record under ``$RUNNER_TEMP/eval-records`` and uploads it
+to the private eval runs bucket as the eval runs writer, whatever the run's exit
 code. The upload step's shell runs here under bash, with ``uv`` stubbed; the upload itself
 is ``search.eval.record_upload``, tested in ``tests/eval/test_record_upload.py``.
 """
@@ -34,19 +34,16 @@ def test_the_nightly_writes_its_record_and_names_its_langfuse_project():
 _ON_DEV = "${{ !cancelled() && github.ref == 'refs/heads/dev' }}"
 
 
-def test_the_record_is_kept_then_uploaded_as_the_writer_whatever_the_run_s_code():
+def test_the_record_is_uploaded_privately_as_the_writer_whatever_the_run_s_code():
     names = [step.get("name", "") for step in _STEPS]
-    artifact = _step("Keep the run record as an artifact")
     skip = _step("Skip the upload off dev")
     auth = _step("eval runs writer")
     upload = _step("Upload the run record")
 
-    order = [names.index(step["name"]) for step in (artifact, skip, auth, upload)]
+    order = [names.index(step["name"]) for step in (skip, auth, upload)]
     assert order == sorted(order)
     assert order[0] == names.index("Run the nightly eval") + 1
-    assert artifact["if"] == "${{ !cancelled() }}"
-    assert artifact["uses"] == "actions/upload-artifact@v7"
-    assert artifact["with"]["path"] == "${{ runner.temp }}/eval-records"
+    assert not any(step.get("uses", "").startswith("actions/upload-artifact@") for step in _STEPS)
     # The writer's binding admits this workflow on dev alone.
     assert auth["if"] == upload["if"] == _ON_DEV
     assert skip["if"] == "${{ !cancelled() && github.ref != 'refs/heads/dev' }}"
