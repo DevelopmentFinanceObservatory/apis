@@ -40,7 +40,6 @@ from materialise.recipes import (
     RecipeNotDeclaredError,
     currency_unmapped_error,
     deflator_missing_error,
-    graph_role_for_spec_role,
     resolve_deflator_role,
     resolve_entity_currencies,
 )
@@ -86,6 +85,7 @@ from search.engine.unit.conversion import (
     CountedConversion,
     conversion_period,
     counted_conversion,
+    target_currencies,
 )
 from search.engine.unit.conversion_catalogue import ConversionCatalogue
 from search.models import (
@@ -1198,7 +1198,7 @@ def unit_request_period(
     tables = catalogue.tables[recipe.recipe_id]
     deflator_entities: frozenset[str] = frozenset()
     try:
-        targets = _target_currencies(plan, unit_request, declared_roles, catalogue)
+        targets = target_currencies(plan, unit_request, declared_roles, catalogue)
         if unit_request.prices == "constant":
             role = resolve_deflator_role(recipe, declared_roles=declared_roles)
             deflator_entities = served_role_entities(plan, role)
@@ -1382,25 +1382,3 @@ def _served_span(plan: ReadPlan) -> tuple[int, int] | None:
         return None
     known = [year for year in years if year is not None]
     return min(known), max(known)
-
-
-def _target_currencies(
-    plan: ReadPlan,
-    unit_request: IdentityUnitRequest,
-    declared_roles: tuple[str, ...],
-    catalogue: ConversionCatalogue,
-) -> frozenset[str]:
-    """The currencies `unit_request` converts the plan's rows into: its ISO code, or each
-    national currency of the entities the plan serves on the role it names
-    (`graph_role_for_spec_role`), leaving out an entity no single currency names, whose
-    rows the conversion omits. Raises `RecipeNotDeclaredError` for a role the members do
-    not declare."""
-    currency = unit_request.currency
-    if isinstance(currency, str):
-        return frozenset({currency})
-    role = graph_role_for_spec_role(spec_role=currency.role, declared_roles=declared_roles)
-    return frozenset(
-        code
-        for entity in served_role_entities(plan, role)
-        if (code := catalogue.national_currencies.get(entity)) is not None
-    )

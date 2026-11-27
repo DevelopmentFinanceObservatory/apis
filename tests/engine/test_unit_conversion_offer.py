@@ -28,9 +28,11 @@ from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, ReadPlan
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.engine.unit.conversion import (
+    UNDECIDED,
     CountedConversion,
     conversion_unavailable_warning,
     counted_conversion,
+    rate_years,
     unit_conversion,
     with_unit_conversion,
 )
@@ -44,6 +46,7 @@ from search.engine.unit.conversion_catalogue import (
 from search.models import (
     ConversionCurrency,
     DownloadFacts,
+    IdentityCurrencyRole,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
     ResolvedFacet,
@@ -377,6 +380,59 @@ def test_a_bare_iso_code_unit_offers_and_counts_its_conversions():
 
     assert counted("INR") is None
     assert isinstance(counted("USD"), CountedConversion)
+
+
+_GTM_GDP = _plan((1990, 2024), (("observationAbout", "country/GTM"),), provenance=_WEO, unit="INR")
+
+
+@pytest.mark.parametrize(
+    ("plan", "currency", "catalogue", "years"),
+    [
+        pytest.param(_INR_PLAN, "USD", _INR_CATALOGUE, _years(1980, 2031), id="dollar-rates"),
+        pytest.param(_INR_PLAN, "INR", _INR_CATALOGUE, None, id="native-current-prices"),
+        pytest.param(_INR_PLAN, "USD", None, UNDECIDED, id="no-catalogue"),
+        pytest.param(
+            _plan((1990, 2024), (("observationAbout", "country/IND"),), provenance=_NO_RECIPE),
+            "EUR",
+            _INR_CATALOGUE,
+            UNDECIDED,
+            id="no-recipe",
+        ),
+        pytest.param(
+            _plan((1990, 2024), (("observationAbout", "country/IND"),), unit="Count"),
+            "EUR",
+            _INR_CATALOGUE,
+            UNDECIDED,
+            id="no-currency-unit",
+        ),
+        pytest.param(
+            _INR_PLAN,
+            IdentityCurrencyRole(role="origin"),
+            _INR_CATALOGUE,
+            UNDECIDED,
+            id="undeclared-role",
+        ),
+        pytest.param(
+            _GTM_GDP,
+            IdentityCurrencyRole(role="observationAbout"),
+            _INR_CATALOGUE,
+            UNDECIDED,
+            id="no-national-currency",
+        ),
+    ],
+)
+def test_rate_years_are_the_years_every_rate_the_request_reads_is_held(
+    plan, currency, catalogue, years
+):
+    """Converting India's rupee GDP into dollars reads the rupee and dollar rates, held from
+    1980 to 2030; a current-price rupee request reads none and bounds no year. A conversion
+    the counts cannot read (no catalogue, no recipe, a unit that is no currency, a role the
+    members do not declare, or a role whose entities no currency names) leaves the years
+    undecided."""
+    request = IdentityUnitRequest(currency=currency, prices="current")
+    facets = {"unit": IdentityFacetValueRequest(request=request)}
+
+    assert rate_years(plan, facets, catalogue=catalogue) == years
 
 
 def test_a_converted_answer_still_offers_conversion():

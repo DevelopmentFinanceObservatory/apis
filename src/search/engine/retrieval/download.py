@@ -36,7 +36,7 @@ identity's window.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 
     from search.engine.clients.graph import Facet
     from search.models import RequestedWindow
-    from series_coverage.index import CoverageIndex, KeptYears
+    from series_coverage.index import CoverageIndex, KeptYears, SeriesYears
     from series_coverage.index import Role as CoverageRole
 
 
@@ -250,25 +250,33 @@ def _coverage_extent(
 
 
 def answer_years(
-    plan: ReadPlan, coverage_index: CoverageIndex | None, *, conversion: CountConversion
+    plan: ReadPlan,
+    coverage_index: CoverageIndex | None,
+    *,
+    conversion: CountConversion,
+    rates: frozenset[int] | Literal["undecided"] | None,
 ) -> YearsWithData | None:
     """The years the series `plan` holds have data in (`YearsWithData`). The series are those
-    it holds under its window before a `latest` window reduces them (`PairPlan.held`), each
-    read under every date, unclipped by the window and with no opt-in, so a source's partly
-    reported period and projected facets hold no year. Under a unit request each series keeps the
-    years `conversion` keeps, as the download counts them.
+    holding a point under the plan's window, with the facets it elected there, before a
+    `latest` window reduces them. Each is read under every date, unclipped by the window and
+    with no opt-in, so a source's partly reported period and projected facets hold no year.
+    Under a unit request each series keeps the years `conversion` keeps, as the download
+    counts them, and only the years `rates` holds (`unit.conversion.rate_years`), since a
+    year without a rate serves no converted row.
 
     - A role-bearing plan reads the coverage index (`CoverageIndex.series_years`) over the
       rows it holds (`coverage.held_rows`) less those a conversion leaves out
-      (`coverage.coverage_exclusions`).
+      (`coverage.coverage_exclusions`). Under a range it keeps the series holding a point
+      inside the range, so a bulk plan, whose rows name every pair of its facets, counts the
+      series a per-pair plan holds (`_series_in_window`).
     - A standard plan reads its held series' facet metadata alone (`_facet_years`), so it
       needs no coverage index.
 
-    None when the conversion's effect cannot be read in memory (`UNDECIDED`), for a
-    role-bearing plan with no coverage index or one lacking a member the plan reads, for a
+    None when the conversion's effect or its rates cannot be read in memory (`UNDECIDED`), for
+    a role-bearing plan with no coverage index or one lacking a member the plan reads, for a
     standard plan with a data-bearing facet whose first or last date is unknown, and when no
     series holds a year."""
-    if conversion == UNDECIDED:
+    if conversion == UNDECIDED or rates == UNDECIDED:
         return None
     kept = conversion if isinstance(conversion, CountedConversion) else None
     if isinstance(plan, PairPlan) and plan.roles is None:
@@ -280,32 +288,55 @@ def answer_years(
                 if held is None:
                     return None
                 years.update(held if allowed is None else held & allowed)
-        return _years_with_data(years)
+        return _years_with_data(years if rates is None else years & rates)
     if (
         plan.roles is None
         or coverage_index is None
         or not all(coverage_index.covers(sv) for sv in plan.members)
     ):
         return None
+    served = held_rows(plan)
+    excluded = coverage_exclusions(plan)
     found = coverage_index.series_years(
         variables=plan.members,
         bound=plan.roles.bound,
-        served=held_rows(plan),
-        excluded=coverage_exclusions(plan),
+        served=served,
+        excluded=excluded,
         kept_years=(coverage_kept_years(kept, plan.roles.role_names) if kept is not None else None),
     )
     if found is None:
         return None
+    masks = found.masks
+    if isinstance(plan.years, TimeWindow):
+        inside = coverage_index.series_years(
+            variables=plan.members,
+            bound=plan.roles.bound,
+            served=served,
+            excluded=excluded,
+            first_year=plan.years.start_year,
+            last_year=plan.years.end_year,
+            include=opt_in(plan.years),
+        )
+        if inside is None:
+            return None
+        masks = masks[_series_in_window(found, inside)]
     epoch = coverage_index.horizon.epoch_year
-    held_words = np.bitwise_or.reduce(found.masks, axis=0).tolist()
-    return _years_with_data(
-        {
-            epoch + MASK_WORD_BITS * word + bit
-            for word, value in enumerate(held_words)
-            for bit in range(int(value).bit_length())
-            if int(value) >> bit & 1
-        }
-    )
+    held_words = np.bitwise_or.reduce(masks, axis=0).tolist() if masks.shape[0] else []
+    found_years = {
+        epoch + MASK_WORD_BITS * word + bit
+        for word, value in enumerate(held_words)
+        for bit in range(int(value).bit_length())
+        if int(value) >> bit & 1
+    }
+    return _years_with_data(found_years if rates is None else found_years & rates)
+
+
+def _series_in_window(found: SeriesYears, inside: SeriesYears) -> np.ndarray:
+    """Whether each series of `found` is one of `inside`'s, the series holding a point in
+    the window, matched on `(variable, recipient, donor)`."""
+    held = set(inside.keys())
+    series = found.keys()
+    return np.array([key in held for key in series], dtype=bool)
 
 
 def _facet_years(facet: Facet) -> frozenset[int] | None:

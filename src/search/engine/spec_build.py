@@ -73,7 +73,7 @@ from search.engine.spec_id import (
     entity_role_key,
     slots_in_identity_order,
 )
-from search.engine.unit.conversion import counted_conversion
+from search.engine.unit.conversion import counted_conversion, rate_years
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     SCHEMA_VERSION,
@@ -1645,7 +1645,12 @@ def build_spec(
                 conversion=conversion,
                 provenance=provenance.ref if provenance is not None else None,
             )
-        years_with_data = answer_years(plan, coverage_index, conversion=conversion)
+        years_with_data = answer_years(
+            plan,
+            coverage_index,
+            conversion=conversion,
+            rates=rate_years(plan, identity_doc.facets, catalogue=current_conversion_catalogue()),
+        )
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))
     resolved_stat_vars = _resolved_stat_vars(
