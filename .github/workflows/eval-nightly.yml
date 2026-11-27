@@ -139,28 +139,12 @@ jobs:
           echo "::error::The nightly eval exited $rc; see the run summary."
           exit 1
 
-      # The record stays with the run as an artifact, so an upload that fails
-      # does not cost the eval. Only this workflow on dev can act as the writer,
-      # so finishing an upload by hand takes someone who may read and write the
-      # bucket: check any results.jsonl already there matches the artifact's
-      # (gcloud storage hash), then copy the missing files with gcloud storage
-      # cp --no-clobber, manifest.json last.
-      - name: Keep the run record as an artifact
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: eval-records
-          path: ${{ runner.temp }}/eval-records
-          if-no-files-found: ignore
-          retention-days: 30
-
       # The writer may create objects only under apis-search/ in the eval runs
       # bucket, and its workload identity binding admits only this workflow
-      # file on dev, so a run dispatched from another branch keeps its record
-      # in the artifact alone.
+      # file on dev. The bucket is the private destination for raw records.
       - name: Skip the upload off dev
         if: ${{ !cancelled() && github.ref != 'refs/heads/dev' }}
-        run: echo "::notice::Run from ${{ github.ref }}; the writer admits dev only, so the record stays in the eval-records artifact."
+        run: echo "::notice::Run from $GITHUB_REF. Only runs on dev persist their records."
 
       - name: Authenticate to Google Cloud as the eval runs writer
         if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
