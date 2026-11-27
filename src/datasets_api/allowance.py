@@ -1,7 +1,7 @@
 """Daily allowances per caller, kept in `datasets.caller_allowance`.
 
 A caller (`dfo_platform.caller.Caller`) holds one allowance of each caller kind per UTC day:
-`share` (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10) for share writes, `card`
+`share` (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 250) for share writes, `card`
 (`DATASETS_CARD_DAILY_ALLOWANCE`, default 500) for Presentation card creates and revisions, and
 `pin` (`DATASETS_PIN_DAILY_ALLOWANCE`, default 100) for the pins of callers without the pin
 grant. Two budgets every caller shares are kept the same way, under `BUDGET_KEY`: `pin_budget`

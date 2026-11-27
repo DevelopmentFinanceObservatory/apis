@@ -252,7 +252,7 @@ class DatasetsBuildSettings(FoldCeilingSettings):
     pin_daily_allowance: int = Field(default=100, ge=0)
 
     # Shares one caller may write per UTC day (`datasets_api.allowance`).
-    share_daily_allowance: int = Field(default=10, ge=0)
+    share_daily_allowance: int = Field(default=250, ge=0)
 
     # Presentation card creates and revisions one caller may write per UTC day
     # (`datasets_api.allowance`). A caller holding the publish grant spends none.
