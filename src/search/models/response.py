@@ -358,17 +358,17 @@ class StudioRoute(StrictModel):
     target: Literal["studio"] = Field(default="studio", description="the surface routed to")
     mode: Literal["auto", "offer"] = Field(
         description=(
-            "'auto' when the question needs analysis: the response is a declined answer "
-            "with reason 'requires_analysis', and the client moves the question to Studio; "
-            "'offer' when it may: the run answers as usual and the client offers Studio "
-            "beside the answer"
+            "'auto' when the question needs analysis (the response is a declined answer "
+            "with reason 'requires_analysis', and the client moves the question to Studio), "
+            "'offer' when it may (the run answers as usual and the client offers Studio "
+            "beside the answer)"
         )
     )
     probability: float | None = Field(
         ge=0.0,
         le=1.0,
         description=(
-            "the router's probability that the question belongs in Studio; null when the "
+            "the router's probability that the question belongs in Studio, null when the "
             "first parse itself read the question as requiring analysis"
         ),
     )

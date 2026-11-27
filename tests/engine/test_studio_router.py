@@ -60,9 +60,8 @@ _INVALID_ANSWER = _validation_error()
 
 class _RouterAsk:
     """The router's `jev_client.ask`, answering every studio signal with `probability` (a
-    binary fraction, so their mean is exactly it), or
-    raising `fail`, after `gate` is set when one is given. It records each call's state,
-    model and lane."""
+    binary fraction, so their mean is exactly it), or raising `fail`, after `gate` is set
+    when one is given. It records each call's state, model and lane."""
 
     def __init__(
         self,
@@ -274,7 +273,7 @@ def test_a_resolution_routes_on_the_studio_probability(
 def test_a_parse_kind_other_than_resolution_routes_on_the_parse_alone(
     monkeypatch, kind: str, answer: type, route_on_the_wire: dict | None
 ):
-    """Jev's high probability changes nothing: the parse decides scope, and a parse reading
+    """Jev's high probability changes nothing, since the parse decides scope, and a parse reading
     the question as requiring analysis moves it with no router probability, stated as null
     on the wire."""
     _install(monkeypatch, _RouterAsk(0.75))
@@ -390,7 +389,7 @@ def test_a_resolution_naming_no_variable_gets_no_route(monkeypatch, probability:
 
 
 def test_a_follower_given_an_unstored_leader_answer_logs_it_as_shared(monkeypatch):
-    """The leader decides without Jev's answer and stores nothing in layer 1; the request
+    """The leader decides without Jev's answer and stores nothing in layer 1. The request
     that waited on it is served that answer and says so."""
     _install(monkeypatch, _RouterAsk(0.75, gate=asyncio.Event()))
     cache = ResponseCache()
@@ -441,7 +440,7 @@ def test_layer1_keeps_routed_and_unrouted_answers_apart_and_replays_the_offer(
 
 def test_the_sse_wire_sends_the_offer_with_its_trace_id_live_and_on_a_hit(monkeypatch):
     """The `route` frame precedes `interpretation` on a live run and `response` on a layer-1
-    hit, each carrying its own request's trace id, the one its response states; the live
+    hit, each carrying its own request's trace id, the one its response states. The live
     run's `resolve` line logs the decision."""
     _install(monkeypatch, _RouterAsk(0.5))
     graph = FakeGraph()

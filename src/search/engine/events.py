@@ -190,7 +190,7 @@ class RouteEvent(BaseModel):
     Fires at most once, on a raw_text request that set `studio_routing`, after the extract
     step and before `interpretation`, and the run goes on to its answer, whose response
     carries the same route. A layer-1 cache hit on such an answer sends it before
-    `response`. An 'auto' route sends no event: the response it ends with carries it."""
+    `response`. An 'auto' route sends no event, since the response it ends with carries it."""
 
     model_config = ConfigDict(frozen=True)
     kind: Literal["route"] = "route"

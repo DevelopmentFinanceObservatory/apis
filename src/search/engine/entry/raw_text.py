@@ -2135,8 +2135,8 @@ async def handle(
     Under `params.studio_routing` the router's Jev read starts beside the door read
     (`studio_router.JevRead`) and the route is decided when the door read returns
     (`studio_router.decide`), recorded in `route_record`. An `auto` route answers as a
-    requires-analysis question does, a declined answer; an `offer` route sends its `route`
-    event after the extract step and the run goes on. Every response a routed request
+    requires-analysis question does, with a declined answer. An `offer` route sends its
+    `route` event after the extract step and the run goes on. Every response a routed request
     sends carries its route, or none, whatever a layer-2 entry stored.
     """
     query: str = inp.query
@@ -2177,7 +2177,7 @@ async def handle(
     route = None
     if routing is not None and jev_read is not None:
         outcome = jev_read.outcome()
-        # A resolution naming no variable refuses as `variable_not_resolved` below; Studio
+        # A resolution naming no variable refuses as `variable_not_resolved` below. Studio
         # gets no route for it, whatever Jev said.
         routed_resolution = extraction.kind == "resolution" and bool(extraction.variables)
         if routed_resolution or extraction.kind != "resolution":
@@ -2189,7 +2189,7 @@ async def handle(
         if route is not None and route.mode == "offer":
             yield RouteEvent.of(route, trace_id=get_trace_id())
         elif route is not None and extraction.kind == "resolution":
-            # Moved to Studio: answered as the parse answers a question requiring analysis.
+            # Moved to Studio, so answered as the parse answers a question requiring analysis.
             extraction = extraction.model_copy(update={"kind": "requires_analysis"})
     stamp = functools.partial(_with_route, route=route, routed=routing is not None)
 

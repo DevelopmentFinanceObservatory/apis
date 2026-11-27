@@ -145,8 +145,9 @@ ROUTER_QUESTIONS = RouterQuestions(
 forecast, or a brief, overview or summary in words; search keeps one that asks to show, find,
 list, compare or download data, a trend over time included. The studio probability averages
 the route choice's `analysis` option, `wants_analysis` and `needs_synthesis`. The first parse
-decides scope, so the `in_scope` answer routes nothing; it stays in the request the
-`SEARCH_STUDIO_ROUTER_AUTO` and `SEARCH_STUDIO_ROUTER_OFFER` defaults were set on."""
+decides scope, so the `in_scope` answer routes nothing. It is in the request because the
+`SEARCH_STUDIO_ROUTER_AUTO` and `SEARCH_STUDIO_ROUTER_OFFER` defaults were set on a request
+that includes it."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -314,7 +315,7 @@ class JevRead:
         return cls(task, None)
 
     def outcome(self) -> JevOutcome:
-        """What the read holds now. A call still running is left to finish in the
+        """What the read holds when called. A call still running is left to finish in the
         background, where its answer reaches the memo."""
         if self._task is None:
             return JevOutcome(status="memo", probability=self._memo)
@@ -348,11 +349,12 @@ async def _read(
     except JevError as exc:
         return _Failed(exc.kind, elapsed())
     except ValidationError:
-        # A `ValueError` too, so it is caught first: a malformed answer, not a long query.
+        # A `ValidationError` is a `ValueError` too, so this clause comes first. It reports a
+        # malformed answer.
         logger.warning("studio router: Jev's answer failed validation", exc_info=True)
         return _Failed("invalid_response", elapsed())
     except ValueError:
-        # `ask` refuses a state over the request budget; a query that long routes nothing.
+        # `ask` refuses a state over the request budget. A query that long routes nothing.
         return _Failed("too_large", elapsed())
     except Exception:
         # The call runs detached from the request, so nothing above it would see a defect.
@@ -370,7 +372,7 @@ def decide(kind: str, outcome: JevOutcome, *, routing: StudioRouting) -> StudioR
 
     A ``requires_analysis`` parse moves the question at once, with no probability. A
     ``resolution`` moves at `routing.auto` and offers at `routing.offer`, and routes nothing
-    without a probability. Every other kind routes nothing: the parse decides scope.
+    without a probability. Every other kind routes nothing, since the parse decides scope.
     """
     if kind == "requires_analysis":
         return StudioRoute(mode="auto", probability=None)
@@ -387,14 +389,14 @@ def decide(kind: str, outcome: JevOutcome, *, routing: StudioRouting) -> StudioR
 class RouteRecord:
     """What a routed request's `resolve` log line reports of its routing.
 
-    `decision` is the route's mode, ``none`` when it routed nothing; `probability` the
-    route's, None without one; `jev_probability` Jev's studio probability, None when Jev
-    gave none. `extract_kind` is the first parse's kind, None on a cache hit or before the
-    parse returned. `jev` is the Jev call's `JevOutcome.status`; ``cached`` on a layer-1 hit
-    on a stored answer and ``shared`` on a layer-1 follower given a leader's answer it did
-    not store, neither of which asks Jev; ``off`` on a request that set `studio_routing`
-    while `Settings.studio_router` is ``off``; None before the parse returned. `jev_error` is
-    the call's failure kind and `jev_ms` its wall time.
+    `decision` is the route's mode, ``none`` when it routed nothing. `probability` is the
+    route's, None without one, and `jev_probability` is Jev's studio probability, None when
+    Jev gave none. `extract_kind` is the first parse's kind, None on a cache hit or before
+    the parse returned. `jev` is the Jev call's `JevOutcome.status`, or ``cached`` on a
+    layer-1 hit on a stored answer, ``shared`` on a layer-1 follower given a leader's
+    answer it did not store (neither asks Jev), ``off`` on a request that set
+    `studio_routing` while `Settings.studio_router` is ``off``, and None before the parse
+    returned. `jev_error` is the call's failure kind and `jev_ms` its wall time.
     """
 
     decision: Decision | None = None

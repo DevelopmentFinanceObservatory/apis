@@ -836,7 +836,7 @@ class CacheScope:
         """The events a cache hit sends for the `response` a lookup returned.
 
         With `route_frame`, a response whose route offers Studio is preceded by the `route`
-        event a fresh run sends before it. Layer 1 sets it; a layer-2 hit replays inside a
+        event a fresh run sends before it. Layer 1 sets it. A layer-2 hit replays inside a
         run that has sent its own.
 
         The `response` and `done` events are fresh (trace id, timing, usage). A bundle hit

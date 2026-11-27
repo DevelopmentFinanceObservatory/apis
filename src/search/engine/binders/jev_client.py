@@ -20,7 +20,7 @@ cut that a wait for a slot shares in (``slot_wait``, ``queued_timeout``) moves t
 neither way, since the process's own queue spent the ceiling.
 
 The breaker and the concurrency slots belong to a `JevLane`. The binder's calls take the
-process's default lane; a caller whose failures must not open the binder's breaker or take
+process's default lane. A caller whose failures must not open the binder's breaker or take
 its slots, such as the Studio router (`search.engine.studio_router`), passes its own.
 """
 
@@ -257,12 +257,12 @@ def _binder_slots(settings: SearchSettings) -> int:
 
 @dataclass(frozen=True, slots=True)
 class JevLane:
-    """A circuit breaker and per-loop concurrency slots that calls share apart from the
-    binder's, each loop's semaphore sized by `slots` from the settings. The client and its
-    one connection pool (`_LIMITS`) stay shared by every lane, so the lanes' slots together
-    stay below the pool's connections (`SearchSettings._validate_bounds`): a call past its
-    lane's slots then waits for a slot and fails as ``slot_wait``, which no breaker counts,
-    and never waits in the pool, where a cut call fails as ``timeout``."""
+    """A circuit breaker and per-loop concurrency slots shared by one caller's calls and kept
+    apart from the binder's, each loop's semaphore sized by `slots` from the settings. Every
+    lane shares the client and its one connection pool (`_LIMITS`), and the lanes' slots
+    together stay below the pool's connections (`SearchSettings._validate_bounds`). A call
+    past its lane's slots waits for a slot and fails as ``slot_wait``, which no breaker
+    counts, and never waits in the pool, where a cut call fails as ``timeout``."""
 
     breaker: CircuitBreaker
     semaphores: LoopLocal[asyncio.Semaphore]
