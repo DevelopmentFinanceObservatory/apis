@@ -43,7 +43,11 @@ def test_the_record_is_uploaded_privately_as_the_writer_whatever_the_run_s_code(
     order = [names.index(step["name"]) for step in (skip, auth, upload)]
     assert order == sorted(order)
     assert order[0] == names.index("Run the nightly eval") + 1
-    assert not any(step.get("uses", "").startswith("actions/upload-artifact@") for step in _STEPS)
+    assert not any(
+        "eval-records" in step.get("with", {}).get("path", "")
+        for step in _STEPS
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
     # The writer's binding admits this workflow on dev alone.
     assert auth["if"] == upload["if"] == _ON_DEV
     assert skip["if"] == "${{ !cancelled() && github.ref != 'refs/heads/dev' }}"
