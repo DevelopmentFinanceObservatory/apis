@@ -1,10 +1,24 @@
 name: Eval nightly
 
-# One sample of every eligible corpus case against the deployed dev service,
-# logged to Langfuse as one experiment per case file (python -m search.eval.sync
-# --nightly, which syncs the datasets first). The run summary lists every check
-# that failed outside its case's known_failure, and every check lost to
-# infrastructure.
+# One sample of every eligible corpus case against the deployed dev service
+# (python -m search.eval.sync --nightly, which syncs the Langfuse datasets
+# first). The run is written as a dfo-evals run record and pushed to Langfuse
+# as one experiment per case file. The run summary lists every check that
+# failed outside its case's known_failure and every check lost to
+# infrastructure, and says whether the Langfuse push completed; a push that
+# did not also raises its own warning.
+#
+# Once the run ends, whatever its exit code, the record is copied to the
+# eval runs bucket under apis-search/<run id>/, results.jsonl first and
+# manifest.json second, since a reader treats a run with a manifest as
+# complete. The copy authenticates as the eval runs writer, which may create
+# objects only under apis-search/ and whose workload identity binding admits
+# only this workflow file on dev. Each object is created only when none of
+# its name exists (search.eval.record_upload).
+#
+# The nightly and the corpus sync (eval-sync.yml) share one concurrency
+# group, since both write the Langfuse datasets and a sync during the
+# nightly would change the item inputs its push checks.
 #
 # The job fails on exit 2, a crash or setup error, whether or not alerting is on.
 # Alerting is off unless the repository variable EVAL_NIGHTLY_ALERT is 'true'.
@@ -27,8 +41,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: eval-nightly
+  group: eval-langfuse
   cancel-in-progress: false
+  # Keeps every pending run in order. By default a group holds one pending run,
+  # and a newer one cancels it, so a corpus sync could drop a waiting nightly.
+  queue: max
 
 env:
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
@@ -79,6 +96,8 @@ jobs:
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          # The project the Langfuse keys must name; the push refuses any other.
+          LANGFUSE_PROJECT_ID: ${{ vars.LANGFUSE_PROJECT_ID }}
           SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
           # WAF bypass for the graph: CI runner IPs are datacenter ranges the
           # graph's bot protection challenges, and this header exempts them.
@@ -92,7 +111,8 @@ jobs:
           set -euo pipefail
           summary="$RUNNER_TEMP/nightly.md"
           rc=0
-          uv run python -m search.eval.sync --nightly "$SEARCH_API_URL" --summary "$summary" || rc=$?
+          uv run python -m search.eval.sync --nightly "$SEARCH_API_URL" --summary "$summary" \
+            --records "$RUNNER_TEMP/eval-records" || rc=$?
           if [ -f "$summary" ]; then
             cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -118,3 +138,41 @@ jobs:
           fi
           echo "::error::The nightly eval exited $rc; see the run summary."
           exit 1
+
+      # The writer may create objects only under apis-search/ in the eval runs
+      # bucket, and its workload identity binding admits only this workflow
+      # file on dev. The bucket is the private destination for raw records.
+      - name: Skip the upload off dev
+        if: ${{ !cancelled() && github.ref != 'refs/heads/dev' }}
+        run: echo "::notice::Run from $GITHUB_REF. Only runs on dev persist their records."
+
+      - name: Authenticate to Google Cloud as the eval runs writer
+        if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
+          service_account: ${{ secrets.EVAL_RUNS_WRITER_SA }}
+
+      # results.jsonl goes first and manifest.json second: a reader treats a
+      # run with a manifest as complete. search.eval.record_upload creates each
+      # object only when none of its name exists, which needs no read: the
+      # writer may create objects and nothing else, and gcloud storage cp reads
+      # the destination first.
+      - name: Upload the run record
+        if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
+        env:
+          BUCKET: ${{ vars.EVAL_RUNS_BUCKET }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/eval-records"
+          if [ ! -d "$root/apis-search" ]; then
+            echo "::notice::The nightly wrote no run record; nothing to upload."
+            exit 0
+          fi
+          : "${BUCKET:?vars.EVAL_RUNS_BUCKET is unset}"
+          uv run python -m search.eval.record_upload --bucket "$BUCKET" "$root"
+          shopt -s nullglob
+          for manifest in "$root"/apis-search/*/manifest.json; do
+            run_id="$(basename "$(dirname "$manifest")")"
+            echo "Uploaded the run record to gs://$BUCKET/apis-search/$run_id/" >> "$GITHUB_STEP_SUMMARY"
+          done

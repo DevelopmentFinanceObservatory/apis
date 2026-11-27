@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
-from langfuse.api import DatasetStatus
+from dfo_evals.langfuse_sink import DatasetItemRef, PushIncompleteError, PushTimeoutError
+from dfo_evals.records import FaultClass, read_run
+from dfo_evals.report import input_digest
+from langfuse.api import DatasetStatus, NotFoundError
+from langfuse.api.core.api_error import ApiError
+from pydantic_evals.reporting import EvaluationReport
 
 import graph_release.service as release_service
 import search.eval.sync as m
+from dfo_platform.app import COMMIT_HEADER
 from dfo_platform.singleton import RefCountedSingleton
-from graph_release.context import URI_ENV_VAR, bound_release_or_none, current_release
+from graph_release.context import URI_ENV_VAR, current_release
 from search.engine.errors import GraphReadFailure
 from search.eval.cases import load_case_files
 from search.eval.checks import ScoreContext, WireSchema
-from search.eval.runner import CaseRun, Sample, build_request
+from search.eval.corpus_dataset import SUITE, case_inputs
+from search.eval.run_record import record_manifest, run_record
+from search.eval.runner import CaseRun, Sample
 from search.models import RESOLVE_RESPONSE_ADAPTER
 from tests.conftest import _build_worked_example_response
 from tests.origin_catalogue.fake_catalogue import fake_catalogue_service
@@ -73,6 +81,8 @@ RESUBMIT = """
       entities: [{dcid: country/KEN, role: destination}]
 """
 
+PROJECT_ID = "project-1"
+
 
 class FakeLangfuse:
     """Datasets and items in memory, with the SDK calls `sync` makes."""
@@ -80,7 +90,7 @@ class FakeLangfuse:
     def __init__(self) -> None:
         self.datasets: dict[str, dict[str, Any]] = {}
         self.items: dict[str, dict[str, SimpleNamespace]] = {}
-        self.experiments: list[dict[str, Any]] = []
+        self.writes: list[str] = []
         self.api = SimpleNamespace(datasets=SimpleNamespace(list=self._list))
 
     def create_dataset(self, *, name: str, description: str, metadata: dict) -> None:
@@ -88,6 +98,7 @@ class FakeLangfuse:
         self.items.setdefault(name, {})
 
     def create_dataset_item(self, *, dataset_name: str, id: str, status, **fields) -> None:
+        self.writes.append(id)
         item = self.items[dataset_name].setdefault(id, SimpleNamespace(id=id))
         item.status = status
         for key, value in fields.items():
@@ -96,43 +107,26 @@ class FakeLangfuse:
     def flush(self) -> None:
         pass
 
+    def shutdown(self) -> None:
+        pass
+
     def get_dataset(self, name: str) -> SimpleNamespace:
-        return SimpleNamespace(items=list(self.items[name].values()))
+        if name not in self.items:
+            raise NotFoundError(body=name)
+        # Langfuse's get_dataset lists active items only.
+        active = [i for i in self.items[name].values() if i.status == DatasetStatus.ACTIVE]
+        return SimpleNamespace(id=f"id-{name}", items=active)
 
     def _list(self, *, page: int, limit: int) -> SimpleNamespace:
         rows = [SimpleNamespace(**d) for d in self.datasets.values()]
         pages = [rows[i : i + 1] for i in range(len(rows))] or [[]]
         return SimpleNamespace(data=pages[page - 1], meta=SimpleNamespace(total_pages=len(pages)))
 
-    def run_experiment(self, *, data, task, evaluators, **kwargs) -> SimpleNamespace:
-        """Runs the task and evaluators per item, as `Langfuse.run_experiment` does,
-        swallowing what they raise as it does."""
 
-        async def one(item) -> list:
-            # The SDK logs and drops what a task or an evaluator raises.
-            try:
-                output = await task(item=item)
-            except Exception:
-                return []
-            evaluations = []
-            for evaluator in evaluators:
-                try:
-                    evaluations += await evaluator(
-                        input=item.input,
-                        output=output,
-                        expected_output=item.expected_output,
-                        metadata=item.metadata,
-                    )
-                except Exception:
-                    continue
-            return evaluations
-
-        async def every() -> list:
-            return [await one(item) for item in data]
-
-        scores = asyncio.run(every())
-        self.experiments.append({"items": [i.metadata["id"] for i in data], "scores": scores})
-        return SimpleNamespace(experiment_url=f"run-{len(self.experiments)}")
+@pytest.fixture(autouse=True)
+def _project_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sync and the nightly read the Langfuse project id before they connect."""
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
 
 
 def _write(corpus: Path, files: dict[str, str]) -> dict:
@@ -157,7 +151,8 @@ def test_sync_keeps_one_dataset_per_file_and_archives_what_is_gone(tmp_path):
 
     assert _active(fake, "search-eth") == {"search-eth:search-case-eth"}
     item = fake.items["search-eth"]["search-eth:search-case-eth"]
-    assert item.input == build_request(by_file["eth"][0])
+    assert item.input == case_inputs(by_file["eth"][0]).model_dump(mode="json")
+    assert item.input["case_id"] == "eth"
     assert item.expected_output == {
         "definite": {"entities": [{"dcid": "country/ETH", "role": "destination"}]}
     }
@@ -167,7 +162,9 @@ def test_sync_keeps_one_dataset_per_file_and_archives_what_is_gone(tmp_path):
     # A dropped case and a deleted file are archived; a dataset sync did not create is left.
     fake.create_dataset(name="search-goldens-v1", description="", metadata={})
     fake.create_dataset_item(dataset_name="search-goldens-v1", id="old", status="ACTIVE")
-    archived = m.sync(_write(corpus, {"ken": KENYA.split("- id: ken-known")[0]}), langfuse=fake)
+    archived = m.sync(
+        _write(corpus, {"ken": KENYA.split("- id: ken-known")[0]}), langfuse=fake
+    ).archived
 
     assert archived == {
         "search-ken": ["search-ken:search-case-ken-known", "search-ken:search-case-ken-holdout"],
@@ -176,6 +173,50 @@ def test_sync_keeps_one_dataset_per_file_and_archives_what_is_gone(tmp_path):
     assert _active(fake, "search-ken") == {"search-ken:search-case-ken"}
     assert _active(fake, "search-eth") == set()
     assert _active(fake, "search-goldens-v1") == {"old"}
+
+
+def test_a_sync_writes_only_the_items_that_changed(tmp_path):
+    fake = FakeLangfuse()
+    corpus = tmp_path / "corpus"
+    first = m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    fake.writes.clear()
+
+    again = m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    unchanged_writes = list(fake.writes)
+    edited = m.sync(
+        _write(corpus, {"ken": KENYA.replace("query: aid to Kenya", "query: all aid to Kenya")}),
+        langfuse=fake,
+    )
+
+    assert len(first.written["search-ken"]) == 3
+    assert again.written == {"search-ken": []}
+    assert unchanged_writes == []
+    assert edited.written == {"search-ken": ["search-ken:search-case-ken-holdout"]}
+
+
+def test_a_restored_case_file_brings_its_archived_item_back(tmp_path):
+    """Langfuse returns active items only, so an archived item reads as missing and the
+    next sync writes it again as active."""
+    fake = FakeLangfuse()
+    corpus = tmp_path / "corpus"
+    item = "search-eth:search-case-eth"
+
+    m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+    m.sync(_write(corpus, {"ken": KENYA}), langfuse=fake)
+    archived = _active(fake, "search-eth")
+    restored = m.sync(_write(corpus, {"eth": ETHIOPIA, "ken": KENYA}), langfuse=fake)
+
+    assert archived == set()
+    assert restored.written["search-eth"] == [item]
+    assert _active(fake, "search-eth") == {item}
+
+
+def test_a_sync_without_a_project_id_exits_2(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"eth": ETHIOPIA})
+    monkeypatch.delenv("LANGFUSE_PROJECT_ID")
+
+    assert m.main([f"--corpus-dir={corpus}"]) == 2
 
 
 class AllExist:
@@ -194,55 +235,105 @@ def ctx() -> ScoreContext:
     return score_context(AllExist())
 
 
+async def _ethiopia_run_cases(cases, **_):
+    """The app answers Ethiopia to everything, with a trace id naming the case."""
+    (case,) = cases
+    body = copy.deepcopy(_build_worked_example_response())
+    body["diagnostics"]["trace_id"] = f"t-{case.id}"
+    sample = Sample(body, 200, False, False, 1, 0.1)
+    return {case.id: CaseRun(case.id, {}, (sample,), sample, 1, None)}
+
+
+async def _down_run_cases(cases, **_):
+    (case,) = cases
+    return {case.id: CaseRun(case.id, {}, (), None, 0, "HTTP 503")}
+
+
+def _record(run: m.NightlyRun):
+    started = datetime(2026, 11, 25, 4, 17, tzinfo=UTC)
+    manifest = record_manifest(
+        run_id="nightly-test",
+        started_at=started,
+        finished_at=started,
+        revision="abc",
+        environment={"url": "http://app", "samples": "1"},
+        dataset_digest=run.dataset_digest,
+    )
+    return run_record(run.report, manifest=manifest)
+
+
 def test_nightly_lists_only_unmarked_failures_of_eligible_cases(tmp_path, monkeypatch, ctx):
     """The app answers Ethiopia to everything, so `ken` fails `entities` unmarked."""
-    fake = FakeLangfuse()
     by_file = _write(tmp_path / "corpus", {"eth": ETHIOPIA, "ken": KENYA})
-    m.sync(by_file, langfuse=fake)
     posted: list[str] = []
 
-    async def run_cases(cases, *, url, samples, concurrency):
-        (case,) = cases
-        posted.append(case.id)
-        body = copy.deepcopy(_build_worked_example_response())
-        body["diagnostics"]["trace_id"] = f"t-{case.id}"
-        sample = Sample(body, 200, False, False, 1, 0.1)
-        return {case.id: CaseRun(case.id, {}, (sample,), sample, 1, None)}
+    async def run_cases(cases, *, gate, **kwargs):
+        assert gate is not None, "every case shares one bound on posts"
+        posted.append(cases[0].id)
+        return await _ethiopia_run_cases(cases, **kwargs)
 
     monkeypatch.setattr(m, "run_cases", run_cases)
 
-    states, run_urls = m.nightly(by_file, url="http://app", ctx=ctx, langfuse=fake)
+    run = m.nightly(by_file, url="http://app", ctx=ctx)
 
     assert sorted(posted) == ["eth", "ken", "ken-known"]
-    assert run_urls == {"search-eth": "run-1", "search-ken": "run-2"}
-    markdown = m.nightly_markdown(states, run_urls)
+    assert [s.case.id for s in run.states] == ["eth", "ken", "ken-known"]
+    markdown = m.nightly_markdown(run.states, experiment="exp", record=None)
     assert "`ken` (ken) `entities`" in markdown
     assert "`ken` (ken) `answer`: entities" in markdown
     assert "(trace `t-ken`)" in markdown
     assert "ken-known" not in markdown
     assert "`eth`" not in markdown
-    assert m.nightly_exit_code(states) == 1
-    # Each scored check reaches Langfuse as a 0/1 score named for the check.
-    ken = fake.experiments[1]
-    scores = {e.name: e.value for e in ken["scores"][ken["items"].index("ken")]}
-    assert scores["entities"] == 0.0
+    assert "Langfuse experiment: `exp`" in markdown
+    assert m.nightly_exit_code(run.states) == 1
+    assert run.outputs[("ken", 1)]["diagnostics"]["trace_id"] == "t-ken"
+
+
+def test_the_record_holds_one_trial_per_eligible_case(tmp_path, monkeypatch, ctx):
+    by_file = _write(tmp_path / "corpus", {"eth": ETHIOPIA, "ken": KENYA})
+    monkeypatch.setattr(m, "run_cases", _ethiopia_run_cases)
+
+    record = _record(m.nightly(by_file, url="http://app", ctx=ctx))
+
+    assert record.manifest.suite == SUITE
+    assert record.manifest.headline_check == "answer"
+    by_case = {r.case_id: r for r in record.results}
+    assert sorted(by_case) == ["eth", "ken", "ken-known"]
+    assert all(r.trial == 1 for r in record.results)
+    assert by_case["ken"].tags == ("corpus/ken.yaml",)
+    assert by_case["eth"].tags == ("corpus/eth.yaml",)
+    assert by_case["ken"].trace_id == "t-ken"
+    checks = {c.name: c.verdict for c in by_case["ken"].checks}
+    assert checks["entities"] == "fail" and checks["answer"] == "fail"
+    assert by_case["eth"].fault is None
+
+
+def test_a_synced_item_holds_the_input_its_trial_ran_on(tmp_path, monkeypatch, ctx):
+    """The sink pushes a trial only onto an item whose input digests as the trial's."""
+    by_file = _write(tmp_path / "corpus", {"eth": ETHIOPIA, "ken": KENYA})
+    fake = FakeLangfuse()
+    m.sync(by_file, langfuse=fake)
+    monkeypatch.setattr(m, "run_cases", _ethiopia_run_cases)
+
+    record = _record(m.nightly(by_file, url="http://app", ctx=ctx))
+
+    for result in record.results:
+        stem = "eth" if result.case_id == "eth" else "ken"
+        item = fake.items[f"search-{stem}"][f"search-{stem}:search-case-{result.case_id}"]
+        assert input_digest(item.input) == result.input_digest
 
 
 def test_nightly_reports_a_post_lost_to_infrastructure(tmp_path, monkeypatch, ctx):
-    fake = FakeLangfuse()
     by_file = _write(tmp_path / "corpus", {"eth": ETHIOPIA})
-    m.sync(by_file, langfuse=fake)
+    monkeypatch.setattr(m, "run_cases", _down_run_cases)
 
-    async def run_cases(cases, **_):
-        (case,) = cases
-        return {case.id: CaseRun(case.id, {}, (), None, 0, "HTTP 503")}
+    run = m.nightly(by_file, url="http://app", ctx=ctx)
 
-    monkeypatch.setattr(m, "run_cases", run_cases)
-
-    states, run_urls = m.nightly(by_file, url="http://app", ctx=ctx, langfuse=fake)
-
-    assert m.nightly_exit_code(states) == 3
-    assert "HTTP 503" in m.nightly_markdown(states, run_urls)
+    assert m.nightly_exit_code(run.states) == 3
+    assert "HTTP 503" in m.nightly_markdown(run.states, experiment=None, record=None)
+    assert run.outputs == {("eth", 1): {"task_error": "HTTP 503"}}
+    (result,) = _record(run).results
+    assert result.fault == FaultClass.INFRA
 
 
 SLOW = """
@@ -270,9 +361,7 @@ class DownGraph:
     ids=["failed run", "failed graph read"],
 )
 def test_a_known_task_failure_excuses_only_a_failed_run(tmp_path, monkeypatch, run, graph, code):
-    fake = FakeLangfuse()
     by_file = _write(tmp_path / "corpus", {"slow": SLOW})
-    m.sync(by_file, langfuse=fake)
 
     async def run_cases(cases, **_):
         (case,) = cases
@@ -283,9 +372,12 @@ def test_a_known_task_failure_excuses_only_a_failed_run(tmp_path, monkeypatch, r
 
     monkeypatch.setattr(m, "run_cases", run_cases)
 
-    states, _ = m.nightly(by_file, url="http://app", ctx=score_context(graph), langfuse=fake)
+    nightly_run = m.nightly(by_file, url="http://app", ctx=score_context(graph))
 
-    assert m.nightly_exit_code(states) == code
+    assert m.nightly_exit_code(nightly_run.states) == code
+    # Either way the sample measures the environment, so the record marks it infra.
+    (result,) = _record(nightly_run).results
+    assert result.fault == FaultClass.INFRA
 
 
 @pytest.fixture
@@ -308,47 +400,26 @@ def _set_release_uri(monkeypatch, tmp_path: Path, uri: str) -> None:
         monkeypatch.setenv(URI_ENV_VAR, (tmp_path / "no-release").as_uri())
 
 
+def _no_release_service():
+    raise AssertionError("the release opened")
+
+
 @pytest.mark.unbound_release
-@pytest.mark.parametrize(
-    ("corpus_text", "uri", "code"),
-    [
-        (RESUBMIT, "session", 0),
-        (RESUBMIT, "unset", 2),
-        (RESUBMIT, "empty", 3),
-        (ETHIOPIA, "unset", 0),
-    ],
-    ids=["resubmit", "resubmit, unset URI", "resubmit, no release", "raw_text, unset URI"],
-)
-def test_main_opens_the_release_only_for_a_request_that_reads_it(
-    tmp_path, monkeypatch, fresh_release_service, _fixture_index_release, corpus_text, uri, code
-):
-    """A `dataset_resubmit` request reads the bound release's code index, so `main` opens the
-    release `GRAPH_RELEASE_URI` names before `sync` builds it, and a corpus without one opens
-    none."""
+@pytest.mark.parametrize("corpus_text", [RESUBMIT, ETHIOPIA], ids=["resubmit", "raw_text"])
+def test_a_plain_sync_opens_no_release(tmp_path, monkeypatch, corpus_text):
+    """An item's input is the authored request, which reads no release, so a sync runs
+    with no ``GRAPH_RELEASE_URI``."""
     corpus = tmp_path / "corpus"
     by_file = _write(corpus, {"main": corpus_text})
     fake = FakeLangfuse()
-    monkeypatch.setattr(m, "_client", lambda: fake)
-    _set_release_uri(monkeypatch, tmp_path, uri)
-    bound = []
+    monkeypatch.setattr(m, "_connect", lambda project_id: fake)
+    monkeypatch.delenv(URI_ENV_VAR)
+    monkeypatch.setattr(m, "get_release_service", _no_release_service)
 
-    def spy_build_request(case):
-        bound.append(bound_release_or_none())
-        return build_request(case)
-
-    monkeypatch.setattr(m, "build_request", spy_build_request)
-
-    assert m.main([f"--corpus-dir={corpus}"]) == code
-    if code != 0:
-        return
-    assert _active(fake, "search-main") == {f"search-main:search-case-{by_file['main'][0].id}"}
-    (release,) = bound
-    if corpus_text == RESUBMIT:
-        assert release is not None
-        assert release.service is release_service.get_release_service()
-        assert release.service is not _fixture_index_release.service
-    else:
-        assert release is None
+    assert m.main([f"--corpus-dir={corpus}"]) == 0
+    (case,) = by_file["main"]
+    item = fake.items["search-main"][f"search-main:search-case-{case.id}"]
+    assert item.input == case_inputs(case).model_dump(mode="json")
 
 
 def _no_langfuse():
@@ -364,43 +435,30 @@ def test_a_crash_exits_2(tmp_path, monkeypatch, corpus_text, client):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "eth.yaml").write_text(corpus_text)
-    monkeypatch.setattr(m, "_client", client)
+    monkeypatch.setattr(m, "_connect", lambda project_id: client())
 
     assert m.main([f"--corpus-dir={corpus}"]) == 2
 
 
-def test_client_samples_every_span_whatever_the_sample_rate(monkeypatch):
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0")
-    monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
-    client = m._client()
-    try:
-        with client.start_as_current_observation(name="probe") as span:
-            sampled = span._otel_span.get_span_context().trace_flags.sampled
-    finally:
-        client.shutdown()
-
-    assert sampled
-
-
-@pytest.mark.parametrize("value", ["false", "False"])
-def test_client_refuses_disabled_tracing(monkeypatch, value):
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", value)
-
-    with pytest.raises(RuntimeError, match="LANGFUSE_TRACING_ENABLED"):
-        m._client()
-
-
-def _schema_response(status: int, url: str) -> httpx.Response:
-    return httpx.Response(status, json={}, request=httpx.Request("GET", url))
+def _schema_response(
+    status: int, url: str, headers: dict[str, str] | None = None
+) -> httpx.Response:
+    return httpx.Response(status, json={}, headers=headers, request=httpx.Request("GET", url))
 
 
 def _refused(url: str, **_: object) -> httpx.Response:
     raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
+
+
+@pytest.mark.parametrize(
+    ("headers", "revision"),
+    [({COMMIT_HEADER: "abc123"}, "abc123"), ({}, "unknown"), ({COMMIT_HEADER: "a,b"}, "unknown")],
+    ids=["named", "absent", "comma"],
+)
+def test_the_schema_read_names_the_apps_commit(monkeypatch, headers, revision):
+    monkeypatch.setattr(m.httpx, "get", lambda url, **_: _schema_response(200, url, headers))
+
+    assert m._schema("http://app") == ({}, revision)
 
 
 @pytest.mark.parametrize(
@@ -413,20 +471,23 @@ def test_a_schema_that_does_not_load_exits_3(tmp_path, monkeypatch, get):
     release does."""
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": RESUBMIT})
-    monkeypatch.setattr(m, "_client", FakeLangfuse)
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
+    monkeypatch.setattr(m, "_connect", lambda project_id: FakeLangfuse())
     monkeypatch.setattr(m.httpx, "get", get)
     monkeypatch.setattr(m, "get_release_service", _no_release_service)
 
     assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 3
 
 
-def _no_release_service():
-    raise AssertionError("the release opened before the schema loaded")
-
-
 @contextmanager
 def _fake_score_clients():
     yield SimpleNamespace(graph=AllExist(), sdmx=None, coverage=None)
+
+
+def _empty_run() -> m.NightlyRun:
+    return m.NightlyRun(
+        states=[], report=EvaluationReport(name=SUITE, cases=[]), dataset_digest="d", outputs={}
+    )
 
 
 @pytest.mark.unbound_release
@@ -435,10 +496,13 @@ def test_the_nightly_runs_under_the_release_main_opened(
     tmp_path, monkeypatch, fresh_release_service, uri, code
 ):
     """`_run_nightly` binds the release `main` opened from `GRAPH_RELEASE_URI` around the
-    experiment, and a release that does not open exits as in a sync."""
+    run, where a `dataset_resubmit` request reads it. A release that does not open exits 3,
+    an unset URI 2."""
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": ETHIOPIA})
-    monkeypatch.setattr(m, "_client", FakeLangfuse)
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
+    monkeypatch.setattr(m, "_connect", lambda project_id: FakeLangfuse())
+    monkeypatch.setattr(m, "push_run", lambda **_: "exp")
     response = RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
     schema = {"schema_version": 1, "request": {}, "response": response}
     monkeypatch.setattr(
@@ -456,7 +520,7 @@ def test_the_nightly_runs_under_the_release_main_opened(
 
     def spy_nightly(by_file, **_):
         bound.append(current_release())
-        return [], {}
+        return _empty_run()
 
     monkeypatch.setattr(m, "nightly", spy_nightly)
 
@@ -470,34 +534,350 @@ class BuggyGraph:
         raise ValueError("a bug in the check")
 
 
-async def _answer_run_cases(cases, **_):
-    (case,) = cases
-    sample = Sample(_build_worked_example_response(), 200, False, False, 1, 0.1)
-    return {case.id: CaseRun(case.id, {}, (sample,), sample, 1, None)}
-
-
 async def _raising_run_cases(cases, **_):
     raise RuntimeError("a bug in the task")
 
 
-@pytest.mark.parametrize(
-    ("corpus_text", "run_cases", "graph"),
-    [(ETHIOPIA, _answer_run_cases, BuggyGraph()), (SLOW, _raising_run_cases, AllExist())],
-    ids=["raising check", "raising task on a known task failure"],
-)
-def test_a_task_or_check_that_raises_exits_2(tmp_path, monkeypatch, corpus_text, run_cases, graph):
+def _stub_nightly(monkeypatch, *, run_cases, graph, push_run) -> FakeLangfuse:
+    """Stub everything the nightly reads beyond the corpus: the app's schema and commit
+    (``abc``), the posts, the live clients, and both Langfuse clients, one fake."""
     fake = FakeLangfuse()
-    corpus = tmp_path / "corpus"
-    _write(corpus, {"main": corpus_text})
-    monkeypatch.setattr(m, "_client", lambda: fake)
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
+    monkeypatch.setattr(m, "_connect", lambda project_id: fake)
     monkeypatch.setattr(m, "run_cases", run_cases)
-    monkeypatch.setattr(m.httpx, "get", lambda url, **_: _schema_response(200, url))
+    monkeypatch.setattr(m, "push_run", push_run)
+    monkeypatch.setattr(
+        m.httpx, "get", lambda url, **_: _schema_response(200, url, {COMMIT_HEADER: "abc"})
+    )
     monkeypatch.setattr(
         m,
         "_run_nightly",
-        lambda by_file, url, schema, langfuse, release: m.nightly(
-            by_file, url=url, ctx=score_context(graph), langfuse=langfuse
-        ),
+        lambda by_file, url, schema, release: m.nightly(by_file, url=url, ctx=score_context(graph)),
     )
+    return fake
+
+
+@pytest.mark.parametrize(
+    ("corpus_text", "run_cases", "graph"),
+    [(ETHIOPIA, _ethiopia_run_cases, BuggyGraph()), (SLOW, _raising_run_cases, AllExist())],
+    ids=["raising check", "raising task on a known task failure"],
+)
+def test_a_task_or_check_that_raises_exits_2(
+    tmp_path, monkeypatch, capsys, corpus_text, run_cases, graph
+):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": corpus_text})
+    _stub_nightly(monkeypatch, run_cases=run_cases, graph=graph, push_run=lambda **_: "exp")
 
     assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+    err = capsys.readouterr().err
+    # The first crash stops the run and is raised with its own traceback, once.
+    assert err.count("Traceback (most recent call last)") == 1
+    assert "a bug in the" in err.rstrip().splitlines()[-1]
+
+
+def test_main_writes_the_record_and_pushes_it_onto_the_synced_items(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"eth": ETHIOPIA, "ken": KENYA})
+    pushed: dict[str, Any] = {}
+
+    def push_run(*, client, run, item_of, outputs, **_):
+        refs = {r.case_id: item_of(r.case_id) for r in run.results}
+        for result in run.results:
+            item = client.items[refs[result.case_id].dataset][refs[result.case_id].item_id]
+            assert input_digest(item.input) == result.input_digest
+        pushed.update(run=run, outputs=outputs, refs=refs)
+        return "apis-search/r1 abc 0123"
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+
+    code = m.main(
+        [
+            f"--corpus-dir={corpus}",
+            "--nightly=http://app",
+            f"--records={records}",
+            "--run-id=r1",
+            f"--summary={summary}",
+        ]
+    )
+
+    assert code == 1
+    record = read_run(records / SUITE / "r1")
+    assert record == pushed["run"]
+    assert record.manifest.revision == "abc"
+    assert record.manifest.environment == {"url": "http://app", "samples": "1"}
+    assert pushed["refs"] == {
+        "eth": DatasetItemRef(dataset="search-eth", item_id="search-eth:search-case-eth"),
+        "ken": DatasetItemRef(dataset="search-ken", item_id="search-ken:search-case-ken"),
+        "ken-known": DatasetItemRef(
+            dataset="search-ken", item_id="search-ken:search-case-ken-known"
+        ),
+    }
+    assert set(pushed["outputs"]) == {("eth", 1), ("ken", 1), ("ken-known", 1)}
+    markdown = summary.read_text()
+    assert "Langfuse experiment: `apis-search/r1 abc 0123`" in markdown
+    assert "Run record: `apis-search/r1/`" in markdown
+
+
+def test_a_nightly_without_a_project_id_exits_2_before_any_case_runs(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"eth": ETHIOPIA})
+    posted = []
+
+    async def run_cases(cases, **kwargs):
+        posted.append(cases[0].id)
+        return await _ethiopia_run_cases(cases, **kwargs)
+
+    _stub_nightly(monkeypatch, run_cases=run_cases, graph=AllExist(), push_run=lambda **_: "exp")
+    monkeypatch.delenv("LANGFUSE_PROJECT_ID")
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+    assert posted == []
+
+
+def _api_error(message: str) -> Exception:
+    return ApiError(status_code=503, body=message)
+
+
+def _transport_error(message: str) -> Exception:
+    return httpx.ConnectError(message, request=httpx.Request("GET", "http://langfuse"))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PushIncompleteError, PushTimeoutError, _api_error, _transport_error],
+    ids=["incomplete", "timeout", "api error", "transport error"],
+)
+@pytest.mark.parametrize(
+    ("corpus_text", "code"), [(ETHIOPIA, 3), (KENYA, 1)], ids=["checks pass", "checks fail"]
+)
+def test_a_push_langfuse_did_not_show_is_infrastructure(
+    tmp_path, monkeypatch, error, corpus_text, code
+):
+    """An unmarked failure outranks the lost push, which otherwise exits 3."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": corpus_text})
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+
+    def push_run(**_):
+        raise error("3 cases never appeared")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+
+    argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
+    assert m.main([*argv, f"--summary={summary}"]) == code
+    assert "the push did not complete" in summary.read_text()
+    (written,) = (records / SUITE).iterdir()
+    assert written.name.startswith("nightly-")
+
+
+def test_another_push_error_exits_2_after_writing_the_summary(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": KENYA})
+    summary = tmp_path / "nightly.md"
+
+    def push_run(**_):
+        raise ValueError("revision holds a comma")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--summary={summary}"]) == 2
+    text = summary.read_text()
+    assert "ValueError: revision holds a comma" in text
+    assert "`ken` (main) `entities`" in text
+
+
+@pytest.mark.parametrize(
+    ("env", "base_url"),
+    [
+        ({"LANGFUSE_BASE_URL": "https://a", "LANGFUSE_HOST": "https://b"}, "https://a"),
+        ({"LANGFUSE_HOST": "https://b"}, "https://b"),
+        ({}, "https://cloud.langfuse.com"),
+    ],
+    ids=["base url", "host", "default"],
+)
+def test_the_client_reads_the_base_url_then_the_host(monkeypatch, env, base_url):
+    for name in ("LANGFUSE_BASE_URL", "LANGFUSE_HOST"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    seen = {}
+    monkeypatch.setattr(m, "connect", lambda **kwargs: seen.update(kwargs))
+
+    m._connect(PROJECT_ID)
+
+    assert seen["base_url"] == base_url
+
+
+def test_a_run_id_a_directory_cannot_take_stops_the_nightly_before_it_starts(tmp_path):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+
+    with pytest.raises(SystemExit) as raised:
+        m.main([f"--corpus-dir={corpus}", "--nightly=http://app", "--run-id=night 1"])
+
+    assert raised.value.code == 2
+
+
+def _unreachable(**_):
+    raise httpx.ConnectError("no route", request=httpx.Request("GET", "http://langfuse"))
+
+
+def _down(**_):
+    raise ApiError(status_code=503, body="unavailable")
+
+
+def _refused(**_):
+    raise ApiError(status_code=401, body="invalid keys")
+
+
+@pytest.mark.parametrize(
+    ("connect", "corpus_text", "code"),
+    [(_unreachable, ETHIOPIA, 3), (_down, ETHIOPIA, 3), (_down, KENYA, 1)],
+    ids=["network", "5xx", "5xx with an unmarked failure"],
+)
+def test_a_langfuse_down_at_the_start_still_runs_and_records_the_nightly(
+    tmp_path, monkeypatch, connect, corpus_text, code
+):
+    """The record outlives Langfuse, so an outage skips only the sync and the push."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": corpus_text})
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+    real_connect = m._connect
+    fake = _stub_nightly(
+        monkeypatch,
+        run_cases=_ethiopia_run_cases,
+        graph=AllExist(),
+        push_run=lambda **_: pytest.fail("pushed with no client"),
+    )
+    monkeypatch.setattr(m, "_connect", real_connect)
+    monkeypatch.setattr(m, "connect", connect)
+
+    argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
+    assert m.main([*argv, f"--summary={summary}"]) == code
+    assert "Langfuse did not answer at the start" in summary.read_text()
+    (written,) = (records / SUITE).iterdir()
+    assert written.name.startswith("nightly-")
+    assert fake.items == {}
+
+
+@pytest.mark.parametrize(
+    ("status", "code"), [(503, 3), (429, 3), (404, 2)], ids=["503", "429", "404"]
+)
+def test_a_langfuse_failure_during_the_sync_still_records_the_nightly(
+    tmp_path, monkeypatch, status, code
+):
+    """A sync Langfuse fails part-way is infrastructure, like a failed start. A request
+    fault in the sync is a crash, raised once the record and summary are written."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    records, summary = tmp_path / "records", tmp_path / "nightly.md"
+    fake = _stub_nightly(
+        monkeypatch,
+        run_cases=_ethiopia_run_cases,
+        graph=AllExist(),
+        push_run=lambda **_: pytest.fail("pushed after a failed sync"),
+    )
+
+    def failing(**_):
+        raise ApiError(status_code=status, body="sync refused")
+
+    monkeypatch.setattr(fake, "create_dataset", failing)
+    argv = [f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"]
+
+    assert m.main([*argv, f"--summary={summary}"]) == code
+    # Whoever is at fault, the cases run and the record and summary are written.
+    expected = "Langfuse failed during the dataset sync" if code == 3 else "the dataset sync failed"
+    assert expected in summary.read_text()
+    (written,) = (records / SUITE).iterdir()
+    assert written.name.startswith("nightly-")
+
+
+@pytest.mark.parametrize("actions", ["true", None])
+def test_a_push_that_did_not_complete_raises_its_own_annotation(
+    tmp_path, monkeypatch, capsys, actions
+):
+    """The nightly usually exits 1, so a failed push needs a sign of its own in Actions."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": KENYA})
+
+    def push_run(**_):
+        raise PushTimeoutError("scores never appeared")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+    if actions:
+        monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    else:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 1
+    warned = "::warning::The nightly Langfuse push did not complete" in capsys.readouterr().out
+    assert warned is (actions == "true")
+
+
+def test_a_nightly_case_that_fails_its_answer_stays_scored_beside_a_lost_read(
+    tmp_path, monkeypatch
+):
+    """``ken`` answers Ethiopia and fails ``entities`` while the graph is down, so its
+    ``answer`` is a definite failure and stays a finding. ``ken-known`` lists
+    ``entities`` as known, so its ``answer`` rests on the lost read and is infra."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"ken": KENYA})
+    records = tmp_path / "records"
+    _stub_nightly(
+        monkeypatch, run_cases=_ethiopia_run_cases, graph=DownGraph(), push_run=lambda **_: "exp"
+    )
+
+    m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--records={records}"])
+
+    (run_dir,) = (records / SUITE).iterdir()
+    faults = {r.case_id: r.fault for r in read_run(run_dir).results}
+    assert faults == {"ken": None, "ken-known": FaultClass.INFRA}
+
+
+def test_keys_langfuse_refuses_stop_the_nightly_before_it_starts(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    monkeypatch.setenv("LANGFUSE_PROJECT_ID", PROJECT_ID)
+    monkeypatch.setattr(m, "connect", _refused)
+    monkeypatch.setattr(m, "_schema", lambda url: pytest.fail("the nightly ran past the check"))
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "code"), [(404, 2), (422, 2), (429, 3), (502, 3)], ids=["404", "422", "429", "502"]
+)
+def test_a_push_error_is_infrastructure_only_when_langfuse_is_at_fault(
+    tmp_path, monkeypatch, status, code
+):
+    """A 404 from an endpoint Langfuse removed repeats every night, so it is a crash."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    summary = tmp_path / "nightly.md"
+
+    def push_run(**_):
+        raise ApiError(status_code=status, body="refused")
+
+    _stub_nightly(monkeypatch, run_cases=_ethiopia_run_cases, graph=AllExist(), push_run=push_run)
+
+    assert (
+        m.main([f"--corpus-dir={corpus}", "--nightly=http://app", f"--summary={summary}"]) == code
+    )
+    assert "the push did not complete" in summary.read_text()
+
+
+@pytest.mark.parametrize(
+    ("connect", "code"),
+    [(_unreachable, 3), (_down, 3), (_refused, 2)],
+    ids=["network", "5xx", "refused keys"],
+)
+def test_a_plain_sync_whose_langfuse_does_not_answer_is_infrastructure(
+    tmp_path, monkeypatch, connect, code
+):
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": ETHIOPIA})
+    monkeypatch.setattr(m, "connect", connect)
+
+    assert m.main([f"--corpus-dir={corpus}"]) == code

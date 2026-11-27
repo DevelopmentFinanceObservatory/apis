@@ -1,5 +1,5 @@
 paths:
-  .github/workflows/deploy-{dev,prod}.yml:
+  .github/workflows/{deploy-dev,deploy-prod,eval-nightly,eval-sync}.yml:
     ignore:
       # GitHub documents `concurrency.queue` (workflow-syntax reference), but
       # actionlint's schema doesn't know the key yet: rhysd/actionlint#657 is

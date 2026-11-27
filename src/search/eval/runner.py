@@ -228,6 +228,7 @@ async def run_cases(
     concurrency: int,
     client: httpx.AsyncClient | None = None,
     backoff_s: float = 2.0,
+    gate: asyncio.Semaphore | None = None,
 ) -> dict[str, CaseRun]:
     """Post every case ``samples`` times to ``<url>/api/search/resolve``, and a case that
     sets ``repeat`` at least that many times.
@@ -241,13 +242,14 @@ async def run_cases(
     sample.
     Requests are built before any post, so a case that cannot build one raises before
     traffic starts. Returns one ``CaseRun`` per case id, in case order. ``client`` defaults
-    to a fresh client closed on return.
+    to a fresh client closed on return. ``gate``, when given, bounds posts in flight in
+    place of ``concurrency``, so calls running side by side share one bound.
     """
     if samples < 1:
         raise ValueError(f"samples must be at least 1, got {samples}")
     endpoint = f"{url.rstrip('/')}{RESOLVE_PATH}"
     requests = {case.id: build_request(case) for case in cases}
-    gate = asyncio.Semaphore(concurrency)
+    gate = gate or asyncio.Semaphore(concurrency)
     async with _client_scope(client) as http, asyncio.TaskGroup() as tasks:
         runs = {
             case.id: tasks.create_task(
