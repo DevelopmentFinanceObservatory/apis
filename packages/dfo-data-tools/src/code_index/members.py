@@ -857,10 +857,9 @@ def eligible_among(
 
     With no scope: those that are not `opt_in`, or the `opt_in` ones when `datasets` holds
     no other. Under a scope, the pool is `datasets` in `scope.allowed`, which holds dataset
-    ids (`CodeIndex.dataset_of`), never the member provenances of a dataset of several: its
-    datasets that
-    are not `opt_in`, else the whole pool when the scope names a source or when `datasets`
-    holds no dataset that is not `opt_in`, else none. So excluding a table never opens an
+    ids (`CodeIndex.dataset_of`): its datasets that are not `opt_in`, else the whole pool
+    when the scope names a source or when `datasets` holds no dataset that is not `opt_in`,
+    else none. So excluding a table never opens an
     opt-in table on a family another table publishes, and an opt-in-only family stays
     answerable under an exclusion that leaves it a publisher. A caller that holds a
     family's datasets filters them here without selecting the family again."""

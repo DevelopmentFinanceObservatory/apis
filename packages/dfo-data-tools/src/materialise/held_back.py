@@ -8,7 +8,9 @@ A row is judged by its source, its `measurementMethod` and its `time_period` cel
   (`method_status.projection_methods`), whatever period the row holds. An estimate under an
   undeclared pair is an actual row.
 - `partial`: the row reaches the period its source's import holds only part of
-  (`origin_catalogue.partial_period_of`, `partial_period.reaches`).
+  (`origin_catalogue.partial_period_of`, `partial_period.reaches`). A declared dataset's
+  rows carry its id, and they reach a period any of its member provenances marks
+  (`partial_mark`).
 - `unknown`: the catalogue documents no such source, the row names none, or the frame grammar
   cannot read the mark or the period. Nothing says, so the row is served.
 
@@ -27,6 +29,7 @@ from datetime import date, timedelta
 from functools import cache
 from typing import Final, Literal
 
+from graph_release.context import bound_release_or_none
 from materialise.method_status import is_projection
 from materialise.partial_period import reaches, start_of
 from origin_catalogue import Catalogue, CatalogueNotBound, current_catalogue
@@ -41,6 +44,8 @@ __all__ = [
     "judge",
     "last_period_before",
     "last_year_before",
+    "partial_mark",
+    "partial_marks",
     "source_of",
 ]
 
@@ -83,7 +88,7 @@ def judge(
     if source is None:
         return _UNKNOWN
     try:
-        mark = partial_period_of(catalogue, source)
+        mark = partial_mark(catalogue, source)
     except Undocumented:
         _warn_undocumented(source)
         return _UNKNOWN
@@ -93,6 +98,42 @@ def judge(
     if reached is None:
         return _UNKNOWN
     return Judgement(status="partial", partial_period=mark) if reached else None
+
+
+def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
+    """The distinct partial marks, sorted, of the provenances whose rows carry `source`:
+    `source`'s own (`partial_period_of`), or for a declared dataset's id its member
+    provenances' in the bound release's code index (`CodeIndex.provenances_of`), a member the
+    catalogue does not document adding none. Empty where none is marked. With no release
+    bound, `source` reads as a plain table.
+
+    Raises:
+        Undocumented: `catalogue` documents none of those provenances."""
+    release = bound_release_or_none()
+    provenances = (source,) if release is None else release.views.code_index.provenances_of(source)
+    marks: set[str] = set()
+    documented = False
+    for provenance in provenances:
+        try:
+            mark = partial_period_of(catalogue, provenance)
+        except Undocumented:
+            continue
+        documented = True
+        if mark is not None:
+            marks.add(mark)
+    if not documented:
+        raise Undocumented(source)
+    return tuple(sorted(marks))
+
+
+def partial_mark(catalogue: Catalogue, source: str) -> str | None:
+    """The partial mark `source`'s rows are judged by: the one of `partial_marks` that starts
+    first (`partial_period.start_of`), since it reaches every period a later one reaches, so a
+    declared dataset holds back each period any member marks. `None` where none is marked.
+
+    Raises:
+        Undocumented: as `partial_marks` does."""
+    return min(partial_marks(catalogue, source), key=start_of, default=None)
 
 
 @cache

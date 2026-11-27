@@ -474,17 +474,16 @@ def _ledger_parties() -> dict[str, PartyRow]:
 @pytest.mark.parametrize(
     ("field", "provenance", "cell"),
     [
-        pytest.param("party_kind", _LEDGER_NORTH, "total", id="kind-member-row"),
+        pytest.param("party_kind", _LEDGER, "total", id="kind-dataset-row"),
         pytest.param("party_kind", _CRS, "party", id="kind-crs-row"),
-        pytest.param("party_whole", _LEDGER_NORTH, "true", id="whole-member-row"),
+        pytest.param("party_whole", _LEDGER, "true", id="whole-dataset-row"),
         pytest.param("party_whole", _CRS, "false", id="whole-crs-row"),
     ],
 )
-def test_a_member_row_of_a_dataset_reads_a_party_s_kind_and_marker_in_the_dataset(
-    field, provenance, cell
-):
-    """A row keeps the member provenance it was published under, and the party's row reads it
-    as its dataset (`PartyRow.dataset_of`), so a long row and a pivot take the ledger's kind."""
+def test_a_row_of_a_dataset_reads_a_party_s_kind_and_marker_in_the_dataset(field, provenance, cell):
+    """A row of one of the ledger's member provenances carries the ledger's id
+    (`materialise.columnar.dataset_cells`), so a long row and a pivot take the ledger's
+    kind."""
     parties = _ledger_parties()
 
     assert (

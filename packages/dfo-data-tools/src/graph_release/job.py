@@ -642,7 +642,7 @@ def _build_phases(
         _needs(Dependency.SPANNER, *_SPANNER_ERRORS),
         snapshot_at(database, read_timestamp=read_at) as snapshot,
     ):
-        raw = read_inputs(snapshot)
+        raw = read_inputs(snapshot, declared=[dataset.id for dataset in declarations.datasets])
         ingested = read_ingested_imports(snapshot, execution_id=inputs.import_execution_id)
     if raw.import_key != key:
         emit("graph_release_discarded", reason="import_moved", **inputs.to_json())

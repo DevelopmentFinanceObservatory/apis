@@ -837,7 +837,7 @@ def _parse_datasets(
     three keys are optional), a `house_default_for`
     (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
     (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
-    `provenance` or `rank` repeated across rows. Each raises
+    `id` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     members: dict[str, tuple[str, ...]] = {}
@@ -903,7 +903,7 @@ def _parse_datasets(
             raise IndexFormatError(f"datasets row for {dataset.id!r} carries no description")
         if dataset.id in seen:
             raise IndexFormatError(
-                f"provenance {dataset.id!r} is declared more than once in datasets"
+                f"dataset id {dataset.id!r} is declared more than once in datasets"
             )
         seen.add(dataset.id)
         if not _is_member_list(listed) or not listed or listed != sorted(set(listed)):

@@ -81,6 +81,7 @@ from materialise.facets import (
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
+    read_as_datasets,
     request_scope_key,
     role_bearing_facet_candidates,
     select_facet,
@@ -625,9 +626,11 @@ class _PreparedPreview:
 
 
 def _admitted(probe: MemberProbe, candidate_filter: Callable[[Facet], bool] | None) -> MemberProbe:
-    """`probe` with only the candidates the request's facet filter admits
-    (`admitted_candidates`), which every election then ranks. Its row admission is kept."""
-    return replace(probe, candidates=tuple(admitted_candidates(probe.candidates, candidate_filter)))
+    """`probe` with its candidates read as their datasets' (`facets.read_as_datasets`) and only
+    those the request's facet filter admits (`admitted_candidates`), which every election,
+    dispatch and held-run read then takes. Its row admission is kept."""
+    candidates = read_as_datasets(probe.candidates)
+    return replace(probe, candidates=tuple(admitted_candidates(candidates, candidate_filter)))
 
 
 def _national_currency_probe(
@@ -681,9 +684,8 @@ def _select_member_facets(
 
     A member of an index-resolved family selects among the candidates its elected
     dataset publishes (`facets.dataset_candidates`), so the selected provenance is that
-    dataset's. A dataset of several member provenances elects as one table, its id the
-    selected provenance, and the selection admits every member's facets
-    (`facets.ElectedDataset.admitting_members`), so the dispatch serves them all.
+    dataset's. The facets of a declared dataset's member provenances carry its id
+    (`facets.read_as_datasets`), so they elect as one table under that id.
     """
     # The candidates its dispatch reads, each merged across places with the AND of its
     # places' annual evidence (`Facet.reads_annual`).
@@ -770,10 +772,7 @@ def _select_member_facets(
         breadth=breadth,
         variable_breadth=variable_breadth,
     )
-    election = continued_election(election, [candidates], window=request.window, breadth=breadth)
-    if request.dataset is None:
-        return election
-    return request.dataset.admitting_members(election)
+    return continued_election(election, [candidates], window=request.window, breadth=breadth)
 
 
 def _validate_empty_member_probe(
@@ -1565,17 +1564,17 @@ def reads_absent_as_zero(
     """Whether a group's members holding no observation in the requested years go unreported:
     `selections` dispatch one dataset and `absent_reads_zero` says it reads an absent member
     as zero (`code_index.members.absent_member_reads_zero`). The provenance selection's ref
-    is the dataset's id, for a dataset of several member provenances as for a plain table
-    (`facets.ElectedDataset.admitting_members`), so every member reads the one declaration.
-    Without `absent_reads_zero` every dataset reads unknown. The mint (`pipeline.materialise_group`)
-    and the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
+    is the dataset's id (`facets.read_as_datasets`), so every member provenance reads the one
+    declaration. Without `absent_reads_zero` every dataset reads unknown. The mint
+    (`pipeline.materialise_group`) and the stored-warning backfill
+    (`datasets_api.warning_backfill`) both ask this."""
     served = dispatched_provenances(selections)
     return absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
 
 
 def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
-    """The sorted provenance refs `selections` dispatch: provenances, or the id of an elected
-    dataset of several member provenances (`facets.ElectedDataset.admitting_members`)."""
+    """The sorted provenance refs `selections` dispatch: a plain table's provenance, or a
+    declared dataset's id (`facets.read_as_datasets`)."""
     return sorted(
         {
             selection.ref
@@ -1593,18 +1592,12 @@ def _dispatch_refresh(
 ) -> dict[str, ProvenanceRefresh]:
     """The refresh dates of the provenances `selections` dispatch, called before the fetch so
     a run's source tokens are never newer than its rows. Dates `precomputed_probe` holds
-    serve as read; the rest come from one `node_arcs_many`. The ref of an elected dataset of
-    several member provenances (`FacetSelection.provenances`) takes its Dataset node's date,
-    else its newest member's (`facets._probe_provenance_refresh`)."""
+    serve as read; the rest come from one `node_arcs_many`. A declared dataset's id takes its
+    Dataset node's date, else its newest member's (`facets._probe_provenance_refresh`)."""
     refs = dispatched_provenances(selections)
     known = precomputed_probe.provenance_refresh if precomputed_probe is not None else {}
     missing = [ref for ref in refs if ref not in known]
-    members = {
-        selection.ref: selection.provenances
-        for selection in selections.values()
-        if selection.axis == "provenance" and selection.ref is not None and selection.provenances
-    }
-    read = _probe_provenance_refresh(missing, graph=graph, members=members)
+    read = _probe_provenance_refresh(missing, graph=graph)
     return {ref: known[ref] if ref in known else read[ref] for ref in refs}
 
 

@@ -11,7 +11,7 @@ contribute zero rows. The members the group serves must pass joint checks.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from materialise.errors import (
@@ -58,6 +58,7 @@ from materialise.facets import (
     merge_facets,
     rank_pool,
     ranked_values,
+    read_as_datasets,
     select_bound_facet,
     summed_counts,
 )
@@ -70,8 +71,8 @@ if TYPE_CHECKING:
 
 # Index-sourced groups agree on provenance and unit. CRS can split a shared
 # population across facet IDs that differ only in measurement method, and a
-# dataset of several member provenances across its members. Other groups require
-# an exact facet ID.
+# declared dataset across its member provenances. Other groups require an exact
+# facet ID.
 _GROUP_AGREEMENT_AXES: frozenset[str] = frozenset({"provenance", "unit"})
 
 
@@ -93,9 +94,9 @@ def _facet_id_key(candidate: Facet) -> object:
 
 
 def _agreement_key(candidate: Facet) -> object:
-    """Index-sourced groups agree on the provenance axis value and the unit: the dataset's id
-    for a facet of an elected dataset of several members (`facets.facet_axis_value`), so the
-    members' facets form one group. Merging still requires the same `facet_id`."""
+    """Index-sourced groups agree on the provenance axis value and the unit: a declared
+    dataset's id for a facet of one of its member provenances (`facets.facet_axis_value`), so
+    the members' facets form one group. Merging still requires the same `facet_id`."""
     return (facet_axis_value(candidate, "provenance"), candidate.unit)
 
 
@@ -725,10 +726,8 @@ def select_group_facets(
     its ranking reads only that dataset's facets, and a member holding observations under
     another dataset alone is unpopulated. `DatasetDisagreementError` reports a member the
     probe finds only under provenances the code index does not record for it. The facets of
-    a dataset of several member provenances elect as one table
-    (`facets.ElectedDataset.read_as_dataset`), so they form one group whichever member holds
-    them, and the group's provenance selection admits every member
-    (`facets.ElectedDataset.admitting_members`).
+    a declared dataset's member provenances carry its id (`facets.read_as_datasets`), so they
+    form one group whichever member holds them.
 
     Raises `FacetNotAvailableError` when a populated member lacks an observation on a bound
     axis (`_check_bound_axes`), when no member holds a candidate carrying the bound refs
@@ -740,12 +739,7 @@ def select_group_facets(
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
     ]
-    members = [
-        member_candidates
-        if request.dataset is None
-        else request.dataset.read_as_dataset(member_candidates)
-        for request, member_candidates in zip(requests, candidates, strict=True)
-    ]
+    members = [read_as_datasets(member_candidates) for member_candidates in candidates]
     _check_bound_axes(requests, electable, graph=graph)
     group = elect_group(
         members,
@@ -763,11 +757,7 @@ def select_group_facets(
         raise _no_group_refusal(electable, graph=graph)
     if group.incoherent:
         raise _coherence_refusal(requests, electable, group.incoherent, graph=graph)
-    election = group.election
-    for request in requests:
-        if request.dataset is not None:
-            election = request.dataset.admitting_members(election)
-    return replace(group, election=election)
+    return group
 
 
 def group_election(

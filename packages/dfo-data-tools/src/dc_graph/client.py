@@ -238,10 +238,11 @@ class Facet:
     earliest of theirs, and a coverage facet its earliest row's. `None` when every series
     the facet holds ends at `latest_date` (`earliest_series_end`), as on a facet of one.
 
-    `dataset_id` is the id of the elected dataset of several member provenances whose
-    election reads the facet (`materialise.facets.ElectedDataset.read_as_dataset`), and the
-    value the facet carries on the provenance axis (`materialise.facets.facet_axis_value`).
-    `None` on a facet as read, and on a plain table's, whose provenance is its dataset.
+    `dataset_id` is the id of the declared dataset the facet's provenance is a member of
+    (`code_index.query.CodeIndex.dataset_of`), set where a mint reads the facet
+    (`materialise.facets.read_as_datasets`), and the value the facet carries on the
+    provenance axis (`materialise.facets.facet_axis_value`). `None` on a facet as read, and
+    on a plain table's, whose provenance is its dataset.
     """
 
     obs_count: int

@@ -1,5 +1,5 @@
-"""The code and measure indexes a request reads, and `per_index`, the memo for values derived
-from one code index.
+"""The code and measure indexes a request reads, `dataset_of`, the dataset a provenance's rows
+carry, and `per_index`, the memo for values derived from one code index.
 
 Both indexes are the serving views of the graph release bound to the current context
 (`graph_release.service.ReleaseViews`), so a request reads its release's indexes and none
@@ -21,6 +21,13 @@ def get_index() -> CodeIndex:
     """Return the bound release's code index. Raises `graph_release.context.ReleaseNotBound`
     when no release is bound."""
     return current_views().code_index
+
+
+def dataset_of(provenance: str) -> str:
+    """The id of the declared dataset `provenance` is a member of in the bound release's code
+    index (`CodeIndex.dataset_of`), or `provenance` itself for a plain table. Raises as
+    `get_index` does."""
+    return get_index().dataset_of(provenance)
 
 
 def get_measure_index() -> MeasureIndex:
@@ -52,4 +59,4 @@ def per_index[T](build: Callable[[CodeIndex], T]) -> Callable[[CodeIndex], T]:
     return cached
 
 
-__all__ = ["get_index", "get_measure_index", "per_index"]
+__all__ = ["dataset_of", "get_index", "get_measure_index", "per_index"]

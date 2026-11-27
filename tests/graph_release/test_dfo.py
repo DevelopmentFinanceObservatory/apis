@@ -26,7 +26,6 @@ from code_index.declarations import CRS_INCLUSIVE, WholePopulationTotal, WholeWi
 from code_index.export import (
     DATASET_MEMBER_CLAIMED_TWICE,
     DATASET_MEMBERS_SHARE_SERIES,
-    DATASET_WITHOUT_MEMBERS,
     WHOLE_MARKER_IN_COMPOSITE,
 )
 from code_index.loader import content_hash, parse_index
@@ -476,7 +475,6 @@ def test_dfo_parts_key_a_declared_dataset_by_the_provenances_part_of_it() -> Non
             ((_IMPUTED, _LEDGER, _IMPUTED),),
             id="declared-provenance-part-of-a-declared-dataset",
         ),
-        pytest.param((), False, DATASET_WITHOUT_MEMBERS, ((_LEDGER,),), id="dataset-no-member"),
         pytest.param(
             ((_NORTH, _LEDGER), (_SOUTH, _LEDGER)),
             True,

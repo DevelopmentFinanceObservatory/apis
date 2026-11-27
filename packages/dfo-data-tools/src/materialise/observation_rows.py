@@ -10,6 +10,10 @@ by variable, place and facet id, newest period first, one row per series under
 later stage reads them as it reads SDMX rows, and the read fails as an SDMX
 read does.
 
+A row's `provenance` cell holds its dataset's id from the read on
+(`code_index.shared.dataset_of`): a declared dataset's id for a row of one of its
+member provenances, the provenance itself for a plain table's row.
+
 One fetch names variables of one origin: `generation.request_batch_key` keeps
 UN variables out of chunks with the others.
 """
@@ -23,6 +27,7 @@ from typing import Final, Literal
 
 import pyarrow as pa
 
+from code_index.shared import dataset_of
 from dc_graph import Facet, GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import (
     Among,
@@ -37,6 +42,7 @@ from dc_sdmx import (
     observation_schema,
     place_slices,
 )
+from materialise.columnar import dataset_cells
 from materialise.errors import MaterialisationUsageError
 from materialise.graph import GraphReader, UnObservationReader
 from origin_catalogue.graph import is_un_dcid
@@ -71,7 +77,8 @@ def stream_observation_batches(
     max_rows: int | None = None,
     deadline: float | None = None,
 ) -> Iterator[tuple[tuple[str, ...], Iterator[pa.RecordBatch]]]:
-    """Yields `(roles, batches)` for `variables`, as `SdmxClient.stream_data_batches` does.
+    """Yields `(roles, batches)` for `variables`, as `SdmxClient.stream_data_batches` does,
+    each row's `provenance` cell holding its dataset's id (`columnar.dataset_cells`).
 
     Variables with no UN dcid stream through `sdmx` with every argument
     passed on, `time_period` as `LATEST` or a list of exact periods. A UN read takes
@@ -94,8 +101,8 @@ def stream_observation_batches(
             roles=roles,
             max_rows=max_rows,
             deadline=deadline,
-        ) as streamed:
-            yield streamed
+        ) as (streamed_roles, batches):
+            yield streamed_roles, (dataset_cells(batch) for batch in batches)
         return
     if len(un_variables) != len(variables):
         raise MaterialisationUsageError(
@@ -332,7 +339,11 @@ def _variable_batch(
             columns["unit"].append(facet.unit)
             columns["measurementMethod"].append(facet.measurement_method)
             columns["observationPeriod"].append(facet.observation_period)
-            columns["provenance"].append(facet.provenance_id)
+            columns["provenance"].append(
+                facet.provenance_id
+                if facet.provenance_id is None
+                else dataset_of(facet.provenance_id)
+            )
             columns["TIME_PERIOD"].append(date)
             columns["OBS_VALUE"].append("" if value is None else repr(float(value)))
             columns["scalingFactor"].append(facet.scaling_factor)

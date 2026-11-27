@@ -10,7 +10,7 @@ import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
 
@@ -271,21 +271,6 @@ Bump it when those rules change what a row reads, so every file holding party ce
 re-renders under the new reading although no row changed."""
 
 
-def _reading_members(party: PartyRow, member_of: Mapping[str, str]) -> PartyRow:
-    """`party` with `PartyRow.member_of` holding the member provenances of each dataset of
-    several members it names in `published`, `whole` or `dataset_kinds`, so a frame row of one
-    of those members reads as its dataset. `party` itself when it names none."""
-    named = {
-        *(dataset for dataset, _axis in party.published),
-        *(marker.dataset for marker in party.whole),
-        *(dataset for dataset, _kind in party.dataset_kinds),
-    }
-    members = {provenance: dataset for provenance, dataset in member_of.items() if dataset in named}
-    if not members:
-        return party
-    return replace(party, member_of=MappingProxyType(members))
-
-
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
     """The hex SHA-256 of `PARTY_READING_VERSION`, each declared composite's component tables
     and the table and bound destination total it reads markers through
@@ -298,9 +283,7 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
     because a party's kind and class cells depend on the row's dataset. The publications are
     in it because they decide which kind or marker a reader takes and which roles can hold a
     total (`PartyRow.publishes`), and the composites' tables and bound totals because a
-    composite provenance reads its kinds and markers through them. A row naming a dataset of
-    several member provenances adds its `(provenance, dataset)` members (`PartyRow.member_of`),
-    because a member row reads its dataset's kinds and markers through them."""
+    composite provenance reads its kinds and markers through them."""
     rows = sorted(
         (
             party.dcid,
@@ -309,7 +292,6 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
             [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
             *([list(party.dataset_kinds)] if party.dataset_kinds else []),
             list(party.published),
-            *([sorted(party.member_of.items())] if party.member_of else []),
         )
         for party in parties
     )
@@ -591,14 +573,7 @@ class CodeIndex:
         self.totals_by_group: dict[str, PartyRow] = {}
         """The total that holds each group (`PartyRow.totals`), by the group as search names
         it, whether or not it equals the sum of the group's members (`PartyRow.sums_members`)."""
-        member_of = {
-            provenance: dataset
-            for dataset, provenances in self._provenances_by_dataset.items()
-            if len(provenances) > 1
-            for provenance in provenances
-        }
         for party in parties:
-            party = _reading_members(party, member_of)
             if party.dcid in self.parties:
                 raise DuplicateDcid(f"party dcid {party.dcid!r} appears more than once")
             self.parties[party.dcid] = party

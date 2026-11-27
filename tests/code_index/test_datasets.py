@@ -141,7 +141,7 @@ def test_loader_rejects_a_duplicate_provenance():
     payload = _fixture()
     payload["datasets"].append(dict(payload["datasets"][0]))
 
-    with pytest.raises(IndexFormatError, match="declared more than once"):
+    with pytest.raises(IndexFormatError, match=r"dataset id '.*' is declared more than once"):
         parse_index(payload)
 
 

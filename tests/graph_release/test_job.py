@@ -338,7 +338,7 @@ def _named(events: list[dict], name: str) -> list[dict]:
 
 @pytest.fixture
 def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> Builder:
-    def read_recorded(snapshot):
+    def read_recorded(snapshot, *, declared):
         return dataclasses.replace(raw_inputs(), import_key=read_import_key(snapshot))
 
     monkeypatch.setattr(job, "read_inputs", read_recorded)
@@ -727,7 +727,7 @@ def _inconsistent_facets(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> N
         2, "facet_max", pa.array(["{}"] * raw.facets.num_rows, pa.string())
     )
 
-    def read_inconsistent(snapshot):
+    def read_inconsistent(snapshot, *, declared):
         return dataclasses.replace(raw, import_key=read_import_key(snapshot), facets=facets)
 
     monkeypatch.setattr(job, "read_inputs", read_inconsistent)
@@ -902,7 +902,7 @@ def test_a_stale_check_that_cannot_read_is_logged_when_the_tick_already_failed(
 
 
 def test_a_key_that_moved_before_the_build_snapshot_discards_the_build(builder, monkeypatch):
-    def moved(snapshot):
+    def moved(snapshot, *, declared):
         key = read_import_key(snapshot)
         assert key is not None
         return dataclasses.replace(

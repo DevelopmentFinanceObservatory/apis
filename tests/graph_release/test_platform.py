@@ -21,6 +21,7 @@ import pyarrow.compute as pc
 import pytest
 
 from artifact_publication.jobs import ImportKey
+from code_index.export import DATASET_WITHOUT_MEMBERS, ExportRefused, resolve_dataset_members
 from graph_release import reads
 from graph_release.authored import AUTHORED, AUTHORED_PROVENANCE, literal_id
 from graph_release.dfo import ReleaseGraphReader
@@ -262,6 +263,42 @@ def test_read_inputs_reads_the_isPartOf_edges_of_the_facets_provenances(raw):
     assert reader.node_arcs_many([ledger], properties=["typeOf"]) == {
         ledger: {"typeOf": ("Dataset",)}
     }
+
+
+def test_a_declared_dataset_no_provenance_is_part_of_reads_its_type_and_refuses(raw):
+    """The node read covers the declared ids, so a declared `Dataset` no faceted provenance
+    is part of keeps its `Node` row and the export refuses it by name; the row of a declared
+    id that is no `Dataset` stays out of the nodes part."""
+    ledger, table = "dataset/Ledger", "provenance/DeclaredTable"
+    nodes = pa.Table.from_pylist(
+        [
+            {"subject_id": ledger, "value": None, "name": "Ledger", "types": ["Dataset"]},
+            {"subject_id": table, "value": None, "name": "Table", "types": ["Provenance"]},
+        ],
+        schema=reads.RAW_NODES,
+    )
+    spanner = _RecordedSpanner(
+        dataclasses.replace(raw, nodes_raw=pa.concat_tables([raw.nodes_raw, nodes]))
+    )
+
+    read = read_inputs(spanner, declared=[table, ledger])
+    parts = build_platform_parts(read, authored=AUTHORED)
+    reader = ReleaseGraphReader(edges=parts.edges, nodes=parts.nodes)
+
+    assert read.declared == (ledger, table)
+    node_ids = set(parts.nodes["subject_id"].to_pylist())
+    assert ledger in node_ids
+    assert table not in node_ids
+    with pytest.raises(ExportRefused) as refused:
+        resolve_dataset_members(
+            reader,
+            declared=[ledger],
+            listed=(),
+            covered=[
+                json.loads(text)["provenance"] for text in raw.facets["facet_min"].to_pylist()
+            ],
+        )
+    assert (refused.value.code, list(refused.value.rows)) == (DATASET_WITHOUT_MEMBERS, [(ledger,)])
 
 
 def test_snapshot_at_refuses_a_naive_timestamp():

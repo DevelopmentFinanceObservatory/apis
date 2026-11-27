@@ -15,6 +15,11 @@ A read holds back two kinds of years unless its window's `include` names them
   at the newest year a continuing projection facet holds. A read serving only projection
   facets, as one binding the projection method, is projected over their years.
 
+A run's source is the dataset a facet's provenance is a member of
+(`code_index.shared.dataset_of`), the provenance itself for a plain table, as a row's
+`provenance` cell holds it, and a declared dataset's partial period is the earliest its members
+mark (`held_back.partial_mark`).
+
 A served facet is one the read dispatches. The read dispatches no projection facet it holds
 back, so the projected runs read every candidate of the series.
 
@@ -33,13 +38,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Protocol
 
-from materialise.facets import at_cadence, cadences_by_member, continues_series
+from code_index.shared import dataset_of
+from materialise.facets import at_cadence, cadences_by_member, continues_series, read_as_datasets
 from materialise.graph import Facet
-from materialise.held_back import HeldKind, cut_catalogue
+from materialise.held_back import HeldKind, cut_catalogue, partial_mark
 from materialise.method_status import is_projection
 from materialise.partial_period import start_of
 from origin_catalogue import Catalogue
-from origin_catalogue.catalogue import Undocumented, partial_period_of
+from origin_catalogue.catalogue import Undocumented
 
 __all__ = [
     "DatedFacet",
@@ -81,6 +87,11 @@ def _year_of(date: str | None) -> int | None:
         return None
 
 
+def _source(facet: DatedFacet) -> str | None:
+    """The source a run of `facet` is held under: its provenance's dataset (`dataset_of`)."""
+    return facet.provenance_id if facet.provenance_id is None else dataset_of(facet.provenance_id)
+
+
 def _is_actual(facet: DatedFacet) -> bool:
     return not is_projection(facet.provenance_id, facet.measurement_method)
 
@@ -89,7 +100,7 @@ def _partial_start(catalogue: Catalogue, source: str) -> int | None:
     """The first year of the period `catalogue` marks `source`'s import as holding only in
     part, None when it marks none, documents none, or the mark cannot be read."""
     try:
-        mark = partial_period_of(catalogue, source)
+        mark = partial_mark(catalogue, source)
     except Undocumented:
         return None
     if mark is None:
@@ -105,9 +116,9 @@ def partial_runs(served: Iterable[DatedFacet], *, catalogue: Catalogue) -> Itera
     the period `catalogue` marks partial, by source."""
     newest: dict[str, int] = {}
     for f in served:
-        year = _year_of(f.latest_date)
-        if f.provenance_id is not None and year is not None and _is_actual(f):
-            newest[f.provenance_id] = max(year, newest.get(f.provenance_id, year))
+        year, source = _year_of(f.latest_date), _source(f)
+        if source is not None and year is not None and _is_actual(f):
+            newest[source] = max(year, newest.get(source, year))
     for source, end in sorted(newest.items()):
         start = _partial_start(catalogue, source)
         if start is not None and start <= end:
@@ -138,8 +149,9 @@ def projected_runs(series: Iterable[tuple[Sequence[Facet], Sequence[Facet]]]) ->
         if not actual:
             for f in served:
                 first, last = _year_of(f.earliest_date), _year_of(f.latest_date)
-                if f.provenance_id is not None and first is not None and last is not None:
-                    held(f.provenance_id, first, last)
+                source = _source(f)
+                if source is not None and first is not None and last is not None:
+                    held(source, first, last)
             continue
         lead = actual[0]
         ends = [year for f in actual if (year := _year_of(f.earliest_series_end)) is not None]
@@ -152,14 +164,15 @@ def projected_runs(series: Iterable[tuple[Sequence[Facet], Sequence[Facet]]]) ->
         )
         units = {f.unit for f in actual}
         for c in candidates:
-            if c.provenance_id is None or _is_actual(c):
+            source = _source(c)
+            if source is None or _is_actual(c):
                 continue
             last = _year_of(c.latest_date)
             if last is not None and continues_series(
-                c, provenance=lead.provenance_id, units=units, after=actual_end, serves=serves
+                c, provenance=_source(lead), units=units, after=actual_end, serves=serves
             ):
                 first = max(actual_end + 1, _year_of(c.earliest_date) or actual_end + 1)
-                held(c.provenance_id, first, last)
+                held(source, first, last)
     for source in sorted(end):
         if start[source] <= end[source]:
             yield HeldRun(
@@ -189,18 +202,19 @@ def merged_runs(runs: Iterable[HeldRun]) -> tuple[HeldRun, ...]:
 def read_runs(members: Iterable[tuple[Sequence[Facet], Collection[str]]]) -> tuple[HeldRun, ...]:
     """The runs of partial and projected years the sources of `members`, each its candidates
     and the facet ids the read dispatches of them, hold past their served actual years,
-    merged per kind and source (`merged_runs`). They are read from facet metadata, so a read
-    states them whatever its window and whatever rows it cut.
+    merged per kind and source (`merged_runs`), each candidate read as its dataset's
+    (`facets.read_as_datasets`). They are read from facet metadata, so a read states them
+    whatever its window and whatever rows it cut.
 
     Raises:
         CatalogueNotBound: no origin catalogue is bound, so partial marks cannot be read
             (`held_back.cut_catalogue`).
     """
     catalogue = cut_catalogue()
-    series = [
-        ([c for c in candidates if c.facet_id in dispatched], candidates)
-        for candidates, dispatched in members
-    ]
+    series: list[tuple[list[Facet], list[Facet]]] = []
+    for candidates, dispatched in members:
+        read = read_as_datasets(candidates)
+        series.append(([c for c in read if c.facet_id in dispatched], read))
     return merged_runs(
         [
             *partial_runs((f for served, _ in series for f in served), catalogue=catalogue),

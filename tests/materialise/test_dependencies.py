@@ -33,7 +33,6 @@ from materialise.dependencies import (
     refreshed_dependencies,
 )
 from materialise.facets import (
-    ElectedDataset,
     FacetBinding,
     ProvenanceRefresh,
     probe_collection_facets,
@@ -53,6 +52,7 @@ from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
 )
 
+from ._ledger import LEDGER, NORTH, SOLO, SOLO_MEMBER, SOUTH, bound_ledger_index
 from .conftest import FakeGraphReader
 
 
@@ -386,12 +386,23 @@ def test_applied_horizons_records_marks_and_declared_projections():
     assert applied_horizons([crs]) == ()
 
 
+def _ledger_nodes(north: str | None, south: str | None) -> dict[str, dict[str, tuple[str, ...]]]:
+    """`LEDGER`'s member provenances as the catalogue documents them, each marking the partial
+    period given, or none."""
+    crs = dev_provenance_nodes()["provenance/OECDCreditorReportingSystem"]
+    unmarked = {prop: values for prop, values in crs.items() if prop != "partialObservationDate"}
+    return {
+        provenance: unmarked if mark is None else {**unmarked, "partialObservationDate": (mark,)}
+        for provenance, mark in ((NORTH, north), (SOUTH, south))
+    }
+
+
 @pytest.mark.parametrize(
     ("north", "south", "horizon"),
     [
-        pytest.param("2026", None, (("partial:dataset/Ledger", "2026"),), id="one-member"),
-        pytest.param("2026", "2026", (("partial:dataset/Ledger", "2026"),), id="both-agree"),
-        pytest.param("2026", "2025", (("partial:dataset/Ledger", "2025,2026"),), id="both-differ"),
+        pytest.param("2026", None, ((f"partial:{LEDGER}", "2026"),), id="one-member"),
+        pytest.param("2026", "2026", ((f"partial:{LEDGER}", "2026"),), id="both-agree"),
+        pytest.param("2026", "2025", ((f"partial:{LEDGER}", "2025,2026"),), id="both-differ"),
         pytest.param(None, None, (), id="none"),
     ],
 )
@@ -399,38 +410,56 @@ def test_a_dataset_of_two_member_provenances_holds_back_each_period_a_member_mar
     north, south, horizon
 ):
     """`dataset/Ledger`'s series sit under two member provenances, which the catalogue
-    documents, and the dataset holds back every period either marks partial."""
-    ledger = "dataset/Ledger"
-    crs = dev_provenance_nodes()["provenance/OECDCreditorReportingSystem"]
-    unmarked = {prop: values for prop, values in crs.items() if prop != "partialObservationDate"}
-    nodes = {
-        provenance: unmarked if mark is None else {**unmarked, "partialObservationDate": (mark,)}
-        for provenance, mark in (
-            ("provenance/LedgerNorth", north),
-            ("provenance/LedgerSouth", south),
-        )
-    }
+    documents, and the dataset holds back every period either marks partial. The members come
+    from the bound code index, whatever dataset the request elects; outside it the id is a
+    provenance the catalogue does not document."""
+    request = _request(_STAT_VAR, RequestedWindow(kind="all"))
 
-    request = replace(
-        _request(_STAT_VAR, RequestedWindow(kind="all")),
-        dataset=ElectedDataset(
-            provenance=ledger, provenances=tuple(nodes), recorded_provenances=tuple(nodes)
-        ),
+    with bound_catalogue(documenting(_ledger_nodes(north, south))):
+        assert applied_horizons([LEDGER]) == ()
+        with bound_ledger_index():
+            assert applied_horizons([LEDGER]) == horizon
+            dependencies = build_dependencies(
+                [request],
+                source_refs=[LEDGER],
+                provenance_refresh={},
+                conversion_records=(),
+                latest_years={},
+                candidate_provenances=(),
+                scope_settled=True,
+            )
+    assert dependencies.held_back == horizon
+
+
+@pytest.mark.parametrize(
+    ("source", "origins", "keyed"),
+    [
+        pytest.param(LEDGER, {NORTH: DFO, SOUTH: DFO}, True, id="two-dfo-members"),
+        pytest.param(LEDGER, {NORTH: DFO, SOUTH: BASE}, False, id="a-base-member"),
+        pytest.param(LEDGER, {NORTH: DFO}, False, id="an-unlisted-member"),
+        pytest.param(SOLO, {SOLO_MEMBER: DFO}, True, id="one-member"),
+    ],
+)
+def test_a_mint_of_a_declared_dataset_keys_on_the_import_its_members_name(source, origins, keyed):
+    """The run's source is the dataset's id, which the catalogue does not list; its member
+    provenances are what the catalogue lists, so the run keys on the import when each is
+    DFO's."""
+    catalogue = FakeCatalogue(
+        provenances={ref: provenance_row(ref, origin) for ref, origin in origins.items()},
+        dfo_variables=frozenset({_BARE_STAT_VAR}),
     )
-
-    with bound_catalogue(documenting(nodes)):
-        assert applied_horizons([ledger], members={ledger: tuple(nodes)}) == horizon
-        assert applied_horizons([ledger]) == ()
+    with bound_catalogue(catalogue), bound_ledger_index():
         dependencies = build_dependencies(
-            [request],
-            source_refs=[ledger],
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=[source],
             provenance_refresh={},
             conversion_records=(),
             latest_years={},
-            candidate_provenances=(),
+            candidate_provenances=[next(iter(origins))],
             scope_settled=True,
         )
-    assert dependencies.held_back == horizon
+
+    assert dependencies.imported_data == (current_release().imported_data if keyed else None)
 
 
 def test_a_source_with_no_date_on_both_sides_is_unchanged():
