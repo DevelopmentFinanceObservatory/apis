@@ -576,6 +576,9 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="zero",
         account="provider",
         rank=80,
+        # Each member is an organisation reporting its own transactions, so one flow can
+        # appear as a donor's disbursement and again as the implementer's expenditure.
+        members_report_overlapping_accounts=True,
     ),
 )
 
