@@ -488,7 +488,7 @@ class ShareSlotDataResponse(BaseModel):
     mode: Literal["live", "snapshot"] = Field(description="the share's mode")
     freshness: Literal["current", "stale", "pending"] = Field(
         description="current: the newest data DFO found at its last check, at most 15 minutes "
-        "ago, or a snapshot's own rows; pending: newer data is building and these rows are the "
+        "ago, a snapshot's own rows, or the rows of the frame the read named; pending: newer data is building and these rows are the "
         "last check's; stale: DFO could not check, or the card cannot be drawn on the newer "
         "data, and these rows are older"
     )
@@ -511,9 +511,14 @@ class ShareSlotCardResponse(ComponentReadResponse):
         "from when DFO stored it. Null for a card that draws no frame, or one whose frame DFO "
         "holds no version record of",
     )
+    frame: ShareFrameModel | None = Field(
+        description="the frame the card is drawn on, the frame the slot's data route serves and "
+        "the share's history lists. Send its spec_id and content_version to either slot route "
+        "to read the slot on this frame for good. Null for a card that draws no frame"
+    )
     freshness: Literal["current", "stale", "pending"] = Field(
         description="as the slot's data route states it: current, the newest data DFO found "
-        "at its last check or a snapshot's own frame; pending, newer data is building and the "
+        "at its last check, a snapshot's own frame, or the frame the read named; pending, newer data is building and the "
         "card is drawn on the last check's frame; stale, DFO could not check, or the card "
         "cannot be drawn on the newer data, and the card is drawn on an older frame"
     )

@@ -36,7 +36,10 @@ records the frame a slot read serves. It reads the slot's newest entry first and
 shows something else, locks the share row, checks that the revision the read served is still the
 latest, and checks the newest entry again under the lock, so concurrent reads of one slot record
 one entry, a read of an unchanged slot takes no lock, and a read that served a revision a replace
-or snapshot conversion has since moved past records nothing.
+or snapshot conversion has since moved past records nothing. `slot_served` answers whether a
+slot's timeline holds a card on a frame, reading one slot's entries through migration 0017's
+`served_frame_slot_newest_idx`, a few rows since a slot records an entry only when what it shows
+changes.
 `sample_shares` draws shares that are not taken down at random, optionally within a
 `created_at` window, each with its kind, mode, `created_at` and the number of slots its latest
 revision shows a card in, and nothing about its owner, title, token or payload. It orders the
@@ -465,6 +468,14 @@ class ShareStore(Protocol):
         """
         ...
 
+    def slot_served(self, *, share_id: str, slot: int, card: ShareCard, frame: FrameRef) -> bool:
+        """Whether the share's timeline holds an entry of `slot` showing `card` on `frame`.
+
+        Raises:
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
     def sample_shares(
         self,
         *,
@@ -807,6 +818,25 @@ class LiveShareStore:
             )
 
         self._in_transaction(f"recording a frame share {share_id!r} served", write)
+
+    def slot_served(self, *, share_id: str, slot: int, card: ShareCard, frame: FrameRef) -> bool:
+        def read(tx: Transaction) -> bool:
+            row = tx.fetch_one(
+                "SELECT 1 FROM presentation.served_frame WHERE share_id = %s AND slot = %s "
+                "AND component_id = %s AND component_revision = %s AND frame_spec_id = %s "
+                "AND frame_content_version = %s LIMIT 1",
+                (
+                    share_id,
+                    slot,
+                    card.component_id,
+                    card.revision,
+                    frame.spec_id,
+                    frame.content_version,
+                ),
+            )
+            return row is not None
+
+        return self._in_transaction(f"reading what share {share_id!r} slot {slot} served", read)
 
     def sample_shares(
         self,

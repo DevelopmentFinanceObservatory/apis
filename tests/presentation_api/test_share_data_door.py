@@ -218,6 +218,10 @@ def _serve_door(
         yield _Door(client, frame_store=frame_store, newest=newest, presentation=presentation)
 
 
+def _wire(frame: FrameRef) -> dict[str, str]:
+    return {"spec_id": frame.spec_id, "content_version": frame.content_version}
+
+
 def _values(body: dict) -> list[float]:
     return [row["value"] for row in body["rows"]]
 
@@ -281,7 +285,7 @@ def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door)
     again = door.slot_card(share["id"], headers={"if-none-match": etag})
 
     assert resp.status_code == 200
-    assert resp.json() == {**read, "freshness": "current"}
+    assert resp.json() == {**read, "frame": _wire(_STORED), "freshness": "current"}
     assert resp.headers["cache-control"] == "public, max-age=300"
     assert etag.startswith('"') and etag.endswith('"')
     assert (again.status_code, again.content) == (304, b"")
@@ -811,8 +815,23 @@ def test_a_replacement_puts_a_new_card_in_the_slot_with_no_check(door: _Door):
         ("slots/0/data", 400, "request_invalid"),
         ("slots/1/data?format=zip", 400, "request_invalid"),
         ("slots/1/data?bundle=true", 400, "request_invalid"),
+        (f"slots/1/data?spec_id={_STORED.spec_id}", 400, "request_invalid"),
+        (f"slots/1?content_version={_STORED.content_version}", 400, "request_invalid"),
+        (
+            f"slots/1?spec_id=spec-x&content_version={_STORED.content_version}",
+            400,
+            "request_invalid",
+        ),
     ],
-    ids=["no-such-slot", "slot-zero", "unknown-format", "json-bundle"],
+    ids=[
+        "no-such-slot",
+        "slot-zero",
+        "unknown-format",
+        "json-bundle",
+        "spec-id-alone",
+        "content-version-alone",
+        "malformed-spec-id",
+    ],
 )
 def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: int, code: str):
     share = door.share(door.card(), latest=True)
@@ -1247,3 +1266,93 @@ def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _
         headers={_TOKEN: share["write_token"]},
     )
     assert (replaced.status_code, replaced.json()["code"]) == (409, "share_not_replaceable")
+
+
+def _hold(monkeypatch: pytest.MonkeyPatch, retention: dict[FrameRef, dict[str, object]]) -> None:
+    """State each frame's retention as `retention` gives it."""
+
+    def stated(frame_ref: FrameRef, *, snapshot_reader) -> dict[str, object]:
+        return retention[frame_ref]
+
+    monkeypatch.setattr(presentation_retention, "frame_retention", stated)
+
+
+def _named(door: _Door, route: str, share_id: str, frame: FrameRef, **headers: str):
+    path = f"/api/presentation/shares/{share_id}/slots/1{'/data' if route == 'data' else ''}"
+    return door.client.get(path, params=_wire(frame), headers=headers)
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+def test_a_read_naming_a_frame_the_slot_served_serves_it_for_good_with_no_check(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, route: str
+):
+    _hold(monkeypatch, {_STORED: {"pinned": True}, _MOVED: {"pinned": True}})
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _MOVED
+    moved = door.data(share["id"]) if route == "data" else door.slot_card(share["id"])
+    history = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()
+
+    named = _named(door, route, share["id"], _STORED)
+    again = _named(door, route, share["id"], _STORED, **{"if-none-match": named.headers["etag"]})
+
+    assert named.status_code == 200, named.json()
+    body = named.json()
+    assert (body["frame"], body["freshness"]) == (_wire(_STORED), "current")
+    assert moved.json()["frame"] == _wire(_MOVED)
+    if route == "data":
+        assert _values(body) == [row["value"] for row in malaria_ethiopia_rows()]
+    else:
+        assert _drawn_on(body) == _STORED.content_version
+    assert named.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert named.headers["x-dfo-freshness"] == "current"
+    assert "x-dfo-checked-at" not in named.headers
+    assert (again.status_code, again.headers["etag"]) == (304, named.headers["etag"])
+    assert again.headers["cache-control"] == "public, max-age=31536000, immutable"
+    # The named reads ran no check and recorded nothing, so the slot still serves its check.
+    assert door.newest.asked == [_STORED]
+    assert door.client.get(f"/api/presentation/shares/{share['id']}/history").json() == history
+    assert door.data(share["id"]).json()["frame"] == _wire(_MOVED)
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+@pytest.mark.parametrize("if_none_match", [None, '"any"'], ids=["read", "revalidate"])
+@pytest.mark.parametrize(
+    ("case", "status", "code"),
+    [
+        ("never-served", 404, "frame_not_served"),
+        ("other-card", 404, "frame_not_served"),
+        ("expired", 410, "frame_expired"),
+    ],
+)
+def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_no_longer_holds(
+    door: _Door,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    if_none_match: str | None,
+    case: str,
+    status: int,
+    code: str,
+):
+    held = (_START - timedelta(days=1)).isoformat()
+    _hold(monkeypatch, {_STORED: {"pinned": False, "held_until": held}, _MOVED: {"pinned": True}})
+    share = door.share(door.card(), latest=True)
+    if case == "other-card":
+        # The slot served _MOVED for its first card, then a replace put another card in it.
+        door.newest.answer = _MOVED
+        door.data(share["id"])
+        door.client.put(
+            f"/api/presentation/shares/{share['id']}",
+            json={"cards": [{"component_id": door.card(), "revision": 1}]},
+            headers={_TOKEN: share["write_token"]},
+        )
+    frame = _STORED if case == "expired" else _MOVED
+    headers = {} if if_none_match is None else {"if-none-match": if_none_match}
+
+    resp = _named(door, route, share["id"], frame, **headers)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retry_mode"]) == (
+        status,
+        code,
+        "do_not_retry",
+    )
+    assert resp.headers["access-control-allow-origin"] == "*"

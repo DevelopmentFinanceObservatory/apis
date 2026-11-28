@@ -32,8 +32,8 @@ occurrence as `retry_mode` (`presentation_api.refusals.retry_mode`).
 
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
 `write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
-`share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
-retryable. A card create or revise and a share create refuse
+`share_not_replaceable` and `share_id_taken` at 409, `payload_too_large` at 413, and on a slot
+read naming a frame `frame_not_served` at 404 and `frame_expired` at 410, none retryable. A card create or revise and a share create refuse
 the platform's `allowance_exhausted`, not retryable either, with `Retry-After` naming
 the reset, and the share sample refuses a caller without the verify principal the platform's
 `verify_not_permitted` (403) (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
@@ -132,6 +132,16 @@ SHARE_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "share_import_not_permitted": (
         "Share Import Not Permitted",
         "The share import is restricted to its first-party principal.",
+    ),
+    "frame_not_served": (
+        "Frame Not Served",
+        "A share slot read names a frame the slot's history does not list for the card the "
+        "slot shows.",
+    ),
+    "frame_expired": (
+        "Frame Expired",
+        "A share slot read names a frame the slot served whose retention has ended, so DFO no "
+        "longer holds it. Read the slot without a frame for the data it serves now.",
     ),
 }
 
