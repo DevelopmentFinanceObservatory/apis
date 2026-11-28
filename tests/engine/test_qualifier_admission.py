@@ -332,6 +332,26 @@ def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own
     ]
 
 
+def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
+    """`CRSTypeOfFinance400` ("loans") is a CRS finance type that only IATI rows hold,
+    through codes under it, and those rows also declare `iatiTransactionType`. A CRS
+    shape's own reading of "ODA loans" claims no finance type; a shape that also reads the
+    transaction type reads loans."""
+    iati = _CRS | {"iatiTransactionType"}
+    reading = read_text("ODA loans", _REAL_INDEX, vocabularies=[_CRS, iati])
+
+    def finance_types(vocabulary: frozenset[str]) -> set[str]:
+        return {
+            row.dcid
+            for span in reading.by_vocabulary[vocabulary].spans
+            for row in span.rows
+            if isinstance(row, CodeRow) and row.code_system == "crsTypeOfFinance"
+        }
+
+    assert finance_types(_CRS) == set()
+    assert "CRSTypeOfFinance400" in finance_types(iati)
+
+
 # ---------------------------------------------------------------------------
 # A part naming the CRS refuses only terms no CRS shape reads and holds.
 # ---------------------------------------------------------------------------

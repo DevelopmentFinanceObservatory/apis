@@ -22,6 +22,7 @@ from search.engine.bind import (
     _UniversalBindOutput,
     bind_universal,
     rank_elected,
+    reads_bound_values_alike,
     split_stray_bindings,
 )
 from search.engine.binders import BindRequest, GeminiBinder
@@ -42,6 +43,7 @@ from search.models import GraphRef, QuantityForm
 from tests.engine._binders import elected_reply, keep_the_pick
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._index_slots import crs_vocabulary
 from tests.engine._quantity import NO_QUANTITY
 
 # Helpers
@@ -987,7 +989,7 @@ _EDUCATION_LEAVES = [
     f"CRSPurposeCode{code}"
     for code in (
         *(11110, 11120, 11130, 11182, 11220, 11230, 11231, 11232),
-        *(11240, 11250, 11260, 11320, 11330, 11420, 11430),
+        *(11240, 11250, 11260, 11320, 11321, 11322, 11330, 11420, 11430),
     )
 ]
 _EDUCATION_AMOUNT = [
@@ -1108,6 +1110,26 @@ def test_the_rank_elects_among_shapes_the_menu_states_alike(
     )
 
     assert rank_elected([first, chosen], output, availability=availability) == elected
+
+
+def test_a_bound_parent_reads_alike_whatever_leaves_only_another_datasets_rows_hold():
+    """Upper secondary education (`CRSPurposeCode113`) on a CRS shape covers 11320 and
+    11330, the leaves CRS rows hold. 11321 and 11322, which only IATI rows hold, change
+    nothing: a shape listing the parent beside those two leaves reads it as one listing
+    the leaves alone."""
+    slots = tuple(
+        SlotKeyDraft(axis="how", property_dcid=prop, label=prop)
+        for prop in sorted(crs_vocabulary())
+    )
+    leaves = ["CRSPurposeCode11320", "CRSPurposeCode11330"]
+    listing = _shape(
+        "parent", slot_keys=slots, slot_taxonomy={"how:crsPurpose": ["CRSPurposeCode113", *leaves]}
+    )
+    alone = dataclasses.replace(
+        listing, shape_id="leaves", slot_taxonomy={"how:crsPurpose": leaves}
+    )
+
+    assert reads_bound_values_alike(listing, alone, [_value("crsPurpose", "CRSPurposeCode113")])
 
 
 def test_dropped_qualifiers_block_renders_only_when_phrases_exist():

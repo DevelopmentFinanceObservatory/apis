@@ -25,7 +25,7 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
-from search.engine.qualifier_match import _normalize, names_plain_name
+from search.engine.qualifier_match import _normalize, bindable_codes, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
     denominator_meaning,
@@ -621,18 +621,47 @@ def reads_bound_values_alike(
         for value in bound.get((axis, prop), ()):
             read = [code for code in ours if applies_value(value, code)]
             read_there = [code for code in theirs if applies_value(value, code)]
-            if not read or covered_leaves(read) != covered_leaves(read_there):
+            if not read or covered_leaves(read, shape=elected) != covered_leaves(
+                read_there, shape=other
+            ):
                 return False
     return True
 
 
-def covered_leaves(codes: Iterable[str]) -> frozenset[str]:
+def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> frozenset[str]:
     """The leaf codes `codes` cover in the code index's hierarchy: each code's descendants
     that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
-    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves."""
+    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves.
+
+    Read for `shape`, a parent covers only the leaves of `shape`'s code systems that a
+    shape of its vocabulary can bind (`qualifier_match.bindable_codes`), so a code of the
+    enum that only another dataset's rows hold, an IATI-only purpose code under a CRS
+    parent, changes nothing a CRS shape reads. A listed code always covers itself."""
     index = get_index()
+    listed = set(codes)
+    vocabulary = _code_systems(shape) if shape is not None else frozenset()
+    bindable = bindable_codes(index, vocabulary) if shape is not None else frozenset()
+
+    def counts(leaf: str) -> bool:
+        if shape is None or leaf in listed or leaf in bindable:
+            return True
+        row = index.code_by_dcid(leaf)
+        return row is None or row.code_system not in vocabulary
+
     return frozenset(
-        leaf for code in codes for leaf in index.descendants(code) if not index.has_children(leaf)
+        leaf
+        for code in listed
+        for leaf in index.descendants(code)
+        if not index.has_children(leaf) and counts(leaf)
+    )
+
+
+def _code_systems(shape: ShapeDraft) -> frozenset[str]:
+    """The code systems `shape` reads, its slots' properties and the slots a breakdown
+    left out (`region.state.shape_vocabulary`)."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
     )
 
 

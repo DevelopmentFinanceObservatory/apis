@@ -1,0 +1,42 @@
+- id: iati-disbursements-kenya-2024
+  query: IATI disbursements to Kenya in 2024
+  activation: pending_data:iati
+  why: Naming IATI elects the IATI dataset across its publishers; "disbursements" names the gross disbursement measure, so the transaction type stays open.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
+  expect:
+    definite:
+      measure:
+        family: iati.disbursement_gross
+        open: [iatiTransactionType]
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: []
+
+- id: iati-unfpa-expenditure-2024
+  query: UNFPA expenditure in 2024
+  activation: pending_data:iati
+  why: Expenditure is an IATI transaction type no other table offers, so the opt-in IATI dataset answers, with UNFPA as the provider.
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse}
+  expect:
+    definite:
+      measure:
+        family: iati.disbursement_gross
+        bound: {iatiTransactionType: IATITransactionType4}
+      provenance: {bound: true}
+      entities: [{dcid: UnitedNationsPopulationFund, role: origin}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: []
+
+- id: iati-crs-control-sanitation-uk-kenya-2023
+  query: basic sanitation disbursements from the UK to Kenya in 2023
+  why: The question names no dataset, so the opt-in IATI dataset stays out and the CRS answers the basic sanitation sector in gross disbursements.
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsPurpose: CRSPurposeCode14032}
+      provenance: {origin: dfo, dataset: provenance/OECDCreditorReportingSystem}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2023, end: 2023}

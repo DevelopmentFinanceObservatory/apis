@@ -9,6 +9,7 @@ import pytest
 from code_index.shared import get_index
 from datasets_api.capabilities import CapabilityFormat, build_capabilities
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.manifest import frame_code_systems
 from datasets_api.output_options import derive_output_options
 from materialise.profile import ColumnProfile, EnrichmentCoverage, OutputProfile, PivotFeasibility
 
@@ -18,7 +19,26 @@ _NO_OPEN_ROLE: dict[str, object] = {"entities": {}}
 _DAC2A = "provenance/OECDDAC2A"
 _CRS = "provenance/OECDCreditorReportingSystem"
 
-_derive = functools.partial(derive_output_options, parties=get_index().parties, datasets=())
+_derive = functools.partial(
+    derive_output_options, parties=get_index().parties, datasets=(), code_systems=None
+)
+
+_CRS_STAT_VAR = (
+    "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSCooperationModalityA01_CRSPurposeCode11330_Nominal"
+)
+_IATI_STAT_VAR = (
+    "dcid:Amount_FinancialFlow_Gross_Disbursement_EquityInstrument_IATITransactionType8_"
+    "CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB02_CRSPurposeCode99810_Nominal"
+)
+
+
+def _code_systems(*refs: str) -> frozenset[str] | None:
+    """The code systems a frame of `refs` carries, as a stored trace records them."""
+    trace = {"resolved_stat_vars": [{"ref": ref} for ref in refs]}
+    return frame_code_systems(trace, index=get_index())
+
+
 """`derive_output_options` over the fixture index's parties, for a definition whose read
 selected no provenance."""
 
@@ -407,6 +427,27 @@ class TestGroupby:
         assert document.groupby.reason is None
         assert document.groupby.axes == [{"name": "crsPurpose"}]
 
+    @pytest.mark.parametrize(
+        ("refs", "transaction_type"),
+        [((_CRS_STAT_VAR,), False), ((_IATI_STAT_VAR,), True), ((), False)],
+        ids=["crs-frame", "iati-frame", "no-stat-var"],
+    )
+    def test_axes_are_the_summable_code_systems_the_frames_stat_vars_carry(
+        self, refs, transaction_type
+    ):
+        """A CRS frame offers no IATI transaction type, since none of its StatVars carries
+        one; an IATI frame offers it beside the CRS systems its StatVars also carry."""
+        document = _derive(
+            _profile(),
+            identity=_NO_OPEN_ROLE,
+            capabilities=_capabilities(),
+            code_systems=_code_systems(*refs),
+        )
+
+        names = [axis["name"] for axis in document.groupby.axes]
+        assert ("iatiTransactionType" in names) is transaction_type
+        assert ("crsPurpose" in names) is bool(refs)
+
     def test_axes_are_empty_while_summability_declarations_are_not_live_even_with_axes_declared(
         self,
     ):
@@ -486,6 +527,7 @@ class TestDesignWorkedExamples:
             _profile(columns=columns, pivots=pivots, enrichments=enrichments),
             identity={"entities": {"origin": ["country/GBR"]}, "open_roles": ["destination"]},
             capabilities=_capabilities(),
+            code_systems=_code_systems(_CRS_STAT_VAR),
         )
 
         assert len(document.pivots) == 3
@@ -523,6 +565,7 @@ class TestDesignWorkedExamples:
             _profile(pivots=pivots, enrichments=enrichments),
             identity=_NO_OPEN_ROLE,
             capabilities=_capabilities(),
+            code_systems=_code_systems(_CRS_STAT_VAR),
         )
 
         assert all(p.state == "available" for p in document.pivots)
@@ -577,6 +620,7 @@ def test_long_layout_totals_names_only_roles_that_can_hold_a_total(
         capabilities=_capabilities(),
         parties=get_index().parties,
         datasets=datasets,
+        code_systems=None,
     )
 
     assert document.long_layout_totals == listed

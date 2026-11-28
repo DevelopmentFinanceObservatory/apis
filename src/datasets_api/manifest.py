@@ -52,6 +52,7 @@ from dataset_store.snapshot import FrameLineage, ManifestFacts, StoredVersion
 from datasets_api.admission import bound_roles
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.decode import statvar_code_systems
 from datasets_api.description_record import mint_steps, minted_flow_family
 from datasets_api.manifest_models import (
     ArtifactEntryModel,
@@ -1159,6 +1160,7 @@ def manifest_output_options(
         capabilities=capabilities,
         parties=code_index.parties,
         datasets=source_refs_of(materialisation.trace),
+        code_systems=frame_code_systems(materialisation.trace, index=code_index),
     )
 
 
@@ -1236,6 +1238,22 @@ def source_refs_of(trace: ManifestTrace | Mapping[str, object]) -> list[str]:
             )
         )
     return provenance_refs_of(facets)
+
+
+def frame_code_systems(
+    trace: ManifestTrace | Mapping[str, object], *, index: CodeIndex
+) -> frozenset[str] | None:
+    """The declared code systems the StatVars of a version's `trace.resolved_stat_vars` carry
+    (`decode.statvar_code_systems`), the axes its frame can sum over, or `None` for a stored
+    trace that records no `resolved_stat_vars`. A live `ManifestTrace` or a stored or wire
+    trace mapping."""
+    if isinstance(trace, ManifestTrace):
+        entries: Iterable[Mapping[str, object]] | None = trace.resolved_stat_vars
+    else:
+        entries = cast("Iterable[Mapping[str, object]] | None", trace.get("resolved_stat_vars"))
+    if entries is None:
+        return None
+    return statvar_code_systems((cast(str, entry["ref"]) for entry in entries), index=index)
 
 
 def stored_manifest_facts(stored: StoredVersion) -> ManifestFacts:

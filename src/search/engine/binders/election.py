@@ -40,11 +40,14 @@ def holds_requested_slots(
     chosen: ShapeDraft, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> bool:
     """Whether, for each ``requested_all`` draft of `bindings`, `shape`'s slot on its
-    property covers every leaf code `chosen`'s slot covers (`bind.covered_leaves`)."""
+    property covers every leaf code `chosen`'s slot covers, each read for its own shape
+    (`bind.covered_leaves`)."""
     own, held = chosen.slot_taxonomy or {}, shape.slot_taxonomy or {}
     keys = [f"{d.axis}:{d.property_dcid}" for d in bindings if d.evidence == "requested_all"]
     return all(
-        covered_leaves(own.get(key, ())) <= covered_leaves(held.get(key, ())) for key in keys
+        covered_leaves(own.get(key, ()), shape=chosen)
+        <= covered_leaves(held.get(key, ()), shape=shape)
+        for key in keys
     )
 
 

@@ -57,6 +57,7 @@ from datasets_api.delivery import record_manifest
 from datasets_api.deps import DepsCell
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest import (
+    frame_code_systems,
     source_refs_of,
     stored_manifest,
     stored_manifest_facts,
@@ -121,6 +122,7 @@ def _stored_snapshot_manifest(
                 capabilities=capabilities,
                 parties=get_index().parties,
                 datasets=source_refs_of(facts.trace),
+                code_systems=frame_code_systems(facts.trace, index=get_index()),
             )
             if profile is not None
             else None

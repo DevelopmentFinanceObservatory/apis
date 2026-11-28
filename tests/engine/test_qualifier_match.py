@@ -1251,6 +1251,7 @@ def test_each_code_systems_markers_come_from_its_name():
         "dac1AidType": ["dac1"],
         "dac2aAidType": ["dac2a"],
         "dac2bAidType": ["dac2b"],
+        "iatiTransactionType": ["iati", "transaction"],
     }
     # "aid" names every aid-type system, so it marks none, measure word or not.
     assert {
