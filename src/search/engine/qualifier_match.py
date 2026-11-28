@@ -1083,10 +1083,14 @@ def bindable_codes(index: CodeIndex, *, datasets: Collection[str] = ()) -> froze
     row of `index` carries, whose StatVars the index does not list and so cannot rule out.
     No datasets, a shape the index does not carry (`shape_datasets`), reads every row.
 
+    A reader with one shape scopes by that shape's datasets; a reader comparing two shapes
+    scopes both sides by the union of the two shapes' datasets
+    (`bound_values.pair_datasets`); the reading in every code system stays unscoped.
+
     A code of a system the rows carry that no row holds binds on no shape. "population"
-    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. "loans",
-    `CRSTypeOfFinance400`, is a finance type only IATI rows hold, so it binds on no CRS
-    shape, and a CRS purpose code no IATI row holds binds on no IATI shape.
+    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. "police",
+    `CRSPurposeCode15132`, is a purpose only IATI rows hold, so it binds on no CRS shape,
+    and a CRS purpose code no IATI row holds binds on no IATI shape.
 
     The rows of `datasets` are the rows of every family one of them publishes
     (`IndexFamily.rows`) and each listed row (`CodeIndex.listed_statvars`) one of them

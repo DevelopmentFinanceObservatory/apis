@@ -193,7 +193,9 @@ def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():
     grant-equivalent flow both parts elect does not state "loans", as the binder rates it,
     so that part refuses on it, flagging the flow with its slot open. "loans" names
     `CRSTypeOfFinance400`, which only IATI rows hold, so the CRS shape records it as
-    unavailable."""
+    unavailable. 400 is a withdrawn DAC finance type that IATI publishers still report;
+    once the graph recodes the withdrawn finance types to the codes that replaced them, no
+    row holds 400 and the record returns to ("loans", "no_vocabulary", "uncovered")."""
     response = offline_resolve(
         make_request("How much aid did Kenya get?"),
         graph=_e2e_graph_for("funding", "loans"),

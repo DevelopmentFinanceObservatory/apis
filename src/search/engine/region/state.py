@@ -1200,6 +1200,13 @@ class ResolveState:
     shape_held_codes: dict[int, tuple[ShapeDraft, Callable[[QualifierMatch], bool]]] = field(
         default_factory=dict, repr=False
     )
+    # The shapes another shape's candidate menu reads as bound elsewhere
+    # (`phase_rank_bind._binding_elsewhere`), beside the recalled shapes and the source
+    # scope it was built from, so it is built once per part and again only when either
+    # changes.
+    binding_elsewhere: (
+        tuple[tuple[ShapeDraft, ...], SourceScope | None, list[ShapeDraft]] | None
+    ) = field(default=None, repr=False)
     # Whether a dropped qualifier phrase uses a price-basis word no match read
     # (`alternate_guard.leaves_price_basis_unread`). The default-reading collapse and the
     # guard's default operation both stand down on such a leg.
