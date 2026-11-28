@@ -39,6 +39,24 @@ from dfo_platform.roles import RoleAxis
 
 
 @dataclass(frozen=True)
+class DeclaredParent:
+    """A parent code DFO declares in a code system whose graph enum holds none for `children`.
+
+    The export writes it as a code row of the system with no `classificationCode`, named
+    `name`, and gives each of `children` it as their parent, as a graph `specializationOf`
+    arc would. `definition` is the sentence that says what the code means. The export
+    refuses the declaration once the graph holds a parent of any of `children` or a node of
+    `dcid` (`code_index.export.DECLARED_PARENT_IN_GRAPH`). Remove the declaration then, since
+    the graph's parent replaces it.
+    """
+
+    dcid: str
+    name: str
+    children: tuple[str, ...]
+    definition: str
+
+
+@dataclass(frozen=True)
 class CodeSystemConfig:
     """One code system's graph enum and semantic declarations.
 
@@ -55,7 +73,9 @@ class CodeSystemConfig:
     optional for older CRS StatVars. A dataset is enumerated only through systems that list it,
     and the export checks every exported row against the listing.
 
-    `plain_name` is the singular lowercase noun used after "any". A default code belongs to this
+    `plain_name` is the singular lowercase noun used after "any". `defaults` lists the
+    system's declared defaults in the order they are tried, a `when_open` one last
+    (`CodeSystemDeclaration.defaults`). A default code belongs to this
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
     non-empty. Export validates these conditions before writing. `no_vocabulary_terms` lists
     the lowercase words naming a distinction of this axis no code expresses
@@ -68,7 +88,8 @@ class CodeSystemConfig:
     objectives are DFO's own values and no publisher codes them. `uncoded` lists the dcids of a
     system with `classification_codes=True` that the publisher left without a code. Such a row
     exports with `code` `None` and must carry no `classificationCode`, and every other value of
-    the system must carry one.
+    the system must carry one. `declared_parents` lists the parent codes DFO declares where the
+    graph holds none (`DeclaredParent`). Each exports uncoded.
     """
 
     code_system: str
@@ -79,11 +100,12 @@ class CodeSystemConfig:
     absent_reading: str
     declared_by_every_statvar_of: tuple[str, ...]
     plain_name: str
-    default: DeclaredDefault | None = None
+    defaults: tuple[DeclaredDefault, ...] = ()
     no_vocabulary_terms: tuple[str, ...] = ()
     house_case: HouseDefaultCase | None = None
     classification_codes: bool = True
     uncoded: frozenset[str] = frozenset()
+    declared_parents: tuple[DeclaredParent, ...] = ()
 
 
 CRS = "provenance/OECDCreditorReportingSystem"
@@ -111,6 +133,11 @@ DAC1_MULTILATERAL_ODA = "DAC1AidType2000"
 DAC2A_TOTAL_ODA = "DAC2aAidType206"
 DAC2A_IMPUTED_MULTILATERAL_ODA = "DAC2aAidType106"
 CLIMATE_FINANCE = "ClimateChangePolicyObjective"
+IATI_DISBURSEMENT = "IATITransactionType3"
+IATI_EXPENDITURE = "IATITransactionType4"
+# DFO's parent of IATI's disbursements and expenditure, which the graph does not hold yet
+# (`DeclaredParent`).
+IATI_SPENDING = "IATITransactionTypeSpending"
 
 # The stacked composites of a donor's bilateral flows and its imputed share of multilateral
 # spending (`COMPOSITES`): one over the CRS and ONE's imputed multilateral table, one over
@@ -189,10 +216,12 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         # A grant bound under CRSTypeOfFinance100 defaults to ODA when no flow is named.
         # `when_named=("aid",)` also covers a variable phrase naming only "aid". The trigger
         # requires an open flow slot and no qualifier match or tie.
-        default=DeclaredDefault(
-            code="CRSTypeOfFlow10",
-            when_bound_under=("CRSTypeOfFinance100",),
-            when_named=("aid",),
+        defaults=(
+            DeclaredDefault(
+                code="CRSTypeOfFlow10",
+                when_bound_under=("CRSTypeOfFinance100",),
+                when_named=("aid",),
+            ),
         ),
         # No CRS flow type separates non-concessional flows from concessional ones, so a
         # question naming them on a CRS shape refuses the qualifier.
@@ -214,11 +243,13 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         plain_name="aid type",
         # A DAC2a question that names no aid type asks about total ODA. The imputed table's
         # slot holds its invariant code alone, so the default binds nothing there.
-        default=DeclaredDefault(
-            code=DAC2A_TOTAL_ODA,
-            when_bound_under=(),
-            when_open=True,
-            note="The answer covers official development assistance of every aid type.",
+        defaults=(
+            DeclaredDefault(
+                code=DAC2A_TOTAL_ODA,
+                when_bound_under=(),
+                when_open=True,
+                note="The answer covers official development assistance of every aid type.",
+            ),
         ),
     ),
     # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
@@ -233,11 +264,13 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         declared_by_every_statvar_of=(DAC1,),
         plain_name="aid type",
         # A DAC1 question that names no aid type asks about total ODA.
-        default=DeclaredDefault(
-            code=DAC1_TOTAL_ODA,
-            when_bound_under=(),
-            when_open=True,
-            note="The answer covers official development assistance of every aid type.",
+        defaults=(
+            DeclaredDefault(
+                code=DAC1_TOTAL_ODA,
+                when_bound_under=(),
+                when_open=True,
+                note="The answer covers official development assistance of every aid type.",
+            ),
         ),
     ),
     # DAC2b flow types nest totals over their parts (OOF under official non-concessional
@@ -254,13 +287,15 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         plain_name="official flow type",
         # A DAC2b question that names no flow type asks about the net total, the one root
         # holding every other code but interest received. The table publishes it net alone.
-        default=DeclaredDefault(
-            code="DAC2bAidType296",
-            when_bound_under=(),
-            when_open=True,
-            note=(
-                "No official flow type was named, so the answer covers net official"
-                " non-concessional flows."
+        defaults=(
+            DeclaredDefault(
+                code="DAC2bAidType296",
+                when_bound_under=(),
+                when_open=True,
+                note=(
+                    "No official flow type was named, so the answer covers net official"
+                    " non-concessional flows."
+                ),
             ),
         ),
     ),
@@ -279,31 +314,67 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         declared_by_every_statvar_of=(_ONE_CLIMATE_FINANCE, _OECD_CRDF, _UNFCCC_BTR),
         plain_name="climate objective",
         # A climate finance question that names no objective asks about the total.
-        default=DeclaredDefault(
-            code=CLIMATE_FINANCE,
-            when_bound_under=(),
-            when_open=True,
-            note=(
-                "No climate objective was named, so the answer covers all climate finance,"
-                " whatever its objective."
+        defaults=(
+            DeclaredDefault(
+                code=CLIMATE_FINANCE,
+                when_bound_under=(),
+                when_open=True,
+                note=(
+                    "No climate objective was named, so the answer covers all climate finance,"
+                    " whatever its objective."
+                ),
             ),
         ),
         classification_codes=False,
     ),
     # Every IATI StatVar states the IATI transaction type its figures record: an outgoing
     # commitment (2), a disbursement (3), an expenditure (4), a reimbursement (7), a purchase
-    # of equity (8) or a credit guarantee (10). The enum is flat, so a bound type reads its own
-    # StatVars alone. The types are distinct transactions, so a sum across them adds no
-    # amount twice: IATI counts disbursements and expenditure together as spending.
+    # of equity (8) or a credit guarantee (10). The types are distinct transactions, so a sum
+    # across them adds no amount twice. Spending (`IATI_SPENDING`) is the parent of
+    # disbursements and expenditure, so a part binding it reads both types' StatVars and
+    # sums them.
     CodeSystemConfig(
         code_system="iatiTransactionType",
         enum_dcid="IATITransactionTypeEnum",
-        expected_hierarchical=False,
+        expected_hierarchical=True,
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_IATI,),
         plain_name="transaction type",
+        # "disbursements" names the CRS measure, so it is no synonym of type 3, and a part
+        # saying it binds type 3 through this default. A part naming no transaction type
+        # counts spending.
+        defaults=(
+            DeclaredDefault(
+                code=IATI_DISBURSEMENT,
+                when_bound_under=(),
+                when_named=("disbursement", "disbursements", "disbursed"),
+            ),
+            DeclaredDefault(
+                code=IATI_SPENDING,
+                when_bound_under=(),
+                when_open=True,
+                note=(
+                    "No transaction type was named, so the answer counts spending:"
+                    " disbursements (type 3) and expenditure (type 4)."
+                ),
+            ),
+        ),
+        # The graph holds no spending node yet. Remove this declaration once it does: the
+        # export then refuses it (`export.DECLARED_PARENT_IN_GRAPH`).
+        declared_parents=(
+            DeclaredParent(
+                dcid=IATI_SPENDING,
+                name="spending (IATI Transaction Type)",
+                children=(IATI_DISBURSEMENT, IATI_EXPENDITURE),
+                definition=(
+                    "Disbursements and expenditure together: the outgoing funds an"
+                    " organisation places at a recipient's disposal or spends on goods and"
+                    " services for an activity."
+                ),
+            ),
+        ),
     ),
 )
 
@@ -1232,12 +1303,16 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     # "disbursement" are left out. They name the CRS measures (`financialObligationType`,
     # `financialFlowType`), and a code synonym of the same text ties with the measure value
     # in every vocabulary, so "commitments to Kenya" would read a flow. Every IATI commitment
-    # is an outgoing commitment, so its five-tuple pins type 2 (`CodeIndex.dataset_pins`).
+    # is an outgoing commitment, so its five-tuple pins type 2 (`CodeIndex.dataset_pins`), and
+    # "disbursements" binds type 3 through the system's declared default. "spending" and
+    # "spend" name the spending parent and "equity" type 8, on an IATI shape alone
+    # (`CODE_SYNONYMS_WITHIN_VOCABULARY`).
     "IATITransactionType2": ("outgoing commitment",),
     "IATITransactionType4": ("expenditure",),
     "IATITransactionType7": ("reimbursement",),
-    "IATITransactionType8": ("purchase of equity",),
+    "IATITransactionType8": ("purchase of equity", "equity"),
     "IATITransactionType10": ("credit guarantee",),
+    IATI_SPENDING: ("spending", "spend"),
 }
 
 # Code synonyms that name their code only on a shape of its own code system. Such a shape
@@ -1254,8 +1329,12 @@ CODE_SYNONYMS_WITHIN_VOCABULARY: Mapping[str, frozenset[str]] = {
     "AdaptationOnlyClimateChangePolicyObjective": frozenset({"adaptation"}),
     "MitigationOnlyClimateChangePolicyObjective": frozenset({"mitigation"}),
     # "expenditure" names IATI's type 4 on an IATI shape. Read in every code system, it would
-    # bring the IATI family into a World Bank question on government expenditure.
+    # bring the IATI family into a World Bank question on government expenditure, and
+    # "spending" would do the same for "health spending". "equity" would read type 8 beside
+    # a CRS question on equity investment.
     "IATITransactionType4": frozenset({"expenditure"}),
+    "IATITransactionType8": frozenset({"equity"}),
+    IATI_SPENDING: frozenset({"spending", "spend"}),
 }
 
 # Names a question uses for a code that no matcher reads, exported as `CodeRow.also_called`.

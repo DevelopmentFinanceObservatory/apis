@@ -189,11 +189,14 @@ class TestSummableAxes:
 class TestGroupbyLevelAxes:
     """A level axis is declared summable, hierarchical, and disjoint from children."""
 
-    def test_the_published_level_axes_are_the_real_hierarchical_crs_systems(self):
+    def test_the_published_level_axes_are_the_real_hierarchical_summable_systems(self):
+        """The hierarchical CRS systems, and IATI's transaction types under the spending
+        parent."""
         assert _capabilities().groupby_level_axes == [
             "crsCooperationModality",
             "crsPurpose",
             "crsTypeOfFinance",
+            "iatiTransactionType",
         ]
 
     def test_a_flat_unsummable_or_overlapping_system_is_no_level_axis(self):

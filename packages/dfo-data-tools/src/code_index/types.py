@@ -133,6 +133,18 @@ def invalid_when_named_entry(when_named: Sequence[str]) -> int | None:
     )
 
 
+def misplaced_when_open(defaults: Sequence[DeclaredDefault]) -> int | None:
+    """Return the index of the first default that fires on every open slot
+    (`DeclaredDefault.when_open`) but is not the last of `defaults`, whose later entries
+    could then never fire. Return `None` when there is none.
+    The loader and exporter share this check.
+    """
+    return next(
+        (index for index, default in enumerate(defaults[:-1]) if default.when_open),
+        None,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CodeSystemDeclaration:
     """Rules declared by one code system.
@@ -141,8 +153,10 @@ class CodeSystemDeclaration:
     says parent-coded records differ from child-coded records. CRS assigns
     one code per transaction per axis, so those populations are disjoint.
     `summable` says sibling values can reconstruct a parent total. `absent_reading`
-    defines how missing constraints read, `plain_name` supplies the axis
-    noun, and `default` defines an open-slot default or is `None`.
+    defines how missing constraints read, and `plain_name` supplies the axis
+    noun. `defaults` lists the system's open-slot defaults in the order they are tried; the
+    first that fires on a slot binds it, and a default that fires on every open slot
+    (`DeclaredDefault.when_open`) comes last.
 
     `enum_dcid` is the system's graph id, the enumeration its codes are `typeOf`
     (`CRSPurposeCodeEnum` for `crsPurpose`). Every exported declaration carries
@@ -163,7 +177,7 @@ class CodeSystemDeclaration:
     summable: bool
     absent_reading: AbsentReading
     plain_name: str
-    default: DeclaredDefault | None = None
+    defaults: tuple[DeclaredDefault, ...] = ()
     enum_dcid: str | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
     house_case: HouseDefaultCase | None = None
@@ -173,7 +187,7 @@ class CodeSystemDeclaration:
 class ShapeSlotDefault:
     """The value an open constraint slot takes on every shape of one `populationType`.
 
-    A code system declares defaults for its own slots (`CodeSystemDeclaration.default`).
+    A code system declares defaults for its own slots (`CodeSystemDeclaration.defaults`).
     This declares one for a graph property no code system of the index carries.
     """
 

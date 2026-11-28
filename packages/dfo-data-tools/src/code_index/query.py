@@ -27,6 +27,7 @@ from code_index.types import (
     CompositeDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    DeclaredDefault,
     HouseDefaultCase,
     ImpliedValue,
     IndexStamp,
@@ -344,29 +345,34 @@ def _check_declared_defaults(
     """Raises `InvalidDeclaredDefault` for a default code outside its system or an invalid
     `when_bound_under` dcid."""
     for declaration in declarations.values():
-        default = declaration.default
-        if default is None:
-            continue
-        code_row = codes_by_dcid.get(default.code)
-        if code_row is None or code_row.code_system != declaration.code_system:
+        for default in declaration.defaults:
+            _check_declared_default(declaration, default, codes_by_dcid)
+
+
+def _check_declared_default(
+    declaration: CodeSystemDeclaration, default: DeclaredDefault, codes_by_dcid: dict[str, CodeRow]
+) -> None:
+    """One default of `declaration` checked as `_check_declared_defaults` describes."""
+    code_row = codes_by_dcid.get(default.code)
+    if code_row is None or code_row.code_system != declaration.code_system:
+        raise InvalidDeclaredDefault(
+            f"code system {declaration.code_system!r} declares default code "
+            f"{default.code!r}, which is not a row of that code system"
+        )
+    for scoping_dcid in default.when_bound_under:
+        scoping_row = codes_by_dcid.get(scoping_dcid)
+        if scoping_row is None:
             raise InvalidDeclaredDefault(
-                f"code system {declaration.code_system!r} declares default code "
-                f"{default.code!r}, which is not a row of that code system"
+                f"code system {declaration.code_system!r} declares a default "
+                f"when_bound_under code {scoping_dcid!r}, which this index holds no "
+                "row for"
             )
-        for scoping_dcid in default.when_bound_under:
-            scoping_row = codes_by_dcid.get(scoping_dcid)
-            if scoping_row is None:
-                raise InvalidDeclaredDefault(
-                    f"code system {declaration.code_system!r} declares a default "
-                    f"when_bound_under code {scoping_dcid!r}, which this index holds no "
-                    "row for"
-                )
-            if scoping_row.code_system == declaration.code_system:
-                raise InvalidDeclaredDefault(
-                    f"code system {declaration.code_system!r} declares a default "
-                    f"when_bound_under code {scoping_dcid!r} in its own code system -- a "
-                    "default cannot condition on the slot it defaults"
-                )
+        if scoping_row.code_system == declaration.code_system:
+            raise InvalidDeclaredDefault(
+                f"code system {declaration.code_system!r} declares a default "
+                f"when_bound_under code {scoping_dcid!r} in its own code system -- a "
+                "default cannot condition on the slot it defaults"
+            )
 
 
 CANDIDATE_HITS = 8

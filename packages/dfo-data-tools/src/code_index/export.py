@@ -50,6 +50,7 @@ from code_index.declarations import (
     WHOLE_POPULATION_TOTALS,
     WHOLE_TOTAL_SETS,
     CodeSystemConfig,
+    DeclaredParent,
     KindOverride,
     MeasureValueText,
     TotalGroup,
@@ -84,6 +85,7 @@ from code_index.types import (
     declared_composite_tables,
     invalid_when_named_entry,
     label_for_pairs,
+    misplaced_when_open,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -984,13 +986,71 @@ def _stat_type_word_to_dict(declaration: StatTypeWordDeclaration) -> dict:
     return {"pattern": declaration.pattern.pattern, "stat_type": declaration.stat_type}
 
 
+DECLARED_PARENT_IN_GRAPH = "declared_parent_in_graph"
+"""`ExportRefused.code` for a parent code DFO declares (`CodeSystemConfig.declared_parents`)
+once the graph holds a node of its dcid or a parent of one of its children."""
+
+
+def _declared_parent_row(
+    config: CodeSystemConfig, parent: DeclaredParent, rows_by_dcid: Mapping[str, dict]
+) -> dict:
+    """The code row of `parent`, a parent code DFO declares in `config`'s system, which sets
+    itself as the parent of each of its children in `rows_by_dcid`, the system's graph rows.
+
+    Raises `ExportRefused` with code `DECLARED_PARENT_IN_GRAPH` where the graph enumerates a
+    node of `parent.dcid` or already gives one of the children a parent, since the graph
+    then holds the parent and the declaration is to be removed. A child the system does not
+    enumerate raises `ExportRefused`."""
+    if parent.dcid in rows_by_dcid:
+        raise ExportRefused(
+            f"{config.code_system} declares the parent {parent.dcid!r}, which "
+            f"{config.enum_dcid} now enumerates -- drop it from "
+            "CodeSystemConfig.declared_parents",
+            code=DECLARED_PARENT_IN_GRAPH,
+            rows=[(parent.dcid,)],
+        )
+    missing = [child for child in parent.children if child not in rows_by_dcid]
+    if missing:
+        raise ExportRefused(
+            f"{config.code_system} declares the parent {parent.dcid!r} of {missing}, which "
+            f"{config.enum_dcid} does not enumerate"
+        )
+    held = [
+        (child, rows_by_dcid[child]["parent"])
+        for child in parent.children
+        if rows_by_dcid[child]["parent"] is not None
+    ]
+    if held:
+        raise ExportRefused(
+            f"{config.code_system} declares the parent {parent.dcid!r}, but the graph gives "
+            f"its children parents of their own: {_capped(held)} -- drop it from "
+            "CodeSystemConfig.declared_parents",
+            code=DECLARED_PARENT_IN_GRAPH,
+            rows=held,
+        )
+    for child in parent.children:
+        rows_by_dcid[child]["parent"] = parent.dcid
+    return {
+        "dcid": parent.dcid,
+        "code_system": config.code_system,
+        "code": None,
+        "label": strip_system_suffix(parent.name),
+        "synonyms": sorted(set(CODE_SYNONYMS.get(parent.dcid, ()))),
+        "short_name": CODE_SHORT_NAMES.get(parent.dcid),
+        "parent": None,
+        "definition": parent.definition,
+        "also_called": list(CODE_ALSO_CALLED.get(parent.dcid, ())),
+    }
+
+
 def export_code_system(
     reader: ExportReader, config: CodeSystemConfig, *, max_results: int = _DEFAULT_MAX_RESULTS
 ) -> tuple[dict, list[dict]]:
     """Return a declaration and rows for `config`'s code system.
 
-    Derive `hierarchical` from parent arcs and reject disagreement with the configured value or
-    parents outside the enumerated system.
+    Add the parent codes DFO declares (`_declared_parent_row`). Derive `hierarchical` from
+    parent arcs and reject disagreement with the configured value or parents outside the
+    enumerated system.
     """
     if config.uncoded and not config.classification_codes:
         raise ExportRefused(
@@ -1017,8 +1077,12 @@ def export_code_system(
                 "holds no node for it"
             )
         rows.append(_build_code_row(config, dcid, arcs))
-    rows.sort(key=lambda row: row["dcid"])
     _reject_cross_system_parents(config, set(dcids), rows)
+    rows_by_dcid = {row["dcid"]: row for row in rows}
+    rows.extend(
+        _declared_parent_row(config, parent, rows_by_dcid) for parent in config.declared_parents
+    )
+    rows.sort(key=lambda row: row["dcid"])
 
     derived_hierarchical = any(row["parent"] is not None for row in rows)
     if derived_hierarchical != config.expected_hierarchical:
@@ -1034,7 +1098,7 @@ def export_code_system(
         "summable": config.summable,
         "absent_reading": config.absent_reading,
         "plain_name": config.plain_name,
-        "default": _declared_default_to_dict(config.default),
+        "defaults": [_declared_default_to_dict(default) for default in config.defaults],
         "enum_dcid": config.enum_dcid,
         "no_vocabulary_terms": list(config.no_vocabulary_terms),
         **({"house_case": config.house_case} if config.house_case is not None else {}),
@@ -1042,9 +1106,7 @@ def export_code_system(
     return declaration, rows
 
 
-def _declared_default_to_dict(default: DeclaredDefault | None) -> dict | None:
-    if default is None:
-        return None
+def _declared_default_to_dict(default: DeclaredDefault) -> dict:
     return {
         "code": default.code,
         "when_bound_under": list(default.when_bound_under),
@@ -1061,47 +1123,59 @@ def _validate_declared_defaults(
 
     Its code must belong to its own system. `when_bound_under` codes must belong to other systems.
     `when_named` entries are non-empty lowercase strings. A default that fires on an open slot
-    (`when_open`) carries a note.
+    (`when_open`) carries a note and is its system's last (`misplaced_when_open`).
     """
     dcids_by_system = {
         system: {row["dcid"] for row in rows} for system, rows in code_rows_by_system.items()
     }
     for config in code_systems:
-        default = config.default
-        if default is None:
-            continue
-        if default.code not in dcids_by_system.get(config.code_system, set()):
+        misplaced = misplaced_when_open(config.defaults)
+        if misplaced is not None:
             raise ExportRefused(
-                f"{config.code_system}: declared default code {default.code!r} is not a row "
-                "of that code system"
+                f"{config.code_system}: declared default {config.defaults[misplaced].code!r} "
+                "fires on every open slot but is not the last default, so the defaults after "
+                "it can never fire"
             )
-        for scoping_dcid in default.when_bound_under:
-            owning_system = next(
-                (system for system, dcids in dcids_by_system.items() if scoping_dcid in dcids),
-                None,
-            )
-            if owning_system is None:
-                raise ExportRefused(
-                    f"{config.code_system}: declared default when_bound_under code "
-                    f"{scoping_dcid!r} is not a row of any exported code system"
-                )
-            if owning_system == config.code_system:
-                raise ExportRefused(
-                    f"{config.code_system}: declared default when_bound_under code "
-                    f"{scoping_dcid!r} belongs to its own code system -- a default cannot "
-                    "condition on the slot it defaults"
-                )
-        invalid = invalid_when_named_entry(default.when_named)
-        if invalid is not None:
+        for default in config.defaults:
+            _validate_declared_default(config, default, dcids_by_system)
+
+
+def _validate_declared_default(
+    config: CodeSystemConfig, default: DeclaredDefault, dcids_by_system: Mapping[str, set[str]]
+) -> None:
+    """One default of `config` checked as `_validate_declared_defaults` describes."""
+    if default.code not in dcids_by_system.get(config.code_system, set()):
+        raise ExportRefused(
+            f"{config.code_system}: declared default code {default.code!r} is not a row "
+            "of that code system"
+        )
+    for scoping_dcid in default.when_bound_under:
+        owning_system = next(
+            (system for system, dcids in dcids_by_system.items() if scoping_dcid in dcids),
+            None,
+        )
+        if owning_system is None:
             raise ExportRefused(
-                f"{config.code_system}: declared default when_named entry "
-                f"{default.when_named[invalid]!r} must be a non-empty lowercase string"
+                f"{config.code_system}: declared default when_bound_under code "
+                f"{scoping_dcid!r} is not a row of any exported code system"
             )
-        if default.when_open and not (default.note and default.note.strip()):
+        if owning_system == config.code_system:
             raise ExportRefused(
-                f"{config.code_system}: declared default {default.code!r} fires on an open "
-                "slot and carries no note"
+                f"{config.code_system}: declared default when_bound_under code "
+                f"{scoping_dcid!r} belongs to its own code system -- a default cannot "
+                "condition on the slot it defaults"
             )
+    invalid = invalid_when_named_entry(default.when_named)
+    if invalid is not None:
+        raise ExportRefused(
+            f"{config.code_system}: declared default when_named entry "
+            f"{default.when_named[invalid]!r} must be a non-empty lowercase string"
+        )
+    if default.when_open and not (default.note and default.note.strip()):
+        raise ExportRefused(
+            f"{config.code_system}: declared default {default.code!r} fires on an open "
+            "slot and carries no note"
+        )
 
 
 @dataclass(frozen=True)

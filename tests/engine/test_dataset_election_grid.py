@@ -378,7 +378,7 @@ def _index(
                 summable=True,
                 absent_reading="not_declared",
                 plain_name=prop,
-                default=defaults.get(prop),
+                defaults=(defaults[prop],) if prop in defaults else (),
             )
             for prop in _PROPERTIES
         ),

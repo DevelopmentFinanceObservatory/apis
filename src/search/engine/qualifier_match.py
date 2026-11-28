@@ -993,8 +993,8 @@ def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
     measure_words = frozenset(
         word.casefold()
         for declaration in index.declarations.values()
-        if declaration.default is not None
-        for word in declaration.default.when_named
+        for default in declaration.defaults
+        for word in default.when_named
     )
     markers: dict[str, _SystemMarkers] = {}
     for system, words in raw.items():

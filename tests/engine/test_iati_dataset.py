@@ -2,7 +2,8 @@
 
 The fixture index declares `dataset/InternationalAidTransparencyInitiative` with the ten
 publisher provenances the dev graph holds, its StatVars on the CRS five-tuples with
-`iatiTransactionType` beside the CRS codes, and the transaction types as the graph holds them.
+`iatiTransactionType` beside the CRS codes, the transaction types as the graph holds them, and
+the spending parent of types 3 and 4 that DFO declares (`declarations.IATI_SPENDING`).
 IATI is opt-in, so a question answers from it when it names IATI or names a transaction type no
 other table offers, and a question naming neither answers from the CRS. IATI reads a missing
 row as zero, so a sum over transaction types counts a type a publisher does not report as
@@ -52,6 +53,7 @@ _KEN = "country/KEN"
 _GBR = "country/GBR"
 _DISBURSEMENT = "IATITransactionType3"
 _EXPENDITURE = "IATITransactionType4"
+_SPENDING = "IATITransactionTypeSpending"
 _TRANSACTION_TYPE = "iatiTransactionType"
 _SHARED = "CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12240"
 # One basic nutrition disbursement member of each table, and IATI's expenditure member of it.
@@ -137,8 +139,8 @@ def test_a_question_naming_iati_answers_from_the_dataset_across_its_publishers(
 ):
     """A part naming IATI answers from the dataset, whichever publisher holds the series: the
     answer cites the dataset and binds it as its source. "disbursements" names the gross
-    disbursement measure, which IATI's disbursement, expenditure and equity purchase types
-    all carry, so the transaction type stays open."""
+    disbursement measure and, on IATI's shape, binds transaction type 3 through the system's
+    declared default, which states no note."""
     _name_dataset(monkeypatch, _IATI)
     llm = _ScriptedLLM("disbursements", entities=(_TO_KENYA,))
 
@@ -148,10 +150,61 @@ def test_a_question_naming_iati_answers_from_the_dataset_across_its_publishers(
         _graph("disbursements", _IATI_DISBURSEMENTS, _CRS_DISBURSEMENTS),
     )
 
-    (spec,) = _specs(response)
-    assert _sources(spec) == [_IATI]
-    assert _bound(spec)["source"] == _IATI
-    assert _TRANSACTION_TYPE not in _bound(spec)
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert _sources(part.spec) == [_IATI]
+    assert _bound(part.spec)["source"] == _IATI
+    assert _bound(part.spec)[_TRANSACTION_TYPE] == _DISBURSEMENT
+    assert "slot_defaulted" not in {warning.code for warning in part.warnings}
+
+
+def test_a_part_naming_iati_and_no_transaction_type_counts_spending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A part naming no transaction type binds spending, the parent of disbursements and
+    expenditure, through the system's open-slot default, and states the note naming both
+    types."""
+    _name_dataset(monkeypatch, _IATI)
+    llm = _ScriptedLLM("funding", entities=(_TO_KENYA,))
+
+    response = _resolve(
+        "IATI funding to Kenya in 2024",
+        llm,
+        _graph("funding", _IATI_DISBURSEMENTS, _IATI_EXPENDITURE),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert _bound(part.spec)[_TRANSACTION_TYPE] == _SPENDING
+    note = get_index().declarations[_TRANSACTION_TYPE].defaults[-1].note
+    assert [w.message for w in part.warnings if w.code == "slot_defaulted"] == [note]
+
+
+_BY_UNFPA = ExtractedEntity(text="UNFPA", span="UNFPA", role="source", cue="by")
+
+
+def test_unfpas_spending_answers_and_its_disbursements_find_no_data(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """UNFPA publishes expenditure alone. "spending" reads the spending parent on IATI's
+    shape, so UNFPA's spending answers from its expenditure, while "disbursements" binds type
+    3, which UNFPA does not publish, and finds no data."""
+    _name_dataset(monkeypatch, _IATI)
+    spending, disbursements = (
+        _resolve(
+            f"IATI {variable} by UNFPA in 2024",
+            _ScriptedLLM(variable, entities=(_BY_UNFPA,)),
+            _graph(variable, _IATI_DISBURSEMENTS, _IATI_EXPENDITURE),
+        )
+        for variable in ("spending", "disbursements")
+    )
+
+    (part,) = spending.parts
+    assert isinstance(part, DefinitePart), part
+    assert _bound(part.spec)[_TRANSACTION_TYPE] == _SPENDING
+    (part,) = disbursements.parts
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "no_observations"
 
 
 @pytest.mark.parametrize("variable", ["disbursements", "basic nutrition aid"])
@@ -314,16 +367,9 @@ def test_the_same_sum_under_a_table_reading_absence_as_unknown_refuses():
     assert refused.value.precondition == "missing_members"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The dev graph holds no spending parent of IATITransactionType3, 4, 7 and 8 yet, so"
-        " iatiTransactionType is flat and no bound code widens to its children."
-    ),
-)
 def test_a_spending_parent_widens_to_the_transaction_types_it_sums():
-    """Once the graph holds the parent, a part binding it reads its children's StatVars, and
-    `groupby` sums them as it sums CRS purpose codes under their parents."""
+    """A part binding the spending parent reads its children's StatVars, and `groupby` sums
+    them as it sums CRS purpose codes under their parents."""
     index = get_index()
     parents = [
         row.dcid
@@ -332,4 +378,4 @@ def test_a_spending_parent_widens_to_the_transaction_types_it_sums():
         and {_DISBURSEMENT, _EXPENDITURE} <= set(index.expansion(row.dcid))
     ]
 
-    assert len(parents) == 1
+    assert parents == [_SPENDING]

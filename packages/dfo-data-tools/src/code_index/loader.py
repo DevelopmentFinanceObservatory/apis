@@ -51,6 +51,7 @@ from code_index.types import (
     declared_composite_reads,
     invalid_when_named_entry,
     marked_datasets,
+    misplaced_when_open,
 )
 from dfo_platform.roles import AXIS_LABELS, FlowAccount
 
@@ -122,7 +123,8 @@ def parse_index(
     dataset declarations, dataset declarations the StatVar rows contradict
     (`_check_datasets`), a party word naming a party the `parties` block does not
     list for its dataset and axis (`_check_party_words`), or an invalid
-    `default.when_named`. Duplicate
+    `when_named` of a declared default, or a default that fires on every open slot listed
+    before its declaration's last. Duplicate
     dcids or code pairs raise `DuplicateDcid`. Parent cycles raise
     `CyclicParent`. Cross-system parents raise `CrossSystemParent`.
     Invalid defaults raise `InvalidDeclaredDefault` when their code is
@@ -622,14 +624,28 @@ def _parse_stamp(payload: Mapping) -> IndexStamp:
     )
 
 
-def _parse_declared_default(payload: Mapping | None) -> DeclaredDefault | None:
+def _parse_declared_defaults(
+    code_system: str, rows: Sequence[Mapping]
+) -> tuple[DeclaredDefault, ...]:
+    """Parses a declaration's `defaults` list in order, refusing a default that fires on
+    every open slot before the last (`misplaced_when_open`), since the defaults after it
+    could never fire."""
+    defaults = tuple(_parse_declared_default(row) for row in rows)
+    misplaced = misplaced_when_open(defaults)
+    if misplaced is not None:
+        raise IndexFormatError(
+            f"declaration for {code_system!r} lists the default {defaults[misplaced].code!r}, "
+            "which fires on every open slot, before its last default"
+        )
+    return defaults
+
+
+def _parse_declared_default(payload: Mapping) -> DeclaredDefault:
     """Parses a default block, requiring non-empty lowercase `when_named` terms, a boolean
     `when_open` and a non-empty `note`, and a note on a default that fires on an open slot.
     `when_open` and `note` read as false and none where absent.
 
     Matching casefolds terms and checks whole words."""
-    if payload is None:
-        return None
     when_named = tuple(payload["when_named"])
     invalid = invalid_when_named_entry(when_named)
     if invalid is not None:
@@ -657,7 +673,7 @@ def _parse_declared_default(payload: Mapping | None) -> DeclaredDefault | None:
 
 
 def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
-    # `default` is required. Use `null` when the code system declares none.
+    # `defaults` is required. Use `[]` when the code system declares none.
     return CodeSystemDeclaration(
         code_system=payload["code_system"],
         hierarchical=payload["hierarchical"],
@@ -665,7 +681,7 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
         summable=payload["summable"],
         absent_reading=payload["absent_reading"],
         plain_name=payload["plain_name"],
-        default=_parse_declared_default(payload["default"]),
+        defaults=_parse_declared_defaults(payload["code_system"], payload["defaults"]),
         enum_dcid=payload["enum_dcid"],
         no_vocabulary_terms=_parse_no_vocabulary_terms(payload.get("no_vocabulary_terms", ())),
         house_case=_parse_house_case(payload["code_system"], payload.get("house_case")),

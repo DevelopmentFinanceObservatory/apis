@@ -622,15 +622,16 @@ def _read_quantity_answer(
 
 def _slot_defaults(shapes: Sequence[ShapeDraft]) -> list[SlotDefault]:
     """The declared default of each constraint slot `shapes` hold: the code index's, then
-    each one it declares for a population type among them (`CodeIndex.shape_slot_defaults`)."""
+    each one it declares for a population type among them (`CodeIndex.shape_slot_defaults`).
+    A code system declaring several defaults gives its last, the one tried once no other
+    fires (`CodeSystemDeclaration.defaults`)."""
     vocabulary = frozenset().union(*(shape_vocabulary(shape) for shape in shapes))
     index = get_index()
     declarations = index.declarations
     defaults = [
-        SlotDefault(property=prop, value=default.code)
+        SlotDefault(property=prop, value=declaration.defaults[-1].code)
         for prop in sorted(vocabulary)
-        if (declaration := declarations.get(prop)) is not None
-        and (default := declaration.default) is not None
+        if (declaration := declarations.get(prop)) is not None and declaration.defaults
     ]
     population_types = {shape.pop_type_dcid for shape in shapes}
     defaults.extend(
@@ -2954,8 +2955,8 @@ def _conversational_words(
     known |= {
         word.casefold()
         for declaration in declarations
-        if declaration.default is not None
-        for word in declaration.default.when_named
+        for default in declaration.defaults
+        for word in default.when_named
     }
 
     def conversational(word: str) -> bool:

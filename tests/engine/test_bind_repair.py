@@ -771,7 +771,7 @@ class TestOpenSlotDefault:
 
         assert [b.value_dcids for b in repaired] == [["DAC1AidType1010"]]
         notes = defaulted_slot_notes(defaulted, index=get_index())
-        assert notes == [get_index().declarations["dac1AidType"].default.note]
+        assert notes == [get_index().declarations["dac1AidType"].defaults[0].note]
         assert defaulted_slots_named(defaulted, index=get_index(), texts=["aid type"]) == []
 
     @pytest.mark.parametrize(
@@ -824,6 +824,110 @@ class TestOpenSlotDefault:
         )
 
         assert defaulted == []
+
+
+_TRANSACTION_TYPE = "iatiTransactionType"
+_IATI_COMMITMENT = "IATITransactionType2"
+_IATI_DISBURSEMENT = "IATITransactionType3"
+_IATI_EXPENDITURE = "IATITransactionType4"
+_IATI_EQUITY = "IATITransactionType8"
+_IATI_SPENDING = "IATITransactionTypeSpending"
+
+
+def _iati_shape(*codes: str) -> ShapeDraft:
+    """An IATI shape whose transaction-type slot holds `codes`, as the index's rows of one
+    five-tuple do: types 3, 4 and 8 under the gross disbursement measure, type 2 alone under
+    the commitment measure."""
+    return shape_draft_from(
+        shape_id="iati",
+        label="IATI",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        constraint_props=[_TRANSACTION_TYPE],
+        prop_labels={_TRANSACTION_TYPE: "transaction type"},
+        prop_observed_values={_TRANSACTION_TYPE: list(codes)},
+        sv_arc_facts={},
+        slot_taxonomy={f"how:{_TRANSACTION_TYPE}": list(codes)},
+        place_available=True,
+        value_labels=None,
+        recalled=False,
+    )
+
+
+def _transaction_type(value: str | None = None) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="how",
+        property_dcid=_TRANSACTION_TYPE,
+        kind="value" if value else "unbound",
+        value_dcids=[value] if value else [],
+        evidence="mentioned",
+    )
+
+
+class TestIatiTransactionTypeDefaults:
+    """IATI declares two defaults, tried in order: "disbursements" binds type 3, and a part
+    naming no transaction type binds spending, the parent of types 3 and 4 that no StatVar
+    holds, and states the note naming them."""
+
+    @pytest.mark.parametrize(
+        ("variable", "bound", "noted"),
+        [
+            pytest.param("funding", _IATI_SPENDING, True, id="no-type-named-spending"),
+            pytest.param("disbursements", _IATI_DISBURSEMENT, False, id="disbursements-type-3"),
+            pytest.param("amounts disbursed", _IATI_DISBURSEMENT, False, id="disbursed-type-3"),
+        ],
+    )
+    def test_an_open_slot_on_a_disbursement_shape_takes_the_first_default_to_fire(
+        self, variable: str, bound: str, noted: bool
+    ):
+        index = get_index()
+        shape = _iati_shape(_IATI_DISBURSEMENT, _IATI_EXPENDITURE, _IATI_EQUITY)
+
+        repaired, defaulted = apply_declared_defaults(
+            [_transaction_type()], shape, index=index, variable=variable
+        )
+
+        assert [b.value_dcids for b in repaired] == [[bound]]
+        note = index.declarations[_TRANSACTION_TYPE].defaults[-1].note
+        assert defaulted_slot_notes(defaulted, index=index) == ([note] if noted else [])
+
+    def test_a_named_type_or_a_shape_holding_neither_child_takes_no_default(self):
+        """Expenditure binds type 4 and keeps it, and a commitment shape, whose slot holds type
+        2 alone, takes neither default, while the same open slot on a disbursement shape
+        takes spending."""
+        index = get_index()
+        disbursements = _iati_shape(_IATI_DISBURSEMENT, _IATI_EXPENDITURE, _IATI_EQUITY)
+        expenditure = QualifierMatch(
+            code_system=_TRANSACTION_TYPE,
+            code_dcid=_IATI_EXPENDITURE,
+            label="expenditure",
+            source="synonym",
+            matched_text="expenditure",
+        )
+
+        named, named_fired = apply_declared_defaults(
+            [_transaction_type(_IATI_EXPENDITURE)],
+            disbursements,
+            index=index,
+            variable="expenditure",
+            query_qualifier_matches=(expenditure,),
+        )
+        commitments = apply_declared_defaults(
+            [_transaction_type()],
+            _iati_shape(_IATI_COMMITMENT),
+            index=index,
+            variable="commitments",
+        )
+        opened, _ = apply_declared_defaults(
+            [_transaction_type()], disbursements, index=index, variable="commitments"
+        )
+
+        assert ([b.value_dcids for b in named], named_fired) == ([[_IATI_EXPENDITURE]], [])
+        assert commitments == ([_transaction_type()], [])
+        assert [b.value_dcids for b in opened] == [[_IATI_SPENDING]]
 
 
 _ROOT_FLOWS = "DAC1AidType5"
@@ -1011,13 +1115,12 @@ class TestAReplyValueAboveTheDefault:
     ):
         index = get_index()
         declaration = index.declarations["dac1AidType"]
-        assert declaration.default is not None
+        (declared,) = declaration.defaults
+        fired = dataclasses.replace(declared, code=default)
         monkeypatch.setitem(
             index.declarations,
             "dac1AidType",
-            dataclasses.replace(
-                declaration, default=dataclasses.replace(declaration.default, code=default)
-            ),
+            dataclasses.replace(declaration, defaults=(fired,)),
         )
 
         repaired, defaulted = apply_declared_defaults(
@@ -1035,7 +1138,7 @@ class TestAReplyValueAboveTheDefault:
         else:
             # The default replaces the values above it alone, which the note names.
             replaced = tuple(value for value in binding.value_dcids if value not in binds)
-            assert defaulted == [FiredDefault(entry=binding, replaced=replaced)]
+            assert defaulted == [FiredDefault(entry=binding, default=fired, replaced=replaced)]
             assert repaired == [
                 binding.model_copy(
                     update={

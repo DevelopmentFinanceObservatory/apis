@@ -919,8 +919,8 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     known = set(FUNCTION_WORDS | CONNECTIVES | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS)
     for declaration in declarations:
         known |= {token.text.casefold() for token in word_tokens(declaration.plain_name)}
-        if declaration.default is not None:
-            known |= {named.casefold() for named in declaration.default.when_named}
+        for default in declaration.defaults:
+            known |= {named.casefold() for named in default.when_named}
 
     def read(token: Token) -> bool:
         return token.text.casefold() in known or any(

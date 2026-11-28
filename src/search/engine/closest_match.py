@@ -253,6 +253,6 @@ def bound_code_names(bound_codes: Iterable[str]) -> Iterator[str]:
         yield row.label
         yield from row.synonyms
         declaration = index.declarations.get(row.code_system)
-        default = declaration.default if declaration is not None else None
-        if default is not None and default.code == row.dcid:
-            yield from default.when_named
+        for default in declaration.defaults if declaration is not None else ():
+            if default.code == row.dcid:
+                yield from default.when_named
