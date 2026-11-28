@@ -97,6 +97,7 @@ from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.phase_election import (
     _settle_served_dataset,
     narrowed_to_breakdown,
+    query_read_bindings,
     sampled_claims,
     without_sampled_claims,
 )
@@ -1194,7 +1195,9 @@ class _WalkedAlternate:
         return self.alternate.shape
 
 
-_WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str, tuple[object, ...]]
+_WalkKey = tuple[
+    int, tuple[str, ...], tuple[object, ...], str, tuple[object, ...], tuple[object, ...]
+]
 
 
 def _walk_key(
@@ -1204,7 +1207,8 @@ def _walk_key(
     the alternate, by capped-shape index, its members and the role keys `roles` assigns its
     places under, the representative its bindings come from, and the values the bind
     drafted on slots the elected reading lacks, which it binds where its members hold them
-    (`candidates._with_stray_values`). The dataset it names is
+    (`candidates._with_stray_values`), and the codes the query reads on its slots
+    (`phase_election.query_read_bindings`). The dataset it names is
     its shape's (`ShapeDraft.named_dataset`), or the one the part's source scope leaves
     serving under those bindings, whatever bindings the shape in play holds. The scope is
     the leg's, fixed once vetting runs."""
@@ -1213,7 +1217,11 @@ def _walk_key(
     strays = tuple(
         sorted((prop, tuple(sorted(values))) for prop, values in _strays_by_property(state).items())
     )
-    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv, strays)
+    reads = tuple(
+        (prop, read.kind, tuple(read.value_dcids))
+        for prop, read in sorted(_query_reads(state, index, shape).items())
+    )
+    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv, strays, reads)
 
 
 def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
@@ -1223,6 +1231,15 @@ def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
     for prop, value in stray_values(state.requirements):
         by_prop.setdefault(prop, set()).add(value)
     return {prop: frozenset(values) for prop, values in by_prop.items()}
+
+
+def _query_reads(state: ResolveState, index: int, shape: ShapeDraft) -> dict[str, SlotBindingDraft]:
+    """The codes the query reads on the slots of the alternate at `index`, offered as
+    `shape` (`phase_election.query_read_bindings`). A breakdown of the elected shape walks
+    under its own bindings (`ResolveState.breakdown_rivals`), so it reads none."""
+    if index in state.breakdown_rivals:
+        return {}
+    return query_read_bindings(state, shape)
 
 
 def _walk_args(
@@ -1237,6 +1254,7 @@ def _walk_args(
         "role_class_walks": state.role_class_walks,
         "scope": state.scope,
         "stray_values": _strays_by_property(state),
+        "query_reads": _query_reads(state, index, shape),
         "bindings": state.breakdown_rivals.get(index),
     }
 
@@ -1283,6 +1301,7 @@ def _walk_assignment(
             rep_sv,
             scope=state.scope,
             stray_values=_strays_by_property(state),
+            query_reads=_query_reads(state, index, shape),
             bindings=state.breakdown_rivals.get(index),
         )
         # A breakdown copy's bindings keep the elected shape's sampled claims, which select no

@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 from code_index.scope_conventions import ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.shared import get_index, get_measure_index
@@ -145,7 +146,7 @@ from search.scope.basis import (
     sector_systems,
 )
 from search.scope.sector import SECTOR_PROPERTIES, read_sector
-from search.scope.state import AxisRecord
+from search.scope.state import AxisRecord, ScopeState
 from search.scope.vocabulary import measure_basis_option_id
 
 logger = logging.getLogger(__name__)
@@ -429,20 +430,18 @@ def _settle_bindings(
     state.text_recognized_properties = frozenset()
     state.grouped_properties = frozenset()
     if admitted_qualifiers or choices:
-        bindings, forced = _force_qualifier_bindings(
+        read = _bind_query_codes(
             bindings,
-            admitted_qualifiers,
             shape_draft,
+            admitted_qualifiers,
             variable=state.variable,
+            scope=state.scope_selection,
             chosen=choices,
+            write=state.scope_selection.write,
         )
-        # A property whose admitted matches leave each other unresolved ("gross ODA, not
-        # net") keeps the model's binding, so the text did not bind it and the measure
-        # election may force it. Intersecting with the admitted matches' systems keeps a
-        # property forced only by a menu choice at `binder` provenance, since the model
-        # chose its code.
-        state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
-        bindings = _settle_sector(state, bindings, admitted_qualifiers)
+        bindings = read.bindings
+        state.text_recognized_properties = read.text_recognized
+        state.grouped_properties = read.grouped
         _log_admitted_qualifiers(admitted_qualifiers)
     bindings, named = _with_named_values(bindings, shape_draft, state.variable)
     state.text_recognized_properties |= named
@@ -451,37 +450,58 @@ def _settle_bindings(
     return unresolved, readings
 
 
-def _settle_sector(
-    state: ResolveState,
-    bindings: list[SlotBindingDraft],
-    matches: tuple[QualifierMatch, ...],
-) -> list[SlotBindingDraft]:
-    """`bindings` with each text-recognised sector binding read as the sector axis reads it
-    (`scope.sector.read_sector`), and the axis recorded on `ResolveState.scope_selection`.
+class _QueryCodes(NamedTuple):
+    """The bindings the query's codes leave on a shape (`_bind_query_codes`), the properties
+    the text bound, and the sector properties that bound a concept's grouping."""
 
-    A sector concept the admitted `matches` name binds its declared grouping's codes, or
-    the option an explicit or carried entry made for it chose, and its property joins
-    `ResolveState.grouped_properties`: "health aid" binds CRS 120 and 130. A code the text
-    named, "basic health" or "purpose code 120", keeps its binding and is recorded as an
-    explicit entry of the words that named it."""
+    bindings: list[SlotBindingDraft]
+    text_recognized: frozenset[str]
+    grouped: frozenset[str]
+
+
+def _bind_query_codes(
+    bindings: list[SlotBindingDraft],
+    shape_draft: ShapeDraft,
+    matches: tuple[QualifierMatch, ...],
+    *,
+    variable: str,
+    scope: ScopeState,
+    chosen: tuple[QualifierMatch, ...] = (),
+    write: Callable[[AxisRecord], None] | None = None,
+) -> _QueryCodes:
+    """`bindings` with the codes the query's admitted `matches` and the model's menu
+    choices (`chosen`) combine into forced onto `shape_draft`'s slots
+    (`_force_qualifier_bindings`), each text-recognised sector binding read as the sector
+    axis reads it (`scope.sector.read_sector`).
+
+    A property whose admitted matches leave each other unresolved ("gross ODA, not net")
+    keeps the model's binding, so the text did not bind it and the measure election may
+    force it. Intersecting with the matches' systems keeps a property forced only by a menu
+    choice at `binder` provenance, since the model chose its code, and out of the sector
+    reading. A sector concept the matches name binds its declared grouping's codes, or the
+    option an explicit or carried entry in `scope` made for it chose, and its property is
+    `grouped`: "health aid" binds CRS 120 and 130. A code the text named, "basic health" or
+    "purpose code 120", keeps its binding. Each sector reading's record goes to `write`
+    when given, the elected shape's scope selection."""
+    bindings, forced = _force_qualifier_bindings(
+        bindings, matches, shape_draft, variable=variable, chosen=chosen
+    )
+    recognised = forced & {m.code_system for m in matches}
     settled: list[SlotBindingDraft] = []
     grouped: set[str] = set()
     for draft in bindings:
         prop = draft.property_dcid
-        if (
-            prop not in SECTOR_PROPERTIES
-            or prop not in state.text_recognized_properties
-            or not draft.value_dcids
-        ):
+        if prop not in SECTOR_PROPERTIES or prop not in recognised or not draft.value_dcids:
             settled.append(draft)
             continue
         reading = read_sector(
             codes=draft.value_dcids,
             matches=[match for match in matches if match.code_system == prop],
-            variable=state.variable,
-            scope=state.scope_selection,
+            variable=variable,
+            scope=scope,
         )
-        state.scope_selection.write(reading.record)
+        if write is not None:
+            write(reading.record)
         if reading.grouped:
             grouped.add(prop)
             draft = SlotBindingDraft(
@@ -491,8 +511,32 @@ def _settle_sector(
                 value_dcids=list(reading.codes),
             )
         settled.append(draft)
-    state.grouped_properties = frozenset(grouped)
-    return settled
+    return _QueryCodes(settled, recognised, frozenset(grouped))
+
+
+def query_read_bindings(state: ResolveState, shape: ShapeDraft) -> dict[str, SlotBindingDraft]:
+    """The bindings the part's query reads on `shape`'s slots, by property: the codes its
+    own admitted qualifiers force there (`_shape_qualifiers`, `_bind_query_codes`), as an
+    election of `shape` with no slot drafted binds them. "education aid" binds CRS purpose
+    110 on any shape holding the purpose slot. An alternate binds these in place of its
+    representative's own values on the same slots (`candidates.walk_alternate`), so its
+    identity is the one a question electing it mints."""
+    own, _ties, _unheld = _shape_qualifiers(state, shape)
+    terms = _admit_qualifier_matches_against_elected_shape(own, shape)
+    if not terms:
+        return {}
+    read = _bind_query_codes(
+        _with_every_slot_drafted([], shape),
+        shape,
+        terms,
+        variable=state.variable,
+        scope=state.scope_selection,
+    )
+    return {
+        prop: b
+        for b in read.bindings
+        if (prop := b.property_dcid) is not None and prop in read.text_recognized
+    }
 
 
 def _with_every_slot_drafted(

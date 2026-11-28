@@ -251,8 +251,11 @@ def _elect_family(
     as its total unless its constraints are not known, an unbound one is not resolved, or
     it narrows a bound property, so a recall sample holding one member narrow only on
     unbound properties raises nothing. An
-    alternate or re-elected shape binds every constraint of its representative, so the
-    representative is a total and the narrowing shows in the Spec's bound slots.
+    alternate or re-elected shape binds the codes the part's query reads on its slots, as a
+    fresh election of it does, and its representative's own constraint on every other slot
+    (`candidates.walk_alternate`). Beside "education aid" it binds education where its
+    representative states basic education. On the slots it takes from its representative the
+    representative is a total, and that narrowing shows in the Spec's bound slots.
 
     Kept members sort totals first. With no total, the members narrowing the family least
     sort first: members with known constraints before unknown ones, then fewer asserted

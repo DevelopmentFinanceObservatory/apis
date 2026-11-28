@@ -1299,7 +1299,7 @@ class ResolveState:
     # (`phase_rank_bind._force_qualifier_bindings`); `build_spec` marks their provenance.
     text_recognized_properties: frozenset[str] = frozenset()
     # The text-recognised properties a sector concept the text named bound to its declared
-    # grouping (`phase_election._settle_sector`); `build_spec` marks their provenance
+    # grouping (`phase_election._bind_query_codes`); `build_spec` marks their provenance
     # `declared_grouping`. A subset of `text_recognized_properties`, since the text bound them.
     grouped_properties: frozenset[str] = frozenset()
     # Measure properties inserted by family election; `build_spec` marks their provenance.

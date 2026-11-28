@@ -1705,30 +1705,51 @@ def test_electing_the_opt_in_shape_names_its_table():
     assert _pinned(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
 
 
-def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it():
+@pytest.mark.parametrize(
+    ("variable", "drafts_purpose"),
+    [
+        # "aid" reads no purpose, so the alternate binds its representative's own and the
+        # fresh question drafts it.
+        ("aid", True),
+        # "education aid" reads purpose 110 on both shapes, so the alternate binds 110, as
+        # the fresh question electing the imputed shape with nothing drafted does, where its
+        # representative states 11110.
+        (_E, False),
+    ],
+    ids=["purpose-unread", "purpose-read"],
+)
+def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it(
+    variable: str, drafts_purpose: bool
+):
     """Bind elects the CRS commitments shape and nominates the imputed shape beside it. The
     alternate names the opt-in table its shape alone may answer from, so its identity is the
-    one a fresh question electing the imputed shape mints under the purpose the alternate's
-    representative member binds."""
+    one a fresh question electing the imputed shape mints: under the purpose the query reads
+    where it reads one, else under the purpose the alternate's representative member binds."""
     purpose = next(
         row.constraint_properties["crsPurpose"]
         for row in get_index().statvars
         if row.dcid == _IMPUTED_MEMBER
     )
-    drafted = SlotBindingDraft(
-        axis="how", property_dcid="crsPurpose", kind="value", value_dcids=[purpose]
+    drafted = (
+        (
+            SlotBindingDraft(
+                axis="how", property_dcid="crsPurpose", kind="value", value_dcids=[purpose]
+            ),
+        )
+        if drafts_purpose
+        else ()
     )
 
     offered = _resolve_scripted(
-        "aid to Kenya",
-        _ScriptedLLM("aid", also_plausible=[1]),
-        graph=_graph("aid", members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable, also_plausible=[1]),
+        graph=_graph(variable, members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
         binder=ReplyBinder(),
     )
     fresh = _resolve_scripted(
-        "aid to Kenya",
-        _ScriptedLLM("aid", drafted=(drafted,)),
-        graph=_graph("aid", members=(_IMPUTED_MEMBER, _CRS_MEMBER)),
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable, drafted=drafted),
+        graph=_graph(variable, members=(_IMPUTED_MEMBER, _CRS_MEMBER)),
     )
 
     (part,) = offered.parts

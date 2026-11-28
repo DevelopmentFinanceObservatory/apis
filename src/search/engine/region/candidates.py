@@ -166,7 +166,7 @@ def _prewarm_places(
 @dataclass(frozen=True)
 class _Alternate:
     """An alternate ready to materialise: its shape narrowed to the role class its entities
-    elect, the constraint bindings of its representative StatVar, whether the mint's walk
+    elect, its constraint bindings (`walk_alternate`), whether the mint's walk
     left its members unsettled (`MembershipAuthority.settled`), and what the mint states of
     the members it settled (`MembershipResolution.walked`)."""
 
@@ -250,6 +250,20 @@ def _with_stray_values(
     ]
 
 
+def _with_query_reads(
+    bindings: list[SlotBindingDraft], query_reads: Mapping[str, SlotBindingDraft]
+) -> list[SlotBindingDraft]:
+    """`bindings` with each slot on a property the part's query reads bound as the query
+    reads it (`query_reads`, `phase_election.query_read_bindings`), and each such property
+    `bindings` lack appended."""
+    if not query_reads:
+        return bindings
+    held = {binding.property_dcid for binding in bindings}
+    return [query_reads.get(binding.property_dcid or "", binding) for binding in bindings] + [
+        read for prop, read in query_reads.items() if prop not in held
+    ]
+
+
 def walk_alternate(
     shape: ShapeDraft,
     role_keys: RoleKeys,
@@ -260,6 +274,7 @@ def walk_alternate(
     role_class_walks: RoleClassWalks | None = None,
     scope: SourceScope | None = None,
     stray_values: Mapping[str, frozenset[str]] | None = None,
+    query_reads: Mapping[str, SlotBindingDraft] | None = None,
     bindings: Sequence[SlotBindingDraft] | None = None,
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
@@ -271,7 +286,10 @@ def walk_alternate(
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
     from its representative StatVar (`alternate_representative`), except on a property the
     bind drafted values on for a slot the elected reading lacks (`stray_values`), which it
-    binds to the drafted values its members apply (`_with_stray_values`). A breakdown of
+    binds to the drafted values its members apply (`_with_stray_values`), and on a property
+    the part's query reads (`query_reads`), which it binds as the query reads it, as an
+    election of its shape does (`_with_query_reads`): beside "education aid", an alternate
+    whose representative states basic education binds education. A breakdown of
     the elected shape (`ResolveState.breakdown_rivals`) passes its own `bindings` instead.
     The alternate names the dataset its shape names (`with_named_source`), as the chosen
     shape does, so its identity is the one a question electing it mints. When the shape names none, the alternate names the
@@ -294,7 +312,13 @@ def walk_alternate(
     shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
     served = _served_alternate(
-        shape, role_keys, rep_sv, scope=scope, stray_values=stray_values or {}, bindings=bindings
+        shape,
+        role_keys,
+        rep_sv,
+        scope=scope,
+        stray_values=stray_values or {},
+        query_reads=query_reads or {},
+        bindings=bindings,
     )
     if served is None:
         return None
@@ -321,16 +345,23 @@ def settle_alternate(
     *,
     scope: SourceScope | None = None,
     stray_values: Mapping[str, frozenset[str]] | None = None,
+    query_reads: Mapping[str, SlotBindingDraft] | None = None,
     bindings: Sequence[SlotBindingDraft] | None = None,
 ) -> _Alternate | None:
     """The alternate `walk_alternate` walks, before its walk: `shape` naming the dataset it
-    is served from, with the constraint bindings of `rep_sv`, or the `bindings` a breakdown
+    is served from, with the constraint bindings of `rep_sv` under the query's reads, or the `bindings` a breakdown
     of the elected shape passes, in canonical form under `role_keys`. `None` where
     `walk_alternate` drops it because no table serves those bindings. Binding repair settles the elected shape's bindings this way before its role
     class is elected, and an alternate's whole total is judged on these, as the elected
     shape's is (`phase_place_materialise._walk_assignment`)."""
     served = _served_alternate(
-        shape, role_keys, rep_sv, scope=scope, stray_values=stray_values or {}, bindings=bindings
+        shape,
+        role_keys,
+        rep_sv,
+        scope=scope,
+        stray_values=stray_values or {},
+        query_reads=query_reads or {},
+        bindings=bindings,
     )
     if served is None:
         return None
@@ -345,15 +376,20 @@ def _served_alternate(
     *,
     scope: SourceScope | None,
     stray_values: Mapping[str, frozenset[str]],
+    query_reads: Mapping[str, SlotBindingDraft],
     bindings: Sequence[SlotBindingDraft] | None,
 ) -> tuple[ShapeDraft, list[SlotBindingDraft]] | None:
     """`shape` naming the dataset the part is served from under the alternate's bindings
     (`part_source`), with those bindings naming it, or `None` when no table serves them
     (`bound_values.PartNotServed`). The bindings are `bindings` where given, else those of
-    `rep_sv` with the drafted `stray_values` its members apply (`_with_stray_values`)."""
+    `rep_sv` with the drafted `stray_values` its members apply (`_with_stray_values`) and
+    the query's reads (`_with_query_reads`)."""
     if bindings is None:
-        bindings = _with_stray_values(
-            standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values
+        bindings = _with_query_reads(
+            _with_stray_values(
+                standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values
+            ),
+            query_reads,
         )
     else:
         bindings = list(bindings)
