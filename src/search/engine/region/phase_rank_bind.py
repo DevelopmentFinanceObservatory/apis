@@ -21,6 +21,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, singular, tokenize, word_tokens
 from code_index.types import (
     CodeRow,
+    CodeSystemDeclaration,
     DatasetDeclaration,
     MeasureAxis,
     MeasureIndex,
@@ -43,6 +44,7 @@ from search.engine.bind_repair import (
     _label_has_negated_occurrence,
     _label_named_in_text,
     _label_negated_in_text,
+    _names_trigger_word,
 )
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
@@ -174,6 +176,7 @@ from search.engine.region.source_choice import (
     with_idle_exclusions,
 )
 from search.engine.region.state import (
+    BindingElsewhere,
     Requirement,
     ResolveState,
     ValueRule,
@@ -620,16 +623,33 @@ def _read_quantity_answer(
     return True
 
 
-def _slot_defaults(shapes: Sequence[ShapeDraft]) -> list[SlotDefault]:
+def _slot_defaults(shapes: Sequence[ShapeDraft], texts: Sequence[str | None]) -> list[SlotDefault]:
     """The declared default of each constraint slot `shapes` hold: the code index's, then
     each one it declares for a population type among them (`CodeIndex.shape_slot_defaults`).
-    A code system declaring several defaults gives its last, the one tried once no other
-    fires (`CodeSystemDeclaration.defaults`)."""
+    A code system declaring several defaults gives the first whose `when_named` word one of
+    `texts` names, as `bind_repair.apply_declared_defaults` tries them, and otherwise its
+    last, the one tried once no other fires (`CodeSystemDeclaration.defaults`): IATI's
+    "disbursements" gives type 3, and "funding" spending."""
     vocabulary = frozenset().union(*(shape_vocabulary(shape) for shape in shapes))
     index = get_index()
     declarations = index.declarations
+
+    def stated(declaration: CodeSystemDeclaration) -> str:
+        return next(
+            (
+                default.code
+                for default in declaration.defaults
+                if any(
+                    _names_trigger_word(default.when_named, text)
+                    for text in texts
+                    if text is not None
+                )
+            ),
+            declaration.defaults[-1].code,
+        )
+
     defaults = [
-        SlotDefault(property=prop, value=declaration.defaults[-1].code)
+        SlotDefault(property=prop, value=stated(declaration))
         for prop in sorted(vocabulary)
         if (declaration := declarations.get(prop)) is not None and declaration.defaults
     ]
@@ -660,7 +680,7 @@ def _completed_frame(
         measure_class=measure_class(state.variable),
         place_sets=state.place_sets,
         role_bearing=state.role_bearing_outranks,
-        slot_defaults=_slot_defaults(eligible_shapes),
+        slot_defaults=_slot_defaults(eligible_shapes, (state.variable, state.query_text)),
     )
 
 
@@ -1343,7 +1363,10 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     (`family_reads`, over the codes the phrase names in every code system,
     `_phrase_codes`): "purchase of equity" names IATI's transaction type 8, which no
     other table reads, so IATI stays. "ODA to Kenya" names the CRS flow type, a property
-    the CRS family holds, so IATI leaves. A part naming a source keeps every shape its
+    the CRS family holds, so IATI leaves. A phrase of amount words alone (`AMOUNT_WORDS`)
+    names the quantity every table counts and no breakdown, so "health spending" and
+    "health expenditure", which read IATI's spending parent and type 4 on its shape, leave
+    IATI out. A part naming a source keeps every shape its
     scope allows. An excluding part keeps the rule as it stands without the exclusion,
     so excluding a table opens no opt-in one, as `code_index.members.eligible_among`
     keeps within one family."""
@@ -1369,6 +1392,7 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
             return False
         return not any(
             match.code_system in breakdown
+            and not _names_an_amount(match.matched_text)
             and not any(
                 family_reads(other, _phrase_codes(match, index), index=index) for other in others
             )
@@ -1376,6 +1400,14 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
         )
 
     return [shape for shape in shapes if not unasked(shape)]
+
+
+def _names_an_amount(phrase: str) -> bool:
+    """Whether every word of `phrase` is an amount word (`AMOUNT_WORDS`): it names the
+    quantity a measure counts and no breakdown of it, whatever code a vocabulary reads in
+    it."""
+    words = [token.text.casefold() for token in word_tokens(phrase)]
+    return bool(words) and all(word in AMOUNT_WORDS for word in words)
 
 
 def _phrase_codes(match: QualifierMatch, index: CodeIndex) -> tuple[CodeRow, ...]:
@@ -1400,14 +1432,17 @@ def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
     of the purpose codes only its rows hold, such as `CRSPurposeCode11321`, on a CRS part.
     Built once per part (`ResolveState.binding_elsewhere`)."""
     shapes, scope = tuple(state.shapes_found), state.scope
+    pinned, operations = dict(state.pinned_part_matches), state.operations
     memo = state.binding_elsewhere
     if (
         memo is not None
-        and memo[1] is scope
-        and len(memo[0]) == len(shapes)
-        and all(built is shape for built, shape in zip(memo[0], shapes, strict=True))
+        and memo.scope is scope
+        and memo.pinned_part_matches == pinned
+        and memo.operations == operations
+        and len(memo.shapes) == len(shapes)
+        and all(built is shape for built, shape in zip(memo.shapes, shapes, strict=True))
     ):
-        return memo[2]
+        return memo.found
     index = get_index()
 
     def opt_in_only(shape: ShapeDraft) -> bool:
@@ -1427,7 +1462,13 @@ def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
             if not opt_in_only(shape)
             or (shape.shape_id in asked and (scope is None or _in_scope(shape, scope, index)))
         ]
-    state.binding_elsewhere = (shapes, scope, found)
+    state.binding_elsewhere = BindingElsewhere(
+        shapes=shapes,
+        scope=scope,
+        pinned_part_matches=pinned,
+        operations=operations,
+        found=found,
+    )
     return found
 
 
@@ -1840,8 +1881,10 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
     `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`).
     "bilateral" in "bilateral ODA", DAC1 aid type 1015, is read on a CRS shape, and "ODA" in
     "climate ODA" on ONE Data Climate Finance, which notes that its figures count other
-    official flows too. A shape the index does not carry has no family to compare, and a
-    term no rival records keeps the handling of the checks beside this one.
+    official flows too. A term of amount words alone (`_names_an_amount`) names no
+    breakdown: "spending" on a CRS shape is the CRS's own amount, though IATI's shape
+    reads its spending parent there. A shape the index does not carry has no family to
+    compare, and a term no rival records keeps the handling of the checks beside this one.
     """
     index = get_index()
     shape = state.shape_draft
@@ -1877,7 +1920,7 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
         code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
         if not code_rows or len(code_rows) < len(span.rows):
             continue
-        if not _unread_words(variable, span, read):
+        if _names_an_amount(span.matched_text) or not _unread_words(variable, span, read):
             continue
         if family_reads(own, code_rows, index=index):
             continue

@@ -194,6 +194,7 @@ class _RawSpan:
 # lowercase or digit characters after it, or a run of lowercase or digit characters.
 # "crsCooperationModality" yields ["crs", "Cooperation", "Modality"].
 _CAMEL_WORD_RE = re.compile(r"[A-Z][a-z0-9]*|[a-z0-9]+")
+_LABEL_WORD_RE = re.compile(r"[a-z0-9]+")
 
 # Tokens that join two code spans of one variable, casefolded. A union connective reads
 # the two codes together ("health and education", "health & education", and "health
@@ -972,14 +973,19 @@ class _SystemMarkers:
     tail: tuple[str, ...]
 
 
+@per_index
 def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
     """Return each system's bare-code markers, read from its camelCase name.
 
     A word shared by several indexed systems, such as `crs` or `of`, cannot distinguish a
     system and marks none alone. A word a declared default lists in `when_named` names the
     measure a query asks for, so it marks nothing alone either
-    (`_SystemMarkers.measure_words`). The name's last two words, in its order, mark the
-    system (`_SystemMarkers.tail`). New system names need no manual marker list.
+    (`_SystemMarkers.measure_words`). A name's first word naming a dataset whose rows carry
+    another code system as well (`_dataset_name_words`) names the dataset, which says
+    nothing of the axis a number after it codes, so it marks nothing alone: "IATI top 3
+    recipients" holds no transaction type, while "dac2a 106" reads DAC2a's one system. The name's last two
+    words, in its order, mark the system (`_SystemMarkers.tail`). New system names need no
+    manual marker list. Built once per index.
     """
     names = {
         system: tuple(word.casefold() for word in _CAMEL_WORD_RE.findall(system))
@@ -996,15 +1002,37 @@ def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
         for default in declaration.defaults
         for word in default.when_named
     )
+    dataset_words = _dataset_name_words(index)
     markers: dict[str, _SystemMarkers] = {}
     for system, words in raw.items():
-        unique = frozenset(word for word in words if word_counts[word] == 1)
+        prefix = names[system][0]
+        unique = frozenset(
+            word
+            for word in words
+            if word_counts[word] == 1
+            and (word != prefix or dataset_words.get(word, {system}) <= {system})
+        )
         markers[system] = _SystemMarkers(
             words=unique - measure_words,
             measure_words=unique & measure_words,
             tail=names[system][-2:],
         )
     return markers
+
+
+def _dataset_name_words(index: CodeIndex) -> dict[str, frozenset[str]]:
+    """Each word of a declared dataset's label, casefolded, with the code systems the rows
+    of the datasets it names carry. A dataset no row of `index` holds adds no system."""
+    carried: dict[str, set[str]] = {}
+    for row in (*index.statvars, *index.listed_statvars):
+        systems = row.constraint_properties.keys() & index.declarations.keys()
+        for dataset in row.datasets:
+            carried.setdefault(dataset, set()).update(systems)
+    words: dict[str, set[str]] = {}
+    for dataset in index.datasets.values():
+        for word in _LABEL_WORD_RE.findall(dataset.label.casefold()):
+            words.setdefault(word, set()).update(carried.get(dataset.id, ()))
+    return {word: frozenset(systems) for word, systems in words.items()}
 
 
 def _preceding_marker_systems(

@@ -608,6 +608,23 @@ def test_the_export_refuses_a_declared_parent_once_the_graph_holds_one(node, arc
     assert (refused.value.code, refused.value.rows) == (DECLARED_PARENT_IN_GRAPH, rows)
 
 
+def test_the_export_refuses_two_declared_parents_of_one_child_as_a_declaration_error():
+    """Two declared parents naming one child contradict each other, which the graph cannot
+    settle, so the refusal names the declaration and no graph parent."""
+    graph = _two_system_graph()
+    second = DeclaredParent(
+        dcid="SysFlatAlpha", name="alpha (CRS Flat)", children=("SysFlatA",), definition="A."
+    )
+    config = dataclasses.replace(
+        _FLAT_WITH_PARENT, declared_parents=(*_FLAT_WITH_PARENT.declared_parents, second)
+    )
+
+    with pytest.raises(ExportRefused, match="more than one parent of one child") as refused:
+        export_code_system(graph, config)
+
+    assert refused.value.code is None
+
+
 def test_the_export_refuses_an_open_slot_default_listed_before_a_named_one():
     """Defaults are tried in order, so one firing on every open slot comes last."""
     named = DeclaredDefault(code="SysHierChild", when_bound_under=(), when_named=("aid",))

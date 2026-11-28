@@ -1043,6 +1043,27 @@ def _declared_parent_row(
     }
 
 
+def _reject_shared_declared_children(config: CodeSystemConfig) -> None:
+    """Raise `ExportRefused` where two of `config`'s declared parents name one child. A code
+    has one parent, so the declaration contradicts itself whatever the graph holds."""
+    first: dict[str, str] = {}
+    for parent in config.declared_parents:
+        for child in parent.children:
+            first.setdefault(child, parent.dcid)
+    shared = [
+        (child, first[child], parent.dcid)
+        for parent in config.declared_parents
+        for child in parent.children
+        if first[child] != parent.dcid
+    ]
+    if shared:
+        raise ExportRefused(
+            f"{config.code_system} declares more than one parent of one child: "
+            f"{_capped(shared)} -- give each child one parent in "
+            "CodeSystemConfig.declared_parents"
+        )
+
+
 def export_code_system(
     reader: ExportReader, config: CodeSystemConfig, *, max_results: int = _DEFAULT_MAX_RESULTS
 ) -> tuple[dict, list[dict]]:
@@ -1078,6 +1099,7 @@ def export_code_system(
             )
         rows.append(_build_code_row(config, dcid, arcs))
     _reject_cross_system_parents(config, set(dcids), rows)
+    _reject_shared_declared_children(config)
     rows_by_dcid = {row["dcid"]: row for row in rows}
     rows.extend(
         _declared_parent_row(config, parent, rows_by_dcid) for parent in config.declared_parents

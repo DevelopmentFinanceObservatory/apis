@@ -39,7 +39,13 @@ from search.engine.qualifier_match import (
     read_by_vocabulary,
 )
 from search.engine.region.phase_rank_bind import _combine_matches
-from tests.engine._index_slots import CRS, crs_vocabulary, dataset_scopes, read_text
+from tests.engine._index_slots import (
+    CRS,
+    crs_vocabulary,
+    dataset_scopes,
+    dataset_vocabulary,
+    read_text,
+)
 
 # ---------------------------------------------------------------------------
 # The fixture index, the code index the session release serves.
@@ -1254,7 +1260,8 @@ def test_each_code_systems_markers_come_from_its_name():
         "dac1AidType": ["dac1"],
         "dac2aAidType": ["dac2a"],
         "dac2bAidType": ["dac2b"],
-        "iatiTransactionType": ["iati", "transaction"],
+        # "iati" names a dataset whose rows carry the CRS systems too, so it marks none.
+        "iatiTransactionType": ["transaction"],
     }
     # "aid" names every aid-type system, so it marks none, measure word or not.
     assert {
@@ -1280,6 +1287,33 @@ def test_each_code_systems_markers_come_from_its_name():
 def test_a_bare_code_after_its_systems_marker_matches(text: str, code_dcid: str):
     matches = match_qualifiers(text, _REAL_INDEX)
     assert [m.code_dcid for m in matches if m.source == "code"] == [code_dcid]
+
+
+_IATI_DATASET = "dataset/InternationalAidTransparencyInitiative"
+
+
+@pytest.mark.parametrize(
+    ("query", "dataset", "codes"),
+    [
+        ("IATI spending for the top 3 recipients", _IATI_DATASET, []),
+        ("IATI top 10 recipients", _IATI_DATASET, []),
+        ("IATI transaction type 3 to Kenya", _IATI_DATASET, ["IATITransactionType3"]),
+        ("CRS top 10 recipients", CRS, []),
+        ("CRS aid to the top 3 recipients", CRS, []),
+    ],
+)
+def test_a_bare_number_after_a_dataset_name_codes_no_axis(query, dataset, codes):
+    """ "iati" names a dataset whose rows carry five code systems, so a number after it is
+    no transaction type, in the shape's vocabulary or in every system: a rank stays a rank.
+    The system's tail still marks its code."""
+    vocabulary = dataset_vocabulary(dataset)
+    reading = read_text(
+        query, _REAL_INDEX, vocabularies=[vocabulary], datasets=dataset_scopes(dataset)
+    ).by_vocabulary[vocabulary]
+    assert [m.code_dcid for m in reading.matches if m.source == "code"] == codes
+    assert [m.code_dcid for m in match_qualifiers(query, _REAL_INDEX) if m.source == "code"] == (
+        codes
+    )
 
 
 @pytest.mark.parametrize(

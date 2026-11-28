@@ -66,7 +66,7 @@ def derive_output_options(
     code index's `parties` and the provenances the definition read, `datasets`. `groupby` lists
     the summable axes among `code_systems`, the code systems the frame's StatVars carry
     (`frame_code_systems`), so a CRS frame offers no IATI transaction type. `None`, for a
-    trace that records no StatVars, lists every summable axis.
+    trace that records no StatVars or none the index holds, lists every summable axis.
     """
     role_columns = [column.name for column in profile.columns if column.kind == "role"]
     long_layout_tokens = long_layout_written_tokens(

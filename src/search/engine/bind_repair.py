@@ -25,6 +25,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.function_words import FUNCTION_WORDS, INTERJECTION, NEGATORS
 from search.engine.qualifier_match import (
     CONNECTIVES,
+    UNION_CONNECTIVES,
     QualifierMatch,
     QualifierTie,
     names_plain_name,
@@ -306,7 +307,11 @@ def apply_declared_defaults(
     default does not fire the slot keeps the reply's values. ``pinned_properties`` names the
     pins, and every row of that dataset holds the pinned value, so the slot takes no
     default. Any raw qualifier match or tie for that code system blocks the default,
-    including unresolved ambiguity. Then either another query-derived ``value``/
+    including unresolved ambiguity, save one: a ``when_named`` word a union connective
+    joins to a match of the system (`_named_beside_match`) adds its code to the codes the
+    slot holds, so "disbursements and expenditure" binds IATI's types 3 and 4. The question
+    names both, so the slot stays a named one and no fired default reports it. Otherwise
+    either another query-derived ``value``/
     ``mentioned`` binding enters the declared scope on a non-engine-authored property, or
     the variable/query text names a ``when_named`` word outside negation or exclusion, or
     the default fires on every open slot (``when_open``).
@@ -322,11 +327,13 @@ def apply_declared_defaults(
 
     Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
     bindings and each fired default (`FiredDefault`): the slot's pre-default entry and the
-    reply values the default replaced. Iteration follows binding and declaration order.
+    reply values the default replaced. A joined code changes the bindings and reports no
+    fired default. Iteration follows binding and declaration order.
     """
     bindings = list(bindings)
 
     fire: dict[int, tuple[DeclaredDefault, tuple[str, ...]]] = {}
+    join: dict[int, DeclaredDefault] = {}
     for code_system, declaration in index.declarations.items():
         if not declaration.defaults:
             continue
@@ -335,11 +342,22 @@ def apply_declared_defaults(
         )
         if target_index is None or code_system in pinned_properties:
             continue
-        if any(m.code_system == code_system for m in query_qualifier_matches):
-            continue
         if any(row.code_system == code_system for tie in query_qualifier_ties for row in tie.rows):
             continue
         binding = bindings[target_index]
+        matched = [m.matched_text for m in query_qualifier_matches if m.code_system == code_system]
+        if matched:
+            joined = _joined_default(
+                declaration.defaults,
+                binding,
+                shape_draft,
+                matched,
+                index=index,
+                texts=(variable, query_text),
+            )
+            if joined is not None:
+                join[target_index] = joined
+            continue
         for default in declaration.defaults:
             replaces = _above_default_unnamed(
                 binding,
@@ -364,11 +382,16 @@ def apply_declared_defaults(
                 fire[target_index] = default, replaces
                 break
 
-    if not fire:
+    if not fire and not join:
         return bindings, []
 
     result = list(bindings)
     defaulted: list[FiredDefault] = []
+    for i, default in join.items():
+        binding = result[i]
+        result[i] = binding.model_copy(
+            update={"kind": "set", "value_dcids": [*binding.value_dcids, default.code]}
+        )
     for i, (default, replaces) in fire.items():
         binding = result[i]
         code = default.code
@@ -388,6 +411,71 @@ def apply_declared_defaults(
             }
         )
     return result, defaulted
+
+
+def _joined_default(
+    defaults: Sequence[DeclaredDefault],
+    binding: SlotBindingDraft,
+    shape_draft: ShapeDraft,
+    matched: Sequence[str],
+    *,
+    index: CodeIndex,
+    texts: Sequence[str | None],
+) -> DeclaredDefault | None:
+    """The first of `defaults` whose `when_named` word one of `texts` joins by a union
+    connective to a match's text in `matched` (`_named_beside_match`), where `binding` holds
+    values, none of them the default's code, under it or above it, and the slot's taxonomy
+    reads the code (`apply_declared_defaults`). "disbursements and expenditure" adds type 3
+    to the type 4 "expenditure" binds. "OOF aid" adds no ODA: no connective joins the
+    words."""
+    system = binding.property_dcid
+    if system is None or binding.kind not in ("value", "set") or not binding.value_dcids:
+        return None
+    for default in defaults:
+        if any(
+            value == default.code
+            or value in index.descendants(default.code)
+            or default.code in index.descendants(value)
+            for value in binding.value_dcids
+        ):
+            continue
+        if not _taxonomy_reads(shape_draft, system, default.code, index=index):
+            continue
+        if any(
+            _names_trigger_word((word,), text) and _named_beside_match(word, matched, text)
+            for word in default.when_named
+            for text in texts
+            if text is not None
+        ):
+            return default
+    return None
+
+
+def _named_beside_match(word: str, matched: Sequence[str], text: str) -> bool:
+    """Whether `text` writes `word` and one of the texts in `matched` with union connectives
+    alone (`UNION_CONNECTIVES`), at least one, between them, in either order."""
+    tokens = [token.text.casefold() for token in tokenize(text)]
+    target = [token.text.casefold() for token in tokenize(word)]
+    others = [words for m in matched if (words := [t.text.casefold() for t in tokenize(m)])]
+
+    def at(position: int, words: list[str]) -> bool:
+        return position >= 0 and tokens[position : position + len(words)] == words
+
+    for start in range(len(tokens)):
+        if not at(start, target):
+            continue
+        after = start + len(target)
+        gap = after
+        while gap < len(tokens) and tokens[gap] in UNION_CONNECTIVES:
+            gap += 1
+        if gap > after and any(at(gap, other) for other in others):
+            return True
+        before = start
+        while before > 0 and tokens[before - 1] in UNION_CONNECTIVES:
+            before -= 1
+        if before < start and any(at(before - len(other), other) for other in others):
+            return True
+    return False
 
 
 def _default_triggered(

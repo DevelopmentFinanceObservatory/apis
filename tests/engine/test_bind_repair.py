@@ -33,6 +33,7 @@ from search.engine.exclusion_read import Exclusion, ExclusionRead, LeftOut, admi
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
+from search.engine.region.phase_rank_bind import _slot_defaults
 from search.engine.shape import ShapeDraft, shape_draft_from
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -928,6 +929,65 @@ class TestIatiTransactionTypeDefaults:
         assert ([b.value_dcids for b in named], named_fired) == ([[_IATI_EXPENDITURE]], [])
         assert commitments == ([_transaction_type()], [])
         assert [b.value_dcids for b in opened] == [[_IATI_SPENDING]]
+
+    @pytest.mark.parametrize(
+        ("variable", "bound"),
+        [
+            pytest.param(
+                "disbursements and expenditure",
+                [_IATI_EXPENDITURE, _IATI_DISBURSEMENT],
+                id="and-joins-type-3",
+            ),
+            pytest.param(
+                "expenditure & disbursements",
+                [_IATI_EXPENDITURE, _IATI_DISBURSEMENT],
+                id="ampersand-joins-type-3",
+            ),
+            pytest.param("expenditure on disbursements", [_IATI_EXPENDITURE], id="no-connective"),
+            pytest.param("expenditure", [_IATI_EXPENDITURE], id="no-trigger-word"),
+        ],
+    )
+    def test_a_default_word_joined_to_a_match_adds_its_code_to_the_slot(
+        self, variable: str, bound: list[str]
+    ):
+        """ "expenditure" binds type 4, and "disbursements" joined to it by a union
+        connective adds type 3, the code its default binds, beside it, as a named code and
+        no fired default. A default word the match does not join adds nothing."""
+        index = get_index()
+        shape = _iati_shape(_IATI_DISBURSEMENT, _IATI_EXPENDITURE, _IATI_EQUITY)
+        expenditure = QualifierMatch(
+            code_system=_TRANSACTION_TYPE,
+            code_dcid=_IATI_EXPENDITURE,
+            label="expenditure",
+            source="synonym",
+            matched_text="expenditure",
+        )
+
+        repaired, defaulted = apply_declared_defaults(
+            [_transaction_type(_IATI_EXPENDITURE)],
+            shape,
+            index=index,
+            variable=variable,
+            query_qualifier_matches=(expenditure,),
+        )
+
+        assert ([b.value_dcids for b in repaired], defaulted) == ([bound], [])
+
+    @pytest.mark.parametrize(
+        ("variable", "value"),
+        [
+            pytest.param("disbursements", _IATI_DISBURSEMENT, id="named-default"),
+            pytest.param("funding", _IATI_SPENDING, id="open-default"),
+        ],
+    )
+    def test_the_frame_states_the_default_the_part_fires(self, variable: str, value: str):
+        """The frame's slot default for the transaction type is the one the part's words
+        fire, as `apply_declared_defaults` tries them."""
+        shape = _iati_shape(_IATI_DISBURSEMENT, _IATI_EXPENDITURE, _IATI_EQUITY)
+
+        defaults = _slot_defaults([shape], (variable, None))
+
+        assert [d.value for d in defaults if d.property == _TRANSACTION_TYPE] == [value]
 
 
 _ROOT_FLOWS = "DAC1AidType5"

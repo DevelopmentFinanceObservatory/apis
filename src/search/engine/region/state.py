@@ -190,6 +190,19 @@ type MeasureFamily = tuple[MeasurePartition | None, tuple[MeasurePartition, ...]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class BindingElsewhere:
+    """The shapes another shape's candidate menu reads as bound elsewhere (`found`,
+    `phase_rank_bind._binding_elsewhere`), beside every input they were built from: the
+    recalled shapes, the source scope, the part's pinned matches and its operations."""
+
+    shapes: tuple[ShapeDraft, ...]
+    scope: SourceScope | None
+    pinned_part_matches: dict[frozenset[str], tuple[QualifierMatch, ...]]
+    operations: tuple[Operation, ...]
+    found: list[ShapeDraft]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class MintedComposite:
     """A definite answer minted as the composite `mint` names (`spec_build.build_spec`):
     `read` is the identity its rows were read for, the composite's table identity with each
@@ -1200,13 +1213,10 @@ class ResolveState:
     shape_held_codes: dict[int, tuple[ShapeDraft, Callable[[QualifierMatch], bool]]] = field(
         default_factory=dict, repr=False
     )
-    # The shapes another shape's candidate menu reads as bound elsewhere
-    # (`phase_rank_bind._binding_elsewhere`), beside the recalled shapes and the source
-    # scope it was built from, so it is built once per part and again only when either
-    # changes.
-    binding_elsewhere: (
-        tuple[tuple[ShapeDraft, ...], SourceScope | None, list[ShapeDraft]] | None
-    ) = field(default=None, repr=False)
+    # The shapes another shape's candidate menu reads as bound elsewhere, beside the
+    # inputs they were built from (`BindingElsewhere`), so they are built once per part and
+    # again only when an input changes.
+    binding_elsewhere: BindingElsewhere | None = field(default=None, repr=False)
     # Whether a dropped qualifier phrase uses a price-basis word no match read
     # (`alternate_guard.leaves_price_basis_unread`). The default-reading collapse and the
     # guard's default operation both stand down on such a leg.

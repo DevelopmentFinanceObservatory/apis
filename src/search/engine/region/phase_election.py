@@ -1119,8 +1119,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
             match.code_dcid for match in (*state.admitted_qualifiers, *state.menu_choices)
         ),
     )
+    # A default word joined to a named code adds its code and fires no default.
+    state.bindings = with_sampled_claims(bindings, claims)
     if fired_defaults:
-        state.bindings = with_sampled_claims(bindings, claims)
         state.defaulted_properties = frozenset(
             fired.entry.property_dcid
             for fired in fired_defaults

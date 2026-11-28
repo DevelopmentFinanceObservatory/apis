@@ -428,15 +428,22 @@ class TestGroupby:
         assert document.groupby.axes == [{"name": "crsPurpose"}]
 
     @pytest.mark.parametrize(
-        ("refs", "transaction_type"),
-        [((_CRS_STAT_VAR,), False), ((_IATI_STAT_VAR,), True), ((), False)],
-        ids=["crs-frame", "iati-frame", "no-stat-var"],
+        ("refs", "transaction_type", "purpose"),
+        [
+            ((_CRS_STAT_VAR,), False, True),
+            ((_IATI_STAT_VAR,), True, True),
+            ((), False, False),
+            (("dcid:Count_Person",), True, True),
+        ],
+        ids=["crs-frame", "iati-frame", "no-stat-var", "stat-var-the-index-lacks"],
     )
     def test_axes_are_the_summable_code_systems_the_frames_stat_vars_carry(
-        self, refs, transaction_type
+        self, refs, transaction_type, purpose
     ):
         """A CRS frame offers no IATI transaction type, since none of its StatVars carries
-        one; an IATI frame offers it beside the CRS systems its StatVars also carry."""
+        one; an IATI frame offers it beside the CRS systems its StatVars also carry. A frame
+        of StatVars the index holds no row of carries unknown systems, so it offers every
+        summable axis."""
         document = _derive(
             _profile(),
             identity=_NO_OPEN_ROLE,
@@ -446,7 +453,7 @@ class TestGroupby:
 
         names = [axis["name"] for axis in document.groupby.axes]
         assert ("iatiTransactionType" in names) is transaction_type
-        assert ("crsPurpose" in names) is bool(refs)
+        assert ("crsPurpose" in names) is purpose
 
     def test_axes_are_empty_while_summability_declarations_are_not_live_even_with_axes_declared(
         self,

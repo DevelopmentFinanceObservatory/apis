@@ -93,11 +93,17 @@ def build_decode_plan(
     return DecodePlan(requests=requests, lookup=lookup)
 
 
-def statvar_code_systems(refs: Iterable[str], *, index: CodeIndex) -> frozenset[str]:
+def statvar_code_systems(refs: Iterable[str], *, index: CodeIndex) -> frozenset[str] | None:
     """The declared code systems (`index.declarations`) the index rows of `refs`, bare or
     `dcid:` StatVar refs, carry as constraint properties. These are the systems a frame of
-    those StatVars decodes, before a composite leaves out its marker axes."""
-    return _code_systems(_index_rows(refs, index=index).values(), index=index)
+    those StatVars decodes, before a composite leaves out its marker axes. `None` where
+    `refs` holds StatVars and the index holds a row of none of them, so their systems are
+    unknown; no refs carry no system."""
+    refs = list(refs)
+    rows = _index_rows(refs, index=index)
+    if refs and not rows:
+        return None
+    return _code_systems(rows.values(), index=index)
 
 
 def _index_rows(refs: Iterable[str], *, index: CodeIndex) -> dict[str, StatVarRow]:

@@ -213,10 +213,21 @@ def test_unfpas_spending_answers_and_its_disbursements_find_no_data(
     assert part.no_data.reason == "no_observations"
 
 
-@pytest.mark.parametrize("variable", ["disbursements", "basic nutrition aid"])
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "disbursements",
+        "basic nutrition aid",
+        "aid spending on health",
+        "aid spend on health",
+        "health expenditure",
+    ],
+)
 def test_a_question_naming_no_dataset_leaves_the_opt_in_iati_out(variable: str):
     """IATI's shape, recalled first beside the CRS shape, is not offered to a part naming no
-    dataset, and "disbursements" names the measure both tables publish. The CRS answers."""
+    dataset, and "disbursements" names the measure both tables publish. "spending", "spend"
+    and "expenditure" read IATI's spending parent and type 4 on its shape, but as amount
+    words they name no breakdown only IATI offers. The CRS answers."""
     llm = _ScriptedLLM(variable, entities=(_TO_KENYA,))
 
     response = _resolve(
@@ -250,6 +261,36 @@ def test_iatis_expenditure_answers_under_its_transaction_type(monkeypatch: pytes
     assert isinstance(part, DefinitePart), part
     assert _sources(part.spec) == [_IATI]
     assert _bound(part.spec)[_TRANSACTION_TYPE] == _EXPENDITURE
+
+
+def test_disbursements_and_expenditure_bind_both_transaction_types(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "expenditure" reads type 4 on IATI's shape, and "disbursements", joined to it by
+    "and", binds type 3 beside it through the system's declared default."""
+    _name_dataset(monkeypatch, _IATI)
+    variable = "disbursements and expenditure"
+    llm = _ScriptedLLM(variable, entities=(_BY_UNFPA,), drafted=_binds(_EXPENDITURE))
+
+    response = _resolve(
+        f"IATI {variable} by UNFPA in 2024",
+        llm,
+        _graph(variable, _IATI_DISBURSEMENTS, _IATI_EXPENDITURE),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (slot,) = [
+        slot
+        for slot in part.spec.resolved.slots
+        if slot.key.property is not None and slot.key.property.ref == _TRANSACTION_TYPE
+    ]
+    assert slot.binding.kind == "set"
+    assert {value.ref.ref for value in slot.binding.values if value.ref is not None} == {
+        _DISBURSEMENT,
+        _EXPENDITURE,
+    }
+    assert "slot_defaulted" not in {warning.code for warning in part.warnings}
 
 
 class _DatedLLM(_ScriptedLLM):
