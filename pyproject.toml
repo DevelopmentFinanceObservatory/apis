@@ -263,7 +263,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit 91f6113, which lists the `params.why` reasons of
+# The pin is spec-kit 230ab79, which lists the `params.why` reasons of
 # `bilateral_reading_unavailable` (`WARNING_REASONS`), registers that warning on
 # search.resolve and the organisation reading codes,
 # defining the tie between them by the role the query's reading states,
@@ -344,8 +344,8 @@ dfo-analysis-engine = { workspace = true }
 # definition, options and snapshot routes.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "91f611318d08daa7c6d0827af1ef320748888638", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "91f611318d08daa7c6d0827af1ef320748888638", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "230ab796e8bc60143ff78221c407cd8f994dca81", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "230ab796e8bc60143ff78221c407cd8f994dca81", subdirectory = "python/client-contract" }
 # Pinned to an evals dev commit until v0.1.0 is tagged after the first nightly
 # run record; then the pin moves to the tag.
 dfo-evals = { git = "https://github.com/DevelopmentFinanceObservatory/evals.git", rev = "732a431e186ca4ee549273fea19f9ec3ea698e07" }
