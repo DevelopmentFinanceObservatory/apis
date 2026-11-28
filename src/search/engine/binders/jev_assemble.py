@@ -1192,8 +1192,9 @@ def _bind_slot(
     covered = {d for v in offered for d in index.descendants(v) if d != v}
     offered = [v for v in offered if v not in covered]
     declaration = index.declarations.get(property_dcid)
-    if declaration is not None and declaration.default is not None:
-        offered = [v for v in offered if v != declaration.default.code]
+    if declaration is not None and declaration.defaults:
+        defaults = {default.code for default in declaration.defaults}
+        offered = [v for v in offered if v not in defaults]
     # When the phrase asks for no particular value, a value it only implies restates the
     # measure; one it names outright stays.
     if f"part|{pid}" in answers.nouls and answers.noul(f"part|{pid}") <= t.part:

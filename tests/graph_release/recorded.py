@@ -84,7 +84,7 @@ _IMPUTED: Final[str] = "provenance/ONEImputedMultilateralSectors"
 SLICE_DECLARATIONS = dataclasses.replace(
     DECLARATIONS,
     code_systems=tuple(
-        dataclasses.replace(config, default=None)
+        dataclasses.replace(config, defaults=())
         for config in DECLARATIONS.code_systems
         if config.code_system == "crsTypeOfFlow"
     ),

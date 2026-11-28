@@ -26336,5 +26336,165 @@
     "operations": [],
     "dropped_qualifiers": [],
     "dates": []
+  },
+  "ExclusionRead@3c024839b279:eff538ffea4addbddd5cbdb56fed2c470dca680f": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:6c1921f52a81e7a56ddab143d8259820d46d392b": {
+    "kind": "resolution",
+    "variables": [
+      "IATI disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a5681f0d55ad922701dfd785d4d45115adb19c81": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:56ccb179edc0f2045f49e5ec0b6673850df5c0a9": {
+    "kind": "resolution",
+    "variables": [
+      "basic sanitation disbursements"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2023",
+        "end": "2023"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:ca6ea242fe64d154d4f7b42488b78f74736b569e": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:5524556cee4bf4c443ce11a4a89a8eaaedf535e3": {
+    "kind": "resolution",
+    "variables": [
+      "IATI expenditure"
+    ],
+    "entities": [
+      {
+        "text": "UNFPA",
+        "span": "UNFPA",
+        "variables": [
+          0
+        ],
+        "cue": "by",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:6e1eabd714813e7d5dec518a3ed4bfeaffbd9a24": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:dea54a837b8e9fac50190ed5a1fa9e62ee6253fd": {
+    "kind": "resolution",
+    "variables": [
+      "IATI spending"
+    ],
+    "entities": [
+      {
+        "text": "UNFPA",
+        "span": "UNFPA",
+        "variables": [
+          0
+        ],
+        "cue": "by",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:4f70eb3bb691639bc4531aec2c7c22f677a1257b": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:b0e99166619006f1f7ec945b2b93e2f2c9f18573": {
+    "kind": "resolution",
+    "variables": [
+      "IATI disbursements"
+    ],
+    "entities": [
+      {
+        "text": "UNFPA",
+        "span": "UNFPA",
+        "variables": [
+          0
+        ],
+        "cue": "by",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
   }
 }

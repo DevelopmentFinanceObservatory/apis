@@ -223,7 +223,7 @@ class TestAgreesWithGroupby:
             code_system=_SYNTHETIC_NOT_SUMMABLE,
             hierarchical=False,
             summable=False,
-            default=None,
+            defaults=(),
         )
         edited = _index_with(
             index,

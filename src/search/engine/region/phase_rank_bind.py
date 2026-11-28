@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -18,9 +18,10 @@ from code_index.labels import without_property_suffix
 from code_index.members import ProvenanceScope, eligible_among, is_opt_in
 from code_index.query import CodeIndex, IndexFamily, fold_word
 from code_index.shared import get_index, get_measure_index
-from code_index.tokens import Token, tokenize, word_tokens
+from code_index.tokens import Token, singular, tokenize, word_tokens
 from code_index.types import (
     CodeRow,
+    CodeSystemDeclaration,
     DatasetDeclaration,
     MeasureAxis,
     MeasureIndex,
@@ -43,6 +44,7 @@ from search.engine.bind_repair import (
     _label_has_negated_occurrence,
     _label_named_in_text,
     _label_negated_in_text,
+    _names_trigger_word,
 )
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
@@ -61,7 +63,7 @@ from search.engine.binders.house_policy import (
     differ_on_basis,
     shape_facts,
 )
-from search.engine.clients.graph import family_reads, family_ref
+from search.engine.clients.graph import default_families_of, family_reads, family_ref
 from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
 from search.engine.departures import qualifier_property
@@ -174,6 +176,7 @@ from search.engine.region.source_choice import (
     with_idle_exclusions,
 )
 from search.engine.region.state import (
+    BindingElsewhere,
     Requirement,
     ResolveState,
     ValueRule,
@@ -212,6 +215,7 @@ from search.engine.retrieval.bound_values import (
     shape_for_part,
     shape_listed_rows,
     shape_population_arcs,
+    vocabulary_datasets,
 )
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
@@ -619,17 +623,35 @@ def _read_quantity_answer(
     return True
 
 
-def _slot_defaults(shapes: Sequence[ShapeDraft]) -> list[SlotDefault]:
+def _slot_defaults(shapes: Sequence[ShapeDraft], texts: Sequence[str | None]) -> list[SlotDefault]:
     """The declared default of each constraint slot `shapes` hold: the code index's, then
-    each one it declares for a population type among them (`CodeIndex.shape_slot_defaults`)."""
+    each one it declares for a population type among them (`CodeIndex.shape_slot_defaults`).
+    A code system declaring several defaults gives the first whose `when_named` word one of
+    `texts` names, as `bind_repair.apply_declared_defaults` tries them, and otherwise its
+    last, the one tried once no other fires (`CodeSystemDeclaration.defaults`): IATI's
+    "disbursements" gives type 3, and "funding" spending."""
     vocabulary = frozenset().union(*(shape_vocabulary(shape) for shape in shapes))
     index = get_index()
     declarations = index.declarations
+
+    def stated(declaration: CodeSystemDeclaration) -> str:
+        return next(
+            (
+                default.code
+                for default in declaration.defaults
+                if any(
+                    _names_trigger_word(default.when_named, text)
+                    for text in texts
+                    if text is not None
+                )
+            ),
+            declaration.defaults[-1].code,
+        )
+
     defaults = [
-        SlotDefault(property=prop, value=default.code)
+        SlotDefault(property=prop, value=stated(declaration))
         for prop in sorted(vocabulary)
-        if (declaration := declarations.get(prop)) is not None
-        and (default := declaration.default) is not None
+        if (declaration := declarations.get(prop)) is not None and declaration.defaults
     ]
     population_types = {shape.pop_type_dcid for shape in shapes}
     defaults.extend(
@@ -658,7 +680,7 @@ def _completed_frame(
         measure_class=measure_class(state.variable),
         place_sets=state.place_sets,
         role_bearing=state.role_bearing_outranks,
-        slot_defaults=_slot_defaults(eligible_shapes),
+        slot_defaults=_slot_defaults(eligible_shapes, (state.variable, state.query_text)),
     )
 
 
@@ -907,12 +929,15 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # matches and ties, and the elected shape's qualifier records. Each vocabulary, a
     # shape's slot properties, reads the text on its own: "ODA" binds the CRS flow type on a
     # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
-    # "multilateral ODA" never hides "ODA" from a CRS shape.
+    # "multilateral ODA" never hides "ODA" from a CRS shape. Each vocabulary reads only the
+    # codes its shapes' datasets' rows hold (`vocabulary_datasets`).
+    scopes = vocabulary_datasets(candidates)
     sources = _read_sources(
         state.variable,
         state.dropped_qualifier_phrases,
         query_text=state.query_text,
-        vocabularies=(shape_vocabulary(shape) for shape in candidates),
+        vocabularies=scopes,
+        datasets=scopes,
     )
     state.variable_spans_in_every_system = sources.variable.everywhere.spans
     state.variable_spans_by_vocabulary = {
@@ -1319,20 +1344,32 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     naming a source has no need of, so a bind reply cannot elect it.
 
     A table answers from its opt-in rows only when the part names it (`shape_for_part`)
-    or asks a breakdown no other table offers. Another of `shapes` on the same five-tuple
-    that a table that is not opt-in publishes measures what the opt-in shape does: ONE's
-    imputed multilateral sectors and DAC2a's imputed multilateral ODA line are both
-    attributed amounts of financial flows. The opt-in shape stays when the question names
-    a code (`ResolveState.pinned_part_matches`), or asks an operation over `category`
-    of (`operation_slot_phrases`), one of its slots that none of those other shapes
-    holds and that its tables do not hold fixed on every row
+    or asks a breakdown no other table offers. The other tables are the index families of
+    the opt-in shape's five-tuple that a table which is not opt-in publishes and that hold
+    its measure values (`clients.graph.default_families_of`), whatever recall returned, so
+    IATI's gross disbursements leave a part naming no source while the CRS's family holds
+    gross disbursements, and recall adds a row of that family beside IATI's alone
+    (`clients.graph.with_rival_families`). ONE's imputed multilateral sectors and DAC2a's
+    imputed multilateral ODA line are both attributed gross disbursements of financial
+    flows. The opt-in shape stays when the question names a code
+    (`ResolveState.pinned_part_matches`), or asks an operation over `category` of
+    (`operation_slot_phrases`), one of its slots that none of those families' properties
+    hold and that its tables do not hold fixed on every row
     (`DatasetDeclaration.invariants`): "imputed multilateral aid to health" names a
     sector and "which sectors get the most imputed multilateral ODA" ranks the sectors,
     which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
-    aid type and ONE's fixed flow type, so DAC2a's own line answers it. A part naming a
-    source keeps every shape its scope allows. An excluding part keeps the rule as it
-    stands without the exclusion, so excluding a table opens no opt-in one, as
-    `code_index.members.eligible_among` keeps within one family."""
+    aid type and ONE's fixed flow type, so DAC2a's own line answers it. A named code
+    keeps the opt-in shape only when none of those families reads its phrase
+    (`family_reads`, over the codes the phrase names in every code system,
+    `_phrase_codes`): "purchase of equity" names IATI's transaction type 8, which no
+    other table reads, so IATI stays. "ODA to Kenya" names the CRS flow type, a property
+    the CRS family holds, so IATI leaves. A phrase of amount words alone (`AMOUNT_WORDS`)
+    names the quantity every table counts and no breakdown, so "health spending" and
+    "health expenditure", which read IATI's spending parent and type 4 on its shape, leave
+    IATI out. A part naming a source keeps every shape its
+    scope allows. An excluding part keeps the rule as it stands without the exclusion,
+    so excluding a table opens no opt-in one, as `code_index.members.eligible_among`
+    keeps within one family."""
     if state.scope is not None and state.scope.named:
         return list(shapes)
     index = get_index()
@@ -1341,29 +1378,98 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
         return bool(shape.datasets) and all(is_opt_in(index, d) for d in shape.datasets or ())
 
     def unasked(shape: ShapeDraft) -> bool:
-        if not opt_in_only(shape):
+        if not opt_in_only(shape) or (family := shape_family(shape, index)) is None:
             return False
-        five_tuple = shape_five_tuple(shape)
-        others = [
-            other
-            for other in shapes
-            if any(not is_opt_in(index, d) for d in other.datasets or ())
-            and shape_five_tuple(other) == five_tuple
-        ]
+        others = default_families_of(family, index=index)
         if not others:
             return False
         fixed = {
             prop for dataset in shape.datasets or () for prop in index.datasets[dataset].invariants
         }
-        offered = frozenset().union(*(shape_vocabulary(other) for other in others))
+        offered = frozenset().union(*(other.properties for other in others))
         breakdown = shape_vocabulary(shape) - offered - fixed
         if not breakdown.isdisjoint(operation_slot_phrases(state.operations, shape)):
             return False
         return not any(
-            match.code_system in breakdown for match in for_shape(state.pinned_part_matches, shape)
+            match.code_system in breakdown
+            and not _names_an_amount(match.matched_text)
+            and not any(
+                family_reads(other, _phrase_codes(match, index), index=index) for other in others
+            )
+            for match in for_shape(state.pinned_part_matches, shape)
         )
 
     return [shape for shape in shapes if not unasked(shape)]
+
+
+def _names_an_amount(phrase: str) -> bool:
+    """Whether every word of `phrase` is an amount word (`AMOUNT_WORDS`): it names the
+    quantity a measure counts and no breakdown of it, whatever code a vocabulary reads in
+    it."""
+    words = [token.text.casefold() for token in word_tokens(phrase)]
+    return bool(words) and all(word in AMOUNT_WORDS for word in words)
+
+
+def _phrase_codes(match: QualifierMatch, index: CodeIndex) -> tuple[CodeRow, ...]:
+    """The code rows `match`'s phrase names in every code system, in the plural or the
+    singular (`CodeIndex.codes_by_tokens`), with the code it reads."""
+    words = tokenize(match.matched_text)
+    forms = (words,) if (less_s := singular(words)) is None else (words, less_s)
+    rows = {row.dcid: row for form in forms for row in index.codes_by_tokens(form)}
+    if (own := index.code_by_dcid(match.code_dcid)) is not None:
+        rows.setdefault(own.dcid, own)
+    return tuple(rows.values())
+
+
+def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
+    """The shapes the part recalled (`ResolveState.shapes_found`) whose codes another shape's
+    menu reads as bound elsewhere (`_candidate_menus`). These are the recalled shapes
+    before a named dataset narrows them, less each shape only opt-in tables publish
+    (`is_opt_in`) that the part cannot answer from: one outside its source scope
+    (`_in_scope`), or one a part naming no source has no need of
+    (`_without_unasked_opt_in`). A part naming the CRS still reads
+    "multilateral" in "multilateral ODA" as DAC1's aid type, while IATI, unasked, binds none
+    of the purpose codes only its rows hold, such as `CRSPurposeCode11321`, on a CRS part.
+    Built once per part (`ResolveState.binding_elsewhere`)."""
+    shapes, scope = tuple(state.shapes_found), state.scope
+    pinned, operations = dict(state.pinned_part_matches), state.operations
+    memo = state.binding_elsewhere
+    if (
+        memo is not None
+        and memo.scope is scope
+        and memo.pinned_part_matches == pinned
+        and memo.operations == operations
+        and len(memo.shapes) == len(shapes)
+        and all(built is shape for built, shape in zip(memo.shapes, shapes, strict=True))
+    ):
+        return memo.found
+    index = get_index()
+
+    def opt_in_only(shape: ShapeDraft) -> bool:
+        datasets = shape_datasets(shape, index)
+        return bool(datasets) and all(is_opt_in(index, dataset) for dataset in datasets)
+
+    if not any(opt_in_only(shape) for shape in shapes):
+        found = list(shapes)
+    else:
+        asked = {
+            shape.shape_id
+            for shape in _without_unasked_opt_in(state, _dataset_candidates(shapes, None))
+        }
+        found = [
+            shape
+            for shape in shapes
+            if not opt_in_only(shape)
+            or (shape.shape_id in asked and (scope is None or _in_scope(shape, scope, index)))
+        ]
+    state.binding_elsewhere = BindingElsewhere(
+        shapes=shapes,
+        scope=scope,
+        pinned_part_matches=pinned,
+        operations=operations,
+        found=found,
+    )
+    return found
 
 
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:
@@ -1716,12 +1822,13 @@ def _unbindable_qualifiers(
     denominators: Mapping[str, DenominatorRead],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that name only codes
-    no shape can bind (`qualifier_match.bindable_codes`), one of them of a system `shape`
-    declares, and whose words `shape`'s own reading (`own_spans`) leaves partly
-    unread, each as an unbound record with evidence ``"unavailable"``.
+    `shape` cannot bind (`qualifier_match.bindable_codes` of its `shape_datasets`), one of
+    them of a system `shape` declares, and whose words `shape`'s own reading (`own_spans`)
+    leaves partly unread, each as an unbound record with evidence ``"unavailable"``.
 
     A shape's own reading skips such codes, so "population", `CRSTypeOfFinance4`, neither
-    binds nor hides a purpose reading on a CRS shape. Where nothing else reads the word,
+    binds nor hides a purpose reading on a CRS shape, and "police", `CRSPurposeCode15132`,
+    which only IATI rows hold, is unavailable on one. Where nothing else reads the word,
     "population ODA" refuses on it. A term every word of which the shape reads
     otherwise yields to that reading, and so does one inside a phrase the bind model's
     menu choice reads (`chosen`, `_menu_choices`): "population policies" read as purpose
@@ -1729,9 +1836,9 @@ def _unbindable_qualifiers(
     names of declared measures the variable holds, that the shape holds
     (`_measure_named_ranges`).
     """
-    index = get_index()
-    bindable = bindable_codes(index)
     vocabulary = shape_vocabulary(shape)
+    index = get_index()
+    bindable = bindable_codes(index, datasets=shape_datasets(shape, index))
     read = [
         *((own.start, own.end) for own in for_shape(own_spans, shape)),
         *chosen,
@@ -1774,8 +1881,10 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
     `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`).
     "bilateral" in "bilateral ODA", DAC1 aid type 1015, is read on a CRS shape, and "ODA" in
     "climate ODA" on ONE Data Climate Finance, which notes that its figures count other
-    official flows too. A shape the index does not carry has no family to compare, and a
-    term no rival records keeps the handling of the checks beside this one.
+    official flows too. A term of amount words alone (`_names_an_amount`) names no
+    breakdown: "spending" on a CRS shape is the CRS's own amount, though IATI's shape
+    reads its spending parent there. A shape the index does not carry has no family to
+    compare, and a term no rival records keeps the handling of the checks beside this one.
     """
     index = get_index()
     shape = state.shape_draft
@@ -1811,7 +1920,7 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
         code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
         if not code_rows or len(code_rows) < len(span.rows):
             continue
-        if not _unread_words(variable, span, read):
+        if _names_an_amount(span.matched_text) or not _unread_words(variable, span, read):
             continue
         if family_reads(own, code_rows, index=index):
             continue
@@ -2100,13 +2209,19 @@ def _read_sources(
     *,
     query_text: str | None = None,
     vocabularies: Iterable[frozenset[str]],
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> _SourceReadings:
     """Read ``variable``, optional ``query_text`` and each dropped phrase separately, so a
-    match cannot span sources, each in every one of `vocabularies`."""
+    match cannot span sources, each in every one of `vocabularies`, binding codes within
+    the rows of its `datasets` entry (`qualifier_match.read_by_vocabulary`)."""
     texts = [variable, *([query_text] if query_text else []), *dropped_qualifier_phrases]
     return _SourceReadings(
         texts=read_by_vocabulary(
-            texts, get_index(), get_measure_index(), vocabularies=vocabularies
+            texts,
+            get_index(),
+            get_measure_index(),
+            vocabularies=vocabularies,
+            datasets=datasets,
         ),
         owned=1 + bool(query_text),
     )
@@ -2320,8 +2435,8 @@ def _admit_qualifier_ties(
     names, so an identical tie the variable and the query text both carry is kept once:
     asked twice, the model may answer each copy with another row. A tie of a declared
     system whose codes the family holds none of, though rows of another family do, is
-    `unheld`. A shape's own reading skips codes no shape can bind
-    (`qualifier_match.bindable_codes`), so they form no tie.
+    `unheld`. A shape's own reading skips codes no row of its vocabulary's datasets holds
+    (`vocabulary_datasets`), so they form no tie.
     """
     promoted: list[list[QualifierMatch]] = []
     admitted: list[list[QualifierTie]] = []
@@ -2892,8 +3007,8 @@ def _conversational_words(
     known |= {
         word.casefold()
         for declaration in declarations
-        if declaration.default is not None
-        for word in declaration.default.when_named
+        for default in declaration.defaults
+        for word in default.when_named
     }
 
     def conversational(word: str) -> bool:
@@ -3087,9 +3202,12 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     shape the part recalled binds (`ResolveState.shapes_found`, before a named dataset
     narrows them), one declaring the code's system whose family holds it
     (`ResolveState.held_codes_of`), is read too, and `shape` leaves its words to the
-    coverage rule. "imputed" in "imputed education aid" is DAC2a aid type 106, which the
-    imputed multilateral shape binds, so a CRS shape is offered no "imputed student cost"
-    for it, and "multilateral" in "multilateral ODA", DAC1 aid type 2000, stays an
+    coverage rule. A shape only opt-in tables publish binds nothing elsewhere when the part
+    cannot answer from it (`_binding_elsewhere`): "culture" in "culture ODA" is purpose
+    16066, which only IATI rows hold, and with IATI left unasked a CRS shape keeps its
+    menu for "culture". "imputed" in "imputed education aid" is DAC2a aid type 106, which
+    the imputed multilateral shape binds, so a CRS shape is offered no "imputed student
+    cost" for it, and "multilateral" in "multilateral ODA", DAC1 aid type 2000, stays an
     unavailable term on a part naming the CRS. "ODA loans" is DAC2a aid type 218, and
     with no recalled shape holding it "loans" keeps its menu, which offers type of
     finance 420. "population", type of finance 4, binds on no shape and keeps its menu.
@@ -3128,7 +3246,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
         occurrence for text in state.entity_texts for occurrence in token_occurrences(tokens, text)
     ]
     read += state.party_alias_spans
-    others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
+    others = [other for other in _binding_elsewhere(state) if other.shape_id != shape.shape_id]
 
     def bound_elsewhere(row: CodeRow) -> bool:
         return any(

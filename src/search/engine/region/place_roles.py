@@ -61,9 +61,11 @@ from search.engine.retrieval.bound_values import (
     declared_datasets,
     phrases_within,
     ratio_base_axis,
+    shape_datasets,
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
+    shape_vocabulary,
 )
 from search.engine.retrieval.whole_reading import WholeReading, whole_population, whole_reading
 from search.engine.role_text import asks_members, role_contradicted
@@ -904,21 +906,21 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     bank ODA" and "multilateral education aid" it stands beside a word a DAC2a shape does
     not read."""
     index = get_index()
-    # `state.shape_vocabulary`, which this module cannot import.
-    vocabulary = (
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        | shape.omitted_slots
-    )
+    vocabulary = shape_vocabulary(shape)
     (reading,) = read_by_vocabulary(
-        [variable], index, get_measure_index(), vocabularies=[vocabulary]
+        [variable],
+        index,
+        get_measure_index(),
+        vocabularies=[vocabulary],
+        datasets={vocabulary: shape_datasets(shape, index)},
     )
     spans = reading.by_vocabulary[vocabulary].spans
     declarations = [index.declarations[prop] for prop in vocabulary if prop in index.declarations]
     known = set(FUNCTION_WORDS | CONNECTIVES | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS)
     for declaration in declarations:
         known |= {token.text.casefold() for token in word_tokens(declaration.plain_name)}
-        if declaration.default is not None:
-            known |= {named.casefold() for named in declaration.default.when_named}
+        for default in declaration.defaults:
+            known |= {named.casefold() for named in default.when_named}
 
     def read(token: Token) -> bool:
         return token.text.casefold() in known or any(

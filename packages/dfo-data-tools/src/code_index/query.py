@@ -27,6 +27,7 @@ from code_index.types import (
     CompositeDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    DeclaredDefault,
     HouseDefaultCase,
     ImpliedValue,
     IndexStamp,
@@ -344,29 +345,34 @@ def _check_declared_defaults(
     """Raises `InvalidDeclaredDefault` for a default code outside its system or an invalid
     `when_bound_under` dcid."""
     for declaration in declarations.values():
-        default = declaration.default
-        if default is None:
-            continue
-        code_row = codes_by_dcid.get(default.code)
-        if code_row is None or code_row.code_system != declaration.code_system:
+        for default in declaration.defaults:
+            _check_declared_default(declaration, default, codes_by_dcid)
+
+
+def _check_declared_default(
+    declaration: CodeSystemDeclaration, default: DeclaredDefault, codes_by_dcid: dict[str, CodeRow]
+) -> None:
+    """One default of `declaration` checked as `_check_declared_defaults` describes."""
+    code_row = codes_by_dcid.get(default.code)
+    if code_row is None or code_row.code_system != declaration.code_system:
+        raise InvalidDeclaredDefault(
+            f"code system {declaration.code_system!r} declares default code "
+            f"{default.code!r}, which is not a row of that code system"
+        )
+    for scoping_dcid in default.when_bound_under:
+        scoping_row = codes_by_dcid.get(scoping_dcid)
+        if scoping_row is None:
             raise InvalidDeclaredDefault(
-                f"code system {declaration.code_system!r} declares default code "
-                f"{default.code!r}, which is not a row of that code system"
+                f"code system {declaration.code_system!r} declares a default "
+                f"when_bound_under code {scoping_dcid!r}, which this index holds no "
+                "row for"
             )
-        for scoping_dcid in default.when_bound_under:
-            scoping_row = codes_by_dcid.get(scoping_dcid)
-            if scoping_row is None:
-                raise InvalidDeclaredDefault(
-                    f"code system {declaration.code_system!r} declares a default "
-                    f"when_bound_under code {scoping_dcid!r}, which this index holds no "
-                    "row for"
-                )
-            if scoping_row.code_system == declaration.code_system:
-                raise InvalidDeclaredDefault(
-                    f"code system {declaration.code_system!r} declares a default "
-                    f"when_bound_under code {scoping_dcid!r} in its own code system -- a "
-                    "default cannot condition on the slot it defaults"
-                )
+        if scoping_row.code_system == declaration.code_system:
+            raise InvalidDeclaredDefault(
+                f"code system {declaration.code_system!r} declares a default "
+                f"when_bound_under code {scoping_dcid!r} in its own code system -- a "
+                "default cannot condition on the slot it defaults"
+            )
 
 
 CANDIDATE_HITS = 8
@@ -427,6 +433,8 @@ class CodeIndex:
         "_codes_by_word",
         "_composites",
         "_dataset_by_provenance",
+        "_default_families",
+        "_default_families_by_five_tuple",
         "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
@@ -670,6 +678,24 @@ class CodeIndex:
             _families_by_five_tuple(self.statvars, self.datasets)
         )
         """Each five-tuple's families (`IndexFamily`), in serving order."""
+        self._default_families_by_five_tuple: dict[FiveTuple, tuple[IndexFamily, ...]] = {
+            five_tuple: default
+            for five_tuple, families in self.families_by_five_tuple.items()
+            if (
+                default := tuple(
+                    family
+                    for family in families
+                    if any(
+                        (declaration := self.datasets.get(dataset)) is None
+                        or not declaration.opt_in
+                        for dataset in family.datasets
+                    )
+                )
+            )
+        }
+        self._default_families: dict[
+            tuple[FiveTuple, frozenset[tuple[str, str]]], tuple[IndexFamily, ...]
+        ] = {}
         self.family_by_dcid: dict[str, IndexFamily] = {
             row.dcid: family
             for families in self.families_by_five_tuple.values()
@@ -791,6 +817,31 @@ class CodeIndex:
             if not any(other.properties < family.properties for other in holding)
         ]
         return fewest[0] if len(fewest) == 1 else None
+
+    def default_families_on(
+        self, five_tuple: FiveTuple, measure_values: Mapping[str, str]
+    ) -> tuple[IndexFamily, ...]:
+        """The families of `five_tuple` that a dataset which is not opt-in publishes
+        (`DatasetDeclaration.opt_in`), and one of whose rows holds every property value of
+        `measure_values`, in serving order. On the CRS flows' five-tuple, gross disbursements
+        (`financialFlowType` Disbursement, `nettingBasis` Gross) are held by the CRS, DAC1,
+        DAC2a and DAC2b families and not by IATI's, which is opt-in. A family whose rows all
+        state another value, or none, on one of the properties is left out. Empty for a
+        five-tuple no such family publishes. The result is built once per five-tuple and
+        set of values."""
+        key = (five_tuple, frozenset(measure_values.items()))
+        found = self._default_families.get(key)
+        if found is None:
+            found = tuple(
+                family
+                for family in self._default_families_by_five_tuple.get(five_tuple, ())
+                if any(
+                    all(row.constraint_properties.get(p) == v for p, v in key[1])
+                    for row in family.rows
+                )
+            )
+            self._default_families[key] = found
+        return found
 
     def dataset_of(self, provenance: str) -> str:
         """The id of the declared dataset `provenance` is a member of, or `provenance` itself

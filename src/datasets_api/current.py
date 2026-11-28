@@ -118,6 +118,7 @@ from datasets_api.doors.snapshot import (
 from datasets_api.manifest import (
     collapsed_head_manifest,
     collapsed_incomplete_after,
+    frame_code_systems,
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
@@ -525,6 +526,7 @@ def _record_head_hit_derived(
             capabilities=capabilities,
             parties=deps.code_index.parties,
             datasets=source_refs_of(manifest.trace),
+            code_systems=frame_code_systems(manifest.trace, index=deps.code_index),
         ),
         extra_warnings=reshape_models,
     )

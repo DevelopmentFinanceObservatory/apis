@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import pydantic
 
+from code_index.members import is_opt_in
 from code_index.query import CodeIndex, IndexFamily
 from code_index.scope_conventions import BasisMeasure
-from code_index.shared import get_index, per_index
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import CodeRow, StatVarRow
 from dc_graph import ArcTarget, Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
@@ -170,6 +171,43 @@ def _rows_broadest_first(
     }
 
 
+@per_index
+def _measure_values(index: CodeIndex) -> dict[tuple[FiveTuple, frozenset[str]], dict[str, str]]:
+    """Each index family's measure values, keyed by five-tuple and family properties: the
+    value every row of the family states on each constraint measure axis
+    (`MeasureIndex.axes`), as gross disbursement on IATI's flows. An axis the rows state
+    differently, or some leave unstated, is left out."""
+    axes = [axis.axis for axis in get_measure_index().axes if axis.kind == "constraint"]
+    values: dict[tuple[FiveTuple, frozenset[str]], dict[str, str]] = {}
+    for families in index.families_by_five_tuple.values():
+        for family in families:
+            first, *rest = family.rows
+            values[family.five_tuple, family.properties] = {
+                axis: value
+                for axis in axes
+                if (value := first.constraint_properties.get(axis)) is not None
+                and all(row.constraint_properties.get(axis) == value for row in rest)
+            }
+    return values
+
+
+def family_measure_values(family: IndexFamily, *, index: CodeIndex) -> Mapping[str, str]:
+    """The value every row of `family` states on each constraint measure axis
+    (`_measure_values`)."""
+    return _measure_values(index)[family.five_tuple, family.properties]
+
+
+def opt_in_family(family: IndexFamily, *, index: CodeIndex) -> bool:
+    """Whether only opt-in datasets publish `family` (`is_opt_in`)."""
+    return bool(family.datasets) and all(is_opt_in(index, d) for d in family.datasets)
+
+
+def default_families_of(family: IndexFamily, *, index: CodeIndex) -> tuple[IndexFamily, ...]:
+    """The families of `family`'s five-tuple that a dataset which is not opt-in publishes
+    and that hold `family`'s measure values (`CodeIndex.default_families_on`)."""
+    return index.default_families_on(family.five_tuple, family_measure_values(family, index=index))
+
+
 def with_rival_families(
     hits: Sequence[DetectedSV], *, catalogue: Catalogue, index: CodeIndex
 ) -> tuple[DetectedSV, ...]:
@@ -227,7 +265,16 @@ def with_rival_families(
     of the reading the binder elects, so the binder does not read its shape while one of
     those families stands on the menu, and the shape joins the policies' pool only beside
     one of them (`phase_rank_bind._HousePolicyStep`): DAC1's ODA amounts at the tail of the
-    cut for "greenhouse gas emissions" put no grant equivalents before the binder."""
+    cut for "greenhouse gas emissions" put no grant equivalents before the binder.
+
+    A five-tuple among the hits whose recalled families only opt-in datasets publish
+    (`opt_in_family`) gains a row of each family there that a dataset which is not opt-in
+    publishes and that holds a recalled family's measure values (`default_families_of`), as
+    the CRS family holds IATI's gross disbursements. A part naming no source answers an
+    opt-in table only when it names a breakdown no such family offers
+    (`phase_rank_bind._without_unasked_opt_in`), so recall that returns IATI's rows alone
+    puts the CRS's beside them. Under a source scope only the families a provenance in the
+    scope publishes join, so a part naming IATI gains none."""
     scope = catalogue.scope
     best: dict[FiveTuple, float] = {}
     present: dict[FiveTuple, set[frozenset[str]]] = {}
@@ -246,6 +293,19 @@ def with_rival_families(
         if scope is not None and not scope.isdisjoint(family.datasets):
             recalled_in_scope.add(family.five_tuple)
 
+    by_five_tuple: dict[FiveTuple, list[IndexFamily]] = {}
+    for family in recalled:
+        by_five_tuple.setdefault(family.five_tuple, []).append(family)
+    defaults = {
+        five_tuple: {
+            id(default)
+            for family in families
+            for default in default_families_of(family, index=index)
+        }
+        for five_tuple, families in by_five_tuple.items()
+        if all(opt_in_family(family, index=index) for family in families)
+    }
+
     rivals: list[DetectedSV] = []
     for five_tuple, score in best.items():
         covered = present[five_tuple]
@@ -259,7 +319,10 @@ def with_rival_families(
                 and five_tuple not in recalled_in_scope
                 and not scope.isdisjoint(family.datasets)
             )
-            if not (rival or in_scope):
+            default = id(family) in defaults.get(five_tuple, ()) and (
+                scope is None or not scope.isdisjoint(family.datasets)
+            )
+            if not (rival or in_scope or default):
                 continue
             row = _broadest_admitted_row(family, catalogue=catalogue, index=index)
             if row is not None:

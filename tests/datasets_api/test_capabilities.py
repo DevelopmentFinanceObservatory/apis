@@ -155,16 +155,18 @@ def _declaration(
 class TestSummableAxes:
     """Test that declared summability controls published axes.
 
-    All four CRS systems are summable, so a synthetic false declaration checks exclusion.
+    The four CRS systems and IATI's transaction type are summable, so a synthetic false
+    declaration checks exclusion.
     """
 
-    def test_all_four_real_crs_systems_are_summable(self):
+    def test_the_four_crs_systems_and_iati_transaction_type_are_summable(self):
         declarations = get_index().declarations
         assert {name for name, d in declarations.items() if d.summable} == {
             "crsPurpose",
             "crsTypeOfFinance",
             "crsCooperationModality",
             "crsTypeOfFlow",
+            "iatiTransactionType",
         }
 
     def test_a_declared_summable_system_is_included(self):
@@ -187,11 +189,14 @@ class TestSummableAxes:
 class TestGroupbyLevelAxes:
     """A level axis is declared summable, hierarchical, and disjoint from children."""
 
-    def test_the_published_level_axes_are_the_real_hierarchical_crs_systems(self):
+    def test_the_published_level_axes_are_the_real_hierarchical_summable_systems(self):
+        """The hierarchical CRS systems, and IATI's transaction types under the spending
+        parent."""
         assert _capabilities().groupby_level_axes == [
             "crsCooperationModality",
             "crsPurpose",
             "crsTypeOfFinance",
+            "iatiTransactionType",
         ]
 
     def test_a_flat_unsummable_or_overlapping_system_is_no_level_axis(self):

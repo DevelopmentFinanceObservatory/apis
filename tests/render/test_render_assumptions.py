@@ -378,7 +378,7 @@ def test_every_declared_default_the_index_holds_fits_an_echoed_assumption():
 
     index = get_index()
     codes = [
-        *(d.default.code for d in index.declarations.values() if d.default is not None),
+        *(default.code for d in index.declarations.values() for default in d.defaults),
         *(default.value_dcid for default in index.shape_slot_defaults),
     ]
     assert codes

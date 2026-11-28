@@ -243,7 +243,7 @@ def _net_rows_of_the_purpose() -> list:
 
 
 def _five_slot_crs_resubmit():
-    """Sixteen rows share the identity's five bound values. Fifteen also assert
+    """Sixteen CRS rows share the identity's five bound values. Fifteen also assert
     crsCooperationModality, which the identity omits, so its family is the one row
     asserting no other slot."""
     bound = {
@@ -263,6 +263,7 @@ def _five_slot_crs_resubmit():
         for row in _rows_holding(**bound)
         if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
         and row.measurement_denominator is None
+        and "provenance/OECDCreditorReportingSystem" in row.datasets
     ]
     return identity, rows
 

@@ -2201,6 +2201,59 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
     return family.datasets if family is not None else ()
 
 
+def pair_datasets(
+    first: ShapeDraft, second: ShapeDraft, index: CodeIndex | None = None
+) -> tuple[str, ...]:
+    """The datasets within which a comparison of `first` and `second` reads both shapes'
+    codes (`bind.covered_leaves`). They are those publishing either shape's family
+    (`shape_datasets`), in first-seen order, or none (every row) when either shape has
+    none, so a shape the index does not carry never scopes the other to the other's own
+    datasets."""
+    index = index or get_index()
+    ours, theirs = shape_datasets(first, index), shape_datasets(second, index)
+    if not ours or not theirs:
+        return ()
+    return tuple(dict.fromkeys((*ours, *theirs)))
+
+
+def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
+    """The constraint properties `shape` can carry into binding, its slots' properties, which
+    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`) stays in it. The query was read in the family's vocabulary,
+    and a term on that slot is one the answer leaves unapplied."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
+
+
+def vocabulary_datasets(
+    shapes: Iterable[ShapeDraft], index: CodeIndex | None = None
+) -> dict[frozenset[str], tuple[str, ...]]:
+    """Each vocabulary of `shapes` (`shape_vocabulary`) and the datasets whose rows its
+    reading binds codes in (`qualifier_match.bindable_codes`). They are those publishing the
+    family of each of its shapes (`shape_datasets`), in first-seen order, or none (every
+    row) when one of its shapes has none.
+
+    A reading is keyed by its vocabulary alone, so the shapes sharing one read a text alike,
+    and a code binds in it when one of them can bind it. Each shape then judges its own
+    codes on its own datasets' rows (`bind.covered_leaves`, the unbindable qualifiers and
+    the exclusion judgement)."""
+    index = index or get_index()
+    scopes: dict[frozenset[str], tuple[str, ...]] = {}
+    every_row: set[frozenset[str]] = set()
+    for shape in shapes:
+        vocabulary = shape_vocabulary(shape)
+        datasets = shape_datasets(shape, index)
+        if not datasets:
+            every_row.add(vocabulary)
+        scopes[vocabulary] = tuple(dict.fromkeys((*scopes.get(vocabulary, ()), *datasets)))
+    return {
+        vocabulary: () if vocabulary in every_row else datasets
+        for vocabulary, datasets in scopes.items()
+    }
+
+
 def declared_datasets(shape: ShapeDraft, index: CodeIndex) -> list[DatasetDeclaration]:
     """The declared datasets `shape` answers from: the dataset it names
     (`ShapeDraft.named_dataset`), else those candidacy stamped on it (`ShapeDraft.datasets`),

@@ -26,7 +26,7 @@
       "summable": true,
       "absent_reading": "not_declared",
       "plain_name": "sector",
-      "default": null,
+      "defaults": [],
       "enum_dcid": "CRSPurposeCodeEnum"
     },
     {
@@ -36,7 +36,7 @@
       "summable": true,
       "absent_reading": "not_declared",
       "plain_name": "instrument",
-      "default": null,
+      "defaults": [],
       "enum_dcid": "CRSTypeOfFinanceEnum"
     },
     {
@@ -46,7 +46,7 @@
       "summable": true,
       "absent_reading": "not_declared",
       "plain_name": "modality",
-      "default": null,
+      "defaults": [],
       "enum_dcid": "CRSCooperationModalityEnum"
     },
     {
@@ -56,7 +56,7 @@
       "summable": true,
       "absent_reading": "not_declared",
       "plain_name": "flow",
-      "default": null,
+      "defaults": [],
       "enum_dcid": "CRSTypeOfFlowEnum"
     }
   ],

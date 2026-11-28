@@ -105,6 +105,7 @@ from search.engine.retrieval.bound_values import (
     shape_member_facts,
     shape_population_arcs,
     shape_query,
+    shape_vocabulary,
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.read_plan import ReadPlan, minimal_constraint_svs
@@ -186,6 +187,19 @@ __all__ = [
 
 # A served measure partition and its sibling partitions (`bound_values.observed_measure_family`).
 type MeasureFamily = tuple[MeasurePartition | None, tuple[MeasurePartition, ...]]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BindingElsewhere:
+    """The shapes another shape's candidate menu reads as bound elsewhere (`found`,
+    `phase_rank_bind._binding_elsewhere`), beside every input they were built from: the
+    recalled shapes, the source scope, the part's pinned matches and its operations."""
+
+    shapes: tuple[ShapeDraft, ...]
+    scope: SourceScope | None
+    pinned_part_matches: dict[frozenset[str], tuple[QualifierMatch, ...]]
+    operations: tuple[Operation, ...]
+    found: list[ShapeDraft]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -470,17 +484,6 @@ def _served_members(shape: ShapeDraft, query: FamilyQuery) -> list[str]:
 AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out"]
 
 
-def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
-    """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
-    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
-    and a term on that slot is one the answer leaves unapplied."""
-    return (
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        | shape.omitted_slots
-    )
-
-
 def qualifier_dropped_warning(phrase: str) -> Warning:
     """The `query_qualifier_dropped` warning for a qualifier phrase the answer does not
     apply."""
@@ -636,10 +639,9 @@ def exclusion_requirements(
 
     A phrase is judged only when every word of what it leaves out (`LeftOut.things`, less
     function words) lies in one of its runs that names codes. A word no code names leaves
-    the phrase unjudged, and so does a phrase that names no thing: "excluding standard grants
-    and loans" judges no answer, for "loans" names no code, and "excluding French standard
-    grants" judges none, for leaving out every standard grant leaves out more than the French
-    ones.
+    the phrase unjudged, and so does a phrase that names no thing: "not net fragile" judges
+    no answer, for "fragile" names no code, and "excluding French standard grants" judges
+    none, for leaving out every standard grant leaves out more than the French ones.
 
     The requirements carry no departure. The door that holds the phrase discloses it unless
     every answer leaves out every run (`requirements.Judgement.met_exclusions`).
@@ -1211,6 +1213,10 @@ class ResolveState:
     shape_held_codes: dict[int, tuple[ShapeDraft, Callable[[QualifierMatch], bool]]] = field(
         default_factory=dict, repr=False
     )
+    # The shapes another shape's candidate menu reads as bound elsewhere, beside the
+    # inputs they were built from (`BindingElsewhere`), so they are built once per part and
+    # again only when an input changes.
+    binding_elsewhere: BindingElsewhere | None = field(default=None, repr=False)
     # Whether a dropped qualifier phrase uses a price-basis word no match read
     # (`alternate_guard.leaves_price_basis_unread`). The default-reading collapse and the
     # guard's default operation both stand down on such a leg.

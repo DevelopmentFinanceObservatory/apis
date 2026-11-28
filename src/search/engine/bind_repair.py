@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING
 
 from code_index.query import CodeIndex
 from code_index.tokens import tokenize, word_tokens
-from code_index.types import BroadReading, ShapeSlotDefault
+from code_index.types import BroadReading, DeclaredDefault, ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
 from search.engine.function_words import FUNCTION_WORDS, INTERJECTION, NEGATORS
 from search.engine.qualifier_match import (
     CONNECTIVES,
+    UNION_CONNECTIVES,
     QualifierMatch,
     QualifierTie,
     names_plain_name,
@@ -144,18 +145,19 @@ def _modifies_the_measure(word: str, text: str) -> bool:
     return False
 
 
+def _slot_open(binding: SlotBindingDraft) -> bool:
+    """True when the slot is open. A ``requested_all`` slot keeps its full requested
+    scope."""
+    if binding.kind not in ("unbound", "absent") or binding.value_dcids:
+        return False
+    return binding.evidence != "requested_all"
+
+
 def _slot_open_to_default(
     binding: SlotBindingDraft, shape_draft: ShapeDraft, code_system: str, default_code: str
 ) -> bool:
-    """True when the slot is open and contains the declared code.
-
-    A ``requested_all`` slot keeps its full requested scope.
-    """
-    if binding.kind not in ("unbound", "absent") or binding.value_dcids:
-        return False
-    if binding.evidence == "requested_all":
-        return False
-    return _taxonomy_holds(shape_draft, code_system, default_code)
+    """True when the slot is open and contains the declared code."""
+    return _slot_open(binding) and _taxonomy_holds(shape_draft, code_system, default_code)
 
 
 def _above_default_unnamed(
@@ -182,7 +184,7 @@ def _above_default_unnamed(
     """
     if binding.kind not in ("value", "set") or binding.evidence == "requested_all":
         return ()
-    if not _taxonomy_holds(shape_draft, code_system, default_code):
+    if not _taxonomy_reads(shape_draft, code_system, default_code, index=index):
         return ()
     return tuple(
         value
@@ -201,6 +203,18 @@ def _taxonomy_holds(shape_draft: ShapeDraft, property_dcid: str, value_dcid: str
         return False
     taxonomy_values = (shape_draft.slot_taxonomy or {}).get(f"{slot.axis}:{property_dcid}", [])
     return value_dcid in taxonomy_values
+
+
+def _taxonomy_reads(
+    shape_draft: ShapeDraft, property_dcid: str, code: str, *, index: CodeIndex
+) -> bool:
+    """Whether ``shape_draft``'s slot on ``property_dcid`` holds a code a binding of
+    ``code`` reads (``CodeIndex.expansion``): the code itself or, in a system whose parent
+    sums its children, a child. A parent no StatVar holds, such as IATI's spending, reads
+    the children the shape holds."""
+    return any(
+        _taxonomy_holds(shape_draft, property_dcid, value) for value in index.expansion(code)
+    )
 
 
 def _some_binding_triggers_default(
@@ -245,8 +259,8 @@ def declared_default_words_named(text: str, *, index: CodeIndex) -> tuple[tuple[
     return tuple(
         (code_system, word)
         for code_system, declaration in index.declarations.items()
-        if declaration.default is not None
-        for word in declaration.default.when_named
+        for default in declaration.defaults
+        for word in default.when_named
         if _names_trigger_word((word,), text)
     )
 
@@ -254,10 +268,11 @@ def declared_default_words_named(text: str, *, index: CodeIndex) -> tuple[tuple[
 @dataclass(frozen=True, slots=True)
 class FiredDefault:
     """A slot a declared default fired on (`apply_declared_defaults`): the slot's entry
-    before the default, and the reply's values the default replaced
+    before the default, the default that fired, and the reply's values the default replaced
     (`_above_default_unnamed`), empty where the slot was open."""
 
     entry: SlotBindingDraft
+    default: DeclaredDefault
     replaced: tuple[str, ...] = ()
 
 
@@ -277,20 +292,26 @@ def apply_declared_defaults(
     """Apply declared defaults to open slots when query evidence triggers them.
 
     The release's code index defines each default and its ``when_bound_under`` scopes or
-    ``when_named`` words. ``query_text`` is the raw query only for a single-variable
-    extraction, when trigger words can be attributed to this variable. Both it and the
-    extracted ``variable`` can trigger a default.
+    ``when_named`` words. A code system's defaults are tried in their declared order
+    (``CodeSystemDeclaration.defaults``), and the first to fire binds the slot.
+    ``query_text`` is the raw query only for a single-variable extraction, when trigger
+    words can be attributed to this variable. Both it and the extracted ``variable`` can
+    trigger a default.
 
-    A slot must be open, have no ``requested_all`` evidence, contain the default code in
-    its taxonomy, and hold no pin of the elected dataset. A slot the reply bound to values
-    above the default that the question does not name (`_above_default_unnamed`, read
-    against `named_codes`, the codes the question names) takes the default as an open one
-    does: the default replaces exactly those values and the slot keeps the reply's others,
-    so a set beside them stays bound. Wherever the default does not fire the slot keeps the
-    reply's values. ``pinned_properties`` names the
+    A slot must be open, have no ``requested_all`` evidence, hold a code the default's
+    binding reads in its taxonomy (``_taxonomy_reads``), and hold no pin of the elected
+    dataset. A slot the reply bound to values above the default that the question does not
+    name (`_above_default_unnamed`, read against `named_codes`, the codes the question
+    names) takes the default as an open one does: the default replaces exactly those values
+    and the slot keeps the reply's others, so a set beside them stays bound. Wherever the
+    default does not fire the slot keeps the reply's values. ``pinned_properties`` names the
     pins, and every row of that dataset holds the pinned value, so the slot takes no
     default. Any raw qualifier match or tie for that code system blocks the default,
-    including unresolved ambiguity. Then either another query-derived ``value``/
+    including unresolved ambiguity, save one: a ``when_named`` word a union connective
+    joins to a match of the system (`_named_beside_match`) adds its code to the codes the
+    slot holds, so "disbursements and expenditure" binds IATI's types 3 and 4. The question
+    names both, so the slot stays a named one and no fired default reports it. Otherwise
+    either another query-derived ``value``/
     ``mentioned`` binding enters the declared scope on a non-engine-authored property, or
     the variable/query text names a ``when_named`` word outside negation or exclusion, or
     the default fires on every open slot (``when_open``).
@@ -306,61 +327,75 @@ def apply_declared_defaults(
 
     Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
     bindings and each fired default (`FiredDefault`): the slot's pre-default entry and the
-    reply values the default replaced. Iteration follows binding and declaration order.
+    reply values the default replaced. A joined code changes the bindings and reports no
+    fired default. Iteration follows binding and declaration order.
     """
     bindings = list(bindings)
 
-    fire: dict[int, tuple[str, tuple[str, ...]]] = {}
+    fire: dict[int, tuple[DeclaredDefault, tuple[str, ...]]] = {}
+    join: dict[int, DeclaredDefault] = {}
     for code_system, declaration in index.declarations.items():
-        default = declaration.default
-        if default is None:
+        if not declaration.defaults:
             continue
         target_index = next(
             (i for i, b in enumerate(bindings) if b.property_dcid == code_system), None
         )
         if target_index is None or code_system in pinned_properties:
             continue
-        binding = bindings[target_index]
-        replaces = _above_default_unnamed(
-            binding,
-            shape_draft,
-            code_system,
-            default.code,
-            index=index,
-            named_codes=named_codes,
-        )
-        if not replaces and not _slot_open_to_default(
-            binding, shape_draft, code_system, default.code
-        ):
-            continue
-        if any(m.code_system == code_system for m in query_qualifier_matches):
-            continue
         if any(row.code_system == code_system for tie in query_qualifier_ties for row in tie.rows):
             continue
-        scoping_dcids = frozenset(
-            dcid for scope in default.when_bound_under for dcid in index.descendants(scope)
-        )
-        triggered = (
-            default.when_open
-            or _some_binding_triggers_default(bindings, scoping_dcids, engine_authored_properties)
-            or any(
-                _names_trigger_word(default.when_named, text)
-                for text in (variable, query_text)
-                if text is not None
+        binding = bindings[target_index]
+        matched = [m.matched_text for m in query_qualifier_matches if m.code_system == code_system]
+        if matched:
+            joined = _joined_default(
+                declaration.defaults,
+                binding,
+                shape_draft,
+                matched,
+                index=index,
+                texts=(variable, query_text),
             )
-        )
-        if not triggered:
+            if joined is not None:
+                join[target_index] = joined
             continue
-        fire[target_index] = default.code, replaces
+        for default in declaration.defaults:
+            replaces = _above_default_unnamed(
+                binding,
+                shape_draft,
+                code_system,
+                default.code,
+                index=index,
+                named_codes=named_codes,
+            )
+            if not replaces and not (
+                _slot_open(binding)
+                and _taxonomy_reads(shape_draft, code_system, default.code, index=index)
+            ):
+                continue
+            if _default_triggered(
+                default,
+                bindings,
+                index=index,
+                texts=(variable, query_text),
+                engine_authored_properties=engine_authored_properties,
+            ):
+                fire[target_index] = default, replaces
+                break
 
-    if not fire:
+    if not fire and not join:
         return bindings, []
 
     result = list(bindings)
     defaulted: list[FiredDefault] = []
-    for i, (code, replaces) in fire.items():
+    for i, default in join.items():
         binding = result[i]
-        defaulted.append(FiredDefault(entry=binding, replaced=replaces))
+        result[i] = binding.model_copy(
+            update={"kind": "set", "value_dcids": [*binding.value_dcids, default.code]}
+        )
+    for i, (default, replaces) in fire.items():
+        binding = result[i]
+        code = default.code
+        defaulted.append(FiredDefault(entry=binding, default=default, replaced=replaces))
         if not replaces:
             result[i] = binding.model_copy(update={"kind": "value", "value_dcids": [code]})
             continue
@@ -376,6 +411,92 @@ def apply_declared_defaults(
             }
         )
     return result, defaulted
+
+
+def _joined_default(
+    defaults: Sequence[DeclaredDefault],
+    binding: SlotBindingDraft,
+    shape_draft: ShapeDraft,
+    matched: Sequence[str],
+    *,
+    index: CodeIndex,
+    texts: Sequence[str | None],
+) -> DeclaredDefault | None:
+    """The first of `defaults` whose `when_named` word one of `texts` joins by a union
+    connective to a match's text in `matched` (`_named_beside_match`), where `binding` holds
+    values, none of them the default's code, under it or above it, and the slot's taxonomy
+    reads the code (`apply_declared_defaults`). "disbursements and expenditure" adds type 3
+    to the type 4 "expenditure" binds. "OOF aid" adds no ODA: no connective joins the
+    words."""
+    system = binding.property_dcid
+    if system is None or binding.kind not in ("value", "set") or not binding.value_dcids:
+        return None
+    for default in defaults:
+        if any(
+            value == default.code
+            or value in index.descendants(default.code)
+            or default.code in index.descendants(value)
+            for value in binding.value_dcids
+        ):
+            continue
+        if not _taxonomy_reads(shape_draft, system, default.code, index=index):
+            continue
+        if any(
+            _names_trigger_word((word,), text) and _named_beside_match(word, matched, text)
+            for word in default.when_named
+            for text in texts
+            if text is not None
+        ):
+            return default
+    return None
+
+
+def _named_beside_match(word: str, matched: Sequence[str], text: str) -> bool:
+    """Whether `text` writes `word` and one of the texts in `matched` with union connectives
+    alone (`UNION_CONNECTIVES`), at least one, between them, in either order."""
+    tokens = [token.text.casefold() for token in tokenize(text)]
+    target = [token.text.casefold() for token in tokenize(word)]
+    others = [words for m in matched if (words := [t.text.casefold() for t in tokenize(m)])]
+
+    def at(position: int, words: list[str]) -> bool:
+        return position >= 0 and tokens[position : position + len(words)] == words
+
+    for start in range(len(tokens)):
+        if not at(start, target):
+            continue
+        after = start + len(target)
+        gap = after
+        while gap < len(tokens) and tokens[gap] in UNION_CONNECTIVES:
+            gap += 1
+        if gap > after and any(at(gap, other) for other in others):
+            return True
+        before = start
+        while before > 0 and tokens[before - 1] in UNION_CONNECTIVES:
+            before -= 1
+        if before < start and any(at(before - len(other), other) for other in others):
+            return True
+    return False
+
+
+def _default_triggered(
+    default: DeclaredDefault,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    index: CodeIndex,
+    texts: Sequence[str | None],
+    engine_authored_properties: frozenset[str],
+) -> bool:
+    """Whether `default` fires on its open slot: it fires on every open slot (`when_open`),
+    a query-derived binding enters its `when_bound_under` scope, or one of `texts` names a
+    `when_named` word (`apply_declared_defaults`)."""
+    scoping_dcids = frozenset(
+        dcid for scope in default.when_bound_under for dcid in index.descendants(scope)
+    )
+    return (
+        default.when_open
+        or _some_binding_triggers_default(bindings, scoping_dcids, engine_authored_properties)
+        or any(_names_trigger_word(default.when_named, text) for text in texts if text is not None)
+    )
 
 
 def apply_named_exclusions(
@@ -564,13 +685,13 @@ def defaulted_slots_named(
     named: list[tuple[str, str]] = []
     for fired in defaulted:
         declaration = index.declarations.get(fired.entry.property_dcid or "")
-        if declaration is None or declaration.default is None or declaration.default.note:
+        if declaration is None or fired.default.note:
             continue
         if fired.replaced:
             continue
         if not any(names_plain_name(text, declaration.plain_name) for text in texts):
             continue
-        named.append((declaration.plain_name, _code_label(declaration.default.code, index=index)))
+        named.append((declaration.plain_name, _code_label(fired.default.code, index=index)))
     return named
 
 
@@ -583,17 +704,17 @@ def defaulted_slot_notes(defaulted: Sequence[FiredDefault], *, index: CodeIndex)
     notes: list[str] = []
     for fired in defaulted:
         declaration = index.declarations.get(fired.entry.property_dcid or "")
-        if declaration is None or declaration.default is None:
+        if declaration is None:
             continue
         if fired.replaced:
             replaced = join_labels([_code_label(dcid, index=index) for dcid in fired.replaced])
             notes.append(
-                f"The answer covers {_code_label(declaration.default.code, index=index)}, the "
+                f"The answer covers {_code_label(fired.default.code, index=index)}, the "
                 f"default {declaration.plain_name}, in place of {replaced}, a broader "
                 f"{declaration.plain_name} no word of the question names."
             )
-        elif declaration.default.note:
-            notes.append(declaration.default.note)
+        elif fired.default.note:
+            notes.append(fired.default.note)
     return notes
 
 
@@ -614,5 +735,5 @@ def declared_default_slots_named(text: str, *, index: CodeIndex) -> tuple[str, .
     return tuple(
         code_system
         for code_system, declaration in index.declarations.items()
-        if declaration.default is not None and names_plain_name(text, declaration.plain_name)
+        if declaration.defaults and names_plain_name(text, declaration.plain_name)
     )

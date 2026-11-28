@@ -89,10 +89,12 @@ def _label_for(partition: MeasurePartition) -> str:
 
 
 def _members_matching(**want: str | None) -> list:
-    """Return the real family rows matching the requested measure partition."""
+    """Return the real CRS family rows matching the requested measure partition."""
     index = get_index()
 
     def _match(row) -> bool:
+        if "provenance/OECDCreditorReportingSystem" not in row.datasets:
+            return False
         if row.constraint_properties.get(_PURPOSE_PROP) != _PURPOSE:
             return False
         for prop in ("nettingBasis", "financialFlowType", "financialObligationType"):

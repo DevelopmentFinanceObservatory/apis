@@ -131,7 +131,7 @@ def test_the_key_follows_the_dataset_the_election_reads():
     axes = get_measure_index().axes
     shape = _crs_shape()
     bare = query_for(shape, {})
-    (opt_in,) = (d for d in index.datasets.values() if d.opt_in)
+    (opt_in,) = (d for d in index.datasets.values() if d.opt_in and d.invariants)
 
     named = dataclasses.replace(bare, source=opt_in.id)
     keys = {

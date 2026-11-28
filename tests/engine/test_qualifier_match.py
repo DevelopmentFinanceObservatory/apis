@@ -29,6 +29,7 @@ from search.engine.qualifier_match import (
     _all_normalized_text_ranges,
     _all_system_markers,
     _max_phrase_words,
+    cross_vocabulary_codes,
     match_qualifier_readings,
     match_qualifier_ties,
     match_qualifiers,
@@ -38,7 +39,13 @@ from search.engine.qualifier_match import (
     read_by_vocabulary,
 )
 from search.engine.region.phase_rank_bind import _combine_matches
-from tests.engine._index_slots import crs_vocabulary, read_text
+from tests.engine._index_slots import (
+    CRS,
+    crs_vocabulary,
+    dataset_scopes,
+    dataset_vocabulary,
+    read_text,
+)
 
 # ---------------------------------------------------------------------------
 # The fixture index, the code index the session release serves.
@@ -55,8 +62,10 @@ _IMPUTED = frozenset(
 
 
 def _read(query: str, vocabulary: frozenset[str] = _CRS) -> VocabularyReading:
-    """`query` read in `vocabulary`, a CRS shape's by default, as the prune step reads it."""
-    return read_text(query, _REAL_INDEX, vocabularies=[vocabulary]).by_vocabulary[vocabulary]
+    """`query` read in `vocabulary`, a CRS shape's by default, as the prune step reads it,
+    the CRS vocabulary within CRS rows."""
+    reading = read_text(query, _REAL_INDEX, vocabularies=[vocabulary], datasets=dataset_scopes(CRS))
+    return reading.by_vocabulary[vocabulary]
 
 
 def _matches(query: str) -> tuple[QualifierMatch, ...]:
@@ -1251,6 +1260,8 @@ def test_each_code_systems_markers_come_from_its_name():
         "dac1AidType": ["dac1"],
         "dac2aAidType": ["dac2a"],
         "dac2bAidType": ["dac2b"],
+        # "iati" names a dataset whose rows carry the CRS systems too, so it marks none.
+        "iatiTransactionType": ["transaction"],
     }
     # "aid" names every aid-type system, so it marks none, measure word or not.
     assert {
@@ -1276,6 +1287,33 @@ def test_each_code_systems_markers_come_from_its_name():
 def test_a_bare_code_after_its_systems_marker_matches(text: str, code_dcid: str):
     matches = match_qualifiers(text, _REAL_INDEX)
     assert [m.code_dcid for m in matches if m.source == "code"] == [code_dcid]
+
+
+_IATI_DATASET = "dataset/InternationalAidTransparencyInitiative"
+
+
+@pytest.mark.parametrize(
+    ("query", "dataset", "codes"),
+    [
+        ("IATI spending for the top 3 recipients", _IATI_DATASET, []),
+        ("IATI top 10 recipients", _IATI_DATASET, []),
+        ("IATI transaction type 3 to Kenya", _IATI_DATASET, ["IATITransactionType3"]),
+        ("CRS top 10 recipients", CRS, []),
+        ("CRS aid to the top 3 recipients", CRS, []),
+    ],
+)
+def test_a_bare_number_after_a_dataset_name_codes_no_axis(query, dataset, codes):
+    """ "iati" names a dataset whose rows carry five code systems, so a number after it is
+    no transaction type, in the shape's vocabulary or in every system: a rank stays a rank.
+    The system's tail still marks its code."""
+    vocabulary = dataset_vocabulary(dataset)
+    reading = read_text(
+        query, _REAL_INDEX, vocabularies=[vocabulary], datasets=dataset_scopes(dataset)
+    ).by_vocabulary[vocabulary]
+    assert [m.code_dcid for m in reading.matches if m.source == "code"] == codes
+    assert [m.code_dcid for m in match_qualifiers(query, _REAL_INDEX) if m.source == "code"] == (
+        codes
+    )
 
 
 @pytest.mark.parametrize(
@@ -1415,3 +1453,30 @@ def test_climate_finance_for_adaptation_binds_the_adaptation_only_part():
     assert [m.code_dcid for m in matches] == [_CLIMATE_TOTAL, _CLIMATE_ADAPTATION]
     combination = _combine_matches(variable, matches, _climate_index())
     assert combination.values == {_CLIMATE_SYSTEM: (_CLIMATE_ADAPTATION,)}
+
+
+@pytest.mark.parametrize(
+    ("variable", "named"),
+    [
+        pytest.param(
+            "government expenditure on education as share of total government spending",
+            [],
+            id="government-expenditure",
+        ),
+        pytest.param("health expenditure per capita in Africa", [], id="health-expenditure"),
+        pytest.param("outgoing commitments to Kenya", ["IATITransactionType2"], id="control"),
+    ],
+)
+def test_bare_expenditure_names_no_iati_transaction_type_in_every_code_system(variable, named):
+    """ "expenditure" names IATI's transaction type 4 only on an IATI shape
+    (`declarations.CODE_SYNONYMS_WITHIN_VOCABULARY`), so a World Bank question on
+    expenditure brings in no IATI family, while "outgoing commitment" names type 2
+    everywhere."""
+    reading = read_text(variable, _REAL_INDEX)
+
+    assert [
+        row.dcid
+        for span in reading.everywhere.spans
+        for row in cross_vocabulary_codes(span)
+        if row.code_system == "iatiTransactionType"
+    ] == named

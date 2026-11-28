@@ -488,18 +488,20 @@ def test_load_index_refuses_a_parent_from_a_different_code_system(tmp_path):
     assert "CRSTypeOfFinance110" in str(excinfo.value)
 
 
-# --- CodeSystemDeclaration.default (issue #968) ---
+# --- CodeSystemDeclaration.defaults ---
 
 
 def _payload_with_flow_default(*, code: str, when_bound_under: list[str]) -> dict:
     payload = json.loads(FIXTURE_PATH.read_text())
     for row in payload["declarations"]:
         if row["code_system"] == "crsTypeOfFlow":
-            row["default"] = {
-                "code": code,
-                "when_bound_under": when_bound_under,
-                "when_named": [],
-            }
+            row["defaults"] = [
+                {
+                    "code": code,
+                    "when_bound_under": when_bound_under,
+                    "when_named": [],
+                }
+            ]
     return payload
 
 
@@ -512,12 +514,11 @@ def test_loads_a_well_formed_declared_default(tmp_path):
 
     index = load_index(doc)
 
-    default = index.declarations["crsTypeOfFlow"].default
-    assert default is not None
+    (default,) = index.declarations["crsTypeOfFlow"].defaults
     assert default.code == "CRSTypeOfFlow10"
     assert default.when_bound_under == ("CRSTypeOfFinance100",)
-    # A missing default parses as None.
-    assert index.declarations["crsPurpose"].default is None
+    # An empty list parses as no default.
+    assert index.declarations["crsPurpose"].defaults == ()
 
 
 def test_refuses_a_declared_default_whose_code_is_not_a_row_of_its_own_system(tmp_path):
@@ -562,8 +563,7 @@ def test_refuses_a_declared_default_scoped_under_its_own_code_system(tmp_path):
 def test_the_fixture_index_declares_the_crs_type_of_flow_default():
     # #968: An open flow slot selects CRSTypeOfFlow10 for aid under CRSTypeOfFinance100.
     index = load_index(INDEX_FIXTURE)
-    default = index.declarations["crsTypeOfFlow"].default
-    assert default is not None
+    (default,) = index.declarations["crsTypeOfFlow"].defaults
     assert default.code == "CRSTypeOfFlow10"
     assert default.when_bound_under == ("CRSTypeOfFinance100",)
     assert default.when_named == ("aid",)
@@ -593,8 +593,7 @@ def test_the_fixture_index_declares_the_table_total_as_the_open_aid_type_default
 ):
     """A DAC1 or DAC2a question that names no aid type reads total ODA, a DAC2b question net
     official non-concessional flows, and the answer says so."""
-    default = load_index(INDEX_FIXTURE).declarations[code_system].default
-    assert default is not None
+    (default,) = load_index(INDEX_FIXTURE).declarations[code_system].defaults
     assert default.code == code
     assert default.when_open is True
     assert default.note
@@ -615,11 +614,26 @@ def test_refuses_a_malformed_open_slot_default(tmp_path, fields, message):
     )
     for row in payload["declarations"]:
         if row["code_system"] == "crsTypeOfFlow":
-            row["default"].update(fields)
+            row["defaults"][0].update(fields)
     doc = tmp_path / "malformed_open_default.json"
     doc.write_text(json.dumps(payload))
 
     with pytest.raises(IndexFormatError, match=message):
+        load_index(doc)
+
+
+def test_refuses_an_open_slot_default_listed_before_a_named_one(tmp_path):
+    """A default that fires on every open slot is tried last, since one listed before
+    another would leave the later one no slot to fire on."""
+    payload = _payload_with_flow_default(code="CRSTypeOfFlow10", when_bound_under=[])
+    for row in payload["declarations"]:
+        if row["code_system"] == "crsTypeOfFlow":
+            named = {**row["defaults"][0], "when_named": ["aid"]}
+            row["defaults"] = [{**named, "when_open": True, "note": "n"}, named]
+    doc = tmp_path / "open_default_first.json"
+    doc.write_text(json.dumps(payload))
+
+    with pytest.raises(IndexFormatError, match="'CRSTypeOfFlow10', which fires on every open"):
         load_index(doc)
 
 
@@ -629,7 +643,7 @@ def test_refuses_a_declared_default_with_no_when_named_key_at_all(tmp_path):
     )
     for row in payload["declarations"]:
         if row["code_system"] == "crsTypeOfFlow":
-            del row["default"]["when_named"]
+            del row["defaults"][0]["when_named"]
     doc = tmp_path / "no_when_named_key.json"
     doc.write_text(json.dumps(payload))
 
@@ -643,14 +657,13 @@ def test_loads_a_well_formed_declared_default_with_when_named(tmp_path):
     )
     for row in payload["declarations"]:
         if row["code_system"] == "crsTypeOfFlow":
-            row["default"]["when_named"] = ["aid"]
+            row["defaults"][0]["when_named"] = ["aid"]
     doc = tmp_path / "with_when_named.json"
     doc.write_text(json.dumps(payload))
 
     index = load_index(doc)
 
-    default = index.declarations["crsTypeOfFlow"].default
-    assert default is not None
+    (default,) = index.declarations["crsTypeOfFlow"].defaults
     assert default.when_named == ("aid",)
 
 
@@ -671,7 +684,7 @@ def test_refuses_a_declared_default_with_invalid_when_named_entry(tmp_path, entr
     )
     for row in payload["declarations"]:
         if row["code_system"] == "crsTypeOfFlow":
-            row["default"]["when_named"] = [entry]
+            row["defaults"][0]["when_named"] = [entry]
     doc = tmp_path / "invalid_when_named.json"
     doc.write_text(json.dumps(payload))
 

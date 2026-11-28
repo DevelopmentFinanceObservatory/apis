@@ -721,9 +721,11 @@ def test_a_population_covering_its_side_on_the_crs_reads_as_every_party_it_holds
 
 
 def _crs_and_imputed_answer(monkeypatch: pytest.MonkeyPatch, text: str) -> Any:
-    """The one part answering aid from `text` to Ethiopia in 2021, where the bind elects the
-    CRS commitments shape and nominates the imputed multilateral shape beside it, and
-    coverage holds France's series to Ethiopia on both."""
+    """The one part answering education aid from `text` to Ethiopia in 2021, where the bind
+    elects the CRS commitments shape and nominates the imputed multilateral shape beside it,
+    and coverage holds France's series to Ethiopia on both. "Education" names a sector only
+    the imputed table breaks down on its five-tuple, so a part naming no source keeps the
+    opt-in shape (`_without_unasked_opt_in`)."""
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
@@ -740,12 +742,12 @@ def _crs_and_imputed_answer(monkeypatch: pytest.MonkeyPatch, text: str) -> Any:
     part = {
         "entities": [_TO_ETHIOPIA, {"role": "from", "text": text}],
         "time": "2021",
-        "variable": "aid",
+        "variable": "education aid",
     }
     (answer,) = offline_resolve(
         _parsed(part),
-        graph=_graph(members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER), variable="aid"),
-        llm=_ScriptedLLM("aid", also_plausible=[1]),
+        graph=_graph(members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER), variable="education aid"),
+        llm=_ScriptedLLM("education aid", also_plausible=[1]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         binder=ReplyBinder(),
     ).parts
@@ -2449,12 +2451,18 @@ def test_a_whole_population_asked_member_by_member_lists_its_members(
     ],
 )
 @pytest.mark.parametrize(
-    ("members", "listed", "unread", "held"),
+    ("variable", "members", "listed", "unread", "held"),
     [
         pytest.param(
-            (_COMMITMENTS_MEMBER, _IMPUTED_MEMBER), IMPUTED_PROVENANCE, False, None, id="imputed"
+            "education aid",
+            (_COMMITMENTS_MEMBER, _IMPUTED_MEMBER),
+            IMPUTED_PROVENANCE,
+            False,
+            None,
+            id="imputed",
         ),
         pytest.param(
+            "aid",
             (_DAC2A_MEMBER, _CRS_MEMBER),
             None,
             False,
@@ -2462,6 +2470,7 @@ def test_a_whole_population_asked_member_by_member_lists_its_members(
             id="dac2a-and-crs",
         ),
         pytest.param(
+            "education aid",
             (_COMMITMENTS_MEMBER, _IMPUTED_MEMBER),
             None,
             True,
@@ -2472,6 +2481,7 @@ def test_a_whole_population_asked_member_by_member_lists_its_members(
 )
 def test_official_donors_asked_member_by_member_list_where_no_private_donor_stands_beside(
     monkeypatch: pytest.MonkeyPatch,
+    variable: str,
     members: tuple[str, ...],
     listed: str | None,
     unread: bool,
@@ -2487,7 +2497,9 @@ def test_official_donors_asked_member_by_member_list_where_no_private_donor_stan
     ones. Where the index reads no class of donor in the imputed table (`unread`), as for a
     shape no declared dataset publishes, nothing shows what its open side would list, so it
     lists no population either and the part refuses with no account of what the
-    population leaves out."""
+    population leaves out. The imputed rows ask education aid, a sector only the imputed
+    table breaks down on its five-tuple, so a part naming no source keeps its opt-in
+    shape."""
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
@@ -2510,14 +2522,14 @@ def test_official_donors_asked_member_by_member_list_where_no_private_donor_stan
     part = {
         "entities": [_TO_ETHIOPIA, donors],
         "time": "2021",
-        "variable": "aid",
+        "variable": variable,
         **{key: value for key, value in asked.items() if key != "members"},
     }
 
     (answer,) = offline_resolve(
         _parsed(part),
-        graph=_graph(members=members, variable="aid"),
-        llm=_ScriptedLLM("aid"),
+        graph=_graph(members=members, variable=variable),
+        llm=_ScriptedLLM(variable),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     ).parts
 

@@ -21,7 +21,9 @@ from search.engine.bind import (
     _build_universal_bind_prompt,
     _UniversalBindOutput,
     bind_universal,
+    covered_leaves,
     rank_elected,
+    reads_bound_values_alike,
     split_stray_bindings,
 )
 from search.engine.binders import BindRequest, GeminiBinder
@@ -42,6 +44,7 @@ from search.models import GraphRef, QuantityForm
 from tests.engine._binders import elected_reply, keep_the_pick
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._index_slots import CRS, IATI, dataset_flow_slot_keys
 from tests.engine._quantity import NO_QUANTITY
 
 # Helpers
@@ -987,7 +990,7 @@ _EDUCATION_LEAVES = [
     f"CRSPurposeCode{code}"
     for code in (
         *(11110, 11120, 11130, 11182, 11220, 11230, 11231, 11232),
-        *(11240, 11250, 11260, 11320, 11330, 11420, 11430),
+        *(11240, 11250, 11260, 11320, 11321, 11322, 11330, 11420, 11430),
     )
 ]
 _EDUCATION_AMOUNT = [
@@ -1108,6 +1111,127 @@ def test_the_rank_elects_among_shapes_the_menu_states_alike(
     )
 
     assert rank_elected([first, chosen], output, availability=availability) == elected
+
+
+@pytest.mark.parametrize(
+    ("dataset", "parent", "leaves"),
+    [
+        pytest.param(
+            CRS,
+            "CRSPurposeCode113",
+            ["CRSPurposeCode11320", "CRSPurposeCode11330"],
+            id="crs-shape-past-iati-only-leaves",
+        ),
+        pytest.param(
+            IATI,
+            "CRSPurposeCode123",
+            [
+                *("CRSPurposeCode12310", "CRSPurposeCode12330", "CRSPurposeCode12340"),
+                *("CRSPurposeCode12350", "CRSPurposeCode12382"),
+            ],
+            id="iati-shape-past-a-crs-only-leaf",
+        ),
+    ],
+)
+def test_a_bound_parent_reads_alike_whatever_leaves_only_another_datasets_rows_hold(
+    dataset, parent, leaves
+):
+    """A bound parent on a shape covers the leaves its own dataset's rows hold, `leaves`.
+    Upper secondary education (`CRSPurposeCode113`) on a CRS shape passes over 11321 and
+    11322, which only IATI rows hold, and noncommunicable disease (`CRSPurposeCode123`) on
+    an IATI shape passes over 12320, which only CRS rows hold: a shape listing the parent
+    beside its leaves reads it as one listing the leaves alone."""
+    listing = dataclasses.replace(
+        _shape("parent", slot_taxonomy={"how:crsPurpose": [parent, *leaves]}),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_qual_dcid="Nominal",
+        slot_keys=dataset_flow_slot_keys(dataset),
+    )
+    alone = dataclasses.replace(
+        listing, shape_id="leaves", slot_taxonomy={"how:crsPurpose": leaves}
+    )
+
+    assert reads_bound_values_alike(listing, alone, [_value("crsPurpose", parent)])
+
+
+def _flow_listing(dataset: str, codes: list[str]) -> ShapeDraft:
+    """A shape of nominal financial-flow amounts built from the family `dataset` publishes,
+    whose purpose slot lists `codes`."""
+    return dataclasses.replace(
+        _shape(f"{dataset}-{'-'.join(codes)}", slot_taxonomy={"how:crsPurpose": codes}),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_qual_dcid="Nominal",
+        slot_keys=dataset_flow_slot_keys(dataset),
+    )
+
+
+_SECONDARY_CRS_LEAVES = ["CRSPurposeCode11320", "CRSPurposeCode11330"]
+
+
+@pytest.mark.parametrize(
+    ("elected", "other", "alike"),
+    [
+        # Health (`CRSPurposeCode120`) holds 12320, which only CRS rows hold, and 12196,
+        # which only IATI rows hold. Read within both datasets, the parent covers the same
+        # leaves on each shape.
+        pytest.param(
+            (CRS, ["CRSPurposeCode120"]),
+            (IATI, ["CRSPurposeCode120"]),
+            True,
+            id="crs-and-iati-shapes-list-one-parent",
+        ),
+        pytest.param(
+            (CRS, ["CRSPurposeCode113"]),
+            (CRS, _SECONDARY_CRS_LEAVES),
+            True,
+            id="crs-parent-and-its-crs-held-children",
+        ),
+        # The union holds 11321 and 11322, which only IATI rows hold and the CRS shape does
+        # not list, so the check refuses a move between the two.
+        pytest.param(
+            (IATI, ["CRSPurposeCode113"]),
+            (CRS, _SECONDARY_CRS_LEAVES),
+            False,
+            id="iati-parent-and-crs-held-children",
+        ),
+    ],
+)
+def test_two_shapes_read_a_bound_parent_within_both_their_datasets(elected, other, alike):
+    """Two shapes compare a bound parent's leaves within the union of their datasets
+    (`pair_datasets`), so a parent both list covers the same leaves on each, and a shape
+    listing the children its own datasets hold covers fewer than one listing the parent
+    from another dataset."""
+    bound = elected[1][0]
+
+    assert (
+        reads_bound_values_alike(
+            _flow_listing(*elected), _flow_listing(*other), [_value("crsPurpose", bound)]
+        )
+        is alike
+    )
+
+
+def test_a_parent_none_of_whose_leaves_the_rows_hold_covers_itself():
+    """No IATI row holds a code under reimbursable grants (`CRSTypeOfFinance422`), so
+    within the IATI dataset the parent covers itself, and a shape listing only its sibling
+    421 does not read it alike."""
+    listing = dataclasses.replace(
+        _shape("parent", slot_taxonomy={"how:crsTypeOfFinance": ["CRSTypeOfFinance422"]}),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_qual_dcid="Nominal",
+        slot_keys=dataset_flow_slot_keys(IATI),
+    )
+    sibling = dataclasses.replace(
+        listing, shape_id="sibling", slot_taxonomy={"how:crsTypeOfFinance": ["CRSTypeOfFinance421"]}
+    )
+
+    assert covered_leaves(["CRSTypeOfFinance422"], datasets=(IATI,)) == {"CRSTypeOfFinance422"}
+    assert not reads_bound_values_alike(
+        listing, sibling, [_value("crsTypeOfFinance", "CRSTypeOfFinance422")]
+    )
 
 
 def test_dropped_qualifiers_block_renders_only_when_phrases_exist():

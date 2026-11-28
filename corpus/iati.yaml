@@ -1,0 +1,65 @@
+- id: iati-disbursements-kenya-2024
+  query: IATI disbursements to Kenya in 2024
+  activation: pending_data:iati
+  why: Naming IATI elects the IATI dataset across its publishers; "disbursements" names the gross disbursement measure and binds IATI's transaction type 3.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
+  expect:
+    definite:
+      measure:
+        family: iati.disbursement_gross
+        bound: {iatiTransactionType: IATITransactionType3}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: []
+
+- id: iati-unfpa-expenditure-2024
+  query: IATI expenditure by UNFPA in 2024
+  activation: pending_data:iati
+  why: Naming IATI elects the IATI dataset, which reads "expenditure" as its transaction type 4, with UNFPA as the provider.
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
+  expect:
+    definite:
+      measure:
+        family: iati.disbursement_gross
+        bound: {iatiTransactionType: IATITransactionType4}
+      provenance: {bound: true}
+      entities: [{dcid: UnitedNationsPopulationFund, role: origin}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: []
+
+- id: iati-unfpa-spending-2024
+  query: IATI spending by UNFPA in 2024
+  activation: pending_data:iati
+  why: The word spending reads the IATI spending parent of types 3 and 4, so UNFPA, which publishes expenditure alone, answers from its expenditure.
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
+  expect:
+    definite:
+      measure:
+        family: iati.disbursement_gross
+        bound: {iatiTransactionType: IATITransactionTypeSpending}
+      provenance: {bound: true}
+      entities: [{dcid: UnitedNationsPopulationFund, role: origin}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: []
+
+- id: iati-unfpa-disbursements-2024
+  query: IATI disbursements by UNFPA in 2024
+  activation: pending_data:iati
+  why: The word disbursements binds IATI transaction type 3, which UNFPA does not publish, so the part finds no data.
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
+  expect:
+    no_data: {reason: no_observations}
+
+- id: iati-crs-control-sanitation-uk-kenya-2023
+  query: basic sanitation disbursements from the UK to Kenya in 2023
+  why: The question names no dataset, so the opt-in IATI dataset stays out and the CRS answers the basic sanitation sector in gross disbursements.
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsPurpose: CRSPurposeCode14032}
+      provenance: {origin: dfo, dataset: provenance/OECDCreditorReportingSystem}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2023, end: 2023}

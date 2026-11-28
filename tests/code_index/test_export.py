@@ -32,6 +32,7 @@ from code_index.declarations import (
     WHOLE_POPULATION_TOTALS,
     WHOLE_TOTAL_SETS,
     CodeSystemConfig,
+    DeclaredParent,
     KindOverride,
     MeasureValueText,
     TotalGroup,
@@ -39,6 +40,7 @@ from code_index.declarations import (
     WholeWindow,
 )
 from code_index.export import (
+    DECLARED_PARENT_IN_GRAPH,
     PARTY_KIND_UNRESOLVED,
     WHOLE_MARKER_IN_COMPOSITE,
     CoverageJoin,
@@ -514,6 +516,128 @@ def test_hierarchical_declared_disagreement_raises_naming_both_values():
     )
     with pytest.raises(ExportRefused, match=r"derived hierarchical=False.*expected value True"):
         export_code_system(graph, wrong)
+
+
+# --- A parent DFO declares where the graph holds none ---
+
+_FLAT_WITH_PARENT = dataclasses.replace(
+    _FLAT,
+    expected_hierarchical=True,
+    declared_parents=(
+        DeclaredParent(
+            dcid="SysFlatBoth",
+            name="both flats (CRS Flat)",
+            children=("SysFlatA", "SysFlatB"),
+            definition="Alpha and beta together.",
+        ),
+    ),
+)
+
+
+def test_a_declared_parent_exports_uncoded_and_its_children_read_under_it():
+    """The parent exports as a code row with no code, its children name it as their parent
+    as a graph `specializationOf` arc would, and the system derives hierarchical, so a
+    binding of the parent reads both children."""
+    graph = _two_system_graph()
+
+    declaration, rows = export_code_system(graph, _FLAT_WITH_PARENT)
+
+    by_dcid = {row["dcid"]: row for row in rows}
+    assert declaration["hierarchical"] is True
+    assert by_dcid["SysFlatBoth"] | {"synonyms": None} == {
+        "dcid": "SysFlatBoth",
+        "code_system": "sysFlat",
+        "code": None,
+        "label": "both flats",
+        "synonyms": None,
+        "short_name": None,
+        "parent": None,
+        "definition": "Alpha and beta together.",
+        "also_called": [],
+    }
+    assert {dcid: row["parent"] for dcid, row in by_dcid.items()} == {
+        "SysFlatA": "SysFlatBoth",
+        "SysFlatB": "SysFlatBoth",
+        "SysFlatBoth": None,
+    }
+    document = export_index(
+        graph,
+        party_reader=graph,
+        coverage=_covered(graph),
+        datasets=_TEST_DATASETS,
+        partly_stated_values=(),
+        graph_endpoint="https://fake.example",
+        code_systems=(_HIERARCHICAL, _FLAT_WITH_PARENT),
+        measure_axes=(),
+        total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
+        party_kind_overrides={},
+    )
+    index = parse_index(document)
+    assert index.expansion("SysFlatBoth") == ("SysFlatBoth", "SysFlatA", "SysFlatB")
+
+
+@pytest.mark.parametrize(
+    ("node", "arcs", "rows"),
+    [
+        pytest.param(
+            "SysFlatRoot",
+            {"typeOf": ("SysFlatEnum",), "classificationCode": ("1",), "name": ("flat root",)},
+            (("SysFlatA", "SysFlatRoot"),),
+            id="graph-parent-of-a-child",
+        ),
+        pytest.param(
+            "SysFlatBoth",
+            {"typeOf": ("SysFlatEnum",), "classificationCode": ("1",), "name": ("both flats",)},
+            (("SysFlatBoth",),),
+            id="graph-node-of-the-parent",
+        ),
+    ],
+)
+def test_the_export_refuses_a_declared_parent_once_the_graph_holds_one(node, arcs, rows):
+    """A parent the graph holds replaces DFO's, so the declaration cannot outlive it."""
+    graph = _two_system_graph()
+    graph.forward_arcs[node] = arcs
+    if node == "SysFlatRoot":
+        graph.forward_arcs["SysFlatA"]["specializationOf"] = ("SysFlatRoot",)
+
+    with pytest.raises(ExportRefused) as refused:
+        export_code_system(graph, _FLAT_WITH_PARENT)
+
+    assert (refused.value.code, refused.value.rows) == (DECLARED_PARENT_IN_GRAPH, rows)
+
+
+def test_the_export_refuses_two_declared_parents_of_one_child_as_a_declaration_error():
+    """Two declared parents naming one child contradict each other, which the graph cannot
+    settle, so the refusal names the declaration and no graph parent."""
+    graph = _two_system_graph()
+    second = DeclaredParent(
+        dcid="SysFlatAlpha", name="alpha (CRS Flat)", children=("SysFlatA",), definition="A."
+    )
+    config = dataclasses.replace(
+        _FLAT_WITH_PARENT, declared_parents=(*_FLAT_WITH_PARENT.declared_parents, second)
+    )
+
+    with pytest.raises(ExportRefused, match="more than one parent of one child") as refused:
+        export_code_system(graph, config)
+
+    assert refused.value.code is None
+
+
+def test_the_export_refuses_an_open_slot_default_listed_before_a_named_one():
+    """Defaults are tried in order, so one firing on every open slot comes last."""
+    named = DeclaredDefault(code="SysHierChild", when_bound_under=(), when_named=("aid",))
+    opened = DeclaredDefault(code="SysHierRoot", when_bound_under=(), when_open=True, note="n")
+    code_rows_by_system = {"sysHier": [{"dcid": "SysHierRoot"}, {"dcid": "SysHierChild"}]}
+
+    _validate_declared_defaults(
+        (dataclasses.replace(_HIERARCHICAL, defaults=(named, opened)),), code_rows_by_system
+    )
+    with pytest.raises(ExportRefused, match="'SysHierRoot' fires on every open slot"):
+        _validate_declared_defaults(
+            (dataclasses.replace(_HIERARCHICAL, defaults=(opened, named)),), code_rows_by_system
+        )
 
 
 # --- A parent outside the exported code system ---
@@ -2198,7 +2322,7 @@ def test_export_index_stamps_plain_name_and_enum_dcid_from_the_code_system_table
     } == {"sysHier": "SysHierEnum", "sysFlat": "SysFlatEnum"}
 
 
-# --- CodeSystemDeclaration.default (issue #968) ---
+# --- CodeSystemDeclaration.defaults ---
 
 _HIERARCHICAL_WITH_DEFAULT = CodeSystemConfig(
     code_system="sysHier",
@@ -2209,7 +2333,7 @@ _HIERARCHICAL_WITH_DEFAULT = CodeSystemConfig(
     absent_reading="not_declared",
     declared_by_every_statvar_of=(_TEST_PROVENANCE,),
     plain_name="hier",
-    default=DeclaredDefault(code="SysHierChild", when_bound_under=("SysFlatA",)),
+    defaults=(DeclaredDefault(code="SysHierChild", when_bound_under=("SysFlatA",)),),
 )
 
 
@@ -2230,25 +2354,26 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
         party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
-    assert by_system["sysHier"]["default"] == {
-        "code": "SysHierChild",
-        "when_bound_under": ["SysFlatA"],
-        "when_named": [],
-        "when_open": False,
-        "note": None,
-    }
-    # A system with no configured default stamps None, not a missing key.
-    assert by_system["sysFlat"]["default"] is None
+    assert by_system["sysHier"]["defaults"] == [
+        {
+            "code": "SysHierChild",
+            "when_bound_under": ["SysFlatA"],
+            "when_named": [],
+            "when_open": False,
+            "note": None,
+        }
+    ]
+    # A system with no configured default stamps an empty list, not a missing key.
+    assert by_system["sysFlat"]["defaults"] == []
 
     out = tmp_path / "with_default.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
-    default = index.declarations["sysHier"].default
-    assert default is not None
+    (default,) = index.declarations["sysHier"].defaults
     assert default.code == "SysHierChild"
     assert default.when_bound_under == ("SysFlatA",)
     assert default.when_named == ()
-    assert index.declarations["sysFlat"].default is None
+    assert index.declarations["sysFlat"].defaults == ()
 
 
 _HIERARCHICAL_WITH_NAMED_DEFAULT = CodeSystemConfig(
@@ -2260,8 +2385,8 @@ _HIERARCHICAL_WITH_NAMED_DEFAULT = CodeSystemConfig(
     absent_reading="not_declared",
     declared_by_every_statvar_of=(_TEST_PROVENANCE,),
     plain_name="hier",
-    default=DeclaredDefault(
-        code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("aid",)
+    defaults=(
+        DeclaredDefault(code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("aid",)),
     ),
 )
 
@@ -2283,12 +2408,12 @@ def test_export_index_stamps_when_named_and_it_round_trips(tmp_path: Path):
         party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
-    assert by_system["sysHier"]["default"]["when_named"] == ["aid"]
+    assert by_system["sysHier"]["defaults"][0]["when_named"] == ["aid"]
 
     out = tmp_path / "with_named_default.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
-    assert index.declarations["sysHier"].default.when_named == ("aid",)
+    assert index.declarations["sysHier"].defaults[0].when_named == ("aid",)
 
 
 def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lowercase():
@@ -2302,8 +2427,10 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
-        default=DeclaredDefault(
-            code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("Aid",)
+        defaults=(
+            DeclaredDefault(
+                code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("Aid",)
+            ),
         ),
     )
 
@@ -2335,8 +2462,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
-        default=DeclaredDefault(
-            code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("",)
+        defaults=(
+            DeclaredDefault(code="SysHierChild", when_bound_under=("SysFlatA",), when_named=("",)),
         ),
     )
 
@@ -2369,10 +2496,12 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
-        default=DeclaredDefault(
-            code="SysHierChild",
-            when_bound_under=("SysFlatA",),
-            when_named=(None,),  # type: ignore[arg-type]
+        defaults=(
+            DeclaredDefault(
+                code="SysHierChild",
+                when_bound_under=("SysFlatA",),
+                when_named=(None,),  # type: ignore[arg-type]
+            ),
         ),
     )
 
@@ -2405,7 +2534,7 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
         # `SysFlatA` belongs to `sysFlat`.
-        default=DeclaredDefault(code="SysFlatA", when_bound_under=("SysFlatA",)),
+        defaults=(DeclaredDefault(code="SysFlatA", when_bound_under=("SysFlatA",)),),
     )
 
     with pytest.raises(ExportRefused, match="declared default code 'SysFlatA' is not a row"):
@@ -2436,7 +2565,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
-        default=DeclaredDefault(code="SysHierChild", when_bound_under=("NotARealDcid",)),
+        defaults=(DeclaredDefault(code="SysHierChild", when_bound_under=("NotARealDcid",)),),
     )
 
     with pytest.raises(ExportRefused, match=r"NotARealDcid.*not a row of any exported code system"):
@@ -2468,7 +2597,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="hier",
         # `SysHierRoot` belongs to the default's own system.
-        default=DeclaredDefault(code="SysHierChild", when_bound_under=("SysHierRoot",)),
+        defaults=(DeclaredDefault(code="SysHierChild", when_bound_under=("SysHierRoot",)),),
     )
 
     with pytest.raises(ExportRefused, match="belongs to its own code system"):
@@ -3075,7 +3204,9 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (dataset.id for dataset in DATASETS)
+    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr, iati = (
+        dataset.id for dataset in DATASETS
+    )
     assert [dataset.opt_in for dataset in DATASETS] == [
         False,
         True,
@@ -3085,19 +3216,21 @@ def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_alw
         False,
         True,
         True,
+        True,
     ]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
     } == {
-        "crsPurpose": {crs, imputed},
-        "crsTypeOfFinance": {crs},
-        "crsCooperationModality": set(),
-        "crsTypeOfFlow": {crs, imputed},
+        "crsPurpose": {crs, imputed, iati},
+        "crsTypeOfFinance": {crs, iati},
+        "crsCooperationModality": {iati},
+        "crsTypeOfFlow": {crs, imputed, iati},
         "dac2aAidType": {imputed, dac2a},
         "dac1AidType": {dac1},
         "dac2bAidType": {dac2b},
         "climatePolicyObjective": {one_climate, crdf, btr},
+        "iatiTransactionType": {iati},
     }
     assert [config.code_system for config in CODE_SYSTEMS if not config.classification_codes] == [
         "climatePolicyObjective"

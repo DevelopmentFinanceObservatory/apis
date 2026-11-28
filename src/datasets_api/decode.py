@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from code_index.query import CodeIndex
+from code_index.types import StatVarRow
 from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.reshape import DecodePlan, TableLike
 
@@ -68,19 +69,14 @@ def build_decode_plan(
         return None
     marked = _component_marker_axes(table, index=index)
 
-    bare_refs = {_bare_dcid(ref) for ref in refs}
-    statvar_by_dcid = {row.dcid: row for row in index.statvars if row.dcid in bare_refs}
-
-    code_systems: set[str] = set()
-    for statvar in statvar_by_dcid.values():
-        code_systems.update(statvar.constraint_properties.keys() & index.declarations.keys())
-    code_systems -= marked
+    statvars = _index_rows(refs, index=index)
+    code_systems = set(_code_systems(statvars.values(), index=index)) - marked
     if not code_systems:
         return None
 
     lookup: dict[str, dict[str, str]] = {}
     for ref in refs:
-        statvar = statvar_by_dcid.get(_bare_dcid(ref))
+        statvar = statvars.get(ref)
         cells: dict[str, str] = {}
         for code_system in code_systems:
             if statvar is None:
@@ -95,6 +91,41 @@ def build_decode_plan(
 
     requests = tuple((_STAT_VAR_COLUMN, code_system) for code_system in sorted(code_systems))
     return DecodePlan(requests=requests, lookup=lookup)
+
+
+def statvar_code_systems(refs: Iterable[str], *, index: CodeIndex) -> frozenset[str] | None:
+    """The declared code systems (`index.declarations`) the index rows of `refs`, bare or
+    `dcid:` StatVar refs, carry as constraint properties. These are the systems a frame of
+    those StatVars decodes, before a composite leaves out its marker axes. `None` where
+    `refs` holds StatVars and the index holds a row of none of them, so their systems are
+    unknown; no refs carry no system."""
+    refs = list(refs)
+    rows = _index_rows(refs, index=index)
+    if refs and not rows:
+        return None
+    return _code_systems(rows.values(), index=index)
+
+
+def _index_rows(refs: Iterable[str], *, index: CodeIndex) -> dict[str, StatVarRow]:
+    """Each of `refs` the index enumerates (`CodeIndex.statvars`) mapped to its row, looked up
+    by dcid. A listed StatVar (`CodeIndex.listed_statvars`), which belongs to no family, and a
+    ref the index does not hold are left out."""
+    rows: dict[str, StatVarRow] = {}
+    for ref in refs:
+        dcid = _bare_dcid(ref)
+        if dcid in index.family_by_dcid and (row := index.statvar_by_dcid(dcid)) is not None:
+            rows[ref] = row
+    return rows
+
+
+def _code_systems(rows: Iterable[StatVarRow], *, index: CodeIndex) -> frozenset[str]:
+    """The declared code systems (`index.declarations`) `rows` carry as constraint
+    properties."""
+    return frozenset(
+        code_system
+        for row in rows
+        for code_system in row.constraint_properties.keys() & index.declarations.keys()
+    )
 
 
 def _component_marker_axes(table: TableLike, *, index: CodeIndex) -> frozenset[str]:

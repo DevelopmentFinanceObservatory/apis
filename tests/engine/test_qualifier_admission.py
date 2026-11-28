@@ -62,12 +62,17 @@ from search.engine.region.phase_rank_bind import (
     _log_admitted_qualifiers,
     _menu_choices,
     _resolve_query_qualifiers,
+    _unbindable_qualifiers,
     _undeclared_qualifiers,
 )
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.qualifier_readings import match_query_readings
 from search.engine.region.state import ResolveState, shape_vocabulary
-from search.engine.retrieval.bound_values import held_codes, shape_for_part
+from search.engine.retrieval.bound_values import (
+    held_codes,
+    shape_for_part,
+    vocabulary_datasets,
+)
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
@@ -81,8 +86,12 @@ from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snap
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._index_slots import (
+    CRS,
+    IATI,
     crs_flow_slot_keys,
     crs_vocabulary,
+    dataset_scopes,
+    dataset_vocabulary,
     own_variable_spans,
     query_qualifiers,
     read_text,
@@ -330,6 +339,53 @@ def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own
         if any(isinstance(row, MeasureValueRow) for row in span.rows)
         and span.matched_text == "gross"
     ]
+
+
+def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
+    """Police (`CRSPurposeCode15132`) is a CRS purpose that only IATI rows hold. A CRS
+    shape's own reading of "police ODA" claims no purpose; an IATI shape's reads police."""
+    iati = dataset_vocabulary(IATI)
+    reading = read_text(
+        "police ODA", _REAL_INDEX, vocabularies=[_CRS, iati], datasets=dataset_scopes(CRS, IATI)
+    )
+
+    def purposes(vocabulary: frozenset[str]) -> set[str]:
+        return {
+            row.dcid
+            for span in reading.by_vocabulary[vocabulary].spans
+            for row in span.rows
+            if isinstance(row, CodeRow) and row.code_system == "crsPurpose"
+        }
+
+    assert purposes(_CRS) == set()
+    assert purposes(iati) == {"CRSPurposeCode15132"}
+
+
+@pytest.mark.parametrize(
+    ("variable", "unavailable"),
+    [
+        pytest.param("police aid to Kenya", [("police", "unavailable")], id="police"),
+        # "urban development" names 43032, which only IATI rows hold, and 43030, which CRS
+        # rows hold, so the CRS shape reads it.
+        pytest.param("urban development ODA to Kenya", [], id="urban-development"),
+    ],
+)
+def test_a_code_only_another_datasets_rows_hold_is_unavailable_on_a_crs_shape(
+    variable, unavailable
+):
+    """Police (`CRSPurposeCode15132`), which only IATI rows hold, is a purpose no CRS shape
+    binds, so the CRS shape records "police" as unavailable."""
+    state = _model_choice_state(variable, [])
+    records = _unbindable_qualifiers(
+        variable,
+        state.variable_spans_in_every_system,
+        state.capped_shapes[0],
+        state.variable_spans_by_vocabulary,
+        named=(),
+        denominators={},
+    )
+
+    assert [(record.text, record.evidence) for record in records] == unavailable
 
 
 # ---------------------------------------------------------------------------
@@ -703,9 +759,10 @@ def test_admit_qualifier_ties_narrows_a_four_row_tie_per_declaring_shape():
 
 
 def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
-    """ "ODA" ties CRS's flow type and DAC2a's ODA code in the vocabulary of ONE's imputed
-    sectors table, which declares both systems. Its rows hold the flow type alone, so the
-    tie promotes to it and bind is never offered DAC2a's ODA code."""
+    """ "ODA" ties CRS's flow type and DAC2a's ODA code in the code systems of ONE's imputed
+    sectors table, which declares both. Its rows hold the flow type alone, so its own
+    reading, within its rows, matches the flow type, and a tie read over every row promotes
+    to it: bind is never offered DAC2a's ODA code."""
     sectors_sv = (
         "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
         "CRSPurposeCode11220_Nominal"
@@ -715,6 +772,14 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
     )
     (sectors,) = derive_shapes(confirmed_svs=[sectors_sv], graph=graph)
     vocabulary = shape_vocabulary(sectors)
+    own = read_text(
+        "ODA to Kenya",
+        _REAL_INDEX,
+        vocabularies=[vocabulary],
+        datasets=vocabulary_datasets([sectors]),
+    ).by_vocabulary[vocabulary]
+    assert [match.code_dcid for match in own.matches] == ["CRSTypeOfFlow10"]
+    assert own.ties == ()
     ties = (
         read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary])
         .by_vocabulary[vocabulary]
@@ -2193,8 +2258,10 @@ def _model_choice_state(
         for sv in svs
         for derived in derive_shapes(confirmed_svs=[sv], graph=graph)
     ]
-    vocabulary = shape_vocabulary(shape)
-    reading = read_text(variable, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary])
+    scopes = vocabulary_datasets([shape])
+    reading = read_text(
+        variable, _REAL_INDEX, get_measure_index(), vocabularies=scopes, datasets=scopes
+    )
     bindings = (
         [
             SlotBindingDraft(
@@ -2222,6 +2289,12 @@ def _model_choice_state(
     state.query_qualifier_matches = {
         vocabulary: own.matches for vocabulary, own in reading.by_vocabulary.items()
     }
+    recalled = [shape, *elsewhere]
+    state.pinned_part_matches = query_qualifiers(
+        variable,
+        vocabularies=[shape_vocabulary(s) for s in recalled],
+        datasets=vocabulary_datasets(recalled),
+    ).matches
     return state
 
 
@@ -2408,6 +2481,10 @@ _IMPUTED_SECTORS_SV = (
     "CRSPurposeCode11220_Nominal"
 )
 _DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal"
+_IATI_CULTURE_SV = (
+    "Amount_FinancialFlow_Gross_Disbursement_IATITransactionType3_CRSTypeOfFlow10_"
+    "CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode16066_Nominal"
+)
 
 
 @pytest.mark.parametrize(
@@ -2425,6 +2502,11 @@ _DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000
         ("imputed education aid", [], ["imputed education"]),
         ("ODA loans for education", [], ["loans"]),
         ("ODA loans for education", [_IMPUTED_SECTORS_SV], ["loans"]),
+        # "culture" is purpose 16066, which only IATI rows hold. An unnamed part has no
+        # need of the opt-in IATI shape, so it binds nothing elsewhere and "culture" keeps
+        # its menu.
+        ("culture ODA", [], ["culture"]),
+        ("culture ODA", [_IATI_CULTURE_SV], ["culture"]),
         ("equity investment ODA", [], ["equity investment"]),
         ("technical cooperation ODA", [], ["technical cooperation"]),
         # A word naming data itself is read (subj-health-data), and a run reaches past an

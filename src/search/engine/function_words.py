@@ -51,12 +51,12 @@ FUNCTION_WORDS = (
 )  # fmt: skip
 
 # Nouns that name the quantity a measure counts and nothing about which flows it counts:
-# "health spending", "imputed multilateral flows", "CRS figures". A word that restricts
-# the flows ("private", "grant", "domestic") stays out.
+# "health spending", "aid spend", "imputed multilateral flows", "CRS figures". A word that
+# restricts the flows ("private", "grant", "domestic") stays out.
 AMOUNT_WORDS = frozenset(
     {
-        "spending", "expenditure", "funding", "financing", "total", "figures", "amount",
-        "amounts", "money", "flows",
+        "spending", "spend", "expenditure", "funding", "financing", "total", "figures",
+        "amount", "amounts", "money", "flows",
     }
 )  # fmt: skip
 

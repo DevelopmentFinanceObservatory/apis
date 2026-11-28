@@ -1705,11 +1705,14 @@ def test_electing_the_opt_in_shape_names_its_table():
     assert _pinned(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
 
 
-def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it():
-    """Bind elects the CRS commitments shape and nominates the imputed shape beside it. The
-    alternate names the opt-in table its shape alone may answer from, so its identity is the
-    one a fresh question electing the imputed shape mints under the purpose the alternate's
-    representative member binds."""
+def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Bind elects the CRS commitments shape and nominates the imputed shape beside it, which
+    a part naming no source keeps because "education" names a sector only the imputed table
+    breaks down on its five-tuple. The alternate names the opt-in table its shape alone may
+    answer from, so its identity is the one a fresh question naming that table mints under
+    the purpose the alternate's representative member binds."""
     purpose = next(
         row.constraint_properties["crsPurpose"]
         for row in get_index().statvars
@@ -1720,11 +1723,12 @@ def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it
     )
 
     offered = _resolve_scripted(
-        "aid to Kenya",
-        _ScriptedLLM("aid", also_plausible=[1]),
-        graph=_graph("aid", members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
+        f"{_E} to Kenya",
+        _ScriptedLLM(_E, also_plausible=[1]),
+        graph=_graph(_E, members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
         binder=ReplyBinder(),
     )
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
     fresh = _resolve_scripted(
         "aid to Kenya",
         _ScriptedLLM("aid", drafted=(drafted,)),

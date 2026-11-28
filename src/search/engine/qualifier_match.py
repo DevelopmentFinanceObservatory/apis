@@ -40,7 +40,13 @@ from code_index.tokens import (
     tokenize,
     word_tokens,
 )
-from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
+from code_index.types import (
+    CodeRow,
+    MeasureIndex,
+    MeasurePartitionLabel,
+    MeasureValueRow,
+    StatVarRow,
+)
 from dfo_platform.lru_memo import LruMemo
 from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
 from search.engine.role_text import ROLE_PREPOSITIONS
@@ -188,6 +194,7 @@ class _RawSpan:
 # lowercase or digit characters after it, or a run of lowercase or digit characters.
 # "crsCooperationModality" yields ["crs", "Cooperation", "Modality"].
 _CAMEL_WORD_RE = re.compile(r"[A-Z][a-z0-9]*|[a-z0-9]+")
+_LABEL_WORD_RE = re.compile(r"[a-z0-9]+")
 
 # Tokens that join two code spans of one variable, casefolded. A union connective reads
 # the two codes together ("health and education", "health & education", and "health
@@ -896,25 +903,36 @@ def _max_phrase_words(index: CodeIndex, measure_index: MeasureIndex | None) -> i
     return longest
 
 
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """A vocabulary one scan reads and the codes its shapes can bind (`bindable_codes`),
+    read once a scan."""
+
+    vocabulary: AbstractSet[str]
+    bindable: frozenset[str]
+
+
 def _rows_for(
-    span: Sequence[Token], lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+    span: Sequence[Token], lexicon: _Lexicon, scope: _Scope | None
 ) -> tuple[MatchableRow, ...]:
-    """Every code row of a system in `vocabulary` (every system when `None`) and every
-    measure value whose text matches `span`. A vocabulary reads only the codes a shape can
-    bind (`bindable_codes`)."""
+    """Every code row of a system in `scope`'s vocabulary that a shape of it can bind
+    (`bindable_codes`), every code row when `scope` is `None`, and every measure value
+    whose text matches `span`."""
     codes = lexicon.index.codes_by_tokens(span)
-    if vocabulary is not None:
+    if scope is not None:
         codes = tuple(
-            row for row in codes if row.code_system in vocabulary and row.dcid in lexicon.bindable
+            row
+            for row in codes
+            if row.code_system in scope.vocabulary and row.dcid in scope.bindable
         )
     return codes + lexicon.measure_lookup.get(span)
 
 
 def _candidate_rows(
-    span: Sequence[Token], lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+    span: Sequence[Token], lexicon: _Lexicon, scope: _Scope | None
 ) -> tuple[bool, tuple[MatchableRow, ...]] | None:
     """Whether the query span `span` resolves only less its trailing "s", and every
-    row it resolves to (a code row of a system in `vocabulary`, every system when `None`,
+    row it resolves to (a code row `scope` reads, every code row when `None`,
     or a measure value), or `None` if it resolves to nothing at all.
     A measure value is reachable the same way a code row is: neither source
     is preferred over the other, so a span both register returns both rows
@@ -926,12 +944,12 @@ def _candidate_rows(
     apply: strip one trailing "s" and look that up instead. The caller
     decides ambiguity -- a returned result may still carry more than one row.
     """
-    exact_rows = _rows_for(span, lexicon, vocabulary)
+    exact_rows = _rows_for(span, lexicon, scope)
     if exact_rows:
         return False, exact_rows
     less_s = singular(span)
     if less_s is not None:
-        singular_rows = _rows_for(less_s, lexicon, vocabulary)
+        singular_rows = _rows_for(less_s, lexicon, scope)
         if singular_rows:
             return True, singular_rows
     return None
@@ -955,14 +973,19 @@ class _SystemMarkers:
     tail: tuple[str, ...]
 
 
+@per_index
 def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
     """Return each system's bare-code markers, read from its camelCase name.
 
     A word shared by several indexed systems, such as `crs` or `of`, cannot distinguish a
     system and marks none alone. A word a declared default lists in `when_named` names the
     measure a query asks for, so it marks nothing alone either
-    (`_SystemMarkers.measure_words`). The name's last two words, in its order, mark the
-    system (`_SystemMarkers.tail`). New system names need no manual marker list.
+    (`_SystemMarkers.measure_words`). A name's first word naming a dataset whose rows carry
+    another code system as well (`_dataset_name_words`) names the dataset, which says
+    nothing of the axis a number after it codes, so it marks nothing alone: "IATI top 3
+    recipients" holds no transaction type, while "dac2a 106" reads DAC2a's one system. The name's last two
+    words, in its order, mark the system (`_SystemMarkers.tail`). New system names need no
+    manual marker list. Built once per index.
     """
     names = {
         system: tuple(word.casefold() for word in _CAMEL_WORD_RE.findall(system))
@@ -976,18 +999,40 @@ def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
     measure_words = frozenset(
         word.casefold()
         for declaration in index.declarations.values()
-        if declaration.default is not None
-        for word in declaration.default.when_named
+        for default in declaration.defaults
+        for word in default.when_named
     )
+    dataset_words = _dataset_name_words(index)
     markers: dict[str, _SystemMarkers] = {}
     for system, words in raw.items():
-        unique = frozenset(word for word in words if word_counts[word] == 1)
+        prefix = names[system][0]
+        unique = frozenset(
+            word
+            for word in words
+            if word_counts[word] == 1
+            and (word != prefix or dataset_words.get(word, {system}) <= {system})
+        )
         markers[system] = _SystemMarkers(
             words=unique - measure_words,
             measure_words=unique & measure_words,
             tail=names[system][-2:],
         )
     return markers
+
+
+def _dataset_name_words(index: CodeIndex) -> dict[str, frozenset[str]]:
+    """Each word of a declared dataset's label, casefolded, with the code systems the rows
+    of the datasets it names carry. A dataset no row of `index` holds adds no system."""
+    carried: dict[str, set[str]] = {}
+    for row in (*index.statvars, *index.listed_statvars):
+        systems = row.constraint_properties.keys() & index.declarations.keys()
+        for dataset in row.datasets:
+            carried.setdefault(dataset, set()).update(systems)
+    words: dict[str, set[str]] = {}
+    for dataset in index.datasets.values():
+        for word in _LABEL_WORD_RE.findall(dataset.label.casefold()):
+            words.setdefault(word, set()).update(carried.get(dataset.id, ()))
+    return {word: frozenset(systems) for word, systems in words.items()}
 
 
 def _preceding_marker_systems(
@@ -1041,7 +1086,6 @@ class _Lexicon:
     measure_lookup: TokenLookup[MeasureValueRow]
     system_markers: Mapping[str, _SystemMarkers]
     max_width: int
-    bindable: frozenset[str]
 
 
 def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
@@ -1051,56 +1095,96 @@ def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
         measure_lookup=_measure_lookup(measure_index),
         system_markers=_all_system_markers(index),
         max_width=_max_phrase_words(index, measure_index),
-        bindable=bindable_codes(index),
     )
 
 
-# Each index's bindable codes, by index object id. A weakref finalizer removes the entry
-# before Python can reuse the id.
-_bindable_codes_cache: dict[int, frozenset[str]] = {}
+@per_index
+def _bindable_by_datasets(_index: CodeIndex) -> dict[frozenset[str], frozenset[str]]:
+    """Each index's bindable codes (`bindable_codes`), by the datasets they are scoped to,
+    the empty set for every row."""
+    return {}
 
 
-def bindable_codes(index: CodeIndex) -> frozenset[str]:
-    """The dcids of the codes a shape can bind: each code some StatVar row of `index` holds,
-    itself or through a descendant, and every code of a system no row carries, whose
-    StatVars the index does not list and so cannot rule out.
+def bindable_codes(index: CodeIndex, *, datasets: Collection[str] = ()) -> frozenset[str]:
+    """The dcids of the codes a shape built from the rows of `datasets` can bind: each code
+    one of those rows holds, itself or through a descendant, and every code of a system no
+    row of `index` carries, whose StatVars the index does not list and so cannot rule out.
+    No datasets, a shape the index does not carry (`shape_datasets`), reads every row.
+
+    A reader with one shape scopes by that shape's datasets. A reader comparing two shapes
+    scopes both sides by the union of the two shapes' datasets
+    (`bound_values.pair_datasets`). The reading in every code system stays unscoped.
 
     A code of a system the rows carry that no row holds binds on no shape. "population"
-    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. Built once per index.
+    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. "police",
+    `CRSPurposeCode15132`, is a purpose only IATI rows hold, so it binds on no CRS shape,
+    and a CRS purpose code no IATI row holds binds on no IATI shape.
+
+    The rows of `datasets` are the rows of every family one of them publishes
+    (`IndexFamily.rows`) and each listed row (`CodeIndex.listed_statvars`) one of them
+    holds. A family's rows include those no dataset publishes, `StatVarRow.datasets` empty,
+    which the index files with the family whose properties hold theirs. A shape of the
+    family reads them as its members, so it binds their codes. Built once per index and
+    datasets.
     """
-    key = id(index)
-    cached = _bindable_codes_cache.get(key)
+    scope = frozenset(datasets)
+    by_datasets = _bindable_by_datasets(index)
+    cached = by_datasets.get(scope)
     if cached is not None:
         return cached
+    if scope:
+        rows: Iterable[StatVarRow] = (
+            *(
+                row
+                for families in index.families_by_five_tuple.values()
+                for family in families
+                if not scope.isdisjoint(family.datasets)
+                for row in family.rows
+            ),
+            *(row for row in index.listed_statvars if not scope.isdisjoint(row.datasets)),
+        )
+    else:
+        rows = (*index.statvars, *index.listed_statvars)
     bindable: set[str] = set()
-    carried: set[str] = set()
-    for row in (*index.statvars, *index.listed_statvars):
-        carried.update(row.constraint_properties)
+    for row in rows:
         for value in row.constraint_properties.values():
             code = index.code_by_dcid(value)
             while code is not None and code.dcid not in bindable:
                 bindable.add(code.dcid)
                 code = index.code_by_dcid(code.parent) if code.parent is not None else None
+    carried = _carried_systems(index)
     bindable.update(code.dcid for code in index.codes if code.code_system not in carried)
-    cached = frozenset(bindable)
-    _bindable_codes_cache[key] = cached
-    weakref.finalize(index, _bindable_codes_cache.pop, key, None)
+    cached = by_datasets[scope] = frozenset(bindable)
     return cached
 
 
+@per_index
+def _carried_systems(index: CodeIndex) -> frozenset[str]:
+    """The constraint properties some row of `index` carries."""
+    return frozenset(
+        system
+        for row in (*index.statvars, *index.listed_statvars)
+        for system in row.constraint_properties
+    )
+
+
 def _recognise_raw(
-    query: str, lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+    query: str,
+    lexicon: _Lexicon,
+    vocabulary: AbstractSet[str] | None,
+    datasets: Collection[str] = (),
 ) -> tuple[_RawSpan, ...]:
     """Return the spans one scan claims, sorted by start offset.
 
     `vocabulary` holds the code systems the scan reads; `None` reads every system. A code
     row of another system neither matches nor claims a token, so a longer label only a
-    foreign system carries cannot hide a shorter one this vocabulary reads. A code no shape
-    can bind (`bindable_codes`) is foreign in the same way: on a CRS shape "population"
-    names no type of finance and stays free for a purpose reading. The scan in every
-    system keeps such codes, so its reading states what the words name, and the measure
-    values every vocabulary shares stay those of that reading ("gross" in "gross national
-    income" is no netting basis). Measure values are read in every vocabulary.
+    foreign system carries cannot hide a shorter one this vocabulary reads. A code a shape
+    built from the rows of `datasets` cannot bind (`bindable_codes`) is foreign in the same
+    way: on a CRS shape "population" names no type of finance and stays free for a purpose
+    reading. The scan in every system keeps such codes, so its reading states what the
+    words name, and the measure values every vocabulary shares stay those of that reading
+    ("gross" in "gross national income" is no netting basis). Measure values are read in
+    every vocabulary.
 
     First, try the widest run of words matching a label or synonym at each position
     (`code_index.tokens`). Any match claims the words, even when ambiguous; a span of
@@ -1118,15 +1202,20 @@ def _recognise_raw(
 
     claimed = [False] * n
     found: list[_RawSpan] = []
+    scope = (
+        None
+        if vocabulary is None
+        else _Scope(
+            vocabulary=vocabulary, bindable=bindable_codes(lexicon.index, datasets=datasets)
+        )
+    )
 
     for width in range(min(lexicon.max_width, n), 0, -1):
         for start in range(0, n - width + 1):
             last = start + width - 1
             if any(claimed[start : last + 1]):
                 continue
-            candidate = _candidate_rows(
-                tokens[word_at[start] : word_at[last] + 1], lexicon, vocabulary
-            )
+            candidate = _candidate_rows(tokens[word_at[start] : word_at[last] + 1], lexicon, scope)
             if candidate is None:
                 continue
             # Claim these positions regardless of the ambiguity verdict --
@@ -1157,7 +1246,7 @@ def _recognise_raw(
         if not systems:
             continue
         row = _lookup_code_in_systems(word.text, systems, lexicon.index)
-        if row is None or (vocabulary is not None and row.dcid not in lexicon.bindable):
+        if row is None or (scope is not None and row.dcid not in scope.bindable):
             continue
         found.append(
             _RawSpan(
@@ -1205,9 +1294,10 @@ def _read(
     measure_spans: tuple[_RawSpan, ...] | None = None,
     *,
     located: bool = False,
+    datasets: Collection[str] = (),
 ) -> VocabularyReading:
-    """`_recognise_raw`'s scan of `query` in `vocabulary`, projected to spans, one-row
-    matches and ties (`_project`).
+    """`_recognise_raw`'s scan of `query` in `vocabulary`, binding codes within the rows of
+    `datasets`, projected to spans, one-row matches and ties (`_project`).
 
     `measure_spans`, the one-measure-value spans of the scan in every code system, replace
     the scan's own: a vocabulary drops a foreign code row, but the measure reading of the
@@ -1217,7 +1307,7 @@ def _read(
     raw = (
         _scan_everywhere(query, lexicon)
         if vocabulary is None
-        else _recognise_raw(query, lexicon, vocabulary)
+        else _recognise_raw(query, lexicon, vocabulary, datasets)
     )
     if measure_spans is not None:
         kept = [r for r in raw if not _is_measure_span(r)]
@@ -1310,14 +1400,17 @@ def read_by_vocabulary(
     measure_index: MeasureIndex | None = None,
     *,
     vocabularies: Iterable[frozenset[str]],
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> tuple[TextReading, ...]:
     """Each of `texts` read in every code system and in each of `vocabularies`, one scan per
     text and distinct vocabulary, with the lookup tables built once for the call.
 
     Each vocabulary's reading sees only its own code systems (`VocabularyReading`), so a
     shape reads a text in its own systems' labels and never receives two readings of one
-    token from two parses. Measure values take the reading in every code system, shared by
-    every vocabulary. Each match and tie row carries its offsets in its own text. The scan
+    token from two parses. It reads only the codes a shape built from the rows of its
+    `datasets` entry can bind (`bindable_codes`), every row for a vocabulary `datasets`
+    does not map (`retrieval.bound_values.vocabulary_datasets`). Measure values take the
+    reading in every code system, shared by every vocabulary. Each match and tie row carries its offsets in its own text. The scan
     in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
     variable (`interpret._detect`) and the bind phase's share one scan.
     """
@@ -1331,7 +1424,14 @@ def read_by_vocabulary(
             TextReading(
                 everywhere=_project(everywhere, located=True),
                 by_vocabulary={
-                    vocabulary: _read(text, lexicon, vocabulary, measure_spans, located=True)
+                    vocabulary: _read(
+                        text,
+                        lexicon,
+                        vocabulary,
+                        measure_spans,
+                        located=True,
+                        datasets=(datasets or {}).get(vocabulary, ()),
+                    )
                     for vocabulary in vocabularies
                 },
             )

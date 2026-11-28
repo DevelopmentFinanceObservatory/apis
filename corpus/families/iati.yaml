@@ -1,0 +1,10 @@
+iati.disbursement_gross:
+  origin: dfo
+  dataset: dataset/InternationalAidTransparencyInitiative
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Gross}

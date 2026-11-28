@@ -60,9 +60,9 @@ def test_no_shared_word_in_the_systems_asked_gives_no_menu(committed, words, sys
 
 
 def test_the_menu_is_bounded(committed: CodeIndex):
-    """Dozens of codes share "services" and, with their relatives, number 34. The menu holds
-    `CANDIDATE_LIMIT` of them, each once."""
-    menu = committed.candidate_codes(["services"], code_systems=_CRS)
+    """Over twenty codes share "support", and with their relatives they pass the bound. The
+    menu holds `CANDIDATE_LIMIT` of them, each once."""
+    menu = committed.candidate_codes(["support"], code_systems=_CRS)
     assert len(menu.codes) == CANDIDATE_LIMIT
     assert len(set(menu.codes)) == len(menu.codes)
     assert len(menu.hits) == CANDIDATE_HITS

@@ -25,7 +25,7 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
-from search.engine.qualifier_match import _normalize, names_plain_name
+from search.engine.qualifier_match import _normalize, bindable_codes, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
     denominator_meaning,
@@ -34,6 +34,7 @@ from search.engine.quantity import (
 from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
+    pair_datasets,
     ratio_base_axis,
     shape_invariants,
     shape_partly_stated,
@@ -612,28 +613,59 @@ def reads_bound_values_alike(
     `elected`'s (`covered_leaves`), and to at least one (`applies_value`), so
     `other` holds every bound value as `elected` does. A family that lists a parent code
     beside its children reads the parent as another listing lists its children alone. A
-    shape with no slot on the property holds none of its values."""
+    shape with no slot on the property holds none of its values. Both sides read their
+    codes within the pair's datasets (`pair_datasets`)."""
     bound = _bound_slots(bindings)
     own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
+    datasets = pair_datasets(elected, other)
     for axis, prop in _slot_properties(elected):
         key = f"{axis}:{prop}"
         ours, theirs = own.get(key, []), held.get(key, [])
         for value in bound.get((axis, prop), ()):
             read = [code for code in ours if applies_value(value, code)]
             read_there = [code for code in theirs if applies_value(value, code)]
-            if not read or covered_leaves(read) != covered_leaves(read_there):
+            if not read or covered_leaves(read, datasets=datasets) != covered_leaves(
+                read_there, datasets=datasets
+            ):
                 return False
     return True
 
 
-def covered_leaves(codes: Iterable[str]) -> frozenset[str]:
+def covered_leaves(codes: Iterable[str], *, datasets: Collection[str]) -> frozenset[str]:
     """The leaf codes `codes` cover in the code index's hierarchy: each code's descendants
     that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
-    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves."""
+    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves.
+
+    A parent covers only the leaves the rows of `datasets` can bind
+    (`qualifier_match.bindable_codes`), every row when `datasets` is empty. A reader with
+    one shape passes that shape's datasets (`shape_datasets`). A reader comparing two
+    shapes passes one universe for both sides, the union of their datasets
+    (`pair_datasets`), so a parent both shapes list covers the same leaves on each. A
+    listed code always covers itself, and so does a parent none of whose leaves count. No
+    IATI row holds a code under reimbursable grants (`CRSTypeOfFinance422`), so within the
+    IATI dataset it covers itself and reads apart from a shape binding nothing.
+
+    The union is conservative where two datasets hold different children of one parent: a
+    CRS shape listing the CRS-held children of upper secondary education
+    (`CRSPurposeCode113`) alone does not read alike with an IATI shape listing the parent,
+    because the union holds 11321 and 11322, which only IATI rows hold and the CRS shape
+    does not list."""
     index = get_index()
-    return frozenset(
-        leaf for code in codes for leaf in index.descendants(code) if not index.has_children(leaf)
-    )
+    listed = set(codes)
+    bindable = bindable_codes(index, datasets=datasets)
+
+    def counts(leaf: str) -> bool:
+        return leaf in listed or leaf in bindable
+
+    covered: set[str] = set()
+    for code in listed:
+        leaves = {
+            leaf
+            for leaf in index.descendants(code)
+            if not index.has_children(leaf) and counts(leaf)
+        }
+        covered |= leaves or {code}
+    return frozenset(covered)
 
 
 def _bound_slots(bindings: Sequence[SlotBindingDraft]) -> dict[tuple[Axis, str], list[str]]:

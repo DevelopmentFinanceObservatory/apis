@@ -554,10 +554,10 @@ def test_a_part_scans_its_variable_in_every_system_once(monkeypatch):
     scans: list[str] = []
     scan = qualifier_match._recognise_raw
 
-    def counting(text, lexicon, vocabulary):
+    def counting(text, lexicon, vocabulary, datasets=()):
         if vocabulary is None and text == "adaptation finance disbursements":
             scans.append(text)
-        return scan(text, lexicon, vocabulary)
+        return scan(text, lexicon, vocabulary, datasets)
 
     monkeypatch.setattr(qualifier_match, "_recognise_raw", counting)
     query = "germany adaptation finance disbursements 2022"

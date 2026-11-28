@@ -71,7 +71,7 @@ def test_a_picker_gets_the_largest_code_system_in_one_page():
     with make_client() as client:
         page = _page(client, _CRS_PURPOSES, relation="codes", limit=1000)
 
-    assert len(page["items"]) == 289
+    assert len(page["items"]) == 356
     assert page["next_cursor"] is None
     assert page["complete"] is True
     assert "code_index" in page["built_from"]
