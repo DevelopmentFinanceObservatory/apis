@@ -228,8 +228,8 @@ def build_frame_from_table(
 
     The frame carries the `reporting_organisation` column when `reporting_organisation` is
     true, and when it is `None` exactly when a row of `table` names its reporter
-    (`names_reporters`), so a plain table's frame has the columns it had before the column
-    existed. Empty tables produce the same columns-only `Frame` as `build_frame`.
+    (`names_reporters`), so a plain table's frame has no such column. Empty tables produce
+    the same columns-only `Frame` as `build_frame`.
     """
     role_keys = tuple(role_keys)
     if reporting_organisation is None:

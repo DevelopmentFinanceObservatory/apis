@@ -1293,6 +1293,36 @@ def absent_reads_zero_in(
     )
 
 
+def absence_reads_zero_over(
+    index: CodeIndex,
+    dataset: str | None,
+    *,
+    members: Iterable[str],
+    years: Iterable[int] | None,
+    held_years: Callable[[str], AbstractSet[int]] | None,
+) -> bool:
+    """Returns whether every observation `dataset` carries no row for adds zero to a sum over
+    the years `years`, whichever of `members` files the series: the reading a sum applies year
+    by year (`absent_reads_zero_in`), held over the whole window.
+
+    A dataset declaring `members_report_overlapping_accounts` reads zero over the window only
+    when each of `members` holds an observation in every one of `years` (`held_years`, the
+    `series_coverage.index.CoverageIndex.provenance_years` of each member), and unknown for no
+    `members`, no `years` and no `held_years`. Any other dataset reads as
+    `absent_member_reads_zero` does. Search's `Slot.summable` reads absence through this
+    function, so it marks a sum summable only where the Datasets collapse of the same frame
+    reads every missing row as zero (`datasets_api.groupby.ReporterCheck`)."""
+    if not absent_member_reads_zero(index, dataset):
+        return False
+    if not reports_overlapping_accounts(index, dataset):
+        return True
+    if years is None or held_years is None:
+        return False
+    window = frozenset(years)
+    held = [held_years(member) for member in members]
+    return bool(held) and all(window <= member_years for member_years in held)
+
+
 def listed_group(index: CodeIndex, query: FamilyQuery, *, member_cap: int) -> MemberGroup | None:
     """Returns the group the graph walk resolves for `query`, elected from the index alone,
     when that group holds a listed row (`CodeIndex.listed_statvars`), else `None`, which
@@ -1366,6 +1396,7 @@ __all__ = [
     "DatasetFamily",
     "FamilyQuery",
     "SourceNotInFamily",
+    "absence_reads_zero_over",
     "absent_member_reads_zero",
     "absent_readings",
     "absent_reads_zero_in",

@@ -425,15 +425,6 @@ def to_materialisation_request(
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     facet_bindings: dict[str, FacetBinding] = {}
     for axis, binding in facets.items():
-        if axis == _PROVENANCE_AXIS and ("refs" in binding or isinstance(binding.get("ref"), str)):
-            # A facet reads a member's dataset on the provenance axis, and the pin's scope
-            # (`pinned_provenance_scope`) admits only the members it names, so a member ref
-            # binds its dataset's id here.
-            posted = binding["refs"] if "refs" in binding else (binding["ref"],)
-            refs = tuple(dict.fromkeys(map(code_index.dataset_of, cast("Sequence[str]", posted))))
-            if len(refs) == 1:
-                facet_bindings[axis] = FacetBinding(state="bound", ref=refs[0])
-            continue
         has_ref = "ref" in binding
         has_request = "request" in binding
         has_national_currency = "national_currency" in binding
@@ -443,6 +434,15 @@ def to_materialisation_request(
                 f"{axis} facet binding carries more than one of 'ref', 'request' and "
                 "'national_currency'",
             )
+        if axis == _PROVENANCE_AXIS and ("refs" in binding or isinstance(binding.get("ref"), str)):
+            # A facet reads a member's dataset on the provenance axis, and the pin's scope
+            # (`pinned_provenance_scope`) admits only the members it names, so a member ref
+            # binds its dataset's id here.
+            posted = binding["refs"] if "refs" in binding else (binding["ref"],)
+            refs = tuple(dict.fromkeys(map(code_index.dataset_of, cast("Sequence[str]", posted))))
+            if len(refs) == 1:
+                facet_bindings[axis] = FacetBinding(state="bound", ref=refs[0])
+            continue
         if has_national_currency:
             role = cast("Mapping[str, object]", binding["national_currency"])["role"]
             _require_currency_role(cast(str, role), shape=shape)

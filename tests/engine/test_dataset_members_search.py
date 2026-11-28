@@ -683,16 +683,17 @@ def test_excluding_a_member_serves_the_other_alone(member_world: World) -> None:
     [
         pytest.param(None, True, id="unscoped"),
         pytest.param({_NORTH, _SOUTH, _PLAIN}, True, id="every-member"),
-        pytest.param({_NORTH, _PLAIN}, False, id="one-member"),
+        pytest.param({_NORTH, _PLAIN}, True, id="one-member"),
+        pytest.param({_PLAIN}, False, id="no-member"),
     ],
 )
-def test_a_scope_leaving_out_a_member_answers_no_data_before_disagreement(
+def test_a_scope_leaving_out_every_member_answers_no_data_before_disagreement(
     index: CodeIndex, scope: set[str] | None, refused: bool
 ) -> None:
     """The Ledger's member holds a facet of the plain table alone. With every member
-    admitted that is drift, and the mint refuses `DatasetDisagreementError`; under a scope
-    that leaves out a member the member is unpopulated, so the part answers its scope's no
-    data."""
+    admitted, or some, that is drift, and the mint refuses `DatasetDisagreementError`; under
+    a scope that leaves out every member the member is unpopulated, so the part answers its
+    scope's no data."""
     catalogue = _CATALOGUE if scope is None else _CATALOGUE.scoped(frozenset(scope))
     candidates = [_member_facet("fP", _PLAIN)]
 

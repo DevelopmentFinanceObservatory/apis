@@ -7,7 +7,8 @@ unchanged definition, each member a token that exists today.
 - `revisions`: each dispatched declared dataset's id with its members revision
   (`member_folds.members_revision`), a digest of each member and its own date, so a member
   that moves under a newer member's date, or a member added or removed, changes the
-  fingerprint where the newest date holds. A plain table has no entry.
+  fingerprint where the newest date holds. The revision is `None` while a member's date is
+  unknown. A plain table has no entry.
 - `conversion_sources`: each rate table provenance with the refresh date its tables were
   admitted under (`ConversionRecord.table_refresh_date`).
 - `recipes`: each conversion recipe with the digest of its deployed body
@@ -262,11 +263,11 @@ def build_dependencies(
     request alone took (`place_scope.DefaultPresence.unsettled`)."""
     records = [record for record in conversion_records if record is not None]
     sources: dict[str, str | None] = {}
-    revisions: dict[str, str] = {}
+    revisions: dict[str, str | None] = {}
     for ref in source_refs:
         refresh = provenance_refresh.get(ref)
         sources[ref] = refresh.last_data_refresh_date if refresh is not None else None
-        if refresh is not None and refresh.members_revision is not None:
+        if refresh is not None and refresh.declared_dataset:
             revisions[ref] = refresh.members_revision
     conversion_sources = {
         record.table_provenance_id: record.table_refresh_date for record in records
@@ -422,7 +423,7 @@ def refreshed_dependencies(
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
     serves uncached. A declared dataset's id takes the newest of its Dataset node's date and
     every member's, as the run's did (`facets._probe_provenance_refresh`), and each stored
-    source that is a declared dataset's id now gains its members revision from the same read,
+    source that is a declared dataset's id takes its members revision from the same read,
     so a member's move, or a member added or removed in the bound code index, differs in
     `revisions`. Each stored
     recipe takes the digest of its deployed body. `held_back` is the horizon of each stored
@@ -481,9 +482,9 @@ def refreshed_dependencies(
         sources=tuple((ref, _token(ref)) for ref, _ in stored.sources),
         revisions=tuple(
             sorted(
-                (ref, revision)
+                (ref, refresh[ref].members_revision)
                 for ref, _ in stored.sources
-                if (revision := refresh[ref].members_revision) is not None
+                if refresh[ref].declared_dataset
             )
         ),
         conversion_sources=tuple((ref, _token(ref)) for ref, _ in stored.conversion_sources),
@@ -520,9 +521,10 @@ def _composite_digest_now(provenance: str, *, code_index: CodeIndex) -> str | No
         return None
 
 
-# The pair fields whose tokens are refresh dates. A current `None` date says nothing about the
-# source, so it never differs from a stored one (`dependency_changes`).
-_DATE_FIELDS = ("sources", "conversion_sources")
+# The pair fields whose tokens are refresh dates, or a digest of them (`revisions`). A current
+# `None` says nothing about the source, so it never differs from a stored one
+# (`dependency_changes`).
+_DATE_FIELDS = ("sources", "conversion_sources", "revisions")
 
 
 def _pairs_by_name(dependencies: Dependencies) -> dict[str, object]:
@@ -550,9 +552,9 @@ def dependency_changes(
     A member is `members`, `window`, `latest_years`, or a pair named `<field>:<ref>`, such as
     `held_back:partial:provenance/OECDDAC2A` (a horizon present on one side only differs), or
     `sources:provenance/OECDDAC2A`, `revisions:<dataset id>` or `composites:provenance/ONEBilateralAndImputedMultilateral`. A ref present on one side only differs. A source or
-    conversion source whose current refresh date is `None` is unknown and never differs, so a
-    source with no refresh date, or one whose date the graph stops serving, never rebuilds on
-    its token. A missing, malformed, or other-schema `stored` returns `("schema",)`.
+    conversion source whose current refresh date is `None`, and a declared dataset whose
+    current members revision is `None`, is unknown and never differs, so a source with no
+    refresh date, or one whose date the graph stops serving, never rebuilds on its token. A missing, malformed, or other-schema `stored` returns `("schema",)`.
     """
     decoded = decode_dependencies(stored) if stored is not None else None
     if decoded is None:

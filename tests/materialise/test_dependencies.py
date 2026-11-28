@@ -462,6 +462,13 @@ _EAST = "provenance/LedgerEast"
             id="a-member-removed",
         ),
         pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: None, SOUTH: "2026-03-01"},
+            (),
+            id="a-member-date-unread-is-unknown",
+        ),
+        pytest.param(
             PLAIN, {PLAIN: "2026-03-01"}, {PLAIN: "2026-03-01"}, (), id="plain-table-unchanged"
         ),
     ],
@@ -472,15 +479,21 @@ def test_a_declared_dataset_is_stale_when_a_member_moves_or_its_membership_chang
     """The run records the dataset's newest member date in `sources` and a digest of each
     member with its own date in `revisions`. A member moving from January to February under
     another at March, or a member added or removed, leaves the newest date at March and moves
-    the revision. A plain table records its date alone, in the shape it always had."""
+    the revision. A member whose date the graph stops serving makes the revision unknown, and
+    an unknown revision never differs. A plain table records its date alone and no
+    `revisions` entry."""
     request = _request(_STAT_VAR, RequestedWindow(kind="all"))
 
-    def graph(dates: dict[str, str]) -> FakeGraphReader:
+    def graph(dates: dict[str, str | None]) -> FakeGraphReader:
         return FakeGraphReader(
-            arcs={dcid: {"lastDataRefreshDate": (date,)} for dcid, date in dates.items()}
+            arcs={
+                dcid: {"lastDataRefreshDate": (date,)}
+                for dcid, date in dates.items()
+                if date is not None
+            }
         )
 
-    def members(dates: dict[str, str]) -> tuple[str, ...]:
+    def members(dates: dict[str, str | None]) -> tuple[str, ...]:
         return tuple(sorted(dates.keys() - {PLAIN}))
 
     with bound_ledger_index(members(before)):

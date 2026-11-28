@@ -22,6 +22,9 @@ from datasets_api.render import _RenderReads, _reshape
 from datasets_api.warnings import reporters_summed_message
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
+from search.engine.retrieval.bound_values import apply_slot_summability
+from search.models import BaseIdentity
+from tests.engine._builders import unbound_slot
 from tests.graph_release.support import serving_index
 
 from ._graph_doubles import FakeMintGraphReader
@@ -390,6 +393,54 @@ def test_a_reporters_missing_row_reads_zero_only_in_years_it_holds(
         row[columns.index("time_period")]: row[columns.index("value")]
         for row in reshaped.table.rows
     } == totals
+
+
+# The Ledger family's identity, as Search resolves it from `_ledger_index`.
+_LEDGER_IDENTITY = BaseIdentity.model_validate(
+    {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": "Amount",
+            "measured_property": "amount",
+        },
+        "slots": [{"property": "crsPurpose", "binding": {"state": "unbound"}}],
+        "requested_window": {"kind": "all"},
+    }
+)
+
+
+@pytest.mark.parametrize("last_year", [2023, 2024], ids=["held-years", "unheld-year"])
+def test_search_reads_a_ledger_sum_summable_exactly_where_the_collapse_sums(last_year: int):
+    """North files nothing in 2024, so a sum to 2024 reads its missing health row as unknown
+    and refuses; Search reads the same window not summable. To 2023 both sum."""
+    table = _reported(
+        ("SV_health", "2021", 10.0, _NORTH),
+        ("SV_health", "2023", 10.0, _NORTH),
+        *(("SV_malaria", str(year), 4.0, _SOUTH) for year in range(2021, last_year + 1)),
+    )
+    index = _ledger_index(absent_zero=True)
+
+    def held_years(provenance: str) -> frozenset[int]:
+        return _HELD.get(provenance, frozenset())
+
+    try:
+        _sum_ledger(table, index=index, held_years=held_years)
+    except RollupNotSummableError as refused:
+        assert refused.precondition == "missing_members"
+        sums = False
+    else:
+        sums = True
+    with serving_index(index):
+        (slot,) = apply_slot_summability(
+            [unbound_slot("how", "crsPurpose", "crsPurpose")],
+            _LEDGER_IDENTITY,
+            years=range(2021, last_year + 1),
+            held_years=held_years,
+        )
+
+    assert sums is (last_year == 2023)
+    assert slot.summable is sums
 
 
 # --- Declaration lookup uses the injected index -----------------------------

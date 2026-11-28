@@ -181,8 +181,8 @@ def unit_column(table: pa.Table, *, count: int) -> pa.ChunkedArray:
 def shared_cells(table: pa.Table, groups: Groups) -> pa.Array | None:
     """Each group's `reporting_organisation` cell, the member that reported its rows: the one
     cell every row of the group holds, and null where they hold several, a null counting as
-    one. None when `table` carries no such column, so an output built from these cells keeps
-    the shape it had before the column existed."""
+    one. None when `table` carries no such column, so an output built from these cells carries
+    none either."""
     if REPORTING_ORGANISATION_COLUMN not in table.column_names:
         return None
     if not groups.count:

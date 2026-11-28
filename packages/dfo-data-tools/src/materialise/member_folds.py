@@ -24,8 +24,9 @@ The rule of each fact:
 - reported status (`reported_sources`, `status_of`): a dataset's method-less values count as
   reported when every member is a reported provenance, so a member and its dataset agree.
 - the refresh date (`refresh_nodes`, `newest_refresh`): the newest of the Dataset node's
-  date and every member's. Its revision (`members_revision`) digests each of those nodes with
-  its own date, so a dependency fingerprint sees a member move under a newer member's date.
+  date and every member's. Its revision (`members_revision`) digests each member with its own
+  date, so a dependency fingerprint sees a member move under a newer member's date, and is
+  unknown while a member's date is.
 - the conversion recipe (`dataset_recipe_id`): the Dataset node's own, else the one every
   member names, else none (`recipe_undeclared` at the mint).
 - a declared default policy (`dataset_policy`, `dataset_policies`): a provenance default
@@ -286,11 +287,15 @@ def newest_refresh(dates: Iterable[str | None]) -> str | None:
     return max((date for date in dates if date is not None), default=None)
 
 
-def members_revision(dates: Mapping[str, str | None]) -> str:
-    """`sha256:` and the hex digest of the JSON list of `[node, date]` pairs of `dates`, sorted
-    by node, each node of a dataset's `refresh_nodes` with its own `lastDataRefreshDate` or
-    `None`. It moves when any node's date moves or the node set changes, which the newest date
-    (`newest_refresh`) misses when another node holds a newer date."""
+def members_revision(dates: Mapping[str, str | None]) -> str | None:
+    """`sha256:` and the hex digest of the JSON list of `[member, date]` pairs of `dates`,
+    sorted by member, each member provenance of a dataset (`members_of`) with its own
+    `lastDataRefreshDate`. It moves when any member's date moves or the member set changes,
+    which the newest date (`newest_refresh`) misses when another member holds a newer date.
+    `None`, unknown, when a member's date is `None`, so a date the graph stops serving reads
+    as a refresh date with no value does (`dependencies.dependency_changes`)."""
+    if any(date is None for date in dates.values()):
+        return None
     pairs = sorted(dates.items())
     encoded = json.dumps(pairs, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"

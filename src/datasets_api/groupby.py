@@ -23,6 +23,7 @@ from typing import Literal, cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
+from dfo_frame_grammar import unit_codes
 
 from code_index.composites import component_of, components_splice, components_sum
 from code_index.query import CodeIndex
@@ -395,6 +396,7 @@ class SpliceCheck:
 
 
 _REPORTER_COLUMN = "__reporter"
+_TOTAL_COLUMN = "__total"
 
 
 class ReporterCheck:
@@ -478,47 +480,71 @@ class ReporterCheck:
         )
 
     def summed_reporters(self) -> int:
-        """How many reporting organisations the noted rows name, when a total folds rows of
-        two or more of them, else 0."""
+        """How many reporting organisations the totals folding rows of two or more of them
+        name, else 0. A row naming no reporting organisation counts as none."""
         if not self._parts:
             return 0
         noted = pa.concat_tables(self._parts, promote_options="default")
+        totals = _row_codes(noted, [*self.cell_columns, _CODES_COLUMN])
+        reporters = noted.column(_REPORTER_COLUMN)
         aggregation: tuple[str, Literal["count_distinct"], pc.CountOptions] = (
             _REPORTER_COLUMN,
             "count_distinct",
-            pc.CountOptions(mode="all"),
+            pc.CountOptions(mode="only_valid"),
         )
-        per_total = noted.group_by(
-            [*self.cell_columns, _CODES_COLUMN], use_threads=False
-        ).aggregate([aggregation])
-        counts = cast(
-            "list[int]", per_total.column(f"{_REPORTER_COLUMN}_count_distinct").to_pylist()
+        per_total = (
+            pa.table({_TOTAL_COLUMN: totals, _REPORTER_COLUMN: reporters})
+            .group_by(_TOTAL_COLUMN, use_threads=False)
+            .aggregate([aggregation])
         )
-        if max(counts, default=0) < 2:
+        mixing = per_total.filter(
+            cast(
+                "pa.BooleanArray",
+                pc.greater_equal(
+                    per_total.column(f"{_REPORTER_COLUMN}_count_distinct"),
+                    pa.scalar(2, pa.int64()),
+                ),
+            )
+        ).column(_TOTAL_COLUMN)
+        if len(mixing) == 0:
             return 0
-        return len(pc.unique(noted.column(_REPORTER_COLUMN)).drop_null())
+        summed = reporters.filter(pc.is_in(totals, value_set=mixing.combine_chunks()))
+        return len(pc.unique(summed).drop_null())
 
     def refuse_unknown_absence(self) -> None:
         """Raise `RollupNotSummableError` (`missing_members`) for a total missing a member
-        whose absence reads unknown in its cell's year. A no-op without `reads_zero`."""
+        whose absence reads unknown in its cell's year. A no-op without `reads_zero`.
+
+        The totals missing an expected member are found in Arrow, by counting each total's
+        distinct expected StatVars against its codes' expected count, and only their rows,
+        and the rows of each absent member's own series, are read into Python."""
         if self._reads_zero is None or not self._parts:
             return
-        rows = pa.concat_tables(self._parts, promote_options="default").to_pylist()
+        noted = pa.concat_tables(self._parts, promote_options="default")
+        missing = self._missing_totals(noted)
+        if missing is None:
+            return
         time_column = self.cell_columns[-1]
         role_columns = self.cell_columns[:-1]
-        series: dict[tuple[object, ...], set[str | None]] = {}
         totals: dict[tuple[object, ...], tuple[set[str], set[str | None]]] = {}
-        for row in rows:
+        for row in _python_rows(noted.filter(missing)):
             roles = tuple(row[column] for column in role_columns)
-            series.setdefault((*roles, row[_STAT_VAR_COLUMN]), set()).add(row[_REPORTER_COLUMN])
             key = (*roles, row[time_column], row[_CODES_COLUMN])
             observed, reporters = totals.setdefault(key, (set(), set()))
-            observed.add(row[_STAT_VAR_COLUMN])
-            reporters.add(row[_REPORTER_COLUMN])
-        for key, (observed, reporters) in totals.items():
-            *roles, period, codes = key
+            observed.add(cast("str", row[_STAT_VAR_COLUMN]))
+            reporters.add(cast("str | None", row[_REPORTER_COLUMN]))
+        absent = {
+            key: sorted(self._expected.get(key[-1], set()) - observed)
+            for key, (observed, _) in totals.items()
+        }
+        series = self._series_reporters(
+            noted,
+            {(*key[:-2], member) for key, members in absent.items() for member in members},
+        )
+        for key, (_, reporters) in totals.items():
+            *roles, period, _codes = key
             year = _leading_year(period)
-            for member in sorted(self._expected.get(codes, set()) - observed):
+            for member in absent[key]:
                 filed = series.get((*roles, member)) or reporters
                 if all(self._reads_zero(provenance, year) for provenance in filed):
                     continue
@@ -532,6 +558,77 @@ class ReporterCheck:
                     precondition="missing_members",
                 )
 
+    def _missing_totals(self, noted: pa.Table) -> pa.BooleanArray | None:
+        """Whether each of `noted`'s rows belongs to a total holding fewer distinct expected
+        StatVars than its codes expect, or None when no total does."""
+        pair_columns = [_CODES_COLUMN, _STAT_VAR_COLUMN]
+        pairs = [(codes, ref) for codes, refs in self._expected.items() for ref in refs]
+        expected_pairs = pa.table(
+            {
+                _CODES_COLUMN: pa.array([codes for codes, _ in pairs], pa.string()),
+                _STAT_VAR_COLUMN: pa.array([ref for _, ref in pairs], pa.string()),
+            }
+        )
+        pair_codes = _row_codes(
+            pa.concat_tables(
+                [noted.select(pair_columns).cast(expected_pairs.schema), expected_pairs]
+            ),
+            pair_columns,
+        )
+        rows = noted.num_rows
+        expected_pair = pc.is_in(pair_codes.slice(0, rows), value_set=pair_codes.slice(rows))
+        codes_order = list(self._expected)
+        expected_count = pa.array(
+            [len(self._expected[codes]) for codes in codes_order], pa.int64()
+        ).take(
+            pc.index_in(noted.column(_CODES_COLUMN), value_set=pa.array(codes_order, pa.string()))
+        )
+        totals = _row_codes(noted, [*self.cell_columns, _CODES_COLUMN])
+        member = pc.if_else(expected_pair, pair_codes.slice(0, rows), pa.scalar(None, pa.int64()))
+        counted: tuple[str, Literal["count_distinct"], pc.CountOptions] = (
+            "member",
+            "count_distinct",
+            pc.CountOptions(mode="only_valid"),
+        )
+        highest: tuple[str, Literal["max"], None] = ("expected", "max", None)
+        per_total = (
+            pa.table({_TOTAL_COLUMN: totals, "member": member, "expected": expected_count})
+            .group_by(_TOTAL_COLUMN, use_threads=False)
+            .aggregate([counted, highest])
+        )
+        short = per_total.filter(
+            cast(
+                "pa.BooleanArray",
+                pc.less(
+                    per_total.column("member_count_distinct"), per_total.column("expected_max")
+                ),
+            )
+        ).column(_TOTAL_COLUMN)
+        if len(short) == 0:
+            return None
+        return pc.is_in(totals, value_set=short.combine_chunks())
+
+    def _series_reporters(
+        self, noted: pa.Table, wanted: set[tuple[object, ...]]
+    ) -> dict[tuple[object, ...], set[str | None]]:
+        """The reporting organisations of `noted`'s rows of each `wanted` series, a role tuple
+        and StatVar, read into Python for those series' rows alone."""
+        if not wanted:
+            return {}
+        series_columns = [*self.cell_columns[:-1], _STAT_VAR_COLUMN]
+        query = pa.Table.from_pylist(
+            [dict(zip(series_columns, key, strict=True)) for key in wanted],
+            schema=noted.select(series_columns).schema,
+        )
+        codes = _row_codes(pa.concat_tables([noted.select(series_columns), query]), series_columns)
+        rows = noted.num_rows
+        kept = pc.is_in(codes.slice(0, rows), value_set=codes.slice(rows))
+        series: dict[tuple[object, ...], set[str | None]] = {}
+        for row in _python_rows(noted.select([*series_columns, _REPORTER_COLUMN]).filter(kept)):
+            key = tuple(row[column] for column in series_columns)
+            series.setdefault(key, set()).add(cast("str | None", row[_REPORTER_COLUMN]))
+        return series
+
     def _codes(self, ref: str) -> str:
         codes = self._lookup.get(ref, {})
         return json.dumps([codes.get(code_system) for code_system in self._kept])
@@ -541,6 +638,24 @@ class ReporterCheck:
             return True
         codes = self._lookup.get(ref, {})
         return all(codes.get(axis) in kept for axis, kept in self._selection.items())
+
+
+def _row_codes(table: pa.Table, columns: Sequence[str]) -> pa.Int64Array:
+    """One code per row of `table`, equal exactly where every one of `columns` holds the same
+    value or null (`dfo_frame_grammar.unit_codes`)."""
+    return cast(
+        "pa.Int64Array",
+        unit_codes(
+            pa.StructArray.from_arrays(
+                [table.column(column).combine_chunks() for column in columns], names=list(columns)
+            )
+        ).codes,
+    )
+
+
+def _python_rows(table: pa.Table) -> list[dict[str, object]]:
+    """`table`'s rows as Python dicts, the one place `ReporterCheck` reads rows into Python."""
+    return table.to_pylist()
 
 
 def _leading_year(period: object) -> int | None:

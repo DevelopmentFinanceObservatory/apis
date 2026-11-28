@@ -97,6 +97,7 @@ from search.models import (
     HeldBack,
     IdentityFacetBinding,
     IdentityFacetValueRequest,
+    IdentityWindowRange,
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
@@ -1388,6 +1389,20 @@ def answer_identity(
     )
 
 
+def _served_window(years: tuple[int, int] | None, identity: BaseIdentity) -> range | None:
+    """The years a mint of `identity` serves: the served series' first to last year
+    (`read_plan.data_years`), clipped to the identity's requested range. None when the data
+    years are unknown."""
+    if years is None:
+        return None
+    first, last = years
+    window = identity.requested_window
+    if isinstance(window, IdentityWindowRange):
+        first = first if window.start_year is None else max(first, window.start_year)
+        last = last if window.end_year is None else min(last, window.end_year)
+    return range(first, last + 1)
+
+
 def build_spec(
     shape: Shape,
     slots: list[Slot],
@@ -1657,10 +1672,15 @@ def build_spec(
         identity=identity_doc,
         provenance=provenance.ref if provenance is not None else None,
     )
-    resolved_slots = apply_slot_summability(slots, identity_doc)
+    years = data_years(plan)
+    resolved_slots = apply_slot_summability(
+        slots,
+        identity_doc,
+        years=_served_window(years, identity_doc),
+        held_years=coverage_index.provenance_years if coverage_index is not None else None,
+    )
     stated_facets = facets or {}
     published_tables = _published_tables(provenance, index)
-    years = data_years(plan)
     if composite is None and plan is not None:
         stated_held = held_back(plan, plan_runs(plan, coverage_index=coverage_index))
         if stated_held:

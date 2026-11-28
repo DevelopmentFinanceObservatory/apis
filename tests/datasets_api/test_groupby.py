@@ -4,11 +4,14 @@ A synthetic non-summable code system covers a declaration no live CRS system use
 
 from __future__ import annotations
 
+import pyarrow as pa
 import pytest
 
+import datasets_api.groupby as groupby_module
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.groupby import (
+    ReporterCheck,
     collapse_axes,
     contributing_dcids,
     kept_axes,
@@ -397,3 +400,99 @@ class TestContributingDcids:
 
     def test_no_rows_at_all_is_empty(self):
         assert contributing_dcids(_table(())) == frozenset()
+
+
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+_EAST = "provenance/LedgerEast"
+
+
+def _reporter_check(
+    rows: list[tuple[str, str, str, str | None]],
+    *,
+    members: tuple[str, ...],
+    reads_zero: bool = True,
+) -> ReporterCheck:
+    """A check over `rows` of `(StatVar, recipient, year, reporting organisation)`, expecting
+    every one of `members` in each total, and reading a missing member as zero in every year
+    when `reads_zero`, else in none."""
+    check = ReporterCheck(
+        cell_columns=("financingRecipient", "time_period"),
+        members=members,
+        lookup={},
+        kept_code_systems=(),
+        reads_zero=lambda provenance, year: reads_zero,
+    )
+    stat_vars, recipients, years, reporters = (list(column) for column in zip(*rows, strict=True))
+    check.note(
+        pa.array(stat_vars, pa.string()),
+        pa.array(reporters, pa.string()),
+        pa.table({"financingRecipient": recipients, "time_period": years}),
+    )
+    return check
+
+
+class TestReporterCheck:
+    @pytest.mark.parametrize(
+        ("rows", "summed"),
+        [
+            pytest.param(
+                [
+                    ("dcid:A", "country/KEN", "2022", _NORTH),
+                    ("dcid:B", "country/KEN", "2022", None),
+                ],
+                0,
+                id="null-reporter-mixes-with-none",
+            ),
+            pytest.param(
+                [
+                    ("dcid:A", "country/KEN", "2022", _NORTH),
+                    ("dcid:B", "country/KEN", "2022", _SOUTH),
+                    ("dcid:A", "country/UGA", "2022", _EAST),
+                ],
+                2,
+                id="non-mixing-reporter-uncounted",
+            ),
+        ],
+    )
+    def test_summed_reporters_counts_the_reporters_of_mixing_totals(self, rows, summed):
+        check = _reporter_check(rows, members=("dcid:A", "dcid:B"))
+
+        assert check.summed_reporters() == summed
+
+    @pytest.mark.parametrize("reads_zero", [True, False], ids=["reads-zero", "reads-unknown"])
+    def test_only_totals_missing_a_member_are_read_into_python(self, monkeypatch, reads_zero):
+        """Of 20,000 recipients' totals, Kenya's 2022 total alone lacks member B. Python reads
+        that total's one row and the one row of Kenya's own B series, and no other, and the
+        check refuses that total where its absence reads unknown."""
+        rows = [
+            (stat_var, f"country/R{i}", year, reporter)
+            for i in range(20_000)
+            for year in ("2021", "2022")
+            for stat_var, reporter in (("dcid:A", _NORTH), ("dcid:B", _SOUTH))
+        ]
+        rows += [
+            ("dcid:A", "country/KEN", "2021", _NORTH),
+            ("dcid:B", "country/KEN", "2021", _SOUTH),
+            ("dcid:A", "country/KEN", "2022", _NORTH),
+        ]
+        check = _reporter_check(rows, members=("dcid:A", "dcid:B"), reads_zero=reads_zero)
+        read: list[int] = []
+        python_rows = groupby_module._python_rows
+
+        def counting(table: pa.Table) -> list[dict[str, object]]:
+            read.append(table.num_rows)
+            return python_rows(table)
+
+        monkeypatch.setattr(groupby_module, "_python_rows", counting)
+
+        if reads_zero:
+            check.refuse_unknown_absence()
+        else:
+            with pytest.raises(RollupNotSummableError) as refused:
+                check.refuse_unknown_absence()
+            assert refused.value.precondition == "missing_members"
+            assert "'dcid:B'" in str(refused.value)
+            assert "country/KEN" in str(refused.value)
+
+        assert read == [1, 1]

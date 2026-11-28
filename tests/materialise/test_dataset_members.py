@@ -400,8 +400,8 @@ def _mint(provenances: tuple[str, str], dataset: ElectedDataset | None):
     )
 
 
-# The content version this group mint of the plain table had under frame grammar 1.2.0,
-# before the `reporting_organisation` column existed.
+# The content version of this group mint of the plain table, a frame with no
+# `reporting_organisation` column.
 _PLAIN_CONTENT_VERSION = "cv_9810ab0f7801c7878de0ba0e2bd859dc"
 
 
@@ -468,8 +468,8 @@ def test_a_mint_of_a_plain_table_keeps_its_bytes_under_an_index_declaring_datase
 ):
     """A plain table's provenance is its own dataset, so it mints the frame and content
     version it mints under the session's index, which declares no Ledger. Its rows name no
-    reporting organisation, so the frame has no such column and keeps the bytes and content
-    version it had before frame grammar 1.3.0 added one."""
+    reporting organisation, so the frame has no such column and mints `_PLAIN_CONTENT_VERSION`,
+    the content version of a frame without it."""
     under_ledger = _mint((PLAIN, PLAIN), _PLAIN_DATASET)
     with bound_release(_fixture_index_release):
         under_fixture = _mint((PLAIN, PLAIN), _PLAIN_DATASET)

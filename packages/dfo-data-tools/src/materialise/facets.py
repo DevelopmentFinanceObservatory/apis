@@ -56,6 +56,7 @@ from materialise.graph import (
 from materialise.member_folds import (
     dataset_policies,
     is_projection,
+    members_of,
     members_revision,
     newest_refresh,
     refresh_nodes,
@@ -269,8 +270,10 @@ class ElectedDataset:
         under that one alone, and is then unpopulated. Raises `DatasetDisagreementError`
         when no dispatchable candidate is this dataset's and one carries a provenance that is
         a member of no dataset the code index records for the member, unless the bound
-        catalogue's source scope leaves out one of this dataset's members: the member is then
-        unpopulated under the scope, and the read answers as its scope's no data. The mint
+        catalogue's source scope admits none of this dataset's members: the member is then
+        unpopulated under the scope, and the read answers as its scope's no data. A scope
+        admitting some members still raises, since the provenance it admits publishes a member
+        the code index records under none of its datasets. The mint
         (`dataset_candidates`) keeps candidates through this method, and Search runs it over
         the members a mint of its answer serves
         (`search.engine.retrieval.elected_dataset.check_elected_datasets`), so both refuse
@@ -288,7 +291,7 @@ class ElectedDataset:
                 }
             )
             scope = current_source_scope()
-            if unrecorded and (scope is None or scope.issuperset(self.provenances)):
+            if unrecorded and (scope is None or not scope.isdisjoint(self.provenances)):
                 raise DatasetDisagreementError(
                     f"{stat_var!r} is a member of dataset {self.provenance!r}, and the "
                     f"code index records it under {list(self.recorded_provenances)!r}; its "
@@ -1635,9 +1638,9 @@ def _probe_provenance_refresh(
     The id of a declared dataset among `provenance_ids` takes the newest of its Dataset node's
     date and every member provenance's (`member_folds.refresh_nodes`,
     `member_folds.newest_refresh`), which the same batch reads, and a `members_revision`
-    digesting each of those nodes with its own date (`member_folds.members_revision`), so a
-    member's move under a newer member's date, and a member added or removed, change the
-    revision. A plain table carries its date alone."""
+    digesting each member with its own date (`member_folds.members_revision`), so a member's
+    move under a newer member's date, and a member added or removed, change the revision. The
+    revision is unknown while a member's date is. A plain table carries its date alone."""
     if not provenance_ids:
         return {}
     nodes = {ref: refresh_nodes(ref) for ref in provenance_ids}
@@ -1651,9 +1654,14 @@ def _probe_provenance_refresh(
 
     def refresh(ref: str) -> ProvenanceRefresh:
         dates = {node: own_date(node) for node in nodes[ref]}
+        if nodes[ref] == (ref,):
+            return ProvenanceRefresh(last_data_refresh_date=dates[ref])
         return ProvenanceRefresh(
             last_data_refresh_date=newest_refresh(dates.values()),
-            members_revision=members_revision(dates) if nodes[ref] != (ref,) else None,
+            members_revision=members_revision(
+                {member: dates[member] for member in members_of(ref)}
+            ),
+            declared_dataset=True,
         )
 
     return {ref: refresh(ref) for ref in provenance_ids}

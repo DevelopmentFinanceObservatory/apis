@@ -662,8 +662,7 @@ def test_a_series_names_the_member_every_point_of_it_was_reported_under(reporter
     """A stored frame of a declared dataset names each row's member provenance in its
     `reporting_organisation` column, and the series' provenance facet names the member that
     reported every point of it, none when two did. A stored frame without the column, as
-    every plain table's and every frame stored before the column existed is, reads, and its
-    facets name no member."""
+    every plain table's is, reads, and its facets name no member."""
     rows = [
         _standard_row("Count_Person", "country/KEN", "2020", 50.0),
         _standard_row("Count_Person", "country/KEN", "2021", 52.0),

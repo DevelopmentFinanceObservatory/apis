@@ -1,7 +1,7 @@
 """Every verb reads `reporting_organisation`, the member provenance that reported a row of a
 declared dataset, as an attribute: it names no entity, an output row keeps the member its input
 rows share and holds null where it folds rows of two members, and a join's row keeps its own
-side's member. A frame without the column builds the output it built before the column existed.
+side's member. A frame without the column builds an output without it.
 
 The root is a two-member Ledger: `dataset/Ledger` holds the series of `provenance/LedgerNorth`
 and `provenance/LedgerSouth`, one member per donor.
@@ -16,6 +16,8 @@ import pytest
 from dfo_frame_grammar import Frame, build_frame_from_arrow
 from dfo_frame_grammar.grammar import REPORTING_ORGANISATION_COLUMN
 
+from dfo_analysis_engine.anchor import latest_period
+from dfo_analysis_engine.calls import admit
 from dfo_analysis_engine.engine.aggregate import UnknownGroupByColumnError, run_aggregate
 from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
@@ -26,6 +28,7 @@ from dfo_analysis_engine.engine.quotient_of import run_quotient_of
 from dfo_analysis_engine.engine.rank import run_rank
 from dfo_analysis_engine.engine.share_of import run_share_of
 from dfo_analysis_engine.engine.sum_of import run_sum_of
+from dfo_analysis_engine.op_spec import RootPopulation
 
 _LEDGER = "dataset/Ledger"
 _NORTH = "provenance/LedgerNorth"
@@ -225,3 +228,26 @@ def test_a_join_row_keeps_its_own_side_s_member(right: Frame, expected_right: li
         ("dcid:Y", "dcid:A"): {expected_right[0]},
         ("dcid:Y", "dcid:B"): {expected_right[1]},
     }
+
+
+def test_a_series_two_members_report_in_turn_is_one_series_to_the_rolling_anchor() -> None:
+    """Donor A's 2021 row is North's and its 2022 row South's: one series holding 2022, so the
+    anchor at 2022 leaves no series out."""
+    spec = "spec_" + "0" * 32
+    table = pa.table(
+        {
+            "stat_var": ["dcid:X"] * 4,
+            "donor": ["dcid:A", "dcid:A", "dcid:B", "dcid:B"],
+            "time_period": ["2021", "2022", "2021", "2022"],
+            "value": [1.0, 2.0, 3.0, 4.0],
+            "unit": ["dcid:USDollar"] * 4,
+            "provenance": [_LEDGER] * 4,
+            REPORTING_ORGANISATION_COLUMN: [_NORTH, _SOUTH, _NORTH, _NORTH],
+        }
+    )
+    root = admit(build_frame_from_arrow(table, role_keys=["donor"]), content_version="v1")
+
+    anchor = latest_period([RootPopulation(spec_id=spec)], [(spec, root)])
+
+    assert anchor.period == "2022"
+    assert anchor.left_out == ()
