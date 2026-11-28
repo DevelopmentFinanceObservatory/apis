@@ -488,14 +488,14 @@ def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
 def _unread_exclusions(
     requirements: Sequence[Requirement], datasets: Collection[str]
 ) -> frozenset[tuple[str, str]]:
-    """Each phrase the request asked to leave out and run of it that names, on code systems,
-    only codes a shape built from the rows of `datasets` cannot bind
+    """Each phrase the request asked to leave out, with each run of it, that names on code
+    systems only codes a shape built from the rows of `datasets` cannot bind
     (`qualifier_match.bindable_codes`), codes that only other datasets' rows hold. Such a
     shape reads no code in the run's words, so its answer is outside the run's
     requirements, as every answer is outside a phrase a word of which names no code
     (`state.exclusion_requirements`). "excluding police" names `CRSPurposeCode15132`, which
     only IATI rows hold, so a CRS answer neither meets nor leaves it unmet. The phrase's
-    other runs are judged as they stand: in "excluding education and police" a CRS answer
+    other runs are judged as they stand. In "excluding education and police" a CRS answer
     binding education (`CRSPurposeCode110`) leaves "education" unmet."""
     index = get_index()
     bindable = bindable_codes(index, datasets=datasets)

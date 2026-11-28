@@ -1242,8 +1242,8 @@ def frame_code_systems(
 ) -> frozenset[str] | None:
     """The declared code systems the StatVars of a version's `trace.resolved_stat_vars` carry
     (`decode.statvar_code_systems`), the axes its frame can sum over, or `None` for a stored
-    trace that records no `resolved_stat_vars`. A live `ManifestTrace` or a stored or wire
-    trace mapping."""
+    trace that records no `resolved_stat_vars`. `trace` is a live `ManifestTrace` or a
+    stored or wire trace mapping."""
     if isinstance(trace, ManifestTrace):
         entries: Iterable[Mapping[str, object]] | None = trace.resolved_stat_vars
     else:

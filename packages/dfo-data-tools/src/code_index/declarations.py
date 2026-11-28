@@ -1229,7 +1229,7 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
     # The graph names each IATI transaction type with an "(IATI Transaction Type)" suffix,
     # which the label keeps, so each type's plain name is a synonym. "commitment" and
-    # "disbursement" are left out: they name the CRS measures (`financialObligationType`,
+    # "disbursement" are left out. They name the CRS measures (`financialObligationType`,
     # `financialFlowType`), and a code synonym of the same text ties with the measure value
     # in every vocabulary, so "commitments to Kenya" would read a flow. Every IATI commitment
     # is an outgoing commitment, so its five-tuple pins type 2 (`CodeIndex.dataset_pins`).
@@ -1253,8 +1253,8 @@ CODE_SYNONYMS_WITHIN_VOCABULARY: Mapping[str, frozenset[str]] = {
     "ClimateChangePolicyObjective": frozenset({"climate"}),
     "AdaptationOnlyClimateChangePolicyObjective": frozenset({"adaptation"}),
     "MitigationOnlyClimateChangePolicyObjective": frozenset({"mitigation"}),
-    # "expenditure" names IATI's type 4 on an IATI shape; read everywhere it would bring the
-    # IATI family into a World Bank question on government expenditure.
+    # "expenditure" names IATI's type 4 on an IATI shape. Read in every code system, it would
+    # bring the IATI family into a World Bank question on government expenditure.
     "IATITransactionType4": frozenset({"expenditure"}),
 }
 

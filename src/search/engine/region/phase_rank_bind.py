@@ -1335,7 +1335,7 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
     aid type and ONE's fixed flow type, so DAC2a's own line answers it. A named code
     keeps the opt-in shape only when none of those other shapes reads its phrase
-    (`QualifierMatch.phrase`): "ODA to Kenya" names IATI's CRS flow type, a slot DAC2a
+    (`QualifierMatch.phrase`). "ODA to Kenya" names IATI's CRS flow type, a slot DAC2a
     lacks, but DAC2a reads "ODA" in its own codes, so IATI leaves. A part naming a
     source keeps every shape its scope allows. An excluding part keeps the rule as it
     stands without the exclusion, so excluding a table opens no opt-in one, as
@@ -1381,10 +1381,11 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
 
 def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
     """The shapes the part recalled (`ResolveState.shapes_found`) whose codes another shape's
-    menu reads as bound elsewhere (`_candidate_menus`): each one before a named dataset
-    narrows them, less each one only opt-in tables publish (`is_opt_in`) that the part
-    cannot answer from, outside its source scope (`_in_scope`) or one a part not naming a
-    source has no need of (`_without_unasked_opt_in`). A part naming the CRS still reads
+    menu reads as bound elsewhere (`_candidate_menus`). These are the recalled shapes
+    before a named dataset narrows them, less each shape only opt-in tables publish
+    (`is_opt_in`) that the part cannot answer from: one outside its source scope
+    (`_in_scope`), or one a part naming no source has no need of
+    (`_without_unasked_opt_in`). A part naming the CRS still reads
     "multilateral" in "multilateral ODA" as DAC1's aid type, while IATI, unasked, binds none
     of the purpose codes only its rows hold, such as `CRSPurposeCode11321`, on a CRS part.
     Built once per part (`ResolveState.binding_elsewhere`)."""
@@ -3151,10 +3152,9 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     coverage rule. A shape only opt-in tables publish binds nothing elsewhere when the part
     cannot answer from it (`_binding_elsewhere`): "culture" in "culture ODA" is purpose
     16066, which only IATI rows hold, and with IATI left unasked a CRS shape keeps its
-    menu for "culture". "imputed" in "imputed education
-    aid" is DAC2a aid type 106, which the imputed multilateral shape binds, so a CRS shape
-    is offered no "imputed student cost" for it, and "multilateral" in "multilateral ODA",
-    DAC1 aid type 2000, stays an
+    menu for "culture". "imputed" in "imputed education aid" is DAC2a aid type 106, which
+    the imputed multilateral shape binds, so a CRS shape is offered no "imputed student
+    cost" for it, and "multilateral" in "multilateral ODA", DAC1 aid type 2000, stays an
     unavailable term on a part naming the CRS. "ODA loans" is DAC2a aid type 218, and
     with no recalled shape holding it "loans" keeps its menu, which offers type of
     finance 420. "population", type of finance 4, binds on no shape and keeps its menu.

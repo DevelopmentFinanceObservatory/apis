@@ -65,7 +65,7 @@ def derive_output_options(
     its main table (`movable_totals_roles`, the rule the render splits by), from `identity`, the
     code index's `parties` and the provenances the definition read, `datasets`. `groupby` lists
     the summable axes among `code_systems`, the code systems the frame's StatVars carry
-    (`frame_code_systems`), so a CRS frame offers no IATI transaction type; `None`, for a
+    (`frame_code_systems`), so a CRS frame offers no IATI transaction type. `None`, for a
     trace that records no StatVars, lists every summable axis.
     """
     role_columns = [column.name for column in profile.columns if column.kind == "role"]

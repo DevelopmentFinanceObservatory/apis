@@ -95,8 +95,8 @@ def build_decode_plan(
 
 def statvar_code_systems(refs: Iterable[str], *, index: CodeIndex) -> frozenset[str]:
     """The declared code systems (`index.declarations`) the index rows of `refs`, bare or
-    `dcid:` StatVar refs, carry as constraint properties: the systems a frame of those
-    StatVars decodes, before a composite leaves out its marker axes."""
+    `dcid:` StatVar refs, carry as constraint properties. These are the systems a frame of
+    those StatVars decodes, before a composite leaves out its marker axes."""
     return _code_systems(_index_rows(refs, index=index).values(), index=index)
 
 
