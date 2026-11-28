@@ -15,6 +15,7 @@ from assembler.errors import EditConflict
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import RevisionStore
 from assembler.reply import build_fact_summary
+from assembler.rolling import period_mode
 
 # -- get_component --------------------------------------------------------
 
@@ -25,7 +26,10 @@ def get_component(
     revision: int | None = None,
     revision_store: RevisionStore,
 ) -> Mapping[str, object]:
-    """Returns the stored intent, summary, envelope, and composition membership for one revision.
+    """Returns the stored intent, summary, envelope, composition membership, and period mode
+    for one revision.
+
+    `period_mode` is `assembler.rolling.period_mode` of the stored intent and component.
 
     Membership is fixed at creation. `composition_revision` reports the
     composition head at read time. The summary uses the formatter profile stored on the
@@ -68,4 +72,5 @@ def get_component(
         "stored_intent": record.stored_intent,
         "fact_summary": fact_summary,
         "resolved_payload": record.resolved_payload,
+        "period_mode": period_mode(intent=record.stored_intent, component=component),
     }

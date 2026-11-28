@@ -8,8 +8,10 @@ rendered revision the shape a component read has, less its `retention`.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 from assembler.reply import WriteReply
+from assembler.rolling import period_mode
 
 __all__ = ["serialize_create_reply", "serialize_read_reply", "serialize_write_reply"]
 
@@ -49,7 +51,9 @@ def serialize_read_reply(
     reply: WriteReply, *, stored_intent: Mapping[str, object]
 ) -> dict[str, object]:
     """A rendering of a stored revision as a component read states it: the revision's own
-    `stored_intent` beside the rendering's summary and envelope."""
+    `stored_intent` beside the rendering's summary and envelope, and the `period_mode` of the
+    stored intent and the rendered component."""
+    component = cast("Mapping[str, object]", reply.resolved_payload["component"])
     return {
         "component_id": reply.component_id,
         "revision": reply.revision,
@@ -59,4 +63,5 @@ def serialize_read_reply(
         "stored_intent": stored_intent,
         "fact_summary": reply.fact_summary,
         "resolved_payload": reply.resolved_payload,
+        "period_mode": period_mode(intent=stored_intent, component=component),
     }

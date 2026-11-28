@@ -27,6 +27,7 @@ from assembler.rolling import (
     ROLLING_WINDOW_INVERTED,
     ROLLING_WINDOW_SIDE_OMITTED,
     RollingPeriodInvalid,
+    period_mode,
 )
 from assembler.testing import build_resolved_frame, malaria_ethiopia_resolved_frame
 
@@ -974,3 +975,178 @@ def test_a_widened_bar_chart_draws_at_the_period_every_bar_shares(write, render)
     assert _warnings(rendered) == [
         {"kind": "coverage_gap", "detail": "1 series has no 2024 value: Ghana"}
     ]
+
+
+# -- period mode -----------------------------------------------------------------
+
+_OPS_ID = "ops_" + "b" * 32
+
+
+def _drawn(member: str, *, through: str, **fields) -> dict[str, object]:
+    """A minted `member` whose one series holds a value up to `through` and a status after."""
+    points = [
+        {"period": "2015", "value": 1.0},
+        {"period": through, "value": 2.0},
+        {"period": "2030", "status": "missing"},
+    ]
+    if member == "table":
+        return {"type": member, "rows": points, **fields}
+    return {"type": member, "series": [{"id": "series_1", "points": points}], **fields}
+
+
+_LINE = _drawn("line_chart", through="2024")
+_ENTITY_BARS = {"type": "bar_chart", "category_axis": {"mode": "entity", "period": "2023"}}
+_PERIOD_BARS = _drawn("bar_chart", through="2024", category_axis={"mode": "period"})
+
+
+def _stored(member: str, *, spec_id: str = _SPEC_ID, **fields) -> dict[str, object]:
+    return {
+        "type": member,
+        "frame_ref": {"spec_id": spec_id, "content_version": "cv_" + "1" * 32},
+        "select": {"stat_var": _STAT_VAR, "recipient": "country/KEN"},
+        **fields,
+    }
+
+
+@pytest.mark.parametrize(
+    ("intent", "component", "expected"),
+    [
+        pytest.param(
+            _stored("line_chart", window={"start": "2015", "end": "2024"}),
+            _LINE,
+            "fixed",
+            id="literal-window",
+        ),
+        pytest.param(
+            _stored("line_chart", window={"start": "2015", "end": _LATEST}),
+            _LINE,
+            "rolling",
+            id="relative-end",
+        ),
+        pytest.param(
+            _stored("table", window={"start": _back(-4), "end": "2024"}),
+            {"type": "table"},
+            "rolling",
+            id="relative-start",
+        ),
+        pytest.param(
+            _stored("line_chart", window={"end": "2024"}),
+            _LINE,
+            "rolling",
+            id="omitted-start",
+        ),
+        pytest.param(
+            _stored("line_chart", window={"start": "2015"}),
+            _LINE,
+            "rolling",
+            id="omitted-end",
+        ),
+        pytest.param(_stored("line_chart"), _LINE, "rolling", id="no-window"),
+        pytest.param(
+            _stored("line_chart", window={"start": "2000", "end": "2030"}),
+            _drawn("line_chart", through="2023"),
+            "rolling",
+            id="window-end-past-the-data",
+        ),
+        pytest.param(
+            _stored("table", window={"start": "2000", "end": "2030"}),
+            _drawn("table", through="2023"),
+            "rolling",
+            id="table-window-end-past-the-data",
+        ),
+        pytest.param(
+            _stored("bar_chart", window={"start": "2000", "end": "2030"}),
+            _drawn("bar_chart", through="2023", category_axis={"mode": "period"}),
+            "rolling",
+            id="period-bars-window-end-past-the-data",
+        ),
+        pytest.param(
+            _stored("table", window={"start": "2000", "end": "2023"}),
+            _drawn("table", through="2023"),
+            "fixed",
+            id="window-end-at-the-data-end",
+        ),
+        pytest.param(
+            _stored(
+                "stat_card",
+                window={"start": "2000", "end": "2030"},
+                change={"basis": ["2020", "2023"]},
+            ),
+            {"type": "stat_card", "period": "2023"},
+            "fixed",
+            id="literal-change-basis-window-past-the-data",
+        ),
+        pytest.param(
+            _stored("stat_card", change={"basis": [_back(-1), _LATEST]}),
+            {"type": "stat_card"},
+            "rolling",
+            id="relative-change-basis",
+        ),
+        pytest.param(
+            _stored("stat_card", change={"basis": ["2020", "2023"]}),
+            {"type": "stat_card"},
+            "fixed",
+            id="literal-change-basis-without-window",
+        ),
+        pytest.param(
+            _stored("stat_card", window={"start": "2022", "end": "2024"}),
+            {"type": "stat_card"},
+            "rolling",
+            id="stat-card-latest-point-in-window",
+        ),
+        pytest.param(
+            _stored("stat_card", window={"start": "2023", "end": "2023"}),
+            {"type": "stat_card"},
+            "fixed",
+            id="stat-card-one-period-window",
+        ),
+        pytest.param(
+            _stored("bar_chart", window={"start": "2022", "end": "2024"}),
+            _ENTITY_BARS,
+            "rolling",
+            id="entity-bars-latest-shared-period-in-window",
+        ),
+        pytest.param(
+            _stored("bar_chart", window={"start": "2022", "end": "2024"}),
+            _PERIOD_BARS,
+            "fixed",
+            id="period-bars-literal-window",
+        ),
+        pytest.param(
+            _stored("line_chart", spec_id=_OPS_ID, window={"start": "2015", "end": "2024"}),
+            _LINE,
+            "fixed",
+            id="derived-frame-literal-window",
+        ),
+        pytest.param(
+            _stored("line_chart", spec_id=_OPS_ID),
+            _LINE,
+            "rolling",
+            id="derived-frame-no-window",
+        ),
+        pytest.param(
+            {"type": "note_narration", "text": "A note."},
+            {"type": "note_narration"},
+            "fixed",
+            id="note",
+        ),
+    ],
+)
+def test_period_mode_reads_whether_the_drawn_periods_stay_put(intent, component, expected):
+    assert period_mode(intent=intent, component=component) == expected
+
+
+def test_a_stored_window_a_render_draws_again_states_its_period_mode(write):
+    """The bar chart the stated-window test draws picks 2023 inside 2022..2024, so a newer
+    frame with 2024 for every series moves it."""
+    frame = _frame(_KENYA_LAGS)
+    intent = _intent(
+        frame,
+        member="bar_chart",
+        recipients=list(_KENYA_LAGS),
+        window={"start": "2022", "end": "2024"},
+    )
+
+    reply = write(frame, intent)
+
+    assert period_mode(intent=intent, component=_component(reply)) == "rolling"

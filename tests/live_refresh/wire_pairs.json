@@ -276,6 +276,7 @@
               }
             }
           },
+          "period_mode": "rolling",
           "retention": {
             "pinned": false,
             "held_until": "<timestamp>"
@@ -953,6 +954,7 @@
               }
             }
           },
+          "period_mode": "rolling",
           "retention": {
             "pinned": false,
             "held_until": "<timestamp>"
@@ -1428,6 +1430,7 @@
               }
             }
           },
+          "period_mode": "rolling",
           "retention": {
             "pinned": false,
             "held_until": "<timestamp>"

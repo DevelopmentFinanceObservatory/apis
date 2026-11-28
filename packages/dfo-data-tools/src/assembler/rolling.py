@@ -20,13 +20,16 @@ A frame anchor's left-out series are named only when the select admits them
 `StoredSelect`'s rules, whether or not its intent states a relative period.
 
 Every refusal is a `RollingPeriodInvalid`, a `BindingInvalid` whose `code` names the cause.
+
+`period_mode` says whether the periods a stored revision draws stay put when its card is
+drawn on newer data (`"fixed"`) or can move with it (`"rolling"`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from dfo_frame_grammar import (
     STATUS_COLUMN,
@@ -48,12 +51,18 @@ __all__ = [
     "ROLLING_SPAN_FRAME",
     "ROLLING_WINDOW_INVERTED",
     "ROLLING_WINDOW_SIDE_OMITTED",
+    "PeriodMode",
     "ResolvedRolling",
     "RollingPeriodInvalid",
     "StoredSelect",
     "admitted_left_out",
+    "period_mode",
     "resolve_rolling",
 ]
+
+type PeriodMode = Literal["fixed", "rolling"]
+
+_PERIODLESS_MEMBERS = frozenset({"note_narration", "source_card"})
 
 ROLLING_WINDOW_SIDE_OMITTED = "rolling_window_side_omitted"
 ROLLING_WINDOW_INVERTED = "rolling_window_inverted"
@@ -220,6 +229,76 @@ def resolve_rolling(
         absent=absent,
         window_end_relative=window is not None and _is_relative(window.get("end")),
     )
+
+
+def period_mode(*, intent: Mapping[str, object], component: Mapping[str, object]) -> PeriodMode:
+    """Whether the periods a revision draws stay put on newer data, read from its stored
+    `intent` and the `component` it minted (`resolved_payload.component`).
+
+    A card is `"rolling"` when its intent states a relative period in `window` or
+    `change.basis`, since each render resolves it again on the frame it draws. It is
+    `"rolling"` when it has no window or its window omits a side, since the omitted side runs
+    to the edge of the frame's coverage (`assembler.mint.builders.complete_window`). A card
+    that draws one period it chooses inside a stated window, a stat card without a change at
+    its latest observed point and an entity-mode bar chart at the latest period every series
+    holds, is `"rolling"` unless the window starts and ends at the same period. A stat card
+    with a change draws the change's two periods, its window aside. Any other card draws
+    every point the frame holds in its window, so it is `"rolling"` when the last period it
+    draws with a value is earlier than its stated `window.end`, since newer data fills the
+    periods in between, and `"fixed"` otherwise. A `note_narration` or `source_card` draws no
+    period and is `"fixed"`.
+
+    A derived (`ops_`) frame's rolling anchor sets "latest" for the intent's relative periods
+    alone, so a card on one is classified by the same rules."""
+    member = intent.get("type")
+    if member in _PERIODLESS_MEMBERS:
+        return "fixed"
+    window = intent.get("window")
+    change = intent.get("change")
+    sides = cast("Mapping[str, object]", window) if isinstance(window, Mapping) else {}
+    basis = cast("Sequence[object]", change.get("basis", ())) if isinstance(change, Mapping) else ()
+    if any(_is_relative(period) for period in (*sides.values(), *basis)):
+        return "rolling"
+    if member == "stat_card" and basis:
+        return "fixed"
+    start, end = sides.get("start"), sides.get("end")
+    if start is None or end is None:
+        return "rolling"
+    if _chooses_one_period(member=member, component=component):
+        return "fixed" if start == end else "rolling"
+    drawn_end = _drawn_end(component=component)
+    if drawn_end is None or drawn_end < cast(str, end):
+        return "rolling"
+    return "fixed"
+
+
+def _chooses_one_period(*, member: object, component: Mapping[str, object]) -> bool:
+    """Whether the card draws one period it picks from the data inside its window."""
+    if member == "stat_card":
+        return True
+    if member == "bar_chart":
+        axis = component.get("category_axis")
+        return isinstance(axis, Mapping) and axis.get("mode") == "entity"
+    return False
+
+
+def _drawn_end(*, component: Mapping[str, object]) -> str | None:
+    """The last period holding a value that `component` draws, in a line chart's or bar
+    chart's `series[].points` or a table's `rows`, or `None` when it draws none. A frame's
+    period labels share one grain, so they order as strings."""
+    points: list[Mapping[str, object]] = [
+        cast("Mapping[str, object]", point)
+        for one in cast("Sequence[Mapping[str, object]]", component.get("series") or ())
+        for point in cast("Sequence[object]", one.get("points") or ())
+        if isinstance(point, Mapping)
+    ]
+    points += [
+        cast("Mapping[str, object]", row)
+        for row in cast("Sequence[object]", component.get("rows") or ())
+        if isinstance(row, Mapping)
+    ]
+    periods = [cast(str, point["period"]) for point in points if "value" in point]
+    return max(periods, default=None)
 
 
 def _is_relative(period: object) -> bool:
