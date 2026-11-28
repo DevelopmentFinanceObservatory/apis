@@ -4,7 +4,9 @@ A cursor holds the last item's sort key and dcid, and a digest of the walk it be
 node, the relation, the projection, the `as_of` date and the order, and for a relation that
 filters its items, the filter values. The next page starts after
 that key, so a page read after a rebuild repeats no item and skips none present in both
-builds; nothing in the cursor names a build. A cursor sent with another binding, or one that
+builds; nothing in the cursor names a build. The digest also covers `_ORDER_REVISION`, the
+revision of the relations' sort keys, so a cursor issued under another revision refuses where
+it would resume at a shifted position. A cursor sent with another binding, or one that
 does not decode, raises `CursorInvalid`, which the members door refuses 400 `request_invalid`
 at `/cursor`.
 
@@ -22,6 +24,10 @@ from dataclasses import dataclass
 from datetime import date
 
 _DIGEST_CHARS = 16
+
+# The revision of the relations' sort keys. Revision 2 orders a code system's uncoded rows after
+# its coded ones (`code_index.query.code_order`).
+_ORDER_REVISION = 2
 
 
 class CursorInvalid(ValueError):
@@ -44,6 +50,7 @@ class Binding:
 
     def digest(self) -> str:
         fields = [
+            _ORDER_REVISION,
             self.node,
             self.relation,
             self.projection,
@@ -89,6 +96,7 @@ def decode(cursor: str, binding: Binding) -> Position:
         raise CursorInvalid("the cursor does not decode")
     if digest != binding.digest():
         raise CursorInvalid(
-            "the cursor belongs to another node, relation, projection, as_of date, order or filter"
+            "the cursor belongs to another node, relation, projection, as_of date, order, filter or"
+            " sort-key revision"
         )
     return Position(key=key, dcid=dcid)

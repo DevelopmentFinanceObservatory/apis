@@ -373,16 +373,23 @@ def test_hierarchical_code_row_carries_stripped_label_and_synonyms():
 
 
 @pytest.mark.parametrize(
-    ("classification_codes", "codes", "expected"),
+    ("classification_codes", "uncoded", "codes", "expected"),
     [
-        (True, ("10",), "10"),
-        (True, (), ExportRefused),
-        (False, (), None),
-        (False, ("10",), ExportRefused),
+        (True, frozenset(), ("10",), "10"),
+        (True, frozenset(), (), ExportRefused),
+        (False, frozenset(), (), None),
+        (False, frozenset(), ("10",), ExportRefused),
+        (True, frozenset({"SysFlatA"}), (), None),
+        (True, frozenset({"SysFlatB"}), (), ExportRefused),
+        (True, frozenset({"SysFlatA"}), ("10",), ExportRefused),
+        (False, frozenset({"SysFlatA"}), (), ExportRefused),
     ],
 )
 def test_a_code_row_carries_a_classification_code_exactly_when_its_system_declares_them(
-    classification_codes: bool, codes: tuple[str, ...], expected: str | type | None
+    classification_codes: bool,
+    uncoded: frozenset[str],
+    codes: tuple[str, ...],
+    expected: str | type | None,
 ):
     graph = _FakeGraph(
         forward_arcs={
@@ -393,9 +400,9 @@ def test_a_code_row_carries_a_classification_code_exactly_when_its_system_declar
             },
         }
     )
-    config = dataclasses.replace(_FLAT, classification_codes=classification_codes)
+    config = dataclasses.replace(_FLAT, classification_codes=classification_codes, uncoded=uncoded)
     if expected is ExportRefused:
-        with pytest.raises(ExportRefused, match="SysFlatA"):
+        with pytest.raises(ExportRefused, match="SysFlat"):
             export_code_system(graph, config)
     else:
         _, rows = export_code_system(graph, config)
@@ -3087,6 +3094,12 @@ def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_alw
     assert [config.code_system for config in CODE_SYSTEMS if not config.classification_codes] == [
         "climatePolicyObjective"
     ]
+    assert {config.code_system: config.uncoded for config in CODE_SYSTEMS if config.uncoded} == {
+        "crsPurpose": {"CRSPurposeCodeUndefined"},
+        "crsTypeOfFinance": {"CRSTypeOfFinanceUndefined"},
+        "crsCooperationModality": {"CRSCooperationModalityUndefined"},
+        "crsTypeOfFlow": {"CRSTypeOfFlowUndefined"},
+    }
 
 
 # --- A StatVar the index would decide must be an exported row ---

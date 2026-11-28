@@ -94,7 +94,7 @@ _STAMP = IndexStamp(
 )
 
 
-def _code(dcid: str, code: str, parent: str | None = None) -> CodeRow:
+def _code(dcid: str, code: str | None, parent: str | None = None) -> CodeRow:
     return CodeRow(dcid=dcid, code_system="sys", code=code, label=dcid, synonyms=(), parent=parent)
 
 
@@ -113,7 +113,8 @@ def _statvar(dcid: str, *provenances: str) -> StatVarRow:
 
 
 def _ordering_index() -> CodeIndex:
-    # Index order runs against code order, and two siblings differ in code length.
+    # Index order runs against code order, two siblings differ in code length, and one root
+    # carries no code.
     return CodeIndex(
         stamp=_STAMP,
         declarations=[
@@ -127,6 +128,7 @@ def _ordering_index() -> CodeIndex:
             )
         ],
         codes=[
+            _code("SysUndefined", None),
             _code("Sys2", "2"),
             _code("Sys1020", "1020", parent="Sys2"),
             _code("Sys200", "200", parent="Sys2"),
@@ -143,7 +145,7 @@ def _ordering_index() -> CodeIndex:
 def test_a_system_lists_its_codes_and_a_code_its_children_in_code_order():
     index = _ordering_index()
 
-    assert [row.code for row in index.codes_by_system["sys"]] == ["1", "1020", "2", "200"]
+    assert [row.code for row in index.codes_by_system["sys"]] == ["1", "1020", "2", "200", None]
     assert [row.dcid for row in index.children("Sys2")] == ["Sys1020", "Sys200"]
     assert index.children("Sys1020") == ()
     assert index.children("NotACode") == ()

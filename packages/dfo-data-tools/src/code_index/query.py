@@ -89,10 +89,15 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
     )
 
 
+# The sort key of a row with no code: above every code string, so a code the publisher left
+# uncoded (`CodeSystemConfig.uncoded`) follows its system's coded rows.
+_UNCODED_KEY = "\U0010ffff"
+
+
 def code_order(row: CodeRow) -> tuple[str, str]:
-    """The order of one system's code rows: by `CodeRow.code` as a string, and by dcid in a
-    system whose rows carry no code."""
-    return (row.code or "", row.dcid)
+    """The order of one system's code rows: by `CodeRow.code` as a string, then the rows with
+    no code by dcid. A system whose rows carry no code orders by dcid alone."""
+    return (_UNCODED_KEY if row.code is None else row.code, row.dcid)
 
 
 def _datasets_by_five_tuple(

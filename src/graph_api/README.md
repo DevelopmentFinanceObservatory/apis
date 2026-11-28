@@ -519,7 +519,7 @@ Lists what belongs to a node under one `relation`. The route must be mounted ahe
 
 - `relation`: required.
 - `limit`: items per page, 1 to 1000 (`MEMBERS_PAGE_MAX`); default 200 (`MEMBERS_PAGE_DEFAULT`).
-- `cursor`: the `next_cursor` of the previous page. The cursor is opaque, bound to the node, relation, projection, `as_of` date, order and, for `facets`, the filter values. It continues after the last item's sort key, with the dcid breaking ties, so a page read after a rebuild repeats no item and skips none present in both builds. A cursor that does not decode or belongs to another walk is refused at `/cursor`.
+- `cursor`: the `next_cursor` of the previous page. The cursor is opaque, bound to the node, relation, projection, `as_of` date, order, the revision of the sort keys and, for `facets`, the filter values. It continues after the last item's sort key, with the dcid breaking ties, so a page read after a rebuild repeats no item and skips none present in both builds. A cursor that does not decode or belongs to another walk is refused at `/cursor`.
 - `projection`: for `members` and `countries` only, one of `countries` (the default), `other_states`, `territories`, `former_states` or `institutions`. Any other relation refuses it at `/projection`.
 - `as_of`: for `members` and `countries` only, an ISO date. An undated membership (every region, and the 20 groups whose authority records no dates) refuses it at `/as_of`.
 - `source`, `unit`, `measurement_method`: for `facets` only, filter the facets by provenance, unit and measurement method dcid. An empty `measurement_method` selects the facets that state no method. Any other relation refuses a filter at its name.

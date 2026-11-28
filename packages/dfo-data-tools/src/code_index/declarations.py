@@ -64,7 +64,10 @@ class CodeSystemConfig:
     `classification_codes` says whether the enum's values carry a `classificationCode` arc,
     the publisher's code. The export refuses a value that breaks the declaration either way,
     so a system's rows all carry a code (`CodeRow.code`) or none do. The climate policy
-    objectives are DFO's own values and no publisher codes them.
+    objectives are DFO's own values and no publisher codes them. `uncoded` lists the dcids of a
+    system with `classification_codes=True` that the publisher left without a code. Such a row
+    exports with `code` `None` and must carry no `classificationCode`, and every other value of
+    the system must carry one.
     """
 
     code_system: str
@@ -79,6 +82,7 @@ class CodeSystemConfig:
     no_vocabulary_terms: tuple[str, ...] = ()
     house_case: HouseDefaultCase | None = None
     classification_codes: bool = True
+    uncoded: frozenset[str] = frozenset()
 
 
 CRS = "provenance/OECDCreditorReportingSystem"
@@ -121,6 +125,13 @@ DAC_MULTILATERALS = "DACMultilaterals"
 # their StatVars from the coverage build into `listed_statvars` (`listed_dcids`).
 LISTED_DATASETS: tuple[str, ...] = (_IDS,)
 
+# IATI StatVars declare these codes for a transaction that states no purpose, flow, finance type
+# or modality. The CRS has no such code, so none carries a `classificationCode`.
+_CRS_UNDEFINED_PURPOSE = "CRSPurposeCodeUndefined"
+_CRS_UNDEFINED_FLOW = "CRSTypeOfFlowUndefined"
+_CRS_UNDEFINED_FINANCE = "CRSTypeOfFinanceUndefined"
+_CRS_UNDEFINED_MODALITY = "CRSCooperationModalityUndefined"
+
 # Exported declarations set CRS behaviour.
 # `crsTypeOfFlow` is flat, with nine root codes.
 CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
@@ -138,6 +149,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         # purpose code names it, so a question naming climate on a CRS shape refuses the
         # qualifier.
         no_vocabulary_terms=("climate",),
+        uncoded=frozenset({_CRS_UNDEFINED_PURPOSE}),
     ),
     CodeSystemConfig(
         code_system="crsTypeOfFinance",
@@ -148,6 +160,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         absent_reading="not_declared",
         declared_by_every_statvar_of=(CRS,),
         plain_name="instrument",
+        uncoded=frozenset({_CRS_UNDEFINED_FINANCE}),
     ),
     CodeSystemConfig(
         code_system="crsCooperationModality",
@@ -158,6 +171,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         absent_reading="not_declared",
         declared_by_every_statvar_of=(),
         plain_name="modality",
+        uncoded=frozenset({_CRS_UNDEFINED_MODALITY}),
     ),
     CodeSystemConfig(
         code_system="crsTypeOfFlow",
@@ -179,6 +193,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         # No CRS flow type separates non-concessional flows from concessional ones, so a
         # question naming them on a CRS shape refuses the qualifier.
         no_vocabulary_terms=("non-concessional",),
+        uncoded=frozenset({_CRS_UNDEFINED_FLOW}),
     ),
     # Imputed multilateral and DAC2a StatVars carry `dac2aAidType`, and CRS StatVars do not. DAC2a
     # aid types nest totals over their parts ("ODA grants" under "ODA"), and a net total holds
