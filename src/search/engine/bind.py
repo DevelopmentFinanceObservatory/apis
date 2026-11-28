@@ -34,11 +34,10 @@ from search.engine.quantity import (
 from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
+    pair_datasets,
     ratio_base_axis,
-    shape_datasets,
     shape_invariants,
     shape_partly_stated,
-    shape_vocabulary,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
 from search.models import Axis, RoleAxis
@@ -614,48 +613,49 @@ def reads_bound_values_alike(
     `elected`'s (`covered_leaves`), and to at least one (`applies_value`), so
     `other` holds every bound value as `elected` does. A family that lists a parent code
     beside its children reads the parent as another listing lists its children alone. A
-    shape with no slot on the property holds none of its values."""
+    shape with no slot on the property holds none of its values. Both sides read their
+    codes within the pair's datasets (`pair_datasets`)."""
     bound = _bound_slots(bindings)
     own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
+    datasets = pair_datasets(elected, other)
     for axis, prop in _slot_properties(elected):
         key = f"{axis}:{prop}"
         ours, theirs = own.get(key, []), held.get(key, [])
         for value in bound.get((axis, prop), ()):
             read = [code for code in ours if applies_value(value, code)]
             read_there = [code for code in theirs if applies_value(value, code)]
-            if not read or covered_leaves(read, shape=elected) != covered_leaves(
-                read_there, shape=other
+            if not read or covered_leaves(read, datasets=datasets) != covered_leaves(
+                read_there, datasets=datasets
             ):
                 return False
     return True
 
 
-def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> frozenset[str]:
+def covered_leaves(codes: Iterable[str], *, datasets: Collection[str]) -> frozenset[str]:
     """The leaf codes `codes` cover in the code index's hierarchy: each code's descendants
     that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
     leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves.
 
-    Read for `shape`, a parent covers only the leaves of `shape`'s code systems that the
-    rows of its datasets hold (`qualifier_match.bindable_codes` of its `shape_datasets`),
-    so a code of the enum that only another dataset's rows hold changes nothing it reads:
-    an IATI-only purpose code under a CRS parent on a CRS shape, and a CRS-only one on an
-    IATI shape. A listed code always covers itself, and so does a parent none of whose
-    leaves count: no IATI row holds a code under standard loans (`CRSTypeOfFinance422`),
-    so on an IATI shape it covers itself and reads apart from a shape binding nothing."""
+    A parent covers only the leaves the rows of `datasets` can bind
+    (`qualifier_match.bindable_codes`), every row when `datasets` is empty. A reader with
+    one shape passes that shape's datasets (`shape_datasets`); a reader comparing two
+    shapes passes one universe for both sides, the union of their datasets
+    (`pair_datasets`), so a parent both shapes list covers the same leaves on each. A
+    listed code always covers itself, and so does a parent none of whose leaves count: no
+    IATI row holds a code under reimbursable grants (`CRSTypeOfFinance422`), so within the
+    IATI dataset it covers itself and reads apart from a shape binding nothing.
+
+    The union is conservative where two datasets hold different children of one parent: a
+    CRS shape listing the CRS-held children of upper secondary education
+    (`CRSPurposeCode113`) alone does not read alike with an IATI shape listing the parent,
+    because the union holds 11321 and 11322, which only IATI rows hold and the CRS shape
+    does not list."""
     index = get_index()
     listed = set(codes)
-    vocabulary = shape_vocabulary(shape) if shape is not None else frozenset()
-    bindable = (
-        bindable_codes(index, datasets=shape_datasets(shape, index))
-        if shape is not None
-        else frozenset()
-    )
+    bindable = bindable_codes(index, datasets=datasets)
 
     def counts(leaf: str) -> bool:
-        if shape is None or leaf in listed or leaf in bindable:
-            return True
-        row = index.code_by_dcid(leaf)
-        return row is None or row.code_system not in vocabulary
+        return leaf in listed or leaf in bindable
 
     covered: set[str] = set()
     for code in listed:

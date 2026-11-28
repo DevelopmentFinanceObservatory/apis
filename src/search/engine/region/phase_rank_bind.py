@@ -1376,28 +1376,39 @@ def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
     narrows them, less each one only opt-in tables publish (`is_opt_in`) that the part
     cannot answer from, outside its source scope (`_in_scope`) or one a part not naming a
     source has no need of (`_without_unasked_opt_in`). A part naming the CRS still reads
-    "multilateral" in "multilateral ODA" as DAC1's aid type, while IATI, unasked, binds no
-    "loans" on a CRS part."""
+    "multilateral" in "multilateral ODA" as DAC1's aid type, while IATI, unasked, binds none
+    of the purpose codes only its rows hold, such as `CRSPurposeCode11321`, on a CRS part.
+    Built once per part (`ResolveState.binding_elsewhere`)."""
+    shapes, scope = tuple(state.shapes_found), state.scope
+    memo = state.binding_elsewhere
+    if (
+        memo is not None
+        and memo[1] is scope
+        and len(memo[0]) == len(shapes)
+        and all(built is shape for built, shape in zip(memo[0], shapes, strict=True))
+    ):
+        return memo[2]
     index = get_index()
-    shapes = state.shapes_found
 
     def opt_in_only(shape: ShapeDraft) -> bool:
         datasets = shape_datasets(shape, index)
         return bool(datasets) and all(is_opt_in(index, dataset) for dataset in datasets)
 
     if not any(opt_in_only(shape) for shape in shapes):
-        return list(shapes)
-    scope = state.scope
-    asked = {
-        shape.shape_id
-        for shape in _without_unasked_opt_in(state, _dataset_candidates(shapes, None))
-    }
-    return [
-        shape
-        for shape in shapes
-        if not opt_in_only(shape)
-        or (shape.shape_id in asked and (scope is None or _in_scope(shape, scope, index)))
-    ]
+        found = list(shapes)
+    else:
+        asked = {
+            shape.shape_id
+            for shape in _without_unasked_opt_in(state, _dataset_candidates(shapes, None))
+        }
+        found = [
+            shape
+            for shape in shapes
+            if not opt_in_only(shape)
+            or (shape.shape_id in asked and (scope is None or _in_scope(shape, scope, index)))
+        ]
+    state.binding_elsewhere = (shapes, scope, found)
+    return found
 
 
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:
@@ -1755,7 +1766,7 @@ def _unbindable_qualifiers(
     leaves partly unread, each as an unbound record with evidence ``"unavailable"``.
 
     A shape's own reading skips such codes, so "population", `CRSTypeOfFinance4`, neither
-    binds nor hides a purpose reading on a CRS shape, and "loans", `CRSTypeOfFinance400`,
+    binds nor hides a purpose reading on a CRS shape, and "police", `CRSPurposeCode15132`,
     which only IATI rows hold, is unavailable on one. Where nothing else reads the word,
     "population ODA" refuses on it. A term every word of which the shape reads
     otherwise yields to that reading, and so does one inside a phrase the bind model's
@@ -3129,9 +3140,9 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     narrows them), one declaring the code's system whose family holds it
     (`ResolveState.held_codes_of`), is read too, and `shape` leaves its words to the
     coverage rule. A shape only opt-in tables publish binds nothing elsewhere when the part
-    cannot answer from it (`_binding_elsewhere`): "loans" in "education loans" is
-    `CRSTypeOfFinance400`, which only IATI rows hold, and with IATI left unasked a CRS
-    shape keeps the menu that offers type of finance 420. "imputed" in "imputed education
+    cannot answer from it (`_binding_elsewhere`): "culture" in "culture ODA" is purpose
+    16066, which only IATI rows hold, and with IATI left unasked a CRS shape keeps its
+    menu for "culture". "imputed" in "imputed education
     aid" is DAC2a aid type 106, which the imputed multilateral shape binds, so a CRS shape
     is offered no "imputed student cost" for it, and "multilateral" in "multilateral ODA",
     DAC1 aid type 2000, stays an

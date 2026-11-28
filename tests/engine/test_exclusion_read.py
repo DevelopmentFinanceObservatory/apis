@@ -1223,41 +1223,43 @@ def test_a_run_naming_two_systems_is_left_out_only_on_every_property(shape, bind
 @pytest.mark.parametrize(
     ("dataset", "met"),
     [
-        pytest.param(CRS, False, id="crs-answer-reads-no-loan"),
-        pytest.param(IATI, True, id="iati-answer-leaves-loans-out"),
+        pytest.param(CRS, False, id="crs-answer-reads-no-police"),
+        pytest.param(IATI, True, id="iati-answer-leaves-police-out"),
     ],
 )
 def test_a_run_naming_only_codes_the_answers_rows_lack_is_not_left_out(dataset, met):
-    """ "loans" names `CRSTypeOfFinance400`, which only IATI rows hold. A CRS answer binding
-    standard grants reads no loan, so it cannot show the loans left out, as a word naming
-    no code shows nothing; an IATI answer binding them leaves loans out."""
-    exclusion = LeftOut(phrase="excluding loans", things=("loans",), at=0, shown="excluding loans")
+    """ "police" names `CRSPurposeCode15132`, which only IATI rows hold. A CRS answer binding
+    education reads no police, so it cannot show the police left out, as a word naming no
+    code shows nothing; an IATI answer binding education leaves the police out."""
+    exclusion = LeftOut(
+        phrase="excluding police", things=("police",), at=0, shown="excluding police"
+    )
     (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
     shape = replace(
         _crs_shape(), meas_qual_dcid="Nominal", slot_keys=dataset_flow_slot_keys(dataset)
     )
 
-    judgement = judge(requirements, [(shape, _crs_bound(crsTypeOfFinance="CRSTypeOfFinance110"))])
+    judgement = judge(requirements, [(shape, _crs_bound(crsPurpose="CRSPurposeCode110"))])
 
-    assert judgement.met_exclusions() == ({"excluding loans"} if met else frozenset())
+    assert judgement.met_exclusions() == ({"excluding police"} if met else frozenset())
 
 
 def test_a_run_of_codes_the_answers_rows_hold_is_judged_beside_one_they_lack():
-    """ "loans" names `CRSTypeOfFinance400`, which only IATI rows hold, and "standard
-    grants" `CRSTypeOfFinance110`. A CRS answer binding standard grants is outside the loans
-    run and leaves the standard grants run unmet."""
-    phrase = "excluding standard grants and loans"
-    exclusion = LeftOut(phrase=phrase, things=("standard grants", "loans"), at=0, shown=phrase)
+    """ "police" names `CRSPurposeCode15132`, which only IATI rows hold, and "education"
+    `CRSPurposeCode110`. A CRS answer binding education is outside the police run and
+    leaves the education run unmet."""
+    phrase = "excluding education and police"
+    exclusion = LeftOut(phrase=phrase, things=("education", "police"), at=0, shown=phrase)
     (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
     shape = replace(_crs_shape(), meas_qual_dcid="Nominal", slot_keys=dataset_flow_slot_keys(CRS))
 
-    judgement = judge(requirements, [(shape, _crs_bound(crsTypeOfFinance="CRSTypeOfFinance110"))])
+    judgement = judge(requirements, [(shape, _crs_bound(crsPurpose="CRSPurposeCode110"))])
 
     (outcomes,) = judgement.outcomes
     assert {
         (excluded_run(requirement.rule), outcome)
         for requirement, outcome in zip(requirements, outcomes, strict=True)
-    } == {("standard grants", "unmet"), ("loans", "outside")}
+    } == {("education", "unmet"), ("police", "outside")}
 
 
 @pytest.mark.parametrize(

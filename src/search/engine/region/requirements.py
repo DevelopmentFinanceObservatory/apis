@@ -493,10 +493,10 @@ def _unread_exclusions(
     (`qualifier_match.bindable_codes`), codes that only other datasets' rows hold. Such a
     shape reads no code in the run's words, so its answer is outside the run's
     requirements, as every answer is outside a phrase a word of which names no code
-    (`state.exclusion_requirements`). "excluding loans" names `CRSTypeOfFinance400`, which
+    (`state.exclusion_requirements`). "excluding police" names `CRSPurposeCode15132`, which
     only IATI rows hold, so a CRS answer neither meets nor leaves it unmet. The phrase's
-    other runs are judged as they stand: in "excluding standard grants and loans" a CRS
-    answer binding standard grants (`CRSTypeOfFinance110`) leaves "standard grants" unmet."""
+    other runs are judged as they stand: in "excluding education and police" a CRS answer
+    binding education (`CRSPurposeCode110`) leaves "education" unmet."""
     index = get_index()
     bindable = bindable_codes(index, datasets=datasets)
     reads: dict[tuple[str, str], bool] = {}

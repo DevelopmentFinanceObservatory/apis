@@ -17,6 +17,7 @@ from search.engine.bind import (
 )
 from search.engine.bind_repair import _label_named_in_text
 from search.engine.binders.base import PolicyContractError
+from search.engine.retrieval.bound_values import pair_datasets
 
 if TYPE_CHECKING:
     from search.engine.binders.house_policy import PolicyChoice
@@ -40,13 +41,16 @@ def holds_requested_slots(
     chosen: ShapeDraft, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> bool:
     """Whether, for each ``requested_all`` draft of `bindings`, `shape`'s slot on its
-    property covers every leaf code `chosen`'s slot covers, each read for its own shape
-    (`bind.covered_leaves`)."""
+    property covers every leaf code `chosen`'s slot covers, both read within the pair's
+    datasets (`bind.covered_leaves` of `pair_datasets`)."""
     own, held = chosen.slot_taxonomy or {}, shape.slot_taxonomy or {}
     keys = [f"{d.axis}:{d.property_dcid}" for d in bindings if d.evidence == "requested_all"]
+    if not keys:
+        return True
+    datasets = pair_datasets(chosen, shape)
     return all(
-        covered_leaves(own.get(key, ()), shape=chosen)
-        <= covered_leaves(held.get(key, ()), shape=shape)
+        covered_leaves(own.get(key, ()), datasets=datasets)
+        <= covered_leaves(held.get(key, ()), datasets=datasets)
         for key in keys
     )
 

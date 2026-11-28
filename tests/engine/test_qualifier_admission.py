@@ -342,40 +342,39 @@ def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own
 
 
 def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
-    """`CRSTypeOfFinance400` ("loans") is a CRS finance type that only IATI rows hold,
-    through codes under it. A CRS shape's own reading of "ODA loans" claims no finance
-    type; an IATI shape's reads loans."""
+    """Police (`CRSPurposeCode15132`) is a CRS purpose that only IATI rows hold. A CRS
+    shape's own reading of "police ODA" claims no purpose; an IATI shape's reads police."""
     iati = dataset_vocabulary(IATI)
     reading = read_text(
-        "ODA loans", _REAL_INDEX, vocabularies=[_CRS, iati], datasets=dataset_scopes(CRS, IATI)
+        "police ODA", _REAL_INDEX, vocabularies=[_CRS, iati], datasets=dataset_scopes(CRS, IATI)
     )
 
-    def finance_types(vocabulary: frozenset[str]) -> set[str]:
+    def purposes(vocabulary: frozenset[str]) -> set[str]:
         return {
             row.dcid
             for span in reading.by_vocabulary[vocabulary].spans
             for row in span.rows
-            if isinstance(row, CodeRow) and row.code_system == "crsTypeOfFinance"
+            if isinstance(row, CodeRow) and row.code_system == "crsPurpose"
         }
 
-    assert finance_types(_CRS) == set()
-    assert "CRSTypeOfFinance400" in finance_types(iati)
+    assert purposes(_CRS) == set()
+    assert purposes(iati) == {"CRSPurposeCode15132"}
 
 
 @pytest.mark.parametrize(
     ("variable", "unavailable"),
     [
-        pytest.param("loans to Kenya", [("loans", "unavailable")], id="loans"),
-        # The reading in every code system takes "ODA loans" as DAC2a aid type 218, which
-        # the CRS shape does not declare.
-        pytest.param("ODA loans to Kenya", [], id="oda-loans"),
+        pytest.param("police aid to Kenya", [("police", "unavailable")], id="police"),
+        # "urban development" names 43032, which only IATI rows hold, and 43030, which CRS
+        # rows hold, so the CRS shape reads it.
+        pytest.param("urban development ODA to Kenya", [], id="urban-development"),
     ],
 )
 def test_a_code_only_another_datasets_rows_hold_is_unavailable_on_a_crs_shape(
     variable, unavailable
 ):
-    """`CRSTypeOfFinance400` ("loans"), which only IATI rows hold, is a finance type no CRS
-    shape binds, so the CRS shape records "loans" as unavailable."""
+    """Police (`CRSPurposeCode15132`), which only IATI rows hold, is a purpose no CRS shape
+    binds, so the CRS shape records "police" as unavailable."""
     state = _model_choice_state(variable, [])
     records = _unbindable_qualifiers(
         variable,
@@ -2476,9 +2475,9 @@ _IMPUTED_SECTORS_SV = (
     "CRSPurposeCode11220_Nominal"
 )
 _DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal"
-_IATI_LOAN_SV = (
+_IATI_CULTURE_SV = (
     "Amount_FinancialFlow_Gross_Disbursement_IATITransactionType3_CRSTypeOfFlow10_"
-    "CRSTypeOfFinance410_CRSCooperationModalityC01_CRSPurposeCode11120_Nominal"
+    "CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode16066_Nominal"
 )
 
 
@@ -2497,11 +2496,11 @@ _IATI_LOAN_SV = (
         ("imputed education aid", [], ["imputed education"]),
         ("ODA loans for education", [], ["loans"]),
         ("ODA loans for education", [_IMPUTED_SECTORS_SV], ["loans"]),
-        # "loans" is type of finance 400, which only IATI rows hold. An unnamed part has no
-        # need of the opt-in IATI shape, so it binds nothing elsewhere and "loans" keeps
-        # the menu offering 420.
-        ("education loans", [], ["education loans"]),
-        ("education loans", [_IATI_LOAN_SV], ["education loans"]),
+        # "culture" is purpose 16066, which only IATI rows hold. An unnamed part has no
+        # need of the opt-in IATI shape, so it binds nothing elsewhere and "culture" keeps
+        # its menu.
+        ("culture ODA", [], ["culture"]),
+        ("culture ODA", [_IATI_CULTURE_SV], ["culture"]),
         ("equity investment ODA", [], ["equity investment"]),
         ("technical cooperation ODA", [], ["technical cooperation"]),
         # A word naming data itself is read (subj-health-data), and a run reaches past an

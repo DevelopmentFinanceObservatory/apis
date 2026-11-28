@@ -2201,6 +2201,20 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
     return family.datasets if family is not None else ()
 
 
+def pair_datasets(
+    first: ShapeDraft, second: ShapeDraft, index: CodeIndex | None = None
+) -> tuple[str, ...]:
+    """The datasets a comparison of `first` and `second` reads both shapes' codes within
+    (`bind.covered_leaves`): those publishing either shape's family (`shape_datasets`), in
+    first-seen order, or none, every row, when either shape has none, so a shape the index
+    does not carry never scopes the other to the other's own datasets."""
+    index = index or get_index()
+    ours, theirs = shape_datasets(first, index), shape_datasets(second, index)
+    if not ours or not theirs:
+        return ()
+    return tuple(dict.fromkeys((*ours, *theirs)))
+
+
 def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
     are also the code systems it reads qualifier text in. A slot a breakdown decision left out
