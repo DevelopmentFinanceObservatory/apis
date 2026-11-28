@@ -122,7 +122,7 @@ class IncompleteAfter(BaseModel):
     serving those variables. `unknown`: no catalogue documented `source` (`None` when the rows
     name no provenance) or the frame grammar could not read the mark, so nothing says.
     `projected`: the rows include rows under a method `source` uses only for years after its
-    last actual year (`materialise.method_status.projection_methods`), served because the
+    last actual year (`materialise.member_folds.projection_methods`), served because the
     request's window opted in to them; `partial_period` holds the first period they start.
     `unmarked`: the pipeline marks no partial period the rows reach, listed only in a computed
     version's record, which names every cell of its rows. `partial_period` is set

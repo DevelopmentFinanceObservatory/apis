@@ -137,7 +137,7 @@ def _five_tuple(row: StatVarRow) -> FiveTuple:
 
 @functools.cache
 def _provenances() -> dict[str, tuple[str, ...]]:
-    return {row.dcid: row.provenances for row in get_index().statvars}
+    return {row.dcid: row.datasets for row in get_index().statvars}
 
 
 def _arcs(row: StatVarRow) -> dict:
@@ -297,7 +297,7 @@ def _draw(rng: random.Random) -> list[_Drawn]:
             "entities": {"destination": ["country/KEN"]},
             "requested_window": {"kind": "all"},
         }
-        facet = _provenance_facet(rng, datasets, base.provenances)
+        facet = _provenance_facet(rng, datasets, base.datasets)
         if facet is not None:
             identity["facets"] = {"provenance": facet}
         drawn.append(_Drawn(identity=identity, all_keys=all_keys, rows=tuple(rows)))
@@ -337,7 +337,7 @@ def _first_pass_shape(drawn: _Drawn, rng: random.Random) -> ShapeDraft:
     model = BaseIdentity.model_validate(drawn.identity)
     assert isinstance(model.shape, IdentityShapeSchema)
     sample = rng.sample(drawn.rows, min(_RECALL_SAMPLE, len(drawn.rows)))
-    sample += [row for row in drawn.rows if len(row.provenances) == 1][-2:]
+    sample += [row for row in drawn.rows if len(row.datasets) == 1][-2:]
     return dataclasses.replace(
         synthetic_shape_for_identity(model.shape),
         slot_keys=tuple(

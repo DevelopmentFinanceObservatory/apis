@@ -475,7 +475,7 @@ def test_to_materialisation_request_binds_a_provenance_set_of_one_and_leaves_a_w
     assert (None if binding is None else (binding.state, binding.ref)) == (
         None if bound is None else ("bound", bound)
     )
-    assert provenance_pin(identity) == frozenset(refs)
+    assert provenance_pin(identity, code_index=get_index()) == frozenset(refs)
 
 
 def test_to_materialisation_request_translates_an_axis_alias_entity_role_to_the_declared_role():
@@ -652,24 +652,29 @@ def test_to_materialisation_request_refuses_a_role_shaped_currency_naming_an_amb
     assert isinstance(exc_info.value.__cause__, RoleAxisConflictError)
 
 
-def test_to_materialisation_request_refuses_a_unit_facet_carrying_both_ref_and_request():
+@pytest.mark.parametrize(
+    ("axis", "ref"),
+    [("unit", "USD"), ("provenance", "provenance/OECDCreditorReportingSystem")],
+)
+def test_to_materialisation_request_refuses_a_facet_carrying_both_ref_and_request(axis, ref):
     identity = {
         "identity_version": "spec1",
         "shape": {"kind": "stat_var", "id": "MalariaGrantDisbursements"},
         "slots": [],
         "entities": {},
         "facets": {
-            "unit": {
+            axis: {
                 "state": "value",
-                "ref": "USD",
+                "ref": ref,
                 "request": {"currency": "USD", "prices": "current"},
             }
         },
         "requested_window": {"kind": "all"},
     }
 
-    with pytest.raises(IdentityError):
+    with pytest.raises(IdentityError) as refused:
         to_materialisation_request(identity, shape=_SHAPE, code_index=get_index())
+    assert refused.value.category == "invalid_binding_shape"
 
 
 def test_to_materialisation_request_refuses_a_unit_facet_carrying_neither_ref_nor_request():

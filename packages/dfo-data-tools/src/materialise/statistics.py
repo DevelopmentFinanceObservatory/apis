@@ -33,16 +33,12 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from dfo_frame_grammar import parse_time_period, unit_cell_to_json, unit_cells, unit_codes
 
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from materialise.continued_series import ContinuedSeries, continuation_leads
 from materialise.frame_build import Frame
 from materialise.held_back import source_of
-from materialise.method_status import (
-    StatusClass,
-    is_projection,
-    method_status_classes,
-    reported_provenances,
-)
+from materialise.member_folds import is_projection, reported_sources
+from materialise.method_status import StatusClass, method_status_classes
 
 _STAT_VAR_COLUMN = "stat_var"
 _TIME_PERIOD_COLUMN = "time_period"
@@ -62,6 +58,7 @@ _FIXED_COLUMNS: frozenset[str] = frozenset(
         _STATUS_COLUMN,
         _MEASUREMENT_METHOD_COLUMN,
         PROVENANCE_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
     }
 )
 
@@ -367,7 +364,7 @@ def count_statuses(
     provenance)` pair produced.
 
     A method's status is its class in `classes`. A pair with no method is reported when
-    its provenance is in `reported` (`reported_provenances`). A count is known only when
+    its provenance is in `reported` (`member_folds.reported_sources`). A count is known only when
     every pair's status is: one unclassed method, or one method-less pair under another
     provenance, makes both counts `None`, so an unknown status never reads as 0.
     """
@@ -429,7 +426,7 @@ class SeriesFigures:
     order. Each entity counts the distinct variables holding data for it, not their
     series. `latest_by_source` maps each `(provenance cell, stat_var)` pair to the latest end
     any of its series reaches, whatever the grains. `actual_by_source` maps each pair holding
-    a row under no projection method (`method_status.is_projection`) to the latest end its
+    a row under no projection method (`member_folds.is_projection`) to the latest end its
     rows under other methods reach, and `projected_by_source` each pair holding a row under
     one to the earliest start its projected rows reach. A row is judged a projection by its
     source (`held_back.source_of`), the composite component serving its variable in a
@@ -590,7 +587,7 @@ class _FiguresFold:
             status=count_statuses(
                 self.values_by_facet,
                 classes=method_status_classes(),
-                reported=reported_provenances(),
+                reported=reported_sources(),
             ),
             latest_by_source=dict(self.source_ends),
             actual_by_source=dict(self.actual_ends),

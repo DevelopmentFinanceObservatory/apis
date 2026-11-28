@@ -851,6 +851,7 @@ def _rendered_from_frame(
         ),
         frame_mode=plan.frame_mode,
         recorded_cut=recorded_cut,
+        held_years=coverage_index.provenance_years,
     )
     return rendered, documentation_complete
 

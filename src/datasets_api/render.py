@@ -70,11 +70,12 @@ import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from functools import cache, cached_property
+from functools import cache, cached_property, partial
 from typing import IO, cast
 from urllib.parse import urlencode
 
@@ -94,7 +95,11 @@ from artifact_store import (
 from artifact_store.errors import ArtifactIntegrityError
 from code_index.composites import DECLARED_COMPOSITES, components_splice
 from code_index.labels import PRICES_BY_QUALIFIER, family_label
-from code_index.members import absent_member_reads_zero
+from code_index.members import (
+    absent_member_reads_zero,
+    absent_reads_zero_in,
+    reports_overlapping_accounts,
+)
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
 from code_index.types import CompositeDeclaration, PartyRow, level_axes, summable_axes
@@ -113,6 +118,7 @@ from datasets_api.decode import build_decode_plan
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.failures import FoldPermitWaitExpired
 from datasets_api.groupby import (
+    ReporterCheck,
     SpliceCheck,
     adds_stat_vars,
     collapse_axes,
@@ -162,10 +168,11 @@ from datasets_api.versions import (
     enrichment_stamp,
     link_digest,
 )
+from datasets_api.warnings import REPORTERS_SUMMED, reporters_summed_message
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.named import named_capped
 from dfo_platform.request_deadline import bounded_deadline
@@ -770,10 +777,13 @@ def _reshape_groupby_collapse(
     levels: Mapping[str, int] | None = None,
     components: bool = False,
     selection: Mapping[str, frozenset[str]] | None = None,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
-    selection on axes the frame decodes, a sum checks the groups it sums. The checks before
-    the folds read every row: provenance disagreement, decode gaps (which refuse a level
+    selection on axes the frame decodes, a sum checks the groups it sums. `provenance_refs`
+    and the rows' `provenance` cells name datasets. Every row of a declared dataset's member
+    provenances carries the dataset's id (`materialise.columnar.dataset_cells`), so a total
+    over rows of several members carries that id. The checks before the folds read every row: provenance disagreement, decode gaps (which refuse a level
     roll-up's missing ancestor), StatVar collision and, for a spliced composite's components,
     a StatVar no one component serves or a cell holding rows of two components
     (`groupby.SpliceCheck.refuse_structure`), so they refuse as the same render without a
@@ -791,13 +801,17 @@ def _reshape_groupby_collapse(
     `entity_columns` plus the `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
     decoded axis the sum does not collapse (`groupby.unsummed_axes`), which `grammar_frame`
     holds to one value. A member with no rows counts as zero when the frame's dataset declares
-    it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
-    returns any unconsumed decode plan. A grammar frame requires `subject_id` unless one member
+    it (`absent_member_reads_zero`). A dataset declaring `members_report_overlapping_accounts`
+    reads it as zero only in the years its reporting organisation holds (`held_years`,
+    `groupby.ReporterCheck.refuse_unknown_absence`), and a total of rows two or more of its
+    reporting organisations filed raises `reporters_summed` (`groupby.ReporterCheck`). Appends
+    decode, streaming and reporter warnings to `warnings` and returns any unconsumed decode
+    plan. A grammar frame requires `subject_id` unless one member
     contributed and `kept` is empty."""
     refuse_provenance_disagreement(provenance_refs=provenance_refs)
-    # `refuse_provenance_disagreement` leaves one provenance at most: the dataset the frame
-    # was served from, which is the elected one for an index-resolved family, or the
-    # composite its components were composed into.
+    # `refuse_provenance_disagreement` leaves one dataset at most: the one the frame was served
+    # from, which is the elected one for an index-resolved family, or the composite its
+    # components were composed into.
     dataset = next(iter(set(provenance_refs)), None)
     composite = _frame_composite(code_index, provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
@@ -823,6 +837,28 @@ def _reshape_groupby_collapse(
         if components and composite is not None and components_splice(composite)
         else None
     )
+    reporters = (
+        ReporterCheck(
+            cell_columns=(
+                *(column for column in entity_columns if column in table.columns),
+                TIME_PERIOD_COLUMN,
+            ),
+            members=decode_lookup.keys(),
+            lookup=decode_lookup,
+            kept_code_systems=tuple(
+                code_system
+                for code_system in decoded_code_systems
+                if code_system not in axes_to_collapse
+            ),
+            selection=selection,
+            reads_zero=partial(absent_reads_zero_in, code_index, dataset, held_years=held_years)
+            if missing_declared_as_zero
+            else None,
+        )
+        if reports_overlapping_accounts(code_index, dataset)
+        and REPORTING_ORGANISATION_COLUMN in table.columns
+        else None
+    )
     if frame_chunks is None:
         if decode_plan is not None:
             current, decode_warnings = apply_reshapes(current, plan=ReshapePlan(decode=decode_plan))
@@ -843,6 +879,8 @@ def _reshape_groupby_collapse(
         if splice is not None:
             _note_splice_rows(splice, current)
             splice.refuse_structure()
+        if reporters is not None:
+            _note_reporter_rows(reporters, current)
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
         if selection is not None:
@@ -899,8 +937,13 @@ def _reshape_groupby_collapse(
                 classification = classify_columns(
                     (*table.columns, *decoded_column_names_before_collapse)
                 )
+                noted_chunks = (
+                    frame_chunks if splice is None else _noting_splice(frame_chunks, splice)
+                )
+                if reporters is not None:
+                    noted_chunks = _noting_reporters(noted_chunks, reporters)
                 outcome, streaming_contributors, decode_warnings = _stream_first_axis_collapse(
-                    frame_chunks if splice is None else _noting_splice(frame_chunks, splice),
+                    noted_chunks,
                     axis=axis,
                     classification=classification,
                     summable_axes=summable_columns,
@@ -953,6 +996,8 @@ def _reshape_groupby_collapse(
             if axis_index == 0 and splice is not None:
                 # After the fold's own preconditions, on both paths.
                 splice.refuse_missing()
+            if axis_index == 0 and reporters is not None:
+                reporters.refuse_unknown_absence()
             remaining_columns = tuple(c for c in remaining_columns if c != axis)
         if selection is not None:
             contributors = {
@@ -965,6 +1010,14 @@ def _reshape_groupby_collapse(
             }
         if not grammar_frame:
             current = cast(Table, rows_table(collapsed))
+    if reporters is not None and (summed := reporters.summed_reporters()):
+        warnings.append(
+            {
+                "code": REPORTERS_SUMMED,
+                "severity": "warn",
+                "message": reporters_summed_message(summed),
+            }
+        )
 
     adds = adds_stat_vars(
         contributors,
@@ -1040,6 +1093,47 @@ def _note_splice_rows(splice: SpliceCheck, table: Table) -> None:
 def _note_splice_arrow(splice: SpliceCheck, table: pa.Table) -> None:
     """Note every row of the frame slice `table` in `splice`."""
     splice.note(table.column(_STAT_VAR_COLUMN), table.select(list(splice.cell_columns)))
+
+
+def _note_reporter_rows(reporters: ReporterCheck, table: Table) -> None:
+    """Note every row of `table` in `reporters`: from its Arrow table when it is a frame
+    slice (`_FrameSlice`), else from its tuple rows, a non-string `stat_var` cell noted as
+    none."""
+    if isinstance(table, _FrameSlice):
+        _note_reporter_arrow(reporters, table.table)
+        return
+    stat_var = table.columns.index(_STAT_VAR_COLUMN)
+    reporter = table.columns.index(REPORTING_ORGANISATION_COLUMN)
+    reporters.note(
+        pa.array(
+            [row[stat_var] if isinstance(row[stat_var], str) else None for row in table.rows],
+            pa.string(),
+        ),
+        pa.array([row[reporter] for row in table.rows], pa.string()),
+        pa.table(
+            {
+                column: [row[table.columns.index(column)] for row in table.rows]
+                for column in reporters.cell_columns
+            }
+        ),
+    )
+
+
+def _note_reporter_arrow(reporters: ReporterCheck, table: pa.Table) -> None:
+    """Note every row of the frame slice `table` in `reporters`."""
+    reporters.note(
+        table.column(_STAT_VAR_COLUMN),
+        table.column(REPORTING_ORGANISATION_COLUMN),
+        table.select(list(reporters.cell_columns)),
+    )
+
+
+def _noting_reporters(frame_chunks: Iterable[Table], reporters: ReporterCheck) -> Iterator[Table]:
+    """`frame_chunks`, frame slices (`_FrameSlice`), each noted in `reporters` from its Arrow
+    table as it passes."""
+    for chunk in frame_chunks:
+        _note_reporter_arrow(reporters, cast(_FrameSlice, chunk).table)
+        yield chunk
 
 
 def _noting_splice(frame_chunks: Iterable[Table], splice: SpliceCheck) -> Iterator[Table]:
@@ -1156,6 +1250,7 @@ def _reshape_groupby(
     subject_id: str | None,
     frame_chunks: Iterable[Table] | None,
     deadline: float | None = None,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
@@ -1252,6 +1347,7 @@ def _reshape_groupby(
             levels=levels,
             components=components,
             selection=selection,
+            held_years=held_years,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
@@ -1434,6 +1530,7 @@ def _reshape(
     frame_chunks: Iterable[Table] | None = None,
     decoded: bool = False,
     deadline: float | None = None,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
@@ -1441,7 +1538,8 @@ def _reshape(
     A supplied `code_index` enables decode-plan construction even when no decode option is set.
     `None` skips decoding, as does `decoded`, set for a frame a collapse already decoded.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
-    `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` is used only for
+    `provenance_refs` govern its source-wide missing-as-zero rule, which `held_years` dates for a
+    dataset of reporting organisations (`_reshape_groupby_collapse`). `subject_id` is used only for
     the collapse frame's `stat_var`. `frame_chunks` streams the first
     collapse axis. `None` processes `table` in memory.
 
@@ -1464,6 +1562,7 @@ def _reshape(
         subject_id=subject_id,
         frame_chunks=frame_chunks,
         deadline=deadline,
+        held_years=held_years,
     )
     return _reshape_select_pivot_enrich(
         groupby_outcome.table,
@@ -2927,6 +3026,7 @@ def groupby_collapse_sha256(
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
     subject_id: str,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> str | None:
     """The hash of the frame `options.groupby` collapses the frame `frame_chunks` passes over
     to, folded as `render_and_store` folds it, or `None` when the groupby sums no `stat_var` or
@@ -2954,6 +3054,7 @@ def groupby_collapse_sha256(
         provenance_refs=provenance_refs,
         subject_id=subject_id,
         frame_chunks=itertools.chain((first_chunk,), chunks),
+        held_years=held_years,
     )
     return outcome.collapse.frame_sha256 if outcome.collapse is not None else None
 
@@ -2977,6 +3078,7 @@ def _reshape_stream(
     totals: _TotalRows | None,
     output_profile: OutputProfile | None = None,
     decoded: bool = False,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> _StreamedRender:
     """Reslices chunks, then dispatches the frame through one of four paths:
 
@@ -3044,6 +3146,7 @@ def _reshape_stream(
             subject_id=subject_id,
             frame_chunks=_within_fold_ceiling(rest_of_frame_chunks, cap=fold_max_rows),
             deadline=deadline,
+            held_years=held_years,
         )
         if options.pivot is not None:
             return _StreamedRender(
@@ -3220,6 +3323,7 @@ def render_and_store(
     frame_mode: FrameMode = FrameMode.RAW,
     citation_refs: Sequence[str] | None = None,
     recorded_cut: PartyTotalsCut | None = None,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's `Frame` chunks in order. Long
@@ -3252,7 +3356,9 @@ def render_and_store(
     party-kind cells (`versions.enrichment_stamp`, over the role columns of the frame it
     renders). `resolved_stat_var_refs` and `provenance_refs`
     support groupby population and source checks: `provenance_refs` are the provenances the
-    frame's rows carry. `citation_refs` are the sources the bundle names and the datasets whose
+    frame's rows carry. `held_years` gives the years each member provenance holds
+    (`CoverageIndex.provenance_years`), which a sum over a dataset of reporting organisations
+    reads an absent member by; without it such a sum reads every absent member unknown. `citation_refs` are the sources the bundle names and the datasets whose
     totals the file splits out, `provenance_refs` when `None`. A composite's rows carry its own
     provenance and its citation names its component tables
     (`datasets_api.manifest.source_refs_of`). A collapse frame mints its own version,
@@ -3376,6 +3482,7 @@ def render_and_store(
             output_profile=output_profile,
             # A summed frame's collapse decoded its codes.
             decoded=frame_mode is FrameMode.SUMMED and options.groupby is not None,
+            held_years=held_years,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse

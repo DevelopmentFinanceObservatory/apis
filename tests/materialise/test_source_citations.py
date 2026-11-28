@@ -588,3 +588,36 @@ class TestDocumentation:
                 catalogue=_UNLISTED,
                 documented=True,
             )
+
+
+class TestDeclaredDataset:
+    """`dataset/Ledger` is declared of two member provenances, which the catalogue lists and
+    the graph does not hold under the dataset's id (`tests.materialise._ledger`)."""
+
+    @pytest.mark.parametrize(
+        ("node_licence", "licence_type"),
+        [(None, _CC_BY), (_OECD_TERMS, _OECD_TERMS)],
+        ids=["members-licence", "node-licence"],
+    )
+    def test_a_dataset_takes_its_members_shared_licence_when_its_node_states_none(
+        self, node_licence, licence_type
+    ):
+        from ._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+        rows = [
+            replace(provenance_row(member, DFO, source="dc/s/Ledger"), licence=_WDI_LICENCE)
+            for member in (NORTH, SOUTH)
+        ]
+        node = {"typeOf": ("Dataset",), "name": ("Ledger register",)}
+        if node_licence is not None:
+            node["licenseType"] = (node_licence,)
+        graph = FakeGraphReader(arcs={LEDGER: node, **_LICENCE_NODES})
+
+        with bound_ledger_index():
+            citation = read_source_citations(
+                graph, [LEDGER], catalogue=restrictive_catalogue(provenances=rows)
+            )[LEDGER]
+
+        assert citation.name == "Ledger register"
+        assert citation.source == SourceRef(ref="dc/s/Ledger", label="dc/s/Ledger")
+        assert citation.licence_type == licence_type

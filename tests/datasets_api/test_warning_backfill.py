@@ -38,6 +38,8 @@ from origin_catalogue import record_un_read_failure
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.materialise.conftest import FakeGraphReader
 
+from ._release_doubles import bound_index
+
 _KEN = "country/KEN"
 _PROVENANCE = "PROV1"
 _DETAIL = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
@@ -90,7 +92,7 @@ def _code_index(*, absent_reads_zero: bool = False, indexed: bool = False) -> Co
             measurement_denominator=None,
             observation_properties=(),
             constraint_properties={},
-            provenances=(_PROVENANCE, "PROV2"),
+            datasets=(_PROVENANCE, "PROV2"),
         )
         for member in (_SERVED, _IN, _OUT, _GONE, _MOVED)
     )
@@ -107,7 +109,7 @@ def _code_index(*, absent_reads_zero: bool = False, indexed: bool = False) -> Co
         statvars=rows if indexed else (),
         datasets=(
             DatasetDeclaration(
-                provenance=_PROVENANCE,
+                id=_PROVENANCE,
                 label="Fixture table",
                 description="Amounts by place.",
                 opt_in=False,
@@ -429,6 +431,52 @@ def test_a_member_holding_only_another_dataset_is_unpopulated_under_the_elected_
 
     stored = _stored(store)
     assert stored["out_of_window_members"] == {"count": 1, "refs": ["dcid:Var_Moved"]}
+    assert "unserved_members" not in stored
+
+
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+
+
+def _ledger_code_index() -> CodeIndex:
+    """An index declaring `dataset/Ledger`, whose series two member provenances hold, and a row
+    for each member under it."""
+    fixture = _code_index(indexed=True)
+    return CodeIndex(
+        stamp=fixture.stamp,
+        declarations=(),
+        codes=(),
+        statvars=tuple(replace(row, datasets=(_LEDGER,)) for row in fixture.statvars),
+        datasets=(replace(fixture.datasets[_PROVENANCE], id=_LEDGER, label="Ledger"),),
+        dataset_members={_LEDGER: (_NORTH, _SOUTH)},
+    )
+
+
+def test_a_member_held_under_another_provenance_of_the_elected_dataset_is_not_unserved():
+    """The mint served Var_Served from one member provenance of the ledger and elected the
+    dataset, whose id the trace records. Var_In holds the requested years under the other
+    member, so it is off cadence, as for a plain table."""
+    facets = {
+        (_SERVED, _KEN): [_facet("f-served", "2015", provenance=_NORTH)],
+        (_IN, _KEN): [_facet("f-in", "2015", provenance=_SOUTH)],
+    }
+    row = _row(_warning([_IN]), zero=[_IN])
+    row["trace"]["facets"][0]["ref"] = _LEDGER
+    store = _Store([row])
+    index = _ledger_code_index()
+    readers = Readers(
+        graph=FakeGraphReader(facets=facets),
+        availability=ScopeAvailability(data=()),
+        code_index=index,
+        coverage=None,
+    )
+
+    with bound_index(index):
+        assert _run(store, readers=readers) == 0
+
+    stored = _stored(store)
+    assert stored["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_In"]}
     assert "unserved_members" not in stored
 
 

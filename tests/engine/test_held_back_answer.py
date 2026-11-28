@@ -5,7 +5,7 @@ held-back years it names (`region.facets.settled_opt_in`). Engine tests pin toda
 The partial fixture is a CRS-sourced series to 2025, which the dev graph marks partial from
 2025 (`tests.origin_catalogue.fake_catalogue.dev_provenance_nodes`). The projected fixture
 is an IDS-shaped series: reported to 2025 under no method, then `Estimated`, a declared
-projection pair (`method_status.projection_methods`), from 2026 to 2030."""
+projection pair (`member_folds.projection_methods`), from 2026 to 2030."""
 
 from __future__ import annotations
 

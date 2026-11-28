@@ -847,7 +847,10 @@ def compute_options(
     base pin answers at a place a DFO table also holds.
     """
     # A provenance pin scopes every read before DFO precedence, as resubmit reads it.
-    with recording_un_blocked_places() as un_blocked, pinned_provenance_scope(target.facets):
+    with (
+        recording_un_blocked_places() as un_blocked,
+        pinned_provenance_scope(target.facets, code_index=get_index()),
+    ):
         if req.for_.role == "observationAbout":
             options, probe_warning = _observation_about_options_set(
                 req,

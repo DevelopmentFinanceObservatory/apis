@@ -137,7 +137,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Male",
@@ -148,7 +148,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Male"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Female",
@@ -159,7 +159,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Female"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
         ),
     )
@@ -290,7 +290,7 @@ def _ids_twin_index(*, by_creditor_constraints: dict[str, str] = _IDS_CONSTRAINT
             measurement_denominator=None,
             observation_properties=roles,
             constraint_properties=constraints,
-            provenances=("provenance/Test",),
+            datasets=("provenance/Test",),
         )
 
     return CodeIndex(
@@ -421,7 +421,7 @@ def _flow_row(dcid: str) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties=constraints,
-        provenances=("provenance/Listed",) if _listed else ("provenance/Test",),
+        datasets=("provenance/Listed",) if _listed else ("provenance/Test",),
     )
 
 

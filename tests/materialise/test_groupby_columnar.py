@@ -67,6 +67,24 @@ def _plain_rows() -> list[dict]:
     return rows
 
 
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+
+
+def _reported_rows() -> list[dict]:
+    """Health rows of a declared dataset's members: North reports both of Kenya's variables,
+    and North and South one each of Tanzania's."""
+    return [
+        _row(stat_var, recipient, "2015", value, reporting_organisation=reporter)
+        for stat_var, recipient, value, reporter in (
+            ("dcid:SV_A", "country/KEN", 1.0, _NORTH),
+            ("dcid:SV_B", "country/KEN", 2.0, _NORTH),
+            ("dcid:SV_A", "country/TZA", 3.0, _NORTH),
+            ("dcid:SV_B", "country/TZA", 4.0, _SOUTH),
+        )
+    ]
+
+
 def _table(rows: list[dict]) -> pa.Table:
     table = build_frame(role_keys=("recipient",), rows=rows).table
     decoded, _ = decode_table(table, requests=(("stat_var", "sector"),), lookup=_LOOKUP)
@@ -162,6 +180,7 @@ _CASES = [
         {},
         id="value-before-grouping-column",
     ),
+    pytest.param(_reported_rows(), None, {}, id="reporters"),
     pytest.param(_plain_rows(), _twice, {}, id="repeated-grain"),
     pytest.param(_plain_rows(), _reversed, {}, id="out-of-order"),
 ]
@@ -255,6 +274,49 @@ def test_the_arrow_sum_gives_groupby_sum_s_outcome(rows, rearrange, options):
     )
 
     assert arrow == rows_sum
+
+
+def _fold_arrow(table: pa.Table):
+    return fold_groupby_sum_table(
+        table,
+        axis="stat_var",
+        classification=classify_columns(tuple(table.column_names)),
+        summable_axes=_SUMMABLE,
+    ).table
+
+
+def _fold_rows(table: pa.Table):
+    return fold_groupby_sum_chunks(
+        iter((rows_table(table),)),
+        axis="stat_var",
+        classification=classify_columns(tuple(table.column_names)),
+        summable_axes=_SUMMABLE,
+    ).table
+
+
+def _sum_arrow(table: pa.Table):
+    return groupby_sum_table(table, axis="stat_var", summable_axes=_SUMMABLE)
+
+
+def _sum_rows(table: pa.Table):
+    plan = ReshapePlan(groupby=GroupbyPlan(axis="stat_var", summable_axes=_SUMMABLE))
+    return apply_reshapes(rows_table(table), plan=plan)[0]
+
+
+@pytest.mark.parametrize("engine", [_fold_arrow, _fold_rows, _sum_arrow, _sum_rows])
+def test_a_total_keeps_the_reporter_its_rows_share_and_no_other(engine):
+    """`reporting_organisation` is no group key: Kenya's health total, whose rows North
+    reports alone, keeps North, and Tanzania's, which sums North's row and South's, names
+    no reporter. Each engine gives the same totals."""
+    result = rows_table(engine(_table(_reported_rows())))
+
+    recipient = result.columns.index("recipient")
+    reporter = result.columns.index("reporting_organisation")
+    value = result.columns.index("value")
+    assert sorted((row[recipient], row[reporter], row[value]) for row in result.rows) == [
+        ("country/KEN", _NORTH, 3.0),
+        ("country/TZA", None, 7.0),
+    ]
 
 
 def test_each_engine_keeps_its_own_summation_order():

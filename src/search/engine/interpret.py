@@ -197,7 +197,7 @@ def _states_a_word(
     row = index.statvar_by_dcid(dcid)
     return row is not None and any(
         declared.word in words and declared.measured_property == row.measured_property
-        for provenance in row.provenances
+        for provenance in row.datasets
         if provenance in index.datasets
         for declared in (
             *index.datasets[provenance].stated_words,

@@ -58,19 +58,22 @@ from materialise.facets import (
     merge_facets,
     rank_pool,
     ranked_values,
+    read_as_datasets,
     select_bound_facet,
     summed_counts,
 )
 from materialise.graph import Facet, FacetDefaultPolicy, GraphReader
+from materialise.member_folds import dataset_policy
 from materialise.window import RequestedWindow
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
 
 
-# Index-sourced groups agree on provenance and unit. The index declares one
-# CRS provenance, and CRS can split a shared population across facet IDs that
-# differ only in measurement method. Other groups require an exact facet ID.
+# Index-sourced groups agree on provenance and unit. CRS can split a shared
+# population across facet IDs that differ only in measurement method, and a
+# declared dataset across its member provenances. Other groups require an exact
+# facet ID.
 _GROUP_AGREEMENT_AXES: frozenset[str] = frozenset({"provenance", "unit"})
 
 
@@ -92,10 +95,10 @@ def _facet_id_key(candidate: Facet) -> object:
 
 
 def _agreement_key(candidate: Facet) -> object:
-    """Index-sourced groups agree on `(provenance_id, unit)`.
-    Merging still requires the same `facet_id`.
-    """
-    return (candidate.provenance_id, candidate.unit)
+    """Index-sourced groups agree on the provenance axis value and the unit: a declared
+    dataset's id for a facet of one of its member provenances (`facets.facet_axis_value`), so
+    the members' facets form one group. Merging still requires the same `facet_id`."""
+    return (facet_axis_value(candidate, "provenance"), candidate.unit)
 
 
 class _Identified(Protocol):
@@ -183,7 +186,8 @@ def _group_pool(
 
     Each member's dispatchable candidates are narrowed to the bound refs jointly
     (`facets._narrow_by_bound_axes_only`). An index-sourced group's candidates agree on
-    `(provenance_id, unit)`, allowing different `measurementMethod` values under one source,
+    `(provenance, unit)` (`_agreement_key`), allowing different `measurementMethod` values
+    under one source,
     and any other group's on `facet_id`. The pool keeps the candidates whose key the most
     members hold, so a key every populated member holds wins whenever one exists, and
     otherwise the keys serving the most members compete. A member left with no candidate
@@ -244,7 +248,9 @@ def _group_declared_policies(
     graph: GraphReader,
 ) -> dict[str, FacetDefaultPolicy | None]:
     """Each axis the group leaves to selection, mapped to the graph policy every populated
-    member declares, or `None` when they declare none or disagree. Bound axes are absent. An
+    member declares, or `None` when they declare none or disagree, a provenance default naming
+    a member provenance read as its dataset (`member_folds.dataset_policy`). Bound axes are
+    absent. An
     index-sourced group reads its `measurementMethod` policy too, so a family whose members
     declare one method serves that method alone (`_resolve_group_axis_selections`)."""
     bindings = requests[0].facet_bindings
@@ -258,8 +264,9 @@ def _group_declared_policies(
         if bindings.get(axis, FacetBinding(state="unbound")).state == "bound":
             continue
         declared = {
-            graph.default_facet_policy(stat_var=request.stat_var, axis=axis)
+            None if policy is None else dataset_policy(axis, policy)
             for request in populated_requests
+            for policy in (graph.default_facet_policy(stat_var=request.stat_var, axis=axis),)
         }
         policies[axis] = next(iter(declared)) if len(declared) == 1 else None
     return policies
@@ -722,7 +729,9 @@ def select_group_facets(
     publishes (`facets.dataset_candidates`), so the group's provenance is the elected one and
     its ranking reads only that dataset's facets, and a member holding observations under
     another dataset alone is unpopulated. `DatasetDisagreementError` reports a member the
-    probe finds only under provenances the code index does not record for it.
+    probe finds only under provenances the code index does not record for it. The facets of
+    a declared dataset's member provenances carry its id (`facets.read_as_datasets`), so they
+    form one group whichever member holds them.
 
     Raises `FacetNotAvailableError` when a populated member lacks an observation on a bound
     axis (`_check_bound_axes`), when no member holds a candidate carrying the bound refs
@@ -734,9 +743,10 @@ def select_group_facets(
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
     ]
+    members = [read_as_datasets(member_candidates) for member_candidates in candidates]
     _check_bound_axes(requests, electable, graph=graph)
     group = elect_group(
-        candidates,
+        members,
         stat_vars=[request.stat_var for request in requests],
         window=requests[0].window,
         index_sourced=_group_is_index_sourced(requests),

@@ -16,7 +16,7 @@ def _with_declared_datasets(request_schema: dict) -> dict:
     named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
     named["oneOf"] = [
         {
-            "const": dataset.provenance,
+            "const": dataset.id,
             "title": dataset.label,
             "description": dataset.description,
             "x-opt-in": dataset.opt_in,

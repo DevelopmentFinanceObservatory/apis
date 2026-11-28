@@ -114,7 +114,7 @@ def _crs_rows() -> list[StatVarRow]:
             row.measurement_denominator,
         )
         == target
-        and "provenance/OECDCreditorReportingSystem" in row.provenances
+        and "provenance/OECDCreditorReportingSystem" in row.datasets
     ]
 
 
@@ -296,7 +296,7 @@ def _mint_family(identity: dict) -> set[str]:
 
 
 def _imputed_rows() -> set[str]:
-    return {row.dcid for row in get_index().statvars if IMPUTED_PROVENANCE in row.provenances}
+    return {row.dcid for row in get_index().statvars if IMPUTED_PROVENANCE in row.datasets}
 
 
 def test_shape_member_facts_matches_the_mint_family():
@@ -493,7 +493,7 @@ def test_the_measure_family_holds_one_datasets_rows():
     members = {dcid for partition in partitions for dcid in partition.members}
     assert members
     assert members.isdisjoint(_imputed_rows())
-    provenances = {row.provenances for row in index.statvars if row.dcid in members}
+    provenances = {row.datasets for row in index.statvars if row.dcid in members}
     assert provenances == {(CRS_PROVENANCE,)}
 
 
@@ -514,7 +514,7 @@ def test_five_tuple_member_facts_reads_every_row_of_the_shapes_family():
         for row in get_index().statvars
         if (row.population_type, row.measured_property, row.measurement_qualifier)
         == ("FinancialFlow", "amount", "Nominal")
-        and CRS_PROVENANCE in row.provenances
+        and CRS_PROVENANCE in row.datasets
     }
 
     member_facts, index_sourced = five_tuple_member_facts(shape)
@@ -652,7 +652,7 @@ def _plain_aid_identity() -> BaseIdentity:
 
 def _index_with_an_edited_dataset_declaration():
     document = json.loads(gzip.decompress(INDEX_FIXTURE.read_bytes()))
-    imputed = next(d for d in document["datasets"] if d["provenance"] == IMPUTED_PROVENANCE)
+    imputed = next(d for d in document["datasets"] if d["id"] == IMPUTED_PROVENANCE)
     imputed["label"] = f"{imputed['label']} (edited)"
     blocks = {key: value for key, value in document.items() if key != "stamp"}
     document["stamp"]["content_hash"] = content_hash(blocks)

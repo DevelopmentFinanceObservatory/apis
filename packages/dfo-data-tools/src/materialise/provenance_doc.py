@@ -139,6 +139,7 @@ from dc_graph import ArcTarget, GraphReadError, display_name
 from dfo_platform.roles import RoleAxis
 from materialise.cadence import known_cadence_label
 from materialise.graph import SubjectPage
+from materialise.member_folds import dataset_origin, row_licence
 from materialise.roles import axis_noun
 from origin_catalogue import Catalogue, DataCommons, SourceRef
 from origin_catalogue.card_facts import (
@@ -992,8 +993,12 @@ def read_source_citations(
     A dcid in `catalogue`'s provenance table is cited from its row alone, with no graph
     read: its name, url, source, Data Commons and licence (`ProvenanceRow.licence`), and,
     when `documented`, its entry's documentation (`_catalogued_documentation`). Any other
-    dcid, such as a DFO provenance newer than the loaded catalogue, is read from the graph
-    whole and carries no source or Data Commons:
+    dcid, such as a declared dataset's id or a DFO provenance newer than the loaded
+    catalogue, is read from the graph whole. It carries no source or Data Commons, except a
+    declared dataset of the bound release's code index, which takes the source and Data
+    Commons its listed member provenances' rows share (`member_folds.dataset_origin`), as
+    Search cites it (`search.observations.provenance_ref`), and, when its node states no
+    `licenseType`, the licence those rows share (`member_folds.row_licence`):
 
     - `name`: the parent Dataset's `name` when the node is a Provenance with an `isPartOf`
       parent typed Dataset (`first_dataset_parent`), else the node's own, each through
@@ -1033,6 +1038,20 @@ def read_source_citations(
         citation = read.get(dcid)
         if citation is None:
             continue
+        if (origin := dataset_origin(dcid, catalogue=catalogue)) is not None:
+            citation = replace(citation, source=origin[0], data_commons=origin[1])
+        unlicensed = (citation.licence, citation.licence_type, citation.licence_url) == (
+            None,
+            None,
+            None,
+        )
+        if unlicensed and (licence := row_licence(dcid, catalogue=catalogue)) is not None:
+            citation = replace(
+                citation,
+                licence=licence.label,
+                licence_type=licence.type,
+                licence_url=licence.url,
+            )
         if documented:
             documentation, failed = _read_citation_documentation(
                 graph,

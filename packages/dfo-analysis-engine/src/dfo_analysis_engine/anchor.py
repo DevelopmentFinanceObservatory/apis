@@ -6,8 +6,10 @@ op-spec of the recipe counts from.
 (`rolling.rolling_roots`). It narrows each root frame by each population of its
 dataset with the `filter` engine (a binding as a `category_match`, a level as a
 `place_level`), and reads the narrowed rows as series: one for each distinct
-combination of every column but `time_period`, `value` and `status`, mapped to
-the periods it has a row at. `dfo_frame_grammar.latest_anchor` then gives the
+combination of every column but `time_period`, `value`, `status` and
+`reporting_organisation` (`rolling.NON_SERIES_COLUMNS`), mapped to the periods
+it has a row at, so a declared dataset's series one member reports in one year
+and another member in the next is one series. `dfo_frame_grammar.latest_anchor` then gives the
 newest period at least half of the series of every population hold, and the
 series that lack it.
 
@@ -38,7 +40,7 @@ root frame at least one such population. Every refusal is
 periods other than calendar years, which refuse `rolling_grain_unsupported`.
 
 The series are those dfo-apis' assembler groups a frame's rows into, with the
-same three columns left out.
+same four columns left out.
 """
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ from dfo_analysis_engine.op_spec import (
     RootPopulation,
 )
 from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
-from dfo_analysis_engine.rolling import NON_SERIES_COLUMNS
+from dfo_analysis_engine.rolling import NON_SERIES_COLUMNS, UNBOUND_COLUMNS
 from dfo_analysis_engine.time_grain import is_interval, time_grain
 
 __all__ = ["MAX_DISTINCT_POPULATIONS", "LeftOutSeries", "ResolvedPeriods", "latest_period"]
@@ -253,7 +255,7 @@ def _narrowed(population: RootPopulation, admitted: Input) -> pa.Table:
         )
     if not narrowing:
         return frame.table
-    if off_series := sorted(set(population.bindings) & NON_SERIES_COLUMNS):
+    if off_series := sorted(set(population.bindings) & UNBOUND_COLUMNS):
         raise _unresolved(
             "binding_unusable",
             f"{off_series[0]!r} is no part of a series, so no population binds it",

@@ -23,7 +23,11 @@ from code_index import declarations as code_index_declarations
 from code_index import scope_conventions
 from code_index.composites import provenance_datasets
 from code_index.declarations import CRS_INCLUSIVE, WholePopulationTotal, WholeWindow
-from code_index.export import WHOLE_MARKER_IN_COMPOSITE
+from code_index.export import (
+    DATASET_MEMBER_CLAIMED_TWICE,
+    DATASET_MEMBERS_SHARE_SERIES,
+    WHOLE_MARKER_IN_COMPOSITE,
+)
 from code_index.loader import content_hash, parse_index
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
@@ -40,7 +44,7 @@ from graph_release.dfo import (
     stage_dfo_parts,
 )
 from graph_release.format import conform_part
-from graph_release.platform import PlatformRefusal
+from graph_release.platform import PlatformParts, PlatformRefusal
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
     PLACEHOLDER_PARTY,
@@ -55,6 +59,7 @@ from tests.graph_release.recorded import (
 
 _IDS_FIXTURE = Path(__file__).parents[1] / "fixtures/dc_graph/visible_arcs/ids_variables.json"
 _CRS = "provenance/OECDCreditorReportingSystem"
+_IMPUTED = "provenance/ONEImputedMultilateralSectors"
 
 
 @pytest.fixture(scope="module")
@@ -222,7 +227,7 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
         "coverage_build": None,
         "statvars_without_coverage": 0,
     }
-    assert {(row["dcid"].split("_")[0], *row["provenances"]) for row in blocks["statvars"]} == {
+    assert {(row["dcid"].split("_")[0], *row["datasets"]) for row in blocks["statvars"]} == {
         ("Amount", _CRS),
         ("AttributedAmount", "provenance/ONEImputedMultilateralSectors"),
     }
@@ -356,11 +361,166 @@ def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings()
 
     assert [row.get("ratio_base_axis") for row in document["datasets"]] == ["destination", None]
     assert "ratio_base_axis" not in document["datasets"][1]
-    assert index.datasets[crs.provenance].ratio_base_axis == "destination"
-    assert index.datasets[imputed.provenance].ratio_base_axis is None
+    assert index.datasets[crs.id].ratio_base_axis == "destination"
+    assert index.datasets[imputed.id].ratio_base_axis is None
     assert index.shape_slot_defaults == code_index_declarations.SHAPE_SLOT_DEFAULTS
     assert index.broad_readings == code_index_declarations.BROAD_READINGS
     assert built.declarations == declarations.declarations_json()
+
+
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+_SOUTH_FACET = "ledger-south"
+
+
+def _ledger_release(
+    *,
+    part_of: tuple[tuple[str, str], ...],
+    shared_series: bool = False,
+    shared_place_series: bool = False,
+) -> tuple[PlatformParts, Declarations]:
+    """The slice with its CRS series split between two provenances, `_NORTH` and `_SOUTH` (the
+    second half of its variables), the `isPartOf` edges `part_of` and a `Dataset` node
+    `_LEDGER`, and the CRS declaration declared as `_LEDGER`. `shared_series` puts one
+    `_NORTH` series under `_SOUTH` as well, and `shared_place_series` puts one series of a
+    variable that declares no roles (so outside the coverage view, its place in `entity1`) under both."""
+    parts = slice_platform_parts()
+    facets = parts.facets.to_pylist()
+    (crs_facet,) = [row for row in facets if row["provenance"] == _CRS]
+    crs_facet["provenance"] = _NORTH
+    facets.append({**crs_facet, "facet_id": _SOUTH_FACET, "provenance": _SOUTH})
+    series = parts.series.to_pylist()
+    crs_rows = [row for row in series if row["facet_id"] == crs_facet["facet_id"]]
+    variables = sorted({row["variable_measured"] for row in crs_rows})
+    south = set(variables[len(variables) // 2 :])
+    assert south and len(south) < len(variables)
+    for row in crs_rows:
+        if row["variable_measured"] in south:
+            row["facet_id"] = _SOUTH_FACET
+    if shared_series:
+        north = next(row for row in crs_rows if row["facet_id"] != _SOUTH_FACET)
+        series.append({**north, "facet_id": _SOUTH_FACET})
+    if shared_place_series:
+        north = next(row for row in crs_rows if row["facet_id"] != _SOUTH_FACET)
+        place = {**north, "variable_measured": "Count_Place_Keyed", "entity2": None}
+        series += [place, {**place, "facet_id": _SOUTH_FACET}]
+    nodes = pa.table(
+        {
+            "subject_id": [_LEDGER, _NORTH, _SOUTH],
+            "name": ["Ledger", "Ledger north", "Ledger south"],
+            "types": pa.array([["Dataset"], ["Provenance"], ["Provenance"]], pa.list_(pa.string())),
+            "value": pa.array([None] * 3, pa.string()),
+            "authored": [False] * 3,
+        }
+    )
+    edges = pa.table(
+        {
+            "subject_id": pa.array([subject for subject, _ in part_of], pa.string()),
+            "predicate": pa.array(["isPartOf"] * len(part_of), pa.string()),
+            "object_id": pa.array([parent for _, parent in part_of], pa.string()),
+            "provenance": pa.array(["provenance/DFOOntology"] * len(part_of), pa.string()),
+        }
+    )
+    ledger_parts = dataclasses.replace(
+        parts,
+        facets=conform_part(pa.Table.from_pylist(facets), name="facets"),
+        series=conform_part(pa.Table.from_pylist(series), name="series"),
+        nodes=conform_part(pa.concat_tables([parts.nodes.cast(nodes.schema), nodes]), name="nodes"),
+        edges=conform_part(pa.concat_tables([parts.edges.cast(edges.schema), edges]), name="edges"),
+    )
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS,
+        datasets=tuple(
+            dataclasses.replace(dataset, id=_LEDGER) if dataset.id == _CRS else dataset
+            for dataset in SLICE_DECLARATIONS.datasets
+        ),
+        code_systems=tuple(
+            dataclasses.replace(
+                config,
+                declared_by_every_statvar_of=tuple(
+                    _LEDGER if dataset == _CRS else dataset
+                    for dataset in config.declared_by_every_statvar_of
+                ),
+            )
+            for config in SLICE_DECLARATIONS.code_systems
+        ),
+    )
+    return ledger_parts, declarations
+
+
+def test_dfo_parts_key_a_declared_dataset_by_the_provenances_part_of_it() -> None:
+    """A declared Dataset owns the provenances whose `isPartOf` names it: its StatVar rows and
+    parties carry the Dataset's id, and its row lists both members."""
+    parts, declarations = _ledger_release(part_of=((_NORTH, _LEDGER), (_SOUTH, _LEDGER)))
+
+    built = build_dfo_parts(dfo_inputs(parts, declarations), SLICE_BASE_PARTIES)
+    document = json.loads(gzip.decompress(built.code_index_blocks))
+    index = parse_index(document)
+
+    assert {row["id"]: row["members"] for row in document["datasets"]} == {
+        _LEDGER: [_NORTH, _SOUTH],
+        "provenance/ONEImputedMultilateralSectors": ["provenance/ONEImputedMultilateralSectors"],
+    }
+    assert {(row["dcid"].split("_")[0], *row["datasets"]) for row in document["statvars"]} == {
+        ("Amount", _LEDGER),
+        ("AttributedAmount", "provenance/ONEImputedMultilateralSectors"),
+    }
+    published = {entry["dataset"] for row in document["parties"] for entry in row["published"]}
+    assert published == {_LEDGER, "provenance/ONEImputedMultilateralSectors"}
+    assert index.provenances_of(_LEDGER) == (_NORTH, _SOUTH)
+    assert (index.dataset_of(_NORTH), index.dataset_of(_SOUTH)) == (_LEDGER, _LEDGER)
+    assert index.dataset_of(_CRS) == _CRS
+
+
+@pytest.mark.parametrize(
+    ("part_of", "shared_series", "shared_place_series", "detail_code", "rows"),
+    [
+        pytest.param(
+            ((_NORTH, _LEDGER), (_SOUTH, _LEDGER), (_IMPUTED, _LEDGER)),
+            False,
+            False,
+            DATASET_MEMBER_CLAIMED_TWICE,
+            ((_IMPUTED, _LEDGER, _IMPUTED),),
+            id="declared-provenance-part-of-a-declared-dataset",
+        ),
+        pytest.param(
+            ((_NORTH, _LEDGER), (_SOUTH, _LEDGER)),
+            True,
+            False,
+            DATASET_MEMBERS_SHARE_SERIES,
+            None,
+            id="members-share-a-series",
+        ),
+        pytest.param(
+            ((_NORTH, _LEDGER), (_SOUTH, _LEDGER)),
+            False,
+            True,
+            DATASET_MEMBERS_SHARE_SERIES,
+            None,
+            id="members-share-a-place-keyed-series",
+        ),
+    ],
+)
+def test_dfo_inputs_refuse_dataset_members_that_do_not_partition_the_dataset(
+    part_of, shared_series, shared_place_series, detail_code, rows
+) -> None:
+    parts, declarations = _ledger_release(
+        part_of=part_of, shared_series=shared_series, shared_place_series=shared_place_series
+    )
+
+    with pytest.raises(PlatformRefusal) as refused:
+        dfo_inputs(parts, declarations)
+
+    assert (refused.value.code, refused.value.detail_code) == (
+        "code_index_export_refused",
+        detail_code,
+    )
+    if rows is not None:
+        assert refused.value.rows == rows
+    else:
+        ((dataset, *_key, first, second),) = refused.value.rows
+        assert (dataset, first, second) == (_LEDGER, _NORTH, _SOUTH)
 
 
 @pytest.mark.parametrize(

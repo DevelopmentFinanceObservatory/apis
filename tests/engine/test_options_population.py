@@ -76,7 +76,7 @@ def _crs_population_dcids() -> list[str]:
             row.measurement_denominator,
         )
         == target
-        and "provenance/OECDCreditorReportingSystem" in row.provenances
+        and "provenance/OECDCreditorReportingSystem" in row.datasets
     ]
 
 
@@ -530,7 +530,7 @@ def _ids_index(
             measurement_denominator=None,
             observation_properties=roles,
             constraint_properties=constraints,
-            provenances=("provenance/Test",),
+            datasets=("provenance/Test",),
         )
         for dcid, (constraints, roles) in members.items()
     )

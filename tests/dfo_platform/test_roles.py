@@ -7,6 +7,7 @@ from typing import get_args
 import pytest
 from dfo_frame_grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -78,5 +79,6 @@ def test_every_role_on_a_flow_axis_and_every_reserved_column_has_a_noun() -> Non
         VALUE_COLUMN,
         UNIT_COLUMN,
         STATUS_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
         *FACET_IDENTITY_COLUMNS,
     }

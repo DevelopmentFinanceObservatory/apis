@@ -394,7 +394,7 @@ def _dcid_of(provenance: str, measured_property: str) -> str:
     return next(
         row.dcid
         for row in (*index.statvars, *index.listed_statvars)
-        if row.provenances == (provenance,) and row.measured_property == measured_property
+        if row.datasets == (provenance,) and row.measured_property == measured_property
     )
 
 

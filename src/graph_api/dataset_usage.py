@@ -3,8 +3,10 @@ Provenance's graph node.
 
 `build_usage` makes one `ProvenanceUsage` per key of
 `CodeIndex.variables_by_provenance`, so a Provenance appears when at least one StatVar row of
-the index names it. Its `label` and `description` come from the Provenance's graph node, read
-for `PROVENANCE_NODE_PROPERTIES`: the label is the node's display name
+the index names it. The index keys datasets (a plain table's provenance or a declared
+dataset's id), so a dataset of several member provenances appears once, under its id. Its
+`label` and `description` come from the Provenance's graph node, read for
+`PROVENANCE_NODE_PROPERTIES`: the label is the node's display name
 (`dc_graph.display_name`) and the description the least of its `description` values, as the
 schema document labels its nodes. A Provenance the graph does not hold, or whose node carries no
 name or no description, gets null for that field.
@@ -14,14 +16,15 @@ fields, the sorted names of the constraint properties and the sorted observation
 A StatVar that two Provenances publish counts under both.
 
 `facets` reads the coverage index's `facet_metadata` entries whose `provenance_id` is the
-Provenance, and `currencies` reads `provenance_currencies`. A Provenance with no coverage
-entry gets empty lists.
+Provenance, and `currencies` reads `provenance_currencies`, each provenance read as the
+dataset it is a member of (`CodeIndex.dataset_of`), so a declared dataset's facts are the
+union of its members'. A Provenance with no coverage entry gets empty lists.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from typing import NamedTuple, Protocol
@@ -146,16 +149,22 @@ def count_constraint_values(rows: Iterable[StatVarRow]) -> list[SchemaConstraint
     ]
 
 
-def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, SchemaFacets]:
+def _facets_by_dataset(
+    coverage: ProvenanceCoverage, *, dataset_of: Callable[[str], str]
+) -> dict[str, SchemaFacets]:
+    """Each dataset's facet facts, from the coverage entries of its member provenances."""
     units: dict[str, set[str]] = defaultdict(set)
     scaling: dict[str, set[str]] = defaultdict(set)
     methods: dict[str, set[str]] = defaultdict(set)
     periods: dict[str, set[str]] = defaultdict(set)
-    held: set[str] = set(coverage.provenance_currencies)
+    currencies: dict[str, set[str]] = defaultdict(set)
+    for provenance, held_currencies in coverage.provenance_currencies.items():
+        currencies[dataset_of(provenance)].update(held_currencies)
+    held: set[str] = set(currencies)
     for metadata in coverage.facet_metadata.values():
-        provenance = metadata.provenance_id
-        if provenance is None:
+        if metadata.provenance_id is None:
             continue
+        provenance = dataset_of(metadata.provenance_id)
         held.add(provenance)
         for field, values in (
             (metadata.unit, units),
@@ -165,14 +174,13 @@ def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, SchemaFacet
         ):
             if field is not None:
                 values[provenance].add(field)
-    currencies = coverage.provenance_currencies
     return {
         provenance: SchemaFacets(
             units=sorted(units[provenance]),
             scaling_factors=sorted(scaling[provenance]),
             measurement_methods=sorted(methods[provenance]),
             observation_periods=sorted(periods[provenance]),
-            currencies=sorted(currencies.get(provenance, ())),
+            currencies=sorted(currencies[provenance]),
         )
         for provenance in held
     }
@@ -190,7 +198,7 @@ def build_usage(
 ) -> DatasetUsage:
     """How each Provenance of `code_index` uses the model, with facet facts from `coverage` and
     the label and description of its node in `nodes`."""
-    facets = _facets_by_provenance(coverage)
+    facets = _facets_by_dataset(coverage, dataset_of=code_index.dataset_of)
     provenances: list[ProvenanceUsage] = []
     for provenance, dcids in sorted(code_index.variables_by_provenance.items()):
         rows = [row for dcid in dcids if (row := code_index.statvar_by_dcid(dcid)) is not None]

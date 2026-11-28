@@ -15,6 +15,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from dfo_frame_grammar import (
+    REPORTING_ORGANISATION_COLUMN,
     TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     Frame,
@@ -145,7 +146,17 @@ def _canonical_variable_column(table: pa.Table) -> pa.Array:
     return canonical_dictionary.take(dict_array.indices)
 
 
-def _grammar_table(table: pa.Table, *, role_keys: Sequence[str], stat_var: str) -> pa.Table:
+def names_reporters(table: pa.Table) -> bool:
+    """Whether a row of `table` names the member provenance that reported it, a non-null
+    `reporting_organisation` cell (`columnar.dataset_cells`)."""
+    if REPORTING_ORGANISATION_COLUMN not in table.column_names:
+        return False
+    return table[REPORTING_ORGANISATION_COLUMN].null_count < table.num_rows
+
+
+def _grammar_table(
+    table: pa.Table, *, role_keys: Sequence[str], stat_var: str, reporting_organisation: bool
+) -> pa.Table:
     """Validates `table` and derives the grammar table used by both table builders.
 
     `stat_var` must start with `dcid:` or raises `MaterialisationUsageError`.
@@ -154,8 +165,10 @@ def _grammar_table(table: pa.Table, *, role_keys: Sequence[str], stat_var: str) 
     raise `MaterialisationUsageError` because callers must filter observed rows.
 
     The output contains `stat_var`, each role, `time_period`, `value`, `unit`,
-    `measurementMethod`, and `provenance`. It remains a table so group members'
-    tables can be concatenated before one `build_frame_from_arrow` call.
+    `measurementMethod`, and `provenance`, and `reporting_organisation` when
+    `reporting_organisation`, null in every row where `table` names no reporter. It remains
+    a table so group members' tables can be concatenated before one `build_frame_from_arrow`
+    call.
     """
     if not stat_var.startswith(_STAT_VAR_REF_PREFIX):
         raise MaterialisationUsageError(
@@ -194,30 +207,59 @@ def _grammar_table(table: pa.Table, *, role_keys: Sequence[str], stat_var: str) 
     grammar_columns["unit"] = table["unit"]
     grammar_columns["measurementMethod"] = table["measurementMethod"]
     grammar_columns["provenance"] = table["provenance"]
+    if reporting_organisation:
+        grammar_columns[REPORTING_ORGANISATION_COLUMN] = (
+            table[REPORTING_ORGANISATION_COLUMN]
+            if REPORTING_ORGANISATION_COLUMN in table.column_names
+            else pa.nulls(table.num_rows, type=pa.string())
+        )
 
     return pa.table(grammar_columns)
 
 
-def build_frame_from_table(table: pa.Table, *, role_keys: Sequence[str], stat_var: str) -> Frame:
+def build_frame_from_table(
+    table: pa.Table,
+    *,
+    role_keys: Sequence[str],
+    stat_var: str,
+    reporting_organisation: bool | None = None,
+) -> Frame:
     """Builds from an observed-row table under `observation_schema`.
 
-    Empty tables produce the same columns-only `Frame` as `build_frame`.
+    The frame carries the `reporting_organisation` column when `reporting_organisation` is
+    true, and when it is `None` exactly when a row of `table` names its reporter
+    (`names_reporters`), so a plain table's frame has no such column. Empty tables produce
+    the same columns-only `Frame` as `build_frame`.
     """
     role_keys = tuple(role_keys)
-    grammar_table = _grammar_table(table, role_keys=role_keys, stat_var=stat_var)
+    if reporting_organisation is None:
+        reporting_organisation = names_reporters(table)
+    grammar_table = _grammar_table(
+        table,
+        role_keys=role_keys,
+        stat_var=stat_var,
+        reporting_organisation=reporting_organisation,
+    )
     return build_frame_from_arrow(grammar_table, role_keys=role_keys)
 
 
 def build_frame_from_member_tables(
-    tables_by_stat_var: Sequence[tuple[str, pa.Table]], *, role_keys: Sequence[str]
+    tables_by_stat_var: Sequence[tuple[str, pa.Table]],
+    *,
+    role_keys: Sequence[str],
+    reporting_organisation: bool | None = None,
 ) -> Frame:
     """Builds one group `Frame` from each member's `(stat_var, table)` pair.
 
     Each table gets `_grammar_table`'s checks, then the tables are
-    concatenated before one `build_frame_from_arrow` call. Empty input yields
-    a columns-only `Frame` with no rows.
+    concatenated before one `build_frame_from_arrow` call. The frame carries the
+    `reporting_organisation` column as `build_frame_from_table` decides it, over every
+    member's rows. A caller building one frame in several chunks passes the decision, so
+    every chunk has the same columns. Empty input yields a columns-only `Frame` with no rows.
     """
     role_keys = tuple(role_keys)
+    if reporting_organisation is None:
+        reporting_organisation = any(names_reporters(table) for _, table in tables_by_stat_var)
     if not tables_by_stat_var:
         empty_columns: dict[str, object] = {"stat_var": pa.array([], type=pa.string())}
         for role in role_keys:
@@ -227,10 +269,17 @@ def build_frame_from_member_tables(
         empty_columns["unit"] = pa.array([], type=pa.string())
         empty_columns["measurementMethod"] = pa.array([], type=pa.string())
         empty_columns["provenance"] = pa.array([], type=pa.string())
+        if reporting_organisation:
+            empty_columns[REPORTING_ORGANISATION_COLUMN] = pa.array([], type=pa.string())
         return build_frame_from_arrow(pa.table(empty_columns), role_keys=role_keys)
 
     grammar_tables = [
-        _grammar_table(table, role_keys=role_keys, stat_var=stat_var)
+        _grammar_table(
+            table,
+            role_keys=role_keys,
+            stat_var=stat_var,
+            reporting_organisation=reporting_organisation,
+        )
         for stat_var, table in tables_by_stat_var
     ]
     combined = pa.concat_tables(grammar_tables)

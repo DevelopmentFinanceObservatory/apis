@@ -108,7 +108,7 @@ def _statvar(dcid: str, *provenances: str) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=(),
         constraint_properties={},
-        provenances=provenances,
+        datasets=provenances,
     )
 
 

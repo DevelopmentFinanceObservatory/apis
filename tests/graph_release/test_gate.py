@@ -574,8 +574,7 @@ def _drop_crs_variable(staged: list[StagedPart]) -> str:
     part = next(
         part
         for part in staged
-        if part.ref.name == "series"
-        and part.ref.provenance == SLICE_DECLARATIONS.datasets[0].provenance
+        if part.ref.name == "series" and part.ref.provenance == SLICE_DECLARATIONS.datasets[0].id
     )
     table = pa.ipc.open_file(pa.py_buffer(part.path.read_bytes())).read_all()
     variable = table["variable_measured"].cast(pa.string())[0].as_py()
@@ -683,7 +682,7 @@ def _unstamped(document: dict) -> dict:
 
 def _undeclared_dataset(document: dict) -> dict:
     """The document with a dataset declared that no StatVar row belongs to."""
-    extra = {**document["datasets"][0], "provenance": "provenance/NoSuchDataset", "rank": 99}
+    extra = {**document["datasets"][0], "id": "provenance/NoSuchDataset", "rank": 99}
     return {**document, "datasets": [*document["datasets"], extra]}
 
 

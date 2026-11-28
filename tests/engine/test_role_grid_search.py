@@ -756,7 +756,7 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
             **{
                 row.dcid: _index_row_node(row)
                 for row in fixture_index().statvars
-                if _DAC1 in row.provenances
+                if _DAC1 in row.datasets
             },
         },
         detect={query: {"svs": [_DAC1_NET_FLOW], "cosine_scores": [0.9]}},

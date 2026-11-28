@@ -10,19 +10,20 @@ label stay two rows. `groupby.levels` rewrites a kept hierarchical axis's decode
 codes to their ancestors at one depth (`roll_up_levels`), so the sum groups each
 code under its ancestor's dcid.
 
-The guards refuse ambiguous measures, unknown axes, decode gaps, and mixed
-provenance. They use code-index declarations and frame data. The reshape engine
+The guards refuse ambiguous measures, unknown axes, decode gaps, and rows of
+several datasets. They use code-index declarations and frame data. The reshape engine
 performs the sum.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
-from typing import cast
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Literal, cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
+from dfo_frame_grammar import unit_codes
 
 from code_index.composites import component_of, components_splice, components_sum
 from code_index.query import CodeIndex
@@ -394,6 +395,279 @@ class SpliceCheck:
         return self._component_of[ref]
 
 
+_REPORTER_COLUMN = "__reporter"
+_TOTAL_COLUMN = "__total"
+
+
+class ReporterCheck:
+    """The rows a collapse of a dataset declaring `members_report_overlapping_accounts` sums,
+    noted chunk by chunk as Arrow group-bys before its `stat_var` collapse: each row's cell,
+    kept codes, StatVar and reporting organisation (`reporting_organisation`, the member
+    provenance that filed it).
+
+    A cell is a role tuple and time period (`cell_columns`). A total is a cell and the codes
+    of the decoded axes the collapse does not sum (`kept_code_systems`, read from `lookup`).
+    Only the rows of the StatVars `selection` keeps are noted, and a row with no `stat_var`
+    is not, so the check holds a few short columns per distinct row.
+
+    `summed_reporters` counts the reporting organisations whose rows the collapse sums, and
+    reads zero unless some total folds rows of two or more of them, the figure the
+    `reporters_summed` warning describes.
+
+    `refuse_unknown_absence`, run with `reads_zero` after the `stat_var` fold's own
+    preconditions, refuses a total missing a member whose absence the dataset reads as
+    unknown in the cell's year. The expected members of a total are the `members` that
+    `selection` keeps with its codes. An absent member's provenance is the reporting
+    organisation of its own rows at the cell's role tuple, the series the absent row belongs
+    to, else that of the total's rows, and `reads_zero(provenance, year)` judges it
+    (`code_index.members.absent_reads_zero_in`)."""
+
+    def __init__(
+        self,
+        *,
+        cell_columns: Sequence[str],
+        members: Iterable[str],
+        lookup: Mapping[str, Mapping[str, str]],
+        kept_code_systems: Sequence[str],
+        selection: Mapping[str, frozenset[str]] | None = None,
+        reads_zero: Callable[[str | None, int | None], bool] | None = None,
+    ) -> None:
+        self.cell_columns = tuple(cell_columns)
+        self._lookup = lookup
+        self._kept = tuple(kept_code_systems)
+        self._selection = selection
+        self._reads_zero = reads_zero
+        self._expected: dict[str, set[str]] = {}
+        for ref in members:
+            if self._selected(ref):
+                self._expected.setdefault(self._codes(ref), set()).add(ref)
+        self._parts: list[pa.Table] = []
+
+    def note(
+        self,
+        stat_vars: pa.Array | pa.ChunkedArray,
+        reporters: pa.Array | pa.ChunkedArray,
+        cells: pa.Table,
+    ) -> None:
+        """Note the rows whose `stat_var` refs are `stat_vars`, whose reporting organisations
+        are `reporters` and whose cells are the rows of `cells`, its `cell_columns`."""
+        stat_vars = pc.cast(stat_vars, pa.string())
+        reporters = pc.cast(reporters, pa.string())
+        valid = pc.is_valid(stat_vars)
+        stat_vars, reporters, cells = (
+            stat_vars.filter(valid),
+            reporters.filter(valid),
+            cells.filter(valid),
+        )
+        if len(stat_vars) == 0:
+            return
+        refs = cast("list[str]", pc.unique(stat_vars).to_pylist())
+        positions = pc.index_in(stat_vars, value_set=pa.array(refs, pa.string()))
+        selected = pa.array([self._selected(ref) for ref in refs], pa.bool_()).take(positions)
+        codes = pa.array([self._codes(ref) for ref in refs], pa.string()).take(positions)
+        noted = (
+            cells.select(list(self.cell_columns))
+            .append_column(_CODES_COLUMN, codes)
+            .append_column(_STAT_VAR_COLUMN, stat_vars)
+            .append_column(_REPORTER_COLUMN, reporters)
+            .filter(selected)
+        )
+        self._parts.append(
+            noted.group_by(
+                [*self.cell_columns, _CODES_COLUMN, _STAT_VAR_COLUMN, _REPORTER_COLUMN],
+                use_threads=False,
+            ).aggregate([])
+        )
+
+    def summed_reporters(self) -> int:
+        """How many reporting organisations the totals folding rows of two or more of them
+        name, else 0. A row naming no reporting organisation counts as none."""
+        if not self._parts:
+            return 0
+        noted = pa.concat_tables(self._parts, promote_options="default")
+        totals = _row_codes(noted, [*self.cell_columns, _CODES_COLUMN])
+        reporters = noted.column(_REPORTER_COLUMN)
+        aggregation: tuple[str, Literal["count_distinct"], pc.CountOptions] = (
+            _REPORTER_COLUMN,
+            "count_distinct",
+            pc.CountOptions(mode="only_valid"),
+        )
+        per_total = (
+            pa.table({_TOTAL_COLUMN: totals, _REPORTER_COLUMN: reporters})
+            .group_by(_TOTAL_COLUMN, use_threads=False)
+            .aggregate([aggregation])
+        )
+        mixing = per_total.filter(
+            cast(
+                "pa.BooleanArray",
+                pc.greater_equal(
+                    per_total.column(f"{_REPORTER_COLUMN}_count_distinct"),
+                    pa.scalar(2, pa.int64()),
+                ),
+            )
+        ).column(_TOTAL_COLUMN)
+        if len(mixing) == 0:
+            return 0
+        summed = reporters.filter(pc.is_in(totals, value_set=mixing.combine_chunks()))
+        return len(pc.unique(summed).drop_null())
+
+    def refuse_unknown_absence(self) -> None:
+        """Raise `RollupNotSummableError` (`missing_members`) for a total missing a member
+        whose absence reads unknown in its cell's year. A no-op without `reads_zero`.
+
+        The totals missing an expected member are found in Arrow, by counting each total's
+        distinct expected StatVars against its codes' expected count, and only their rows,
+        and the rows of each absent member's own series, are read into Python."""
+        if self._reads_zero is None or not self._parts:
+            return
+        noted = pa.concat_tables(self._parts, promote_options="default")
+        missing = self._missing_totals(noted)
+        if missing is None:
+            return
+        time_column = self.cell_columns[-1]
+        role_columns = self.cell_columns[:-1]
+        totals: dict[tuple[object, ...], tuple[set[str], set[str | None]]] = {}
+        for row in _python_rows(noted.filter(missing)):
+            roles = tuple(row[column] for column in role_columns)
+            key = (*roles, row[time_column], row[_CODES_COLUMN])
+            observed, reporters = totals.setdefault(key, (set(), set()))
+            observed.add(cast("str", row[_STAT_VAR_COLUMN]))
+            reporters.add(cast("str | None", row[_REPORTER_COLUMN]))
+        absent = {
+            key: sorted(self._expected.get(key[-1], set()) - observed)
+            for key, (observed, _) in totals.items()
+        }
+        series = self._series_reporters(
+            noted,
+            {(*key[:-2], member) for key, members in absent.items() for member in members},
+        )
+        for key, (_, reporters) in totals.items():
+            *roles, period, _codes = key
+            year = _leading_year(period)
+            for member in absent[key]:
+                filed = series.get((*roles, member)) or reporters
+                if all(self._reads_zero(provenance, year) for provenance in filed):
+                    continue
+                cell = dict(zip(self.cell_columns, (*roles, period), strict=True))
+                raise RollupNotSummableError(
+                    f"groupby axis {_STAT_VAR_COLUMN!r} refused: expected member {member!r} "
+                    f"never appears in the cell {cell!r}, and its reporting organisation "
+                    "holds no observation in that year, so its absence there is unknown "
+                    "rather than zero",
+                    axis=_STAT_VAR_COLUMN,
+                    precondition="missing_members",
+                )
+
+    def _missing_totals(self, noted: pa.Table) -> pa.BooleanArray | None:
+        """Whether each of `noted`'s rows belongs to a total holding fewer distinct expected
+        StatVars than its codes expect, or None when no total does."""
+        pair_columns = [_CODES_COLUMN, _STAT_VAR_COLUMN]
+        pairs = [(codes, ref) for codes, refs in self._expected.items() for ref in refs]
+        expected_pairs = pa.table(
+            {
+                _CODES_COLUMN: pa.array([codes for codes, _ in pairs], pa.string()),
+                _STAT_VAR_COLUMN: pa.array([ref for _, ref in pairs], pa.string()),
+            }
+        )
+        pair_codes = _row_codes(
+            pa.concat_tables(
+                [noted.select(pair_columns).cast(expected_pairs.schema), expected_pairs]
+            ),
+            pair_columns,
+        )
+        rows = noted.num_rows
+        expected_pair = pc.is_in(pair_codes.slice(0, rows), value_set=pair_codes.slice(rows))
+        codes_order = list(self._expected)
+        expected_count = pa.array(
+            [len(self._expected[codes]) for codes in codes_order], pa.int64()
+        ).take(
+            pc.index_in(noted.column(_CODES_COLUMN), value_set=pa.array(codes_order, pa.string()))
+        )
+        totals = _row_codes(noted, [*self.cell_columns, _CODES_COLUMN])
+        member = pc.if_else(expected_pair, pair_codes.slice(0, rows), pa.scalar(None, pa.int64()))
+        counted: tuple[str, Literal["count_distinct"], pc.CountOptions] = (
+            "member",
+            "count_distinct",
+            pc.CountOptions(mode="only_valid"),
+        )
+        highest: tuple[str, Literal["max"], None] = ("expected", "max", None)
+        per_total = (
+            pa.table({_TOTAL_COLUMN: totals, "member": member, "expected": expected_count})
+            .group_by(_TOTAL_COLUMN, use_threads=False)
+            .aggregate([counted, highest])
+        )
+        short = per_total.filter(
+            cast(
+                "pa.BooleanArray",
+                pc.less(
+                    per_total.column("member_count_distinct"), per_total.column("expected_max")
+                ),
+            )
+        ).column(_TOTAL_COLUMN)
+        if len(short) == 0:
+            return None
+        return pc.is_in(totals, value_set=short.combine_chunks())
+
+    def _series_reporters(
+        self, noted: pa.Table, wanted: set[tuple[object, ...]]
+    ) -> dict[tuple[object, ...], set[str | None]]:
+        """The reporting organisations of `noted`'s rows of each `wanted` series, a role tuple
+        and StatVar, read into Python for those series' rows alone."""
+        if not wanted:
+            return {}
+        series_columns = [*self.cell_columns[:-1], _STAT_VAR_COLUMN]
+        query = pa.Table.from_pylist(
+            [dict(zip(series_columns, key, strict=True)) for key in wanted],
+            schema=noted.select(series_columns).schema,
+        )
+        codes = _row_codes(pa.concat_tables([noted.select(series_columns), query]), series_columns)
+        rows = noted.num_rows
+        kept = pc.is_in(codes.slice(0, rows), value_set=codes.slice(rows))
+        series: dict[tuple[object, ...], set[str | None]] = {}
+        for row in _python_rows(noted.select([*series_columns, _REPORTER_COLUMN]).filter(kept)):
+            key = tuple(row[column] for column in series_columns)
+            series.setdefault(key, set()).add(cast("str | None", row[_REPORTER_COLUMN]))
+        return series
+
+    def _codes(self, ref: str) -> str:
+        codes = self._lookup.get(ref, {})
+        return json.dumps([codes.get(code_system) for code_system in self._kept])
+
+    def _selected(self, ref: str) -> bool:
+        if self._selection is None:
+            return True
+        codes = self._lookup.get(ref, {})
+        return all(codes.get(axis) in kept for axis, kept in self._selection.items())
+
+
+def _row_codes(table: pa.Table, columns: Sequence[str]) -> pa.Int64Array:
+    """One code per row of `table`, equal exactly where every one of `columns` holds the same
+    value or null (`dfo_frame_grammar.unit_codes`)."""
+    return cast(
+        "pa.Int64Array",
+        unit_codes(
+            pa.StructArray.from_arrays(
+                [table.column(column).combine_chunks() for column in columns], names=list(columns)
+            )
+        ).codes,
+    )
+
+
+def _python_rows(table: pa.Table) -> list[dict[str, object]]:
+    """`table`'s rows as Python dicts, the one place `ReporterCheck` reads rows into Python."""
+    return table.to_pylist()
+
+
+def _leading_year(period: object) -> int | None:
+    """The year a `time_period` cell begins with, `None` for a cell holding none."""
+    if not isinstance(period, str):
+        return None
+    try:
+        return int(period[:4])
+    except ValueError:
+        return None
+
+
 def rekeys_stat_vars(
     *,
     by: Sequence[str],
@@ -658,17 +932,19 @@ def refuse_decode_gaps(
 
 def refuse_provenance_disagreement(*, provenance_refs: Sequence[str]) -> None:
     """Raise `RollupNotSummableError` (`rollup_not_summable`,
-    `provenance_disagreement`) when the frame spans multiple sources.
+    `provenance_disagreement`) when the frame spans multiple datasets.
 
-    Each provenance declares whether absent observations count as zero or stay
-    unknown. Mixed sources can disagree, so refuse before selecting a rule. A materialised group
-    carries one provenance, so this guards other callers.
+    `provenance_refs` are dataset ids. The rows of a declared dataset's member provenances
+    carry the dataset's id (`materialise.columnar.dataset_cells`), so the members of one
+    dataset agree. Each dataset declares whether absent observations count as zero or stay
+    unknown. Mixed datasets can disagree, so refuse before selecting a rule. A materialised
+    group carries one dataset, so this guards other callers.
     """
     distinct = sorted(set(provenance_refs))
     if len(distinct) > 1:
         raise RollupNotSummableError(
             f"groupby refused: this frame's rows come from {len(distinct)} distinct "
-            f"provenances ({', '.join(distinct)}), and whether an absent member counts as "
+            f"datasets ({', '.join(distinct)}), and whether an absent member counts as "
             "zero is a per-source declaration -- a summed group spanning sources that could "
             "disagree on it cannot be resolved to one answer",
             axis="provenance",

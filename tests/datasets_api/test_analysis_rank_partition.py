@@ -60,11 +60,11 @@ def test_an_aggregate_and_rank_setting_no_new_parameter_keep_their_recipe_ids() 
 # minted over op-specs that hold no `partition_by` or `allow_sparse_breakdowns` key.
 _RANK_IDS = (
     {
-        "spec_id": "ops_77858a33592f5e1e3650e3652ccff52b",
+        "spec_id": "ops_8865ccdc96b3eee97eb92e4faf4b9aba",
         "recipe": {
             "normal_form_hash": "rnf_6631d4431b29d528ac56a82cfe662fce",
-            "replay_key": "rpk_c3609a033a8951c9190b8b16f3261327",
+            "replay_key": "rpk_7f7bb75e837976eb8f7c3bcc0ce687a5",
         },
     },
-    "ocv_3e5deb2b8586c589d845b486e81aed8b",
+    "ocv_2f4fededb1df976916943072037db5b1",
 )

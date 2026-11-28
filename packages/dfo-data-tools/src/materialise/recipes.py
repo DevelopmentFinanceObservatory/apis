@@ -2,8 +2,9 @@
 
 A recipe id comes from a Provenance's `conversionRecipe` arc or, when it declares none,
 from the first of its Datasets that does, in `isPartOf` order (`elect_recipe`, which the
-search engine's conversion catalogue also calls); `RECIPE_BODIES` supplies the
-deployment's body. Missing declarations raise
+search engine's conversion catalogue also calls). A declared dataset's id whose node elects
+none takes the recipe every member provenance elects (`member_folds.dataset_recipe_id`).
+`RECIPE_BODIES` supplies the deployment's body. Missing declarations raise
 `RecipeNotDeclaredError`; multiple ids or an id without a body raise
 `UpstreamResponseError`.
 
@@ -36,6 +37,7 @@ from dfo_platform.named import cut
 from dfo_platform.problem import Cause
 from materialise.errors import MaterialisationError, UpstreamResponseError
 from materialise.graph import GraphReader, SubjectPage
+from materialise.member_folds import dataset_recipe_id, members_of
 from materialise.recipe_bodies import RECIPE_BODIES, ConversionRecipe, DeflationBasis
 from materialise.roles import declared_roles, roles_by_axis
 
@@ -56,6 +58,10 @@ _NOMINAL_QUALIFIER = "Nominal"
 
 DATASET_RECIPE_PROPERTIES: tuple[str, ...] = ("conversionRecipe",)
 """The properties `resolve_recipe` reads from a Provenance's Datasets."""
+_MEMBER_RECIPE_PROPERTIES: tuple[str, ...] = ("conversionRecipe", "isPartOf", "typeOf")
+"""The properties `resolve_recipe` reads from a declared dataset's member provenances when the
+dataset's node elects no recipe. `typeOf` keeps every live node from coming back with no
+arcs."""
 _CURRENCY_NODE_PROPERTIES: tuple[str, ...] = ("typeOf",)
 _OBSERVATION_PROPERTIES: tuple[str, ...] = ("observationProperties",)
 
@@ -165,9 +171,63 @@ def resolve_recipe(
     provenance_arcs: NodeArcs,
     deadline: float | None = None,
 ) -> ConversionRecipe:
-    """`elect_recipe` over the Provenance's `provenance_arcs` and, when it declares no
-    `conversionRecipe`, its `isPartOf` Datasets' arcs, the one case that reads `graph`.
+    """`elect_recipe` over the node's `provenance_arcs` and, when it declares no
+    `conversionRecipe`, its `isPartOf` Datasets' arcs. A declared dataset's id whose node
+    elects none converts under the recipe every member provenance elects the same way
+    (`member_folds.dataset_recipe_id`), read in one batch of the members and one of their
+    Datasets. Members electing different recipes, or one electing none, leave the dataset
+    `recipe_undeclared`. Only those fallbacks read `graph`.
     """
+    try:
+        return _elected_recipe(
+            graph, provenance_id=provenance_id, provenance_arcs=provenance_arcs, deadline=deadline
+        )
+    except RecipeNotDeclaredError:
+        members = [member for member in members_of(provenance_id) if member != provenance_id]
+        if not members:
+            raise
+    member_arcs = graph.node_arcs_many(
+        members, properties=_MEMBER_RECIPE_PROPERTIES, deadline=deadline
+    )
+    parents = list(
+        dict.fromkeys(p for member in members for p in recipe_datasets(member_arcs.get(member)))
+    )
+    parent_arcs = (
+        graph.node_arcs_many(parents, properties=DATASET_RECIPE_PROPERTIES, deadline=deadline)
+        if parents
+        else {}
+    )
+
+    def member_recipe(member: str) -> str | None:
+        if member == provenance_id:
+            return None
+        try:
+            return elect_recipe(
+                provenance_id=member,
+                provenance_arcs=member_arcs.get(member),
+                dataset_arcs=parent_arcs,
+            ).recipe_id
+        except RecipeNotDeclaredError:
+            return None
+
+    recipe_id = dataset_recipe_id(provenance_id, recipe_of=member_recipe)
+    if recipe_id is None:
+        raise RecipeNotDeclaredError(
+            f"no conversionRecipe declared on dataset {provenance_id!r}, and its member "
+            f"provenances {members!r} do not all elect the same one",
+            cause="recipe_undeclared",
+        )
+    return RECIPE_BODIES[recipe_id]
+
+
+def _elected_recipe(
+    graph: GraphReader,
+    *,
+    provenance_id: str,
+    provenance_arcs: NodeArcs,
+    deadline: float | None,
+) -> ConversionRecipe:
+    """`elect_recipe` over the node's own arcs and its `isPartOf` Datasets'."""
     dataset_ids = recipe_datasets(provenance_arcs)
     dataset_arcs = (
         graph.node_arcs_many(dataset_ids, properties=DATASET_RECIPE_PROPERTIES, deadline=deadline)

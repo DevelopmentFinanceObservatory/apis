@@ -18,7 +18,7 @@ from typing import Protocol
 
 from code_index.types import PartyRow
 from dfo_platform.codes import CodeCatalogue
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
 from materialise.enrichment import (
@@ -102,30 +102,39 @@ class ColumnClassification:
     `facet_axis_columns` contains present `unit`, `measurementMethod`, and
     `provenance` fields; groupby refuses these axes. `non_droppable_columns`
     contains grain, unit, and provenance, while `measurementMethod` can be
-    dropped after homogeneity checks. `apply_reshapes` derives this before
-    decoding, so decoded annotations stay droppable.
+    dropped after homogeneity checks. `attribute_columns` contains a present
+    `reporting_organisation`, an attribute of each observation: it is out of the
+    grain and droppable, a sum keeps its cell on a total whose rows share one and
+    nulls it on any other, and a pivot drops it unchecked. `apply_reshapes`
+    derives this before decoding, so decoded annotations stay droppable.
     """
 
     facet_axis_columns: frozenset[str]
     non_droppable_columns: frozenset[str]
+    attribute_columns: frozenset[str]
 
 
 def classify_columns(columns: Sequence[str]) -> ColumnClassification:
     """Classify the table's present names, even after earlier column selection.
-    Every nonfixed, nonfacet column belongs to the grain.
+    Every nonfixed, nonfacet, nonattribute column belongs to the grain.
     """
     present = set(columns)
     facet_axis_columns = frozenset(
         name for name in (_UNIT_COLUMN, *_FACET_IDENTITY_COLUMNS) if name in present
     )
+    attribute_columns = frozenset(present & {REPORTING_ORGANISATION_COLUMN})
     grain_columns = frozenset(
         name
         for name in columns
-        if name not in facet_axis_columns and name not in (_VALUE_COLUMN, _STATUS_COLUMN)
+        if name not in facet_axis_columns
+        and name not in attribute_columns
+        and name not in (_VALUE_COLUMN, _STATUS_COLUMN)
     )
     non_droppable_columns = grain_columns | (present & {_UNIT_COLUMN, PROVENANCE_COLUMN})
     return ColumnClassification(
-        facet_axis_columns=facet_axis_columns, non_droppable_columns=non_droppable_columns
+        facet_axis_columns=facet_axis_columns,
+        non_droppable_columns=non_droppable_columns,
+        attribute_columns=attribute_columns,
     )
 
 
@@ -491,7 +500,9 @@ def groupby_sum(
     """Sum `value_column` by the remaining grain columns. Facet columns and
     `status` pass through and must be homogeneous within each output group, except that a
     group mixing one estimated `measurementMethod` with other methods sums to a total
-    carrying the estimated one (`_estimated_total`).
+    carrying the estimated one (`_estimated_total`). An attribute column
+    (`ColumnClassification.attribute_columns`) is no group key: a total keeps its cell when
+    every row it sums shares it, and holds null otherwise.
     Parent-child overlap in `hierarchy` refuses a group that would double-count
     an ancestor.
 
@@ -530,7 +541,12 @@ def groupby_sum(
     value_pos = columns.index(value_column)
     hierarchy = hierarchy or {}
 
-    full_grain_positions = [i for i in range(len(columns)) if i != value_pos]
+    attribute_positions = [
+        i for i, c in enumerate(columns) if c in classification.attribute_columns
+    ]
+    full_grain_positions = [
+        i for i in range(len(columns)) if i != value_pos and i not in attribute_positions
+    ]
     seen_full_grain: set[tuple] = set()
     for row in table.rows:
         key = tuple(row[i] for i in full_grain_positions)
@@ -551,7 +567,10 @@ def groupby_sum(
     grouping_positions = [
         i
         for i in range(len(columns))
-        if i != axis_pos and i != value_pos and i not in passthrough_positions
+        if i != axis_pos
+        and i != value_pos
+        and i not in passthrough_positions
+        and i not in attribute_positions
     ]
 
     population_other_key_positions: tuple[int, ...] = ()
@@ -691,6 +710,9 @@ def groupby_sum(
         representative[value_pos_in_remaining] = total
         for pos, method in estimated_totals.get(key, {}).items():
             representative[remaining_positions.index(pos)] = method
+        for pos in attribute_positions:
+            if len({row[pos] for row in rows_in_group}) > 1:
+                representative[remaining_positions.index(pos)] = None
         output_rows.append(tuple(representative))
     output_rows.sort(key=lambda r: tuple(_cell_sort_key(c) for c in r))
 
@@ -703,12 +725,20 @@ class _GroupAccumulator:
     checks; their size follows distinct group values rather than row count.
     """
 
-    __slots__ = ("axis_values", "observed_axis_values", "passthrough", "representative", "total")
+    __slots__ = (
+        "attributes",
+        "axis_values",
+        "observed_axis_values",
+        "passthrough",
+        "representative",
+        "total",
+    )
 
     def __init__(self) -> None:
         self.total: float = 0.0
         self.representative: list[object] | None = None
         self.passthrough: dict[int, set[object]] = {}
+        self.attributes: dict[int, set[object]] = {}
         self.axis_values: set[object] = set()
         self.observed_axis_values: set[object] = set()
 
@@ -741,6 +771,7 @@ class _GroupbySumFoldPlan:
     value_pos: int
     full_grain_positions: tuple[int, ...]
     passthrough_positions: tuple[int, ...]
+    attribute_positions: tuple[int, ...]
     grouping_positions: tuple[int, ...]
     remaining_positions: tuple[int, ...]
     value_pos_in_remaining: int
@@ -791,7 +822,12 @@ def _plan_groupby_sum_fold(
     axis_pos = columns.index(axis)
     value_pos = columns.index(value_column)
 
-    full_grain_positions = tuple(i for i in range(len(columns)) if i != value_pos)
+    attribute_positions = tuple(
+        i for i, c in enumerate(columns) if c in classification.attribute_columns
+    )
+    full_grain_positions = tuple(
+        i for i in range(len(columns)) if i != value_pos and i not in attribute_positions
+    )
     passthrough_positions = tuple(
         i
         for i, c in enumerate(columns)
@@ -800,7 +836,10 @@ def _plan_groupby_sum_fold(
     grouping_positions = tuple(
         i
         for i in range(len(columns))
-        if i != axis_pos and i != value_pos and i not in passthrough_positions
+        if i != axis_pos
+        and i != value_pos
+        and i not in passthrough_positions
+        and i not in attribute_positions
     )
     remaining_positions = tuple(i for i in range(len(columns)) if i != axis_pos)
     value_pos_in_remaining = remaining_positions.index(value_pos)
@@ -845,6 +884,7 @@ def _plan_groupby_sum_fold(
         value_pos=value_pos,
         full_grain_positions=full_grain_positions,
         passthrough_positions=passthrough_positions,
+        attribute_positions=attribute_positions,
         grouping_positions=grouping_positions,
         remaining_positions=remaining_positions,
         value_pos_in_remaining=value_pos_in_remaining,
@@ -873,8 +913,8 @@ class _GroupbySumFold:
 
     def process_row(self, row: tuple[object, ...]) -> None:
         """Fold one row. Chunks must follow non-decreasing `row_sort_key`
-        order (all columns except `value_column`), as materialised frame
-        chunks do. That order makes duplicate full-grain rows adjacent; a
+        order (all columns except `value_column` and the attribute columns), as
+        materialised frame chunks do. That order makes duplicate full-grain rows adjacent; a
         descending key raises `MaterialisationUsageError`. Other group checks
         resolve after folding and do not depend on row order.
         """
@@ -924,6 +964,8 @@ class _GroupbySumFold:
 
         for pos in plan.passthrough_positions:
             group.passthrough.setdefault(pos, set()).add(row[pos])
+        for pos in plan.attribute_positions:
+            group.attributes.setdefault(pos, set()).add(row[pos])
 
         axis_value = row[plan.axis_pos]
         if plan.hierarchy and axis_value is not None:
@@ -1052,6 +1094,9 @@ def _resolve_groupby_sum_outcome(
             representative[plan.value_pos_in_remaining] = group.total
             for pos, method in estimated_totals.get(key, {}).items():
                 representative[plan.remaining_positions.index(pos)] = method
+            for pos, values in group.attributes.items():
+                if len(values) > 1:
+                    representative[plan.remaining_positions.index(pos)] = None
             output_rows.append(tuple(representative))
 
     if violation is not None:

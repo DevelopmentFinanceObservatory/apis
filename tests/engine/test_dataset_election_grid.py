@@ -253,7 +253,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -335,7 +335,7 @@ _OPT_IN = frozenset({_ALONE, _BESIDE})
 def _invariants(rows: tuple[StatVarRow, ...], provenance: str) -> dict[str, str]:
     """The constraint values every row of `provenance` in `rows` holds, which the fixture
     declares as the dataset's invariants (`DatasetDeclaration.invariants`)."""
-    held = [row.constraint_properties for row in rows if provenance in row.provenances]
+    held = [row.constraint_properties for row in rows if provenance in row.datasets]
     if not held:
         return {}
     return {
@@ -397,7 +397,7 @@ def _index(
         statvars=rows,
         datasets=tuple(
             DatasetDeclaration(
-                provenance=provenance,
+                id=provenance,
                 label=provenance,
                 description="A test table.",
                 opt_in=provenance in opt_in,
@@ -897,7 +897,11 @@ def _assert_cell(cell: Cell, outcome: Outcome) -> None:
     assert outcome.withheld == cell.scenario.withheld
     assert outcome.elected == expected.elected
     assert outcome.members == {
-        dcid: ElectedDataset(provenance=expected.elected, member_provenances=recorded)
+        dcid: ElectedDataset(
+            provenance=expected.elected,
+            provenances=(expected.elected,),
+            recorded_provenances=recorded,
+        )
         for dcid, recorded in expected.members.items()
     }
     assert outcome.identity is not None
@@ -955,7 +959,9 @@ def test_a_code_only_the_second_dataset_carries_elects_it_at_every_door(index):
 
     assert outcome.elected == _DETAIL
     assert outcome.members == {
-        "detail_d_k1": ElectedDataset(provenance=_DETAIL, member_provenances=(_DETAIL,))
+        "detail_d_k1": ElectedDataset(
+            provenance=_DETAIL, provenances=(_DETAIL,), recorded_provenances=(_DETAIL,)
+        )
     }
     assert outcome.identity is not None
     assert _bound_slots(outcome.identity) == {"channel": "K1"}
@@ -1313,7 +1319,9 @@ def test_words_that_leave_no_table_refuse_naming_the_excluded_and_opt_in_tables(
         assert isinstance(outcome, Outcome)
         assert outcome.elected == _BESIDE
         assert outcome.members == {
-            "slotted_beside": ElectedDataset(provenance=_BESIDE, member_provenances=(_BESIDE,))
+            "slotted_beside": ElectedDataset(
+                provenance=_BESIDE, provenances=(_BESIDE,), recorded_provenances=(_BESIDE,)
+            )
         }
     else:
         assert isinstance(outcome, RegionResult)
@@ -1754,7 +1762,9 @@ def test_a_question_naming_no_place_elects_under_no_role_key_at_every_door(index
     assert query.role_keys == frozenset()
     assert outcome.elected == _BROAD
     assert outcome.members == {
-        "broad_a": ElectedDataset(provenance=_BROAD, member_provenances=(_BROAD,))
+        "broad_a": ElectedDataset(
+            provenance=_BROAD, provenances=(_BROAD,), recorded_provenances=(_BROAD,)
+        )
     }
     assert _bound_slots(outcome.identity) == {"sector": "A"}
     assert outcome.pins == _BROAD_PINS
@@ -2173,10 +2183,12 @@ def test_resubmitting_a_picked_option_elects_the_table_its_coverage_read(
     assert families is not None
     assert families[value].provenance == picked.elected == _BROAD
     assert picked.members == {
-        dcid: ElectedDataset(provenance=_BROAD, member_provenances=recorded)
+        dcid: ElectedDataset(
+            provenance=_BROAD, provenances=(_BROAD,), recorded_provenances=recorded
+        )
         for dcid, recorded in members.items()
     }
-    assert {row.dcid: row.provenances for row in families[value].rows} == members
+    assert {row.dcid: row.datasets for row in families[value].rows} == members
     _assert_doors_agree(picked, index)
 
 
@@ -3187,7 +3199,7 @@ def _named_part_shape(part: NamedPart) -> ShapeDraft:
     if part.recorded_in is None:
         return _derived_shape(_SHARED, index_rows=part.rows)
     recorded = next(row for row in part.rows if row.dcid == part.recorded_in)
-    shape = _derived_shape(_SHARED, index_rows=part.rows, family_of=recorded.provenances[0])
+    shape = _derived_shape(_SHARED, index_rows=part.rows, family_of=recorded.datasets[0])
     return dataclasses.replace(
         shape,
         slot_keys=tuple(key for key in shape.slot_keys if key.property_dcid != "channel"),
@@ -3206,7 +3218,7 @@ def _rows_held(
     return {
         row.dcid
         for row in rows
-        if set(row.provenances) & set(tables)
+        if set(row.datasets) & set(tables)
         and row.constraint_properties.keys() <= keys
         and all(row.constraint_properties.get(prop) == code for prop, code in codes.items())
     }

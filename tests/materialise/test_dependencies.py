@@ -31,8 +31,14 @@ from materialise.dependencies import (
     dependency_changes,
     members_digest,
     refreshed_dependencies,
+    run_imported_data,
 )
-from materialise.facets import FacetBinding, ProvenanceRefresh, probe_collection_facets
+from materialise.facets import (
+    FacetBinding,
+    ProvenanceRefresh,
+    _probe_provenance_refresh,
+    probe_collection_facets,
+)
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.window import LatestYear, RequestedWindow, election_window
@@ -48,6 +54,7 @@ from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
 )
 
+from ._ledger import LEDGER, NORTH, PLAIN, SOLO, SOLO_MEMBER, SOUTH, bound_ledger_index
 from .conftest import FakeGraphReader
 
 
@@ -381,6 +388,167 @@ def test_applied_horizons_records_marks_and_declared_projections():
     assert applied_horizons([crs]) == ()
 
 
+def _ledger_nodes(north: str | None, south: str | None) -> dict[str, dict[str, tuple[str, ...]]]:
+    """`LEDGER`'s member provenances as the catalogue documents them, each marking the partial
+    period given, or none."""
+    crs = dev_provenance_nodes()["provenance/OECDCreditorReportingSystem"]
+    unmarked = {prop: values for prop, values in crs.items() if prop != "partialObservationDate"}
+    return {
+        provenance: unmarked if mark is None else {**unmarked, "partialObservationDate": (mark,)}
+        for provenance, mark in ((NORTH, north), (SOUTH, south))
+    }
+
+
+@pytest.mark.parametrize(
+    ("north", "south", "horizon"),
+    [
+        pytest.param("2026", None, ((f"partial:{LEDGER}", "2026"),), id="one-member"),
+        pytest.param("2026", "2026", ((f"partial:{LEDGER}", "2026"),), id="both-agree"),
+        pytest.param("2026", "2025", ((f"partial:{LEDGER}", "2025,2026"),), id="both-differ"),
+        pytest.param(None, None, (), id="none"),
+    ],
+)
+def test_a_dataset_of_two_member_provenances_holds_back_each_period_a_member_marks(
+    north, south, horizon
+):
+    """`dataset/Ledger`'s series sit under two member provenances, which the catalogue
+    documents, and the dataset holds back every period either marks partial. The members come
+    from the bound code index, whatever dataset the request elects; outside it the id is a
+    provenance the catalogue does not document."""
+    request = _request(_STAT_VAR, RequestedWindow(kind="all"))
+
+    with bound_catalogue(documenting(_ledger_nodes(north, south))):
+        assert applied_horizons([LEDGER]) == ()
+        with bound_ledger_index():
+            assert applied_horizons([LEDGER]) == horizon
+            dependencies = build_dependencies(
+                [request],
+                source_refs=[LEDGER],
+                provenance_refresh={},
+                conversion_records=(),
+                latest_years={},
+                candidate_provenances=(),
+                scope_settled=True,
+            )
+    assert dependencies.held_back == horizon
+
+
+# A third member provenance the Ledger gains in a later code index.
+_EAST = "provenance/LedgerEast"
+
+
+@pytest.mark.parametrize(
+    ("source", "before", "after", "changed"),
+    [
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: "2026-02-01", SOUTH: "2026-03-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-moves-under-a-newer-member",
+        ),
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01", _EAST: "2026-02-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-added",
+        ),
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {SOUTH: "2026-03-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-removed",
+        ),
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: None, SOUTH: "2026-03-01"},
+            (),
+            id="a-member-date-unread-is-unknown",
+        ),
+        pytest.param(
+            PLAIN, {PLAIN: "2026-03-01"}, {PLAIN: "2026-03-01"}, (), id="plain-table-unchanged"
+        ),
+    ],
+)
+def test_a_declared_dataset_is_stale_when_a_member_moves_or_its_membership_changes(
+    source, before, after, changed
+):
+    """The run records the dataset's newest member date in `sources` and a digest of each
+    member with its own date in `revisions`. A member moving from January to February under
+    another at March, or a member added or removed, leaves the newest date at March and moves
+    the revision. A member whose date the graph stops serving makes the revision unknown, and
+    an unknown revision never differs. A plain table records its date alone and no
+    `revisions` entry."""
+    request = _request(_STAT_VAR, RequestedWindow(kind="all"))
+
+    def graph(dates: dict[str, str | None]) -> FakeGraphReader:
+        return FakeGraphReader(
+            arcs={
+                dcid: {"lastDataRefreshDate": (date,)}
+                for dcid, date in dates.items()
+                if date is not None
+            }
+        )
+
+    def members(dates: dict[str, str | None]) -> tuple[str, ...]:
+        return tuple(sorted(dates.keys() - {PLAIN}))
+
+    with bound_ledger_index(members(before)):
+        stored = build_dependencies(
+            [request],
+            source_refs=[source],
+            provenance_refresh=_probe_provenance_refresh([source], graph=graph(before)),
+            conversion_records=(),
+            latest_years={},
+            candidate_provenances=(),
+            scope_settled=True,
+        )
+    with bound_ledger_index(members(after)) as index:
+        refreshed = refreshed_dependencies(
+            stored, [request], graph=graph(after), coverage=None, code_index=index
+        )
+
+    assert stored.sources == refreshed.sources == ((source, "2026-03-01"),)
+    assert dependency_changes(stored.as_json(), refreshed) == changed
+    if source == PLAIN:
+        assert "revisions" not in stored.as_json()
+        assert stored == refreshed
+
+
+@pytest.mark.parametrize(
+    ("source", "origins", "keyed"),
+    [
+        pytest.param(LEDGER, {NORTH: DFO, SOUTH: DFO}, True, id="two-dfo-members"),
+        pytest.param(LEDGER, {NORTH: DFO, SOUTH: BASE}, False, id="a-base-member"),
+        pytest.param(LEDGER, {NORTH: DFO}, False, id="an-unlisted-member"),
+        pytest.param(SOLO, {SOLO_MEMBER: DFO}, True, id="one-member"),
+    ],
+)
+def test_a_mint_of_a_declared_dataset_keys_on_the_import_its_members_name(source, origins, keyed):
+    """The run's source is the dataset's id, which the catalogue does not list; its member
+    provenances are what the catalogue lists, so the run keys on the import when each is
+    DFO's."""
+    catalogue = FakeCatalogue(
+        provenances={ref: provenance_row(ref, origin) for ref, origin in origins.items()},
+        dfo_variables=frozenset({_BARE_STAT_VAR}),
+    )
+    with bound_catalogue(catalogue), bound_ledger_index():
+        dependencies = build_dependencies(
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=[source],
+            provenance_refresh={},
+            conversion_records=(),
+            latest_years={},
+            candidate_provenances=[next(iter(origins))],
+            scope_settled=True,
+        )
+
+    assert dependencies.imported_data == (current_release().imported_data if keyed else None)
+
+
 def test_a_source_with_no_date_on_both_sides_is_unchanged():
     current = replace(_BASE, sources=(("provenance/IMF", None),))
     assert dependency_changes(current.as_json(), current) == ()
@@ -520,7 +688,12 @@ def test_a_run_over_a_statvar_another_origin_holds_keys_on_no_import():
 
 @pytest.mark.unbound_release
 def test_a_run_with_no_release_bound_keys_on_none():
-    assert _keyed_run({"provenance/X": DFO}, DFO).imported_data is None
+    catalogue = FakeCatalogue(
+        provenances={"provenance/X": provenance_row("provenance/X", DFO)},
+        dfo_variables=frozenset({_BARE_STAT_VAR}),
+    )
+    with bound_catalogue(catalogue):
+        assert run_imported_data(stat_vars=[_STAT_VAR], provenances=["provenance/X"]) is None
 
 
 @pytest.mark.parametrize(

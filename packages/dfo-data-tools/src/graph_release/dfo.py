@@ -28,7 +28,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 import numpy as np
 import pyarrow as pa
@@ -36,10 +36,13 @@ import pyarrow.compute as pc
 
 from code_index.export import (
     CoverageJoin,
+    DatasetMembers,
     ExportRefused,
     PartyPublication,
+    check_member_series,
     export_index,
     index_bytes,
+    resolve_dataset_members,
 )
 from dc_graph.visible_arcs import mixer_target, visible_mask
 from graph_release.coverage import coverage_rows, role_map
@@ -74,6 +77,13 @@ _PARTY_AXES: Final[Mapping[str, RoleAxis]] = {
     DONOR_COLUMN: "origin",
     RECIPIENT_COLUMN: "destination",
 }
+_SERIES_ENTITY_COLUMNS: Final[tuple[str, ...]] = (
+    "entity1",
+    "entity2",
+    "entity3",
+    "extra_entities_id",
+)
+"""The platform `series` columns that, with the variable, name a series inside one facet."""
 _SOURCES: Final[Mapping[str, str]] = {
     "declarations": "graph_release.dfo.declarations",
     "code_index_blocks": "graph_release.dfo.code_index_blocks",
@@ -109,21 +119,31 @@ class DfoParts:
 @dataclass(frozen=True)
 class DfoInputs:
     """What the DFO layer reads of one release: `declarations`, the coverage view `coverage`
-    (`coverage_rows` over `series`), each facet's provenance and a `ReleaseGraphReader` over
-    `edges` and `nodes`."""
+    (`coverage_rows` over `series`), each facet's provenance, a `ReleaseGraphReader` over
+    `edges` and `nodes`, and each declared dataset's member provenances (`datasets`,
+    `code_index.export.resolve_dataset_members`)."""
 
     declarations: Declarations
     coverage: pa.Table
     facet_provenances: Mapping[str, str]
     reader: ReleaseGraphReader
+    datasets: DatasetMembers
+
+    def facet_dataset(self, facet_id: str) -> str:
+        """The dataset of the provenance facet `facet_id` carries."""
+        provenance = self.facet_provenances[facet_id]
+        return self.datasets.dataset_of.get(provenance, provenance)
 
 
 def dfo_inputs(platform: PlatformParts, declarations: Declarations) -> DfoInputs:
     """The `DfoInputs` of `platform` under `declarations`.
 
     Raises `ValueError` for declarations with no role axes, code systems or datasets, and
-    `PlatformRefusal` where `role_map` or `coverage_rows` refuses, or with code `dangling_edge`
-    where an edge names a node the `nodes` part lacks.
+    `PlatformRefusal` where `role_map` or `coverage_rows` refuses, with code `dangling_edge`
+    where an edge names a node the `nodes` part lacks, or with code `code_index_export_refused`
+    where the declared datasets' members do not resolve (`resolve_dataset_members`) or two
+    members of one dataset hold the same series (`check_member_series`), carrying the
+    export's code and rows.
     """
     empty = [
         name
@@ -132,11 +152,29 @@ def dfo_inputs(platform: PlatformParts, declarations: Declarations) -> DfoInputs
     ]
     if empty:
         raise ValueError(f"declarations hold no {', '.join(empty)}; the DFO layer needs them")
+    coverage = coverage_rows(platform.series, role_map(platform.edges, declarations.role_axes))
+    facet_provenances = _facet_provenances(platform.facets)
+    reader = ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes)
+    try:
+        datasets = resolve_dataset_members(
+            reader,
+            declared=[dataset.id for dataset in declarations.datasets],
+            listed=declarations.listed_datasets,
+            covered=set(facet_provenances.values()),
+        )
+        check_member_series(
+            _member_series(platform.series, facet_provenances, datasets), datasets.dataset_of
+        )
+    except ExportRefused as exc:
+        raise PlatformRefusal(
+            "code_index_export_refused", str(exc), detail_code=exc.code, rows=exc.rows
+        ) from exc
     return DfoInputs(
         declarations=declarations,
-        coverage=coverage_rows(platform.series, role_map(platform.edges, declarations.role_axes)),
-        facet_provenances=_facet_provenances(platform.facets),
-        reader=ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes),
+        coverage=coverage,
+        facet_provenances=facet_provenances,
+        reader=reader,
+        datasets=datasets,
     )
 
 
@@ -204,6 +242,7 @@ def _code_index_document(inputs: DfoInputs, base_parties: Mapping[str, dict | No
         coverage=CoverageJoin(
             provenances=_variable_provenances(inputs),
             parties=_parties(inputs, _party_datasets(declarations)),
+            members=inputs.datasets.members,
         ),
         party_reader=_PartyReader(inputs.reader, base=base_parties),
         code_systems=declarations.code_systems,
@@ -243,9 +282,7 @@ def stage_dfo_parts(parts: DfoParts, *, staging_dir: Path, execution_id: str) ->
 
 
 def _party_datasets(declarations: Declarations) -> set[str]:
-    return {dataset.provenance for dataset in declarations.datasets} | set(
-        declarations.listed_datasets
-    )
+    return {dataset.id for dataset in declarations.datasets} | set(declarations.listed_datasets)
 
 
 def _release_held(reader: ReleaseGraphReader, party: str) -> bool:
@@ -266,8 +303,59 @@ def _facet_provenances(facets: pa.Table) -> dict[str, str]:
     )
 
 
+def _member_series(
+    series: pa.Table, facet_provenances: Mapping[str, str], datasets: DatasetMembers
+) -> list[tuple[tuple[str, ...], str]]:
+    """Each series key of the platform `series` (variable, entities and extra-entities id) that
+    two member provenances of one dataset hold, with each member provenance whose facets hold
+    it. Only the facets of datasets of several members are read. The platform series carries
+    place-keyed series that the role coverage view leaves out. The count of distinct member
+    provenances per dataset and series key runs in Arrow, and only the rows of a key with more
+    than one become Python values, so a release whose members partition their series builds no
+    list."""
+    shared = {
+        provenance
+        for members in datasets.members.values()
+        if len(members) > 1
+        for provenance in members
+    }
+    facets = [facet for facet, provenance in facet_provenances.items() if provenance in shared]
+    if not facets:
+        return []
+    key = [
+        "variable_measured",
+        *(name for name in _SERIES_ENTITY_COLUMNS if name in series.column_names),
+    ]
+    held = series.filter(
+        pc.is_in(_strings(series["facet_id"]), value_set=pa.array(facets, pa.string()))
+    )
+    facet_values = pa.array(facets, pa.string())
+    slot = pc.index_in(_strings(held["facet_id"]), value_set=facet_values)
+    provenances = [facet_provenances[facet] for facet in facets]
+    columns = {name: _strings(held[name]).fill_null(ABSENT_ENTITY) for name in key}
+    columns["dataset"] = pa.array(
+        [datasets.dataset_of.get(provenance, provenance) for provenance in provenances],
+        pa.string(),
+    ).take(slot)
+    columns["provenance"] = pa.array(provenances, pa.string()).take(slot)
+    rows = pa.table(columns)
+    group = [*key, "dataset"]
+    distinct_provenances: tuple[str, Literal["count_distinct"]] = (
+        "provenance",
+        "count_distinct",
+    )
+    counts = rows.group_by(group, use_threads=False).aggregate((distinct_provenances,))
+    conflicts = counts.filter(pc.field("provenance_count_distinct") > 1).select(group)
+    if not conflicts.num_rows:
+        return []
+    found = rows.join(conflicts, keys=group, join_type="left semi", use_threads=False)
+    pairs = found.group_by([*key, "provenance"], use_threads=False).aggregate([])
+    values = [cast("list[str]", pairs[name].to_pylist()) for name in [*key, "provenance"]]
+    return [(tuple(row[:-1]), row[-1]) for row in zip(*values, strict=True)]
+
+
 def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
-    """Each covered variable's sorted provenances, from its rows' facets."""
+    """Each covered variable's sorted datasets, from its rows' facets' provenances."""
     pairs = inputs.coverage.group_by(["variable", FACET_COLUMN], use_threads=False).aggregate([])
     found: dict[str, set[str]] = {}
     for variable, facet_id in zip(
@@ -275,8 +363,8 @@ def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
         cast("list[str]", _strings(pairs[FACET_COLUMN]).to_pylist()),
         strict=True,
     ):
-        found.setdefault(variable, set()).add(inputs.facet_provenances[facet_id])
-    return {variable: tuple(sorted(provenances)) for variable, provenances in found.items()}
+        found.setdefault(variable, set()).add(inputs.facet_dataset(facet_id))
+    return {variable: tuple(sorted(datasets)) for variable, datasets in found.items()}
 
 
 def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublication]:
@@ -296,11 +384,11 @@ def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublicatio
             cast("list[int]", spans[f"{LAST_YEAR_COLUMN}_max"].to_pylist()),
             strict=True,
         ):
-            provenance = inputs.facet_provenances[facet_id]
-            if party == ABSENT_ENTITY or provenance not in datasets:
+            dataset = inputs.facet_dataset(facet_id)
+            if party == ABSENT_ENTITY or dataset not in datasets:
                 continue
-            widen_span(years.setdefault(party, {}), provenance, first, last)
-            pairs.setdefault(party, set()).add((provenance, axis))
+            widen_span(years.setdefault(party, {}), dataset, first, last)
+            pairs.setdefault(party, set()).add((dataset, axis))
     return {
         party: PartyPublication(pairs=frozenset(pairs[party]), years=published)
         for party, published in years.items()

@@ -89,7 +89,7 @@ from datasets_api.versions import (
     link_digest,
     unlinked_state,
 )
-from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
+from datasets_api.warnings import DATASETS_WARNING_CATALOGUE, REPORTERS_SUMMED
 from dc_graph import GraphReadError
 from description.citation import citation_line, figures_processed
 from dfo_platform.roles import FlowFamily, axis_for_role, role_wording
@@ -100,6 +100,7 @@ from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
 from materialise.held_back import HeldKind, Judgement, judge, last_year_before, source_of
 from materialise.held_runs import HeldRun
+from materialise.member_folds import dataset_name
 from materialise.partial_period import reaches, start_of
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
@@ -143,14 +144,17 @@ def warning_model(warning: Mapping[str, object]) -> WarningModel:
 def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[WarningModel, ...]:
     """Formats reshape warnings from this surface's catalogue.
 
-    `enrichment_unavailable` adds its column and empty-cell count to the message.
+    `enrichment_unavailable` adds its column and empty-cell count to the message, and
+    `reporters_summed` keeps its own, which counts the reporting organisations.
     """
     models: list[WarningModel] = []
     for warning in warnings:
         code = cast(str, warning["code"])
         _title, detail, severity = DATASETS_WARNING_CATALOGUE[code]
         message = detail
-        if code == "enrichment_unavailable":
+        if code == REPORTERS_SUMMED:
+            message = cast(str, warning["message"])
+        elif code == "enrichment_unavailable":
             column = cast(str, warning["column"])
             count = cast(int, warning["count"])
             plural = "" if count == 1 else "s"
@@ -506,20 +510,20 @@ def _stated_run(
     catalogue: Catalogue | None = None,
 ) -> dict[str, object]:
     """`run` as the frame `result` holds states it (`manifest_models.HeldBack`): `catalogue`,
-    by default the one bound, names its source, and a partial run carries its reported share
-    (`_reported_share`)."""
+    by default the one bound, names its source (`materialise.member_folds.dataset_name`, the
+    name a declared dataset's members share, else its declared label), and a partial run
+    carries its reported share (`_reported_share`)."""
     catalogue = catalogue or current_catalogue()
     share = (
         _reported_share(result, run=run, component_of=_component_of(result))
         if run.kind == "partial"
         else None
     )
-    row = catalogue.provenance(run.source)
     return HeldBack(
         kind=run.kind,
         served=served,
         source=run.source,
-        source_name=None if row is None else row.name,
+        source_name=dataset_name(run.source, catalogue=catalogue),
         start_year=run.start_year,
         end_year=run.end_year,
         reported_share=None if share is None else ReportedShare.model_validate(share),
@@ -1212,10 +1216,11 @@ def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
 def source_refs_of(trace: ManifestTrace | Mapping[str, object]) -> list[str]:
     """The provenance refs a version's figures come from, in first-seen order: for a composite
     each component's (`trace.components`), whose tables its citation names, and otherwise the
-    one its rows carry (`provenance_refs_of`). A live `ManifestTrace` or a stored or wire
-    trace mapping. The citation cites these, and the parties of their datasets decide which
-    rows are totals; `provenance_refs_of` gives what the rows carry, which the render's source
-    guards read."""
+    dataset its rows carry (`provenance_refs_of`), a plain table's provenance or a declared
+    dataset's id, which every row of its member provenances carries. A live `ManifestTrace` or
+    a stored or wire trace mapping. The citation cites these, and the parties of their datasets
+    decide which rows are totals; `provenance_refs_of` gives what the rows carry, which the
+    render's source guards read."""
     if isinstance(trace, ManifestTrace):
         components: Sequence[Mapping[str, object]] = trace.components
         facets: Iterable[Mapping[str, object]] = trace.facets

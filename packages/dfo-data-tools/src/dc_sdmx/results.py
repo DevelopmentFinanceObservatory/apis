@@ -55,10 +55,23 @@ VALUE_COLUMN = "OBS_VALUE"
 # Empty or absent attribute cells map to null.
 ATTRIBUTE_COLUMNS = ("scalingFactor", "facetId")
 
+# The member provenance a row of a declared dataset was reported under, which the read
+# writes once it reads the row's `provenance` as its dataset
+# (`materialise.columnar.dataset_cells`). The wire never carries it, so a parsed row holds
+# null here, as a plain table's row does after the read.
+REPORTING_ORGANISATION_COLUMN = "reporting_organisation"
+
 
 def observation_columns(roles: Sequence[str]) -> tuple[str, ...]:
-    """Return `variableMeasured`, roles, and trailing columns in wire order."""
-    return (VARIABLE_COLUMN, *roles, *_REQUIRED_TRAILING_COLUMNS, *_OPTIONAL_TRAILING_COLUMNS)
+    """Return `variableMeasured`, roles, the trailing columns in wire order, and
+    `reporting_organisation` last."""
+    return (
+        VARIABLE_COLUMN,
+        *roles,
+        *_REQUIRED_TRAILING_COLUMNS,
+        *_OPTIONAL_TRAILING_COLUMNS,
+        REPORTING_ORGANISATION_COLUMN,
+    )
 
 
 def observation_schema(roles: Sequence[str]) -> pa.Schema:
@@ -317,7 +330,8 @@ def iter_data_csv_batches(
     Reads use `use_threads=False`, `newlines_in_values=True`, and string
     columns with null conversion disabled. Batches drop the three structure
     columns, map role and dimension `NotApplicable`, empty roles and empty attributes to null,
-    preserve `OBS_VALUE`, and fill an absent optional `facetId` with nulls.
+    preserve `OBS_VALUE`, and fill an absent optional `facetId` and the
+    `reporting_organisation` column with nulls.
 
     Malformed UTF-8, empty rows, and column-count mismatches raise
     `SdmxResponseError`. PyArrow's batch-level mismatch message identifies

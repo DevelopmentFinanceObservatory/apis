@@ -85,6 +85,7 @@ def make_app(
     task_client: TaskClient | None = None,
     task_creates: TaskCreates | None = None,
     catalogue: CatalogueService | None = None,
+    release=None,
     now: Clock | None = None,
     deps_cell: DepsCell | None = None,
     running_analyses: RunningAnalyses | None = None,
@@ -105,7 +106,8 @@ def make_app(
     `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
     so a successful publish test injects a writer sharing the snapshot reader's store.
     The concurrency keywords replace the matching `settings` fields. `catalogue` replaces the
-    process-wide catalogue service the request scope binds. `deps_cell` and `running_analyses`
+    process-wide catalogue service the request scope binds, and `release` the process-wide release
+    service. `deps_cell` and `running_analyses`
     are shared with a live share slot check (`presentation_api.newest_frames`) as `dfo_apis.app`
     shares them.
     """
@@ -165,6 +167,7 @@ def make_app(
         ("coverage", coverage),
         ("task_creates", task_creates),
         ("catalogue", catalogue),
+        ("release", release),
         ("now", now),
         ("deps_cell", deps_cell),
         ("running_analyses", running_analyses),

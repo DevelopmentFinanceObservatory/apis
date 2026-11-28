@@ -19,7 +19,11 @@ from materialise.convert import require_conversion_coverage
 from materialise.errors import UpstreamResponseError
 from materialise.rate_tables import RATE_TABLE_SCHEMA, RateTable, RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
-from materialise.recipes import CONVERSION_NODE_PROPERTIES, resolve_recipe
+from materialise.recipes import (
+    CONVERSION_NODE_PROPERTIES,
+    RecipeNotDeclaredError,
+    resolve_recipe,
+)
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -773,6 +777,7 @@ def _load(graph: _Graph | None = None) -> ConversionCatalogue:
 def test_the_catalogue_reads_each_provenances_recipe_from_it_or_its_dataset():
     assert dict(_load().recipes) == {
         _CRS: "ConversionRecipeDAC",
+        _DATASET: "ConversionRecipeDAC",
         _IN_DATASET: "ConversionRecipeDAC",
         _IDS: "ConversionRecipeIDS",
         _WEO: "ConversionRecipeIMF",
@@ -803,6 +808,54 @@ def test_a_provenance_in_two_datasets_takes_the_first_ones_recipe_as_the_materia
     materialised = resolve_recipe(graph, provenance_id=_IN_TWO, provenance_arcs=arcs)
     assert materialised.recipe_id == first
     assert _load(graph).recipe(_IN_TWO) is materialised
+
+
+@pytest.mark.parametrize(
+    ("dataset", "north", "south", "recipe"),
+    [
+        pytest.param(("ConversionRecipeIMF",), (), (), "ConversionRecipeIMF", id="node"),
+        pytest.param(
+            (),
+            ("ConversionRecipeDAC",),
+            ("ConversionRecipeDAC",),
+            "ConversionRecipeDAC",
+            id="members-agree",
+        ),
+        pytest.param(
+            (), ("ConversionRecipeDAC",), ("ConversionRecipeIMF",), None, id="members-differ"
+        ),
+        pytest.param((), ("ConversionRecipeDAC",), (), None, id="a-member-names-none"),
+    ],
+)
+def test_a_declared_dataset_converts_under_the_recipe_the_materialiser_resolves_for_it(
+    dataset: tuple[str, ...], north: tuple[str, ...], south: tuple[str, ...], recipe: str | None
+):
+    """An answer cites a declared dataset by its id, which the catalogue keys its node's
+    recipe under, and reads its members' when the node names none, as a mint of it does."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    def node(types: str, recipes: tuple[str, ...], **arcs: tuple[str, ...]):
+        return {"typeOf": (types,), **({"conversionRecipe": recipes} if recipes else {}), **arcs}
+
+    graph = _Graph(
+        {
+            LEDGER: node("Dataset", dataset),
+            NORTH: node("Provenance", north, isPartOf=(LEDGER,)),
+            SOUTH: node("Provenance", south, isPartOf=(LEDGER,)),
+        }
+    )
+    catalogue = _load(graph)
+    arcs = graph.node_arcs_many([LEDGER], properties=CONVERSION_NODE_PROPERTIES)[LEDGER]
+
+    with bound_ledger_index():
+        offered = catalogue.recipe(LEDGER)
+        if recipe is None:
+            with pytest.raises(RecipeNotDeclaredError):
+                resolve_recipe(graph, provenance_id=LEDGER, provenance_arcs=arcs)
+        else:
+            assert resolve_recipe(graph, provenance_id=LEDGER, provenance_arcs=arcs) is offered
+
+    assert (offered.recipe_id if offered is not None else None) == recipe
 
 
 @pytest.mark.parametrize(

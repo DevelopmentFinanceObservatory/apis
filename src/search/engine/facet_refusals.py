@@ -25,6 +25,7 @@ from typing import NamedTuple, get_args
 
 from dfo_platform import Alternative
 from dfo_platform.named import named_capped
+from materialise.facets import read_as_datasets
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import RoleFacetIndex
 from search.engine.config import settings
@@ -55,9 +56,29 @@ facet_satisfies_bindings below)."""
 
 
 def _axis_value(axis: str, facet: Facet) -> str | None:
+    """`facet`'s value on `axis`. On the provenance axis it is the id of the declared dataset
+    the facet's provenance is a member of (`_facet_source_dcid`), stamped or not, so a
+    refusal's alternatives offer the dataset's id."""
     if axis == "provenance":
         return _facet_source_dcid(facet)
     return facet.measurement_method if axis == "measurementMethod" else facet.unit
+
+
+def _admits(
+    axis: str,
+    binding: IdentityBindingValue | IdentityBindingSet | IdentityFacetValueAbsent,
+    facet: Facet,
+) -> bool:
+    """Whether `binding` admits `facet`'s value on `axis` (`binding_admits_value`). On the
+    provenance axis a ref admits a facet of its dataset (`_axis_value`) and a facet of the
+    member provenance it names, so a pin of one member admits that member's facets alone."""
+    if binding_admits_value(binding, _axis_value(axis, facet)):
+        return True
+    return (
+        axis == "provenance"
+        and facet.provenance_id is not None
+        and binding_admits_value(binding, facet.provenance_id)
+    )
 
 
 def _unit_request_admits(
@@ -101,7 +122,7 @@ def _binding_admits(
     exclude one axis's own binding when checking its members (see
     _other_axes_satisfied)."""
     if isinstance(binding, IdentityBindingValue | IdentityBindingSet | IdentityFacetValueAbsent):
-        return binding_admits_value(binding, _axis_value(axis, facet))
+        return _admits(axis, binding, facet)
     if isinstance(binding, IdentityFacetValueRequest):
         # ResubmitIdentityPayload's own model validator already refuses the
         # request form anywhere but the unit axis, so axis == "unit" here
@@ -198,7 +219,7 @@ def _member_present(
     return all(
         any(
             facet.obs_count > 0
-            and binding_admits_value(member, _axis_value(axis, facet))
+            and _admits(axis, member, facet)
             and _other_axes_satisfied(
                 graph, facet, relevant, axis, sv=sv, elected_units=elected_units, deadline=deadline
             )
@@ -594,7 +615,7 @@ def role_index_facets(role_index_by_sv: RoleFacetIndex) -> dict[str, list[Facet]
     has no single subject entity to ask the entity-keyed facet endpoint about.
     """
     return {
-        sv: [
+        sv: read_as_datasets(
             Facet(
                 earliest_date=None,
                 latest_date=candidate.latest_date,
@@ -606,7 +627,7 @@ def role_index_facets(role_index_by_sv: RoleFacetIndex) -> dict[str, list[Facet]
                 facet_id=candidate.facet_id,
             )
             for candidate in candidates
-        ]
+        )
         for sv, candidates in role_index_by_sv.items()
     }
 

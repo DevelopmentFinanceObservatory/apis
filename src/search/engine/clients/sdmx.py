@@ -137,6 +137,8 @@ class RoleFacetCandidate:
 
     Provenance, method, unit, scaling factor and observation period are shared by every
     tuple under a facet id because the release's coverage view keys metadata by that id.
+    Its value on the provenance axis is its provenance's dataset
+    (`elected_dataset.provenance_axis`).
     """
 
     facet_id: str

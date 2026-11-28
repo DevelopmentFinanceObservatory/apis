@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import date
@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from code_index import CodeIndex
 from code_index.shared import get_index
 from dfo_platform.app import Surface, create_app
 from dfo_platform.doors import combine_classifiers, flatten
@@ -42,6 +43,8 @@ from materialise.graph import GraphReadError
 from origin_catalogue import DFO, Catalogue, DatasetRef, ProvenanceRow, SourceRef, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from series_coverage.shared import get_coverage_service
+from tests.datasets_api._release_doubles import bound_index
+from tests.materialise._ledger import LEDGER, MEMBERS, NORTH, SOLO, SOLO_MEMBER, SOUTH, ledger_index
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader, make_client, make_resolver
@@ -577,3 +580,113 @@ def test_a_failed_hold_read_is_classified_and_logged_by_the_members_door(caplog)
         for record in caplog.records
         if record.getMessage().startswith("graph: Graph ")
     ] == ["graph: Graph members"]
+
+
+_LEDGER_SOURCE = SourceRef(ref="dc/s/LedgerPublisher", label="Ledger publisher")
+
+
+def _ledger_index() -> CodeIndex:
+    """The Ledger index (`tests.materialise._ledger`) with variables under each dataset."""
+    index = ledger_index()
+    base = get_index().statvars[0]
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=(),
+        codes=(),
+        statvars=(
+            replace(base, dcid="Ledger_B", datasets=(LEDGER,)),
+            replace(base, dcid="Ledger_A", datasets=(LEDGER,)),
+            replace(base, dcid="Solo_A", datasets=(SOLO,)),
+        ),
+        datasets=tuple(index.datasets.values()),
+        dataset_members={dataset: index.provenances_of(dataset) for dataset in index.datasets},
+    )
+
+
+def _ledger_catalogue() -> FakeCatalogue:
+    """Each member provenance listed under its graph Dataset, as the catalogue lists them."""
+    rows = [
+        replace(_row(member, dataset), source=_LEDGER_SOURCE)
+        for member, dataset in ((NORTH, LEDGER), (SOUTH, LEDGER), (SOLO_MEMBER, SOLO))
+    ]
+    return FakeCatalogue(provenances={row.id: row for row in rows})
+
+
+@pytest.fixture
+def ledger_client(
+    shared_resolver: SharedResolver, serve_catalogue: Callable[[Catalogue], None]
+) -> Iterator[TestClient]:
+    serve_catalogue(_ledger_catalogue())
+    graph = FakeGraphNodeReader(
+        nodes={
+            **{dataset: {"typeOf": ("Dataset",)} for dataset in (LEDGER, SOLO)},
+            **{member: {"typeOf": ("Provenance",)} for member in MEMBERS},
+        }
+    )
+    with bound_index(_ledger_index()):
+        yield TestClient(
+            _surface_app(shared=shared_resolver, policy=_POLICY, graph=graph),
+            raise_server_exceptions=False,
+        )
+
+
+class TestDeclaredDataset:
+    @pytest.mark.parametrize(
+        ("dataset", "variables"),
+        [(LEDGER, ["Ledger_A", "Ledger_B"]), (SOLO, ["Solo_A"])],
+        ids=["two-members", "one-member"],
+    )
+    def test_a_dataset_lists_its_variables_and_no_member_dcid(
+        self, ledger_client, dataset, variables
+    ):
+        with ledger_client:
+            response = _get(ledger_client, dataset, relation="variables", limit=1000)
+            sources = _get(ledger_client, _LEDGER_SOURCE.ref, relation="datasets", limit=1000)
+
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert [item["ref"] for item in page["items"]] == variables
+        assert (page["complete"], page["gaps"]) == (True, [])
+        assert [item["ref"] for item in sources.json()["items"]] == [LEDGER, SOLO]
+        assert not [m for m in MEMBERS if m in response.text or m in sources.text]
+
+    @pytest.mark.parametrize("member", [NORTH, SOLO_MEMBER], ids=["two-members", "one-member"])
+    def test_a_member_provenance_refuses_naming_its_dataset(self, ledger_client, member):
+        """The index records which variables a dataset holds, not which member holds each."""
+        with ledger_client:
+            response = _get(ledger_client, member, relation="variables")
+
+        _assert_refused(response, "/relation")
+        dataset = LEDGER if member == NORTH else SOLO
+        assert repr(dataset) in response.json()["detail"]
+
+    def test_a_catalogue_dataset_holding_some_members_refuses_naming_the_declared_dataset(
+        self, shared_resolver: SharedResolver, serve_catalogue: Callable[[Catalogue], None]
+    ):
+        """The catalogue lists one Ledger member under a Dataset of its own. The index holds
+        the Ledger's variables and not which member holds each, so that Dataset's list is
+        refused, naming the Ledger, while a Dataset holding every member still lists."""
+        partial = "dc/d/LedgerNorthOnly"
+        rows = [
+            replace(_row(member, dataset), source=_LEDGER_SOURCE)
+            for member, dataset in ((NORTH, partial), (SOUTH, LEDGER), (SOLO_MEMBER, SOLO))
+        ]
+        serve_catalogue(FakeCatalogue(provenances={row.id: row for row in rows}))
+        graph = FakeGraphNodeReader(
+            nodes={
+                **{d: {"typeOf": ("Dataset",)} for d in (partial, LEDGER, SOLO)},
+                **{member: {"typeOf": ("Provenance",)} for member in MEMBERS},
+            }
+        )
+        with bound_index(_ledger_index()):
+            client = TestClient(
+                _surface_app(shared=shared_resolver, policy=_POLICY, graph=graph),
+                raise_server_exceptions=False,
+            )
+            with client:
+                response = _get(client, partial, relation="variables")
+                whole = _get(client, SOLO, relation="variables")
+
+        _assert_refused(response, "/relation")
+        assert repr(LEDGER) in response.json()["detail"]
+        assert whole.status_code == 200, whole.text

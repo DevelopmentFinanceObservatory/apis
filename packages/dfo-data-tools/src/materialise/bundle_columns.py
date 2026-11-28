@@ -41,7 +41,13 @@ from dfo_frame_grammar import (
 )
 
 from dc_graph import GraphReadError
-from dfo_platform.columns import PROVENANCE_COLUMN, column_noun, column_title, role_noun
+from dfo_platform.columns import (
+    PROVENANCE_COLUMN,
+    REPORTING_ORGANISATION_COLUMN,
+    column_noun,
+    column_title,
+    role_noun,
+)
 from dfo_platform.roles import role_key_axis
 from materialise.bundle import CODES_PATH, CodeEntry, ColumnDoc
 from materialise.bundle_naming import years_text
@@ -106,6 +112,11 @@ _FIXED_COLUMNS: Mapping[str, tuple[str, str]] = {
     "provenance_label": (
         f"{column_title(PROVENANCE_COLUMN)} name",
         "The name of the source dataset.",
+    ),
+    REPORTING_ORGANISATION_COLUMN: (
+        column_title(REPORTING_ORGANISATION_COLUMN),
+        "The member of the source dataset that reported the row, empty where the source "
+        "dataset has no members or the row sums several members' rows.",
     ),
     STATUS_COLUMN: (
         column_title(STATUS_COLUMN),

@@ -8,7 +8,7 @@ import itertools
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import cast, get_args
+from typing import TypeGuard, cast, get_args
 
 from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
@@ -159,7 +159,7 @@ def parse_index(
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
         codes = [_parse_code(row) for row in payload["codes"]]
         statvars = [_parse_statvar(row) for row in payload["statvars"]]
-        datasets = _parse_datasets(payload["datasets"])
+        datasets, dataset_members = _parse_datasets(payload["datasets"])
         party_types = _parse_party_types(payload.get("party_types", ()))
         parties = [_parse_party(row) for row in payload.get("parties", ())]
         listed_statvars = [_parse_statvar(row) for row in payload.get("listed_statvars", ())]
@@ -185,7 +185,7 @@ def parse_index(
     _check_datasets(datasets, statvars)
     _check_party_words(datasets, parties)
     _check_whole_totals(parties, whole_total_sets)
-    _check_source_codes(source_codes, [*statvars, *listed_statvars])
+    _check_source_codes(source_codes, [*statvars, *listed_statvars], members=dataset_members)
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     _check_implied_values(implied_values, declarations, codes, [*statvars, *listed_statvars])
     served_composites = _check_composites(composites, datasets, statvars)
@@ -195,6 +195,7 @@ def parse_index(
         codes=codes,
         statvars=statvars,
         datasets=datasets,
+        dataset_members=dataset_members,
         party_types=party_types,
         parties=parties,
         listed_statvars=listed_statvars,
@@ -226,11 +227,11 @@ def _check_composites(
     that overlap or leave a year between them. A served stacked composite whose component
     tables' rows declare different role sets is refused too, since the composed frame holds
     one set of role columns. A composite naming a table `datasets` does not declare is not served."""
-    declared = {dataset.provenance for dataset in datasets}
+    declared = {dataset.id for dataset in datasets}
     role_sets: dict[str, set[tuple[str, ...]]] = {}
     for row in statvars:
-        for provenance in row.provenances:
-            role_sets.setdefault(provenance, set()).add(row.observation_properties)
+        for dataset_id in row.datasets:
+            role_sets.setdefault(dataset_id, set()).add(row.observation_properties)
     served: list[CompositeDeclaration] = []
     for composite in composites:
         _check_composite_declaration(composite, declared)
@@ -821,25 +822,33 @@ def _parse_where(provenance: str, word: str, where: Mapping) -> dict:
     return where
 
 
-def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
-    """Parses `datasets` rows, failing closed on a row missing a field, an
-    `absent_observation` value outside `{"zero", "unknown"}`, an `account`
+def _parse_datasets(
+    rows: Sequence[Mapping],
+) -> tuple[list[DatasetDeclaration], dict[str, tuple[str, ...]]]:
+    """Parses `datasets` rows into the declarations and each dataset's member provenances
+    (`members`, `CodeIndex.provenances_of`), failing closed on a row missing a field, a
+    `members` that is not a non-empty sorted list of distinct strings, a provenance two rows
+    list as a member, an `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses, a `party_words` row
     `_parse_party_words` refuses or a `noted_words` row `_parse_noted_words` refuses (the
     three keys are optional), a `house_default_for`
     (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
-    (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
-    `provenance` or `rank` repeated across rows. Each raises
+    (optional, absent reads as `None`) outside `AXIS_LABELS`, a
+    `members_report_overlapping_accounts` (optional, absent reads as false) that is not a
+    boolean, or a `id` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
+    members: dict[str, tuple[str, ...]] = {}
+    claimed: dict[str, str] = {}
     seen: set[str] = set()
     ranks: dict[int, str] = {}
     for row in rows:
         try:
+            listed = row["members"]
             dataset = DatasetDeclaration(
-                provenance=row["provenance"],
+                id=row["id"],
                 label=row["label"],
                 description=row["description"],
                 opt_in=row["opt_in"],
@@ -847,71 +856,92 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 account=row["account"],
                 rank=row["rank"],
                 invariants=dict(row["invariants"]),
-                stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
-                party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
-                noted_words=_parse_noted_words(row["provenance"], row.get("noted_words", ())),
+                stated_words=_parse_stated_words(row["id"], row.get("stated_words", ())),
+                party_words=_parse_party_words(row["id"], row.get("party_words", ())),
+                noted_words=_parse_noted_words(row["id"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
+                members_report_overlapping_accounts=row.get(
+                    "members_report_overlapping_accounts", False
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
         if dataset.absent_observation not in _ABSENT_OBSERVATION_VALUES:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"absent_observation={dataset.absent_observation!r}, outside the vocabulary "
                 f"{sorted(_ABSENT_OBSERVATION_VALUES)!r}"
             )
         if dataset.account not in _FLOW_ACCOUNTS:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"account={dataset.account!r}, outside the vocabulary "
                 f"{sorted(_FLOW_ACCOUNTS)!r}"
             )
         if not isinstance(dataset.opt_in, bool):
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries opt_in={dataset.opt_in!r}, "
+                f"datasets row for {dataset.id!r} carries opt_in={dataset.opt_in!r}, "
                 "which is not a boolean"
+            )
+        if not isinstance(dataset.members_report_overlapping_accounts, bool):
+            raise IndexFormatError(
+                f"datasets row for {dataset.id!r} carries members_report_overlapping_accounts="
+                f"{dataset.members_report_overlapping_accounts!r}, which is not a boolean"
             )
         if not isinstance(dataset.rank, int) or isinstance(dataset.rank, bool):
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries rank={dataset.rank!r}, "
+                f"datasets row for {dataset.id!r} carries rank={dataset.rank!r}, "
                 "which is not an integer"
             )
         if not set(dataset.house_default_for) <= _HOUSE_DEFAULT_CASES:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"house_default_for={list(dataset.house_default_for)!r}, outside the "
                 f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
             )
         if dataset.ratio_base_axis is not None and dataset.ratio_base_axis not in AXIS_LABELS:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries "
+                f"datasets row for {dataset.id!r} carries "
                 f"ratio_base_axis={dataset.ratio_base_axis!r}, outside {sorted(AXIS_LABELS)!r}"
             )
         if not dataset.label:
-            raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
+            raise IndexFormatError(f"datasets row for {dataset.id!r} carries no label")
         if not dataset.description:
+            raise IndexFormatError(f"datasets row for {dataset.id!r} carries no description")
+        if dataset.id in seen:
             raise IndexFormatError(
-                f"datasets row for {dataset.provenance!r} carries no description"
+                f"dataset id {dataset.id!r} is declared more than once in datasets"
             )
-        if dataset.provenance in seen:
+        seen.add(dataset.id)
+        if not _is_member_list(listed) or not listed or listed != sorted(set(listed)):
             raise IndexFormatError(
-                f"provenance {dataset.provenance!r} is declared more than once in datasets"
+                f"datasets row for {dataset.id!r} carries members={listed!r}, which is not a "
+                "non-empty sorted list of distinct provenances"
             )
-        seen.add(dataset.provenance)
-        if (holder := ranks.setdefault(dataset.rank, dataset.provenance)) != dataset.provenance:
+        for member in listed:
+            if (holder := claimed.setdefault(member, dataset.id)) != dataset.id:
+                raise IndexFormatError(
+                    f"provenance {member!r} is a member of datasets {holder!r} and {dataset.id!r}"
+                )
+        members[dataset.id] = tuple(listed)
+        if (holder := ranks.setdefault(dataset.rank, dataset.id)) != dataset.id:
             raise IndexFormatError(
-                f"datasets rows for {holder!r} and {dataset.provenance!r} share "
-                f"rank {dataset.rank!r}"
+                f"datasets rows for {holder!r} and {dataset.id!r} share rank {dataset.rank!r}"
             )
         datasets.append(dataset)
-    return datasets
+    return datasets, members
+
+
+def _is_member_list(value: object) -> TypeGuard[list[str]]:
+    """Whether `value` is a list of non-empty strings."""
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
 
 
 def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[StatVarRow]) -> None:
     """Checks the dataset declarations against the StatVar rows.
 
-    Raises `IndexFormatError` when a row names a provenance no dataset
+    Raises `IndexFormatError` when a row names a dataset no dataset
     declares, a row of a dataset does not carry one of its declared
     `invariants` explicitly (an absent property fails whatever its
     `absent_reading`), a declared dataset has no row, or a dataset states a
@@ -923,47 +953,46 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     claimed: dict[str, str] = {}
     for dataset in datasets:
         for case in dataset.house_default_for:
-            if (holder := claimed.setdefault(case, dataset.provenance)) != dataset.provenance:
+            if (holder := claimed.setdefault(case, dataset.id)) != dataset.id:
                 raise IndexFormatError(
-                    f"datasets {holder!r} and {dataset.provenance!r} both claim "
-                    f"house_default_for {case!r}"
+                    f"datasets {holder!r} and {dataset.id!r} both claim house_default_for {case!r}"
                 )
-    invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
+    invariants = {dataset.id: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     measured: dict[str, set[str]] = {}
     for row in statvars:
-        for provenance in row.provenances:
-            if provenance not in invariants:
+        for dataset_id in row.datasets:
+            if dataset_id not in invariants:
                 raise IndexFormatError(
-                    f"StatVar {row.dcid!r} carries provenance {provenance!r}, which no "
-                    f"dataset declares (declared: {sorted(invariants)!r})"
+                    f"StatVar {row.dcid!r} carries dataset {dataset_id!r}, but no dataset "
+                    f"declares it (declared: {sorted(invariants)!r})"
                 )
-            for prop, code in invariants[provenance].items():
+            for prop, code in invariants[dataset_id].items():
                 if row.constraint_properties.get(prop) != code:
                     raise IndexFormatError(
-                        f"StatVar {row.dcid!r} of dataset {provenance!r} carries "
+                        f"StatVar {row.dcid!r} of dataset {dataset_id!r} carries "
                         f"{prop}={row.constraint_properties.get(prop)!r}, but the dataset "
                         f"declares {prop}={code!r} as an invariant"
                     )
-            populated.add(provenance)
-            measured.setdefault(provenance, set()).add(row.measured_property)
+            populated.add(dataset_id)
+            measured.setdefault(dataset_id, set()).add(row.measured_property)
     empty = sorted(invariants.keys() - populated)
     if empty:
         raise IndexFormatError(f"declared dataset(s) {empty!r} have no StatVar row")
     for dataset in datasets:
         for stated in dataset.stated_words:
-            if stated.measured_property not in measured[dataset.provenance]:
+            if stated.measured_property not in measured[dataset.id]:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} states {stated.word!r} of "
+                    f"dataset {dataset.id!r} states {stated.word!r} of "
                     f"{stated.measured_property!r}, a measured property none of its rows has "
-                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                    f"(has: {sorted(measured[dataset.id])!r})"
                 )
         for named in dataset.party_words:
-            if named.measured_property not in measured[dataset.provenance]:
+            if named.measured_property not in measured[dataset.id]:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} names a party for {named.word!r} of "
+                    f"dataset {dataset.id!r} names a party for {named.word!r} of "
                     f"{named.measured_property!r}, a measured property none of its rows has "
-                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                    f"(has: {sorted(measured[dataset.id])!r})"
                 )
 
 
@@ -975,9 +1004,9 @@ def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence
     for dataset in datasets:
         for named in dataset.party_words:
             party = by_dcid.get(named.party)
-            if party is None or (dataset.provenance, named.axis) not in party.published:
+            if party is None or (dataset.id, named.axis) not in party.published:
                 raise IndexFormatError(
-                    f"dataset {dataset.provenance!r} names {named.party!r} for {named.word!r} "
+                    f"dataset {dataset.id!r} names {named.party!r} for {named.word!r} "
                     f"on {named.axis!r}, which the parties block does not list for that "
                     "dataset and axis"
                 )
@@ -1044,7 +1073,7 @@ def _parse_statvar(payload: Mapping) -> StatVarRow:
         measurement_denominator=payload["measurement_denominator"],
         observation_properties=tuple(payload["observation_properties"]),
         constraint_properties=dict(payload["constraint_properties"]),
-        provenances=tuple(payload["provenances"]),
+        datasets=tuple(payload["datasets"]),
     )
 
 
@@ -1065,14 +1094,24 @@ def _parse_value_parents(rows: Iterable[Mapping]) -> dict[str, str]:
     return parents
 
 
-def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVarRow]) -> None:
+def _check_source_codes(
+    rows: Sequence[SourceCodeRow],
+    statvars: Sequence[StatVarRow],
+    *,
+    members: Mapping[str, Sequence[str]],
+) -> None:
     """Checks the `source_codes` rows against the StatVar rows.
 
     Raises `IndexFormatError` for a code that is empty or not upper-cased and stripped, a
     `(provenance, code)` pair on two rows, a row naming no StatVar, and a dcid that is no
-    StatVar row of the index or whose row does not carry the code's provenance.
+    StatVar row of the index or whose row does not carry the code's dataset. The code's dataset
+    is the declared dataset whose `members` (each dataset's member provenances) list the
+    code's provenance, else the provenance itself, as `CodeIndex.dataset_of` reads it. A code
+    row carries the provenance that asserted the code's arc and a StatVar row the datasets
+    holding it.
     Search answers a code with these rows, so each must be a StatVar it serves from that source."""
-    provenances = {row.dcid: row.provenances for row in statvars}
+    dataset_of = {provenance: dataset for dataset, held in members.items() for provenance in held}
+    provenances = {row.dcid: row.datasets for row in statvars}
     seen: set[tuple[str, str]] = set()
     for row in rows:
         if not row.code or row.code != row.code.strip().upper():
@@ -1095,10 +1134,11 @@ def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVa
                     f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, which "
                     "is no StatVar row of the index"
                 )
-            if row.provenance not in provenances[dcid]:
+            dataset = dataset_of.get(row.provenance, row.provenance)
+            if dataset not in provenances[dcid]:
                 raise IndexFormatError(
-                    f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, whose "
-                    f"row carries provenances {list(provenances[dcid])!r}"
+                    f"source code {row.code!r} under {row.provenance!r} (dataset {dataset!r}) "
+                    f"names {dcid!r}, whose row carries datasets {list(provenances[dcid])!r}"
                 )
 
 

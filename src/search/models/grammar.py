@@ -48,10 +48,17 @@ class DataCommonsRef(StrictModel):
 class ProvenanceRef(GraphRef):
     """A provenance on the wire: its dcid and label, the source behind it, the
     Data Commons its data comes from, and the route of its document, which
-    follows from the dcid. `label`, `source` and `data_commons` come from the
-    origin catalogue's provenance table. A provenance the table does not list
-    carries its graph label and neither `source` nor `data_commons`, and is
-    omitted when the graph has no label for it."""
+    follows from the dcid. The dcid is a provenance's for a table of one import
+    and a Dataset's for a declared Dataset, so a member provenance of a declared
+    Dataset is cited under the Dataset's id. The member that reported a row is an
+    attribute of the observation: a frame names it in its `reporting_organisation`
+    column, and a series in its provenance facet's `reporting_organisation`
+    (`SeriesFacetRef`). `label`, `source` and `data_commons` come
+    from the origin catalogue's provenance table. A declared Dataset carries its
+    graph label, else its declared label, and the source and Data Commons its
+    members' rows share. Any other provenance the table does not list carries
+    its graph label and neither `source` nor `data_commons`, and is omitted when
+    the graph has no label for it."""
 
     source: SourceRef | None = Field(
         default=None, description="the organisation behind the provenance"

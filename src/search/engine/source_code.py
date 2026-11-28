@@ -1,8 +1,9 @@
 """Resolve a part's publisher series code (`ParsedPart.source_code`) to the StatVars it names.
 
 The release's code index records each series code the StatVars it lists carry on their
-`sourceIndicatorCode` arcs, with the StatVars that carry it under each provenance holding it
-(`CodeIndex.source_code_members`). A code's members replace recall's embedding resolve
+`sourceIndicatorCode` arcs, with the StatVars that carry it under each dataset holding it
+(`CodeIndex.source_code_members`, which reads two members of one declared dataset as one
+holder under the dataset's id). A code's members replace recall's embedding resolve
 (`interpret.recall`), and shape derivation, the twin election and bind run on them as on a
 recalled pool. "debt service" under DT.TDS.DEGG.CD elects the by-creditor variable when the
 part opens the creditor role and the aggregate when it does not.
@@ -61,8 +62,8 @@ _SERIES_CODE = re.compile(r"[A-Z]{2}(?:\.[A-Z0-9]{2,5}){2,}")
 
 @dataclass(frozen=True, slots=True)
 class SeriesCodeMembers:
-    """The StatVars `dcids`, sorted, that the provenance `provenance` gives the series code
-    `code`, upper-cased."""
+    """The StatVars `dcids`, sorted, that the dataset `provenance` (`CodeIndex.dataset_of`
+    of each provenance holding it) gives the series code `code`, upper-cased."""
 
     code: str
     provenance: str
@@ -75,9 +76,10 @@ class SourceCodeRefusal:
     answers no_data with `reason`.
 
     `cause` says why a `source_code_not_held` refusal holds, and is `None` for the others.
-    `sources` are the provenances the refusal names: for `source_code_not_held`, every one
-    whose codes the index holds when the cause is `unknown` and the ones holding the code
-    otherwise; for `source_code_ambiguous`, the part's allowed ones holding the code.
+    `sources` are the datasets the refusal names (`CodeIndex.dataset_of`, a plain table being
+    its own): for `source_code_not_held`, every one whose codes the index holds when the
+    cause is `unknown` and the ones holding the code otherwise; for `source_code_ambiguous`,
+    the part's allowed ones holding the code.
     `shared_codes` are the other codes the code's source gives its StatVars, for
     `source_code_shares_variable`."""
 
@@ -97,8 +99,8 @@ def _provenance_reference(provenance: str) -> SourceReference:
 
 
 def not_held(code: str, *, cause: NotHeldCause, index: CodeIndex) -> SourceCodeRefusal:
-    """The `source_code_not_held` refusal of `code` for `cause`, naming the provenances
-    `SourceCodeRefusal.sources` describes."""
+    """The `source_code_not_held` refusal of `code` for `cause`, naming the datasets
+    `SourceCodeRefusal.sources` describes (`CodeIndex.source_code_members`)."""
     provenances = (
         sorted(index.source_code_provenances)
         if cause == "unknown"
@@ -113,13 +115,14 @@ def not_held(code: str, *, cause: NotHeldCause, index: CodeIndex) -> SourceCodeR
 
 
 def compile_part_code(code: str, *, scope: SourceScope | None, index: CodeIndex) -> PartCode:
-    """The StatVars the series code `code` names under the one provenance holding it that
-    `scope` allows (every provenance when `scope` is `None`), or the refusal the module
-    docstring describes."""
+    """The StatVars the series code `code` names under the one dataset holding it that
+    `scope` allows (every dataset when `scope` is `None`), or the refusal the module
+    docstring describes. The holders are datasets (`CodeIndex.source_code_members`), so two
+    members of one declared dataset holding the code are one holder."""
     holding = {
-        provenance: dcids
-        for provenance, dcids in index.source_code_members(code).items()
-        if scope is None or provenance in scope.allowed
+        dataset: dcids
+        for dataset, dcids in index.source_code_members(code).items()
+        if scope is None or dataset in scope.allowed
     }
     if not holding:
         cause = "excluded" if index.source_code_members(code) else "unknown"
@@ -150,19 +153,22 @@ def stands_for_code(
     """Whether a part naming the series code `code` and `provenance` as its source accepts
     as its answer the Spec of `identity`, which serves the StatVars `served` from the
     provenance `read`, so the Spec is the series `provenance` files under `code` and no
-    other.
+    other. Both read as their datasets (`CodeIndex.dataset_of`), so a Spec reading a
+    declared dataset stands for a code its members hold.
 
-    The Spec reads `provenance` alone, where a part naming it reads only it. `provenance`
-    gives none of the code's StatVars another code, as `compile_part_code` requires. Each of
+    The Spec reads `provenance`'s dataset alone, where a part naming it reads only it.
+    `provenance` gives none of the code's StatVars another code, as `compile_part_code` requires. Each of
     `served` is one of the code's, as recall from the code's StatVars leaves them. The
     StatVars a Datasets mint of `identity` serves are known and all the code's
     (`bound_values.elects_within`), as the part's pipeline requires
     (`region.pipeline._within_source_code`). The election runs last, and for one code of a
     Spec at most, since two unshared codes hold no StatVar in common."""
-    members = index.source_code_members(code).get(provenance, ())
+    dataset = index.dataset_of(provenance)
+    members = index.source_code_members(code).get(dataset, ())
     return (
-        read == provenance
-        and not index.shared_codes(provenance, code)
+        read is not None
+        and index.dataset_of(read) == dataset
+        and not index.shared_codes(dataset, code)
         and set(served) <= set(members)
         and elects_within(identity, members)
     )

@@ -117,7 +117,7 @@ def _over_cap_index(count: int) -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("recipient",),
                 constraint_properties={"scheme": f"Code{i}"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             )
             for i in range(count)
         ),
@@ -179,7 +179,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Male",
@@ -190,7 +190,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Male"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
             StatVarRow(
                 dcid="Person_Female",
@@ -201,7 +201,7 @@ def _person_family_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=(),
                 constraint_properties={"gender": "Female"},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
         ),
     )
@@ -276,7 +276,11 @@ def test_under_cap_indexed_spec_derives_members_equal_to_the_walk():
         dataclasses.replace(shape, dataset=None) for shape in indexed.shapes
     ) == frozenset(walked.shapes)
     assert {shape.dataset for shape in indexed.shapes} == {
-        ElectedDataset(provenance="provenance/Test", member_provenances=("provenance/Test",))
+        ElectedDataset(
+            provenance="provenance/Test",
+            provenances=("provenance/Test",),
+            recorded_provenances=("provenance/Test",),
+        )
     }
     assert {shape.stat_var for shape in indexed.shapes} == {"dcid:Person"}
     # Both paths report the family before reduction, the members the root dominates included.
@@ -303,7 +307,7 @@ def _degenerate_observation_properties_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("observationAbout",),
                 constraint_properties={},
-                provenances=("provenance/Test",),
+                datasets=("provenance/Test",),
             ),
         ),
     )
@@ -443,7 +447,7 @@ def _education_aid_members(identity: dict, code_index: CodeIndex) -> ResolvedMem
 
 def _provenances(shapes: tuple[StatVarShape, ...], code_index: CodeIndex) -> set[tuple[str, ...]]:
     members = {shape.stat_var.removeprefix("dcid:") for shape in shapes}
-    return {row.provenances for row in code_index.statvars if row.dcid in members}
+    return {row.datasets for row in code_index.statvars if row.dcid in members}
 
 
 def test_the_plain_aid_identity_resolves_the_crs_members():
@@ -533,7 +537,7 @@ def _imputed_member_graph(code_index: CodeIndex) -> FakeMintGraphReader:
         arcs={
             row.dcid: _member_arcs(row)
             for row in code_index.statvars
-            if IMPUTED_PROVENANCE in row.provenances
+            if IMPUTED_PROVENANCE in row.datasets
         }
     )
 
@@ -762,7 +766,7 @@ def _source_facet(shape: StatVarShape, code_index: CodeIndex) -> Facet:
     row = next(
         row for row in code_index.statvars if row.dcid == shape.stat_var.removeprefix("dcid:")
     )
-    (provenance,) = row.provenances
+    (provenance,) = row.datasets
     return Facet(
         obs_count=10,
         earliest_date="2000",
@@ -815,7 +819,9 @@ def test_every_request_of_an_index_family_carries_the_elected_dataset(
     ]
 
     assert {request.dataset for request in requests} == {
-        ElectedDataset(provenance=provenance, member_provenances=(provenance,))
+        ElectedDataset(
+            provenance=provenance, provenances=(provenance,), recorded_provenances=(provenance,)
+        )
     }
 
 
@@ -832,7 +838,9 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
     requests[0] = dataclasses.replace(
         requests[0],
         dataset=ElectedDataset(
-            provenance=CRS_PROVENANCE, member_provenances=(CRS_PROVENANCE, IMPUTED_PROVENANCE)
+            provenance=CRS_PROVENANCE,
+            provenances=(CRS_PROVENANCE,),
+            recorded_provenances=(CRS_PROVENANCE, IMPUTED_PROVENANCE),
         ),
     )
     imputed_only = Facet(
@@ -896,13 +904,13 @@ def _person_row(dcid: str, constraints: dict[str, str], *provenances: str) -> St
         measurement_denominator=None,
         observation_properties=("recipient",),
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
 def _dataset(provenance: str) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=False,

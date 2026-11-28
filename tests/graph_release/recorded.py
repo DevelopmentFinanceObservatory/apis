@@ -91,7 +91,7 @@ SLICE_DECLARATIONS = dataclasses.replace(
     datasets=tuple(
         dataclasses.replace(dataset, stated_words=(), party_words=())
         for dataset in DECLARATIONS.datasets
-        if dataset.provenance in (_CRS, _IMPUTED)
+        if dataset.id in (_CRS, _IMPUTED)
     ),
     listed_datasets=(),
     party_kind_overrides={},

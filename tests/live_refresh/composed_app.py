@@ -579,13 +579,13 @@ def _code_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("recipient",),
                 constraint_properties={_AXIS: _AXIS_VALUES[member]},
-                provenances=(_PROVENANCE,),
+                datasets=(_PROVENANCE,),
             )
             for member in MEMBERS
         ),
         datasets=(
             DatasetDeclaration(
-                provenance=_PROVENANCE,
+                id=_PROVENANCE,
                 label=_LABELS[_PROVENANCE],
                 description="Aid disbursements by recipient.",
                 opt_in=False,

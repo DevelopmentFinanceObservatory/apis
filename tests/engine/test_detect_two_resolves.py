@@ -151,7 +151,7 @@ def _ge_row(dcid: str, provenance: str, roles: tuple[str, ...], **codes: str) ->
         measurement_denominator=None,
         observation_properties=roles,
         constraint_properties={"financialFlowType": "Disbursement", **codes},
-        provenances=(provenance,),
+        datasets=(provenance,),
     )
 
 

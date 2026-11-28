@@ -11,6 +11,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -21,6 +22,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import array_kernel
 
+from code_index.shared import dataset_of
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
     Among,
@@ -81,6 +83,7 @@ from materialise.facets import (
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
+    read_as_datasets,
     request_scope_key,
     role_bearing_facet_candidates,
     select_facet,
@@ -92,6 +95,7 @@ from materialise.frame_build import (
     build_frame_from_member_tables,
     build_frame_from_table,
     fold_method_periods,
+    names_reporters,
     period_grains,
 )
 from materialise.graph import Facet, GraphReader, GraphReadError
@@ -459,6 +463,8 @@ class _GroupOutcome:
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
     holds under any window. `year_totals` is every member's `_MemberOutcome.year_totals`, and
     `held_runs` every member's `_MemberOutcome.held_runs`, merged per kind and source.
+    `member_provenances` maps each member's `stat_var` to the provenances of its probe's
+    candidates, which an absent member's zero reads (`absent_zero_members`).
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -485,6 +491,7 @@ class _GroupOutcome:
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
     year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
     held_runs: tuple[HeldRun, ...] = ()
+    member_provenances: Mapping[str, frozenset[str | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -625,9 +632,11 @@ class _PreparedPreview:
 
 
 def _admitted(probe: MemberProbe, candidate_filter: Callable[[Facet], bool] | None) -> MemberProbe:
-    """`probe` with only the candidates the request's facet filter admits
-    (`admitted_candidates`), which every election then ranks. Its row admission is kept."""
-    return replace(probe, candidates=tuple(admitted_candidates(probe.candidates, candidate_filter)))
+    """`probe` with its candidates read as their datasets' (`facets.read_as_datasets`) and only
+    those the request's facet filter admits (`admitted_candidates`), which every election,
+    dispatch and held-run read then takes. Its row admission is kept."""
+    candidates = read_as_datasets(probe.candidates)
+    return replace(probe, candidates=tuple(admitted_candidates(candidates, candidate_filter)))
 
 
 def _national_currency_probe(
@@ -681,7 +690,8 @@ def _select_member_facets(
 
     A member of an index-resolved family selects among the candidates its elected
     dataset publishes (`facets.dataset_candidates`), so the selected provenance is that
-    dataset's.
+    dataset's. The facets of a declared dataset's member provenances carry its id
+    (`facets.read_as_datasets`), so they elect as one table under that id.
     """
     # The candidates its dispatch reads, each merged across places with the AND of its
     # places' annual evidence (`Facet.reads_annual`).
@@ -1554,20 +1564,60 @@ def _probe_member(
     )
 
 
-def reads_absent_as_zero(
-    selections: Mapping[str, FacetSelection], absent_reads_zero: Callable[[str], bool] | None
-) -> bool:
-    """Whether a group's members holding no observation in the requested years go unreported:
-    `selections` dispatch one provenance and `absent_reads_zero` says it reads an absent
-    member as zero (`code_index.members.absent_member_reads_zero`). Without
-    `absent_reads_zero` every provenance reads unknown. The mint (`pipeline.materialise_group`)
+type AbsentRule = Callable[[str, str | None, int | None], bool]
+"""Whether an observation dataset `d` carries no row for, on a series its member provenance
+`p` files, in year `y`, adds zero to a sum, called as `rule(d, p, y)`, `y` `None` for a year
+not known (`code_index.members.absent_reads_zero_in` over a code index and a coverage
+index)."""
+
+
+def absent_zero_members(
+    selections: Mapping[str, FacetSelection],
+    absent_reads_zero: AbsentRule | None,
+    *,
+    member_provenances: Mapping[str, AbstractSet[str | None]],
+    window: AppliedWindow | None,
+) -> frozenset[str]:
+    """The members of `member_provenances` holding no observation in the requested years
+    that go unreported, since each adds zero in every year of `window`.
+
+    `selections` must dispatch one dataset, the provenance selection's ref being the dataset's
+    id (`facets.read_as_datasets`), and `absent_reads_zero` must read the member's absence as
+    zero in each year from `window.start_year` to `window.end_year`, for each provenance of
+    the dataset among the member's candidates in `member_provenances`, or for no provenance
+    when none is. A window open at either end reads one year not known. Without
+    `absent_reads_zero` every dataset reads unknown. The mint (`pipeline.materialise_group`)
     and the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
     served = dispatched_provenances(selections)
-    return absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
+    if absent_reads_zero is None or len(served) != 1:
+        return frozenset()
+    (dataset,) = served
+    years: Sequence[int | None] = (
+        range(window.start_year, window.end_year + 1)
+        if window is not None and window.start_year is not None and window.end_year is not None
+        else (None,)
+    )
+    return frozenset(
+        member
+        for member, provenances in member_provenances.items()
+        if all(
+            absent_reads_zero(dataset, provenance, year)
+            for provenance in _filed_by(provenances, dataset)
+            for year in years
+        )
+    )
+
+
+def _filed_by(provenances: AbstractSet[str | None], dataset: str) -> tuple[str | None, ...]:
+    """The member provenances of `dataset` among `provenances`, sorted, or one `None` when
+    none is."""
+    filed = sorted(p for p in provenances if p is not None and dataset_of(p) == dataset)
+    return tuple(filed) or (None,)
 
 
 def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
-    """The sorted provenance refs `selections` dispatch."""
+    """The sorted provenance refs `selections` dispatch: a plain table's provenance, or a
+    declared dataset's id (`facets.read_as_datasets`)."""
     return sorted(
         {
             selection.ref
@@ -1585,7 +1635,8 @@ def _dispatch_refresh(
 ) -> dict[str, ProvenanceRefresh]:
     """The refresh dates of the provenances `selections` dispatch, called before the fetch so
     a run's source tokens are never newer than its rows. Dates `precomputed_probe` holds
-    serve as read; the rest come from one `node_arcs_many`."""
+    serve as read; the rest come from one `node_arcs_many`. A declared dataset's id takes the
+    newest of its Dataset node's date and every member's (`facets._probe_provenance_refresh`)."""
     refs = dispatched_provenances(selections)
     known = precomputed_probe.provenance_refresh if precomputed_probe is not None else {}
     missing = [ref for ref in refs if ref not in known]
@@ -2878,6 +2929,22 @@ def _plan_group_members(
     )
 
 
+def _dispatches_member_provenance(
+    probes: Sequence[MemberProbe], plans: Sequence[_MemberFetchPlan]
+) -> bool:
+    """Whether a member dispatches a facet of a declared dataset's member provenance, whose
+    rows name that member (`columnar.dataset_cells`). The group's frame is built in chunks
+    that share one column order, so it carries `reporting_organisation` when this holds,
+    before any chunk is read."""
+    return any(
+        candidate.provenance_id is not None
+        and dataset_of(candidate.provenance_id) != candidate.provenance_id
+        for probe, plan in zip(probes, plans, strict=True)
+        for candidate in probe.candidates
+        if candidate.facet_id in plan.dispatch_ids
+    )
+
+
 def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
     """The plan of a group none of whose probes returned a candidate: no selection, and for
     each member no dispatch id and no conversion, so `_generate_chunk` fetches nothing and
@@ -2978,8 +3045,10 @@ class _GroupRowStreamer:
         member_concurrency: int,
         progress: RowProgress | None,
         continuing: Sequence[ContinuedSeries],
+        reporting_organisation: bool,
     ) -> None:
         self._dcid_requests = dcid_requests
+        self._reporting_organisation = reporting_organisation
         self._dcid_plans = dcid_plans
         self._chunks = chunks
         self._sdmx = sdmx
@@ -3137,7 +3206,9 @@ class _GroupRowStreamer:
         own row count, once the chunk's `Frame` is genuinely built.
         """
         frame = build_frame_from_member_tables(
-            [(request.stat_var, table) for request, table in members], role_keys=self._shared_roles
+            [(request.stat_var, table) for request, table in members],
+            role_keys=self._shared_roles,
+            reporting_organisation=self._reporting_organisation,
         )
         if not self.frame_columns:
             self.frame_columns.append(frame.columns)
@@ -3467,6 +3538,7 @@ def _generate_group(
         member_concurrency=member_concurrency,
         progress=progress,
         continuing=selected_continued_series(group_plan.selections),
+        reporting_organisation=_dispatches_member_provenance(probed, group_plan.plans),
     )
     outcome = _assemble_group_outcome(
         streamer,
@@ -3485,6 +3557,10 @@ def _generate_group(
         candidate_provenances=frozenset(
             candidate.provenance_id for member in probed for candidate in member.candidates
         ),
+        member_provenances={
+            request.stat_var: frozenset(candidate.provenance_id for candidate in member.candidates)
+            for request, member in zip(requests, probed, strict=True)
+        },
         held_runs=read_runs(
             (member.candidates, frozenset(plan.dispatch_ids))
             for member, plan in zip(probed, group_plan.plans, strict=True)
@@ -3885,8 +3961,16 @@ def _finish_preview_member(
     # over the full survivor set reads this one, since a mint of the same
     # request hashes every survivor row rather than a `limit`-bounded slice.
     # A caller reporting no `content_version` skips it.
+    # The delivered frame takes the full frame's columns, even where its subset names no
+    # reporter.
+    reporting_organisation = names_reporters(table)
     full_frame = (
-        build_frame_from_table(table, role_keys=request.declared_roles, stat_var=request.stat_var)
+        build_frame_from_table(
+            table,
+            role_keys=request.declared_roles,
+            stat_var=request.stat_var,
+            reporting_organisation=reporting_organisation,
+        )
         if prepared.mint_full_frame
         else None
     )
@@ -3912,7 +3996,10 @@ def _finish_preview_member(
     served_entities_by_role = columnar.served_entities_by_role(table, roles=request.declared_roles)
 
     frame = build_frame_from_table(
-        delivered_table, role_keys=request.declared_roles, stat_var=request.stat_var
+        delivered_table,
+        role_keys=request.declared_roles,
+        stat_var=request.stat_var,
+        reporting_organisation=reporting_organisation,
     )
     return _PreviewOutcome(
         frame=frame,

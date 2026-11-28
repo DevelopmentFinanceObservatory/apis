@@ -4,7 +4,7 @@ card table's headers and a download's column docs.
 A role column takes the noun of its graph role name, so `financingRecipient` reads
 "recipient" and `creditor` reads "creditor". A role this module does not name reads "entity".
 A reserved frame column (`stat_var`, `time_period`, `value`, `unit`, `status`,
-`measurementMethod`, `provenance`) takes its own noun. Graph role names and column keys never
+`measurementMethod`, `provenance`, `reporting_organisation`) takes its own noun. Graph role names and column keys never
 reach a header. This standard-library module keeps `assembler` and `materialise` reading one
 table.
 """
@@ -37,6 +37,11 @@ PROVENANCE_COLUMN = "provenance"
 """The frame column naming each row's source dataset, one of the frame grammar's facet identity
 columns (`dfo_frame_grammar.FACET_IDENTITY_COLUMNS`)."""
 
+REPORTING_ORGANISATION_COLUMN = "reporting_organisation"
+"""The frame column naming the member provenance that reported a row of a declared dataset,
+null where a row names none (`dfo_frame_grammar.REPORTING_ORGANISATION_COLUMN`). It is an
+attribute of the observation, outside the frame's grain."""
+
 RESERVED_COLUMN_NOUNS: Mapping[str, str] = MappingProxyType(
     {
         "stat_var": "variable",
@@ -46,6 +51,7 @@ RESERVED_COLUMN_NOUNS: Mapping[str, str] = MappingProxyType(
         "status": "status",
         "measurementMethod": "measurement method",
         PROVENANCE_COLUMN: "source dataset",
+        REPORTING_ORGANISATION_COLUMN: "reporting organisation",
     }
 )
 """The noun per reserved frame column, the frame grammar's own columns and facet identity

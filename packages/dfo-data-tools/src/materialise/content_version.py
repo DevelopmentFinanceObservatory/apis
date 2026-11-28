@@ -12,6 +12,7 @@ import pyarrow as pa
 import rfc8785
 from dfo_frame_grammar import (
     FRAME_VERSION,
+    REPORTING_ORGANISATION_COLUMN,
     STATUS_COLUMN,
     UNIT_COLUMN,
     VALUE_COLUMN,
@@ -53,6 +54,10 @@ def mint_version_from_chunks(chunks: Iterable[Frame]) -> str:
     return mint_version_from_digest(stream_frame_sha256(chunks))
 
 
+# The columns outside a frame's grain, which `collation_sort_keys` leaves out of the key
+# rows are ordered by (`dfo_frame_grammar.grammar.row_sort_key`).
+_NON_GRAIN_COLUMNS = frozenset((VALUE_COLUMN, STATUS_COLUMN, REPORTING_ORGANISATION_COLUMN))
+
 # Rows serialised per Arrow pass: about 13 MB of row text for a typical frame row.
 _HASH_SLICE_ROWS = 65_536
 
@@ -85,7 +90,7 @@ def stream_frame_sha256(chunks: Iterable[Frame]) -> str:
                 f"chunk columns {list(frame.columns)!r} differ from the stream's columns "
                 f"{list(columns)!r}",
             )
-        grain = [column for column in columns if column not in (VALUE_COLUMN, STATUS_COLUMN)]
+        grain = [column for column in columns if column not in _NON_GRAIN_COLUMNS]
         table = frame.table
         for start in range(0, table.num_rows, _HASH_SLICE_ROWS):
             rows = table.slice(start, _HASH_SLICE_ROWS)

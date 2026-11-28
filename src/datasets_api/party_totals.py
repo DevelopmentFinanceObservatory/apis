@@ -73,7 +73,7 @@ from pydantic import JsonValue
 
 from code_index.types import PartyRow
 from datasets_api.manifest_models import PartyTotalsKeptSeriesModel, PartyTotalsLeftOutModel
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from dfo_platform.roles import RoleAxis, role_key_axis
 from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import (
@@ -92,9 +92,18 @@ YEARS_DIMENSION = "years"
 TRACE_KEY = "party_totals_left_out"
 """The trace key of the totals a version left out (`PartyTotalsCut.trace_entries`)."""
 
-_NOT_SERIES = frozenset({TIME_PERIOD_COLUMN, PROVENANCE_COLUMN, VALUE_COLUMN, STATUS_COLUMN})
-"""The columns of a frame that name no series: `value` and `status`, which the frame's grain
-leaves out, and the `time_period` and provenance of a cell."""
+_NOT_SERIES = frozenset(
+    {
+        TIME_PERIOD_COLUMN,
+        PROVENANCE_COLUMN,
+        VALUE_COLUMN,
+        STATUS_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+    }
+)
+"""The columns of a frame that name no series: `value`, `status` and
+`reporting_organisation`, which the frame's grain leaves out, and the `time_period` and
+provenance of a cell."""
 
 
 def open_party_roles(identity: object, entity_columns: Sequence[str]) -> tuple[str, ...]:

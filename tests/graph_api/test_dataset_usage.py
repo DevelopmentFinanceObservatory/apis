@@ -22,6 +22,7 @@ from graph_generation import FakeGeneration
 from materialise.graph import GraphReadError
 from series_coverage.schema import FacetMetadata
 from statvar_members import FiveTuple
+from tests.materialise._ledger import LEDGER, MEMBERS, NORTH, SOLO, SOLO_MEMBER, SOUTH, ledger_index
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
 
@@ -55,7 +56,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=observation_properties,
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -71,7 +72,7 @@ _ROWS = (
 )
 
 _DECLARATION = DatasetDeclaration(
-    provenance=_CRS,
+    id=_CRS,
     label="Creditor Reporting System",
     description="Aid by project.",
     opt_in=False,
@@ -536,3 +537,40 @@ def test_shape_fields_are_five_tuple_fields_and_statvar_row_attributes() -> None
 
     assert set(SHAPE_FIELDS) <= five_tuple
     assert set(SHAPE_FIELDS) <= row_fields
+
+
+def _ledger_usage_index() -> CodeIndex:
+    """The Ledger index (`tests.materialise._ledger`) with a row under each declared dataset."""
+    index = ledger_index()
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=(),
+        codes=(),
+        statvars=(
+            _row("Amount_Ledger", {"flowType": "ODA"}, provenances=(LEDGER,)),
+            _row("Amount_Solo", {"flowType": "OOF"}, provenances=(SOLO,)),
+        ),
+        datasets=tuple(index.datasets.values()),
+        dataset_members={dataset: index.provenances_of(dataset) for dataset in index.datasets},
+    )
+
+
+def test_a_declared_dataset_lists_once_with_its_members_facets_and_no_member_dcid() -> None:
+    coverage = _FakeCoverageIndex(
+        facet_metadata={
+            "north": FacetMetadata(provenance_id=NORTH, unit="CurrencyUSD"),
+            "south": FacetMetadata(provenance_id=SOUTH, unit="CurrencyEUR"),
+            "solo": FacetMetadata(provenance_id=SOLO_MEMBER, unit="Count"),
+        },
+        provenance_currencies={NORTH: frozenset({"USD"}), SOUTH: frozenset({"EUR"})},
+    )
+
+    usage = build_usage(code_index=_ledger_usage_index(), coverage=coverage, nodes={})
+    built = {entry["ref"]: entry for entry in usage.model_dump(mode="json")["provenances"]}
+
+    assert list(built) == [LEDGER, SOLO]
+    assert built[LEDGER]["facets"]["units"] == ["CurrencyEUR", "CurrencyUSD"]
+    assert built[LEDGER]["facets"]["currencies"] == ["EUR", "USD"]
+    assert built[SOLO]["facets"]["units"] == ["Count"]
+    body = usage.model_dump_json()
+    assert not [member for member in MEMBERS if member in body]

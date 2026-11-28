@@ -388,10 +388,12 @@ def to_materialisation_request(
     derived from the same `CodeIndex`. Pinned shapes use the graph path.
 
     A facet uses one form, `ref` or a unit-axis `request`, and the provenance facet may
-    also bind a set (`refs`). A set of one distinct ref binds it as `ref` does. A set of
-    several leaves provenance unbound for selection: the read is scoped to its refs
-    (`pinned_provenance_scope`), and selection elects among them. Malformed bindings
-    raise `IdentityError`. An undeclared role currency raises
+    also bind a set (`refs`). Each provenance ref binds its dataset's id
+    (`CodeIndex.dataset_of`), the value a member's facet carries on the axis, and the read's
+    scope admits only the members the pin names. A set of one distinct dataset binds it as
+    `ref` does. A set of several leaves provenance unbound for selection: the read is
+    scoped to its refs (`pinned_provenance_scope`), and selection elects among them.
+    Malformed bindings raise `IdentityError`. An undeclared role currency raises
     `CurrencyRoleUndeclared`. The caller adds the wire pointer.
     Validation covers facet-binding shape only.
 
@@ -423,11 +425,6 @@ def to_materialisation_request(
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     facet_bindings: dict[str, FacetBinding] = {}
     for axis, binding in facets.items():
-        if axis == _PROVENANCE_AXIS and "refs" in binding:
-            refs = tuple(dict.fromkeys(cast("Sequence[str]", binding["refs"])))
-            if len(refs) == 1:
-                facet_bindings[axis] = FacetBinding(state="bound", ref=refs[0])
-            continue
         has_ref = "ref" in binding
         has_request = "request" in binding
         has_national_currency = "national_currency" in binding
@@ -437,6 +434,15 @@ def to_materialisation_request(
                 f"{axis} facet binding carries more than one of 'ref', 'request' and "
                 "'national_currency'",
             )
+        if axis == _PROVENANCE_AXIS and ("refs" in binding or isinstance(binding.get("ref"), str)):
+            # A facet reads a member's dataset on the provenance axis, and the pin's scope
+            # (`pinned_provenance_scope`) admits only the members it names, so a member ref
+            # binds its dataset's id here.
+            posted = binding["refs"] if "refs" in binding else (binding["ref"],)
+            refs = tuple(dict.fromkeys(map(code_index.dataset_of, cast("Sequence[str]", posted))))
+            if len(refs) == 1:
+                facet_bindings[axis] = FacetBinding(state="bound", ref=refs[0])
+            continue
         if has_national_currency:
             role = cast("Mapping[str, object]", binding["national_currency"])["role"]
             _require_currency_role(cast(str, role), shape=shape)
@@ -488,23 +494,39 @@ def identity_requested_window(
     )
 
 
-def provenance_pin(identity: Mapping[str, object]) -> frozenset[str] | None:
+def provenance_pin(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> frozenset[str] | None:
     """The provenances `identity`'s `facets.provenance` binds, as a `ref` or a set of
-    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none."""
+    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none, whose facets the
+    catalogue admits, as Search scopes a ref (`search.engine.source_scope.read_provenances`).
+    A declared dataset's id binds every member provenance (`CodeIndex.provenances_of`), and a
+    member provenance or a plain table's provenance binds itself alone."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-    return frozenset(pinned_refs(facets)) or None
+    return (
+        frozenset(
+            provenance
+            for ref in pinned_refs(facets)
+            for provenance in code_index.provenances_of(ref)
+        )
+        or None
+    )
 
 
-def pinned_provenance_scope(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+def pinned_provenance_scope(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> AbstractContextManager[object]:
     """Bind the request's catalogue narrowed to `identity`'s pinned provenances
     (`provenance_pin`, `origin_catalogue.scoped_reads`) for every read of a mint of it, so
     a pinned source is admitted before DFO precedence and a base pin serves at a place
-    where a DFO table also holds data. Binds nothing for an identity that pins no provenance.
+    where a DFO table also holds data. A declared dataset's id binds its member provenances,
+    so the pin admits each member, and a member's id admits that member alone. Binds
+    nothing for an identity that pins no provenance.
 
     A composite identity's pin names no table, so a caller derives its components first
     (`composite_components`) and scopes each component's reads by its component identity.
     Handed a composite, `provenance_pin` raises `code_index.composites.CompositeProvenanceRead`."""
-    return scoped_reads(provenance_pin(identity))
+    return scoped_reads(provenance_pin(identity, code_index=code_index))
 
 
 def composite_components(
@@ -631,7 +653,7 @@ def definition_read_scope(
     (`CompositeWindowUnsupported`), so it reads the same unscoped."""
     if composite_components(identity, code_index=code_index) is not None:
         return nullcontext()
-    return pinned_provenance_scope(identity)
+    return pinned_provenance_scope(identity, code_index=code_index)
 
 
 def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:
@@ -845,8 +867,10 @@ def _resolve_index_members(
             measured_property=five_tuple.measured_property,
             population_type=five_tuple.population_type,
             # A family with a row has an elected provenance.
-            dataset=ElectedDataset(
-                provenance=cast(str, elected.provenance), member_provenances=row.provenances
+            dataset=ElectedDataset.of(
+                cast(str, elected.provenance),
+                recorded=row.datasets,
+                provenances_of=code_index.provenances_of,
             ),
             family=stated,
         )

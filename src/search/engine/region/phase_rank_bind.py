@@ -1367,25 +1367,28 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
 
 
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:
-    """Whether a part under `scope` may answer `shape`.
+    """Whether a part under `scope` may answer `shape`. `scope.allowed` holds dataset ids
+    (`CodeIndex.dataset_of`), a plain table's provenance or a declared Dataset's id for
+    its member provenances.
 
     A shape of a family the index declares stays when a dataset publishing it is eligible
     under the scope (`part_datasets`, `code_index.members.eligible_among`). On a family a
     dataset that is not opt-in publishes, an opt-in publisher answers only a part naming a
     source. A shape whose five-tuple the index lists without declaring a dataset
-    (`shape_listed_rows`) stays when a listed row is held by a provenance the scope allows.
+    (`shape_listed_rows`) stays when a listed row's dataset is one the scope allows.
     Any other shape, a table the index does not declare, stays when the scope allows a
-    provenance the index declares no dataset for, and the read applies the scope to it
-    (`origin_catalogue.Catalogue.scoped`): a provenance the part excludes serves none of
-    its data, and the availability read sees none of it. A declared dataset publishes only
-    the index's rows, so a scope of declared datasets alone holds none of its data. A UN
+    dataset the index does not declare, and the read applies the scope's member
+    provenances to it (`SourceScope.provenances`, `origin_catalogue.Catalogue.scoped`): a
+    provenance the part excludes serves none of its data, and the availability read sees
+    none of it. A declared dataset publishes only the index's rows, so a scope of declared
+    datasets alone holds none of its data. A UN
     System Data Commons shape reaches here only when the scope allows a UN provenance
     (`phase_intake._un_shapes`)."""
     if shape_datasets(shape, index):
         return bool(part_datasets(shape, scope, index))
     listed = shape_listed_rows(shape, index)
     if listed:
-        return any(not scope.allowed.isdisjoint(row.provenances) for row in listed)
+        return any(not scope.allowed.isdisjoint(row.datasets) for row in listed)
     return not scope.allowed <= index.datasets.keys()
 
 
@@ -1839,9 +1842,7 @@ def _serving_datasets(families: Sequence[IndexFamily], index: CodeIndex) -> list
             (index.datasets[dataset] for dataset in family.datasets if dataset in index.datasets),
             key=lambda dataset: dataset.rank,
         )
-        for provenance in eligible_among(
-            index, [dataset.provenance for dataset in declared], scope=None
-        ):
+        for provenance in eligible_among(index, [dataset.id for dataset in declared], scope=None):
             served.setdefault(
                 provenance, GraphRef(ref=provenance, label=index.datasets[provenance].label)
             )

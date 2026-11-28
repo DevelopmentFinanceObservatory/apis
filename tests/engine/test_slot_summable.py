@@ -172,7 +172,7 @@ class TestApplySlotSummability:
             index,
             datasets=tuple(
                 dataclasses.replace(dataset, absent_observation="unknown")
-                if dataset.provenance == IMPUTED_PROVENANCE
+                if dataset.id == IMPUTED_PROVENANCE
                 else dataset
                 for dataset in index.datasets.values()
             ),
@@ -217,7 +217,7 @@ class TestAgreesWithGroupby:
 
     def test_every_declared_code_system_agrees(self, monkeypatch):
         index = get_index()
-        template = next(row for row in index.statvars if row.provenances == (CRS_PROVENANCE,))
+        template = next(row for row in index.statvars if row.datasets == (CRS_PROVENANCE,))
         synthetic = dataclasses.replace(
             index.declarations["crsPurpose"],
             code_system=_SYNTHETIC_NOT_SUMMABLE,
@@ -242,7 +242,7 @@ class TestAgreesWithGroupby:
                         **template.constraint_properties,
                         _SYNTHETIC_NOT_SUMMABLE: "SyntheticValue",
                     },
-                    provenances=template.provenances,
+                    datasets=template.datasets,
                 ),
             ),
         )

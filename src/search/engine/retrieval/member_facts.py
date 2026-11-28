@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from code_index.shared import get_index
 from code_index.types import StatVarRow
 from materialise.facets import ElectedDataset
 from search.engine.retrieval.facts import (
@@ -126,7 +127,10 @@ class IndexMemberFacts:
 
     def read_dataset(self) -> ElectedDataset | None:
         """The elected dataset as a mint of the member carries it
-        (`datasets_api.adapter.resolve_definition_members`)."""
+        (`datasets_api.adapter.resolve_definition_members`), each dataset's member
+        provenances read from the bound code index (`code_index.shared.get_index`)."""
         if self.dataset is None:
             return None
-        return ElectedDataset(provenance=self.dataset, member_provenances=self.row.provenances)
+        return ElectedDataset.of(
+            self.dataset, recorded=self.row.datasets, provenances_of=get_index().provenances_of
+        )

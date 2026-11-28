@@ -178,6 +178,12 @@ def test_resolve_recipe_returns_the_packages_own_dac_body() -> None:
     assert recipe.table_provenance == "provenance/ONEConversionTablesDAC"
 
 
+@pytest.mark.unbound_release
+def test_resolve_recipe_reads_a_node_declaring_its_recipe_with_no_release_bound() -> None:
+    """A node that declares its recipe needs no member fold, so no release is read."""
+    assert _resolve_recipe(_DAC_PROVENANCE) is RECIPE_BODIES[_DAC_RECIPE]
+
+
 def test_resolve_recipe_returns_the_packages_own_imf_body() -> None:
     recipe = _resolve_recipe(_WEO_PROVENANCE)
     assert recipe is RECIPE_BODIES[_WEO_RECIPE]

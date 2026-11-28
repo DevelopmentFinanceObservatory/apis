@@ -9,6 +9,7 @@ import pyarrow as pa
 from dc_sdmx.results import (
     ATTRIBUTE_COLUMNS,
     DIMENSION_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     VALUE_COLUMN,
     VARIABLE_COLUMN,
     SdmxObservation,
@@ -52,5 +53,6 @@ def table_from_observations(rows: Iterable[SdmxObservation], *, roles: Sequence[
     for name in ATTRIBUTE_COLUMNS:
         field = field_by_attribute[name]
         data[name] = [getattr(row, field) for row in ordered_rows]
+    data[REPORTING_ORGANISATION_COLUMN] = [None] * len(ordered_rows)
 
     return pa.Table.from_pydict(data, schema=observation_schema(roles))

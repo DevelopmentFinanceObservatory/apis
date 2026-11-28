@@ -32,6 +32,7 @@ from datasets_api.version_store import LiveVersionLister
 from materialise.formats import canonical_frame_document, read_canonical_frame_table
 from materialise.frame_build import build_frame
 from spec_registry import LiveSpecRegistry
+from tests.materialise._ledger import LEDGER, MEMBERS, SOLO, ledger_index
 
 from ._analysis_doubles import (
     AID,
@@ -47,6 +48,7 @@ from ._analysis_doubles import (
 from ._app_factories import make_client
 from ._deps_doubles import closable_permits
 from ._frame_doubles import link_frame1_only
+from ._release_doubles import IndexServingRelease, bound_index
 from ._render_inputs import SITE
 from .conftest import FakeDatasetStore
 
@@ -275,6 +277,49 @@ def test_a_bundle_of_a_frame_over_a_composite_cites_its_tables_and_names_it(
         assert "OECD DAC2a (bilateral flows)" in text
         assert DAC2A_BILATERAL in text
         assert cut in text
+
+
+@pytest.mark.parametrize("declared", [LEDGER, SOLO], ids=["two-members", "one-member"])
+def test_a_bundle_of_a_frame_over_a_declared_dataset_cites_it_once_and_no_member(
+    monkeypatch: pytest.MonkeyPatch, declared: str
+) -> None:
+    """A dataset's rows carry its id, so the derived bundle cites the dataset once, and no
+    file of it names a member provenance."""
+    stores = Stores()
+    growth = step(
+        "growth",
+        dataset(AID, AID_V1),
+        window_start="2021",
+        window_end="2022",
+        entity_by=["financingRecipient"],
+        change="absolute",
+    )
+    monkeypatch.setattr(analysis_door, "LiveRootSource", lambda **_: _roots(stores))
+
+    with bound_index(ledger_index()):
+        member = _stored(stores, aid=_aid(declared), tree=growth)
+        client = make_client(
+            registry=LiveSpecRegistry(store=FakeDatasetStore()),
+            settings=DatasetsBuildSettings.from_env(),
+            artifact_store=stores.artifact_store,
+            snapshot_reader=stores.snapshot_reader,
+            version_writer=stores.version_writer,
+            recipe_store=stores.recipe_store,
+            version_lister=LiveVersionLister(store=stores.store),
+            now=lambda: stores.now,
+            release=IndexServingRelease(ledger_index()),
+        )
+        with client:
+            manifest = client.get(_path(member))
+            response = client.get(_path(member, "/file"))
+
+    assert response.status_code == 200, response.text
+    with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+        files = {name: bundle.read(name).decode() for name in bundle.namelist()}
+    descriptor = json.loads(files["datapackage.json"])
+    assert [source["title"] for source in descriptor["sources"]] == [declared]
+    for text in (manifest.text, *files.values()):
+        assert not [m for m in MEMBERS if m in text]
 
 
 def _locations(stores: Stores, member: dict[str, Any]) -> Any:

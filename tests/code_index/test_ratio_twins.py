@@ -147,12 +147,12 @@ def _index(listed: Sequence[StatVarRow], statvars: Sequence[StatVarRow] = ()) ->
         ),
         pytest.param(
             [*_STOCKS, *_PAIR],
-            [replace(_PAIR[1], dcid="share_by_creditor_published", provenances=(_IDS,))],
+            [replace(_PAIR[1], dcid="share_by_creditor_published", datasets=(_IDS,))],
             None,
             id="class-has-index-family",
         ),
         pytest.param(
-            [*_STOCKS, _PAIR[0], replace(_PAIR[1], provenances=(_IDS,))],
+            [*_STOCKS, _PAIR[0], replace(_PAIR[1], datasets=(_IDS,))],
             [],
             None,
             id="classes-held-by-different-provenances",

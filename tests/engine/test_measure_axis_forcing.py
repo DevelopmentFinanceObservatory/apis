@@ -54,7 +54,7 @@ def _row(dcid: str, **constraints: str) -> StatVarRow:
         measurement_denominator=_FIVE_TUPLE["meas_denom_dcid"],
         observation_properties=(),
         constraint_properties=constraints,
-        provenances=("provenance/Test",),
+        datasets=("provenance/Test",),
     )
 
 

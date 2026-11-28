@@ -836,7 +836,9 @@ def test_decide_spec_unit_probes_within_the_members_elected_dataset(elected, dec
     datasets = (
         {
             _SV: ElectedDataset(
-                provenance=elected, member_provenances=(_PROVENANCE, _OTHER_PROVENANCE)
+                provenance=elected,
+                provenances=(elected,),
+                recorded_provenances=(_PROVENANCE, _OTHER_PROVENANCE),
             )
         }
         if elected is not None

@@ -66,7 +66,7 @@ from search.engine.shape import (
     is_ratio_backed_sv,
 )
 from search.engine.source_code import stands_for_code
-from search.engine.source_scope import source_label
+from search.engine.source_scope import admitted_refs, source_label
 from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
@@ -97,6 +97,7 @@ from search.models import (
     HeldBack,
     IdentityFacetBinding,
     IdentityFacetValueRequest,
+    IdentityWindowRange,
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
@@ -189,8 +190,9 @@ def _source_slot_binding(binding_draft: SlotBindingDraft | None) -> BindingValue
 
 def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) -> list[Slot]:
     """`slots` with the source slot bound to `provenances`, the provenances an answer's
-    read plan serves (`read_plan.served_provenances`), as a value for one and a set for
-    several. A shape with no source slot gains one."""
+    read plan serves (`read_plan.served_provenances`) as its scope admits them
+    (`source_scope.admitted_refs`), as a value for one and a set for several. A shape with
+    no source slot gains one."""
     values = [
         SlotValue(ref=GraphRef(ref=dcid, label=source_label(dcid)), value_kind="source")
         for dcid in provenances
@@ -544,7 +546,9 @@ def _resolved_stat_vars(
     population. ``member_count_exact`` tells a total from a lower bound. ``served_count`` is
     the mint's own count when Search knows it (``stated``). ``source_codes`` are the
     publisher codes the code index gives the members, whether the members were elected from
-    the index or recalled. A code is ``exact`` when a part naming it would accept the Spec of
+    the index or recalled, each under the dataset holding it (`CodeIndex.source_codes_of`), so
+    a code two members of a declared dataset hold is one entry naming the dataset's id. A
+    code is ``exact`` when a part naming it would accept the Spec of
     `identity`, which reads `provenance`, as its answer (`source_code.stands_for_code`)."""
     index = get_index()
     served = {sv.ref.ref for sv in stat_vars}
@@ -593,11 +597,13 @@ def elected_sources(sources: list[ProvenanceRef], identity: BaseIdentity) -> lis
     """Narrow an answer's sources to the dataset elected for its family.
 
     A family the index resolves holds one dataset's members (`identity_dataset`), and its
-    read serves that dataset's facets alone (`read_plan.in_elected_datasets`), so the
-    answer names that dataset's ref among `sources`, under its declared label, the label a
-    bound source slot carries. The ref keeps its source and Data Commons. An answer that
-    served nothing from the dataset names no source. `sources` is returned unchanged when
-    the index elects no dataset.
+    read serves that dataset's facets alone (`read_plan.in_elected_datasets`), citing the
+    declared dataset by its id (`coverage.citable_source_ids`), so the answer names that
+    dataset's ref among `sources`, under its declared label, the label a bound source slot
+    carries. The loader refuses an index whose rows name an undeclared dataset
+    (`code_index.loader`), so every elected dataset is declared. The ref keeps its source
+    and Data Commons. An answer that served nothing from the dataset names no source.
+    `sources` is returned unchanged when the index elects no dataset.
     """
     dataset = identity_dataset(identity)
     if dataset is None:
@@ -1342,7 +1348,7 @@ def answer_identity(
     reading only where the minted identity reads it over its own window
     (`_restate_whole_groups`)."""
     if pin_served_provenance and (served := served_provenances(plan)):
-        slots = with_served_provenance(slots, served)
+        slots = with_served_provenance(slots, admitted_refs(served, code_index=get_index()))
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
             facets = {
                 **facets,
@@ -1381,6 +1387,20 @@ def answer_identity(
         entity_groups=entity_groups,
         served_datasets=served_datasets,
     )
+
+
+def _served_window(years: tuple[int, int] | None, identity: BaseIdentity) -> range | None:
+    """The years a mint of `identity` serves: the served series' first to last year
+    (`read_plan.data_years`), clipped to the identity's requested range. None when the data
+    years are unknown."""
+    if years is None:
+        return None
+    first, last = years
+    window = identity.requested_window
+    if isinstance(window, IdentityWindowRange):
+        first = first if window.start_year is None else max(first, window.start_year)
+        last = last if window.end_year is None else min(last, window.end_year)
+    return range(first, last + 1)
 
 
 def build_spec(
@@ -1652,10 +1672,15 @@ def build_spec(
         identity=identity_doc,
         provenance=provenance.ref if provenance is not None else None,
     )
-    resolved_slots = apply_slot_summability(slots, identity_doc)
+    years = data_years(plan)
+    resolved_slots = apply_slot_summability(
+        slots,
+        identity_doc,
+        years=_served_window(years, identity_doc),
+        held_years=coverage_index.provenance_years if coverage_index is not None else None,
+    )
     stated_facets = facets or {}
     published_tables = _published_tables(provenance, index)
-    years = data_years(plan)
     if composite is None and plan is not None:
         stated_held = held_back(plan, plan_runs(plan, coverage_index=coverage_index))
         if stated_held:

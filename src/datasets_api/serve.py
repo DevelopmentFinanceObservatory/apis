@@ -70,7 +70,7 @@ from code_index.composites import (
     composite_ref,
     population_check,
 )
-from code_index.members import absent_member_reads_zero
+from code_index.members import absent_reads_zero_in
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration, PartyRow
 from dataset_store.clock import utc_now
@@ -649,7 +649,13 @@ def _materialise_scoped(
                     precomputed_probe=precomputed_probe,
                     deadline=deadline,
                     progress=progress,
-                    absent_reads_zero=partial(absent_member_reads_zero, code_index),
+                    absent_reads_zero=partial(
+                        absent_reads_zero_in,
+                        code_index,
+                        held_years=None
+                        if coverage_index is None
+                        else coverage_index.provenance_years,
+                    ),
                 )
         except DefaultFacetUndefinedError as exc:
             if exc.request is not None:
@@ -756,7 +762,7 @@ def _materialise_components(
         part = [request for request in requests if request.component == component.role]
         if not part:
             continue
-        with pinned_provenance_scope(component.identity):
+        with pinned_provenance_scope(component.identity, code_index=code_index):
             result, un_blocked = materialise(part, ceiling=remaining, precomputed_probe=None)
         runs.append(
             _ComponentRun(
@@ -795,14 +801,18 @@ def _materialise_components(
 
 
 def _component_findings(
-    runs: Sequence[_ComponentRun], *, graph: GraphReader, deadline: float | None
+    runs: Sequence[_ComponentRun],
+    *,
+    graph: GraphReader,
+    code_index: CodeIndex,
+    deadline: float | None,
 ) -> _OriginFindings:
     """The origin findings of a composite's component runs, each read under its component
     identity's pinned provenances, its warnings once each and its gaps in run order."""
     warnings: list[WarningModel] = []
     gaps: list[OriginGap] = []
     for run in runs:
-        with pinned_provenance_scope(run.identity):
+        with pinned_provenance_scope(run.identity, code_index=code_index):
             findings = _origin_findings(
                 run.requests,
                 probe_empty=run.probe_empty,
@@ -890,7 +900,11 @@ def prewrite_definition(
         progress=progress,
         code_index=code_index,
     )
-    with pinned_provenance_scope(stored.identity) if components is None else nullcontext():
+    with (
+        pinned_provenance_scope(stored.identity, code_index=code_index)
+        if components is None
+        else nullcontext()
+    ):
         if components is None:
             result, un_blocked = materialise(
                 requests, ceiling=ceiling, precomputed_probe=precomputed_probe
@@ -930,7 +944,9 @@ def prewrite_definition(
         if persisted is not None:
             origin = _NO_ORIGIN_FINDINGS
         elif runs is not None:
-            origin = _component_findings(runs, graph=graph, deadline=deadline)
+            origin = _component_findings(
+                runs, graph=graph, code_index=code_index, deadline=deadline
+            )
         else:
             origin = _origin_findings(
                 requests,
@@ -1502,6 +1518,9 @@ def _render_pass(
         resolved_stat_var_refs=_resolved_stat_var_refs(result),
         output_profile=result.output_profile,
         deadline=deps.deadline,
+        held_years=(
+            None if prewrite.coverage_index is None else prewrite.coverage_index.provenance_years
+        ),
     )
     artifact, reshape_warnings, derived = rendered.artifact, rendered.warnings, rendered.derived
     if not (documentation_complete and rendered.labels_complete):

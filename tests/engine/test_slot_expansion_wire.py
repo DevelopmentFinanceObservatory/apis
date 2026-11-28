@@ -460,7 +460,7 @@ def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
         measurement_denominator=None,
         observation_properties=("financingProvider", "financingRecipient"),
         constraint_properties={"crsPurpose": member_crs_purpose},
-        provenances=(_TEST_PROVENANCE,),
+        datasets=(_TEST_PROVENANCE,),
     )
     edited = CodeIndex(
         stamp=index.stamp,
@@ -470,7 +470,7 @@ def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
         datasets=(
             *index.datasets.values(),
             DatasetDeclaration(
-                provenance=_TEST_PROVENANCE,
+                id=_TEST_PROVENANCE,
                 label="Test financing flows",
                 description="A test table.",
                 opt_in=False,

@@ -36,7 +36,7 @@ def _row(
         measurement_denominator=_FIVE_TUPLE["meas_denom_dcid"],
         observation_properties=observation_properties,
         constraint_properties=constraints,
-        provenances=("provenance/Test",),
+        datasets=("provenance/Test",),
     )
 
 

@@ -30,6 +30,8 @@ from graph_release.reads import RawInputs
 
 _EXAMPLES: Final[int] = 5
 _OBSERVATION_PROPERTIES: Final[str] = "observationProperties"
+# The graph type of a declared dataset whose members are the provenances part of it.
+_DATASET_TYPE: Final[str] = "Dataset"
 
 
 class PlatformRefusal(Exception):
@@ -344,13 +346,15 @@ def _closure(raw: RawInputs) -> pa.Table:
 
 
 def _nodes(raw: RawInputs, edges: pa.Table, authored_nodes: pa.Table) -> pa.Table:
-    """Spanner's rows for every subject and object of `edges` and every live variable, then the
-    authored rows."""
+    """Spanner's rows for every subject and object of `edges`, every live variable and every
+    declared id the graph types `Dataset` (`RawInputs.declared`), then the authored rows. A
+    declared provenance's row stays out, so a release declaring no `Dataset` keeps its nodes."""
     referenced = pa.chunked_array(
         [
             *edges["subject_id"].chunks,
             *edges["object_id"].chunks,
             *raw.live_variables["variable_measured"].chunks,
+            pa.array(_declared_datasets(raw), pa.string()),
         ]
     )
     spanner = raw.nodes_raw.filter(pc.is_in(raw.nodes_raw["subject_id"], value_set=referenced))
@@ -358,6 +362,22 @@ def _nodes(raw: RawInputs, edges: pa.Table, authored_nodes: pa.Table) -> pa.Tabl
         "authored", pa.array([False] * spanner.num_rows, pa.bool_())
     )
     return pa.concat_tables([spanner, authored_nodes])
+
+
+def _declared_datasets(raw: RawInputs) -> list[str]:
+    """The ids of `raw.declared` whose `Node` row the graph types `Dataset`."""
+    declared = raw.nodes_raw.filter(
+        pc.is_in(raw.nodes_raw["subject_id"], value_set=pa.array(raw.declared, pa.string()))
+    )
+    return [
+        dcid
+        for dcid, types in zip(
+            cast("list[str]", declared["subject_id"].to_pylist()),
+            cast("list[list[str] | None]", declared["types"].to_pylist()),
+            strict=True,
+        )
+        if _DATASET_TYPE in (types or ())
+    ]
 
 
 def _imports(raw: pa.Table) -> pa.Table:

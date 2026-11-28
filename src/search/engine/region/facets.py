@@ -25,6 +25,7 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
+from search.engine.retrieval.elected_dataset import provenance_axis
 from search.engine.retrieval.held_back import contained_kinds, held_runs
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -58,7 +59,8 @@ if TYPE_CHECKING:
 
 
 def _facet_source_dcid(facet: Facet) -> str | None:
-    """Return the facet's `provenanceId`, or None when it is absent."""
+    """The facet's value on the provenance axis (`citable_source_ids`), which is the id of the
+    declared dataset its provenance is a member of, or None when it declares no provenance."""
     dcids = citable_source_ids([facet])
     return dcids[0] if dcids else None
 
@@ -94,7 +96,8 @@ class _AxisFacetCandidate(Protocol):
 
 def candidate_facet_refs(candidate: _AxisFacetCandidate) -> dict[str, str]:
     """The axis refs `candidate` declares, in `FacetAxis` order, omitting an axis it leaves
-    unset.
+    unset. The provenance ref is its provenance axis value (`elected_dataset.provenance_axis`),
+    the declared dataset's id, as the rows a mint serves carry it.
 
     `assert_never` makes a new `FacetAxis` value a type error and runtime assertion.
     """
@@ -103,7 +106,7 @@ def candidate_facet_refs(candidate: _AxisFacetCandidate) -> dict[str, str]:
         axis: FacetAxis = raw_axis
         match axis:
             case "provenance":
-                ref = candidate.provenance_id
+                ref = provenance_axis(candidate)
             case "measurementMethod":
                 ref = candidate.measurement_method
             case "unit":

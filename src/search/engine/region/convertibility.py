@@ -62,7 +62,7 @@ from search.engine.region.codes import (
 from search.engine.region.facet_probe import FacetPins, facet_pins
 from search.engine.region.facets import FilteredAnswer, plan_answer
 from search.engine.retrieval.download import deflator_omissions
-from search.engine.retrieval.elected_dataset import NO_DATASETS, ElectedDatasets
+from search.engine.retrieval.elected_dataset import NO_DATASETS, ElectedDatasets, provenance_axis
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     Omissions,
@@ -525,7 +525,8 @@ def elected_unit_refs(
 type UnitCoverageRefusal = RateCoverageGapError | RecipeNotDeclaredError | NonCurrencyUnitError
 
 type _FacetKey = tuple[str | None, str | None]
-"""A served facet's `(unit, provenance_id)`, the two axes a conversion decision reads."""
+"""A served facet's unit and provenance axis value (`elected_dataset.provenance_axis`, the
+declared dataset's id), the two axes a conversion decision reads."""
 
 type _ServedRows = set[ServedBlock]
 """The rows a plan serves under one facet key, as conversion sees them
@@ -608,7 +609,7 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
         best = plan.elected
         if best is None:
             return {}
-        key: _FacetKey = (best.unit, best.provenance_id)
+        key: _FacetKey = (best.unit, provenance_axis(best))
         return {
             sv: {key: partial(_bulk_member_rows, plan.served_candidates(sv), plan.member_years(sv))}
             for sv in plan.served_members
@@ -624,7 +625,7 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
             years = TimeWindow(start_year=latest, end_year=latest)
         for f in series.group:
             keys = by_sv.setdefault(series.stat_var, {})
-            keys.setdefault((f.unit, f.provenance_id), []).append((series, f, years))
+            keys.setdefault((f.unit, provenance_axis(f)), []).append((series, f, years))
     return {
         sv: {key: partial(_pair_rows, served) for key, served in keys.items()}
         for sv, keys in by_sv.items()
@@ -973,7 +974,7 @@ def _fetched_entities(
         best = plan.elected
         if best is None:
             return {}
-        key: _FacetKey = (best.unit, best.provenance_id)
+        key: _FacetKey = (best.unit, provenance_axis(best))
         fetched: dict[str, dict[_FacetKey, Callable[[str], frozenset[str]]]] = {}
         for sv in plan.served_members:
             first, last = (None, None) if plan.years == "latest" else plan.member_years(sv)
@@ -983,7 +984,7 @@ def _fetched_entities(
     for series in plan.held:
         for f in series.group:
             keys = by_sv.setdefault(series.stat_var, {})
-            keys.setdefault((f.unit, f.provenance_id), []).append(series)
+            keys.setdefault((f.unit, provenance_axis(f)), []).append(series)
     return {
         sv: {key: partial(_series_members, held) for key, held in keys.items()}
         for sv, keys in by_sv.items()

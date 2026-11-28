@@ -366,9 +366,7 @@ def test_a_resubmit_the_index_decides_is_scoped_over_the_family_its_mint_serves(
     dataset. The served StatVars are the mint's own."""
     document = education_aid_identity()
     identity = BaseIdentity.model_validate(document)
-    imputed = next(
-        row.dcid for row in get_index().statvars if IMPUTED_PROVENANCE in row.provenances
-    )
+    imputed = next(row.dcid for row in get_index().statvars if IMPUTED_PROVENANCE in row.datasets)
     posted = dataclasses.replace(
         synthetic_shape_for_identity(IdentityShapeSchema.model_validate(document["shape"])),
         sv_arc_facts={imputed: {}},

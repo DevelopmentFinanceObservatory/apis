@@ -394,13 +394,13 @@ def test_a_root_of_one_stat_var_keeps_its_recipe_ids() -> None:
 # The ids of this tree's frame, minted from a read that states no groupby.
 _SOLE_IDS = (
     {
-        "spec_id": "ops_f810d2b04f345cbe4aa80ce276ad820c",
+        "spec_id": "ops_cf43c144c590d70e0fea448d3014c98e",
         "recipe": {
             "normal_form_hash": "rnf_c7a657e19e68385b52e938965d1deee6",
-            "replay_key": "rpk_ab785f6e0fdcc2f3f880d95bd189e94a",
+            "replay_key": "rpk_01fb5702f53e2161237ab2d4215170d8",
         },
     },
-    "ocv_555fd80d73b51ec8fc84ad8add102891",
+    "ocv_29774a0010989946ebafe1bc5d396142",
 )
 
 

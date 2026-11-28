@@ -21,7 +21,7 @@ from materialise.errors import MaterialisationError
 from materialise.facets import ElectedDataset, FacetBinding
 from materialise.rate_tables import RateTableCache
 from materialise.window import RequestedWindow
-from search.engine import spec_build
+from search.engine import source_scope, spec_build
 from search.engine.region.option_coverage import _maybe_build_facet_options
 from search.engine.retrieval import bound_values
 from search.models import IdentityBindingValue, Spec
@@ -62,7 +62,7 @@ def _electing(
         measurement_denominator=None,
         observation_properties=world.declared_roles,
         constraint_properties={},
-        provenances=tuple(sorted(recorded)),
+        datasets=tuple(sorted(recorded)),
     )
     family = DatasetFamily(provenance=provenance, rows=(row,))
     monkeypatch.setattr(bound_values, "index_family", lambda _index, _query: family)
@@ -75,7 +75,7 @@ def _electing(
         **real.datasets,
         **{
             declared: DatasetDeclaration(
-                provenance=declared,
+                id=declared,
                 label=labels[declared],
                 description="A test table.",
                 opt_in=False,
@@ -96,6 +96,8 @@ def _electing(
 
     declaring = _DeclaringBoth()
     monkeypatch.setattr(spec_build, "get_index", lambda: declaring)
+    # The answer's source and its bound source slot take the declared label from here.
+    monkeypatch.setattr(source_scope, "get_index", lambda: declaring)
     return world
 
 
@@ -124,7 +126,11 @@ def _mint_request(
         declared_roles=world.declared_roles,
         facet_bindings={},
         window=RequestedWindow(kind="all"),
-        dataset=ElectedDataset(provenance=provenance, member_provenances=tuple(sorted(recorded))),
+        dataset=ElectedDataset(
+            provenance=provenance,
+            provenances=(provenance,),
+            recorded_provenances=tuple(sorted(recorded)),
+        ),
     )
 
 

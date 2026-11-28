@@ -183,7 +183,7 @@ class _FakeGraph:
 _TEST_PROVENANCE = "provenance/TestDataset"
 _TEST_DATASETS = (
     DatasetDeclaration(
-        provenance=_TEST_PROVENANCE,
+        id=_TEST_PROVENANCE,
         label="Test dataset",
         description="A test table.",
         opt_in=False,
@@ -459,7 +459,7 @@ def test_a_system_without_codes_round_trips_beside_coded_systems_on_one_five_tup
         coverage=CoverageJoin(provenances=provenances, parties={}),
         datasets=(
             *_TEST_DATASETS,
-            dataclasses.replace(_TEST_DATASETS[0], provenance=_OBJECTIVE_PROVENANCE, rank=1),
+            dataclasses.replace(_TEST_DATASETS[0], id=_OBJECTIVE_PROVENANCE, rank=1),
         ),
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
@@ -480,7 +480,7 @@ def test_a_system_without_codes_round_trips_beside_coded_systems_on_one_five_tup
     ]
     assert [row.dcid for row in index.children("ObjectiveTotal")] == ["ObjectiveA", "ObjectiveB"]
     assert index.expansion("ObjectiveTotal") == ("ObjectiveTotal",)
-    assert {row.dcid for row in index.statvars if _OBJECTIVE_PROVENANCE in row.provenances} == {
+    assert {row.dcid for row in index.statvars if _OBJECTIVE_PROVENANCE in row.datasets} == {
         "SV_Objective_ObjectiveTotal",
         "SV_Objective_ObjectiveA",
         "SV_Objective_ObjectiveB",
@@ -2497,7 +2497,7 @@ def test_validate_declared_defaults_accepts_no_defaults_configured():
 
 _OPT_IN_PROVENANCE = "provenance/OptInDataset"
 _OPT_IN = DatasetDeclaration(
-    provenance=_OPT_IN_PROVENANCE,
+    id=_OPT_IN_PROVENANCE,
     label="Opt-in dataset",
     description="A test table.",
     opt_in=True,
@@ -2539,7 +2539,7 @@ def test_export_index_joins_each_rows_sorted_provenances_and_stamps_no_build():
 
     document = _export_two_system_graph(coverage)
 
-    provenances = {row["dcid"]: row["provenances"] for row in document["statvars"]}
+    provenances = {row["dcid"]: row["datasets"] for row in document["statvars"]}
     assert provenances == {
         "SV_Disbursement_Gross": [_TEST_PROVENANCE],
         "SV_Disbursement_NoNetting": [_TEST_PROVENANCE],
@@ -2552,13 +2552,17 @@ def test_export_index_joins_each_rows_sorted_provenances_and_stamps_no_build():
 
 
 @pytest.mark.parametrize(
-    ("ratio_base_axis", "written"),
-    [(None, {}), ("destination", {"ratio_base_axis": "destination"})],
+    "written",
+    [
+        {},
+        {"ratio_base_axis": "destination"},
+        {"members_report_overlapping_accounts": True},
+    ],
 )
 def test_export_index_writes_dataset_declarations_and_they_round_trip(
-    tmp_path: Path, ratio_base_axis: RoleAxis | None, written: dict
+    tmp_path: Path, written: dict
 ):
-    declared = dataclasses.replace(_OPT_IN, ratio_base_axis=ratio_base_axis)
+    declared = dataclasses.replace(_OPT_IN, **written)
     graph = _two_system_graph()
     document = export_index(
         graph,
@@ -2582,7 +2586,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(
 
     assert document["datasets"] == [
         {
-            "provenance": _OPT_IN_PROVENANCE,
+            "id": _OPT_IN_PROVENANCE,
             "label": "Opt-in dataset",
             "description": "A test table.",
             "opt_in": True,
@@ -2591,13 +2595,14 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(
             "rank": 10,
             "invariants": {},
             **written,
+            "members": [_OPT_IN_PROVENANCE],
         }
     ]
     out = tmp_path / "with_datasets.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
     assert index.datasets[_OPT_IN_PROVENANCE] == declared
-    assert {row.provenances for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
+    assert {row.datasets for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
 
 
 def test_export_index_writes_the_declared_slot_defaults_and_broad_readings_and_they_round_trip():
@@ -2652,9 +2657,9 @@ def test_a_broad_reading_is_refused_where_a_row_of_its_value_lacks_the_value_it_
 
 def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
     """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's."""
-    crs, imputed, dac1, dac2a, dac2b, *climate = (dataset.provenance for dataset in DATASETS)
+    crs, imputed, dac1, dac2a, dac2b, *climate = (dataset.id for dataset in DATASETS)
 
-    assert {dataset.provenance: dataset.ratio_base_axis for dataset in DATASETS} == {
+    assert {dataset.id: dataset.ratio_base_axis for dataset in DATASETS} == {
         crs: None,
         imputed: None,
         dac1: "origin",
@@ -2693,7 +2698,7 @@ def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenanc
     assert uncovered_row["stamp"]["content_hash"] != base["stamp"]["content_hash"]
 
 
-def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_parties_or_stamp():
+def test_export_graph_blocks_holds_the_documents_blocks_without_datasets_members_parties_or_stamp():
     graph = _two_system_graph()
     blocks = export_graph_blocks(
         graph,
@@ -2706,13 +2711,18 @@ def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_part
     document = _export_two_system_graph(_covered(graph))
 
     assert set(blocks) == set(document) - {"stamp", "parties"}
-    assert all("provenances" not in row for row in blocks["statvars"])
+    assert all("datasets" not in row for row in blocks["statvars"])
+    assert all("members" not in row for row in blocks["datasets"])
     for block, rows in blocks.items():
-        if block != "statvars":
+        if block not in {"statvars", "datasets"}:
             assert rows == document[block], block
     assert blocks["statvars"] == [
-        {key: value for key, value in row.items() if key != "provenances"}
+        {key: value for key, value in row.items() if key != "datasets"}
         for row in document["statvars"]
+    ]
+    assert blocks["datasets"] == [
+        {key: value for key, value in row.items() if key != "members"}
+        for row in document["datasets"]
     ]
     with pytest.raises(IndexFormatError):
         parse_index({"stamp": document["stamp"], **blocks})
@@ -2858,7 +2868,7 @@ def test_export_index_lists_the_statvars_of_a_dataset_no_code_system_enumerates(
 
     index = parse_index(document)
     assert [row.dcid for row in index.listed_statvars] == ["SV_Listed_Disbursement"]
-    assert index.listed_statvars[0].provenances == (_LISTED_PROVENANCE,)
+    assert index.listed_statvars[0].datasets == (_LISTED_PROVENANCE,)
     assert index.listed_statvars[0].constraint_properties == {"financialFlowType": "Disbursement"}
     assert "SV_Listed_Disbursement" not in {row.dcid for row in index.statvars}
 
@@ -3065,9 +3075,7 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (
-        dataset.provenance for dataset in DATASETS
-    )
+    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (dataset.id for dataset in DATASETS)
     assert [dataset.opt_in for dataset in DATASETS] == [
         False,
         True,

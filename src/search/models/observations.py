@@ -71,6 +71,15 @@ class SeriesFacetRef(StrictModel):
             "GET /api/graph/documentation/{dcid}"
         ),
     )
+    reporting_organisation: SeriesFacetRef | None = Field(
+        default=None,
+        description=(
+            "provenance axis only: the member provenance that reported every point of the "
+            "series, where ref is a declared dataset that groups several publisher "
+            "provenances; absent for a plain table and for a series whose points several "
+            "members report"
+        ),
+    )
 
 
 class SeriesStatVarRef(StrictModel):
@@ -235,7 +244,7 @@ class ObservationSeries(StrictModel):
         ),
     )
     # Whether a point the series serves carries a measurement method classed estimated
-    # (`materialise.method_status.status_of`), as the estimates continuing a reported series
+    # (`materialise.member_folds.status_of`), as the estimates continuing a reported series
     # past its last period do. The part states it in a `modelled_values` departure
     # (`engine.departures`), so it reaches the wire there alone, and a series read back from
     # the cache does not hold it. Equality compares the wire state (`__eq__`).

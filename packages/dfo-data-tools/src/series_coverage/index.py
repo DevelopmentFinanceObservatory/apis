@@ -28,6 +28,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
+from code_index.shared import dataset_of
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
 from dfo_platform.lru_memo import LruMemo
 from dfo_platform.roles import RoleAxis
@@ -38,7 +39,7 @@ from materialise.held_back import (
     judge,
     last_period_before,
 )
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection
 from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
 from series_coverage._bits import bit_length64, lowest_set_bit_index64, popcount64
@@ -167,7 +168,7 @@ def served_until(
 @dataclass(frozen=True, slots=True)
 class _HeldFacets:
     """What the held-back cut reads of each facet of a `CoverageIndex`, by facet code
-    (`CoverageIndex._facet_cut`): `provenance`, the position of its provenance in
+    (`CoverageIndex._facet_cut`): `provenance`, the position of its provenance's dataset in
     `provenances`, -1 for none; `projected`, whether its `(provenance, measurementMethod)`
     pair is a projection pair; `unjudged`, whether the index holds no metadata for it."""
 
@@ -761,7 +762,10 @@ class CoverageIndex:
     @cached_property
     def _held_facets(self) -> _HeldFacets:
         """What the held-back cut reads of each facet of `_facet_ids`, from its metadata
-        (`_HeldFacets`)."""
+        (`_HeldFacets`). A facet's provenance is its dataset's id in the bound release's code
+        index (`code_index.shared.dataset_of`), as a mint's rows carry it, so every member of
+        a declared dataset is cut at the dataset's earliest member mark. Raises
+        `graph_release.context.ReleaseNotBound` when no release is bound."""
         provenances: dict[str, int] = {}
         provenance = np.full(len(self._facet_ids), -1, dtype=np.int64)
         projected = np.zeros(len(self._facet_ids), dtype=bool)
@@ -773,7 +777,8 @@ class CoverageIndex:
             unjudged[code] = False
             projected[code] = is_projection(metadata.provenance_id, metadata.measurement_method)
             if metadata.provenance_id is not None:
-                provenance[code] = provenances.setdefault(metadata.provenance_id, len(provenances))
+                dataset = dataset_of(metadata.provenance_id)
+                provenance[code] = provenances.setdefault(dataset, len(provenances))
         return _HeldFacets(
             provenances=tuple(provenances),
             provenance=provenance,
@@ -789,7 +794,7 @@ class CoverageIndex:
         one AND of each row's limit.
 
         A projection facet's limit holds no year unless `include` names `"projected"`
-        (`method_status.is_projection`), and every year when it does. Any other facet's limit
+        (`member_folds.is_projection`), and every year when it does. Any other facet's limit
         holds every year up to the year before its provenance's partial period
         (`served_through`), unless `include` names `"partial"`. Each provenance of the read is
         judged once, at the horizon's last year. That cuts what a judgement at the newest year
@@ -1787,6 +1792,47 @@ class CoverageIndex:
             masks = self._facet_cut(pairs.facet_codes[selected], masks, include)
         held = np.bitwise_or.reduce(masks, axis=0)
         return _years_of(held.tolist(), self._horizon)
+
+    def provenance_years(self, provenance: str) -> frozenset[int]:
+        """The years any series of member provenance `provenance` holds an observation in,
+        over the whole horizon (`_provenance_years`). Empty for a provenance no facet of the
+        index names. A dataset declaring `members_report_overlapping_accounts` reads an
+        absent observation as zero only in these years of the row's member
+        (`code_index.members.absent_reads_zero_in`)."""
+        return self._provenance_years.get(provenance, frozenset())
+
+    @cached_property
+    def _provenance_years(self) -> Mapping[str, frozenset[int]]:
+        """Each facet provenance's years, the OR of the year masks of every
+        `(variable, facet_id)` pair (`_pair_year_masks`) whose facet metadata names it, built
+        once per index. A facet's provenance is its own `FacetMetadata.provenance_id`, a
+        declared dataset's member provenance and not the dataset, and a facet with no metadata
+        or no provenance adds to none."""
+        pairs = self._pair_years
+        facet_provenances: dict[str, int] = {}
+        facet_provenance = np.full(len(self._facet_ids), -1, dtype=np.int64)
+        for code, facet_id in enumerate(cast("list[str]", self._facet_ids.to_pylist())):
+            metadata = self._facet_metadata.get(facet_id)
+            if metadata is not None and metadata.provenance_id is not None:
+                facet_provenance[code] = facet_provenances.setdefault(
+                    metadata.provenance_id, len(facet_provenances)
+                )
+        row_provenance = facet_provenance[pairs.facet_codes]
+        named = row_provenance >= 0
+        order = np.argsort(row_provenance[named], kind="stable")
+        provenance_codes = row_provenance[named][order]
+        if provenance_codes.size == 0:
+            return MappingProxyType({})
+        masks = pairs.masks[named][order]
+        starts = np.flatnonzero(np.r_[True, provenance_codes[1:] != provenance_codes[:-1]])
+        held = np.bitwise_or.reduceat(masks, starts, axis=0)
+        names = list(facet_provenances)
+        return MappingProxyType(
+            {
+                names[int(provenance_codes[start])]: _years_of(words.tolist(), self._horizon)
+                for start, words in zip(starts.tolist(), held, strict=True)
+            }
+        )
 
     def covers(self, variable: str) -> bool:
         """Whether the index holds any row of `variable`."""

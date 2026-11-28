@@ -52,6 +52,7 @@ import numpy as np
 import pyarrow as pa
 
 from code_index.multilaterals import COUNTRY_PREFIX
+from code_index.shared import dataset_of
 from code_index.types import PartyRow
 from origin_catalogue.catalogue import CatalogueSnapshot, ProvenanceRow, entry_ref
 from origin_catalogue.origins import BASE, DFO, UN_SYSTEM, OriginId
@@ -130,13 +131,14 @@ def catalogue_counts(
     parties: Mapping[str, PartyRow],
 ) -> CatalogueCounts:
     """Counts over `catalogue`'s admitted provenances and base variable
-    table and every row of `coverage`. `datasets` holds the provenances of
-    the declared datasets (`CodeIndex.datasets`). Their coverage rows are
-    the aid rows. The aid counts leave out each aid row's party that totals
-    other parties on its role's axis in the row's dataset (`parties`,
-    `PartyRow.kind_over` of `total` on `COVERAGE_ROLE_AXES` for the facet's
-    provenance), so the IMF trust funds, a total as a donor in some datasets,
-    count as a donor in the others."""
+    table and every row of `coverage`. `datasets` holds the ids of the
+    declared datasets (`CodeIndex.datasets`). Their coverage rows are the
+    aid rows, a member provenance's rows read as its dataset's in the bound
+    release's code index (`code_index.shared.dataset_of`). The aid counts
+    leave out each aid row's party that totals other parties on its role's
+    axis in the row's dataset (`parties`, `PartyRow.kind_over` of `total` on
+    `COVERAGE_ROLE_AXES` for the facet's dataset), so the IMF trust funds, a
+    total as a donor in some datasets, count as a donor in the others."""
     provenances = catalogue.provenance_rows()
     source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)
@@ -226,8 +228,14 @@ def _coverage_by_country(
     provenance_of = {
         facet_id: meta.provenance_id for facet_id, meta in coverage.facet_metadata.items()
     }
+    # A declared dataset's facets carry member provenances; its rows count under its id.
+    dataset_by_facet = {
+        facet_id: dataset_of(provenance)
+        for facet_id, provenance in provenance_of.items()
+        if provenance is not None
+    }
     aid_facets = frozenset(
-        facet_id for facet_id, provenance in provenance_of.items() if provenance in datasets
+        facet_id for facet_id, dataset in dataset_by_facet.items() if dataset in datasets
     )
 
     sources: dict[str, set[str]] = defaultdict(set)
@@ -254,12 +262,12 @@ def _coverage_by_country(
 
     # Pairs repeat a party across many rows, so each (party, role, dataset) is judged once.
     @functools.cache
-    def counted(dcid: str, role: Role, provenance: str) -> bool:
+    def counted(dcid: str, role: Role, dataset: str) -> bool:
         # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
         if dcid == ABSENT_ENTITY:
             return False
         party = parties.get(dcid)
-        return party is None or party.kind_over(COVERAGE_ROLE_AXES[role], (provenance,)) != "total"
+        return party is None or party.kind_over(COVERAGE_ROLE_AXES[role], (dataset,)) != "total"
 
     by_pair_facet = coverage.grouped(by=(*_ROLES, "facet_id"))
     donors: set[str] = set()
@@ -273,9 +281,9 @@ def _coverage_by_country(
     ):
         if facet not in aid_facets:
             continue
-        provenance = provenance_of[facet]
-        donor_counted = counted(donor, "donor", provenance)
-        recipient_counted = counted(recipient, "recipient", provenance)
+        dataset = dataset_by_facet[facet]
+        donor_counted = counted(donor, "donor", dataset)
+        recipient_counted = counted(recipient, "recipient", dataset)
         if donor_counted:
             donors.add(donor)
         if recipient_counted:

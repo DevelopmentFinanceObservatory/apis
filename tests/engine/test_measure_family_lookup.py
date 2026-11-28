@@ -146,7 +146,7 @@ def test_a_crs_shape_reads_every_crs_row_of_its_measure_siblings(
     assert {dcid for partition in partitions for dcid in partition.members} == {
         row.dcid
         for row in index.statvars
-        if _CRS in row.provenances
+        if _CRS in row.datasets
         and row.measured_property in ("amount", "grantEquivalent")
         and row.measurement_denominator is None
     }

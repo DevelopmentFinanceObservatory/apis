@@ -13,15 +13,15 @@ from tests.fixtures import provenance
 
 class _SyntheticIndex:
     def __init__(self, dcid: str, provenance: str) -> None:
-        self.statvars = [SimpleNamespace(dcid=dcid, provenances=(provenance,))]
+        self.statvars = [SimpleNamespace(dcid=dcid, datasets=(provenance,))]
 
 
 def test_swapped_index_does_not_leak_into_the_fixture_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = next(row for row in get_index().statvars if len(row.provenances) == 1)
+    row = next(row for row in get_index().statvars if len(row.datasets) == 1)
     packaged = provenance.index_provenance(row.dcid)
-    assert packaged == row.provenances[0]
+    assert packaged == row.datasets[0]
 
     synthetic = _SyntheticIndex(row.dcid, "provenance/Synthetic")
     with monkeypatch.context() as patch:

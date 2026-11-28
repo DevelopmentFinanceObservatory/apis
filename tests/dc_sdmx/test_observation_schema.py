@@ -21,6 +21,7 @@ def test_observation_columns_with_no_roles():
         "OBS_VALUE",
         "scalingFactor",
         "facetId",
+        "reporting_organisation",
     )
 
 
@@ -36,6 +37,7 @@ def test_observation_columns_with_one_role():
         "OBS_VALUE",
         "scalingFactor",
         "facetId",
+        "reporting_organisation",
     )
 
 
@@ -54,6 +56,7 @@ def test_observation_columns_keeps_role_order_with_two_roles():
         "OBS_VALUE",
         "scalingFactor",
         "facetId",
+        "reporting_organisation",
     )
 
 
@@ -118,3 +121,5 @@ def test_table_from_observations_matches_parsed_rows_under_the_contract():
     assert row["scalingFactor"] == parsed.scaling_factor == "0"
     assert parsed.facet_id is None
     assert row["facetId"] is None
+    # The wire names no reporter, so a parsed row holds none.
+    assert row["reporting_organisation"] is None

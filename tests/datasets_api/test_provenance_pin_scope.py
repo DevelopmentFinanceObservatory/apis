@@ -11,7 +11,8 @@ import json
 import httpx
 import pytest
 
-from datasets_api.adapter import pinned_provenance_scope
+from code_index.shared import get_index
+from datasets_api.adapter import pinned_provenance_scope, provenance_pin
 from dc_sdmx import SdmxClient
 from materialise import FacetBinding, MaterialisationRequest, probe_collection_facets
 from materialise.facets import joint_dispatch_facet_ids
@@ -19,6 +20,7 @@ from materialise.generation import _select_member_facets
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO
 from origin_catalogue.graph import build_graph_client
+from tests.materialise._ledger import LEDGER, NORTH, PLAIN, SOLO, SOLO_MEMBER, SOUTH, ledger_index
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -95,7 +97,7 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
         transport=httpx.MockTransport(_three_facets),
     )
 
-    with client, pinned_provenance_scope(identity):
+    with client, pinned_provenance_scope(identity, code_index=get_index()):
         probe = probe_collection_facets(
             (request,), graph=client, availability=_sdmx_never_read(), settle=True
         )
@@ -106,3 +108,21 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
 
     assert [facet.provenance_id for facet in member.candidates] == candidates
     assert joint_dispatch_facet_ids(member.candidates, election, member=0)[0] == elected
+
+
+@pytest.mark.parametrize(
+    ("pin", "scope"),
+    [
+        pytest.param({"state": "value", "ref": LEDGER}, {NORTH, SOUTH}, id="dataset"),
+        pytest.param({"state": "set", "refs": [SOLO]}, {SOLO_MEMBER}, id="one-member-dataset"),
+        # A member pin scopes to that member alone, as Search scopes it
+        # (`source_scope.read_provenances`).
+        pytest.param({"state": "value", "ref": NORTH}, {NORTH}, id="member"),
+        pytest.param({"state": "set", "refs": [NORTH, SOUTH]}, {NORTH, SOUTH}, id="members"),
+        pytest.param({"state": "value", "ref": PLAIN}, {PLAIN}, id="plain"),
+    ],
+)
+def test_a_pin_reads_under_the_member_provenances_it_names(pin, scope):
+    identity = {"facets": {"provenance": pin}}
+
+    assert provenance_pin(identity, code_index=ledger_index()) == scope

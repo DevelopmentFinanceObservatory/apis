@@ -540,3 +540,18 @@ def test_rows_of_a_source_the_catalogue_does_not_document_are_served_and_logged(
 
     assert max(_years(result)) == "2025"
     assert [r.args for r in caplog.records if r.name == held_back_module.__name__] == [(source,)]
+
+
+@pytest.mark.unbound_release
+def test_a_judgement_with_no_release_bound_refuses_to_read_a_source_as_a_plain_table() -> None:
+    """A source's partial marks are its dataset members', which only the bound release's code
+    index names, so a judgement with none bound raises, as every member-map reader does."""
+    from graph_release.context import ReleaseNotBound
+
+    with (
+        bound_catalogue(documenting({_CRS: dev_provenance_nodes()[_CRS]})),
+        pytest.raises(ReleaseNotBound),
+    ):
+        held_back_module.judge(
+            source=_CRS, method=None, period="2025", catalogue=catalogue_context.current_catalogue()
+        )

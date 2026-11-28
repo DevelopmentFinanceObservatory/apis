@@ -536,7 +536,7 @@ def test_an_ids_identity_elects_its_listed_members_without_walking_the_graph(mon
         measurement_denominator=None,
         observation_properties=("financingRecipient",),
         constraint_properties={"financialFlowType": "ServicingPayment", "guaranteeStatus": _PPG},
-        provenances=("provenance/WorldBankInternationalDebtStatistics",),
+        datasets=("provenance/WorldBankInternationalDebtStatistics",),
     )
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
     graph = _graph({})

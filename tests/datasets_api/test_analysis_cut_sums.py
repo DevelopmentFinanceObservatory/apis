@@ -119,7 +119,7 @@ def _code_index() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("provider", "recipient"),
                 constraint_properties={"testAxis": code},
-                provenances=(_PROVENANCE,),
+                datasets=(_PROVENANCE,),
             )
             for member, code in _MEMBERS.items()
         ),

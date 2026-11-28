@@ -860,7 +860,7 @@ def fixture_populations(index: CodeIndex) -> Iterator[Population]:
                 rows=tuple(
                     row(found.dcid, found.constraint_properties, found.observation_properties)
                     for found in family.rows
-                    if dataset in found.provenances
+                    if dataset in found.datasets
                 ),
                 readings=readings,
             )
@@ -905,7 +905,7 @@ def _index(name: str, populations: Sequence[Population]) -> CodeIndex:
                 measurement_denominator=five_tuple.measurement_denominator,
                 observation_properties=() if found.roles == (SUBJECT,) else found.roles,
                 constraint_properties=dict(found.constraints),
-                provenances=tuple(
+                datasets=tuple(
                     population.dataset for population in populations if found in population.rows
                 ),
             )
@@ -913,7 +913,7 @@ def _index(name: str, populations: Sequence[Population]) -> CodeIndex:
         ),
         datasets=tuple(
             DatasetDeclaration(
-                provenance=population.dataset,
+                id=population.dataset,
                 label=population.dataset,
                 description=population.dataset,
                 opt_in=False,

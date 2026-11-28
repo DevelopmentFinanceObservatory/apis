@@ -60,7 +60,7 @@ def _row(
         measurement_denominator=None,
         observation_properties=(),
         constraint_properties=constraints,
-        provenances=provenances,
+        datasets=provenances,
     )
 
 
@@ -68,7 +68,7 @@ def _dataset(
     provenance: str, *, rank: int, invariants: dict[str, str], opt_in: bool = False
 ) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=opt_in,
@@ -220,32 +220,48 @@ _BOTH = (_FIRST, _SECOND)
         (
             _document(_SHARED, basis="G", flow="F1", line=None, sector=None),
             {
-                "shared_a": ElectedDataset(provenance=_FIRST, member_provenances=_BOTH),
-                "first_b": ElectedDataset(provenance=_FIRST, member_provenances=(_FIRST,)),
+                "shared_a": ElectedDataset(
+                    provenance=_FIRST, provenances=(_FIRST,), recorded_provenances=_BOTH
+                ),
+                "first_b": ElectedDataset(
+                    provenance=_FIRST, provenances=(_FIRST,), recorded_provenances=(_FIRST,)
+                ),
             },
             set(),
         ),
         (
             _document(_SHARED, _FIRST, basis=None, flow=None, line=None, sector=None),
             {
-                "shared_a": ElectedDataset(provenance=_FIRST, member_provenances=_BOTH),
-                "first_b": ElectedDataset(provenance=_FIRST, member_provenances=(_FIRST,)),
+                "shared_a": ElectedDataset(
+                    provenance=_FIRST, provenances=(_FIRST,), recorded_provenances=_BOTH
+                ),
+                "first_b": ElectedDataset(
+                    provenance=_FIRST, provenances=(_FIRST,), recorded_provenances=(_FIRST,)
+                ),
             },
             {"basis", "flow"},
         ),
         (
             _document(_SHARED, _SECOND, basis=None, flow=None, line=None, sector=None),
             {
-                "shared_a": ElectedDataset(provenance=_SECOND, member_provenances=_BOTH),
-                "second_c": ElectedDataset(provenance=_SECOND, member_provenances=(_SECOND,)),
+                "shared_a": ElectedDataset(
+                    provenance=_SECOND, provenances=(_SECOND,), recorded_provenances=_BOTH
+                ),
+                "second_c": ElectedDataset(
+                    provenance=_SECOND, provenances=(_SECOND,), recorded_provenances=(_SECOND,)
+                ),
             },
             {"basis", "line"},
         ),
         (
             _document(_OPT_IN_ONLY, basis="G", sector=None),
             {
-                "opt_a": ElectedDataset(provenance=_OPT_IN, member_provenances=(_OPT_IN,)),
-                "opt_b": ElectedDataset(provenance=_OPT_IN, member_provenances=(_OPT_IN,)),
+                "opt_a": ElectedDataset(
+                    provenance=_OPT_IN, provenances=(_OPT_IN,), recorded_provenances=(_OPT_IN,)
+                ),
+                "opt_b": ElectedDataset(
+                    provenance=_OPT_IN, provenances=(_OPT_IN,), recorded_provenances=(_OPT_IN,)
+                ),
             },
             set(),
         ),

@@ -5,10 +5,11 @@ of, or a projected row.
 A row is judged by its source, its `measurementMethod` and its `time_period` cell:
 
 - `projected`: the `(source, measurementMethod)` pair is declared a projection pair
-  (`method_status.projection_methods`), whatever period the row holds. An estimate under an
-  undeclared pair is an actual row.
+  (`member_folds.projection_methods`, its members' declarations joined for a dataset id),
+  whatever period the row holds. An estimate under an undeclared pair is an actual row.
 - `partial`: the row reaches the period its source's import holds only part of
-  (`origin_catalogue.partial_period_of`, `partial_period.reaches`).
+  (`member_folds.partial_mark`, `partial_period.reaches`). A declared dataset's rows carry
+  its id, and they reach a period any of its member provenances marks.
 - `unknown`: the catalogue documents no such source, the row names none, or the frame grammar
   cannot read the mark or the period. Nothing says, so the row is served.
 
@@ -27,10 +28,10 @@ from datetime import date, timedelta
 from functools import cache
 from typing import Final, Literal
 
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection, partial_mark
 from materialise.partial_period import reaches, start_of
 from origin_catalogue import Catalogue, CatalogueNotBound, current_catalogue
-from origin_catalogue.catalogue import Undocumented, partial_period_of
+from origin_catalogue.catalogue import Undocumented
 
 __all__ = [
     "HELD_KINDS",
@@ -83,7 +84,7 @@ def judge(
     if source is None:
         return _UNKNOWN
     try:
-        mark = partial_period_of(catalogue, source)
+        mark = partial_mark(catalogue, source)
     except Undocumented:
         _warn_undocumented(source)
         return _UNKNOWN

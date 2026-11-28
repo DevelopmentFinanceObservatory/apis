@@ -89,8 +89,8 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
     )
 
 
-# The sort key of a row with no code: above every code string, so a code the publisher left
-# uncoded (`CodeSystemConfig.uncoded`) follows its system's coded rows.
+# The sort key of a row with no code. It sorts above every code string, so a code the publisher
+# left uncoded (`CodeSystemConfig.uncoded`) follows its system's coded rows.
 _UNCODED_KEY = "\U0010ffff"
 
 
@@ -108,7 +108,7 @@ def _datasets_by_five_tuple(
     ones, and provenance breaks a tie. A row with no provenance belongs to no dataset."""
     publishers: dict[FiveTuple, set[str]] = defaultdict(set)
     for row in statvars:
-        publishers[row_five_tuple(row)].update(row.provenances)
+        publishers[row_five_tuple(row)].update(row.datasets)
 
     def serving_order(provenance: str) -> tuple[bool, int, str]:
         declaration = datasets.get(provenance)
@@ -131,7 +131,7 @@ def partly_stated_five_tuples(
     stating: set[FiveTuple] = set()
     silent: set[FiveTuple] = set()
     for row in statvars:
-        if declared.provenance not in row.provenances:
+        if declared.provenance not in row.datasets:
             continue
         stated = row.constraint_properties.get(declared.property_dcid)
         if stated == declared.value_dcid:
@@ -205,9 +205,9 @@ def _families_by_five_tuple(
         carried: dict[str, set[str]] = defaultdict(set)
         unpublished: set[str] = set()
         for row in rows:
-            for provenance in row.provenances:
+            for provenance in row.datasets:
                 carried[provenance].update(row.constraint_properties)
-            if not row.provenances:
+            if not row.datasets:
                 unpublished.update(row.constraint_properties)
         groups: dict[frozenset[str], list[str]] = defaultdict(list)
         for provenance, properties in carried.items():
@@ -215,15 +215,14 @@ def _families_by_five_tuple(
         # Rows no dataset publishes join the one family whose properties hold theirs.
         holding = [properties for properties in groups if unpublished <= properties]
         home = holding[0] if len(holding) == 1 else frozenset(unpublished)
-        if any(not row.provenances for row in rows):
+        if any(not row.datasets for row in rows):
             groups.setdefault(home, [])
         built: list[IndexFamily] = []
         for properties, provenances in groups.items():
             members = tuple(
                 row
                 for row in rows
-                if set(row.provenances) & set(provenances)
-                or (not row.provenances and properties == home)
+                if set(row.datasets) & set(provenances) or (not row.datasets and properties == home)
             )
             built.append(
                 IndexFamily(
@@ -252,7 +251,7 @@ def _dataset_pins(
     rows_by_key: dict[tuple[str, FiveTuple], list[StatVarRow]] = defaultdict(list)
     for row in statvars:
         five_tuple = row_five_tuple(row)
-        for provenance in row.provenances:
+        for provenance in row.datasets:
             rows_by_key[provenance, five_tuple].append(row)
     pins: dict[tuple[str, FiveTuple], dict[str, str]] = {}
     for key, rows in rows_by_key.items():
@@ -427,9 +426,11 @@ class CodeIndex:
         "_codes_by_tokens",
         "_codes_by_word",
         "_composites",
+        "_dataset_by_provenance",
         "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
+        "_provenances_by_dataset",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
         "_whole_sets_by_phrase",
@@ -475,6 +476,7 @@ class CodeIndex:
         codes: Iterable[CodeRow],
         statvars: Iterable[StatVarRow],
         datasets: Iterable[DatasetDeclaration] = (),
+        dataset_members: Mapping[str, Sequence[str]] | None = None,
         party_types: Mapping[str, PartyKind | None] | None = None,
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
@@ -536,10 +538,6 @@ class CodeIndex:
         """The StatVars each publisher's series code names under each provenance holding it
         (`SourceCodeRow`). The export reads them from the `sourceIndicatorCode` arcs of
         `listed_statvars`."""
-        self.source_code_provenances: frozenset[str] = frozenset(
-            row.provenance for row in self.source_codes
-        )
-        """The provenances under which this index holds a series code."""
         self.value_parents: dict[str, str] = dict(value_parents or {})
         """The `specializationOf` parent of each constraint value a listed StatVar holds, for
         the values with one (`IDSDebtorTypeGG` to `IDSDebtorTypePS`)."""
@@ -547,7 +545,20 @@ class CodeIndex:
         self.declarations: dict[str, CodeSystemDeclaration] = {
             d.code_system: d for d in declarations
         }
-        self.datasets: dict[str, DatasetDeclaration] = {d.provenance: d for d in datasets}
+        self.datasets: dict[str, DatasetDeclaration] = {d.id: d for d in datasets}
+        members = dataset_members or {}
+        self._provenances_by_dataset: dict[str, tuple[str, ...]] = {
+            dataset: tuple(sorted(members.get(dataset, (dataset,)))) for dataset in self.datasets
+        }
+        self._dataset_by_provenance: dict[str, str] = {}
+        for dataset, provenances in self._provenances_by_dataset.items():
+            for provenance in provenances:
+                holder = self._dataset_by_provenance.setdefault(provenance, dataset)
+                if holder != dataset:
+                    raise DuplicateDcid(
+                        f"provenance {provenance!r} is a member of datasets {holder!r} and "
+                        f"{dataset!r}"
+                    )
         self.party_types: dict[str, PartyKind | None] = dict(party_types or {})
         """The kind each graph type gives a party (`code_index.types.party_kind`), for every
         type a party of a declared dataset carries. A type mapped to `None` gives no kind of
@@ -634,14 +645,14 @@ class CodeIndex:
             if row.dcid in statvars_by_dcid:
                 raise DuplicateDcid(f"StatVar dcid {row.dcid!r} appears more than once")
             statvars_by_dcid[row.dcid] = row
-            for provenance in row.provenances:
+            for provenance in row.datasets:
                 variables_by_provenance[provenance].append(row.dcid)
         self.variables_by_provenance: dict[str, tuple[str, ...]] = {
             provenance: tuple(sorted(dcids))
             for provenance, dcids in sorted(variables_by_provenance.items())
         }
         """The dcids of the StatVars, `statvars` and `listed_statvars` alike, whose
-        `StatVarRow.provenances` name each provenance, sorted. A provenance no row names is
+        `StatVarRow.datasets` name each provenance, sorted. A provenance no row names is
         absent."""
         for row in self.listed_statvars:
             listed_by_five_tuple[row_five_tuple(row)].append(row)
@@ -710,19 +721,31 @@ class CodeIndex:
         self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
         self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
 
-        members_by_source_code: dict[str, dict[str, tuple[str, ...]]] = defaultdict(dict)
-        source_codes_by_dcid: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        # A row's provenance reads as its declared dataset (`dataset_of`), so two members of
+        # one dataset holding a code are one holder and every source-code read names the
+        # dataset id the rows and facets of an answer carry.
+        members_by_source_code: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
+        source_codes_by_dcid: dict[str, set[tuple[str, str]]] = defaultdict(set)
         for row in self.source_codes:
-            members_by_source_code[row.code][row.provenance] = row.dcids
+            dataset = self.dataset_of(row.provenance)
+            members_by_source_code[row.code][dataset].update(row.dcids)
             for dcid in row.dcids:
-                source_codes_by_dcid[dcid].append((row.provenance, row.code))
+                source_codes_by_dcid[dcid].add((dataset, row.code))
         self._members_by_source_code = {
-            code: MappingProxyType(dict(sorted(members.items())))
+            code: MappingProxyType(
+                {dataset: tuple(sorted(dcids)) for dataset, dcids in sorted(members.items())}
+            )
             for code, members in members_by_source_code.items()
         }
         self._source_codes_by_dcid = {
             dcid: tuple(sorted(pairs)) for dcid, pairs in source_codes_by_dcid.items()
         }
+        self.source_code_provenances: frozenset[str] = frozenset(
+            dataset for members in self._members_by_source_code.values() for dataset in members
+        )
+        """The datasets (`dataset_of`) under which this index holds a series code."""
 
     # --- Lookup ---
 
@@ -769,6 +792,17 @@ class CodeIndex:
         ]
         return fewest[0] if len(fewest) == 1 else None
 
+    def dataset_of(self, provenance: str) -> str:
+        """The id of the declared dataset `provenance` is a member of, or `provenance` itself
+        when no declared dataset holds it. A plain table is its own sole member. A Dataset
+        node's members are the provenances that are part of it (`provenances_of`)."""
+        return self._dataset_by_provenance.get(provenance, provenance)
+
+    def provenances_of(self, dataset: str) -> tuple[str, ...]:
+        """The member provenances of the declared dataset `dataset`, sorted, or `(dataset,)`
+        when no declared dataset has that id."""
+        return self._provenances_by_dataset.get(dataset, (dataset,))
+
     def code_by_dcid(self, dcid: str) -> CodeRow | None:
         """The code row for `dcid`, or `None` if this index holds no such
         row."""
@@ -807,13 +841,13 @@ class CodeIndex:
         return self._statvars_by_dcid.get(dcid)
 
     def statvar_provenances(self, dcids: Iterable[str]) -> frozenset[str]:
-        """The provenances that publish the StatVars `dcids` (`StatVarRow.provenances`), the
+        """The provenances that publish the StatVars `dcids` (`StatVarRow.datasets`), the
         datasets a reader of them serves. A StatVar this index does not list adds none."""
         return frozenset(
             provenance
             for dcid in dcids
             if (row := self.statvar_by_dcid(dcid)) is not None
-            for provenance in row.provenances
+            for provenance in row.datasets
         )
 
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
@@ -907,30 +941,33 @@ class CodeIndex:
     # --- Source codes ---
 
     def source_code_members(self, code: str) -> Mapping[str, tuple[str, ...]]:
-        """The StatVars the series code `code` names, by the provenance holding it, each
-        sorted, and provenances in order. `code` compares upper-cased. Empty when no
-        provenance holds the code."""
+        """The StatVars the series code `code` names, by the dataset holding it (`dataset_of`
+        of each provenance holding it, so a declared dataset's members holding it are one
+        holder), each sorted, and datasets in order. `code` compares upper-cased. Empty when
+        no provenance holds the code."""
         return self._members_by_source_code.get(code.upper(), MappingProxyType({}))
 
     def source_codes_of(self, dcid: str) -> tuple[tuple[str, str], ...]:
-        """The `(provenance, code)` pairs naming the StatVar `dcid`, sorted. Empty for a
-        StatVar no code names."""
+        """The `(dataset, code)` pairs naming the StatVar `dcid`, each holder read as its
+        dataset (`dataset_of`), sorted. Empty for a StatVar no code names."""
         return self._source_codes_by_dcid.get(dcid, ())
 
     def shared_codes(self, provenance: str, code: str) -> tuple[str, ...]:
-        """The other codes `provenance` gives a StatVar the code `code` names there, sorted.
-        Such a StatVar answers either code, so it cannot stand for `code` alone. IDS gives
-        one net-flow StatVar both `DT.NFL.IMFC.CD` and `DT.NFL.MIDA.CD`. `code` compares
-        upper-cased. Empty for a code no StatVar shares, and for one `provenance` does not
-        hold."""
+        """The other codes the dataset `provenance` gives a StatVar the code `code` names
+        there, sorted, across every member of the dataset (`source_code_members`). Such a
+        StatVar answers either code, so it cannot stand for `code` alone. IDS gives one
+        net-flow StatVar both `DT.NFL.IMFC.CD` and `DT.NFL.MIDA.CD`. `code` compares
+        upper-cased. Empty for a code no StatVar shares, and for one the dataset does not
+        hold. A member provenance reads as its dataset."""
         code = code.upper()
+        dataset = self.dataset_of(provenance)
         return tuple(
             sorted(
                 {
                     other
-                    for dcid in self.source_code_members(code).get(provenance, ())
+                    for dcid in self.source_code_members(code).get(dataset, ())
                     for held_by, other in self._source_codes_by_dcid[dcid]
-                    if held_by == provenance and other != code
+                    if held_by == dataset and other != code
                 }
             )
         )
@@ -979,7 +1016,7 @@ class CodeIndex:
         """Each kind of question mapped to the provenance of its house default dataset
         (`DatasetDeclaration.house_default_for`). A kind no dataset claims is absent."""
         return {
-            case: dataset.provenance
+            case: dataset.id
             for dataset in self.datasets.values()
             for case in dataset.house_default_for
         }

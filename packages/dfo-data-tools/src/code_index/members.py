@@ -212,9 +212,17 @@ def named_dataset(index: CodeIndex, facets: Mapping[str, Mapping[str, object]]) 
     serves among those refs (`identity_family_query`, `eligible_datasets`). A ref only
     listed rows record (`CodeIndex.listed_statvars`), as IDS is, or one the index does not
     hold at all, names no dataset either: the pin scopes the reads alone, and members
-    resolve as for an identity that pins nothing."""
-    refs = frozenset(pinned_refs(facets))
+    resolve as for an identity that pins nothing. A member provenance's ref reads as its
+    dataset's (`pinned_datasets`)."""
+    refs = pinned_datasets(index, facets)
     return next(iter(refs)) if len(refs) == 1 and refs <= _held_datasets(index) else None
+
+
+def pinned_datasets(index: CodeIndex, facets: Mapping[str, Mapping[str, object]]) -> frozenset[str]:
+    """The datasets (`CodeIndex.dataset_of`) of the refs an identity's provenance facet binds
+    (`pinned_refs`). A pin of some of a dataset's members elects that dataset; the read's
+    scope admits only the members it names."""
+    return frozenset(map(index.dataset_of, pinned_refs(facets)))
 
 
 def _held_datasets(index: CodeIndex) -> frozenset[str]:
@@ -235,7 +243,7 @@ def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> F
     scopes nothing. The Datasets mint and Search both read an identity through this function, so they
     elect over the same inputs."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-    refs = frozenset(pinned_refs(facets))
+    refs = pinned_datasets(index, facets)
     datasets = refs & _held_datasets(index)
     return FamilyQuery(
         five_tuple=five_tuple_from_identity(cast("Mapping[str, object]", identity["shape"])),
@@ -274,7 +282,7 @@ class DatasetFamily:
     """The dataset elected for a query and the rows that form its family."""
 
     provenance: str | None
-    """The elected dataset's provenance, or `None` when no row survives."""
+    """The elected dataset's id, or `None` when no row survives."""
     rows: tuple[StatVarRow, ...]
     """The elected dataset's rows of the elected role class before antichain reduction, in
     the order given. They declare one role set unless the election tied (`tied`)."""
@@ -462,7 +470,7 @@ def _declared_roles(
     rows = tuple(
         row
         for row in family.rows
-        if (dataset in row.provenances if dataset is not None else not row.provenances)
+        if (dataset in row.datasets if dataset is not None else not row.datasets)
     )
     declared = frozenset(
         admitting_roles(
@@ -563,7 +571,7 @@ def elect_dataset(
     published = {
         dataset: dataset_rows
         for dataset in (eligible_datasets(index, query) if among is None else among)
-        if (dataset_rows := tuple(row for row in rows if dataset in row.provenances))
+        if (dataset_rows := tuple(row for row in rows if dataset in row.datasets))
     }
     if not published:
         return DatasetFamily(provenance=None, rows=(), role_keys=query.role_keys)
@@ -649,7 +657,7 @@ def _five_tuple_rows(index: CodeIndex) -> _FiveTupleRows:
         for row in index.statvars:
             five_tuple = row_five_tuple(row)
             rows[five_tuple].append(row)
-            for dataset in row.provenances:
+            for dataset in row.datasets:
                 carried[dataset, five_tuple].update(row.constraint_properties)
         cached = _FiveTupleRows(
             rows={five_tuple: tuple(found) for five_tuple, found in rows.items()},
@@ -722,7 +730,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
     serving = eligible_datasets(index, query)
     if len(serving) > 1:
         rows = _slot_open_rows(index, query, prop)
-        matching = [d for d in serving if any(d in row.provenances for row in rows)]
+        matching = [d for d in serving if any(d in row.datasets for row in rows)]
         facts = _rows_facts(index, query.five_tuple, rows)
         readings = absent_readings(index)
         role_keys = _serving_role_keys(
@@ -730,7 +738,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
             (
                 electing_role_keys(
                     facts,
-                    [row.dcid for row in rows if d in row.provenances],
+                    [row.dcid for row in rows if d in row.datasets],
                     role_keys=query.role_keys,
                     open_role_keys=query.open_role_keys,
                     readings=readings,
@@ -742,8 +750,7 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
             d
             for d in matching
             if any(
-                d in row.provenances and role_class_covers(_row_roles(row), role_keys)
-                for row in rows
+                d in row.datasets and role_class_covers(_row_roles(row), role_keys) for row in rows
             )
         ]
         serving = tuple(covering or matching or serving)
@@ -857,9 +864,10 @@ def eligible_among(
     order given.
 
     With no scope: those that are not `opt_in`, or the `opt_in` ones when `datasets` holds
-    no other. Under a scope, the pool is `datasets` in `scope.allowed`: its datasets that
-    are not `opt_in`, else the whole pool when the scope names a source or when `datasets`
-    holds no dataset that is not `opt_in`, else none. So excluding a table never opens an
+    no other. Under a scope, the pool is `datasets` in `scope.allowed`, which holds dataset
+    ids (`CodeIndex.dataset_of`): its datasets that are not `opt_in`, else the whole pool
+    when the scope names a source or when `datasets` holds no dataset that is not `opt_in`,
+    else none. So excluding a table never opens an
     opt-in table on a family another table publishes, and an opt-in-only family stays
     answerable under an exclusion that leaves it a publisher. A caller that holds a
     family's datasets filters them here without selecting the family again."""
@@ -1241,8 +1249,78 @@ def absent_member_reads_zero(index: CodeIndex, dataset: str | None) -> bool:
     `dataset` is the provenance of the elected dataset, and the reading is its
     `DatasetDeclaration.absent_observation`. No dataset, and a provenance no dataset
     declares, read unknown. The mint's sum and Search's `Slot.summable` both read absence
-    through this function."""
+    through this function. A dataset declaring `members_report_overlapping_accounts` reads
+    zero only in the years its member holds (`absent_reads_zero_in`), so a sum over it reads
+    a missing member year by year."""
     return dataset is not None and index.absent_observation(dataset) == "zero"
+
+
+def reports_overlapping_accounts(index: CodeIndex, dataset: str | None) -> bool:
+    """Whether `dataset` declares `DatasetDeclaration.members_report_overlapping_accounts`:
+    its members are reporting organisations whose accounts can count one flow twice. False
+    for no dataset, a composite and a provenance no dataset declares."""
+    declared = None if dataset is None else index.datasets.get(dataset)
+    return declared is not None and declared.members_report_overlapping_accounts
+
+
+def absent_reads_zero_in(
+    index: CodeIndex,
+    dataset: str | None,
+    provenance: str | None,
+    year: int | None,
+    *,
+    held_years: Callable[[str], AbstractSet[int]] | None,
+) -> bool:
+    """Returns whether an observation `dataset` carries no row for adds zero to a sum, on a
+    series member provenance `provenance` files, in `year`.
+
+    A dataset that reads absence as unknown (`absent_member_reads_zero`) reads unknown in
+    every year. One declaring `members_report_overlapping_accounts` reads zero only where
+    `year` is one of `held_years(provenance)`, the years any series of that member holds an
+    observation (`series_coverage.index.CoverageIndex.provenance_years`), and unknown for
+    any other year, a `year` of `None`, which is not known, no `provenance` and no
+    `held_years`: a member that filed nothing in a year has no account there to read a zero
+    from. Any other dataset reads zero in every year."""
+    if not absent_member_reads_zero(index, dataset):
+        return False
+    if not reports_overlapping_accounts(index, dataset):
+        return True
+    return (
+        provenance is not None
+        and year is not None
+        and held_years is not None
+        and year in held_years(provenance)
+    )
+
+
+def absence_reads_zero_over(
+    index: CodeIndex,
+    dataset: str | None,
+    *,
+    members: Iterable[str],
+    years: Iterable[int] | None,
+    held_years: Callable[[str], AbstractSet[int]] | None,
+) -> bool:
+    """Returns whether every observation `dataset` carries no row for adds zero to a sum over
+    the years `years`, whichever of `members` files the series: the reading a sum applies year
+    by year (`absent_reads_zero_in`), held over the whole window.
+
+    A dataset declaring `members_report_overlapping_accounts` reads zero over the window only
+    when each of `members` holds an observation in every one of `years` (`held_years`, the
+    `series_coverage.index.CoverageIndex.provenance_years` of each member), and unknown for no
+    `members`, no `years` and no `held_years`. Any other dataset reads as
+    `absent_member_reads_zero` does. Search's `Slot.summable` reads absence through this
+    function, so it marks a sum summable only where the Datasets collapse of the same frame
+    reads every missing row as zero (`datasets_api.groupby.ReporterCheck`)."""
+    if not absent_member_reads_zero(index, dataset):
+        return False
+    if not reports_overlapping_accounts(index, dataset):
+        return True
+    if years is None or held_years is None:
+        return False
+    window = frozenset(years)
+    held = [held_years(member) for member in members]
+    return bool(held) and all(window <= member_years for member_years in held)
 
 
 def listed_group(index: CodeIndex, query: FamilyQuery, *, member_cap: int) -> MemberGroup | None:
@@ -1318,8 +1396,10 @@ __all__ = [
     "DatasetFamily",
     "FamilyQuery",
     "SourceNotInFamily",
+    "absence_reads_zero_over",
     "absent_member_reads_zero",
     "absent_readings",
+    "absent_reads_zero_in",
     "antichain_minimal_rows",
     "bind_slot_value",
     "canonical_identity",
@@ -1351,5 +1431,6 @@ __all__ = [
     "prepare_member_views",
     "publishers",
     "query_family",
+    "reports_overlapping_accounts",
     "shared_pins",
 ]

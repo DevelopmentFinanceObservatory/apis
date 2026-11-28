@@ -25,11 +25,13 @@ from materialise.facets import (
     merge_facets,
     overlaps_window,
     rank_pool,
+    read_as_datasets,
 )
 from materialise.group_facets import declared_in_pool, elect_group, rank_group
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
+from search.engine.retrieval.elected_dataset import provenance_axis
 
 if TYPE_CHECKING:
     from materialise.graph import FacetDefaultPolicy
@@ -135,7 +137,8 @@ def scope_served(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The facet ids a mint of the answer's Spec serves when it elects `lead`, each facet
     merged across every place: its selection, the facets of `candidates` sharing `lead`'s
-    provenance, method and unit at its cadence (`materialise.facets.cadences_by_member`),
+    provenance axis value (`elected_dataset.provenance_axis`, the declared dataset's id),
+    method and unit at its cadence (`materialise.facets.cadences_by_member`),
     `lead` first, as `materialise.facets.joint_matches` admits them; then the facets
     continuing the selection's series in `window`, each past its own place's last year
     (`materialise.facets.continuation`). Several qualifying methods rank by the places each
@@ -150,15 +153,16 @@ def scope_served(
         return at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of)
 
     head = by_id[lead.facet_id]
-    axes = (head.provenance_id, head.measurement_method, head.unit)
+
+    def axes(facet: Facet) -> tuple[str | None, ...]:
+        return (provenance_axis(facet), facet.measurement_method, facet.unit)
+
     selection = [
         head,
         *(
             f
             for facet_id, f in by_id.items()
-            if facet_id != lead.facet_id
-            and serves(facet_id)
-            and (f.provenance_id, f.measurement_method, f.unit) == axes
+            if facet_id != lead.facet_id and serves(facet_id) and axes(f) == axes(head)
         ),
     ]
     continuing = continuation(
@@ -277,6 +281,7 @@ def with_declared_lifetime(
             measurement_method=meta.measurement_method,
             unit=meta.unit,
         )
+        (facet,) = read_as_datasets((facet,))
         if any(facet_axis_value(facet, axis) == p.resolved_ref for axis, p in policies.items()):
             held.append(
                 RoleFacetCandidate(
@@ -432,7 +437,8 @@ def _pair_union(candidates: Sequence[RoleBulkCandidate], *, window: RequestedWin
 
 
 def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None) -> Facet:
-    """`candidate` as the facet `rank_pool` ranks (`rank_role_candidates`)."""
+    """`candidate` as the facet `rank_pool` ranks (`rank_role_candidates`), read as a mint
+    reads it (`materialise.facets.read_as_datasets`)."""
     spans = [candidate.lifetime[sv] for sv in candidate.by_sv if sv in candidate.lifetime]
     if spans:
         obs_count = sum(span.n_obs for span in spans)
@@ -443,7 +449,7 @@ def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None
         first, last = (window.start_year, window.end_year) if window is not None else (None, None)
         obs_count = role_n_obs(candidate, first_year=first, last_year=last)
         earliest_date, latest_date, first_series_end = None, candidate.latest_date, None
-    return Facet(
+    facet = Facet(
         facet_id=candidate.facet_id,
         provenance_id=candidate.provenance_id,
         measurement_method=candidate.measurement_method,
@@ -456,6 +462,8 @@ def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None
         # Coverage's years, whatever the facet's cadence, so no evidence that it is annual.
         dates_coarsened=True,
     )
+    (read,) = read_as_datasets((facet,))
+    return read
 
 
 def role_continuation(

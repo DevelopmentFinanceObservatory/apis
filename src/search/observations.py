@@ -20,7 +20,7 @@ alone (`materialise.enrichment.read_party_kinds`), with no read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -35,6 +35,7 @@ from code_index.types import CompositeDeclaration
 from description.blocks import documentation_link
 from materialise.bundle_sources import composite_bundle_label
 from materialise.enrichment import read_party_kinds
+from materialise.member_folds import dataset_origin
 from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from materialise.roles import axis_for_role
 from materialise.series_conversion import SeriesConversion, SeriesKey
@@ -137,15 +138,47 @@ def _source_and_origin(row: ProvenanceRow) -> tuple[SourceRef, DataCommonsRef]:
     )
 
 
+def _dataset_citation(
+    dcid: str, labels: Mapping[str, str]
+) -> tuple[str | None, SourceRef | None, DataCommonsRef | None] | None:
+    """The name, source and Data Commons of `dcid` when it is a declared dataset with member
+    provenances (`CodeIndex.provenances_of` differs from `(dcid,)`), else None. The name is
+    `labels`', else the declared label. The source and Data Commons are those every member's
+    catalogue row shares (`materialise.member_folds.dataset_origin`, which the mint's
+    citation reads too), and None where the members name different ones or none has a row."""
+    index = get_index()
+    members = index.provenances_of(dcid)
+    if members == (dcid,):
+        return None
+    declared = index.datasets.get(dcid)
+    label = labels.get(dcid) or (declared.label if declared is not None else None)
+    shared = dataset_origin(dcid, catalogue=current_catalogue())
+    if shared is None:
+        return label, None, None
+    source, origin = shared
+    return (
+        label,
+        SourceRef(ref=source.ref, label=source.label),
+        DataCommonsRef(id=origin.id, label=origin.label),
+    )
+
+
 def provenance_ref(dcid: str, labels: Mapping[str, str]) -> ProvenanceRef | None:
     """The provenance ref for `dcid`, with the catalogue row's name, source and Data Commons.
-    A provenance the catalogue does not list takes its name from `labels`, which holds what
-    `materialise.provenance_doc.provenance_names` gives it, and has no source or Data Commons.
-    `None` when neither names it."""
+    A declared dataset with member provenances, which an answer cites by its id, takes the
+    name, source and Data Commons `_dataset_citation` gives it, whatever its member count. Any
+    other provenance the catalogue does not list takes its name from `labels`, which holds
+    what `materialise.provenance_doc.provenance_names` gives it, and has no source or Data
+    Commons. `None` when neither names it."""
     row = current_catalogue().provenance(dcid)
     if row is not None:
         source, origin = _source_and_origin(row)
         return ProvenanceRef(ref=dcid, label=row.name, source=source, data_commons=origin)
+    if (dataset := _dataset_citation(dcid, labels)) is not None:
+        label, source, origin = dataset
+        if label is None:
+            return None
+        return ProvenanceRef(ref=dcid, label=label, source=source, data_commons=origin)
     label = labels.get(dcid)
     return None if label is None else ProvenanceRef(ref=dcid, label=label)
 
@@ -159,20 +192,31 @@ def provenance_refs(dcids: Sequence[str], labels: Mapping[str, str]) -> list[Pro
 
 def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef:
     """A series' provenance-axis facet ref for `dcid`, with the catalogue row's members and the
-    route of its document. A provenance the catalogue does not list takes its name from
-    `labels`, if any. A declared composite (`code_index.composites`), which neither the graph
-    nor the catalogue holds, takes its bundle name (`composite_facet_ref`) and no document route."""
+    route of its document. A declared dataset with member provenances takes the name, source
+    and Data Commons `_dataset_citation` gives it, as its `provenance_ref` does. A provenance
+    the catalogue does not list takes its name from `labels`, if any. A declared composite
+    (`code_index.composites`), which neither the graph nor the catalogue holds, takes its
+    bundle name (`composite_facet_ref`) and no document route."""
     composite = DECLARED_COMPOSITES.get(dcid)
     if composite is not None:
         return composite_facet_ref(composite, index=get_index())
     row = current_catalogue().provenance(dcid)
     documentation = documentation_link(dcid)
-    if row is None:
-        return SeriesFacetRef(ref=dcid, label=labels.get(dcid), documentation=documentation)
-    source, origin = _source_and_origin(row)
-    return SeriesFacetRef(
-        ref=dcid, label=row.name, source=source, data_commons=origin, documentation=documentation
-    )
+    if row is not None:
+        source, origin = _source_and_origin(row)
+        return SeriesFacetRef(
+            ref=dcid,
+            label=row.name,
+            source=source,
+            data_commons=origin,
+            documentation=documentation,
+        )
+    if (dataset := _dataset_citation(dcid, labels)) is not None:
+        label, source, origin = dataset
+        return SeriesFacetRef(
+            ref=dcid, label=label, source=source, data_commons=origin, documentation=documentation
+        )
+    return SeriesFacetRef(ref=dcid, label=labels.get(dcid), documentation=documentation)
 
 
 def composite_facet_ref(composite: CompositeDeclaration, *, index: CodeIndex) -> SeriesFacetRef:
@@ -450,8 +494,10 @@ class SeriesRead:
     each facet axis the series' facet declares (`provenance`, `measurementMethod`, `unit`) to
     its ref. `conversion` describes a converted series, whose facet `unit` is the native unit
     the rows converted from. `holds_estimates` is whether a point's own method is classed
-    estimated (`materialise.method_status.status_of`), as a continuation's points are, while
-    `facets` states the facet the series was elected by.
+    estimated (`materialise.member_folds.status_of`), as a continuation's points are, while
+    `facets` states the facet the series was elected by. `reporting_organisation` is the
+    member provenance that reported every point of a declared dataset's series
+    (`shared_reporter`), `None` for a plain table's.
     """
 
     points: Sequence[tuple[str, float | None]]
@@ -459,6 +505,18 @@ class SeriesRead:
     facets: Mapping[str, str] = field(default_factory=dict)
     conversion: SeriesConversion | None = None
     holds_estimates: bool = False
+    reporting_organisation: str | None = None
+
+
+def shared_reporter(cells: Iterable[object]) -> str | None:
+    """The member provenance a series' rows name in their `reporting_organisation` cells
+    (`materialise.columnar.dataset_cells`) when every row names the same one, else `None`:
+    for a plain table's rows, which name none, and for a series several members report."""
+    reporters = set(cells)
+    if len(reporters) != 1:
+        return None
+    (reporter,) = reporters
+    return reporter if isinstance(reporter, str) else None
 
 
 def facet_value_label(axis: str, label: str) -> str:
@@ -521,6 +579,11 @@ def _read_labels(
     provenance_dcids = [
         *(ref for read in reads.values() if (ref := read.facets.get("provenance")) is not None),
         *(
+            read.reporting_organisation
+            for read in reads.values()
+            if read.reporting_organisation is not None
+        ),
+        *(
             read.conversion.table_provenance_id
             for read in reads.values()
             if read.conversion is not None
@@ -571,7 +634,9 @@ def _series(
     Its axes are its StatVar's `member_constraints`, each value labelled from `labels`, else by
     its humanised dcid (`_humanize_ref`), as the StatVar's row label names it. A converted
     series reports the target currency as its unit when there is one, and no unit otherwise.
-    It holds estimates when `read` does (`ObservationSeries.holds_estimates`)."""
+    It holds estimates when `read` does (`ObservationSeries.holds_estimates`), and its
+    provenance facet names the member that reported it when `read` does
+    (`SeriesFacetRef.reporting_organisation`)."""
     sv, role_tuple = key
     constraints = member_constraints.get(sv, {})
     provenance = read.facets.get("provenance")
@@ -579,6 +644,12 @@ def _series(
         role_tuple, parties=index.parties, datasets=() if provenance is None else (provenance,)
     )
     facet_map = series_facet_map(read.facets, labels)
+    if read.reporting_organisation is not None and "provenance" in facet_map:
+        facet_map["provenance"] = facet_map["provenance"].model_copy(
+            update={
+                "reporting_organisation": provenance_facet_ref(read.reporting_organisation, labels)
+            }
+        )
     conversion = None
     if read.conversion is not None:
         if target_currency_ref is not None:

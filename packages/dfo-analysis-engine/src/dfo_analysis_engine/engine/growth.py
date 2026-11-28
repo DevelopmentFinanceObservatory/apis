@@ -60,11 +60,14 @@ from dfo_frame_grammar.grammar import (
 
 from dfo_analysis_engine.engine.columnar import (
     Groups,
+    agreed_cells,
+    attribute_column,
     distinct,
     group_rows,
     in_periods,
     keys_unique,
     repeated,
+    row_cells,
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
@@ -433,6 +436,14 @@ def run_growth(
         VALUE_COLUMN: pa.array([growth.growth_rate for growth in entity_growths], pa.float64()),
         **{column: groups.keys.column(column).take(computed) for column in entity_by},
         **facet_columns(resolved.facet_selections, count=count),
+        # A growth row reads its two endpoint rows alone, so it keeps the member they share.
+        **attribute_column(
+            agreed_cells(
+                row_cells(windowed, _indices(groups.offsets[index] for index in computed)),
+                row_cells(windowed, _indices(groups.offsets[index + 1] - 1 for index in computed)),
+                count=count,
+            )
+        ),
     }
     # A relative growth rate is a unit-less fraction, and a missing `unit`
     # column builds as nulls. `resolved.unit` still selected which input rows

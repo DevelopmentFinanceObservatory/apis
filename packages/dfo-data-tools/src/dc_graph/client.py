@@ -237,6 +237,12 @@ class Facet:
     holds: a merge across places or StatVars (`materialise.facets.merge_facets`) keeps the
     earliest of theirs, and a coverage facet its earliest row's. `None` when every series
     the facet holds ends at `latest_date` (`earliest_series_end`), as on a facet of one.
+
+    `dataset_id` is the id of the declared dataset the facet's provenance is a member of
+    (`code_index.query.CodeIndex.dataset_of`), set where a mint reads the facet
+    (`materialise.facets.read_as_datasets`), and the value the facet carries on the
+    provenance axis (`materialise.facets.facet_axis_value`). `None` on a facet as read, and
+    on a plain table's, whose provenance is its dataset.
     """
 
     obs_count: int
@@ -257,6 +263,7 @@ class Facet:
     dates_coarsened: bool = False
     annual_evidence: bool | None = None
     first_series_end: str | None = None
+    dataset_id: str | None = None
 
     @property
     def earliest_series_end(self) -> str | None:
@@ -333,9 +340,17 @@ def _log_response(response: httpx.Response) -> None:
 
 @dataclass(frozen=True)
 class ProvenanceRefresh:
-    """A provenance's `lastDataRefreshDate`, `None` if the node or the arc is absent."""
+    """A provenance's `lastDataRefreshDate`, `None` if the node or the arc is absent.
+
+    `declared_dataset` marks a declared dataset's id with member provenances, whose
+    `members_revision` is a digest of its sorted member provenances, each with its own date,
+    so a member's move or a change of membership changes it where the newest date can hold.
+    The revision is `None` when a member's date is unknown, as a refresh date is, and for a
+    plain table, whose date is its revision."""
 
     last_data_refresh_date: str | None
+    members_revision: str | None = None
+    declared_dataset: bool = False
 
 
 @dataclass(frozen=True)

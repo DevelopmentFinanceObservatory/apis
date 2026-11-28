@@ -35,6 +35,7 @@ from materialise.finish import (
 )
 from materialise.frame_build import Frame
 from materialise.generation import (
+    AbsentRule,
     SpanRead,
     _finish_preview_member,
     _flatten_bound_entities,
@@ -44,9 +45,9 @@ from materialise.generation import (
     _PreparedPreview,
     _PreviewOutcome,
     _select_member_facets,
+    absent_zero_members,
     bare_stat_var_ref,
     dispatched_provenances,
-    reads_absent_as_zero,
 )
 from materialise.graph import Facet, GraphReader
 from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
@@ -308,7 +309,7 @@ def materialise_group(
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
     progress: RowProgress | None = None,
-    absent_reads_zero: Callable[[str], bool] | None = None,
+    absent_reads_zero: AbsentRule | None = None,
 ) -> MaterialisationResult:
     """Generate and finish a group. Returns one frame, trace and content version covering every
     member.
@@ -356,11 +357,12 @@ def materialise_group(
     omitted, the call refuses `currency_unmapped` naming the unnamed entities, else
     `deflator_missing` naming each entity and year (`refuse_if_every_row_omitted`).
 
-    `absent_reads_zero` says whether a provenance reads an absent member as zero
-    (`code_index.members.absent_member_reads_zero`), the rule a sum over the frame reads. A
-    group served from one provenance it holds true for raises no warning for its members
-    holding no observation in the requested years (`finish._build_warnings`). Without it
-    every provenance reads unknown.
+    `absent_reads_zero` says whether a dataset reads an absent observation of a member
+    provenance in a year as zero (`generation.AbsentRule`,
+    `code_index.members.absent_reads_zero_in`), the rule a sum over the frame reads. A group
+    served from one dataset raises no warning for a member holding no observation in the
+    requested years that it reads as zero in each of them (`generation.absent_zero_members`,
+    `finish._build_warnings`). Without it every dataset reads unknown.
     """
     if not requests:
         raise MaterialisationUsageError("materialise_group requires at least one member")
@@ -432,7 +434,15 @@ def materialise_group(
         capability_version=capability_version,
         enrichment=enrichment,
         parties=parties,
-        absent_reads_zero=reads_absent_as_zero(outcome.selections, absent_reads_zero),
+        zero_absent_members=absent_zero_members(
+            outcome.selections,
+            absent_reads_zero,
+            member_provenances={
+                member: outcome.member_provenances.get(member, frozenset())
+                for member in outcome.out_of_window_members
+            },
+            window=outcome.applied_window,
+        ),
         dependencies=build_dependencies(
             requests,
             source_refs=served,

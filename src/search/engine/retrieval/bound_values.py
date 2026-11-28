@@ -52,7 +52,7 @@ from code_index.members import (
     FamilyQuery,
     ProvenanceScope,
     SourceNotInFamily,
-    absent_member_reads_zero,
+    absence_reads_zero_over,
     absent_readings,
     antichain_minimal_rows,
     canonical_identity,
@@ -96,6 +96,7 @@ from dfo_platform.request_deadline import bounded_deadline
 from graph_release.context import served_origin_key
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
 from origin_catalogue import current_catalogue
+from origin_catalogue.context import current_source_scope
 from origin_catalogue.families import FamilyKey
 from origin_catalogue.graph import mirrored_arcs
 from origin_catalogue.origins import UN_ID_PREFIX
@@ -869,7 +870,7 @@ def _measure_family_rows(
     matched = tuple(
         row
         for row in index.filter(constraints)
-        if not datasets.isdisjoint(row.provenances)
+        if not datasets.isdisjoint(row.datasets)
         and row.constraint_properties.keys()
         <= (own_keys if row_five_tuple(row) == query.five_tuple else sibling_keys)
         and all(
@@ -2488,15 +2489,25 @@ def apply_slot_expansions(slots: list[Slot], expansions: dict[str, Expansion]) -
     return result
 
 
-def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Slot]:
+def apply_slot_summability(
+    slots: list[Slot],
+    identity: BaseIdentity,
+    *,
+    years: Iterable[int] | None = None,
+    held_years: Callable[[str], AbstractSet[int]] | None = None,
+) -> list[Slot]:
     """Set each slot's ``summable``: whether a Datasets ``groupby`` sum over the slot
     yields one complete series for the family `identity` denotes.
 
     True for a slot whose property is a declared-summable code system
     (``code_index.types.summable_axes``, the axes the datasets door's ``groupby``
     collapses), when the dataset elected for the family (``identity_dataset``) reads an
-    absent observation as zero (``code_index.members.absent_member_reads_zero``, the
-    reading the mint's sum applies to a member with no rows). False for every other
+    absent observation as zero over the answer's `years`
+    (``code_index.members.absence_reads_zero_over``, the reading the mint's sum applies to a
+    member with no rows). A dataset declaring ``members_report_overlapping_accounts`` reads
+    zero there only when each member the bound source scope admits holds an observation in
+    every one of `years` (`held_years`, ``CoverageIndex.provenance_years``), and so reads
+    not summable with no `years` or `held_years`. False for every other
     slot: one with no property, one on a code system not declared summable, and every
     slot of a family with no elected dataset or with a dataset that declares no absence
     reading, where a member with no rows refuses the sum.
@@ -2504,9 +2515,16 @@ def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Sl
     slots list it assembles, so every served slot carries the flag.
     """
     index = get_index()
+    dataset = identity_dataset(identity)
     summable: frozenset[str] = (
         summable_axes(index.declarations)
-        if absent_member_reads_zero(index, identity_dataset(identity))
+        if absence_reads_zero_over(
+            index,
+            dataset,
+            members=_admitted_members(index, dataset),
+            years=years,
+            held_years=held_years,
+        )
         else frozenset()
     )
     return [
@@ -2515,6 +2533,19 @@ def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Sl
         )
         for slot in slots
     ]
+
+
+def _admitted_members(index: CodeIndex, dataset: str | None) -> tuple[str, ...]:
+    """The member provenances of `dataset` the bound source scope admits, every member under
+    no scope and under a scope admitting none, as a mint reads them
+    (``materialise.member_folds.admitted_members``)."""
+    if dataset is None:
+        return ()
+    members = tuple(index.provenances_of(dataset))
+    scope = current_source_scope()
+    if scope is None:
+        return members
+    return tuple(member for member in members if member in scope) or members
 
 
 def apply_declaration_version(spec: Spec, bindings: Sequence[SlotBindingDraft]) -> Spec:
@@ -2581,7 +2612,7 @@ def _published_by(
     """The rows of `rows` one of `datasets` publishes, or all of them for `None`."""
     if datasets is None:
         return rows
-    return tuple(row for row in rows if any(dataset in row.provenances for dataset in datasets))
+    return tuple(row for row in rows if any(dataset in row.datasets for dataset in datasets))
 
 
 def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:

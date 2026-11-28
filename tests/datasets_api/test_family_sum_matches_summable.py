@@ -102,7 +102,7 @@ def _index_where_the_imputed_dataset_declares_no_absence_reading() -> CodeIndex:
         statvars=index.statvars,
         datasets=tuple(
             dataclasses.replace(dataset, absent_observation="unknown")
-            if dataset.provenance == IMPUTED_PROVENANCE
+            if dataset.id == IMPUTED_PROVENANCE
             else dataset
             for dataset in index.datasets.values()
         ),
@@ -539,7 +539,7 @@ def test_a_spliced_row_with_no_stat_var_is_refused_unless_absence_reads_zero():
 
 _STRAY = _net_copy(
     "StrayNet",
-    provenances=("provenance/OECDDAC2A",),
+    datasets=("provenance/OECDDAC2A",),
     constraint_properties={
         **_net_copy("StrayNet").constraint_properties,
         "dac1AidType": "DAC1AidType1015",

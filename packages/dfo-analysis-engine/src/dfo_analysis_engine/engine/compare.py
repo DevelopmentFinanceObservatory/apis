@@ -62,11 +62,14 @@ from dfo_frame_grammar.grammar import (
 )
 
 from dfo_analysis_engine.engine.columnar import (
+    agreed_cells,
+    attribute_column,
     distinct,
     frame_from_columns,
     in_periods,
     keys_unique,
     repeated,
+    row_cells,
 )
 from dfo_analysis_engine.engine.common import (
     Exclusions,
@@ -592,6 +595,9 @@ def run_compare(
             ),
             UNIT_COLUMN: left_matched.column(UNIT_COLUMN),
             **facet_columns(output_facets, count=count),
+            **attribute_column(
+                agreed_cells(row_cells(left_matched), row_cells(right_matched), count=count)
+            ),
         },
         role_keys=(),
     )

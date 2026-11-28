@@ -59,6 +59,7 @@ from materialise.enrichment import PartySplit, party_split
 from origin_catalogue import Catalogue, bound_catalogue, pinned_reads, scoped_reads
 from search.engine.identity_edit import open_within
 from search.engine.retrieval.bound_values import served_members
+from search.engine.source_scope import read_provenances
 from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
@@ -140,7 +141,7 @@ def component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Yea
 
 
 def _component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> YearCounts:
-    with _pinned_reads(identity):
+    with _pinned_reads(identity, facts.index):
         return _counted_years(identity, facts=facts)
 
 
@@ -180,17 +181,19 @@ def donor_years(
 def _donor_years(
     identity: Mapping[str, object], *, facts: ScopeFacts
 ) -> Mapping[str, frozenset[int]]:
-    with _pinned_reads(identity):
+    with _pinned_reads(identity, facts.index):
         return _held_by_donor(identity, facts=facts)
 
 
-def _pinned_reads(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+def _pinned_reads(
+    identity: Mapping[str, object], index: CodeIndex
+) -> AbstractContextManager[object]:
     """Binds the caller's catalogue narrowed to the provenances `identity` pins, within its
     source scope (`origin_catalogue.scoped_reads`), as a plain pinned table reads under a
     part's scope. It binds nothing where `identity` pins none. A composite's component reads run under
     `origin_catalogue.pinned_reads(None)` first, so there the pins replace the part's
     scope."""
-    return scoped_reads(_pins(identity))
+    return scoped_reads(_pins(identity, index))
 
 
 def _held_by_donor(
@@ -1029,7 +1032,7 @@ def _headline(
                 identity = item.component.identity
                 key = (
                     tuple(sorted(bound_roles(identity).items())),
-                    _pins(identity),
+                    _pins(identity, facts.index),
                     window_include(identity),
                 )
                 reads.setdefault(key, set()).update(item.members)
@@ -1050,10 +1053,12 @@ def _headline(
     )
 
 
-def _pins(identity: Mapping[str, object]) -> frozenset[str] | None:
-    """The provenances `identity` pins (`code_index.members.pinned_refs`), None for none."""
+def _pins(identity: Mapping[str, object], index: CodeIndex) -> frozenset[str] | None:
+    """The provenances `identity` pins: those a read naming its pinned refs admits under
+    `index` (`code_index.members.pinned_refs`, `source_scope.read_provenances`), every member
+    provenance of a declared dataset. None for none."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets") or {})
-    return frozenset(pinned_refs(facets)) or None
+    return read_provenances(pinned_refs(facets), code_index=index) or None
 
 
 type _ReadKey = tuple[

@@ -117,6 +117,7 @@ from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 __all__ = [
     "ANCHOR_KEY_PATTERN",
     "NON_SERIES_COLUMNS",
+    "UNBOUND_COLUMNS",
     "PairingKeysUnstatedError",
     "PopulationEmptyError",
     "PopulationLevelColumnMissingError",
@@ -141,9 +142,13 @@ _ROLLING = "rolling"
 _PAIR = "pair"
 _PRIMARY_SLOT = "frame_ref"
 _SLOT_SUFFIX = "_frame_ref"
+# The columns no population binds: a filter keeps no value of them.
+UNBOUND_COLUMNS = frozenset({"time_period", "value", "status"})
 # The columns that are no part of a series: `apis`' assembler groups rows
-# into series by every other column.
-NON_SERIES_COLUMNS = frozenset({"time_period", "value", "status"})
+# into series by every other column. `reporting_organisation` names the member
+# that reported a declared dataset's row, an attribute of the row, so one
+# series can hold rows of several members; a population can still bind it.
+NON_SERIES_COLUMNS = UNBOUND_COLUMNS | {"reporting_organisation"}
 # The second frame slot of each two-sided verb. `compare`, `sum_of`, `share_of`
 # and `quotient_of` read `frame_ref` again when it is null or left out.
 _SECOND_SLOTS = {
@@ -584,7 +589,7 @@ def anchor_populations(
         for dimension, values in (selection or {}).items():
             kept.bind(dimension, values)
         spec_id = roots[root]["dataset"]["spec_id"]
-        carried = set(root_columns[root]) - NON_SERIES_COLUMNS
+        carried = set(root_columns[root]) - UNBOUND_COLUMNS
         bindings = {column: values for column, values in kept.bindings.items() if column in carried}
         for column, values in bindings.items():
             if not values:

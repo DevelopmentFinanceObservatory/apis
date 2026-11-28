@@ -64,6 +64,7 @@ import pyarrow as pa
 from dfo_frame_grammar import Frame, array_kernel, unit_cells, unit_codes
 from dfo_frame_grammar.grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -173,8 +174,19 @@ FACT_WHEN_SET = "fact_when_set"
 # pydantic model layer).
 _ENTITY_CAP = 20
 
+# The columns `grammar.derive_columns` places itself, every one but the roles. A
+# `reporting_organisation` column, the member provenance of a declared dataset's row, is an
+# attribute of the row: it names no entity, and each verb carries it as
+# `engine.columnar.shared_cells` and `engine.columnar.agreed_cells` read it.
 _FIXED_COLUMNS = frozenset(
-    {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN}
+    {
+        STAT_VAR_COLUMN,
+        TIME_PERIOD_COLUMN,
+        VALUE_COLUMN,
+        UNIT_COLUMN,
+        STATUS_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+    }
 ) | frozenset(FACET_IDENTITY_COLUMNS)
 
 
@@ -1352,7 +1364,14 @@ def cross_side_one_sided_facet_axes(
 # role-key-collision reason). `join` does reuse `available_entity_columns`
 # below to shape its refusal's retry candidates.
 _DISALLOWED_ENTITY_COLUMNS = frozenset(
-    {VALUE_COLUMN, STATUS_COLUMN, UNIT_COLUMN, STAT_VAR_COLUMN, TIME_PERIOD_COLUMN}
+    {
+        VALUE_COLUMN,
+        STATUS_COLUMN,
+        UNIT_COLUMN,
+        STAT_VAR_COLUMN,
+        TIME_PERIOD_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+    }
     | set(FACET_IDENTITY_COLUMNS)
 )
 
@@ -1373,7 +1392,7 @@ class UnknownEntityColumnError(Exception):
     `rank_by`, or similar) name a column this frame lacks the grain for --
     either the column does not appear in `frame.columns`, or it is a
     disallowed reduction/reserved column (`value`, `status`, `unit`,
-    `stat_var`, `time_period`, or a facet axis). Same shape as
+    `stat_var`, `time_period`, a facet axis, or `reporting_organisation`). Same shape as
     `dfo_analysis_engine.engine.aggregate.UnknownGroupByColumnError` -- both map to
     the `role_ambiguous` refusal.
     """

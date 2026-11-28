@@ -18,7 +18,7 @@ import heapq
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import accumulate, pairwise
 from typing import Literal, Protocol, cast
 
 import pyarrow as pa
@@ -26,7 +26,7 @@ from dfo_frame_grammar import Frame
 from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN, VALUE_COLUMN, ComposedUnit, UnitCell
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
-from dfo_analysis_engine.engine.columnar import entity_counts, group_rows
+from dfo_analysis_engine.engine.columnar import Groups, entity_counts, group_rows, shared_cells
 from dfo_analysis_engine.engine.common import (
     DATA_GAP_REASONS,
     ExclusionReason,
@@ -134,6 +134,21 @@ class SideSums:
         rows = [self.cell_rows[cell] for cell in dict.fromkeys(cells)]
         contributing = self.table.take(pa.concat_arrays(rows)) if rows else self.table.slice(0, 0)
         return pooled_parties(contributing, self.pooled_roles)
+
+    def members(self, cells: Sequence[tuple[Key, str]]) -> pa.Array | None:
+        """The `reporting_organisation` cell of each of `cells`, (key, period) cells of
+        `by_key`: the member every row its sum reads shares, null where they differ
+        (`columnar.shared_cells`). None when the side's rows carry no such column."""
+        rows = [self.cell_rows[cell] for cell in cells]
+        sizes = [len(positions) for positions in rows]
+        return shared_cells(
+            self.table,
+            Groups(
+                keys=pa.table({}),
+                indices=pa.concat_arrays(rows) if rows else pa.array([], type=pa.int64()),
+                offsets=(0, *accumulate(sizes)),
+            ),
+        )
 
 
 def sum_side(

@@ -288,7 +288,7 @@ def _wide_index(*, members: int) -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("financingProvider", "financingRecipient"),
                 constraint_properties={},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
             for i in range(members)
         ],
@@ -395,7 +395,7 @@ def _index(*, observation_properties: tuple[str, ...]) -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=observation_properties,
                 constraint_properties={},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
         ],
     )
@@ -419,7 +419,7 @@ def _index_with_purpose() -> CodeIndex:
                 measurement_denominator=None,
                 observation_properties=("financingProvider", "financingRecipient"),
                 constraint_properties={"crsPurpose": "CRSPurposeCode51010"},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             )
         ],
     )
@@ -765,7 +765,7 @@ def _two_member_index(*, first: tuple[str, ...], second: tuple[str, ...]) -> Cod
                 measurement_denominator=None,
                 observation_properties=first,
                 constraint_properties={},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             ),
             StatVarRow(
                 dcid=_SV_DECLARING,
@@ -776,7 +776,7 @@ def _two_member_index(*, first: tuple[str, ...], second: tuple[str, ...]) -> Cod
                 measurement_denominator=None,
                 observation_properties=second,
                 constraint_properties={},
-                provenances=(FIXTURE_PROVENANCE,),
+                datasets=(FIXTURE_PROVENANCE,),
             ),
         ],
     )

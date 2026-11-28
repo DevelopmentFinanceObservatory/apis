@@ -111,7 +111,7 @@ _CRS_MEMBER = (
 _IMPUTED_MEMBER = next(
     row.dcid
     for row in get_index().statvars
-    if IMPUTED_PROVENANCE in row.provenances
+    if IMPUTED_PROVENANCE in row.datasets
     and row.constraint_properties.get("crsPurpose") == "CRSPurposeCode11110"
 )
 _MEMBERS = (_CRS_MEMBER, _IMPUTED_MEMBER)
@@ -121,7 +121,7 @@ _COMMITMENTS_MEMBER = next(
     for row in get_index().statvars
     if row.population_type == "FinancialObligation"
     and row.constraint_properties.get("crsPurpose") in get_index().descendants("CRSPurposeCode110")
-    and CRS_PROVENANCE in row.provenances
+    and CRS_PROVENANCE in row.datasets
 )
 _CRS_LABEL = "OECD Creditor Reporting System (CRS)"
 # A test-only table that the second-table tests declare beside the CRS on the aid five-tuple
@@ -450,15 +450,15 @@ def _with_second_table(*, opt_in: bool) -> CodeIndex:
         declarations=tuple(packaged.declarations.values()),
         codes=packaged.codes,
         statvars=tuple(
-            dataclasses.replace(row, provenances=(*row.provenances, _SECOND))
-            if row_five_tuple(row) == aid and CRS_PROVENANCE in row.provenances
+            dataclasses.replace(row, datasets=(*row.datasets, _SECOND))
+            if row_five_tuple(row) == aid and CRS_PROVENANCE in row.datasets
             else row
             for row in packaged.statvars
         ),
         datasets=(
             *packaged.datasets.values(),
             DatasetDeclaration(
-                provenance=_SECOND,
+                id=_SECOND,
                 label=_SECOND_LABEL,
                 description=(
                     "Official development assistance by donor and recipient, as the OECD's"
@@ -623,7 +623,7 @@ _DAC2A = "provenance/OECDDAC2A"
 _DAC2A_MEMBER = next(
     row.dcid
     for row in get_index().statvars
-    if row.provenances == (_DAC2A,)
+    if row.datasets == (_DAC2A,)
     and row.population_type == "FinancialFlow"
     and row.measured_property == "amount"
     and row.measurement_denominator is None
@@ -2631,7 +2631,7 @@ def test_a_bind_call_electing_no_shape_refuses_a_term_no_offered_shape_holds(
 _BUDGET_SUPPORT_MEMBER = next(
     row.dcid
     for row in get_index().statvars
-    if IMPUTED_PROVENANCE in row.provenances
+    if IMPUTED_PROVENANCE in row.datasets
     and row.constraint_properties.get("crsPurpose") == "CRSPurposeCode51010"
 )
 
@@ -2666,7 +2666,7 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
 
 _DAC2B_PROVENANCE = "provenance/OECDDAC2B"
 _DAC2B_MEMBERS = tuple(
-    row.dcid for row in get_index().statvars if _DAC2B_PROVENANCE in row.provenances
+    row.dcid for row in get_index().statvars if _DAC2B_PROVENANCE in row.datasets
 )
 
 
@@ -2873,7 +2873,7 @@ def _dac2a_aid_type_siblings() -> list[str]:
     return [
         row.dcid
         for row in index.statvars
-        if row.provenances == (_DAC2A,)
+        if row.datasets == (_DAC2A,)
         and row_five_tuple(row) == row_five_tuple(base)
         and rest(row) == rest(base)
     ]
@@ -2956,7 +2956,7 @@ def _dac1_aid_type_siblings(*aid_types: str) -> list[str]:
     members = {
         row.constraint_properties["dac1AidType"]: row.dcid
         for row in index.statvars
-        if row.provenances == (_DAC1,)
+        if row.datasets == (_DAC1,)
         and row.measurement_denominator is None
         and row.constraint_properties.get("nettingBasis") == "Net"
         and set(row.constraint_properties) == {"dac1AidType", "financialFlowType", "nettingBasis"}

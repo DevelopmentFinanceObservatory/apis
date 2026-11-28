@@ -37,6 +37,7 @@ from dc_sdmx.errors import (
 from dc_sdmx.results import (
     ATTRIBUTE_COLUMNS,
     DIMENSION_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     VALUE_COLUMN,
     VARIABLE_COLUMN,
     SdmxAvailabilityResult,
@@ -58,6 +59,7 @@ __all__ = [
     "DATA_HEDGE_AFTER_SECONDS",
     "DEFAULT_PLANNING_LANES",
     "DIMENSION_COLUMNS",
+    "REPORTING_ORGANISATION_COLUMN",
     "VALUE_COLUMN",
     "VARIABLE_COLUMN",
     "Among",

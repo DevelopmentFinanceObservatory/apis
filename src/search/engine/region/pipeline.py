@@ -394,7 +394,7 @@ async def resolve_variable(
         # (`_phase_prune_and_rank`): its scope binds for recall, which reads it only to recall
         # in-scope families past the cut (`with_rival_families`), for each pass once its menu
         # stands (`_run_phases`), and for the withheld warning.
-        allowed = None if source_scope is None else source_scope.allowed
+        allowed = None if source_scope is None else source_scope.provenances
         lost = DegradedReads()
         try:
             with (
@@ -1084,7 +1084,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         return refused
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
-                    reads.enter_context(scoped_reads(state.scope.allowed))
+                    reads.enter_context(scoped_reads(state.scope.provenances))
                     scoped = True
         raise AssertionError("_phase_outcome is terminal")
     finally:

@@ -111,7 +111,7 @@ def _family_index() -> CodeIndex:
             measurement_denominator=None,
             observation_properties=("recipient",),
             constraint_properties=constraints,
-            provenances=("OECD_DAC2A",),
+            datasets=("OECD_DAC2A",),
         )
 
     return CodeIndex(

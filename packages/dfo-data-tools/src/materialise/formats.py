@@ -991,7 +991,7 @@ def read_frame1_document(data: bytes) -> dict[str, object]:
 
 # Every column a frame holds beside its role columns, and those of them a frame1 document written
 # before the grammar named them may lack.
-_FRAME_COLUMNS = frozenset(derive_columns(()))
+_FRAME_COLUMNS = frozenset(derive_columns((), reporting_organisation=True))
 _FRAME1_OPTIONAL_COLUMNS = frozenset({UNIT_COLUMN, "measurementMethod", STATUS_COLUMN})
 if not _FRAME1_OPTIONAL_COLUMNS <= _FRAME_COLUMNS:
     raise AssertionError("an optional frame1 column is no frame column")

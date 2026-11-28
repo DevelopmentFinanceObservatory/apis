@@ -49,7 +49,7 @@ def _statvar(dcid: str, *, purpose: str, line: str) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=_ENTITY_COLUMNS,
         constraint_properties={"crsPurpose": purpose, _UNSUMMED: line},
-        provenances=(_PROVENANCE,),
+        datasets=(_PROVENANCE,),
     )
 
 
@@ -78,7 +78,7 @@ _INDEX = CodeIndex(
     ),
     datasets=(
         DatasetDeclaration(
-            provenance=_PROVENANCE,
+            id=_PROVENANCE,
             label="Lines",
             description="A test table.",
             opt_in=False,

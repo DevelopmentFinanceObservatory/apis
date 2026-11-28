@@ -104,13 +104,13 @@ def _resubmit_education(
         [
             (row.dcid, f"f_{provenance}", "country/USA", _KEN, [2020])
             for row in rows
-            for provenance in row.provenances
+            for provenance in row.datasets
         ],
         role_names={row.dcid: _ROLE_NAMES for row in rows},
         facet_metadata={
             f"f_{provenance}": FacetMetadata(provenance_id=provenance)
             for row in rows
-            for provenance in row.provenances
+            for provenance in row.datasets
         },
     )
     return resolve_spec_resubmit(

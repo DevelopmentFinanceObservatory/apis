@@ -736,7 +736,7 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
 _DAC2A_NET_NODES = {
     row.dcid: _index_row_node(row.dcid)
     for row in _REAL_INDEX.statvars
-    if "provenance/OECDDAC2A" in row.provenances
+    if "provenance/OECDDAC2A" in row.datasets
     and row.constraint_properties.get("nettingBasis") == "Net"
 }
 

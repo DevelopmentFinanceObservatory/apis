@@ -113,7 +113,7 @@ def _commitments_shape() -> ShapeDraft:
         for row in _INDEX.statvars
         if row.population_type == _COMMITMENTS
         and row.measurement_denominator is None
-        and CRS_PROVENANCE in row.provenances
+        and CRS_PROVENANCE in row.datasets
     ]
     first = rows[0]
     rows = [
@@ -122,7 +122,7 @@ def _commitments_shape() -> ShapeDraft:
         if (row.measured_property, row.stat_type, row.measurement_qualifier)
         == (first.measured_property, first.stat_type, first.measurement_qualifier)
     ]
-    assert not any(IMPUTED_PROVENANCE in row.provenances for row in rows)
+    assert not any(IMPUTED_PROVENANCE in row.datasets for row in rows)
     return dataclasses.replace(
         _aid_family_shape(),
         pop_type_dcid=_COMMITMENTS,
@@ -484,7 +484,7 @@ def _imputed_arcs() -> dict[str, dict]:
     return {
         row.dcid: _constraint_arcs(dict(row.constraint_properties))
         for row in _INDEX.statvars
-        if IMPUTED_PROVENANCE in row.provenances
+        if IMPUTED_PROVENANCE in row.datasets
         and row.constraint_properties.get("crsPurpose") in education
     }
 
@@ -539,7 +539,7 @@ def _publisher_row(
         measurement_denominator=None,
         observation_properties=(),
         constraint_properties=constraints,
-        provenances=(provenance,),
+        datasets=(provenance,),
     )
 
 
@@ -547,7 +547,7 @@ def _publisher(
     provenance: str, *, rank: int, opt_in: bool, invariants: dict[str, str]
 ) -> DatasetDeclaration:
     return DatasetDeclaration(
-        provenance=provenance,
+        id=provenance,
         label=provenance,
         description="A test table.",
         opt_in=opt_in,
@@ -636,7 +636,7 @@ def _publisher_shape(
         row
         for row in _two_publisher_index().statvars
         if (row.population_type, row.measured_property) == five_tuple
-        and set(row.provenances) & set(datasets)
+        and set(row.datasets) & set(datasets)
     ]
     props = sorted({prop for row in rows for prop in row.constraint_properties})
     return ShapeDraft(
@@ -846,7 +846,7 @@ def test_a_listed_five_tuple_stays_where_a_listed_row_is_in_scope(scope, kept):
         pop_type_dcid="FinancialPosition",
         sv_arc_facts=None,
     )
-    assert any(_IDS in row.provenances for row in get_index().listed_statvars)
+    assert any(_IDS in row.datasets for row in get_index().listed_statvars)
 
     assert bool(_dataset_candidates([position], scope)) is kept
 

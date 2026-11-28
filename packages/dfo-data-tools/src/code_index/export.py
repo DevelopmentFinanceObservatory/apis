@@ -1119,11 +1119,7 @@ def _complete_systems(
     dataset: DatasetDeclaration, code_systems: Sequence[CodeSystemConfig]
 ) -> list[CodeSystemConfig]:
     """Return the code systems every StatVar of `dataset` declares."""
-    return [
-        config
-        for config in code_systems
-        if dataset.provenance in config.declared_by_every_statvar_of
-    ]
+    return [config for config in code_systems if dataset.id in config.declared_by_every_statvar_of]
 
 
 def _choose_spine(
@@ -1138,7 +1134,7 @@ def _choose_spine(
     if not eligible:
         raise ExportRefused(
             f"no code system in the table is declared by every StatVar of dataset "
-            f"{dataset.provenance!r} -- cannot choose an enumeration spine"
+            f"{dataset.id!r} -- cannot choose an enumeration spine"
         )
     return max(eligible, key=lambda config: len(code_rows_by_system[config.code_system]))
 
@@ -2162,7 +2158,7 @@ def _noted_word_to_dict(noted: NotedWord) -> dict:
 
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
-        "provenance": dataset.provenance,
+        "id": dataset.id,
         "label": dataset.label,
         "description": dataset.description,
         "opt_in": dataset.opt_in,
@@ -2195,6 +2191,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.ratio_base_axis is not None
             else {}
         ),
+        **(
+            {"members_report_overlapping_accounts": True}
+            if dataset.members_report_overlapping_accounts
+            else {}
+        ),
     }
 
 
@@ -2208,11 +2209,11 @@ def verify_complete_systems(
         complete_in = set(config.declared_by_every_statvar_of)
         for row in statvars:
             if (
-                complete_in.intersection(row["provenances"])
+                complete_in.intersection(row["datasets"])
                 and config.code_system not in row["constraint_properties"]
             ):
                 raise ExportRefused(
-                    f"{row['dcid']} belongs to {row['provenances']!r} and does not declare "
+                    f"{row['dcid']} belongs to {row['datasets']!r} and does not declare "
                     f"{config.code_system!r}, which is configured as declared by every StatVar "
                     f"of {sorted(complete_in)!r}"
                 )
@@ -2255,8 +2256,8 @@ def export_graph_blocks(
     values into `value_parents` (`export_value_parents`). Each of `broad_readings` is checked
     against the rows of both blocks (`_verify_broad_readings`).
 
-    StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
-    index. `export_index` completes it.
+    StatVar rows carry no `datasets`, dataset rows no `members`, and the result has no stamp,
+    so it does not load as an index. `export_index` completes it.
     """
     declarations = []
     codes = []
@@ -2300,7 +2301,7 @@ def export_graph_blocks(
     return {
         "declarations": declarations,
         "datasets": sorted(
-            (_dataset_to_dict(dataset) for dataset in datasets), key=lambda row: row["provenance"]
+            (_dataset_to_dict(dataset) for dataset in datasets), key=lambda row: row["id"]
         ),
         "codes": codes,
         "statvars": statvars,
@@ -2328,13 +2329,131 @@ def export_graph_blocks(
     }
 
 
+DATASET_MEMBER_CLAIMED_TWICE = "dataset_member_claimed_twice"
+"""`ExportRefused.code` for a provenance two declarations claim, either a declared provenance
+that is also part of a declared Dataset or a provenance part of two declared Datasets."""
+
+DATASET_WITHOUT_MEMBERS = "dataset_without_members"
+"""`ExportRefused.code` for a declared Dataset no covered provenance is part of."""
+
+DATASET_MEMBERS_SHARE_SERIES = "dataset_members_share_series"
+"""`ExportRefused.code` for a series two member provenances of one dataset both hold."""
+
+_DATASET_TYPE = "Dataset"
+_IS_PART_OF = "isPartOf"
+
+
+@dataclass(frozen=True)
+class DatasetMembers:
+    """Each declared dataset's member provenances (`members`, sorted) and the dataset each
+    covered provenance belongs to (`dataset_of`). A provenance belongs to the declared Dataset
+    it is part of, else to itself."""
+
+    members: Mapping[str, tuple[str, ...]]
+    dataset_of: Mapping[str, str]
+
+
+def resolve_dataset_members(
+    reader: ExportReader,
+    *,
+    declared: Collection[str],
+    listed: Collection[str],
+    covered: Collection[str],
+) -> DatasetMembers:
+    """The members of each of `declared`, resolved downward from the declarations.
+
+    A declared id the graph types `Dataset` owns the `covered` provenances whose `isPartOf`
+    names it. Any other declared id, each of `listed` and each covered provenance no declared
+    Dataset owns is its own sole member.
+
+    Raises `ExportRefused` with code `DATASET_MEMBER_CLAIMED_TWICE` for a covered provenance
+    two of these claim, its `rows` each the provenance followed by its claimants, sorted, and
+    with code `DATASET_WITHOUT_MEMBERS` for a declared Dataset that owns no covered provenance,
+    its `rows` each `(dataset,)`."""
+    declared_ids = sorted(set(declared))
+    typed = reader.node_arcs_many(declared_ids, properties=["typeOf"])
+    dataset_nodes = {
+        dcid
+        for dcid in declared_ids
+        if _DATASET_TYPE in ((typed.get(dcid) or {}).get("typeOf", ()))
+    }
+    provenances = sorted(set(covered))
+    parents = reader.node_arcs_many(provenances, properties=[_IS_PART_OF])
+    self_claimed = (set(declared_ids) - dataset_nodes) | set(listed)
+    claimants: dict[str, list[str]] = {}
+    for provenance in provenances:
+        owners = sorted(
+            dataset_nodes.intersection((parents.get(provenance) or {}).get(_IS_PART_OF, ()))
+        )
+        if provenance in self_claimed:
+            owners = sorted({provenance, *owners})
+        claimants[provenance] = owners
+    twice = [(provenance, *owners) for provenance, owners in claimants.items() if len(owners) > 1]
+    if twice:
+        raise ExportRefused(
+            f"provenances are claimed by more than one dataset: {_capped(twice)} (provenance, "
+            "claimants); a provenance is part of at most one declared dataset",
+            code=DATASET_MEMBER_CLAIMED_TWICE,
+            rows=twice,
+        )
+    dataset_of = {
+        provenance: owners[0] if owners else provenance for provenance, owners in claimants.items()
+    }
+    owned: dict[str, list[str]] = defaultdict(list)
+    for provenance, dataset in dataset_of.items():
+        owned[dataset].append(provenance)
+    empty = [(dataset,) for dataset in sorted(dataset_nodes) if not owned.get(dataset)]
+    if empty:
+        raise ExportRefused(
+            f"declared Datasets hold no covered provenance: {_capped(empty)}; a declared "
+            "Dataset needs a provenance with series that is part of it",
+            code=DATASET_WITHOUT_MEMBERS,
+            rows=empty,
+        )
+    members = {
+        dataset: tuple(sorted(owned[dataset])) if dataset in dataset_nodes else (dataset,)
+        for dataset in declared_ids
+    }
+    return DatasetMembers(members=members, dataset_of=dataset_of)
+
+
+def check_member_series(
+    series: Iterable[tuple[tuple[str, ...], str]], dataset_of: Mapping[str, str]
+) -> None:
+    """Raises `ExportRefused` with code `DATASET_MEMBERS_SHARE_SERIES` where two provenances of
+    one dataset (`dataset_of`) both hold a series, each of `series` a series key (its variable
+    and role entities) and a provenance holding it. Member provenances partition their
+    dataset's series, so a sum over them counts each series once and no ranking has to pick
+    one publisher's figures. The `rows` are each the dataset, the series key and the
+    provenances holding it, sorted."""
+    holders: dict[tuple[str, tuple[str, ...]], set[str]] = defaultdict(set)
+    for key, provenance in series:
+        holders[dataset_of.get(provenance, provenance), key].add(provenance)
+    shared = sorted(
+        (dataset, *key, *sorted(provenances))
+        for (dataset, key), provenances in holders.items()
+        if len(provenances) > 1
+    )
+    if shared:
+        raise ExportRefused(
+            f"member provenances of one dataset hold the same series: {_capped(shared)} "
+            "(dataset, series key, provenances); each series belongs to one member",
+            code=DATASET_MEMBERS_SHARE_SERIES,
+            rows=shared,
+        )
+
+
 @dataclass(frozen=True)
 class CoverageJoin:
     """What the export takes from the coverage it joins: each covered variable's sorted
-    provenances, and the donors and recipients of the declared and listed datasets."""
+    datasets (`provenances`, each provenance mapped to its dataset), the donors and recipients
+    of the declared and listed datasets, and each declared dataset's member provenances
+    (`members`, `resolve_dataset_members`). A declared dataset `members` does not name is its
+    own sole member."""
 
     provenances: Mapping[str, Sequence[str]]
     parties: Mapping[str, PartyPublication]
+    members: Mapping[str, Sequence[str]] = field(default_factory=dict)
 
 
 def export_index(
@@ -2366,7 +2485,8 @@ def export_index(
     """Build the index document: the graph blocks (`export_graph_blocks`), with the StatVars
     `coverage` assigns to `listed_datasets` as listed rows (`listed_dcids`), each row's
     provenances from `coverage`, every party of `coverage` with its kind, class, group and
-    whole markers (`export_parties`, read through `party_reader`), and the stamp.
+    whole markers (`export_parties`, read through `party_reader`), each dataset row's members
+    from `coverage`, and the stamp.
 
     The stamp holds only what the blocks determine and `graph_endpoint`: an empty
     `exported_at` and no `coverage_build`, which `graph_release.views` fills from the release
@@ -2397,7 +2517,9 @@ def export_index(
     )
     for block in ("statvars", "listed_statvars"):
         for row in blocks[block]:
-            row["provenances"] = sorted(coverage.provenances.get(row["dcid"], ()))
+            row["datasets"] = sorted(coverage.provenances.get(row["dcid"], ()))
+    for row in blocks["datasets"]:
+        row["members"] = sorted(coverage.members.get(row["id"], (row["id"],)))
     verify_complete_systems(blocks["statvars"], code_systems)
     blocks["parties"] = export_parties(
         party_reader,
@@ -2414,7 +2536,7 @@ def export_index(
         **stamp_counts(blocks),
         "content_hash": content_hash(blocks),
         "coverage_build": None,
-        "statvars_without_coverage": sum(not row["provenances"] for row in blocks["statvars"]),
+        "statvars_without_coverage": sum(not row["datasets"] for row in blocks["statvars"]),
     }
     return {"stamp": stamp, **blocks}
 

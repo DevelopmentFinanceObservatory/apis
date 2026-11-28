@@ -10,6 +10,11 @@ by variable, place and facet id, newest period first, one row per series under
 later stage reads them as it reads SDMX rows, and the read fails as an SDMX
 read does.
 
+A row's `provenance` cell holds its dataset's id from the read on
+(`code_index.shared.dataset_of`). A row of a declared dataset's member provenance holds the
+dataset's id and names the member in `reporting_organisation`, and a plain table's row holds
+its provenance and names none.
+
 One fetch names variables of one origin: `generation.request_batch_key` keeps
 UN variables out of chunks with the others.
 """
@@ -23,8 +28,10 @@ from typing import Final, Literal
 
 import pyarrow as pa
 
+from code_index.shared import dataset_of
 from dc_graph import Facet, GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import (
+    REPORTING_ORGANISATION_COLUMN,
     Among,
     ContainedIn,
     EntityFilter,
@@ -37,6 +44,7 @@ from dc_sdmx import (
     observation_schema,
     place_slices,
 )
+from materialise.columnar import dataset_cells
 from materialise.errors import MaterialisationUsageError
 from materialise.graph import GraphReader, UnObservationReader
 from origin_catalogue.graph import is_un_dcid
@@ -71,7 +79,8 @@ def stream_observation_batches(
     max_rows: int | None = None,
     deadline: float | None = None,
 ) -> Iterator[tuple[tuple[str, ...], Iterator[pa.RecordBatch]]]:
-    """Yields `(roles, batches)` for `variables`, as `SdmxClient.stream_data_batches` does.
+    """Yields `(roles, batches)` for `variables`, as `SdmxClient.stream_data_batches` does,
+    each row's `provenance` cell holding its dataset's id (`columnar.dataset_cells`).
 
     Variables with no UN dcid stream through `sdmx` with every argument
     passed on, `time_period` as `LATEST` or a list of exact periods. A UN read takes
@@ -94,8 +103,8 @@ def stream_observation_batches(
             roles=roles,
             max_rows=max_rows,
             deadline=deadline,
-        ) as streamed:
-            yield streamed
+        ) as (streamed_roles, batches):
+            yield streamed_roles, (dataset_cells(batch) for batch in batches)
         return
     if len(un_variables) != len(variables):
         raise MaterialisationUsageError(
@@ -318,11 +327,21 @@ def _variable_batches(
 def _variable_batch(
     variable: str, series: Sequence[tuple[str, Facet]], *, latest: bool
 ) -> pa.RecordBatch:
-    """One variable's rows, in `series` order, newest period first."""
+    """One variable's rows, in `series` order, newest period first. Each distinct provenance
+    is read as its dataset (`dataset_of`) once, and a row of a member provenance names it in
+    `reporting_organisation`, as `columnar.dataset_cells` writes an SDMX row."""
     columns: dict[str, list[str | None]] = {
         name: [] for name in observation_columns(UN_OBSERVATION_ROLES)
     }
+    datasets: dict[str, str] = {}
     for place, facet in series:
+        provenance = reporter = facet.provenance_id
+        if provenance is not None:
+            if provenance not in datasets:
+                datasets[provenance] = dataset_of(provenance)
+            provenance = datasets[provenance]
+        if reporter == provenance:
+            reporter = None
         observations = sorted(
             zip(facet.dates, facet.values, strict=True), key=lambda obs: obs[0], reverse=True
         )
@@ -332,11 +351,12 @@ def _variable_batch(
             columns["unit"].append(facet.unit)
             columns["measurementMethod"].append(facet.measurement_method)
             columns["observationPeriod"].append(facet.observation_period)
-            columns["provenance"].append(facet.provenance_id)
+            columns["provenance"].append(provenance)
             columns["TIME_PERIOD"].append(date)
             columns["OBS_VALUE"].append("" if value is None else repr(float(value)))
             columns["scalingFactor"].append(facet.scaling_factor)
             columns["facetId"].append(facet.facet_id)
+            columns[REPORTING_ORGANISATION_COLUMN].append(reporter)
     return pa.RecordBatch.from_pydict(columns, schema=observation_schema(UN_OBSERVATION_ROLES))
 
 

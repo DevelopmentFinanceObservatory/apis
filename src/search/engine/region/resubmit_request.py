@@ -9,6 +9,7 @@ from contextlib import AbstractContextManager
 
 from code_index.composites import DECLARED_COMPOSITES
 from code_index.members import pinned_refs
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import ANY_DATASET
 from dfo_platform.executor import submit_with_context
@@ -38,6 +39,7 @@ from search.engine.region.whole_totals import containing_reading
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
 from search.engine.retrieval.whole_reading import plain_whole_set, whole_groups_over_identity
+from search.engine.source_scope import read_provenances
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
@@ -173,18 +175,20 @@ def _source_dcids_from_facets_provenance(
 
 
 def pinned_provenance_scope(
-    facets: dict[str, IdentityFacetBinding] | None,
+    facets: dict[str, IdentityFacetBinding] | None, *, code_index: CodeIndex
 ) -> AbstractContextManager[object]:
-    """Bind the request's catalogue narrowed to the posted `facets.provenance` refs
-    (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
-    and a base pin serves at a place where a DFO table also holds data. Binds nothing when
+    """Bind the request's catalogue narrowed to the provenances the posted
+    `facets.provenance` refs name under `code_index` (`source_scope.read_provenances`, every
+    member provenance of a dataset's id and a member's id alone;
+    `origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence and a base pin serves at a place where a DFO table also holds data. Binds nothing when
     provenance is unbound, or binds a declared composite, whose reads are those of the
     identity its option was set on (`code_index.composites.table_identity`), which pins no
     provenance."""
     binding = (facets or {}).get("provenance")
     if isinstance(binding, IdentityBindingValue) and binding.ref in DECLARED_COMPOSITES:
         return scoped_reads(None)
-    return scoped_reads(frozenset(_source_dcids_from_facets_provenance(facets)) or None)
+    pinned = _source_dcids_from_facets_provenance(facets)
+    return scoped_reads(read_provenances(pinned, code_index=code_index) or None)
 
 
 def _accounting_slots_with_translated_provenance(
@@ -217,9 +221,11 @@ def _facet_filter_from_bindings(
 ) -> Mapping[str, FacetAxisFilter] | None:
     """Build the request's facet filter from the posted source, method, and unit bindings.
 
-    Provenance uses `source_dcids`; a `provenance` key in `identity.facets` is ignored. The
-    resubmit already reads under `pinned_provenance_scope`, so the provenance filter keeps
-    what admission kept. Each
+    Provenance admits a facet whose provenance axis value (`_facet_source_dcid`, the
+    declared dataset's id) or own member provenance is one of `source_dcids`, so a pin of
+    one member admits that member's facets alone, and a `provenance` key in
+    `identity.facets` is ignored. The resubmit already reads under
+    `pinned_provenance_scope`, so the provenance filter keeps what admission kept. Each
     other axis tests its value through `_facet_binding_admits`, the one matching rule every
     filtered election applies, so a null ref admits the facets that declare no value on the
     axis. Elected units are supplied when per-StatVar narrowing replaces the unit axis, which
@@ -230,7 +236,9 @@ def _facet_filter_from_bindings(
     if source_dcids:
         allowed_sources = frozenset(source_dcids)
         result["provenance"] = FacetAxisFilter(
-            predicate=lambda f: _facet_source_dcid(f) in allowed_sources,
+            predicate=lambda f: (
+                _facet_source_dcid(f) in allowed_sources or f.provenance_id in allowed_sources
+            ),
         )
     for axis in ("measurementMethod", "unit"):
         admits = _facet_binding_admits(

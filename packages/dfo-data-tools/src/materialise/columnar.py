@@ -11,8 +11,15 @@ import pyarrow.compute as pc
 from dfo_frame_grammar import FrameError, array_kernel, scalar_kernel
 from dfo_frame_grammar.grammar import parse_time_period
 
+from code_index.shared import dataset_of
 from dc_sdmx.errors import SdmxResponseError
-from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN, observed_value
+from dc_sdmx.results import (
+    ATTRIBUTE_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
+    VALUE_COLUMN,
+    VARIABLE_COLUMN,
+    observed_value,
+)
 from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission, RowAdmission
 from materialise.held_back import (
     Judgement,
@@ -20,8 +27,9 @@ from materialise.held_back import (
     held_back,
     judge,
     last_year_before,
+    partial_mark,
 )
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection
 from materialise.window import (
     AppliedWindow,
     Coverage,
@@ -30,7 +38,7 @@ from materialise.window import (
     latest_period,
 )
 from origin_catalogue import Catalogue
-from origin_catalogue.catalogue import Undocumented, partial_period_of
+from origin_catalogue.catalogue import Undocumented
 
 # `dc_sdmx.results.DIMENSION_COLUMNS`'s trailing entry, the wire's own SDMX
 # component name. Kept as a literal here, the same way `test_observation_
@@ -57,9 +65,17 @@ _NUMERIC_RE = r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$|^[+-]?(nan|inf|infinity)
 _EMPTY_STRING_SCALAR = pa.scalar("", type=pa.string())
 
 # The columns that vary within one series: its period and value, and the facet's own
-# method and attributes, which a continued series changes at its last served period.
+# method and attributes, which a continued series changes at its last served period. The
+# member provenance that reported a row is an attribute of the observation too: a
+# dataset's series is one series whichever member reported each of its periods.
 _NOT_SERIES_KEYS = frozenset(
-    {_TIME_PERIOD_COLUMN, VALUE_COLUMN, "measurementMethod", *ATTRIBUTE_COLUMNS}
+    {
+        _TIME_PERIOD_COLUMN,
+        VALUE_COLUMN,
+        "measurementMethod",
+        *ATTRIBUTE_COLUMNS,
+        REPORTING_ORGANISATION_COLUMN,
+    }
 )
 _FALSE_SCALAR = pa.scalar(False, type=pa.bool_())
 _TRUE_SCALAR = pa.scalar(True, type=pa.bool_())
@@ -102,6 +118,45 @@ def _map_dictionary_values(
         [map_value(value) for value in dict_array.dictionary.to_pylist()], type=result_type
     )
     return mapped_dictionary.take(dict_array.indices)
+
+
+def dataset_cells(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """`batch` with each `provenance` cell holding its dataset's id in the bound release's
+    code index (`code_index.shared.dataset_of`), and the `reporting_organisation` cell of
+    each row whose cell that rewrites holding the member provenance it held. A row of a
+    declared dataset's member provenance holds the dataset's id and names its member, and a
+    plain table's row holds its provenance and names none. Each distinct cell is mapped
+    once, and a batch with no member provenance is returned as it is, so a plain table's
+    rows keep their bytes. Every reader of a row's provenance after the read (the
+    selection, the held-back cut, the frame) reads the dataset. A batch without a
+    `reporting_organisation` column gains one, last, when it holds a member's row.
+
+    Raises:
+        graph_release.context.ReleaseNotBound: no graph release is bound."""
+    index = batch.schema.get_field_index(_PROVENANCE_COLUMN)
+    if index < 0 or batch.num_rows == 0:
+        return batch
+    column = batch.column(index)
+    distinct = cast("list[str | None]", pc.unique(column).to_pylist())
+    mapped = {value: dataset_of(value) for value in distinct if value is not None}
+    members = {value for value, dataset in mapped.items() if dataset != value}
+    if not members:
+        return batch
+    cells = _map_dictionary_values(
+        column,
+        map_value=lambda value: value if value is None else mapped[value],
+        result_type=column.type,
+    )
+    reporters = _map_dictionary_values(
+        column,
+        map_value=lambda value: value if value in members else None,
+        result_type=pa.string(),
+    )
+    batch = batch.set_column(index, batch.schema.field(index), cells)
+    reporter_index = batch.schema.get_field_index(REPORTING_ORGANISATION_COLUMN)
+    if reporter_index < 0:
+        return batch.append_column(REPORTING_ORGANISATION_COLUMN, reporters)
+    return batch.set_column(reporter_index, batch.schema.field(reporter_index), reporters)
 
 
 def distinct_combinations(
@@ -239,7 +294,9 @@ def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection])
     column (`provenance`, `measurementMethod`, or `unit`, the axis name is
     already the contract column name, see `materialise.facets.FACET_AXES`)
     equals `selection.ref`, a null cell equal to a `None` ref, or the selection's
-    `continued_by`. A national-currency selection matches every row on its axis, since the
+    `continued_by`, as `FacetSelection.admits` matches a facet. A row's `provenance` cell
+    holds its dataset's id (`dataset_cells`), as a facet's provenance axis value does. A
+    national-currency selection matches every row on its axis, since the
     probe's place admission (`admission_mask`) holds each place to its own currency. All
     given axes must agree (an AND across axes). No axes given means every row matches.
     """
@@ -507,7 +564,7 @@ def _partial_year(provenance: str, *, catalogue: Catalogue) -> int | None:
     """The calendar year `provenance`'s partial mark starts in, `None` when `catalogue` marks
     none, does not document the source, or the frame grammar cannot read the mark."""
     try:
-        mark = partial_period_of(catalogue, provenance)
+        mark = partial_mark(catalogue, provenance)
     except Undocumented:
         return None
     if mark is None:

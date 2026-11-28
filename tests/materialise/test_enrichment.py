@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 import materialise.enrichment as enrichment_module
+from code_index import CodeIndex, DatasetDeclaration, IndexStamp
 from code_index.composites import provenance_datasets
 from code_index.declarations import (
     COMPOSITES,
@@ -31,6 +32,7 @@ from materialise.enrichment import (
     party_cell,
     party_split,
     period_year,
+    pivot_party_cell,
     read_party_kinds,
     row_party_cell,
 )
@@ -424,6 +426,88 @@ def test_a_composite_s_row_reads_a_party_s_kind_over_the_composite_s_tables(prov
     )
 
     assert cell == kind
+
+
+_LEDGER = "dataset/Ledger"
+_LEDGER_NORTH = "provenance/LedgerNorth"
+
+
+def _ledger_parties() -> dict[str, PartyRow]:
+    """The parties of an index declaring `dataset/Ledger`, whose series two member provenances
+    hold, and the CRS. The trust funds are a whole total in the ledger and a party in the CRS."""
+    trust_funds = PartyRow(
+        dcid=_TRUST_FUNDS.dcid,
+        kind="party",
+        party_class="official",
+        published=((_CRS, "origin"), (_LEDGER, "origin")),
+        whole=(WholeMarker(dataset=_LEDGER, covers=("official",)),),
+        dataset_kinds=((_LEDGER, "total"),),
+    )
+    index = CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="https://fixture.example.org",
+            exported_at="2026-10-01T00:00:00Z",
+            code_counts={},
+            statvar_shape_counts={},
+            content_hash="sha256:fixture",
+        ),
+        declarations=(),
+        codes=(),
+        statvars=(),
+        datasets=(
+            DatasetDeclaration(
+                id=_LEDGER,
+                label="Ledger",
+                description="A test register filed by publisher.",
+                opt_in=False,
+                absent_observation="unknown",
+                account="provider",
+                rank=0,
+            ),
+        ),
+        dataset_members={_LEDGER: (_LEDGER_NORTH, "provenance/LedgerSouth")},
+        parties=(trust_funds,),
+    )
+    return index.parties
+
+
+@pytest.mark.parametrize(
+    ("field", "provenance", "cell"),
+    [
+        pytest.param("party_kind", _LEDGER, "total", id="kind-dataset-row"),
+        pytest.param("party_kind", _CRS, "party", id="kind-crs-row"),
+        pytest.param("party_whole", _LEDGER, "true", id="whole-dataset-row"),
+        pytest.param("party_whole", _CRS, "false", id="whole-crs-row"),
+    ],
+)
+def test_a_row_of_a_dataset_reads_a_party_s_kind_and_marker_in_the_dataset(field, provenance, cell):
+    """A row of one of the ledger's member provenances carries the ledger's id
+    (`materialise.columnar.dataset_cells`), so a long row and a pivot take the ledger's
+    kind."""
+    parties = _ledger_parties()
+
+    assert (
+        row_party_cell(
+            field,
+            _TRUST_FUNDS.dcid,
+            role="financingProvider",
+            parties=parties,
+            period="2022",
+            provenance=provenance,
+        )
+        == cell
+    )
+    if field == "party_kind":
+        assert (
+            pivot_party_cell(
+                field,
+                _TRUST_FUNDS.dcid,
+                role="financingProvider",
+                parties=parties,
+                datasets=(provenance,),
+            )
+            == cell
+        )
 
 
 def test_a_party_s_kind_and_count_read_the_role_s_axis():

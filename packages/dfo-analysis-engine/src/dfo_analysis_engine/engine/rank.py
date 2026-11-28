@@ -102,11 +102,13 @@ from dfo_analysis_engine.engine.aggregate import (
 from dfo_analysis_engine.engine.columnar import (
     GroupMembers,
     Groups,
+    attribute_column,
     distinct,
     group_members,
     group_rows,
     in_periods,
     repeated,
+    shared_cells,
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
@@ -237,6 +239,35 @@ def _writes_positions(*, per_period: bool, limit: int | None) -> bool:
     """Whether a rank's output `value` is the rank position: per period
     with no `limit`. Every other rank writes the measured value."""
     return per_period and limit is None
+
+
+def _kept_members(
+    table: pa.Table,
+    *,
+    kept: Sequence[EntityRank],
+    entity_columns: Sequence[str],
+    per_period: bool,
+) -> pa.Array | None:
+    """Each of `kept`'s `reporting_organisation` cell: the member every row of `table`, the
+    windowed rows, that its entity holds shares, or that its entity holds in its period under
+    `per_period` (`columnar.shared_cells`). None when `table` carries no such column."""
+    keys = (*entity_columns, TIME_PERIOD_COLUMN) if per_period else tuple(entity_columns)
+    groups = group_rows(table, keys)
+    cells = shared_cells(table, groups)
+    if cells is None:
+        return None
+    group_keys = (
+        zip(*(cast("list[str]", groups.keys.column(key).to_pylist()) for key in keys), strict=True)
+        if keys
+        else [()]
+    )
+    position = {key: group for group, key in enumerate(group_keys)}
+    wanted = []
+    for er in kept:
+        named = dict(er.entity_key)
+        key = tuple(named[column] for column in entity_columns)
+        wanted.append(position[(*key, er.time_period) if per_period else key])
+    return cells.take(pa.array(wanted, type=pa.int64()))
 
 
 def _within_limit(entity_ranks: Sequence[EntityRank], limit: int | None) -> tuple[EntityRank, ...]:
@@ -756,6 +787,9 @@ def run_rank(
         columns[UNIT_COLUMN] = unit_column(table, count=count)
     for position, column in enumerate(key_names):
         columns[column] = pa.array([er.entity_key[position][1] for er in kept], type=pa.string())
+    columns |= attribute_column(
+        _kept_members(table, kept=kept, entity_columns=entity_columns, per_period=per_period)
+    )
     output_frame = frame_keeping_role_types(columns, role_keys=entity_columns, source=frame)
 
     return RankResult(

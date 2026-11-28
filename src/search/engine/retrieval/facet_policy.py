@@ -19,6 +19,8 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from materialise.member_folds import dataset_policy
+
 if TYPE_CHECKING:
     from materialise.graph import FacetDefaultPolicy
     from search.engine.clients.graph import EngineGraphClient
@@ -38,7 +40,8 @@ def read_declared_policies(
     each reads (`GraphReader.default_facet_policy`), in one read
     (`EngineGraphClient.default_facet_policies`). The origin client answers a variable the
     catalogue holds from its arc rows and reads the rest in one batch, by `deadline` and the
-    request deadline bound to the context.
+    request deadline bound to the context. A provenance default naming a member provenance
+    reads as its dataset (`materialise.member_folds.dataset_policy`), as a mint reads it.
 
     Raises:
         GraphInfraError: the graph failed the read. No ranking stands in for the
@@ -47,4 +50,7 @@ def read_declared_policies(
     dcids = list(dict.fromkeys(stat_vars))
     if not dcids:
         return NO_DECLARED_POLICIES
-    return graph.default_facet_policies(dcids, deadline=deadline)
+    return {
+        stat_var: {axis: dataset_policy(axis, policy) for axis, policy in by_axis.items()}
+        for stat_var, by_axis in graph.default_facet_policies(dcids, deadline=deadline).items()
+    }

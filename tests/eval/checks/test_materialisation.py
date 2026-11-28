@@ -253,6 +253,32 @@ def test_materialisation_exact_counts_the_other_source_when_stated():
     assert _score(_exact_response(20, facets=stated), facets).verdict == FAIL
 
 
+def test_materialisation_exact_counts_a_declared_dataset_over_every_member():
+    """An answer states a declared dataset's id, and the graph serves its series under the
+    member provenances (`tests.materialise._ledger`), so the count reads each facet as its
+    dataset and sums both members."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    facets = {
+        _ETH: [
+            _facet("f-north", range(2000, 2010), provenance=NORTH),
+            _facet("f-south", range(2010, 2020), provenance=SOUTH),
+            _facet("f-wdi", range(1990, 2020)),
+        ]
+    }
+    stated = {"provenance": {"basis": "fallback", "ref": LEDGER}}
+
+    with bound_ledger_index():
+        assert _score(_exact_response(20, facets=stated), facets).verdict == PASS
+        assert _score(_exact_response(10, facets=stated), facets).verdict == FAIL
+
+
+@pytest.mark.unbound_release
+def test_materialisation_exact_with_no_release_bound_is_infra():
+    ev = _score(_exact_response(10), _TWO_SOURCES)
+    assert (ev.verdict, ev.infra) == (U, True)
+
+
 def test_materialisation_exact_counts_overlapping_dates_of_one_group_once():
     """Two facets of one group at one observation period share 2015 to 2019: the series
     holds fifteen dates, not twenty."""
@@ -409,6 +435,33 @@ def test_materialisation_exact_counts_the_estimates_continuing_a_series(
     ev = _score(resp, facets)
     assert ev.verdict == PASS, ev.detail
     assert f"observed={observed}," in ev.detail
+
+
+def test_materialisation_exact_counts_another_member_s_estimates_continuing_a_series():
+    """Kenya's reported Ledger series is held by one member to 2024 and the other member's
+    `Estimated` facet runs to 2030. Both read as the Ledger dataset, as in a mint, so the
+    estimates continue the series: 2015 to 2027 counts ten reported years and three
+    estimated ones."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    facets = {
+        _KEN: [
+            _facet("f-north", range(2000, 2025), provenance=NORTH),
+            _facet("f-south", range(2020, 2031), provenance=SOUTH, method="Estimated"),
+        ]
+    }
+    resp = _exact_response(
+        13,
+        facets={"provenance": {"basis": "fallback", "ref": LEDGER}},
+        window={"start_year": 2015, "end_year": 2027},
+        entities=("country/KEN",),
+    )
+
+    with bound_ledger_index():
+        ev = _score(resp, facets)
+
+    assert ev.verdict == PASS, ev.detail
+    assert "observed=13," in ev.detail
 
 
 _PER_SERIES = {"provenance": {"basis": "fallback", "selection": "per_series"}}
@@ -968,7 +1021,7 @@ _DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
 _DAC2A_GROSS_ODA = next(
     row.dcid
     for row in get_index().statvars
-    if row.provenances == (_DAC2A,)
+    if row.datasets == (_DAC2A,)
     and row.measured_property == "amount"
     and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"
     and row.constraint_properties.get("nettingBasis") == "Gross"

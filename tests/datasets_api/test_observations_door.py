@@ -638,6 +638,65 @@ def test_a_per_series_version_returns_every_series_labelled_and_sourced():
     assert kenya["facet"]["unit"]["ref"] == "USD"
 
 
+_NORTH = "provenance/LedgerNorth"
+_SOUTH = "provenance/LedgerSouth"
+
+
+@pytest.mark.parametrize(
+    ("reporters", "expected"),
+    [
+        pytest.param(None, {"country/KEN": None, "country/GHA": None}, id="plain-table"),
+        pytest.param(
+            (_NORTH, _NORTH, _SOUTH),
+            {"country/KEN": _NORTH, "country/GHA": _SOUTH},
+            id="one-member-a-series",
+        ),
+        pytest.param(
+            (_NORTH, _SOUTH, _SOUTH),
+            {"country/KEN": None, "country/GHA": _SOUTH},
+            id="two-members-a-series",
+        ),
+    ],
+)
+def test_a_series_names_the_member_every_point_of_it_was_reported_under(reporters, expected):
+    """A stored frame of a declared dataset names each row's member provenance in its
+    `reporting_organisation` column, and the series' provenance facet names the member that
+    reported every point of it, none when two did. A stored frame without the column, as
+    every plain table's is, reads, and its facets name no member."""
+    rows = [
+        _standard_row("Count_Person", "country/KEN", "2020", 50.0),
+        _standard_row("Count_Person", "country/KEN", "2021", 52.0),
+        _standard_row("Count_Person", "country/GHA", "2021", 30.0),
+    ]
+    columns = _COLUMNS_STANDARD
+    if reporters is not None:
+        status = columns.index("status")
+        columns = (*columns[:status], "reporting_organisation", *columns[status:])
+        rows = [
+            (*row[:status], reporter, *row[status:])
+            for row, reporter in zip(rows, reporters, strict=True)
+        ]
+    body = _body(
+        entities={"observationAbout": ["country/KEN", "country/GHA"]},
+        roles=["observationAbout"],
+        members=["Count_Person"],
+        places=2,
+        series_count=2,
+    )
+
+    response = _World(body, _frame(columns, rows)).get()
+
+    assert response.status_code == 200, response.text
+    named = {}
+    for series in response.json()["series"]:
+        (entity,) = series["entities"]
+        provenance = series["facet"]["provenance"]
+        assert provenance["ref"] == _PROV
+        reporter = provenance.get("reporting_organisation")
+        named[entity["ref"]] = None if reporter is None else reporter["ref"]
+    assert named == expected
+
+
 def test_a_scope_defaulted_version_shows_one_latest_point_per_place():
     rows = [
         _standard_row("Count_Person", "country/KEN", "2020", 50.0),
