@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from dfo_frame_grammar import (
     Frame,
     UnitCodes,
@@ -22,7 +23,12 @@ from dfo_frame_grammar import (
     scalar_kernel,
     unit_codes,
 )
-from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN, UNIT_COLUMN, VALUE_COLUMN
+from dfo_frame_grammar.grammar import (
+    REPORTING_ORGANISATION_COLUMN,
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    VALUE_COLUMN,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +176,77 @@ def unit_column(table: pa.Table, *, count: int) -> pa.ChunkedArray:
     carry its resolved unit, as `table` holds it: a ref, a converted unit, or
     null."""
     return table.column(UNIT_COLUMN).take(pa.array([0] * count, type=pa.int64()))
+
+
+def shared_cells(table: pa.Table, groups: Groups) -> pa.Array | None:
+    """Each group's `reporting_organisation` cell, the member that reported its rows: the one
+    cell every row of the group holds, and null where they hold several, a null counting as
+    one. None when `table` carries no such column, so an output built from these cells keeps
+    the shape it had before the column existed."""
+    if REPORTING_ORGANISATION_COLUMN not in table.column_names:
+        return None
+    if not groups.count:
+        return pa.array([], type=pa.string())
+    cells = table.column(REPORTING_ORGANISATION_COLUMN).combine_chunks().take(groups.indices)
+    # Every group holds a row, so its offsets rise strictly and number each sorted row's group.
+    group_of_row = array_kernel(
+        "run_end_decode",
+        pa.RunEndEncodedArray.from_arrays(
+            pa.array(groups.offsets[1:], type=pa.int64()),
+            pa.array(range(groups.count), type=pa.int64()),
+        ),
+    )
+    distinct_count = (
+        pa.table({"group": group_of_row, "cell": cells})
+        .group_by("group", use_threads=False)
+        .aggregate([("cell", "count_distinct", pc.CountOptions(mode="all"))])  # ty: ignore[invalid-argument-type]  # pyarrow-stubs
+        .sort_by("group")
+        .column("cell_count_distinct")
+        .combine_chunks()
+    )
+    first = cells.take(pa.array(groups.offsets[:-1], type=pa.int64()))
+    return array_kernel(
+        "if_else",
+        array_kernel("equal", distinct_count, pa.scalar(1, pa.int64())),
+        first,
+        pa.scalar(None, pa.string()),
+    )
+
+
+def row_cells(table: pa.Table, rows: pa.Array | None = None) -> pa.Array | None:
+    """The `reporting_organisation` cell of each of `rows`, positions in `table`, or of every
+    row of `table` when `rows` is None. None when `table` carries no such column."""
+    if REPORTING_ORGANISATION_COLUMN not in table.column_names:
+        return None
+    cells = table.column(REPORTING_ORGANISATION_COLUMN)
+    return (cells if rows is None else cells.take(rows)).combine_chunks()
+
+
+def agreed_cells(*sides: pa.Array | None, count: int) -> pa.Array | None:
+    """Each of `count` output rows' `reporting_organisation` cell where each of `sides`
+    holds one cell per row, read off the rows it combines: the cell every side holds, and
+    null where they differ or one is null. A side that is None, one whose rows carry no
+    such column, holds null on every row. None when every side is None."""
+    present = [side for side in sides if side is not None]
+    if not present:
+        return None
+    if len(present) < len(sides):
+        return repeated(None, count)
+    agreed = present[0]
+    for side in present[1:]:
+        agreed = array_kernel(
+            "if_else",
+            array_kernel("fill_null", array_kernel("equal", agreed, side), False),
+            agreed,
+            pa.scalar(None, pa.string()),
+        )
+    return agreed
+
+
+def attribute_column(cells: pa.Array | None) -> dict[str, pa.Array]:
+    """`cells` as the output's `reporting_organisation` column, or no column when `cells` is
+    None."""
+    return {} if cells is None else {REPORTING_ORGANISATION_COLUMN: cells}
 
 
 def frame_from_columns(

@@ -66,7 +66,7 @@ from dfo_frame_grammar.grammar import (
 )
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
-from dfo_analysis_engine.engine.columnar import repeated
+from dfo_analysis_engine.engine.columnar import agreed_cells, attribute_column, repeated
 from dfo_analysis_engine.engine.common import (
     Exclusions,
     FacetSelection,
@@ -494,6 +494,15 @@ def run_quotient_of(
                 )
                 for index, column in enumerate(numerator_by)
             },
+            **attribute_column(
+                agreed_cells(
+                    numerator.members(kept_cells),
+                    denominator.members(
+                        [(() if pooled else key, period) for key, period in kept_cells]
+                    ),
+                    count=count,
+                )
+            ),
         },
         role_keys=numerator_by,
         source=numerator_frame,

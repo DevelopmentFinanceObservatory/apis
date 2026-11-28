@@ -57,7 +57,7 @@ column except `unit`, this is a *declared*, schema-level check: `value` is
 numeric, `time_period` is an ordered string (`"ordered_str"`:
 `YYYY`/`YYYY-MM`/`YYYY-MM-DD`, zero-padded, comparing lexically across every
 grain), `stat_var`/every role column is a non-null plain `str`, a facet axis
-is `str | None`, and `status` is always `None`. The frame grammar pins
+and `reporting_organisation` are `str | None`, and `status` is always `None`. The frame grammar pins
 each of these domains at construction (`Frame.build`'s own normalisation),
 so the type is knowable without looking at a single cell, the same way
 `AGGREGATIONS` is a closed set checked without looking at data.
@@ -92,6 +92,7 @@ import pyarrow as pa
 from dfo_frame_grammar import Frame, array_kernel, scalar_kernel
 from dfo_frame_grammar.grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -287,7 +288,7 @@ def _declared_cell_type(column: str) -> str:
         return "NoneType"
     if column == UNIT_COLUMN:
         return "str | UnitRequest | ComposedUnit | None"
-    if column in FACET_IDENTITY_COLUMNS:
+    if column in FACET_IDENTITY_COLUMNS or column == REPORTING_ORGANISATION_COLUMN:
         return "str | None"
     if column == TIME_PERIOD_COLUMN:
         return "ordered_str"

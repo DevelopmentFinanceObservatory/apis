@@ -55,6 +55,7 @@ import pyarrow as pa
 from dfo_frame_grammar import Frame, array_kernel
 from dfo_frame_grammar.grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -63,7 +64,13 @@ from dfo_frame_grammar.grammar import (
     UnitCell,
 )
 
-from dfo_analysis_engine.engine.columnar import group_rows, keys_unique, repeated
+from dfo_analysis_engine.engine.columnar import (
+    attribute_column,
+    group_rows,
+    keys_unique,
+    repeated,
+    row_cells,
+)
 from dfo_analysis_engine.engine.common import (
     Exclusions,
     FacetSelection,
@@ -82,9 +89,17 @@ from dfo_analysis_engine.engine.common import (
 # before this engine runs, `stat_var` naming a join key would only ever match
 # rows sharing one StatVar (defeating the point of joining two different
 # StatVars together), and `time_period` is already matched implicitly by
-# every join, never optionally.
+# every join, never optionally. `reporting_organisation` names the member
+# that reported a row, an attribute each output row copies from its own side.
 _DISALLOWED_JOIN_KEY_COLUMNS = frozenset(
-    {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, STATUS_COLUMN, UNIT_COLUMN}
+    {
+        STAT_VAR_COLUMN,
+        TIME_PERIOD_COLUMN,
+        VALUE_COLUMN,
+        STATUS_COLUMN,
+        UNIT_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+    }
     | set(FACET_IDENTITY_COLUMNS)
 )
 
@@ -497,6 +512,7 @@ def run_join(
                 )
                 for axis in FACET_IDENTITY_COLUMNS
             },
+            **attribute_column(_side_members(left_table, left_rows, right_table, right_rows)),
         },
         role_keys=key_columns,
         source=left_frame,
@@ -529,4 +545,21 @@ def run_join(
         left_unmatched_entity_count=left_unmatched_entities,
         right_unmatched_entity_count=right_unmatched_entities,
         exclusions=exclusions,
+    )
+
+
+def _side_members(
+    left_table: pa.Table, left_rows: pa.Array, right_table: pa.Table, right_rows: pa.Array
+) -> pa.Array | None:
+    """The `reporting_organisation` cells of the long-format output, its left rows then its
+    right rows: each copies its own matched row's cell, since a joined row reads one row of
+    its side. A side whose rows carry no such column holds null. None when neither does."""
+    left, right = row_cells(left_table, left_rows), row_cells(right_table, right_rows)
+    if left is None and right is None:
+        return None
+    return pa.concat_arrays(
+        [
+            cells if cells is not None else repeated(None, len(rows))
+            for cells, rows in ((left, left_rows), (right, right_rows))
+        ]
     )

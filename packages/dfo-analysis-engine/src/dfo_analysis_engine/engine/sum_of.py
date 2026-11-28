@@ -47,7 +47,14 @@ from dfo_frame_grammar.grammar import (
 )
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
-from dfo_analysis_engine.engine.columnar import distinct, frame_from_columns, repeated
+from dfo_analysis_engine.engine.columnar import (
+    agreed_cells,
+    attribute_column,
+    distinct,
+    frame_from_columns,
+    repeated,
+    row_cells,
+)
 from dfo_analysis_engine.engine.common import (
     Exclusions,
     FacetSelection,
@@ -173,6 +180,9 @@ def run_sum_of(
             VALUE_COLUMN: pa.array([entry.value for entry in period_sums], type=pa.float64()),
             UNIT_COLUMN: left_matched.column(UNIT_COLUMN),
             **facet_columns(shared_facets, count=count),
+            **attribute_column(
+                agreed_cells(row_cells(left_matched), row_cells(right_matched), count=count)
+            ),
         },
         role_keys=(),
     )

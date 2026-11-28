@@ -95,7 +95,7 @@ from dfo_frame_grammar.grammar import (
     UnitCell,
 )
 
-from dfo_analysis_engine.engine.columnar import repeated
+from dfo_analysis_engine.engine.columnar import agreed_cells, attribute_column, repeated
 from dfo_analysis_engine.engine.common import (
     Exclusions,
     FacetSelection,
@@ -621,6 +621,15 @@ def run_share_of(
                 column: pa.array([ps.key[index][1] for ps in period_shares], type=pa.string())
                 for index, column in enumerate(numerator_by)
             },
+            **attribute_column(
+                agreed_cells(
+                    numerator.members(shared_cells),
+                    denominator.members(
+                        [(() if pooled else key, period) for key, period in shared_cells]
+                    ),
+                    count=len(period_shares),
+                )
+            ),
         },
         role_keys=numerator_by,
         source=numerator_frame,

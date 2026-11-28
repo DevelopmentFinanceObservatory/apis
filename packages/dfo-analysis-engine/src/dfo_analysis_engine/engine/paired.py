@@ -50,7 +50,13 @@ from dfo_frame_grammar.grammar import (
 )
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
-from dfo_analysis_engine.engine.columnar import distinct, repeated
+from dfo_analysis_engine.engine.columnar import (
+    agreed_cells,
+    attribute_column,
+    distinct,
+    repeated,
+    row_cells,
+)
 from dfo_analysis_engine.engine.common import (
     Exclusions,
     FacetSelection,
@@ -424,6 +430,9 @@ def _run_paired(
             UNIT_COLUMN: data_rows.column(UNIT_COLUMN),
             **facet_columns(facets, count=count),
             **{column: data_rows.column(column) for column in data_columns},
+            **attribute_column(
+                agreed_cells(row_cells(left.taken(kept)), row_cells(right.taken(kept)), count=count)
+            ),
         },
         role_keys=data_columns,
         source=data.frame,

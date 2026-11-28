@@ -54,6 +54,7 @@ import pyarrow as pa
 from dfo_frame_grammar import Frame, array_kernel
 from dfo_frame_grammar.grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -64,11 +65,13 @@ from dfo_frame_grammar.grammar import (
 )
 
 from dfo_analysis_engine.engine.columnar import (
+    attribute_column,
     distinct,
     entity_counts,
     group_members,
     group_rows,
     repeated,
+    shared_cells,
     unit_column,
 )
 from dfo_analysis_engine.engine.common import (
@@ -109,8 +112,17 @@ AGGREGATIONS: tuple[str, ...] = ("sum", "mean", "max", "min")
 # group_by column is string-valued" guarantee the rest of this function
 # relies on (stat_var, time_period, and every role column are always plain,
 # non-null strings by construction -- see `Frame.build`'s own normalisation).
+# `reporting_organisation` names the member that reported a row, an attribute
+# outside the grain, so it keys no group either: a group's row keeps the
+# member its rows share (`columnar.shared_cells`).
 _DISALLOWED_GROUP_BY_COLUMNS = frozenset(
-    {VALUE_COLUMN, STATUS_COLUMN, UNIT_COLUMN, *FACET_IDENTITY_COLUMNS}
+    {
+        VALUE_COLUMN,
+        STATUS_COLUMN,
+        UNIT_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+        *FACET_IDENTITY_COLUMNS,
+    }
 )
 
 
@@ -402,6 +414,7 @@ def run_aggregate(
         VALUE_COLUMN: pa.array(output_values, type=pa.float64()),
         UNIT_COLUMN: unit_column(table, count=groups.count),
         **facet_columns(resolved.facet_selections, count=groups.count),
+        **attribute_column(shared_cells(table, groups)),
     }
     # A grouped stat_var, time_period or role is the group's own key.
     for column in key_columns:
