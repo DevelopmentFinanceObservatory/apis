@@ -226,7 +226,7 @@ class TestCodes:
         assert code_system["property"] == "crsPurpose"
         assert code_system["plain_name"] == "sector"
         assert code_system["declarations"]["hierarchical"] is True
-        assert code_system["code_count"] == 289
+        assert code_system["code_count"] == 356
         assert node["links"] == {
             "codes": "/api/graph/node/CRSPurposeCodeEnum/members?relation=codes"
         }
