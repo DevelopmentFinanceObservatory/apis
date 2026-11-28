@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from code_index.types import CodeSystemDeclaration, IndexStamp
+from code_index.types import CodeSystemDeclaration, IndexStamp, StatVarRow
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
@@ -1314,7 +1314,8 @@ def test_a_version_record_links_its_artifacts_under_the_digest_they_were_rendere
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a synthetic axis absent from the fixture index."""
+    """Builds an index with a synthetic axis absent from the fixture index, which
+    `_STAT_VAR_A` carries, so a frame of it can sum over it."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",
@@ -1334,8 +1335,24 @@ def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
             )
         ],
         codes=[],
-        statvars=[],
+        statvars=[
+            StatVarRow(
+                dcid=_STAT_VAR_A,
+                population_type=None,
+                measured_property="amount",
+                stat_type=None,
+                measurement_qualifier=None,
+                measurement_denominator=None,
+                observation_properties=("recipient",),
+                constraint_properties={code_system: "SyntheticCode"},
+            )
+        ],
     )
+
+
+def _with_resolved_stat_var_a(result: MaterialisationResult) -> MaterialisationResult:
+    """`result` with `_STAT_VAR_A` in its trace's resolved StatVars."""
+    return replace(result, trace=replace(result.trace, resolved_stat_vars=({"ref": _REF_A},)))
 
 
 def test_assemble_manifest_never_reads_the_process_singleton(monkeypatch):
@@ -1345,7 +1362,7 @@ def test_assemble_manifest_never_reads_the_process_singleton(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("must not read the process singleton")),
     )
     frame = _statistics_fixture_frame()
-    result = _statistics_fixture_result(frame)
+    result = _with_resolved_stat_var_a(_statistics_fixture_result(frame))
     stored = _fixture_stored_definition(spec_id="spec_fixture", identity_digest="sha256:fixture")
 
     manifest = assemble_manifest(
@@ -1369,7 +1386,7 @@ def test_assemble_manifest_reports_the_injected_declarations_not_the_singletons(
     # `syntheticAxis` exists only in the injected index.
     assert "syntheticAxis" not in get_index().declarations
     frame = _statistics_fixture_frame()
-    result = _statistics_fixture_result(frame)
+    result = _with_resolved_stat_var_a(_statistics_fixture_result(frame))
     stored = _fixture_stored_definition(spec_id="spec_fixture", identity_digest="sha256:fixture")
 
     manifest = assemble_manifest(

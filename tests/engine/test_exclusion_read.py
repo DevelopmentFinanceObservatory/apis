@@ -360,8 +360,8 @@ def test_items_under_one_cue_share_a_stretch(query, left_out, stretches):
         pytest.param(
             "ODA to Kenya not including multilateral grants or loans",
             ("multilateral grants", "loans"),
-            set(),
-            id="loans-names-no-code",
+            {("loans", "crsTypeOfFinance")},
+            id="loans-after-the-scope",
         ),
     ],
 )

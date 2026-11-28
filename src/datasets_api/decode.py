@@ -71,10 +71,7 @@ def build_decode_plan(
     bare_refs = {_bare_dcid(ref) for ref in refs}
     statvar_by_dcid = {row.dcid: row for row in index.statvars if row.dcid in bare_refs}
 
-    code_systems: set[str] = set()
-    for statvar in statvar_by_dcid.values():
-        code_systems.update(statvar.constraint_properties.keys() & index.declarations.keys())
-    code_systems -= marked
+    code_systems = set(statvar_code_systems(refs, index=index)) - marked
     if not code_systems:
         return None
 
@@ -95,6 +92,19 @@ def build_decode_plan(
 
     requests = tuple((_STAT_VAR_COLUMN, code_system) for code_system in sorted(code_systems))
     return DecodePlan(requests=requests, lookup=lookup)
+
+
+def statvar_code_systems(refs: Iterable[str], *, index: CodeIndex) -> frozenset[str]:
+    """The declared code systems (`index.declarations`) the index rows of `refs`, bare or
+    `dcid:` StatVar refs, carry as constraint properties: the systems a frame of those
+    StatVars decodes, before a composite leaves out its marker axes."""
+    bare_refs = {_bare_dcid(ref) for ref in refs}
+    return frozenset(
+        code_system
+        for row in index.statvars
+        if row.dcid in bare_refs
+        for code_system in row.constraint_properties.keys() & index.declarations.keys()
+    )
 
 
 def _component_marker_axes(table: TableLike, *, index: CodeIndex) -> frozenset[str]:

@@ -55,6 +55,7 @@ def derive_output_options(
     capabilities: Capabilities,
     parties: Mapping[str, PartyRow],
     datasets: Collection[str],
+    code_systems: Collection[str] | None,
 ) -> OutputOptionsModel:
     """Builds `output_options` from the frame profile, the definition's `identity` and
     capabilities.
@@ -62,7 +63,10 @@ def derive_output_options(
     Summability declarations come through `capabilities`, avoiding a second deployment read.
     `long_layout_totals` names the roles whose total rows a long CSV or XLSX can move out of
     its main table (`movable_totals_roles`, the rule the render splits by), from `identity`, the
-    code index's `parties` and the provenances the definition read, `datasets`.
+    code index's `parties` and the provenances the definition read, `datasets`. `groupby` lists
+    the summable axes among `code_systems`, the code systems the frame's StatVars carry
+    (`frame_code_systems`), so a CRS frame offers no IATI transaction type; `None`, for a
+    trace that records no StatVars, lists every summable axis.
     """
     role_columns = [column.name for column in profile.columns if column.kind == "role"]
     long_layout_tokens = long_layout_written_tokens(
@@ -97,7 +101,7 @@ def derive_output_options(
             movable_totals_roles(identity, role_columns, parties=parties, datasets=datasets)
         ),
         pivots=[_pivot_option(analysis, capabilities=capabilities) for analysis in profile.pivots],
-        groupby=_groupby_options(capabilities=capabilities),
+        groupby=_groupby_options(capabilities=capabilities, code_systems=code_systems),
     )
 
 
@@ -260,8 +264,14 @@ def _pivot_format_refusal(
     return None
 
 
-def _groupby_options(*, capabilities: Capabilities) -> GroupbyOptionsModel:
+def _groupby_options(
+    *, capabilities: Capabilities, code_systems: Collection[str] | None
+) -> GroupbyOptionsModel:
     if capabilities.summability_declarations_live:
-        axes = [{"name": axis} for axis in capabilities.summable_axes]
+        axes = [
+            {"name": axis}
+            for axis in capabilities.summable_axes
+            if code_systems is None or axis in code_systems
+        ]
         return GroupbyOptionsModel(state="available", axes=axes)
     return GroupbyOptionsModel(state="unavailable", reason=_CAPABILITY_UNAVAILABLE_REASON, axes=[])

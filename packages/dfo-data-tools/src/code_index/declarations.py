@@ -48,7 +48,8 @@ class CodeSystemConfig:
     `declared_by_every_statvar_of` lists the provenances of the datasets whose every StatVar
     declares this property. CRS StatVars all declare `crsPurpose`, `crsTypeOfFinance`, and
     `crsTypeOfFlow`. Imputed multilateral StatVars all declare `crsPurpose`, `crsTypeOfFlow`, and
-    `dac2aAidType`, and none declares `crsTypeOfFinance`. DAC1 StatVars all declare `dac1AidType`
+    `dac2aAidType`, and none declares `crsTypeOfFinance`. IATI StatVars all declare the four CRS
+    systems and `iatiTransactionType`. DAC1 StatVars all declare `dac1AidType`
     and no CRS code system, and DAC2a and DAC2b StatVars all declare their own table's aid type
     (`dac2aAidType`, `dac2bAidType`) and no CRS code system. `crsCooperationModality` is
     optional for older CRS StatVars. A dataset is enumerated only through systems that list it,
@@ -94,6 +95,9 @@ _IDS = "provenance/WorldBankInternationalDebtStatistics"
 _ONE_CLIMATE_FINANCE = "provenance/ONEClimateFinance"
 _OECD_CRDF = "provenance/OECDClimateRelatedDevelopmentFinance"
 _UNFCCC_BTR = "provenance/UNFCCCBiennialTransparencyReports"
+# The graph's IATI Dataset node. Its member provenances, one per publisher, are the provenances
+# whose `isPartOf` names it (`code_index.export.resolve_dataset_members`).
+_IATI = "dataset/InternationalAidTransparencyInitiative"
 
 # Codes only one dataset carries, which the scope conventions name through these constants.
 CRS_PURPOSE_HEALTH = "CRSPurposeCode120"
@@ -142,7 +146,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS),
+        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS, _IATI),
         plain_name="sector",
         house_case="sector",
         # The CRS tags climate finance with its Rio markers, which the pipeline drops, and no
@@ -158,7 +162,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(CRS,),
+        declared_by_every_statvar_of=(CRS, _IATI),
         plain_name="instrument",
         uncoded=frozenset({_CRS_UNDEFINED_FINANCE}),
     ),
@@ -169,7 +173,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(),
+        declared_by_every_statvar_of=(_IATI,),
         plain_name="modality",
         uncoded=frozenset({_CRS_UNDEFINED_MODALITY}),
     ),
@@ -180,7 +184,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS),
+        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS, _IATI),
         plain_name="flow",
         # A grant bound under CRSTypeOfFinance100 defaults to ODA when no flow is named.
         # `when_named=("aid",)` also covers a variable phrase naming only "aid". The trigger
@@ -286,6 +290,21 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         ),
         classification_codes=False,
     ),
+    # Every IATI StatVar states the IATI transaction type its figures record: an outgoing
+    # commitment (2), a disbursement (3), an expenditure (4), a reimbursement (7), a purchase
+    # of equity (8) or a credit guarantee (10). The enum is flat, so a bound type reads its own
+    # StatVars alone. The types are distinct transactions, so a sum across them adds no
+    # amount twice: IATI counts disbursements and expenditure together as spending.
+    CodeSystemConfig(
+        code_system="iatiTransactionType",
+        enum_dcid="IATITransactionTypeEnum",
+        expected_hierarchical=False,
+        disjoint_from_children=True,
+        summable=True,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_IATI,),
+        plain_name="transaction type",
+    ),
 )
 
 
@@ -324,7 +343,13 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # answering from either reads the word and says the figure is wider than aid alone
 # (`DatasetDeclaration.noted_words`). A UNFCCC report totals what its party counts by its own
 # method, which can reach past official finance, so no one note holds and the words stay
-# unread there.
+# unread there. IATI is one graph Dataset whose member provenances are its publishers, each a
+# provider giving its own account of its transactions. Like the CRS it is a register of
+# transactions, in which no published transaction is a reported zero, so a missing row reads
+# as zero: UNFPA and UNRWA publish expenditure alone, and a sum over transaction types counts
+# their absent disbursements as nothing. Its StatVars share the CRS five-tuples but also
+# declare `iatiTransactionType`, so they form families of their own. It answers a question
+# that names it, or names a transaction type no other table offers.
 _AID_WORDS = ("aid", "oda", "official development assistance")
 
 
@@ -468,6 +493,18 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=70,
+    ),
+    DatasetDeclaration(
+        id=_IATI,
+        label="IATI",
+        description=(
+            "Development and humanitarian finance that organisations publish transaction by"
+            " transaction under the IATI Standard, by recipient, sector and transaction type."
+        ),
+        opt_in=True,
+        absent_observation="zero",
+        account="provider",
+        rank=80,
     ),
 )
 
@@ -1190,6 +1227,17 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
         "mitigation finance",
     ),
     "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
+    # The graph names each IATI transaction type with an "(IATI Transaction Type)" suffix,
+    # which the label keeps, so each type's plain name is a synonym. "commitment" and
+    # "disbursement" are left out: they name the CRS measures (`financialObligationType`,
+    # `financialFlowType`), and a code synonym of the same text ties with the measure value
+    # in every vocabulary, so "commitments to Kenya" would read a flow. Every IATI commitment
+    # is an outgoing commitment, so its five-tuple pins type 2 (`CodeIndex.dataset_pins`).
+    "IATITransactionType2": ("outgoing commitment",),
+    "IATITransactionType4": ("expenditure",),
+    "IATITransactionType7": ("reimbursement",),
+    "IATITransactionType8": ("purchase of equity",),
+    "IATITransactionType10": ("credit guarantee",),
 }
 
 # Code synonyms that name their code only on a shape of its own code system. Such a shape

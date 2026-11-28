@@ -2105,12 +2105,15 @@ def test_ppp_naming_a_crs_purpose_pins_no_price_basis():
 
 def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
     """The imputed multilateral shape the index carries, the slots its dataset pins,
-    and the constraints of one of its education rows. DAC2a's aid type 106 shares the
-    five-tuple, so the shape declares the imputed family's properties as slots: those
-    keys select its family, as they do for the shape Search builds from it."""
+    and the constraints of one of its education rows: the one opt-in dataset declaring
+    invariants. DAC2a's aid type 106 shares the five-tuple, so the shape declares the
+    imputed family's properties as slots: those keys select its family, as they do for the
+    shape Search builds from it."""
     index = get_index()
     ((dataset, five_tuple),) = (
-        key for key, pins in index.dataset_pins.items() if pins and index.datasets[key[0]].opt_in
+        key
+        for key, pins in index.dataset_pins.items()
+        if pins and index.datasets[key[0]].opt_in and index.datasets[key[0]].invariants
     )
     (family,) = (
         family for family in index.families_by_five_tuple[five_tuple] if dataset in family.datasets

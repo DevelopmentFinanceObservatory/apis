@@ -38,6 +38,7 @@ _DAC1_PROVENANCE = "provenance/OECDDAC1"
 _DAC2A_PROVENANCE = "provenance/OECDDAC2A"
 _DAC2B_PROVENANCE = "provenance/OECDDAC2B"
 _IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
+_IATI = "dataset/InternationalAidTransparencyInitiative"
 _EVIDENCE_PATH = FIXTURE_PATH.parent / "absent_observation_evidence.json"
 _EMPTY_STAMP = IndexStamp(
     graph_endpoint="https://fake.example",
@@ -602,7 +603,7 @@ def test_every_constraint_property_of_the_fixture_index_has_a_plain_name():
     assert properties - index.declarations.keys() - index.slot_plain_names.keys() == set()
 
 
-def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
+def test_the_fixture_index_declares_crs_the_dac_tables_and_the_opt_in_imputed_and_iati_datasets():
     index = load_index(INDEX_FIXTURE)
 
     assert {
@@ -614,6 +615,7 @@ def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_impute
         _DAC1_PROVENANCE: (False, "unknown", "provider", 20),
         _DAC2A_PROVENANCE: (False, "unknown", "provider", 30),
         _DAC2B_PROVENANCE: (False, "unknown", "provider", 40),
+        _IATI: (True, "zero", "provider", 80),
     }
     assert index.datasets[_DAC1_PROVENANCE].invariants == {}
     to_countries = {"destination": "country"}
@@ -628,6 +630,7 @@ def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_impute
         _DAC1_PROVENANCE: (),
         _DAC2A_PROVENANCE: (("bilateral", "amount", to_countries),),
         _DAC2B_PROVENANCE: (("bilateral", "amount", to_countries),),
+        _IATI: (),
     }
     multilateral = ("multilateral", "amount", "origin", "DACMultilaterals", to_countries)
     assert {
@@ -642,6 +645,7 @@ def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_impute
         _DAC1_PROVENANCE: (),
         _DAC2A_PROVENANCE: (multilateral,),
         _DAC2B_PROVENANCE: (multilateral,),
+        _IATI: (),
     }
     assert index.datasets[_DAC2A_PROVENANCE].invariants == {}
     assert index.datasets[_DAC2A_PROVENANCE].label == "OECD DAC2a"
@@ -655,6 +659,8 @@ def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_impute
     }
     assert index.datasets[_CRS_PROVENANCE].label == "OECD Creditor Reporting System (CRS)"
     assert index.datasets[_IMPUTED_PROVENANCE].label == "ONE Imputed Multilateral Sectors"
+    assert index.datasets[_IATI].label == "IATI"
+    assert index.datasets[_IATI].invariants == {}
     assert index.house_defaults() == {
         "sector": _CRS_PROVENANCE,
         "recipient": _DAC2A_PROVENANCE,
@@ -679,9 +685,9 @@ def test_every_fixture_declared_word_names_an_entity_kind_the_resolver_assigns()
 def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
     """Each row's constraint properties select the family that holds it
     (`CodeIndex.family_of`), and that family's datasets are the row's own. CRS, DAC1, DAC2a
-    and DAC2b share five-tuples under different codes, and DAC2a's one `attributedAmount` row
-    declares fewer properties than the imputed rows, so each such five-tuple holds one family
-    per dataset."""
+    and DAC2b share five-tuples under different codes, IATI shares the CRS five-tuples and adds
+    `iatiTransactionType`, and DAC2a's one `attributedAmount` row declares fewer properties
+    than the imputed rows, so each such five-tuple holds one family per dataset."""
     index = load_index(INDEX_FIXTURE)
 
     assert index.stamp.coverage_build
@@ -701,11 +707,13 @@ def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
     }
     assert shared == {
         ((_CRS_PROVENANCE,), (_DAC1_PROVENANCE,)),
+        ((_CRS_PROVENANCE,), (_DAC1_PROVENANCE,), (_IATI,)),
         (
             (_CRS_PROVENANCE,),
             (_DAC1_PROVENANCE,),
             (_DAC2A_PROVENANCE,),
             (_DAC2B_PROVENANCE,),
+            (_IATI,),
         ),
         ((_DAC1_PROVENANCE,), (_DAC2A_PROVENANCE,)),
         ((_IMPUTED_PROVENANCE,), (_DAC2A_PROVENANCE,)),
@@ -714,8 +722,8 @@ def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
 
 def test_the_fixture_index_pins_the_constant_slots_of_single_aid_type_five_tuples_only():
     """The imputed table holds one aid type, DAC1 publishes grant equivalents as a share of
-    GNI for total ODA alone, and DAC2a publishes its ratios for total ODA alone and one
-    attributed amount."""
+    GNI for total ODA alone, DAC2a publishes its ratios for total ODA alone and one
+    attributed amount, and IATI's commitments are all outgoing commitments (type 2)."""
     index = load_index(INDEX_FIXTURE)
 
     assert {
@@ -730,6 +738,7 @@ def test_the_fixture_index_pins_the_constant_slots_of_single_aid_type_five_tuple
         (_DAC1_PROVENANCE, "grantEquivalent"): {"dac1AidType": "DAC1AidType1010"},
         (_DAC2A_PROVENANCE, "amount"): {"dac2aAidType": "DAC2aAidType206"},
         (_DAC2A_PROVENANCE, "attributedAmount"): {"dac2aAidType": "DAC2aAidType106"},
+        (_IATI, "amount"): {"iatiTransactionType": "IATITransactionType2"},
     }
 
 

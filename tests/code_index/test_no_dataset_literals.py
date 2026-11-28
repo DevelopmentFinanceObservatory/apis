@@ -1,9 +1,10 @@
 """No module that elects or serves a dataset names one.
 
 Datasets enter Search, the Datasets API and the code index only through the index's
-declarations. A string literal equal to a declared dataset's provenance (with or without
-its `provenance/` prefix), or to a code value only one declared dataset's rows carry (with
-or without a `dcid:` prefix), would let a code path decide for one dataset by name.
+declarations. A string literal equal to a declared dataset's id or one of its member
+provenances (with or without its `provenance/` or `dataset/` prefix), or to a code value only
+one declared dataset's rows carry (with or without a `dcid:` prefix), would let a code path
+decide for one dataset by name.
 `code_index/declarations.py` is the one place dataset literals live, so the scan skips it.
 """
 
@@ -28,8 +29,11 @@ _DECLARATIONS = _ROOTS[-1] / "declarations.py"
 
 
 def _dataset_names(index: CodeIndex) -> set[str]:
-    provenances = {dataset.id for dataset in DATASETS} | set(index.datasets)
-    return provenances | {provenance.removeprefix("provenance/") for provenance in provenances}
+    """Each declared dataset's id and member provenances, each with and without its
+    `provenance/` or `dataset/` prefix."""
+    datasets = {dataset.id for dataset in DATASETS} | set(index.datasets)
+    refs = datasets | {member for dataset in datasets for member in index.provenances_of(dataset)}
+    return refs | {ref.removeprefix("provenance/").removeprefix("dataset/") for ref in refs}
 
 
 def _single_dataset_codes(index: CodeIndex) -> set[str]:

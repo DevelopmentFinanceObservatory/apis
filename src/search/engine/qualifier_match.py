@@ -40,7 +40,13 @@ from code_index.tokens import (
     tokenize,
     word_tokens,
 )
-from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
+from code_index.types import (
+    CodeRow,
+    MeasureIndex,
+    MeasurePartitionLabel,
+    MeasureValueRow,
+    StatVarRow,
+)
 from dfo_platform.lru_memo import LruMemo
 from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
 from search.engine.role_text import ROLE_PREPOSITIONS
@@ -900,12 +906,13 @@ def _rows_for(
     span: Sequence[Token], lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
 ) -> tuple[MatchableRow, ...]:
     """Every code row of a system in `vocabulary` (every system when `None`) and every
-    measure value whose text matches `span`. A vocabulary reads only the codes a shape can
-    bind (`bindable_codes`)."""
+    measure value whose text matches `span`. A vocabulary reads only the codes a shape of
+    it can bind (`bindable_codes`)."""
     codes = lexicon.index.codes_by_tokens(span)
     if vocabulary is not None:
+        bindable = bindable_codes(lexicon.index, vocabulary)
         codes = tuple(
-            row for row in codes if row.code_system in vocabulary and row.dcid in lexicon.bindable
+            row for row in codes if row.code_system in vocabulary and row.dcid in bindable
         )
     return codes + lexicon.measure_lookup.get(span)
 
@@ -1041,7 +1048,6 @@ class _Lexicon:
     measure_lookup: TokenLookup[MeasureValueRow]
     system_markers: Mapping[str, _SystemMarkers]
     max_width: int
-    bindable: frozenset[str]
 
 
 def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
@@ -1051,40 +1057,64 @@ def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
         measure_lookup=_measure_lookup(measure_index),
         system_markers=_all_system_markers(index),
         max_width=_max_phrase_words(index, measure_index),
-        bindable=bindable_codes(index),
     )
 
 
-# Each index's bindable codes, by index object id. A weakref finalizer removes the entry
-# before Python can reuse the id.
-_bindable_codes_cache: dict[int, frozenset[str]] = {}
+# Each index's bindable codes, by index object id and vocabulary. A weakref finalizer removes
+# the index's entries before Python can reuse the id.
+_bindable_codes_cache: dict[int, dict[frozenset[str] | None, frozenset[str]]] = {}
 
 
-def bindable_codes(index: CodeIndex) -> frozenset[str]:
+def bindable_codes(index: CodeIndex, vocabulary: AbstractSet[str] | None = None) -> frozenset[str]:
     """The dcids of the codes a shape can bind: each code some StatVar row of `index` holds,
     itself or through a descendant, and every code of a system no row carries, whose
     StatVars the index does not list and so cannot rule out.
 
     A code of a system the rows carry that no row holds binds on no shape. "population"
-    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. Built once per index.
+    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries.
+
+    With `vocabulary`, a shape's code systems (`shape_vocabulary`), a system's codes come
+    from the rows a shape of that vocabulary is built from, those whose declared code
+    systems all lie in it, wherever such rows carry the system. "loans",
+    `CRSTypeOfFinance400`, is a finance type only IATI rows hold, and they also declare
+    `iatiTransactionType`, so it binds on no CRS shape. A system no such row carries, as on
+    a vocabulary narrower than any row's, reads every row. Built once per index and
+    vocabulary.
     """
     key = id(index)
-    cached = _bindable_codes_cache.get(key)
+    by_vocabulary = _bindable_codes_cache.get(key)
+    if by_vocabulary is None:
+        by_vocabulary = _bindable_codes_cache[key] = {}
+        weakref.finalize(index, _bindable_codes_cache.pop, key, None)
+    vocabulary_key = None if vocabulary is None else frozenset(vocabulary)
+    cached = by_vocabulary.get(vocabulary_key)
     if cached is not None:
         return cached
+    rows = (*index.statvars, *index.listed_statvars)
+    declared = index.declarations.keys()
+
+    def built_from(row: StatVarRow) -> bool:
+        return (
+            vocabulary_key is None
+            or (row.constraint_properties.keys() & declared) <= vocabulary_key
+        )
+
+    scoped = {system for row in rows if built_from(row) for system in row.constraint_properties}
     bindable: set[str] = set()
     carried: set[str] = set()
-    for row in (*index.statvars, *index.listed_statvars):
+    for row in rows:
         carried.update(row.constraint_properties)
-        for value in row.constraint_properties.values():
+        own = built_from(row)
+        for system, value in row.constraint_properties.items():
+            if not own and system in scoped:
+                continue
             code = index.code_by_dcid(value)
             while code is not None and code.dcid not in bindable:
                 bindable.add(code.dcid)
                 code = index.code_by_dcid(code.parent) if code.parent is not None else None
     bindable.update(code.dcid for code in index.codes if code.code_system not in carried)
     cached = frozenset(bindable)
-    _bindable_codes_cache[key] = cached
-    weakref.finalize(index, _bindable_codes_cache.pop, key, None)
+    by_vocabulary[vocabulary_key] = cached
     return cached
 
 
@@ -1157,7 +1187,9 @@ def _recognise_raw(
         if not systems:
             continue
         row = _lookup_code_in_systems(word.text, systems, lexicon.index)
-        if row is None or (vocabulary is not None and row.dcid not in lexicon.bindable):
+        if row is None or (
+            vocabulary is not None and row.dcid not in bindable_codes(lexicon.index, vocabulary)
+        ):
             continue
         found.append(
             _RawSpan(

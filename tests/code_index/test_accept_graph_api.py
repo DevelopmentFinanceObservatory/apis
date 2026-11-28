@@ -23,7 +23,7 @@ def test_a_roll_up_of_every_crs_purpose_root_reads_each_code_exactly_once():
 
     read = Counter(code for root in roots for code in index.expansion(root))
 
-    assert len(purposes) == 289
+    assert len(purposes) == 356
     assert set(read) == set(purposes)
     assert set(read.values()) == {1}
 

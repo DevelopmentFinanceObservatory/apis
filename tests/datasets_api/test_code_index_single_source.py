@@ -8,7 +8,7 @@ import httpx
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from code_index.types import CodeSystemDeclaration, IndexStamp
+from code_index.types import CodeSystemDeclaration, IndexStamp, StatVarRow
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -79,7 +79,8 @@ def _graph() -> FakeMintGraphReader:
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a code system absent from the fixture index."""
+    """Builds an index with a code system absent from the fixture index, which the mint's
+    StatVar carries, so its frame can sum over it."""
     assert code_system not in get_index().declarations
     return CodeIndex(
         stamp=IndexStamp(
@@ -100,7 +101,18 @@ def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
             )
         ],
         codes=[],
-        statvars=[],
+        statvars=[
+            StatVarRow(
+                dcid=_STAT_VAR,
+                population_type=None,
+                measured_property="amount",
+                stat_type=None,
+                measurement_qualifier=None,
+                measurement_denominator=None,
+                observation_properties=("recipient",),
+                constraint_properties={code_system: "SyntheticCode"},
+            )
+        ],
     )
 
 

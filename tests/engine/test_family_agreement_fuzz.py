@@ -224,12 +224,18 @@ def _draw(rng: random.Random) -> list[_Drawn]:
     rows_by_five_tuple: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
     for row in index.statvars:
         rows_by_five_tuple[_five_tuple(row)].append(row)
+    # The opt-in datasets that declare invariants, whose canonical forms bind slots the
+    # identity can leave unbound. IATI is opt-in on the CRS five-tuples and declares none, so
+    # its rows are drawn with the rest.
     opt_in = [
         five_tuple
         for five_tuple in rows_by_five_tuple
-        if any(index.datasets[owner].opt_in for owner in index.datasets_by_five_tuple[five_tuple])
+        if any(
+            index.datasets[owner].opt_in and index.datasets[owner].invariants
+            for owner in index.datasets_by_five_tuple[five_tuple]
+        )
     ]
-    assert opt_in, "the fixture index holds no five-tuple of an opt-in dataset"
+    assert opt_in, "the fixture index holds no five-tuple of an opt-in dataset with invariants"
     datasets = sorted(index.datasets)
 
     drawn = []

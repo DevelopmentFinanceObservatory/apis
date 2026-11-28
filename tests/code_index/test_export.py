@@ -3071,7 +3071,9 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (dataset.id for dataset in DATASETS)
+    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr, iati = (
+        dataset.id for dataset in DATASETS
+    )
     assert [dataset.opt_in for dataset in DATASETS] == [
         False,
         True,
@@ -3081,19 +3083,21 @@ def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_alw
         False,
         True,
         True,
+        True,
     ]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
     } == {
-        "crsPurpose": {crs, imputed},
-        "crsTypeOfFinance": {crs},
-        "crsCooperationModality": set(),
-        "crsTypeOfFlow": {crs, imputed},
+        "crsPurpose": {crs, imputed, iati},
+        "crsTypeOfFinance": {crs, iati},
+        "crsCooperationModality": {iati},
+        "crsTypeOfFlow": {crs, imputed, iati},
         "dac2aAidType": {imputed, dac2a},
         "dac1AidType": {dac1},
         "dac2bAidType": {dac2b},
         "climatePolicyObjective": {one_climate, crdf, btr},
+        "iatiTransactionType": {iati},
     }
     assert [config.code_system for config in CODE_SYSTEMS if not config.classification_codes] == [
         "climatePolicyObjective"
