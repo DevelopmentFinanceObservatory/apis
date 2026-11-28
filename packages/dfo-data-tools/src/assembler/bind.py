@@ -36,7 +36,7 @@ from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from description.steps import Step
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = [
@@ -52,7 +52,14 @@ __all__ = [
 ]
 
 _RESERVED_COLUMNS = frozenset(
-    {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN}
+    {
+        STAT_VAR_COLUMN,
+        TIME_PERIOD_COLUMN,
+        VALUE_COLUMN,
+        UNIT_COLUMN,
+        STATUS_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+    }
 )
 # The suffixes of the columns that describe the place or party another column names: its type,
 # and a party's kind, class and whole cell (`dfo_analysis_engine.place_type.enrichment_role`).

@@ -13,10 +13,12 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+from dataclasses import replace
 
 import pyarrow as pa
 import pytest
 
+from dc_sdmx import observation_schema
 from graph_release.context import bound_release
 from materialise import EnrichmentLookup, materialise_group
 from materialise.columnar import dataset_cells, held_back_mask, held_back_through
@@ -32,6 +34,7 @@ from materialise.generation import _select_member_facets, reads_absent_as_zero
 from materialise.graph import Facet
 from materialise.group_facets import select_group_facets
 from materialise.held_runs import read_runs
+from materialise.observation_rows import UN_OBSERVATION_ROLES, _variable_batch
 from origin_catalogue import bound_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -294,6 +297,11 @@ def _mint(provenances: tuple[str, str], dataset: ElectedDataset | None):
     )
 
 
+# The content version this group mint of the plain table had under frame grammar 1.2.0,
+# before the `reporting_organisation` column existed.
+_PLAIN_CONTENT_VERSION = "cv_9810ab0f7801c7878de0ba0e2bd859dc"
+
+
 def _frame1(result) -> bytes:
     sink = io.BytesIO()
     write_frame1(result.frame_chunks(), sink=sink)
@@ -304,6 +312,14 @@ def _provenance_cells(frame1: bytes) -> set[str]:
     document = json.loads(frame1)
     column = document["columns"].index("provenance")
     return {row[column] for row in document["rows"]}
+
+
+def _reporters(frame1: bytes) -> dict[str, str | None]:
+    """Each row's `reporting_organisation` cell by its `stat_var`."""
+    document = json.loads(frame1)
+    columns = document["columns"]
+    stat_var, reporter = columns.index("stat_var"), columns.index("reporting_organisation")
+    return {row[stat_var]: row[reporter] for row in document["rows"]}
 
 
 @pytest.mark.parametrize(
@@ -317,8 +333,9 @@ def _provenance_cells(frame1: bytes) -> set[str]:
 def test_a_mint_of_a_dataset_serves_every_member_row_under_the_dataset_id(
     provenances, dataset, ref
 ):
-    """Both members' rows are served, each carrying the dataset's id, and no member
-    provenance appears in the frame's bytes, its trace, its dependencies or its held runs."""
+    """Both members' rows are served, each carrying the dataset's id and naming the member
+    that reported it, and no member provenance appears elsewhere in the frame, nor in its
+    trace, its dependencies or its held runs."""
     result = _mint(provenances, dataset)
 
     counts = {entry["ref"]: entry["observation_count"] for entry in result.trace.resolved_stat_vars}
@@ -328,9 +345,13 @@ def test_a_mint_of_a_dataset_serves_every_member_row_under_the_dataset_id(
     assert provenance["ref"] == ref
     frame1 = _frame1(result)
     assert _provenance_cells(frame1) == {ref}
+    assert _reporters(frame1) == {_STAT_VAR_A: provenances[0], _STAT_VAR_B: provenances[1]}
+    document = json.loads(frame1)
+    reporter = document["columns"].index("reporting_organisation")
+    rows = [row[:reporter] + row[reporter + 1 :] for row in document["rows"]]
     served = b"\n".join(
         [
-            frame1,
+            json.dumps(rows).encode(),
             json.dumps(result.trace.to_dict(), default=str).encode(),
             json.dumps(result.dependencies.as_json(), default=str).encode(),
             repr(result.held_runs).encode(),
@@ -343,7 +364,9 @@ def test_a_mint_of_a_plain_table_keeps_its_bytes_under_an_index_declaring_datase
     _fixture_index_release,
 ):
     """A plain table's provenance is its own dataset, so it mints the frame and content
-    version it mints under the session's index, which declares no Ledger."""
+    version it mints under the session's index, which declares no Ledger. Its rows name no
+    reporting organisation, so the frame has no such column and keeps the bytes and content
+    version it had before frame grammar 1.3.0 added one."""
     under_ledger = _mint((PLAIN, PLAIN), _PLAIN_DATASET)
     with bound_release(_fixture_index_release):
         under_fixture = _mint((PLAIN, PLAIN), _PLAIN_DATASET)
@@ -351,6 +374,8 @@ def test_a_mint_of_a_plain_table_keeps_its_bytes_under_an_index_declaring_datase
     assert _frame1(under_ledger) == _frame1(under_fixture)
     assert under_ledger.content_version == under_fixture.content_version
     assert _provenance_cells(_frame1(under_ledger)) == {PLAIN}
+    assert "reporting_organisation" not in json.loads(_frame1(under_ledger))["columns"]
+    assert under_ledger.content_version == _PLAIN_CONTENT_VERSION
 
 
 def test_the_read_writes_each_member_row_under_its_dataset_and_keeps_a_plain_batch():
@@ -367,8 +392,25 @@ def test_the_read_writes_each_member_row_under_its_dataset_and_keeps_a_plain_bat
         schema=_ROWS_SCHEMA,
     )
 
-    assert dataset_cells(batch)["provenance"].to_pylist() == [LEDGER, LEDGER, SOLO, PLAIN, None]
+    read = dataset_cells(batch)
+    assert read["provenance"].to_pylist() == [LEDGER, LEDGER, SOLO, PLAIN, None]
+    assert read["reporting_organisation"].to_pylist() == [NORTH, SOUTH, SOLO_MEMBER, None, None]
     assert dataset_cells(plain) is plain
+
+
+def test_a_un_read_writes_each_member_row_under_its_dataset_and_names_the_member():
+    """The UN deployment's rows, which the read lays out itself, carry the dataset's id and
+    name their member as `dataset_cells` writes an SDMX row, and a plain table's name none."""
+    series = [
+        ("country/KEN", replace(_facet(provenance), dates=("2015",), values=(1.0,)))
+        for provenance in (NORTH, PLAIN)
+    ]
+
+    batch = _variable_batch("undata/Stat_A", series, latest=False)
+
+    assert batch.schema == observation_schema(UN_OBSERVATION_ROLES)
+    assert batch["provenance"].to_pylist() == [LEDGER, PLAIN]
+    assert batch["reporting_organisation"].to_pylist() == [NORTH, None]
 
 
 @pytest.mark.parametrize(

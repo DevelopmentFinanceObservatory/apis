@@ -93,6 +93,7 @@ from datasets_api.render import (
 from datasets_api.store_errors import stored_frame_rows
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
+from dfo_platform.columns import REPORTING_ORGANISATION_COLUMN
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
 from materialise.errors import OverCeilingError
@@ -115,6 +116,7 @@ from search.observations import (
     preview_mode,
     role_bulk_order,
     role_bulk_shown,
+    shared_reporter,
 )
 from spec_registry import IdentityQuarantined
 
@@ -263,7 +265,9 @@ def _series_reads(
     them: the bare StatVar and its `(role, entity)` pairs sorted by role.
 
     Each series' facet refs come from its rows' `provenance`, `measurementMethod` and `unit`
-    cells. A unit cell holding a unit request marks a natively satisfied series when
+    cells, and its reporting organisation from its rows' `reporting_organisation` cells
+    (`search.observations.shared_reporter`), none for a frame without the column. A unit cell
+    holding a unit request marks a natively satisfied series when
     `native_unit_ref` is set, which takes that ref as its unit, and a converted series
     otherwise, which takes its record from `conversions`. Raises `StoredFrameCorrupt` for a
     series under two facets and `ObservationsUnavailable` for a converted series without a
@@ -272,7 +276,9 @@ def _series_reads(
     column = {name: index for index, name in enumerate(columns)}
     roles = sorted(frame_entity_columns(columns))
     facet_columns = [column[axis] for axis in _FACET_AXES]
+    reporter_column = column.get(REPORTING_ORGANISATION_COLUMN)
     rows_by_key: dict[SeriesKey, tuple[tuple[object, ...], list[tuple[str, float | None]]]] = {}
+    reporters: dict[SeriesKey, list[object]] = {}
     for row in rows:
         stat_var = cast(str, row[column["stat_var"]]).removeprefix(_STAT_VAR_REF_PREFIX)
         key = (stat_var, tuple((role, cast(str, row[column[role]])) for role in roles))
@@ -282,6 +288,9 @@ def _series_reads(
         if held[0] != facet:
             raise StoredFrameCorrupt(id=id, content_version=content_version, key=key)
         held[1].append(point)
+        reporters.setdefault(key, []).append(
+            None if reporter_column is None else row[reporter_column]
+        )
 
     reads: dict[SeriesKey, SeriesRead] = {}
     for key, (facet, points) in rows_by_key.items():
@@ -301,6 +310,7 @@ def _series_reads(
             total_rows=len(points),
             facets={axis: ref for axis, ref in refs.items() if isinstance(ref, str)},
             conversion=conversion,
+            reporting_organisation=shared_reporter(reporters[key]),
         )
     return reads
 

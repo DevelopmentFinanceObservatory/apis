@@ -72,6 +72,7 @@ from typing import Annotated, Any, Literal, Self
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, StepsErrorReason, check_steps
 from dfo_frame_grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STAT_VAR_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
@@ -120,7 +121,14 @@ _REPLAY_KEY_PATTERN = r"^rpk_[0-9a-f]{32}$"
 # Columns that name no series. A left-out series' coordinates must hold `stat_var` or a column
 # outside these, the columns `assembler.bind.series_label` labels a series by.
 _UNNAMING_COLUMNS = frozenset(
-    {TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN, *FACET_IDENTITY_COLUMNS}
+    {
+        TIME_PERIOD_COLUMN,
+        VALUE_COLUMN,
+        UNIT_COLUMN,
+        STATUS_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
+        *FACET_IDENTITY_COLUMNS,
+    }
 )
 
 OpsSpecId = Annotated[str, Field(pattern=_OPS_SPEC_ID_PATTERN)]

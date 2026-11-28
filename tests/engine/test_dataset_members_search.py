@@ -12,6 +12,7 @@ table `provenance/Plain` is the control throughout.
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
@@ -538,7 +539,8 @@ _MEMBER_WORLDS = [
 @pytest.mark.parametrize("member_world", _MEMBER_WORLDS, indirect=True)
 def test_no_answer_names_a_member_provenance(member_world: World) -> None:
     """The first answer and its resubmit cite and serve the dataset's id: neither the
-    serialised part nor its Spec names a member provenance anywhere, and every series states
+    serialised part nor its Spec names a member provenance anywhere but in a series'
+    reporting organisation, and every series states
     the dataset under its declared label and the source its members share. The standard
     route's group serves both places, one from each member. A role route with no index
     family reads one facet id, as the mint does, so where each place's series has its own
@@ -568,10 +570,73 @@ def test_no_answer_names_a_member_provenance(member_world: World) -> None:
         if world.route == "standard":
             assert len(observations.series) == 2
         assert stated.resolved.facets["provenance"].ref == dataset
-        serialised = answer.part.model_dump_json() + stated.model_dump_json()
+        serialised = json.dumps(
+            _without_reporters(
+                [answer.part.model_dump(mode="json"), stated.model_dump(mode="json")]
+            )
+        )
         assert dataset in serialised
         for member in (_NORTH, _SOUTH, _SOLO_MEMBER):
             assert member not in serialised
+
+
+def _without_reporters(document: object) -> object:
+    """`document` without its `reporting_organisation` members, the one field that names the
+    member a series' points were reported under (`test_a_series_names_the_member_that_reported_it`)."""
+    if isinstance(document, dict):
+        return {
+            key: _without_reporters(value)
+            for key, value in document.items()
+            if key != "reporting_organisation"
+        }
+    if isinstance(document, list):
+        return [_without_reporters(value) for value in document]
+    return document
+
+
+# Each world facet's member provenance, `None` for a plain table's.
+_REPORTERS = {"f-north": _NORTH, "f-south": _SOUTH, "f-solo": _SOLO_MEMBER, "f-ids": None}
+
+
+@pytest.mark.parametrize(
+    "member_world",
+    [
+        pytest.param(("standard", holders), id=name)
+        for name, holders in (
+            ("north-south", ("f-north", "f-south")),
+            ("solo", ("f-solo", "f-solo")),
+            ("plain", ("f-ids", "f-ids")),
+        )
+    ],
+    indirect=True,
+)
+def test_a_series_names_the_member_that_reported_it(member_world: World) -> None:
+    """On the standard route, which reads a materialised frame, each series of a declared
+    dataset names the member provenance that reported it in its provenance facet, labelled
+    as the catalogue lists the member, and a plain table's series names none. The resubmit
+    reads the same frame and names the same members."""
+    world = member_world
+    with world_module.door_loop():
+        first = world.first([ALAND, BLAND], None, preview=True, unit_text=None)
+        assert first.part is not None, first.error or first.refusal
+        (spec,) = first.specs
+        again = world.resubmit(spec, preview=True)
+
+    expected = {row.place: _REPORTERS[row.facet_id] for row in world.rows}
+    for answer in (first, again):
+        assert answer.part is not None, answer.error or answer.refusal
+        (stated,) = answer.specs
+        observations = stated.resolved.observations
+        assert observations is not None
+        reported = {}
+        for series in observations.series:
+            (place,) = [entity.ref for entity in series.entities]
+            reporter = series.facet["provenance"].reporting_organisation
+            reported[place] = None if reporter is None else (reporter.ref, reporter.label)
+        assert reported == {
+            place: None if member is None else (member, member)
+            for place, member in expected.items()
+        }
 
 
 _ROLE_NORTH_SOUTH_WORLDS = [

@@ -906,13 +906,15 @@ def _served_texts(data: bytes) -> list[str]:
 
 
 @pytest.mark.parametrize("declared", [_TWO_MEMBERS, _ONE_MEMBER], ids=["two-members", "one-member"])
-def test_a_mint_of_a_declared_dataset_names_no_member_provenance(
+def test_a_mint_of_a_declared_dataset_names_its_members_only_as_reporters(
     declared: _Declared, serve_catalogue: Callable[[Catalogue], None]
 ):
     """Every row, ref and citation a mint serves or stores names the dataset: its manifests,
     traces and citations, and every file it writes (frame, CSV, bundle, summed version). The
     dataset's citation takes the source and Data Commons its members' catalogue rows share,
-    as Search cites it."""
+    as Search cites it. A member appears only in a file's `reporting_organisation` column:
+    each unsummed row names the member that filed it, and the sum over the recipient keeps
+    the member its rows share and names none where two members filed them."""
     serve_catalogue(
         FakeCatalogue(
             provenances={
@@ -947,7 +949,22 @@ def test_a_mint_of_a_declared_dataset_names_no_member_provenance(
         "dfo",
     )
     texts = [json.dumps(manifest) for manifest in manifests]
-    texts += [text for data in artifacts._objects.values() for text in _served_texts(data)]
-    assert len(texts) > len(manifests)
-    assert any(declared.dataset in text for text in texts[len(manifests) :])
     assert not [member for member in _MEMBERS if any(member in text for text in texts)]
+    files = [text for data in artifacts._objects.values() for text in _served_texts(data)]
+    assert any(declared.dataset in text for text in files)
+    for text in files:
+        if any(member in text for member in _MEMBERS):
+            assert "reporting_organisation" in text
+    # The canonical frames of the version and its sum, beside the series statistics tables.
+    frames = [
+        pq.read_table(io.BytesIO(data))
+        for data in artifacts._objects.values()
+        if data.startswith(b"PAR1")
+    ]
+    reported = {
+        tuple(sorted(table.column("reporting_organisation").to_pylist(), key=str))
+        for table in frames
+        if "time_period" in table.column_names
+    }
+    shared = declared.filed_a if declared.filed_a == declared.filed_b else None
+    assert reported == {tuple(sorted((declared.filed_a, declared.filed_b))), (shared,)}

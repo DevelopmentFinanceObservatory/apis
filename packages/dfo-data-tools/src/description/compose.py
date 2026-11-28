@@ -14,7 +14,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from dfo_frame_grammar import FACET_IDENTITY_COLUMNS, STAT_VAR_COLUMN
+from dfo_frame_grammar import FACET_IDENTITY_COLUMNS, REPORTING_ORGANISATION_COLUMN, STAT_VAR_COLUMN
 from pydantic.experimental.missing_sentinel import MISSING
 
 from code_index.labels import (
@@ -52,7 +52,9 @@ SELECT_OP = "select"
 SELECT_POLICY = "card_selection"
 """The one policy of `SELECT_OP` in the kit's operation list."""
 
-_NON_ENTITY_COLUMNS = frozenset({STAT_VAR_COLUMN, *FACET_IDENTITY_COLUMNS})
+_NON_ENTITY_COLUMNS = frozenset(
+    {STAT_VAR_COLUMN, REPORTING_ORGANISATION_COLUMN, *FACET_IDENTITY_COLUMNS}
+)
 """The columns of a drawn series whose values name no entity."""
 
 CHANGE_OP = "change"

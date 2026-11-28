@@ -36,7 +36,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Protocol, Self, cast
 
@@ -44,6 +44,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxClientError
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.columns import REPORTING_ORGANISATION_COLUMN
 from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import bounded_deadline
 from materialise import (
@@ -133,6 +134,7 @@ from search.observations import (
     observations_too_large,
     observations_windowed_scope,
     preview_mode,
+    shared_reporter,
 )
 
 if TYPE_CHECKING:
@@ -745,14 +747,22 @@ def _window_ranks(
 class _SeriesRead:
     """One planned series' share of a read: its points in date order, the rows it holds
     before the read's row limit or any display truncation, the read's selections and its
-    own conversion record, and the dates of its rows that carry an estimated method
-    (`_estimated_dates`)."""
+    own conversion record, the dates of its rows that carry an estimated method
+    (`_estimated_dates`), and each date's reporting organisation cell (`_reporters`)."""
 
     points: list[tuple[str, float | None]]
     total_rows: int
     selections: Mapping[str, FacetSelection]
     conversion_record: ConversionRecord | None
     estimated_dates: frozenset[str] = frozenset()
+    reporters: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def reporting_organisation(self) -> str | None:
+        """The member provenance that reported every point the read keeps
+        (`search.observations.shared_reporter`), so a cut of its points keeps the member of
+        the points it keeps."""
+        return shared_reporter(self.reporters.get(date) for date, _value in self.points)
 
     @property
     def holds_estimates(self) -> bool:
@@ -778,6 +788,7 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
                 selections=result.selections,
                 conversion_record=result.conversion_record,
                 estimated_dates=_estimated_dates(result.frame.rows, columns=result.frame.columns),
+                reporters=_reporters(result.frame.rows, columns=result.frame.columns),
             )
         }
     columns = result.frame.columns
@@ -797,6 +808,7 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
             selections=result.selections,
             conversion_record=result.series_conversion_records.get(dcids),
             estimated_dates=_estimated_dates(rows, columns=columns),
+            reporters=_reporters(rows, columns=columns),
         )
     return reads
 
@@ -816,6 +828,15 @@ def _estimated_dates(
         if status_of(cast("str | None", row[method]), cast("str | None", row[provenance]))
         == "estimated"
     )
+
+
+def _reporters(rows: Sequence[tuple[object, ...]], *, columns: Sequence[str]) -> dict[str, object]:
+    """Each row's `reporting_organisation` cell by its date, none for a frame without the
+    column (`materialise.frame_build.names_reporters`)."""
+    if REPORTING_ORGANISATION_COLUMN not in columns:
+        return {}
+    date, reporter = columns.index("time_period"), columns.index(REPORTING_ORGANISATION_COLUMN)
+    return {cast(str, row[date]): row[reporter] for row in rows}
 
 
 def _at_latest_periods(
@@ -1620,6 +1641,7 @@ def _series_read(read: _SeriesRead) -> SeriesRead:
             else None
         ),
         holds_estimates=read.holds_estimates,
+        reporting_organisation=read.reporting_organisation,
     )
 
 

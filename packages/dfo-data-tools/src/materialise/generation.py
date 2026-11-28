@@ -21,6 +21,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import array_kernel
 
+from code_index.shared import dataset_of
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
     Among,
@@ -93,6 +94,7 @@ from materialise.frame_build import (
     build_frame_from_member_tables,
     build_frame_from_table,
     fold_method_periods,
+    names_reporters,
     period_grains,
 )
 from materialise.graph import Facet, GraphReader, GraphReadError
@@ -2886,6 +2888,22 @@ def _plan_group_members(
     )
 
 
+def _dispatches_member_provenance(
+    probes: Sequence[MemberProbe], plans: Sequence[_MemberFetchPlan]
+) -> bool:
+    """Whether a member dispatches a facet of a declared dataset's member provenance, whose
+    rows name that member (`columnar.dataset_cells`). The group's frame is built in chunks
+    that share one column order, so it carries `reporting_organisation` when this holds,
+    before any chunk is read."""
+    return any(
+        candidate.provenance_id is not None
+        and dataset_of(candidate.provenance_id) != candidate.provenance_id
+        for probe, plan in zip(probes, plans, strict=True)
+        for candidate in probe.candidates
+        if candidate.facet_id in plan.dispatch_ids
+    )
+
+
 def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
     """The plan of a group none of whose probes returned a candidate: no selection, and for
     each member no dispatch id and no conversion, so `_generate_chunk` fetches nothing and
@@ -2986,8 +3004,10 @@ class _GroupRowStreamer:
         member_concurrency: int,
         progress: RowProgress | None,
         continuing: Sequence[ContinuedSeries],
+        reporting_organisation: bool,
     ) -> None:
         self._dcid_requests = dcid_requests
+        self._reporting_organisation = reporting_organisation
         self._dcid_plans = dcid_plans
         self._chunks = chunks
         self._sdmx = sdmx
@@ -3145,7 +3165,9 @@ class _GroupRowStreamer:
         own row count, once the chunk's `Frame` is genuinely built.
         """
         frame = build_frame_from_member_tables(
-            [(request.stat_var, table) for request, table in members], role_keys=self._shared_roles
+            [(request.stat_var, table) for request, table in members],
+            role_keys=self._shared_roles,
+            reporting_organisation=self._reporting_organisation,
         )
         if not self.frame_columns:
             self.frame_columns.append(frame.columns)
@@ -3475,6 +3497,7 @@ def _generate_group(
         member_concurrency=member_concurrency,
         progress=progress,
         continuing=selected_continued_series(group_plan.selections),
+        reporting_organisation=_dispatches_member_provenance(probed, group_plan.plans),
     )
     outcome = _assemble_group_outcome(
         streamer,
@@ -3893,8 +3916,16 @@ def _finish_preview_member(
     # over the full survivor set reads this one, since a mint of the same
     # request hashes every survivor row rather than a `limit`-bounded slice.
     # A caller reporting no `content_version` skips it.
+    # The delivered frame takes the full frame's columns, even where its subset names no
+    # reporter.
+    reporting_organisation = names_reporters(table)
     full_frame = (
-        build_frame_from_table(table, role_keys=request.declared_roles, stat_var=request.stat_var)
+        build_frame_from_table(
+            table,
+            role_keys=request.declared_roles,
+            stat_var=request.stat_var,
+            reporting_organisation=reporting_organisation,
+        )
         if prepared.mint_full_frame
         else None
     )
@@ -3920,7 +3951,10 @@ def _finish_preview_member(
     served_entities_by_role = columnar.served_entities_by_role(table, roles=request.declared_roles)
 
     frame = build_frame_from_table(
-        delivered_table, role_keys=request.declared_roles, stat_var=request.stat_var
+        delivered_table,
+        role_keys=request.declared_roles,
+        stat_var=request.stat_var,
+        reporting_organisation=reporting_organisation,
     )
     return _PreviewOutcome(
         frame=frame,

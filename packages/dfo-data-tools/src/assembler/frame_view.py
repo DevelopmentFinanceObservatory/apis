@@ -22,7 +22,7 @@ from assembler.errors import BindingInvalid
 from assembler.limits import LABEL_MAX, PER_DIMENSION_LISTING_CAP
 from assembler.ports import Continuation, DimensionView, StructuralView
 from assembler.series_id import Coordinates
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
 from materialise.continued_series import (
     continuation_leads,
@@ -41,7 +41,10 @@ __all__ = [
     "series_keys",
 ]
 
-_NON_DIMENSION_COLUMNS = frozenset({TIME_PERIOD_COLUMN, VALUE_COLUMN, STATUS_COLUMN})
+# `reporting_organisation` is an attribute of each observation, so it splits no series.
+_NON_DIMENSION_COLUMNS = frozenset(
+    {TIME_PERIOD_COLUMN, VALUE_COLUMN, STATUS_COLUMN, REPORTING_ORGANISATION_COLUMN}
+)
 
 
 def dimension_columns(*, columns: Sequence[str]) -> tuple[str, ...]:

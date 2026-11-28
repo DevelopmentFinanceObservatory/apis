@@ -33,7 +33,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from dfo_frame_grammar import parse_time_period, unit_cell_to_json, unit_cells, unit_codes
 
-from dfo_platform.columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN, REPORTING_ORGANISATION_COLUMN
 from materialise.continued_series import ContinuedSeries, continuation_leads
 from materialise.frame_build import Frame
 from materialise.held_back import source_of
@@ -58,6 +58,7 @@ _FIXED_COLUMNS: frozenset[str] = frozenset(
         _STATUS_COLUMN,
         _MEASUREMENT_METHOD_COLUMN,
         PROVENANCE_COLUMN,
+        REPORTING_ORGANISATION_COLUMN,
     }
 )
 

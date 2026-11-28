@@ -272,6 +272,13 @@ def _grouped_sums(
         .take(groups.first_rows)
         .set_column(plan.value_pos_in_remaining, pa.field(plan.value_column, pa.float64()), totals)
     )
+    for position in plan.attribute_positions:
+        index = plan.remaining_positions.index(position)
+        output = output.set_column(
+            index,
+            output.schema.field(index),
+            _shared_cells(table.column(position), groups, first=output.column(index)),
+        )
     sort_keys = [
         array
         for column in plan.output_columns
@@ -283,6 +290,22 @@ def _grouped_sums(
         sort_keys=[(str(i), "ascending") for i in range(len(sort_keys))],
     )
     return output.take(order)
+
+
+def _shared_cells(cells: pa.ChunkedArray, groups: UnitCodes, *, first: pa.ChunkedArray) -> pa.Array:
+    """Each group's cell of the attribute column `cells` (`reshape.groupby_sum`): its first
+    row's cell, `first`, where every row of the group holds it, and null where they differ, a
+    null counting as one value."""
+    distinct = (
+        pa.table({"group": groups.codes, "cell": cells.combine_chunks()})
+        .group_by("group", use_threads=False)
+        .aggregate((("cell", "count_distinct", pc.CountOptions(mode="all")),))
+        .sort_by("group")
+        .column("cell_count_distinct")
+        .combine_chunks()
+    )
+    shared = array_kernel("equal", distinct, pa.scalar(1, pa.int64()))
+    return array_kernel("if_else", shared, first.combine_chunks(), pa.scalar(None, first.type))
 
 
 def _full_grain_keys(table: pa.Table, plan: _GroupbySumFoldPlan) -> list[pa.Array]:

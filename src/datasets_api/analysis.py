@@ -139,6 +139,7 @@ from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.content_version import mint_content_version
 from dfo_frame_grammar.grammar import (
     FACET_IDENTITY_COLUMNS,
+    REPORTING_ORGANISATION_COLUMN,
     STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
     VALUE_COLUMN,
@@ -1129,8 +1130,11 @@ def _path_words(step: StepNode) -> dict[str, set[str]]:
 
 
 # The columns a filter predicate on which keeps other rows of a frame's StatVars than of their
-# sum: the value, its status, and the facets a sum across StatVars does not keep row by row.
-_OBSERVATION_COLUMNS = frozenset({VALUE_COLUMN, STATUS_COLUMN, *FACET_IDENTITY_COLUMNS})
+# sum: the value, its status, its reporting organisation, and the facets a sum across StatVars
+# does not keep row by row.
+_OBSERVATION_COLUMNS = frozenset(
+    {VALUE_COLUMN, STATUS_COLUMN, REPORTING_ORGANISATION_COLUMN, *FACET_IDENTITY_COLUMNS}
+)
 
 
 def _reads_observations(step: StepNode) -> bool:

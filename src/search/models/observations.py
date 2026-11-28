@@ -71,6 +71,15 @@ class SeriesFacetRef(StrictModel):
             "GET /api/graph/documentation/{dcid}"
         ),
     )
+    reporting_organisation: SeriesFacetRef | None = Field(
+        default=None,
+        description=(
+            "provenance axis only: the member provenance that reported every point of the "
+            "series, where ref is a declared dataset that groups several publisher "
+            "provenances; absent for a plain table and for a series whose points several "
+            "members report"
+        ),
+    )
 
 
 class SeriesStatVarRef(StrictModel):

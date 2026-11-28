@@ -20,7 +20,7 @@ alone (`materialise.enrichment.read_party_kinds`), with no read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -495,7 +495,9 @@ class SeriesRead:
     its ref. `conversion` describes a converted series, whose facet `unit` is the native unit
     the rows converted from. `holds_estimates` is whether a point's own method is classed
     estimated (`materialise.member_folds.status_of`), as a continuation's points are, while
-    `facets` states the facet the series was elected by.
+    `facets` states the facet the series was elected by. `reporting_organisation` is the
+    member provenance that reported every point of a declared dataset's series
+    (`shared_reporter`), `None` for a plain table's.
     """
 
     points: Sequence[tuple[str, float | None]]
@@ -503,6 +505,18 @@ class SeriesRead:
     facets: Mapping[str, str] = field(default_factory=dict)
     conversion: SeriesConversion | None = None
     holds_estimates: bool = False
+    reporting_organisation: str | None = None
+
+
+def shared_reporter(cells: Iterable[object]) -> str | None:
+    """The member provenance a series' rows name in their `reporting_organisation` cells
+    (`materialise.columnar.dataset_cells`) when every row names the same one, else `None`:
+    for a plain table's rows, which name none, and for a series several members report."""
+    reporters = set(cells)
+    if len(reporters) != 1:
+        return None
+    (reporter,) = reporters
+    return reporter if isinstance(reporter, str) else None
 
 
 def facet_value_label(axis: str, label: str) -> str:
@@ -565,6 +579,11 @@ def _read_labels(
     provenance_dcids = [
         *(ref for read in reads.values() if (ref := read.facets.get("provenance")) is not None),
         *(
+            read.reporting_organisation
+            for read in reads.values()
+            if read.reporting_organisation is not None
+        ),
+        *(
             read.conversion.table_provenance_id
             for read in reads.values()
             if read.conversion is not None
@@ -615,7 +634,9 @@ def _series(
     Its axes are its StatVar's `member_constraints`, each value labelled from `labels`, else by
     its humanised dcid (`_humanize_ref`), as the StatVar's row label names it. A converted
     series reports the target currency as its unit when there is one, and no unit otherwise.
-    It holds estimates when `read` does (`ObservationSeries.holds_estimates`)."""
+    It holds estimates when `read` does (`ObservationSeries.holds_estimates`), and its
+    provenance facet names the member that reported it when `read` does
+    (`SeriesFacetRef.reporting_organisation`)."""
     sv, role_tuple = key
     constraints = member_constraints.get(sv, {})
     provenance = read.facets.get("provenance")
@@ -623,6 +644,12 @@ def _series(
         role_tuple, parties=index.parties, datasets=() if provenance is None else (provenance,)
     )
     facet_map = series_facet_map(read.facets, labels)
+    if read.reporting_organisation is not None and "provenance" in facet_map:
+        facet_map["provenance"] = facet_map["provenance"].model_copy(
+            update={
+                "reporting_organisation": provenance_facet_ref(read.reporting_organisation, labels)
+            }
+        )
     conversion = None
     if read.conversion is not None:
         if target_currency_ref is not None:

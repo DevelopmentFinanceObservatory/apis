@@ -45,6 +45,7 @@ def _groupby_row(
 _GROUPBY_CLASSIFICATION = ColumnClassification(
     facet_axis_columns=frozenset({"unit", "measurementMethod", "provenance"}),
     non_droppable_columns=frozenset({"recipient", "time_period", "unit", "provenance"}),
+    attribute_columns=frozenset(),
 )
 
 
@@ -151,6 +152,7 @@ _PRECEDENCE_COLUMNS = ("stat_var", "recipient", "time_period", "value", "unit")
 _PRECEDENCE_CLASSIFICATION = ColumnClassification(
     facet_axis_columns=frozenset({"unit"}),
     non_droppable_columns=frozenset({"recipient", "time_period", "unit"}),
+    attribute_columns=frozenset(),
 )
 
 # Each fixture triggers two refusal conditions and is sorted by `row_sort_key`.
@@ -259,6 +261,7 @@ class TestGroupbySumChunksPrecedenceParity:
 _PIVOT_CLASSIFICATION = ColumnClassification(
     facet_axis_columns=frozenset({"unit", "measurementMethod", "provenance"}),
     non_droppable_columns=frozenset({"stat_var", "recipient", "time_period", "unit", "provenance"}),
+    attribute_columns=frozenset(),
 )
 
 

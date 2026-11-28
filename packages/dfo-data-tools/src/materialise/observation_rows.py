@@ -12,7 +12,8 @@ read does.
 
 A row's `provenance` cell holds its dataset's id from the read on
 (`code_index.shared.dataset_of`). A row of a declared dataset's member provenance holds the
-dataset's id, and a plain table's row holds its provenance.
+dataset's id and names the member in `reporting_organisation`, and a plain table's row holds
+its provenance and names none.
 
 One fetch names variables of one origin: `generation.request_batch_key` keeps
 UN variables out of chunks with the others.
@@ -30,6 +31,7 @@ import pyarrow as pa
 from code_index.shared import dataset_of
 from dc_graph import Facet, GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import (
+    REPORTING_ORGANISATION_COLUMN,
     Among,
     ContainedIn,
     EntityFilter,
@@ -326,17 +328,20 @@ def _variable_batch(
     variable: str, series: Sequence[tuple[str, Facet]], *, latest: bool
 ) -> pa.RecordBatch:
     """One variable's rows, in `series` order, newest period first. Each distinct provenance
-    is read as its dataset (`dataset_of`) once."""
+    is read as its dataset (`dataset_of`) once, and a row of a member provenance names it in
+    `reporting_organisation`, as `columnar.dataset_cells` writes an SDMX row."""
     columns: dict[str, list[str | None]] = {
         name: [] for name in observation_columns(UN_OBSERVATION_ROLES)
     }
     datasets: dict[str, str] = {}
     for place, facet in series:
-        provenance = facet.provenance_id
+        provenance = reporter = facet.provenance_id
         if provenance is not None:
             if provenance not in datasets:
                 datasets[provenance] = dataset_of(provenance)
             provenance = datasets[provenance]
+        if reporter == provenance:
+            reporter = None
         observations = sorted(
             zip(facet.dates, facet.values, strict=True), key=lambda obs: obs[0], reverse=True
         )
@@ -351,6 +356,7 @@ def _variable_batch(
             columns["OBS_VALUE"].append("" if value is None else repr(float(value)))
             columns["scalingFactor"].append(facet.scaling_factor)
             columns["facetId"].append(facet.facet_id)
+            columns[REPORTING_ORGANISATION_COLUMN].append(reporter)
     return pa.RecordBatch.from_pydict(columns, schema=observation_schema(UN_OBSERVATION_ROLES))
 
 
