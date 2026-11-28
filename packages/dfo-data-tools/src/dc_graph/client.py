@@ -340,9 +340,15 @@ def _log_response(response: httpx.Response) -> None:
 
 @dataclass(frozen=True)
 class ProvenanceRefresh:
-    """A provenance's `lastDataRefreshDate`, `None` if the node or the arc is absent."""
+    """A provenance's `lastDataRefreshDate`, `None` if the node or the arc is absent.
+
+    `members_revision` is set for a declared dataset's id alone: a digest of the sorted nodes
+    that date it, its own and each member provenance's, each with its own date, so a member's
+    move or a change of membership changes it where the newest date can hold. `None` for a
+    plain table, whose date is its revision."""
 
     last_data_refresh_date: str | None
+    members_revision: str | None = None
 
 
 @dataclass(frozen=True)

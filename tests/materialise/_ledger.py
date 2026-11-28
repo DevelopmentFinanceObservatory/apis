@@ -37,9 +37,9 @@ def _declaration(dataset: str, *, rank: int) -> DatasetDeclaration:
     )
 
 
-def ledger_index() -> CodeIndex:
-    """A code index declaring `LEDGER` of `NORTH` and `SOUTH`, `SOLO` of `SOLO_MEMBER`, and
-    the plain table `PLAIN`."""
+def ledger_index(ledger_members: tuple[str, ...] = (NORTH, SOUTH)) -> CodeIndex:
+    """A code index declaring `LEDGER` of `ledger_members`, `NORTH` and `SOUTH` by default,
+    `SOLO` of `SOLO_MEMBER`, and the plain table `PLAIN`."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",
@@ -56,14 +56,15 @@ def ledger_index() -> CodeIndex:
             _declaration(SOLO, rank=1),
             _declaration(PLAIN, rank=2),
         ),
-        dataset_members={LEDGER: (NORTH, SOUTH), SOLO: (SOLO_MEMBER,)},
+        dataset_members={LEDGER: ledger_members, SOLO: (SOLO_MEMBER,)},
     )
 
 
 @contextmanager
-def bound_ledger_index() -> Iterator[CodeIndex]:
-    """Binds the bound release with `ledger_index` as its code index for the `with` block."""
+def bound_ledger_index(ledger_members: tuple[str, ...] = (NORTH, SOUTH)) -> Iterator[CodeIndex]:
+    """Binds the bound release with `ledger_index` of `ledger_members` as its code index for
+    the `with` block."""
     release = current_release()
-    index = ledger_index()
+    index = ledger_index(ledger_members)
     with bound_release(replace(release, views=replace(release.views, code_index=index))):
         yield index

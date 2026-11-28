@@ -36,6 +36,7 @@ from materialise.dependencies import (
 from materialise.facets import (
     FacetBinding,
     ProvenanceRefresh,
+    _probe_provenance_refresh,
     probe_collection_facets,
 )
 from materialise.graph import Facet
@@ -53,7 +54,7 @@ from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
 )
 
-from ._ledger import LEDGER, NORTH, SOLO, SOLO_MEMBER, SOUTH, bound_ledger_index
+from ._ledger import LEDGER, NORTH, PLAIN, SOLO, SOLO_MEMBER, SOUTH, bound_ledger_index
 from .conftest import FakeGraphReader
 
 
@@ -430,6 +431,78 @@ def test_a_dataset_of_two_member_provenances_holds_back_each_period_a_member_mar
                 scope_settled=True,
             )
     assert dependencies.held_back == horizon
+
+
+# A third member provenance the Ledger gains in a later code index.
+_EAST = "provenance/LedgerEast"
+
+
+@pytest.mark.parametrize(
+    ("source", "before", "after", "changed"),
+    [
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: "2026-02-01", SOUTH: "2026-03-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-moves-under-a-newer-member",
+        ),
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01", _EAST: "2026-02-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-added",
+        ),
+        pytest.param(
+            LEDGER,
+            {NORTH: "2026-01-01", SOUTH: "2026-03-01"},
+            {SOUTH: "2026-03-01"},
+            (f"revisions:{LEDGER}",),
+            id="a-member-removed",
+        ),
+        pytest.param(
+            PLAIN, {PLAIN: "2026-03-01"}, {PLAIN: "2026-03-01"}, (), id="plain-table-unchanged"
+        ),
+    ],
+)
+def test_a_declared_dataset_is_stale_when_a_member_moves_or_its_membership_changes(
+    source, before, after, changed
+):
+    """The run records the dataset's newest member date in `sources` and a digest of each
+    member with its own date in `revisions`. A member moving from January to February under
+    another at March, or a member added or removed, leaves the newest date at March and moves
+    the revision. A plain table records its date alone, in the shape it always had."""
+    request = _request(_STAT_VAR, RequestedWindow(kind="all"))
+
+    def graph(dates: dict[str, str]) -> FakeGraphReader:
+        return FakeGraphReader(
+            arcs={dcid: {"lastDataRefreshDate": (date,)} for dcid, date in dates.items()}
+        )
+
+    def members(dates: dict[str, str]) -> tuple[str, ...]:
+        return tuple(sorted(dates.keys() - {PLAIN}))
+
+    with bound_ledger_index(members(before)):
+        stored = build_dependencies(
+            [request],
+            source_refs=[source],
+            provenance_refresh=_probe_provenance_refresh([source], graph=graph(before)),
+            conversion_records=(),
+            latest_years={},
+            candidate_provenances=(),
+            scope_settled=True,
+        )
+    with bound_ledger_index(members(after)) as index:
+        refreshed = refreshed_dependencies(
+            stored, [request], graph=graph(after), coverage=None, code_index=index
+        )
+
+    assert stored.sources == refreshed.sources == ((source, "2026-03-01"),)
+    assert dependency_changes(stored.as_json(), refreshed) == changed
+    if source == PLAIN:
+        assert "revisions" not in stored.as_json()
+        assert stored == refreshed
 
 
 @pytest.mark.parametrize(

@@ -56,6 +56,7 @@ from materialise.graph import (
 from materialise.member_folds import (
     dataset_policies,
     is_projection,
+    members_revision,
     newest_refresh,
     refresh_nodes,
     status_of,
@@ -1629,8 +1630,10 @@ def _probe_provenance_refresh(
 
     The id of a declared dataset among `provenance_ids` takes the newest of its Dataset node's
     date and every member provenance's (`member_folds.refresh_nodes`,
-    `member_folds.newest_refresh`), which the same batch reads, so a member's new import moves
-    the dataset's token."""
+    `member_folds.newest_refresh`), which the same batch reads, and a `members_revision`
+    digesting each of those nodes with its own date (`member_folds.members_revision`), so a
+    member's move under a newer member's date, and a member added or removed, change the
+    revision. A plain table carries its date alone."""
     if not provenance_ids:
         return {}
     nodes = {ref: refresh_nodes(ref) for ref in provenance_ids}
@@ -1642,10 +1645,14 @@ def _probe_provenance_refresh(
         last_values = arcs.get("lastDataRefreshDate", ()) if arcs is not None else ()
         return last_values[0] if last_values else None
 
-    return {
-        ref: ProvenanceRefresh(last_data_refresh_date=newest_refresh(map(own_date, nodes[ref])))
-        for ref in provenance_ids
-    }
+    def refresh(ref: str) -> ProvenanceRefresh:
+        dates = {node: own_date(node) for node in nodes[ref]}
+        return ProvenanceRefresh(
+            last_data_refresh_date=newest_refresh(dates.values()),
+            members_revision=members_revision(dates) if nodes[ref] != (ref,) else None,
+        )
+
+    return {ref: refresh(ref) for ref in provenance_ids}
 
 
 def _flatten_bound_entities(role_bindings: Mapping[str, EntityFilter]) -> tuple[str, ...]:

@@ -2,7 +2,12 @@
 unchanged definition, each member a token that exists today.
 
 - `members`: a digest of the sorted, distinct bare member dcids (`members_digest`).
-- `sources`: each dispatched provenance with its `lastDataRefreshDate`.
+- `sources`: each dispatched provenance with its `lastDataRefreshDate`, a declared dataset's
+  id with the newest of its Dataset node's and its members' dates.
+- `revisions`: each dispatched declared dataset's id with its members revision
+  (`member_folds.members_revision`), a digest of each member and its own date, so a member
+  that moves under a newer member's date, or a member added or removed, changes the
+  fingerprint where the newest date holds. A plain table has no entry.
 - `conversion_sources`: each rate table provenance with the refresh date its tables were
   admitted under (`ConversionRecord.table_refresh_date`).
 - `recipes`: each conversion recipe with the digest of its deployed body
@@ -102,14 +107,16 @@ class Dependencies:
     imported_data: str | None = None
     composites: tuple[tuple[str, str | None], ...] = ()
     held_back: tuple[tuple[str, str | None], ...] = ()
+    revisions: tuple[tuple[str, str | None], ...] = ()
 
     def as_json(self) -> dict[str, object]:
         """The stored shape, `{"schema", "members", "sources", "conversion_sources",
         "recipes", "held_back", "window"}`, with a JSON object per pair and `window` as
         `{"start_year", "end_year"}` or null. A `latest` run adds `latest_years`, one
         `{"stat_var", "elected", "served", "facet_ids", "omitted"}` per member, `omitted` a
-        list of `{"role", "entity"}`. A run keyed on an import adds `imported_data`, and a composite run `composites`, one
-        `{"provenance", "digest"}` per composite."""
+        list of `{"role", "entity"}`. A run keyed on an import adds `imported_data`, a composite run `composites`, one
+        `{"provenance", "digest"}` per composite, and a run of a declared dataset
+        `revisions`, one `{"ref", "revision"}` per dataset."""
         encoded: dict[str, object] = {"schema": DEPENDENCIES_SCHEMA, "members": self.members}
         for name, key, value in _PAIR_FIELDS:
             encoded[name] = [{key: ref, value: token} for ref, token in getattr(self, name)]
@@ -137,6 +144,10 @@ class Dependencies:
             encoded["composites"] = [
                 {"provenance": provenance, "digest": digest}
                 for provenance, digest in self.composites
+            ]
+        if self.revisions:
+            encoded["revisions"] = [
+                {"ref": ref, "revision": revision} for ref, revision in self.revisions
             ]
         return encoded
 
@@ -251,9 +262,12 @@ def build_dependencies(
     request alone took (`place_scope.DefaultPresence.unsettled`)."""
     records = [record for record in conversion_records if record is not None]
     sources: dict[str, str | None] = {}
+    revisions: dict[str, str] = {}
     for ref in source_refs:
         refresh = provenance_refresh.get(ref)
         sources[ref] = refresh.last_data_refresh_date if refresh is not None else None
+        if refresh is not None and refresh.members_revision is not None:
+            revisions[ref] = refresh.members_revision
     conversion_sources = {
         record.table_provenance_id: record.table_refresh_date for record in records
     }
@@ -261,6 +275,7 @@ def build_dependencies(
     return Dependencies(
         members=members_digest(request.stat_var for request in requests),
         sources=tuple(sorted(sources.items())),
+        revisions=tuple(sorted(revisions.items())),
         conversion_sources=tuple(sorted(conversion_sources.items())),
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
@@ -375,6 +390,9 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
     composites = _decode_pairs(encoded.get("composites", []), key="provenance", value="digest")
     if composites is None:
         return None
+    revisions = _decode_pairs(encoded.get("revisions", []), key="ref", value="revision")
+    if revisions is None:
+        return None
     return Dependencies(
         members=members,
         sources=pairs["sources"],
@@ -385,6 +403,7 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
         latest_years=latest_years,
         imported_data=imported_data,
         composites=composites,
+        revisions=revisions,
     )
 
 
@@ -402,7 +421,10 @@ def refreshed_dependencies(
     The source and conversion-source refs keep `stored`'s, each with the `lastDataRefreshDate`
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
     serves uncached. A declared dataset's id takes the newest of its Dataset node's date and
-    every member's, as the run's did (`facets._probe_provenance_refresh`). Each stored
+    every member's, as the run's did (`facets._probe_provenance_refresh`), and each stored
+    source that is a declared dataset's id now gains its members revision from the same read,
+    so a member's move, or a member added or removed in the bound code index, differs in
+    `revisions`. Each stored
     recipe takes the digest of its deployed body. `held_back` is the horizon of each stored
     source under the bound catalogue (`applied_horizons`), so a head rebuilds when the
     catalogue's mark for a source moves. `members` and `window` come from `requests` as
@@ -457,6 +479,13 @@ def refreshed_dependencies(
     return Dependencies(
         members=members_digest(request.stat_var for request in requests),
         sources=tuple((ref, _token(ref)) for ref, _ in stored.sources),
+        revisions=tuple(
+            sorted(
+                (ref, revision)
+                for ref, _ in stored.sources
+                if (revision := refresh[ref].members_revision) is not None
+            )
+        ),
         conversion_sources=tuple((ref, _token(ref)) for ref, _ in stored.conversion_sources),
         recipes=tuple((recipe_id, _recipe_digest(recipe_id)) for recipe_id, _ in stored.recipes),
         window=_clock_window(requests[0].window),
@@ -507,6 +536,8 @@ def _pairs_by_name(dependencies: Dependencies) -> dict[str, object]:
             members[f"{name}:{ref}"] = token
     for provenance, digest in dependencies.composites:
         members[f"composites:{provenance}"] = digest
+    for ref, revision in dependencies.revisions:
+        members[f"revisions:{ref}"] = revision
     return members
 
 
@@ -518,7 +549,7 @@ def dependency_changes(
 
     A member is `members`, `window`, `latest_years`, or a pair named `<field>:<ref>`, such as
     `held_back:partial:provenance/OECDDAC2A` (a horizon present on one side only differs), or
-    `sources:provenance/OECDDAC2A` or `composites:provenance/ONEBilateralAndImputedMultilateral`. A ref present on one side only differs. A source or
+    `sources:provenance/OECDDAC2A`, `revisions:<dataset id>` or `composites:provenance/ONEBilateralAndImputedMultilateral`. A ref present on one side only differs. A source or
     conversion source whose current refresh date is `None` is unknown and never differs, so a
     source with no refresh date, or one whose date the graph stops serving, never rebuilds on
     its token. A missing, malformed, or other-schema `stored` returns `("schema",)`.

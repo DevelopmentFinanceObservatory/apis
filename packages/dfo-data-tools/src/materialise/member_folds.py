@@ -22,7 +22,8 @@ The rule of each fact:
 - reported status (`reported_sources`, `status_of`): a dataset's method-less values count as
   reported when every member is a reported provenance, so a member and its dataset agree.
 - the refresh date (`refresh_nodes`, `newest_refresh`): the newest of the Dataset node's
-  date and every member's.
+  date and every member's. Its revision (`members_revision`) digests each of those nodes with
+  its own date, so a dependency fingerprint sees a member move under a newer member's date.
 - the conversion recipe (`dataset_recipe_id`): the Dataset node's own, else the one every
   member names, else none (`recipe_undeclared` at the mint).
 - a declared default policy (`dataset_policy`, `dataset_policies`): a provenance default
@@ -34,6 +35,8 @@ Every function reads the member map of the bound release's code index and raises
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
@@ -67,6 +70,7 @@ __all__ = [
     "entry_licence",
     "is_projection",
     "members_of",
+    "members_revision",
     "newest_refresh",
     "partial_mark",
     "partial_marks",
@@ -255,6 +259,16 @@ def newest_refresh(dates: Iterable[str | None]) -> str | None:
     """The newest of `dates` (ISO dates, which order as strings), a missing one adding none.
     `None` when none is given."""
     return max((date for date in dates if date is not None), default=None)
+
+
+def members_revision(dates: Mapping[str, str | None]) -> str:
+    """`sha256:` and the hex digest of the JSON list of `[node, date]` pairs of `dates`, sorted
+    by node, each node of a dataset's `refresh_nodes` with its own `lastDataRefreshDate` or
+    `None`. It moves when any node's date moves or the node set changes, which the newest date
+    (`newest_refresh`) misses when another node holds a newer date."""
+    pairs = sorted(dates.items())
+    encoded = json.dumps(pairs, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def dataset_recipe_id(ref: str, *, recipe_of: Callable[[str], str | None]) -> str | None:
