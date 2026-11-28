@@ -180,6 +180,7 @@ from .response import (
     ResolveResponse,
     Scope,
     Skill,
+    StudioRoute,
     Unsupported,
     UnsupportedPart,
 )
@@ -525,6 +526,7 @@ __all__ = [
     "StatedScopeRequest",
     "StatedScopeResponse",
     "StatusLiteral",
+    "StudioRoute",
     "TextOrigin",
     "TimeWindow",
     "Timing",

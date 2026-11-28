@@ -1,0 +1,59 @@
+{
+ "source": "Jev jev-1.14.0 answers to the Studio router's request (studio_router.ROUTER_QUESTIONS) for two queries, each with the studio probability those answers were scored at, to two places.",
+ "records": [
+  {
+   "query": "Why did aid to Ethiopia fall in 2023?",
+   "answers": {
+    "route": {
+     "type": "choice",
+     "choice": "analysis",
+     "confidence": 1.0,
+     "probabilities": {
+      "retrieval": 0.0,
+      "analysis": 1.0
+     }
+    },
+    "wants_analysis": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "in_scope": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "needs_synthesis": {
+     "type": "noul",
+     "noul": 0.95
+    }
+   },
+   "studio_probability": 0.98
+  },
+  {
+   "query": "population policy and administrative management",
+   "answers": {
+    "route": {
+     "type": "choice",
+     "choice": "retrieval",
+     "confidence": 0.96,
+     "probabilities": {
+      "retrieval": 0.98,
+      "analysis": 0.02
+     }
+    },
+    "wants_analysis": {
+     "type": "noul",
+     "noul": 0.34
+    },
+    "in_scope": {
+     "type": "noul",
+     "noul": 0.85
+    },
+    "needs_synthesis": {
+     "type": "noul",
+     "noul": 0.6
+    }
+   },
+   "studio_probability": 0.32
+  }
+ ]
+}

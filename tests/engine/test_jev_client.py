@@ -24,6 +24,7 @@ from search.engine.binders.jev_client import (
     BREAKER_WINDOW_S,
     CircuitBreaker,
     JevError,
+    JevLane,
     JevResponse,
     ask,
     build_client,
@@ -321,6 +322,50 @@ def test_breaker_opens_after_consecutive_failures_and_a_probe_closes_it(
     assert jev.ask().nouls == {"control": 0.9}
     assert jev.ask().nouls == {"control": 0.9}
     assert len(jev.requests) == sent + 2
+
+
+def test_a_lane_of_its_own_keeps_its_failures_off_the_binders_breaker(jev: _Jev) -> None:
+    """Failures on the router's lane open that lane's breaker alone, and its calls send the
+    model they name."""
+    jev.serve(_unhealthy(BREAKER_FAILURES))
+    lane = JevLane(breaker=CircuitBreaker(clock=jev.clock), semaphores=LoopLocal())
+
+    def ask_on_lane() -> JevResponse:
+        return asyncio.run(ask(_STATE, _QUESTIONS, settings=jev.settings, model="jev-x", lane=lane))
+
+    for _ in range(BREAKER_FAILURES):
+        with pytest.raises(JevError):
+            ask_on_lane()
+    with pytest.raises(JevError) as raised:
+        ask_on_lane()
+
+    assert raised.value.kind == "breaker_open"
+    assert {request["model"] for request in jev.requests} == {"jev-x"}
+    assert jev.ask().nouls == {"control": 0.9}, "the binder's breaker stayed closed"
+    assert jev.requests[-1]["model"] == jev.settings.jev_model
+
+
+def test_a_lane_holds_its_own_slot_count(jev: _Jev) -> None:
+    """A lane of one slot sends one call at a time whatever the binder's slot count, so the
+    second call waits for the slot and fails as `slot_wait`, which no breaker counts."""
+
+    async def hangs(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(10)
+        return _answers(request)
+
+    jev.serve(hangs, jev_ceiling_s=0.05)
+    lane = JevLane.fresh(slots=lambda settings: 1)
+
+    async def run() -> list[BaseException | JevResponse]:
+        return await asyncio.gather(
+            *(ask(_STATE, _QUESTIONS, settings=jev.settings, lane=lane) for _ in range(2)),
+            return_exceptions=True,
+        )
+
+    failures = asyncio.run(run())
+
+    assert sorted(getattr(f, "kind", "answered") for f in failures) == ["slot_wait", "timeout"]
+    assert len(jev.requests) == 1
 
 
 def test_a_failed_probe_opens_the_breaker_again(jev: _Jev) -> None:

@@ -30,7 +30,7 @@ from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
 from search.engine.envelope import _terminal_events, now_ms
-from search.engine.events import DoneEvent, Event, PlaceOptionsEvent, ResponseEvent
+from search.engine.events import DoneEvent, Event, PlaceOptionsEvent, ResponseEvent, RouteEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -273,6 +273,12 @@ class CacheScope:
     awaits any second sample still running. The LLM memo replays each sample of a
     wording for `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to
     app wiring.
+    `studio_routing` is the routing a routed request runs under
+    (`studio_router.StudioRouting.key_document`), None for any other, and joins the scope.
+    A routed request whose router had not answered when its parse returned, or failed in a
+    way that may pass (`studio_router.JevOutcome.unsettled`), decided without it
+    (`note_route_unsettled`), so layer 1 stores nothing under its query, and the next
+    request of the wording asks again or routes on the verdict the router memoised.
     """
 
     def __init__(
@@ -293,6 +299,7 @@ class CacheScope:
         coverage: CoverageSnapshot,
         trailing: bool,
         generation: GenerationProvider = UNKNOWN_GENERATION,
+        studio_routing: Mapping[str, object] | None = None,
     ) -> None:
         self._cache = cache
         self._fallbacks = fallbacks
@@ -338,6 +345,7 @@ class CacheScope:
                 origin_catalogue=origin.build_id,
                 un_system_enabled=origin.un_system_enabled,
                 bundle=trailing,
+                studio_routing=studio_routing,
             )
             if self.active
             else None
@@ -358,6 +366,7 @@ class CacheScope:
         self._served_timed_out = False
         self._served_degraded_leg = False
         self._served_storable = True
+        self._route_unsettled = False
         # Events from `response` on, while this request records its bundle.
         self._recorded: list[Event] = []
         # The stored bundle a hit replays.
@@ -631,6 +640,16 @@ class CacheScope:
         self._degraded_leg = self._degraded_leg or degraded_leg
         self._trailing_incomplete = self._trailing_incomplete or trailing_incomplete
 
+    def note_route_unsettled(self) -> None:
+        """Mark the request as routed without the router's answer, which keeps its answer
+        out of layer 1 (`_publish`)."""
+        self._route_unsettled = True
+
+    @property
+    def served_unstored(self) -> bool:
+        """Whether a lookup served a leader's answer that the leader did not store."""
+        return not self._served_storable
+
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
@@ -737,7 +756,8 @@ class CacheScope:
                 lease,
                 entry,
                 size,
-                storable=final.storable and (layer == 2 or self._reading_agreed()),
+                storable=final.storable
+                and (layer == 2 or (self._reading_agreed() and not self._route_unsettled)),
                 timed_out=final.timed_out,
                 degraded_leg=final.degraded_leg,
                 max_age_s=self._stamp.max_age_s,
@@ -811,8 +831,13 @@ class CacheScope:
         start_ms: int,
         llm_usage: dict | None = None,
         place_options: ReplayedPlaceOptions | None = None,
+        route_frame: bool = False,
     ) -> AsyncGenerator[Event]:
         """The events a cache hit sends for the `response` a lookup returned.
+
+        With `route_frame`, a response whose route offers Studio is preceded by the `route`
+        event a fresh run sends before it. Layer 1 sets it. A layer-2 hit replays inside a
+        run that has sent its own.
 
         The `response` and `done` events are fresh (trace id, timing, usage). A bundle hit
         sends the stored slot-options and observations events after `response`, then the
@@ -825,6 +850,8 @@ class CacheScope:
         layer-1 or layer-2 hit has no leader and reports neither, and neither applies: no
         layer stores a timed-out or degraded answer (`is_storable`).
         """
+        if route_frame and response.route is not None and response.route.mode == "offer":
+            yield RouteEvent.of(response.route, trace_id=response.diagnostics.trace_id)
         yield ResponseEvent(response=response)
         if self._replay is not None:
             for event in self._replay.trailing:

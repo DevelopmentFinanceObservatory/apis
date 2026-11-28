@@ -18,6 +18,10 @@ is the probe: its success closes the breaker, its unhealthy failure opens it aga
 failure particular to the request (a refusal, a missing key, an unanswered question) or a
 cut that a wait for a slot shares in (``slot_wait``, ``queued_timeout``) moves the breaker
 neither way, since the process's own queue spent the ceiling.
+
+The breaker and the concurrency slots belong to a `JevLane`. The binder's calls take the
+process's default lane. A caller whose failures must not open the binder's breaker or take
+its slots, such as the Studio router (`search.engine.studio_router`), passes its own.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ from typesafe_sdk import (
 
 from search.engine.binders.jev_split import split_questions
 from search.engine.clients.loop_local import LoopLocal
+from search.engine.config import JEV_POOL_CONNECTIONS
 
 if TYPE_CHECKING:
     from search.engine.config import SearchSettings
@@ -96,7 +101,11 @@ _HEALTH_KINDS: frozenset[JevErrorKind] = frozenset(
 _RETRY_STATUSES = frozenset({429, *range(500, 600)})
 
 # The SDK's own pool limits, which it applies only to a client it builds its transport for.
-_LIMITS = httpx2.Limits(max_connections=100, max_keepalive_connections=100, keepalive_expiry=30.0)
+_LIMITS = httpx2.Limits(
+    max_connections=JEV_POOL_CONNECTIONS,
+    max_keepalive_connections=JEV_POOL_CONNECTIONS,
+    keepalive_expiry=30.0,
+)
 
 
 class JevError(Exception):
@@ -242,6 +251,29 @@ _BREAKER = CircuitBreaker()
 _SEMAPHORES: LoopLocal[asyncio.Semaphore] = LoopLocal()
 
 
+def _binder_slots(settings: SearchSettings) -> int:
+    return settings.jev_max_concurrency
+
+
+@dataclass(frozen=True, slots=True)
+class JevLane:
+    """A circuit breaker and per-loop concurrency slots shared by one caller's calls and kept
+    apart from the binder's, each loop's semaphore sized by `slots` from the settings. Every
+    lane shares the client and its one connection pool (`_LIMITS`), and the lanes' slots
+    together stay below the pool's connections (`SearchSettings._validate_bounds`). A call
+    past its lane's slots waits for a slot and fails as ``slot_wait``, which no breaker
+    counts, and never waits in the pool, where a cut call fails as ``timeout``."""
+
+    breaker: CircuitBreaker
+    semaphores: LoopLocal[asyncio.Semaphore]
+    slots: Callable[[SearchSettings], int] = _binder_slots
+
+    @classmethod
+    def fresh(cls, *, slots: Callable[[SearchSettings], int] = _binder_slots) -> JevLane:
+        """A lane with a closed breaker and no slots taken, each loop holding `slots`."""
+        return cls(breaker=CircuitBreaker(), semaphores=LoopLocal(), slots=slots)
+
+
 def _client(settings: SearchSettings) -> AsyncTypeSafeClient:
     global _CLIENT
     with _CLIENT_LOCK:
@@ -291,6 +323,7 @@ async def _send(
     state: JSONContent,
     questions: dict[str, JevQuestion],
     *,
+    model: str | None,
     deadline: float,
     semaphore: asyncio.Semaphore,
     attempt: _Attempt,
@@ -313,7 +346,7 @@ async def _send(
         )
         attempt.sent = True
         try:
-            return await client.system_one(state, questions, retry=retry)
+            return await client.system_one(state, questions, model=model, retry=retry)
         except TypeSafeError as exc:
             raise _jev_error(exc) from exc
 
@@ -323,6 +356,9 @@ async def _ask_chunks(
     chunks: list[dict[str, JevQuestion]],
     *,
     settings: SearchSettings,
+    model: str | None,
+    semaphores: LoopLocal[asyncio.Semaphore],
+    slots: int,
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
     chunk cancels the rest and fails the call. A passed deadline fails it under the kind
@@ -330,7 +366,7 @@ async def _ask_chunks(
     returns them: a loop stalled past the deadline can run a response before the deadline's
     timer, and one chunk's answer without the others' completes nothing."""
     client = _client(settings)
-    semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
+    semaphore = semaphores.get(lambda: asyncio.Semaphore(slots))
     attempts = [_Attempt() for _ in chunks]
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
     tasks: list[asyncio.Task[SystemOneResponse]] = []
@@ -343,6 +379,7 @@ async def _ask_chunks(
                             client,
                             state,
                             chunk,
+                            model=model,
                             deadline=deadline,
                             semaphore=semaphore,
                             attempt=attempt,
@@ -382,8 +419,11 @@ async def ask(
     questions: Mapping[str, JevQuestion],
     *,
     settings: SearchSettings,
+    model: str | None = None,
+    lane: JevLane | None = None,
 ) -> JevResponse:
-    """Jev's answers to `questions` over `state`.
+    """Jev's answers to `questions` over `state`, from `model`, `Settings.jev_model` when
+    None, on `lane`'s breaker and slots, the binder's when None.
 
     Raises:
         ValueError: `state`, or `state` with one question, exceeds the request budget.
@@ -392,11 +432,18 @@ async def ask(
             the breaker.
     """
     chunks = split_questions(state, questions)
-    probe = _BREAKER.enter()
+    # Read at call time, so a test that installs a fresh default breaker or slots reaches it.
+    breaker = lane.breaker if lane is not None else _BREAKER
+    semaphores = lane.semaphores if lane is not None else _SEMAPHORES
+    slots = lane.slots(settings) if lane is not None else settings.jev_max_concurrency
+    probe = breaker.enter()
     ok: bool | None = None
     started = time.perf_counter()
     try:
-        response = _merge(await _ask_chunks(state, chunks, settings=settings), started=started)
+        responses = await _ask_chunks(
+            state, chunks, settings=settings, model=model, semaphores=semaphores, slots=slots
+        )
+        response = _merge(responses, started=started)
         if not questions.keys() <= response.nouls.keys() | response.choices.keys():
             raise JevError(None, "unanswered")
         ok = True
@@ -405,7 +452,7 @@ async def ask(
         ok = False if exc.kind in _HEALTH_KINDS else None
         raise
     finally:
-        _BREAKER.leave(ok, probe=probe)
+        breaker.leave(ok, probe=probe)
 
 
 def _merge(responses: list[SystemOneResponse], *, started: float) -> JevResponse:

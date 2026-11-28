@@ -352,6 +352,28 @@ def _kind_required(schema: dict[str, Any]) -> None:
         required.append("kind")
 
 
+class StudioRoute(StrictModel):
+    """The engine's decision to send a raw_text question to Studio (`RawTextInput.studio_routing`)."""
+
+    target: Literal["studio"] = Field(default="studio", description="the surface routed to")
+    mode: Literal["auto", "offer"] = Field(
+        description=(
+            "'auto' when the question needs analysis (the response is a declined answer "
+            "with reason 'requires_analysis', and the client moves the question to Studio), "
+            "'offer' when it may (the run answers as usual and the client offers Studio "
+            "beside the answer)"
+        )
+    )
+    probability: float | None = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "the router's probability that the question belongs in Studio, null when the "
+            "first parse itself read the question as requiring analysis"
+        ),
+    )
+
+
 class _AnswerBase(BaseModel):
     """Fields every resolve response carries, whatever its kind."""
 
@@ -364,6 +386,13 @@ class _AnswerBase(BaseModel):
     )
     query_echo: QueryEcho = Field(description="what the response was understood to be answering")
     diagnostics: Diagnostics = Field(description="run health, warnings, timing, build stamp")
+    route: StudioRoute | None = Field(
+        default=None,
+        description=(
+            "where the engine routed the question, present only on a raw_text request that "
+            "set `studio_routing` and whose question the router sent to Studio"
+        ),
+    )
 
 
 class Scope(StrictModel):
