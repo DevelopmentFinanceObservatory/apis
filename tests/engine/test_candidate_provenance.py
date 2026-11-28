@@ -1,6 +1,9 @@
-"""Text-recognised provenance reaches the elected candidate's forced filters.
+"""Text-recognised provenance reaches each candidate's slots the query reads.
 
-The alternate shares its crsTypeOfFinance value but reports `binder` from its own bindings.
+The alternate binds the ODA flow and standard-grant finance the query reads
+(`phase_election.query_read_bindings`), which report `text_recognized`, and its
+representative's own values elsewhere, which report `binder`. Its family holds an ODA
+member, `_EXTRA_SV1`, beside the recalled flow-30 representative.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_candidates_member_count_ordering import (
+    _EXTRA_SV1,
     _MEAS_PROP_1,
     _MEAS_QUAL_1,
     _POP_TYPE_1,
@@ -58,6 +62,9 @@ _NODES = {
         meas_qual=_MEAS_QUAL_1,
         constraint_props=list(_SHAPE1_BOUND_PROPS),
     ),
+    # The alternate's ODA member: the query reads CRS flow 10, which the recalled flow-30
+    # representative does not state.
+    _EXTRA_SV1: {"label": "test ODA sibling", "type": "StatisticalVariable"},
     # standard_bindings_from_arcs' own "value" bindings need each bound value
     # dcid to resolve too (build_slot falls back to unbound otherwise).
     **{
@@ -72,6 +79,9 @@ _OBS = {
         {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
     ],
     f"{_RECALLED_SV1}|{_E2E_KEN_DCID}": [
+        {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+    ],
+    f"{_EXTRA_SV1}|{_E2E_KEN_DCID}": [
         {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
     ],
 }
@@ -173,24 +183,29 @@ def _filter_for(spec, prop: str):
     )
 
 
-def test_elected_candidate_carries_text_recognized_alt_carries_binder():
-    """Only the elected candidate's forced filters report `text_recognized`. The alt's matching
-    crsTypeOfFinance value reports `binder`.
+def test_each_candidate_reports_text_recognized_on_the_slots_the_query_reads():
+    """The elected candidate's forced filters report `text_recognized`, and so do the
+    alternate's slots it binds as the query reads them. The alternate's slots bound from its
+    representative report `binder`.
     """
     result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM(), binder=ReplyBinder())
     assert result.status == "candidates"
     assert result.admitted_qualifier_phrases == frozenset({"oda", "standard grants"})
 
     elected = _spec_for(result.specs, _E2E_SV_DCID)
-    alt = _spec_for(result.specs, _RECALLED_SV1)
+    alt = _spec_for(result.specs, _EXTRA_SV1)
 
     assert _filter_for(elected, "crsTypeOfFlow").provenance == "text_recognized"
     assert _filter_for(elected, "crsTypeOfFinance").provenance == "text_recognized"
     assert _filter_for(elected, "crsCooperationModality").provenance == "binder"
 
     alt_finance = _filter_for(alt, "crsTypeOfFinance")
-    assert alt_finance.provenance == "binder"
-    assert alt_finance.refs and alt_finance.refs[0].ref == "CRSTypeOfFinance110"
+    assert alt_finance.provenance == "text_recognized"
+    assert [ref.ref for ref in alt_finance.refs] == ["CRSTypeOfFinance110"]
+    alt_flow = _filter_for(alt, "crsTypeOfFlow")
+    assert alt_flow.provenance == "text_recognized"
+    assert [ref.ref for ref in alt_flow.refs] == ["CRSTypeOfFlow10"]
+    assert _filter_for(alt, "crsPurpose").provenance == "binder"
 
 
 def test_elected_candidate_carries_measure_elected_alt_does_not():
@@ -220,7 +235,7 @@ def test_elected_candidate_carries_measure_elected_alt_does_not():
     assert result.status == "candidates"
 
     elected = _spec_for(result.specs, _E2E_SV_DCID)
-    alt = _spec_for(result.specs, _RECALLED_SV1)
+    alt = _spec_for(result.specs, _EXTRA_SV1)
 
     assert _filter_for(elected, "financialFlowType").provenance == "measure_elected"
     assert all(f.provenance != "measure_elected" for f in alt.resolved.trace.slot_filters)

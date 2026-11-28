@@ -2896,7 +2896,8 @@ def test_bound_values_no_unbinding_can_admit_a_member_under_refuse_binding_misma
 def test_an_alternate_whose_values_no_member_holds_together_unbinds_a_minimal_set():
     """An alternate's values come from its representative, none from the request, so the
     candidate read weighs no class: the smallest conflict goes, the first member's on a
-    tie, and the alternate answers from that member with its value still bound."""
+    tie, and the alternate answers from that member with its value still bound. A property
+    it bound as the query reads it stays text-recognised only while it holds a value."""
     graph = FakeGraph(nodes={**_PLACES, **_RELAX_NODES}, obs=_RELAX_OBS, detect={}, resolve={})
     (shape,) = derive_shapes(confirmed_svs=list(_RELAX_NODES), graph=graph)
     bindings = [
@@ -2909,7 +2910,7 @@ def test_an_alternate_whose_values_no_member_holds_together_unbinds_a_minimal_se
     ]
 
     read = _materialise_alt_shapes(
-        [_Alternate(shape, bindings)],
+        [_Alternate(shape, bindings, text_recognized=frozenset({"guarantee", "instrument"}))],
         places=[
             bound_place_context(flow_place_roles(shape, destination=["country/KEN"]), "country/KEN")
         ],
@@ -2927,6 +2928,7 @@ def test_an_alternate_whose_values_no_member_holds_together_unbinds_a_minimal_se
     assert {
         b.property_dcid: b.value_dcids for b in candidate.bindings if b.property_dcid is not None
     } == {"guarantee": [], "instrument": ["Bond"], "maturity": []}
+    assert candidate.text_recognized == {"instrument"}
 
 
 def test_a_resubmit_posting_values_no_member_holds_together_refuses_and_unbinds_nothing():

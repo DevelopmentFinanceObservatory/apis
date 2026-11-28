@@ -845,6 +845,17 @@ class SlotDefaultDisclosure:
     reading: BroadReading | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class QueryReads:
+    """The bindings a part's query reads on a shape's slots, by property
+    (`phase_election.query_read_bindings`), and the sector properties among them that bound
+    a concept's declared grouping. An alternate binds these, and its Spec marks them
+    `text_recognized`, or `declared_grouping` where `grouped`, as the elected Spec does."""
+
+    bindings: Mapping[str, SlotBindingDraft] = field(default_factory=dict)
+    grouped: frozenset[str] = frozenset()
+
+
 @dataclass(slots=True, kw_only=True)
 class ResolveState:
     """Per-variable state for the stages extracted out of resolve_variable.
@@ -1299,7 +1310,7 @@ class ResolveState:
     # (`phase_rank_bind._force_qualifier_bindings`); `build_spec` marks their provenance.
     text_recognized_properties: frozenset[str] = frozenset()
     # The text-recognised properties a sector concept the text named bound to its declared
-    # grouping (`phase_election._settle_sector`); `build_spec` marks their provenance
+    # grouping (`phase_election._bind_query_codes`); `build_spec` marks their provenance
     # `declared_grouping`. A subset of `text_recognized_properties`, since the text bound them.
     grouped_properties: frozenset[str] = frozenset()
     # Measure properties inserted by family election; `build_spec` marks their provenance.
