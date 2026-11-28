@@ -342,12 +342,13 @@ class ComponentReadResponse(BaseModel):
     )
     resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
     period_mode: Literal["fixed", "rolling"] = Field(
-        description="whether the periods this revision draws stay put when the card is drawn "
-        "on newer data: fixed when its intent states every period it draws as a label, rolling "
-        "when it states a relative period, has no window or a window with a side omitted, "
-        "picks one period from the data inside a window of several (a stat card without a "
-        "change, an entity-mode bar chart), or draws its last value before its window's end. "
-        "A note and a source card are fixed"
+        description="whether the span of periods this revision draws stays put when the card "
+        "is drawn on newer data. A stat card with a change follows its change basis alone. "
+        "Any other card is rolling when its window states a relative period or omits a side, "
+        "when it has no window, when it picks one period from the data (a stat card without a "
+        "change, an entity-mode bar chart) short of its window's end, or when its last drawn "
+        "value falls before its window's end, and fixed otherwise. A note and a source card "
+        "are fixed. Values and the series shown can change inside a fixed span"
     )
     retention: RetentionModel | None = Field(
         default=None,

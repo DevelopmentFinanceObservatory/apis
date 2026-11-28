@@ -232,21 +232,27 @@ def resolve_rolling(
 
 
 def period_mode(*, intent: Mapping[str, object], component: Mapping[str, object]) -> PeriodMode:
-    """Whether the periods a revision draws stay put on newer data, read from its stored
-    `intent` and the `component` it minted (`resolved_payload.component`).
+    """Whether the span of periods a revision draws stays put on newer data, read from its
+    stored `intent` and the `component` it minted (`resolved_payload.component`).
 
-    A card is `"rolling"` when its intent states a relative period in `window` or
-    `change.basis`, since each render resolves it again on the frame it draws. It is
-    `"rolling"` when it has no window or its window omits a side, since the omitted side runs
-    to the edge of the frame's coverage (`assembler.mint.builders.complete_window`). A card
-    that draws one period it chooses inside a stated window, a stat card without a change at
-    its latest observed point and an entity-mode bar chart at the latest period every series
-    holds, is `"rolling"` unless the window starts and ends at the same period. A stat card
-    with a change draws the change's two periods, its window aside. Any other card draws
-    every point the frame holds in its window, so it is `"rolling"` when the last period it
-    draws with a value is earlier than its stated `window.end`, since newer data fills the
-    periods in between, and `"fixed"` otherwise. A `note_narration` or `source_card` draws no
-    period and is `"fixed"`.
+    A stat card with a `change` draws the change's two periods, so it is `"rolling"` when its
+    `change.basis` holds a relative period and `"fixed"` otherwise, whatever its window. Any
+    other card is `"rolling"` when its `window` holds a relative period, since each render
+    resolves it again on the frame it draws, and when it has no window or its window omits a
+    side, since the omitted side runs to the edge of the frame's coverage
+    (`assembler.mint.builders.complete_window`). A card that draws one period it chooses
+    inside a stated window, a stat card without a change at its latest observed point and an
+    entity-mode bar chart at the latest period every series holds, is `"fixed"` when that
+    period is the window's end, which caps it, and `"rolling"` otherwise. Any other card draws
+    every point the frame holds in its window, so it is `"rolling"` when the last period any
+    series draws with a value is earlier than its stated `window.end`, since newer data fills
+    the periods in between, and `"fixed"` otherwise. A `note_narration` or `source_card` draws
+    no period and is `"fixed"`.
+
+    The mode describes the span alone. Newer data can change values or which series appear
+    without moving the span: a lagging series filling in years inside it, or an `order` with
+    no `period` ranking series at the latest period under a series cap. `period_mode` reports
+    neither.
 
     A derived (`ops_`) frame's rolling anchor sets "latest" for the intent's relative periods
     alone, so a card on one is classified by the same rules."""
@@ -257,29 +263,34 @@ def period_mode(*, intent: Mapping[str, object], component: Mapping[str, object]
     change = intent.get("change")
     sides = cast("Mapping[str, object]", window) if isinstance(window, Mapping) else {}
     basis = cast("Sequence[object]", change.get("basis", ())) if isinstance(change, Mapping) else ()
-    if any(_is_relative(period) for period in (*sides.values(), *basis)):
-        return "rolling"
     if member == "stat_card" and basis:
-        return "fixed"
-    start, end = sides.get("start"), sides.get("end")
-    if start is None or end is None:
+        return "rolling" if any(_is_relative(period) for period in basis) else "fixed"
+    if any(_is_relative(period) for period in sides.values()):
         return "rolling"
-    if _chooses_one_period(member=member, component=component):
-        return "fixed" if start == end else "rolling"
+    end = sides.get("end")
+    if sides.get("start") is None or end is None:
+        return "rolling"
+    chooses, chosen = _chosen_period(member=member, component=component)
+    if chooses:
+        return "fixed" if chosen == end else "rolling"
     drawn_end = _drawn_end(component=component)
     if drawn_end is None or drawn_end < cast(str, end):
         return "rolling"
     return "fixed"
 
 
-def _chooses_one_period(*, member: object, component: Mapping[str, object]) -> bool:
-    """Whether the card draws one period it picks from the data inside its window."""
+def _chosen_period(
+    *, member: object, component: Mapping[str, object]
+) -> tuple[bool, object | None]:
+    """Whether the card draws one period it picks from the data inside its window, and that
+    period: a stat card's `period`, an entity-mode bar chart's `category_axis.period`."""
     if member == "stat_card":
-        return True
+        return True, component.get("period")
     if member == "bar_chart":
         axis = component.get("category_axis")
-        return isinstance(axis, Mapping) and axis.get("mode") == "entity"
-    return False
+        if isinstance(axis, Mapping) and axis.get("mode") == "entity":
+            return True, axis.get("period")
+    return False, None
 
 
 def _drawn_end(*, component: Mapping[str, object]) -> str | None:

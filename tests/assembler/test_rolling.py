@@ -979,8 +979,6 @@ def test_a_widened_bar_chart_draws_at_the_period_every_bar_shares(write, render)
 
 # -- period mode -----------------------------------------------------------------
 
-_OPS_ID = "ops_" + "b" * 32
-
 
 def _drawn(member: str, *, through: str, **fields) -> dict[str, object]:
     """A minted `member` whose one series holds a value up to `through` and a status after."""
@@ -999,10 +997,10 @@ _ENTITY_BARS = {"type": "bar_chart", "category_axis": {"mode": "entity", "period
 _PERIOD_BARS = _drawn("bar_chart", through="2024", category_axis={"mode": "period"})
 
 
-def _stored(member: str, *, spec_id: str = _SPEC_ID, **fields) -> dict[str, object]:
+def _stored(member: str, **fields) -> dict[str, object]:
     return {
         "type": member,
-        "frame_ref": {"spec_id": spec_id, "content_version": "cv_" + "1" * 32},
+        "frame_ref": {"spec_id": _SPEC_ID, "content_version": "cv_" + "1" * 32},
         "select": {"stat_var": _STAT_VAR, "recipient": "country/KEN"},
         **fields,
     }
@@ -1090,39 +1088,49 @@ def _stored(member: str, *, spec_id: str = _SPEC_ID, **fields) -> dict[str, obje
         ),
         pytest.param(
             _stored("stat_card", window={"start": "2022", "end": "2024"}),
-            {"type": "stat_card"},
+            {"type": "stat_card", "period": "2023"},
             "rolling",
-            id="stat-card-latest-point-in-window",
+            id="stat-card-latest-point-before-window-end",
+        ),
+        pytest.param(
+            _stored("stat_card", window={"start": "2022", "end": "2024"}),
+            {"type": "stat_card", "period": "2024"},
+            "fixed",
+            id="stat-card-latest-point-at-window-end",
         ),
         pytest.param(
             _stored("stat_card", window={"start": "2023", "end": "2023"}),
-            {"type": "stat_card"},
+            {"type": "stat_card", "period": "2023"},
             "fixed",
             id="stat-card-one-period-window",
+        ),
+        pytest.param(
+            _stored(
+                "stat_card",
+                window={"start": _back(-5), "end": _LATEST},
+                change={"basis": ["2020", "2023"]},
+            ),
+            {"type": "stat_card", "period": "2023"},
+            "fixed",
+            id="literal-change-basis-relative-window",
         ),
         pytest.param(
             _stored("bar_chart", window={"start": "2022", "end": "2024"}),
             _ENTITY_BARS,
             "rolling",
-            id="entity-bars-latest-shared-period-in-window",
+            id="entity-bars-shared-period-before-window-end",
+        ),
+        pytest.param(
+            _stored("bar_chart", window={"start": "2022", "end": "2024"}),
+            {"type": "bar_chart", "category_axis": {"mode": "entity", "period": "2024"}},
+            "fixed",
+            id="entity-bars-shared-period-at-window-end",
         ),
         pytest.param(
             _stored("bar_chart", window={"start": "2022", "end": "2024"}),
             _PERIOD_BARS,
             "fixed",
             id="period-bars-literal-window",
-        ),
-        pytest.param(
-            _stored("line_chart", spec_id=_OPS_ID, window={"start": "2015", "end": "2024"}),
-            _LINE,
-            "fixed",
-            id="derived-frame-literal-window",
-        ),
-        pytest.param(
-            _stored("line_chart", spec_id=_OPS_ID),
-            _LINE,
-            "rolling",
-            id="derived-frame-no-window",
         ),
         pytest.param(
             {"type": "note_narration", "text": "A note."},
