@@ -92,6 +92,7 @@ from search.engine.region.requirements import (
 from search.engine.region.result import RegionResult
 from search.engine.region.source_choice import source_record
 from search.engine.region.state import (
+    QueryReads,
     ResolveState,
     SlotDefaultDisclosure,
     for_shape,
@@ -514,17 +515,18 @@ def _bind_query_codes(
     return _QueryCodes(settled, recognised, frozenset(grouped))
 
 
-def query_read_bindings(state: ResolveState, shape: ShapeDraft) -> dict[str, SlotBindingDraft]:
+def query_read_bindings(state: ResolveState, shape: ShapeDraft) -> QueryReads:
     """The bindings the part's query reads on `shape`'s slots, by property: the codes its
     own admitted qualifiers force there (`_shape_qualifiers`, `_bind_query_codes`), as an
-    election of `shape` with no slot drafted binds them. "education aid" binds CRS purpose
-    110 on any shape holding the purpose slot. An alternate binds these in place of its
+    election of `shape` with no slot drafted binds them, and the sector properties among
+    them that bound a concept's grouping. "education aid" binds CRS purpose 110 on any
+    shape holding the purpose slot. An alternate binds these in place of its
     representative's own values on the same slots (`candidates.walk_alternate`), so its
     identity is the one a question electing it mints."""
     own, _ties, _unheld = _shape_qualifiers(state, shape)
     terms = _admit_qualifier_matches_against_elected_shape(own, shape)
     if not terms:
-        return {}
+        return QueryReads()
     read = _bind_query_codes(
         _with_every_slot_drafted([], shape),
         shape,
@@ -532,11 +534,14 @@ def query_read_bindings(state: ResolveState, shape: ShapeDraft) -> dict[str, Slo
         variable=state.variable,
         scope=state.scope_selection,
     )
-    return {
-        prop: b
-        for b in read.bindings
-        if (prop := b.property_dcid) is not None and prop in read.text_recognized
-    }
+    return QueryReads(
+        {
+            prop: b
+            for b in read.bindings
+            if (prop := b.property_dcid) is not None and prop in read.text_recognized
+        },
+        read.grouped,
+    )
 
 
 def _with_every_slot_drafted(

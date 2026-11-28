@@ -1007,10 +1007,15 @@ def _finish_candidate(
         role_axis_facts=cand_role_axis_facts,
         facet_bindings=answer.facet_bindings,
         answer=answer.identity,
+        # An alternate's own text-recognised properties are those it binds as the query
+        # reads them (`candidates._Alternate`). It carries no measure-elected or defaulted
+        # property, so the provenance sets stay disjoint.
         text_recognized_properties=(
-            text_recognized_properties if cand_bindings is state.bindings else frozenset()
+            text_recognized_properties if cand_bindings is state.bindings else cand.text_recognized
         ),
-        grouped_properties=(grouped_properties if cand_bindings is state.bindings else frozenset()),
+        grouped_properties=(
+            grouped_properties if cand_bindings is state.bindings else cand.grouped
+        ),
         # Judged under the unit request this candidate is served under, as the definite
         # answer's trace is.
         query_qualifiers=answer_terms(

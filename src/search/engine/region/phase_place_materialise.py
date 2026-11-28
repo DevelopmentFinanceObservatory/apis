@@ -141,6 +141,7 @@ from search.engine.region.requirements import record_reading, settle_answer, str
 from search.engine.region.result import FacetAxisFilter, RegionResult
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
+    QueryReads,
     ResolveState,
     TakerStatVars,
     for_shape,
@@ -1219,7 +1220,7 @@ def _walk_key(
     )
     reads = tuple(
         (prop, read.kind, tuple(read.value_dcids))
-        for prop, read in sorted(_query_reads(state, index, shape).items())
+        for prop, read in sorted(_query_reads(state, index, shape).bindings.items())
     )
     return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv, strays, reads)
 
@@ -1233,12 +1234,12 @@ def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
     return {prop: frozenset(values) for prop, values in by_prop.items()}
 
 
-def _query_reads(state: ResolveState, index: int, shape: ShapeDraft) -> dict[str, SlotBindingDraft]:
+def _query_reads(state: ResolveState, index: int, shape: ShapeDraft) -> QueryReads:
     """The codes the query reads on the slots of the alternate at `index`, offered as
     `shape` (`phase_election.query_read_bindings`). A breakdown of the elected shape walks
     under its own bindings (`ResolveState.breakdown_rivals`), so it reads none."""
     if index in state.breakdown_rivals:
-        return {}
+        return QueryReads()
     return query_read_bindings(state, shape)
 
 

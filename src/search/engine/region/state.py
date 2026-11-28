@@ -845,6 +845,17 @@ class SlotDefaultDisclosure:
     reading: BroadReading | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class QueryReads:
+    """The bindings a part's query reads on a shape's slots, by property
+    (`phase_election.query_read_bindings`), and the sector properties among them that bound
+    a concept's declared grouping. An alternate binds these, and its Spec marks them
+    `text_recognized`, or `declared_grouping` where `grouped`, as the elected Spec does."""
+
+    bindings: Mapping[str, SlotBindingDraft] = field(default_factory=dict)
+    grouped: frozenset[str] = frozenset()
+
+
 @dataclass(slots=True, kw_only=True)
 class ResolveState:
     """Per-variable state for the stages extracted out of resolve_variable.

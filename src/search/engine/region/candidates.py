@@ -42,6 +42,7 @@ from search.engine.region.reading import ElectedReads, ElectionFacts, ReadBindin
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
+    QueryReads,
     ResolveState,
     presence_covering,
     presence_lacking,
@@ -123,7 +124,12 @@ class _Candidate:
     (`reading.elect_at_read`), None where its identity counts no total with a bilateral
     source. A
     reading that names a composite was read within the composite's population, and the
-    candidate's Spec is minted as that composite (`candidate_grounding._candidate_answer`)."""
+    candidate's Spec is minted as that composite (`candidate_grounding._candidate_answer`).
+
+    `text_recognized` and `grouped` are the properties an alternate binds as the query reads
+    them (`_Alternate`) that still hold values, which its Spec marks as the elected Spec
+    marks `ResolveState.text_recognized_properties` and `ResolveState.grouped_properties`.
+    The elected shape reads those from the state and leaves both empty."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -135,6 +141,8 @@ class _Candidate:
     uncovered: tuple[ResolvedQualifier, ...] | None = None
     stale_departure: Departed | None = None
     reading: ReadingDecision | None = field(kw_only=True)
+    text_recognized: frozenset[str] = field(default=frozenset(), kw_only=True)
+    grouped: frozenset[str] = field(default=frozenset(), kw_only=True)
 
 
 def _prewarm_places(
@@ -168,12 +176,16 @@ class _Alternate:
     """An alternate ready to materialise: its shape narrowed to the role class its entities
     elect, its constraint bindings (`walk_alternate`), whether the mint's walk
     left its members unsettled (`MembershipAuthority.settled`), and what the mint states of
-    the members it settled (`MembershipResolution.walked`)."""
+    the members it settled (`MembershipResolution.walked`), and the properties it binds as
+    the query reads them (`QueryReads`), with those among them that bound a sector
+    concept's grouping."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
     unverified: bool = False
     walked: WalkedMembers | None = None
+    text_recognized: frozenset[str] = frozenset()
+    grouped: frozenset[str] = frozenset()
 
 
 def _stray_holdings(
@@ -274,7 +286,7 @@ def walk_alternate(
     role_class_walks: RoleClassWalks | None = None,
     scope: SourceScope | None = None,
     stray_values: Mapping[str, frozenset[str]] | None = None,
-    query_reads: Mapping[str, SlotBindingDraft] | None = None,
+    query_reads: QueryReads | None = None,
     bindings: Sequence[SlotBindingDraft] | None = None,
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
@@ -289,7 +301,8 @@ def walk_alternate(
     binds to the drafted values its members apply (`_with_stray_values`), and on a property
     the part's query reads (`query_reads`), which it binds as the query reads it, as an
     election of its shape does (`_with_query_reads`): beside "education aid", an alternate
-    whose representative states basic education binds education. A breakdown of
+    whose representative states basic education binds education. Those properties are
+    text-recognised on the alternate (`_Alternate.text_recognized`). A breakdown of
     the elected shape (`ResolveState.breakdown_rivals`) passes its own `bindings` instead.
     The alternate names the dataset its shape names (`with_named_source`), as the chosen
     shape does, so its identity is the one a question electing it mints. When the shape names none, the alternate names the
@@ -311,13 +324,14 @@ def walk_alternate(
     walk can change the roles the shape declares, so the caller assigns the returned
     shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
+    bindings_given = bindings is not None
     served = _served_alternate(
         shape,
         role_keys,
         rep_sv,
         scope=scope,
         stray_values=stray_values or {},
-        query_reads=query_reads or {},
+        query_reads=query_reads.bindings if query_reads is not None else {},
         bindings=bindings,
     )
     if served is None:
@@ -335,7 +349,15 @@ def walk_alternate(
         return None
     elected = resolution.value
     canonical = canonical_pin_bindings(elected, bindings, role_keys)
-    return _Alternate(elected, canonical, not resolution.authority.settled, resolution.walked)
+    text_recognized, grouped = _read_provenance(query_reads, bindings_given=bindings_given)
+    return _Alternate(
+        elected,
+        canonical,
+        not resolution.authority.settled,
+        resolution.walked,
+        text_recognized=text_recognized,
+        grouped=grouped,
+    )
 
 
 def settle_alternate(
@@ -345,7 +367,7 @@ def settle_alternate(
     *,
     scope: SourceScope | None = None,
     stray_values: Mapping[str, frozenset[str]] | None = None,
-    query_reads: Mapping[str, SlotBindingDraft] | None = None,
+    query_reads: QueryReads | None = None,
     bindings: Sequence[SlotBindingDraft] | None = None,
 ) -> _Alternate | None:
     """The alternate `walk_alternate` walks, before its walk: `shape` naming the dataset it
@@ -360,13 +382,30 @@ def settle_alternate(
         rep_sv,
         scope=scope,
         stray_values=stray_values or {},
-        query_reads=query_reads or {},
+        query_reads=query_reads.bindings if query_reads is not None else {},
         bindings=bindings,
     )
     if served is None:
         return None
-    shape, bindings = served
-    return _Alternate(shape, canonical_pin_bindings(shape, bindings, role_keys))
+    shape, served_bindings = served
+    text_recognized, grouped = _read_provenance(query_reads, bindings_given=bindings is not None)
+    return _Alternate(
+        shape,
+        canonical_pin_bindings(shape, served_bindings, role_keys),
+        text_recognized=text_recognized,
+        grouped=grouped,
+    )
+
+
+def _read_provenance(
+    query_reads: QueryReads | None, *, bindings_given: bool
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The properties an alternate binds as the query reads them (`_with_query_reads`),
+    and those among them that bound a sector concept's grouping: none where a breakdown
+    passes its own bindings."""
+    if query_reads is None or bindings_given:
+        return frozenset(), frozenset()
+    return frozenset(query_reads.bindings), query_reads.grouped
 
 
 def _served_alternate(
@@ -652,6 +691,8 @@ def _materialise_alt_shapes(
             if isinstance(result, Materialised) and result.has_data:
                 if alternate.unverified:
                     result = dataclasses.replace(result, membership_unverified=True)
+                # A query-read property that unbinding relaxed is no longer the text's.
+                held = {b.property_dcid for b in bindings if b.value_dcids}
                 results.append(
                     _Candidate(
                         settled_shape(alternate.shape, result),
@@ -661,6 +702,8 @@ def _materialise_alt_shapes(
                         alternate.walked,
                         date_request,
                         reading=reads.settled(place),
+                        text_recognized=alternate.text_recognized & held,
+                        grouped=alternate.grouped & held,
                     )
                 )
     return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)
