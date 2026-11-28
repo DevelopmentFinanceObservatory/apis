@@ -212,9 +212,17 @@ def named_dataset(index: CodeIndex, facets: Mapping[str, Mapping[str, object]]) 
     serves among those refs (`identity_family_query`, `eligible_datasets`). A ref only
     listed rows record (`CodeIndex.listed_statvars`), as IDS is, or one the index does not
     hold at all, names no dataset either: the pin scopes the reads alone, and members
-    resolve as for an identity that pins nothing."""
-    refs = frozenset(pinned_refs(facets))
+    resolve as for an identity that pins nothing. A member provenance's ref reads as its
+    dataset's (`pinned_datasets`)."""
+    refs = pinned_datasets(index, facets)
     return next(iter(refs)) if len(refs) == 1 and refs <= _held_datasets(index) else None
+
+
+def pinned_datasets(index: CodeIndex, facets: Mapping[str, Mapping[str, object]]) -> frozenset[str]:
+    """The datasets (`CodeIndex.dataset_of`) of the refs an identity's provenance facet binds
+    (`pinned_refs`). A pin of some of a dataset's members elects that dataset; the read's
+    scope admits only the members it names."""
+    return frozenset(map(index.dataset_of, pinned_refs(facets)))
 
 
 def _held_datasets(index: CodeIndex) -> frozenset[str]:
@@ -235,7 +243,7 @@ def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> F
     scopes nothing. The Datasets mint and Search both read an identity through this function, so they
     elect over the same inputs."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-    refs = frozenset(pinned_refs(facets))
+    refs = pinned_datasets(index, facets)
     datasets = refs & _held_datasets(index)
     return FamilyQuery(
         five_tuple=five_tuple_from_identity(cast("Mapping[str, object]", identity["shape"])),

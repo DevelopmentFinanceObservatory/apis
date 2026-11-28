@@ -384,3 +384,25 @@ def test_a_continuation_scoped_to_a_dataset_admits_the_rows_of_every_member():
         continued.admits(method=_ESTIMATED, provenance=cell)
         for cell in rows["provenance"].to_pylist()
     ] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("scope", "marks"),
+    [
+        pytest.param(None, ("2025",), id="unscoped"),
+        pytest.param({NORTH, SOUTH}, ("2025",), id="every-member"),
+        pytest.param({NORTH}, (), id="north-alone"),
+        pytest.param({SOUTH}, ("2025",), id="south-alone"),
+    ],
+)
+def test_a_read_is_held_back_by_the_marks_of_the_members_it_admits(
+    scope: set[str] | None, marks: tuple[str, ...]
+):
+    """South marks 2025 partial and North marks nothing, so a read admitting North alone is
+    held back by no mark, whichever id it reads by, and any read admitting South by South's."""
+    (north,) = _unmarked((NORTH,)).values()
+    catalogue = documenting({NORTH: north, SOUTH: {**north, "partialObservationDate": ("2025",)}})
+    if scope is not None:
+        catalogue = catalogue.scoped(frozenset(scope))
+
+    assert {partial_marks(catalogue, ref) for ref in (LEDGER, NORTH, SOUTH)} == {marks}

@@ -877,27 +877,22 @@ def test_a_sum_over_two_member_provenances_of_one_dataset_folds_to_one_total(
     [{"state": "value", "ref": _NORTH}, {"state": "set", "refs": [_NORTH]}],
     ids=["value", "set"],
 )
-def test_a_pin_on_a_member_provenance_refuses_naming_the_dataset(pin):
-    """The provenance axis holds the dataset's id, so a member provenance is no value on it:
-    the mint refuses `facet_not_available` and offers the dataset."""
+def test_a_pin_on_a_member_provenance_serves_that_member_alone(pin):
+    """A member pin scopes the read to that member (`adapter.provenance_pin`) and binds the
+    dataset's id on the provenance axis, so the mint serves North's member alone and cites
+    the dataset."""
     spec_id, sidecar = _ledger_spec(pin)
 
-    resp = _ledger_client().post(
-        "/api/datasets",
-        json={
-            "schema_version": 1,
-            "input": {"kind": "spec_id", "spec_id": spec_id, "definition": sidecar},
-            "options": {"bundle": False},
-        },
-    )
+    manifest = _mint(_ledger_client(), spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
 
-    assert resp.status_code == 422, resp.text
-    problem = resp.json()
-    assert problem["code"] == "facet_not_available"
-    assert problem["issues"]
-    for issue in problem["issues"]:
-        assert issue["axis"] == "provenance"
-        assert [alternative["ref"] for alternative in issue["alternatives"]] == [_LEDGER]
+    counts = {
+        entry["ref"]: entry["observation_count"]
+        for entry in manifest["trace"]["resolved_stat_vars"]
+    }
+    assert counts == {f"dcid:{_MEMBER_A}": 1, f"dcid:{_MEMBER_B}": 0}
+    assert [
+        entry["ref"] for entry in manifest["trace"]["facets"] if entry["axis"] == "provenance"
+    ] == [_LEDGER]
 
 
 def _served_texts(data: bytes) -> list[str]:

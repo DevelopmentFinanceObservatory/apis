@@ -75,6 +75,7 @@ from origin_catalogue import (
     record_un_read_failure,
     recording_un_blocked_places,
 )
+from origin_catalogue.context import current_source_scope
 from origin_catalogue.graph import is_un_dcid
 from origin_catalogue.origins import BASE, DFO
 from series_coverage.coverage_types import BoundRoles, FacetCoverage, Role
@@ -267,7 +268,9 @@ class ElectedDataset:
         A member the code index also records under another dataset can hold observations
         under that one alone, and is then unpopulated. Raises `DatasetDisagreementError`
         when no dispatchable candidate is this dataset's and one carries a provenance that is
-        a member of no dataset the code index records for the member. The mint
+        a member of no dataset the code index records for the member, unless the bound
+        catalogue's source scope leaves out one of this dataset's members: the member is then
+        unpopulated under the scope, and the read answers as its scope's no data. The mint
         (`dataset_candidates`) keeps candidates through this method, and Search runs it over
         the members a mint of its answer serves
         (`search.engine.retrieval.elected_dataset.check_elected_datasets`), so both refuse
@@ -284,7 +287,8 @@ class ElectedDataset:
                     and c.provenance_id not in self.recorded_provenances
                 }
             )
-            if unrecorded:
+            scope = current_source_scope()
+            if unrecorded and (scope is None or scope.issuperset(self.provenances)):
                 raise DatasetDisagreementError(
                     f"{stat_var!r} is a member of dataset {self.provenance!r}, and the "
                     f"code index records it under {list(self.recorded_provenances)!r}; its "

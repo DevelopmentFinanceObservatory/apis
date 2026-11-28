@@ -2,10 +2,11 @@
 
 The synthetic `dataset/Ledger` splits one table's series between two provenances, as a
 register filed by publisher does: `provenance/LedgerNorth` holds one recipient and
-`provenance/LedgerSouth` another. A source scope names the dataset by its id whichever of its
-references a mention names, a read under it admits both members, the election serves both
-members' facets as one group, and the answer cites and labels the dataset. The plain table
-`provenance/Plain` is the control throughout.
+`provenance/LedgerSouth` another. A source scope allows the dataset by its id whichever of
+its references a mention names, and a read under it admits exactly the members the mention
+names: the dataset's id both, a member's id that member alone. An unscoped election serves
+both members' facets as one group, and the answer cites and labels the dataset. The plain
+table `provenance/Plain` is the control throughout.
 """
 
 from __future__ import annotations
@@ -21,23 +22,27 @@ import pytest
 from code_index import shared as shared_module
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp
+from datasets_api.adapter import provenance_pin
 from graph_release.context import bound_release, current_release
+from materialise.errors import DatasetDisagreementError
 from materialise.facets import ElectedDataset
-from origin_catalogue import bound_catalogue
+from origin_catalogue import bound_catalogue, current_catalogue
 from origin_catalogue.catalogue import DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
 from origin_catalogue.origins import BASE, DFO
 from search.engine import spec_build
 from search.engine.clients.graph import Facet
+from search.engine.errors import EngineInputError
 from search.engine.extract import DateRequest
 from search.engine.facet_refusals import candidate_facet_refusal
 from search.engine.region.resubmit_request import pinned_provenance_scope
 from search.engine.retrieval import read_plan
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.role_resolve import _role_plan
-from search.engine.source_scope import SourceScope, compile_sources
+from search.engine.source_scope import SourceScope, admitted_refs, compile_sources
 from search.models import (
     BaseIdentity,
+    IdentityBindingSet,
     IdentityBindingValue,
     ProvenanceRef,
     SourceMention,
@@ -130,40 +135,101 @@ def _scope(*mentions: SourceMention) -> SourceScope:
 
 
 @pytest.mark.parametrize(
-    ("mention", "allowed", "provenances"),
+    ("mentions", "allowed", "provenances"),
     [
         pytest.param(
-            SourceMention(text="Ledger Register"),
+            [SourceMention(text="Ledger Register")], {_LEDGER}, {_NORTH, _SOUTH}, id="the-dataset"
+        ),
+        pytest.param([SourceMention(text="Ledger North")], {_LEDGER}, {_NORTH}, id="one-member"),
+        pytest.param([SourceMention(ref=_SOUTH)], {_LEDGER}, {_SOUTH}, id="one-member-ref"),
+        pytest.param(
+            [SourceMention(text="Ledger North"), SourceMention(ref=_SOUTH)],
             {_LEDGER},
             {_NORTH, _SOUTH},
-            id="the-dataset",
+            id="both-members",
         ),
         pytest.param(
-            SourceMention(text="Ledger North"), {_LEDGER}, {_NORTH, _SOUTH}, id="one-member"
+            [SourceMention(text="Ledger Register"), SourceMention(ref=_NORTH)],
+            {_LEDGER},
+            {_NORTH, _SOUTH},
+            id="the-dataset-and-a-member",
         ),
-        pytest.param(SourceMention(ref=_SOUTH), {_LEDGER}, {_NORTH, _SOUTH}, id="one-member-ref"),
-        pytest.param(SourceMention(text="Plain Table"), {_PLAIN}, {_PLAIN}, id="plain-table"),
+        pytest.param([SourceMention(text="Plain Table")], {_PLAIN}, {_PLAIN}, id="plain-table"),
+        pytest.param(
+            [SourceMention(text="Ledger South", polarity="exclude")],
+            {_LEDGER, _PLAIN, _UNDECLARED},
+            {_NORTH, _PLAIN, _UNDECLARED},
+            id="excluding-a-member",
+        ),
+        pytest.param(
+            [
+                SourceMention(text="Ledger Register"),
+                SourceMention(text="Ledger South", polarity="exclude"),
+            ],
+            {_LEDGER},
+            {_NORTH},
+            id="the-dataset-less-a-member",
+        ),
+        pytest.param(
+            [
+                SourceMention(text="Ledger North", polarity="exclude"),
+                SourceMention(ref=_SOUTH, polarity="exclude"),
+            ],
+            {_PLAIN, _UNDECLARED},
+            {_PLAIN, _UNDECLARED},
+            id="excluding-every-member",
+        ),
+        pytest.param(
+            [SourceMention(text="Ledger Register", polarity="exclude")],
+            {_PLAIN, _UNDECLARED},
+            {_PLAIN, _UNDECLARED},
+            id="excluding-the-dataset",
+        ),
     ],
 )
-def test_a_scope_naming_the_dataset_or_a_member_allows_the_dataset(
-    index: CodeIndex, mention: SourceMention, allowed: set[str], provenances: set[str]
+def test_a_scope_admits_exactly_the_members_its_mentions_name(
+    index: CodeIndex, mentions: list[SourceMention], allowed: set[str], provenances: set[str]
 ) -> None:
     """A shape's datasets are compared with the scope's `allowed`, so the scope holds the
-    dataset's id however the mention names it, and a read under it admits every member."""
-    scope = _scope(mention)
+    dataset's id however a mention names it. A read under it admits the members the mentions
+    name: the dataset's id every member, a member's id that member alone, and an exclusion
+    removes what it names."""
+    scope = _scope(*mentions)
 
     assert scope.allowed == allowed
-    assert scope.expansions == (frozenset(allowed),)
     assert scope.provenances == provenances
 
 
-def test_a_scope_naming_no_source_allows_every_dataset_and_excluding_a_member_drops_it(
-    index: CodeIndex,
-) -> None:
-    excluding = _scope(SourceMention(text="Ledger South", polarity="exclude"))
+def test_an_exclusion_leaving_no_member_refuses(index: CodeIndex) -> None:
+    """The scope empties at the exclusion that removes the last admitted member."""
+    with pytest.raises(EngineInputError) as refused:
+        compile_sources(
+            [SourceMention(text="Ledger North"), SourceMention(ref=_NORTH, polarity="exclude")],
+            catalogue=_CATALOGUE,
+            pointers=["/0", "/1"],
+        )
 
-    assert excluding.allowed == {_PLAIN, _UNDECLARED}
-    assert excluding.provenances == {_PLAIN, _UNDECLARED}
+    assert (refused.value.code, refused.value.pointer) == ("request_invalid", "/1")
+
+
+@pytest.mark.parametrize(
+    ("scope", "refs"),
+    [
+        pytest.param(None, (_LEDGER, _PLAIN), id="unscoped"),
+        pytest.param({_NORTH, _SOUTH, _PLAIN}, (_LEDGER, _PLAIN), id="every-member"),
+        pytest.param({_NORTH, _PLAIN}, (_NORTH, _PLAIN), id="one-member"),
+    ],
+)
+def test_an_answer_pins_the_members_its_scope_admits(
+    index: CodeIndex, scope: set[str] | None, refs: tuple[str, ...]
+) -> None:
+    """The identity names a dataset by its id when the read admits every member, so a set
+    of every member hashes as the dataset does, and by the admitted members otherwise, so a
+    read of one member never shares an answer with the dataset."""
+    catalogue = _CATALOGUE if scope is None else _CATALOGUE.scoped(frozenset(scope))
+
+    with bound_catalogue(catalogue):
+        assert admitted_refs([_LEDGER, _PLAIN], code_index=index) == refs
 
 
 # ---------------------------------------------------------------------------
@@ -305,24 +371,32 @@ def test_elected_sources_labels_the_elected_dataset(
 
 
 # ---------------------------------------------------------------------------
-# A resubmit pinning the dataset, or one member, reads every member.
+# A pin of the dataset reads every member, and a pin of one member reads it alone.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("pinned", "scope"),
     [
-        pytest.param(_LEDGER, {_NORTH, _SOUTH}, id="the-dataset"),
-        pytest.param(_SOUTH, {_NORTH, _SOUTH}, id="one-member"),
-        pytest.param(_PLAIN, {_PLAIN}, id="plain-table"),
+        pytest.param(IdentityBindingValue(ref=_LEDGER), {_NORTH, _SOUTH}, id="the-dataset"),
+        pytest.param(IdentityBindingValue(ref=_SOUTH), {_SOUTH}, id="one-member"),
+        pytest.param(
+            IdentityBindingSet(refs=[_NORTH, _SOUTH]), {_NORTH, _SOUTH}, id="both-members"
+        ),
+        pytest.param(IdentityBindingValue(ref=_PLAIN), {_PLAIN}, id="plain-table"),
     ],
 )
-def test_a_provenance_pin_scopes_reads_to_every_member(pinned: str, scope: set[str]) -> None:
-    """The index is the caller's, so the pin scopes reads with no release bound."""
-    facets = {"provenance": IdentityBindingValue(ref=pinned)}
+def test_a_provenance_pin_scopes_reads_to_the_members_it_names(
+    pinned: IdentityBindingValue | IdentityBindingSet, scope: set[str]
+) -> None:
+    """Search's resubmit and the Datasets mint scope a pin alike. The index is the caller's,
+    so the pin scopes reads with no release bound."""
+    facets = {"provenance": pinned}
+    identity = {"facets": {"provenance": pinned.model_dump(mode="json")}}
 
     with bound_catalogue(_CATALOGUE), pinned_provenance_scope(facets, code_index=_index()):
         assert current_source_scope() == scope
+    assert provenance_pin(identity, code_index=_index()) == scope
 
 
 def _member_facet(facet_id: str, provenance: str, *, dataset_id: str | None = None) -> Facet:
@@ -341,19 +415,19 @@ def _member_facet(facet_id: str, provenance: str, *, dataset_id: str | None = No
     ("pinned", "refused"),
     [
         pytest.param(_LEDGER, False, id="the-dataset"),
-        pytest.param(_NORTH, True, id="one-member"),
-        pytest.param(_SOUTH, True, id="the-other-member"),
+        pytest.param(_NORTH, False, id="one-member"),
+        pytest.param(_SOUTH, False, id="the-other-member"),
         pytest.param(_PLAIN, True, id="another-table"),
     ],
 )
 @pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "as-read"])
-def test_a_provenance_pin_admits_the_dataset_alone(
+def test_a_provenance_pin_admits_the_dataset_or_a_member(
     index: CodeIndex, pinned: str, refused: bool, stamped: bool
 ) -> None:
     """The provenance axis holds dataset ids, so a pin of the dataset is available whether
-    or not the facets were stamped, as for a StatVar read with no elected dataset, and a pin
-    of either member or another table refuses `facet_not_available`, offering the
-    dataset's id."""
+    or not the facets were stamped, as for a StatVar read with no elected dataset. A pin of
+    a member admits that member's facet, and a pin of another table refuses
+    `facet_not_available`, offering the dataset's id."""
     dataset_id = _LEDGER if stamped else None
     facets_by_sv = {
         _FLOW: [
@@ -465,12 +539,18 @@ _MEMBER_WORLDS = [
 def test_no_answer_names_a_member_provenance(member_world: World) -> None:
     """The first answer and its resubmit cite and serve the dataset's id: neither the
     serialised part nor its Spec names a member provenance anywhere, and every series states
-    the dataset under its declared label and the source its members share. The standard route's group serves both places, one from each member. A
-    role route with no index family serves one facet id, as the mint does, and so one place
-    when each place's series has its own facet."""
+    the dataset under its declared label and the source its members share. The standard
+    route's group serves both places, one from each member. A role route with no index
+    family reads one facet id, as the mint does, so where each place's series has its own
+    member it refuses `DatasetDisagreementError` rather than serve one member's place."""
     world = member_world
+    split = world.role and world.rows[0].facet_id != world.rows[1].facet_id
     with world_module.door_loop():
         first = world.first([ALAND, BLAND], None, preview=True, unit_text=None)
+        if split:
+            assert first.part is None
+            assert (first.error or "").startswith("DatasetDisagreementError")
+            return
         (spec,) = first.specs
         again = world.resubmit(spec, preview=True)
 
@@ -492,3 +572,68 @@ def test_no_answer_names_a_member_provenance(member_world: World) -> None:
         assert dataset in serialised
         for member in (_NORTH, _SOUTH, _SOLO_MEMBER):
             assert member not in serialised
+
+
+_ROLE_NORTH_SOUTH_WORLDS = [
+    pytest.param((route, ("f-north", "f-south")), id=route)
+    for route in world_module.ROUTES
+    if route != "standard"
+]
+
+
+@pytest.mark.parametrize("member_world", _ROLE_NORTH_SOUTH_WORLDS, indirect=True)
+def test_excluding_a_member_serves_the_other_alone(member_world: World) -> None:
+    """A role-bearing part excluding South serves Aland's series from North alone where the
+    unscoped part refuses (`test_no_answer_names_a_member_provenance`), and its identity pins
+    North, so its resubmit reads North alone too. The role routes read through the coverage
+    index, which admits the scope's members; the standard route's facets come from a graph
+    double that admits every provenance."""
+    world = member_world
+    scope = compile_sources(
+        [SourceMention(ref=_SOUTH, polarity="exclude")],
+        catalogue=current_catalogue(),
+        pointers=["/"],
+    )
+    assert isinstance(scope, SourceScope)
+    with world_module.door_loop():
+        first = world.first([ALAND, BLAND], None, preview=True, unit_text=None, source_scope=scope)
+        assert first.part is not None, first.error or first.refusal
+        (spec,) = first.specs
+        again = world.resubmit(spec, preview=True)
+
+    pinned = spec.definition.identity.facets or {}
+    assert pinned["provenance"] == IdentityBindingValue(ref=_NORTH)
+    for answer in (first, again):
+        assert answer.part is not None, answer.error or answer.refusal
+        (stated,) = answer.specs
+        assert stated.spec_id == spec.spec_id
+        observations = stated.resolved.observations
+        assert observations is not None
+        served = {entity.ref for s in observations.series for entity in s.entities}
+        assert served & {ALAND, BLAND} == {ALAND}
+
+
+@pytest.mark.parametrize(
+    ("scope", "refused"),
+    [
+        pytest.param(None, True, id="unscoped"),
+        pytest.param({_NORTH, _SOUTH, _PLAIN}, True, id="every-member"),
+        pytest.param({_NORTH, _PLAIN}, False, id="one-member"),
+    ],
+)
+def test_a_scope_leaving_out_a_member_answers_no_data_before_disagreement(
+    index: CodeIndex, scope: set[str] | None, refused: bool
+) -> None:
+    """The Ledger's member holds a facet of the plain table alone. With every member
+    admitted that is drift, and the mint refuses `DatasetDisagreementError`; under a scope
+    that leaves out a member the member is unpopulated, so the part answers its scope's no
+    data."""
+    catalogue = _CATALOGUE if scope is None else _CATALOGUE.scoped(frozenset(scope))
+    candidates = [_member_facet("fP", _PLAIN)]
+
+    with bound_catalogue(catalogue):
+        if refused:
+            with pytest.raises(DatasetDisagreementError):
+                _LEDGER_DATASET.published(_FLOW, candidates)
+        else:
+            assert _LEDGER_DATASET.published(_FLOW, candidates) == []

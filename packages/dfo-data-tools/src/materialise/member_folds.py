@@ -15,10 +15,12 @@ The rule of each fact:
 - catalogue row facts (`dataset_origin`, `dataset_name`, `entry_licence`, `row_licence`): the
   value every member the catalogue lists gives (`shared_row_fact`), else `None`. The name
   falls back to the dataset's declared label.
-- the partial mark (`partial_marks`, `partial_mark`): every member's mark, judged by the one
-  that starts first, so the dataset holds back each period any member marks.
+- the partial mark (`partial_marks`, `partial_mark`): the mark of every member the read admits
+  (`admitted_members`), judged by the one that starts first, so the dataset holds back each
+  period any admitted member marks, and a read of one member is held back by its own mark.
 - projection methods (`projection_methods`, `is_projection`): the union of the members'
-  declarations, so a facet's rows and its held runs agree whichever id they read by.
+  declarations, so a facet's rows and its held runs agree whichever id they read by. A
+  member that declares no projection holds no row under another member's projection method.
 - reported status (`reported_sources`, `status_of`): a dataset's method-less values count as
   reported when every member is a reported provenance, so a member and its dataset agree.
 - the refresh date (`refresh_nodes`, `newest_refresh`): the newest of the Dataset node's
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
     from dc_graph.client import FacetDefaultPolicy
 
 __all__ = [
+    "admitted_members",
     "agreed",
     "dataset_name",
     "dataset_origin",
@@ -91,6 +94,17 @@ def members_of(ref: str) -> tuple[str, ...]:
     plain table, and every member of the Dataset for a Dataset's id or a member's."""
     index = get_index()
     return index.provenances_of(index.dataset_of(ref))
+
+
+def admitted_members(ref: str, *, catalogue: Catalogue) -> tuple[str, ...]:
+    """The members of `ref`'s dataset (`members_of`) that `catalogue`'s source scope
+    (`Catalogue.scope`) admits, sorted: every member under no scope, and under a scope that
+    admits none of them, since a read of the dataset then reads under another scope."""
+    members = members_of(ref)
+    scope = catalogue.scope
+    if scope is None or len(members) == 1:
+        return members
+    return tuple(member for member in members if member in scope) or members
 
 
 def agreed[T](values: Iterable[T | None]) -> T | None:
@@ -157,16 +171,17 @@ def row_licence(ref: str, *, catalogue: Catalogue) -> Licence | None:
 
 
 def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
-    """The distinct partial marks, sorted, of `source`'s members (`members_of`), each as the
-    catalogue documents it (`origin_catalogue.partial_period_of`), a member the catalogue does
-    not document adding none and, in a dataset of several members, logged once
-    (`_warn_undocumented_member`). Empty where none is marked.
+    """The distinct partial marks, sorted, of `source`'s members the read admits
+    (`admitted_members`), each as the catalogue documents it
+    (`origin_catalogue.partial_period_of`), a member the catalogue does not document adding
+    none and, in a dataset of several members, logged once (`_warn_undocumented_member`).
+    Empty where none is marked.
 
     Raises:
         Undocumented: `catalogue` documents none of the members."""
     marks: set[str] = set()
     documented = False
-    members = members_of(source)
+    members = admitted_members(source, catalogue=catalogue)
     for provenance in members:
         try:
             mark = partial_period_of(catalogue, provenance)
@@ -210,10 +225,20 @@ def projection_methods(provenance: str | None) -> frozenset[str]:
     for a dataset no member of which declares any, whose estimates are actual rows."""
     if provenance is None:
         return frozenset()
-    members = members_of(provenance)
-    if len(members) == 1:
-        return declared_projection_methods(members[0])
-    return frozenset().union(*map(declared_projection_methods, members))
+    joined = _projection_methods(get_index()).get(provenance)
+    return declared_projection_methods(provenance) if joined is None else joined
+
+
+@per_index
+def _projection_methods(index: CodeIndex) -> dict[str, frozenset[str]]:
+    """The projection methods (`projection_methods`) of every declared dataset of `index` and
+    each of its members, by id. A plain table is read on demand."""
+    methods: dict[str, frozenset[str]] = {}
+    for dataset in index.datasets:
+        members = index.provenances_of(dataset)
+        joined = frozenset().union(*map(declared_projection_methods, members))
+        methods.update(dict.fromkeys((dataset, *members), joined))
+    return methods
 
 
 def is_projection(provenance: str | None, method: str | None) -> bool:

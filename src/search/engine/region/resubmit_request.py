@@ -179,8 +179,8 @@ def pinned_provenance_scope(
 ) -> AbstractContextManager[object]:
     """Bind the request's catalogue narrowed to the provenances the posted
     `facets.provenance` refs name under `code_index` (`source_scope.read_provenances`, every
-    member provenance of each ref's dataset; `origin_catalogue.scoped_reads`), so a pinned
-    source is admitted before DFO precedence and a base pin serves at a place where a DFO table also holds data. Binds nothing when
+    member provenance of a dataset's id and a member's id alone;
+    `origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence and a base pin serves at a place where a DFO table also holds data. Binds nothing when
     provenance is unbound, or binds a declared composite, whose reads are those of the
     identity its option was set on (`code_index.composites.table_identity`), which pins no
     provenance."""
@@ -222,7 +222,8 @@ def _facet_filter_from_bindings(
     """Build the request's facet filter from the posted source, method, and unit bindings.
 
     Provenance admits a facet whose provenance axis value (`_facet_source_dcid`, the
-    declared dataset's id) is one of `source_dcids`, and a `provenance` key in
+    declared dataset's id) or own member provenance is one of `source_dcids`, so a pin of
+    one member admits that member's facets alone, and a `provenance` key in
     `identity.facets` is ignored. The resubmit already reads under
     `pinned_provenance_scope`, so the provenance filter keeps what admission kept. Each
     other axis tests its value through `_facet_binding_admits`, the one matching rule every
@@ -235,7 +236,9 @@ def _facet_filter_from_bindings(
     if source_dcids:
         allowed_sources = frozenset(source_dcids)
         result["provenance"] = FacetAxisFilter(
-            predicate=lambda f: _facet_source_dcid(f) in allowed_sources,
+            predicate=lambda f: (
+                _facet_source_dcid(f) in allowed_sources or f.provenance_id in allowed_sources
+            ),
         )
     for axis in ("measurementMethod", "unit"):
         admits = _facet_binding_admits(

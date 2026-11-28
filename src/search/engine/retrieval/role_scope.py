@@ -20,7 +20,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from code_index.shared import dataset_of
 from dfo_platform.roles import GENERIC_ROLE_WORDING
+from materialise.errors import DatasetDisagreementError
 from materialise.facets import MemberProbe, coverage_probe
 from materialise.roles import RoleAxis, axis_for_role
 from search.engine.clients.graph import Facet
@@ -449,10 +451,40 @@ def check_minted_role_members(
 ) -> dict[str, list[Facet]]:
     """Check each of `minted`, the members a mint of a role-bearing answer serves, as the
     mint checks it (`check_elected_datasets`), over its lifetime facets at `bound`, and
-    return those facets."""
+    return those facets.
+
+    A member no index family elects a dataset for reads one facet id per group, so where its
+    facets at `bound` belong to two or more members of one declared dataset it would serve
+    one member's places and say nothing of the rest. It raises `DatasetDisagreementError`
+    (`_refuse_split_dataset`). A source scope admitting one member leaves no such pair."""
     lifetime = lifetime_role_facets(coverage_index, variables=minted, bound=bound)
-    check_elected_datasets(elected_datasets(member_facts), lifetime)
+    datasets = elected_datasets(member_facts)
+    check_elected_datasets(datasets, lifetime)
+    for stat_var, facets in lifetime.items():
+        if stat_var not in datasets:
+            _refuse_split_dataset(stat_var, facets)
     return lifetime
+
+
+def _refuse_split_dataset(stat_var: str, facets: Sequence[Facet]) -> None:
+    """Raise `DatasetDisagreementError` when `facets`, a member's facets, belong to two or
+    more member provenances of one declared dataset (`code_index.shared.dataset_of`)."""
+    members: dict[str, set[str]] = {}
+    for facet in facets:
+        provenance = facet.provenance_id
+        if facet.facet_id is None or provenance is None:
+            continue
+        if (dataset := dataset_of(provenance)) != provenance:
+            members.setdefault(dataset, set()).add(provenance)
+    for dataset, held in sorted(members.items()):
+        if len(held) > 1:
+            raise DatasetDisagreementError(
+                f"{stat_var!r} is published at the bound entities by members {sorted(held)!r} "
+                f"of dataset {dataset!r}, and no index family elects the dataset for it, so a "
+                "role-bearing read would serve one member's facet alone",
+                dataset=dataset,
+                stat_var=stat_var,
+            )
 
 
 def facet_from_coverage(facet: FacetCoverage, meta: FacetMetadata | None) -> Facet:

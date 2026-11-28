@@ -115,14 +115,14 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
     [
         pytest.param({"state": "value", "ref": LEDGER}, {NORTH, SOUTH}, id="dataset"),
         pytest.param({"state": "set", "refs": [SOLO]}, {SOLO_MEMBER}, id="one-member-dataset"),
-        # A member pin scopes to its dataset's members, as Search scopes it
-        # (`source_scope.read_provenances`); the facets carry the dataset's id, so the mint
-        # then refuses the pin (`test_serve_groupby_collapse`).
-        pytest.param({"state": "value", "ref": NORTH}, {NORTH, SOUTH}, id="member"),
+        # A member pin scopes to that member alone, as Search scopes it
+        # (`source_scope.read_provenances`).
+        pytest.param({"state": "value", "ref": NORTH}, {NORTH}, id="member"),
+        pytest.param({"state": "set", "refs": [NORTH, SOUTH]}, {NORTH, SOUTH}, id="members"),
         pytest.param({"state": "value", "ref": PLAIN}, {PLAIN}, id="plain"),
     ],
 )
-def test_a_pin_reads_under_the_member_provenances_of_the_dataset_it_names(pin, scope):
+def test_a_pin_reads_under_the_member_provenances_it_names(pin, scope):
     identity = {"facets": {"provenance": pin}}
 
     assert provenance_pin(identity, code_index=ledger_index()) == scope

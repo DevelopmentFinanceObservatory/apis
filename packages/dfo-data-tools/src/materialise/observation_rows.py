@@ -325,14 +325,18 @@ def _variable_batches(
 def _variable_batch(
     variable: str, series: Sequence[tuple[str, Facet]], *, latest: bool
 ) -> pa.RecordBatch:
-    """One variable's rows, in `series` order, newest period first."""
+    """One variable's rows, in `series` order, newest period first. Each distinct provenance
+    is read as its dataset (`dataset_of`) once."""
     columns: dict[str, list[str | None]] = {
         name: [] for name in observation_columns(UN_OBSERVATION_ROLES)
     }
+    datasets: dict[str, str] = {}
     for place, facet in series:
-        provenance = (
-            facet.provenance_id if facet.provenance_id is None else dataset_of(facet.provenance_id)
-        )
+        provenance = facet.provenance_id
+        if provenance is not None:
+            if provenance not in datasets:
+                datasets[provenance] = dataset_of(provenance)
+            provenance = datasets[provenance]
         observations = sorted(
             zip(facet.dates, facet.values, strict=True), key=lambda obs: obs[0], reverse=True
         )

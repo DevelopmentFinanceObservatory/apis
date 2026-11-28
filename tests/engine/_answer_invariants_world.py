@@ -58,6 +58,7 @@ from search.engine.region import (
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
+from search.engine.source_scope import SourceScope
 from search.models import BaseIdentity, ResubmitIdentityPayload, Spec, TimeWindow
 from search.models.response import CandidatesPart, DefinitePart, NoDataPart, Part
 from series_coverage.index import CoverageIndex
@@ -1033,9 +1034,10 @@ class World:
         *,
         preview: bool,
         unit_text: str | None,
+        source_scope: SourceScope | None = None,
     ) -> Answer:
         """The first door: a query naming `places` in that order, or none when the route
-        discovers its destinations."""
+        discovers its destinations, its part scoped to `source_scope` when one is given."""
         names = [] if self.discovered else [PLACE_NAMES[p] for p in places]
         if self.role:
             query = "debt flows" + (f" to {' and '.join(names)}" if names else "")
@@ -1079,6 +1081,7 @@ class World:
                 unit_text=unit_text,
                 coverage=self.coverage,
                 options=self._options(preview=preview),
+                source_scope=source_scope,
             )
 
         with _recorded() as recorder:

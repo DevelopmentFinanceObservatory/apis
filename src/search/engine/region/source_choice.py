@@ -171,10 +171,11 @@ def idle_inclusion_warnings(scope: SourceScope | None) -> list[Warning]:
 
 def answer_provenances(specs: Sequence[Spec]) -> frozenset[str] | None:
     """The provenances that serve `specs`: each provenance their identities bind as their
-    source (`facets.provenance`, `spec_build.with_served_provenance`), and for a declared
-    composite its component datasets too (`code_index.composites.provenance_datasets`), so
-    the OECD headline serves DAC1. `None` when one binds none, so what served it is
-    unknown."""
+    source (`facets.provenance`, `spec_build.with_served_provenance`) and its dataset
+    (`CodeIndex.dataset_of`), so a member's pin serves the dataset a mention expands to, and
+    for a declared composite its component datasets too
+    (`code_index.composites.provenance_datasets`), so the OECD headline serves DAC1. `None`
+    when one binds none, so what served it is unknown."""
     bound: set[str] = set()
     for spec in specs:
         binding = (spec.definition.identity.facets or {}).get("provenance")
@@ -184,7 +185,10 @@ def answer_provenances(specs: Sequence[Spec]) -> frozenset[str] | None:
             bound.update(binding.refs)
         else:
             return None
-    return frozenset(bound).union(*(provenance_datasets(ref) for ref in bound))
+    index = get_index()
+    return frozenset(bound).union(
+        map(index.dataset_of, bound), *(provenance_datasets(ref) for ref in bound)
+    )
 
 
 def _idle_words(scope: SourceScope | None, polarity: Literal["include", "exclude"]) -> list[str]:

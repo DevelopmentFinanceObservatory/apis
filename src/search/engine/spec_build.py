@@ -66,7 +66,7 @@ from search.engine.shape import (
     is_ratio_backed_sv,
 )
 from search.engine.source_code import stands_for_code
-from search.engine.source_scope import source_label
+from search.engine.source_scope import admitted_refs, source_label
 from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
@@ -189,8 +189,9 @@ def _source_slot_binding(binding_draft: SlotBindingDraft | None) -> BindingValue
 
 def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) -> list[Slot]:
     """`slots` with the source slot bound to `provenances`, the provenances an answer's
-    read plan serves (`read_plan.served_provenances`), as a value for one and a set for
-    several. A shape with no source slot gains one."""
+    read plan serves (`read_plan.served_provenances`) as its scope admits them
+    (`source_scope.admitted_refs`), as a value for one and a set for several. A shape with
+    no source slot gains one."""
     values = [
         SlotValue(ref=GraphRef(ref=dcid, label=source_label(dcid)), value_kind="source")
         for dcid in provenances
@@ -1346,7 +1347,7 @@ def answer_identity(
     reading only where the minted identity reads it over its own window
     (`_restate_whole_groups`)."""
     if pin_served_provenance and (served := served_provenances(plan)):
-        slots = with_served_provenance(slots, served)
+        slots = with_served_provenance(slots, admitted_refs(served, code_index=get_index()))
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
             facets = {
                 **facets,
