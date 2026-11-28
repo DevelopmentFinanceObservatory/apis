@@ -1810,8 +1810,8 @@ def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
 
 def served_provenances(plan: ReadPlan | None) -> tuple[str, ...]:
     """The distinct provenances of the series `plan` serves (`series_facets`), in serving
-    order, each read on the provenance axis (`elected_dataset.provenance_axis`): the
-    declared dataset's id."""
+    order, each read on the provenance axis (`elected_dataset.provenance_axis`), so a member
+    provenance appears as its declared dataset's id."""
     return tuple(
         dict.fromkeys(
             provenance for facet in series_facets(plan) if (provenance := provenance_axis(facet))
@@ -2099,8 +2099,8 @@ def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts])
     elected again from them (`narrowed`), under the defaults its populated members then
     declare (`declared_defaults`). A mint filters a member's candidates by the same test
     before it ranks (`materialise.facets.dataset_candidates`), and agrees on declared
-    defaults over the members still populated (`materialise.group_facets._group_declared_policies`),
-    so an answer and a mint of its Spec elect within one dataset and under one method, and a
+    defaults over the members still populated
+    (`materialise.group_facets._group_declared_policies`), so an answer and a mint of its Spec elect within one dataset and under one method, and a
     member holding data under another dataset alone serves nothing. Every resolver passes
     its plan through here. A plan every member of which has an elected dataset reads an
     index-resolved family, so its group agrees on provenance and unit alone

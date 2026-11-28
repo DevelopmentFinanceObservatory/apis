@@ -178,9 +178,9 @@ def pinned_provenance_scope(
     facets: dict[str, IdentityFacetBinding] | None, *, code_index: CodeIndex
 ) -> AbstractContextManager[object]:
     """Bind the request's catalogue narrowed to the provenances the posted
-    `facets.provenance` refs name under `code_index` (`source_scope.read_provenances`: every
-    member provenance of each ref's dataset) (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
-    and a base pin serves at a place where a DFO table also holds data. Binds nothing when
+    `facets.provenance` refs name under `code_index` (`source_scope.read_provenances`, every
+    member provenance of each ref's dataset; `origin_catalogue.scoped_reads`), so a pinned
+    source is admitted before DFO precedence and a base pin serves at a place where a DFO table also holds data. Binds nothing when
     provenance is unbound, or binds a declared composite, whose reads are those of the
     identity its option was set on (`code_index.composites.table_identity`), which pins no
     provenance."""
@@ -222,10 +222,9 @@ def _facet_filter_from_bindings(
     """Build the request's facet filter from the posted source, method, and unit bindings.
 
     Provenance admits a facet whose provenance axis value (`_facet_source_dcid`, the
-    declared dataset's id) is one of `source_dcids`; a `provenance` key in
-    `identity.facets` is ignored. The
-    resubmit already reads under `pinned_provenance_scope`, so the provenance filter keeps
-    what admission kept. Each
+    declared dataset's id) is one of `source_dcids`, and a `provenance` key in
+    `identity.facets` is ignored. The resubmit already reads under
+    `pinned_provenance_scope`, so the provenance filter keeps what admission kept. Each
     other axis tests its value through `_facet_binding_admits`, the one matching rule every
     filtered election applies, so a null ref admits the facets that declare no value on the
     axis. Elected units are supplied when per-StatVar narrowing replaces the unit axis, which

@@ -90,8 +90,8 @@ class CoverageForm:
 
 
 def citable_source_ids(facets: Sequence[Facet]) -> list[str]:
-    """Return ordered distinct provenance axis values (`elected_dataset.provenance_axis`): the
-    id of the declared dataset each facet's provenance is a member of, which is the
+    """Return ordered distinct provenance axis values (`elected_dataset.provenance_axis`),
+    the id of the declared dataset each facet's provenance is a member of, which is the
     provenance itself for a plain table, so the answer cites the dataset.
 
     Facets without one contribute nothing. Duplicates, including facets with

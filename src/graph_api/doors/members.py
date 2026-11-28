@@ -381,9 +381,9 @@ def _datasets(dcid: str) -> _Listing[MemberItem]:
 
 
 def _variables(dcid: str, index: CodeIndex) -> _Listing[str]:
-    """A Dataset's variables are the union of its provenances' datasets' variables, each
-    provenance read as the dataset it is a member of (`CodeIndex.dataset_of`), which keys the
-    code index's variables. A dcid the catalogue lists as no Dataset is read as a Provenance,
+    """A Dataset's variables are the union of the variables of the datasets its provenances
+    belong to, each provenance read as the dataset it is a member of (`CodeIndex.dataset_of`),
+    which keys the code index's variables. A dcid the catalogue lists as no Dataset is read as a Provenance,
     if either table holds it. A member provenance of a declared dataset raises
     `RelationLacked` naming the dataset, since the index records which variables the dataset
     holds and not which of its members holds each. For the same reason a catalogue Dataset

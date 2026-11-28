@@ -11,8 +11,8 @@ later stage reads them as it reads SDMX rows, and the read fails as an SDMX
 read does.
 
 A row's `provenance` cell holds its dataset's id from the read on
-(`code_index.shared.dataset_of`): a declared dataset's id for a row of one of its
-member provenances, the provenance itself for a plain table's row.
+(`code_index.shared.dataset_of`). A row of a declared dataset's member provenance holds the
+dataset's id, and a plain table's row holds its provenance.
 
 One fetch names variables of one origin: `generation.request_batch_key` keeps
 UN variables out of chunks with the others.

@@ -2325,8 +2325,8 @@ def export_graph_blocks(
 
 
 DATASET_MEMBER_CLAIMED_TWICE = "dataset_member_claimed_twice"
-"""`ExportRefused.code` for a provenance two declarations claim: a declared provenance that
-is also part of a declared Dataset, or a provenance part of two declared Datasets."""
+"""`ExportRefused.code` for a provenance two declarations claim, either a declared provenance
+that is also part of a declared Dataset or a provenance part of two declared Datasets."""
 
 DATASET_WITHOUT_MEMBERS = "dataset_without_members"
 """`ExportRefused.code` for a declared Dataset no covered provenance is part of."""
@@ -2341,8 +2341,8 @@ _IS_PART_OF = "isPartOf"
 @dataclass(frozen=True)
 class DatasetMembers:
     """Each declared dataset's member provenances (`members`, sorted) and the dataset each
-    covered provenance belongs to (`dataset_of`): the declared Dataset it is part of, else the
-    provenance itself."""
+    covered provenance belongs to (`dataset_of`). A provenance belongs to the declared Dataset
+    it is part of, else to itself."""
 
     members: Mapping[str, tuple[str, ...]]
     dataset_of: Mapping[str, str]

@@ -828,8 +828,7 @@ def _parse_datasets(
     """Parses `datasets` rows into the declarations and each dataset's member provenances
     (`members`, `CodeIndex.provenances_of`), failing closed on a row missing a field, a
     `members` that is not a non-empty sorted list of distinct strings, a provenance two rows
-    list as a member, an
-    `absent_observation` value outside `{"zero", "unknown"}`, an `account`
+    list as a member, an `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses, a `party_words` row
@@ -1096,10 +1095,11 @@ def _check_source_codes(
 
     Raises `IndexFormatError` for a code that is empty or not upper-cased and stripped, a
     `(provenance, code)` pair on two rows, a row naming no StatVar, and a dcid that is no
-    StatVar row of the index or whose row does not carry the code's dataset: the declared
-    dataset `members` (each dataset's member provenances) lists the code's provenance under,
-    else the provenance itself, as `CodeIndex.dataset_of` reads it. A code row carries the
-    provenance that asserted the code's arc and a StatVar row the datasets holding it.
+    StatVar row of the index or whose row does not carry the code's dataset. The code's dataset
+    is the declared dataset whose `members` (each dataset's member provenances) list the
+    code's provenance, else the provenance itself, as `CodeIndex.dataset_of` reads it. A code
+    row carries the provenance that asserted the code's arc and a StatVar row the datasets
+    holding it.
     Search answers a code with these rows, so each must be a StatVar it serves from that source."""
     dataset_of = {provenance: dataset for dataset, held in members.items() for provenance in held}
     provenances = {row.dcid: row.datasets for row in statvars}

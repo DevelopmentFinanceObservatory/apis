@@ -13,7 +13,7 @@ A mention resolves to one reference: a provenance, a Dataset, a Source, or a col
 that an alias of several references names. Words that match several references resolve
 to the one that contains all the others, as a Source contains its Datasets and
 provenances; otherwise they are ambiguous. A provenance expands to the dataset it is a
-member of (`CodeIndex.dataset_of`): itself for a plain table, and the declared Dataset for
+member of (`CodeIndex.dataset_of`), itself for a plain table and the declared Dataset for
 a provenance that is part of one, so a mention of one publisher's provenance stands for its
 whole dataset. A Dataset or Source expands to the datasets of its admitted provenances, and
 an included one leaves out the code index's opt-in datasets, unless it publishes nothing
@@ -22,8 +22,7 @@ else. A collection expands to the union of its members' expansions.
 The part's scope is the union of its included expansions, or the dataset of every
 admitted provenance when it includes none, less the union of its excluded expansions. A
 read under the scope admits the member provenances of its datasets
-(`SourceScope.provenances`). `named` records
-whether it includes any. An excluded mention whose words match nothing removes nothing:
+(`SourceScope.provenances`). `named` records whether it includes any. An excluded mention whose words match nothing removes nothing:
 it stays in the scope's mentions with no reference and an empty expansion, so the part
 warns that the exclusion was not applied. Included words that match nothing refuse.
 """

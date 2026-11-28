@@ -333,7 +333,7 @@ def read_ingested_imports(snapshot: Snapshot, *, execution_id: str) -> tuple[str
 
 def _facet_provenances(facets: pa.Table) -> list[str]:
     """The distinct provenances the facets' JSON names, sorted. A facet whose JSON is malformed
-    or names none adds nothing; `graph_release.platform` refuses it."""
+    or names none adds nothing, and `graph_release.platform` refuses it."""
     found: set[str] = set()
     for text in cast("list[str | None]", facets["facet_min"].to_pylist()):
         try:

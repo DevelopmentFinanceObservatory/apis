@@ -85,7 +85,7 @@ def reported_provenances() -> frozenset[str]:
     method of every year up to the last reported debt-stock year empty and marks every later
     year `dcid:Estimated` (`dfo-pipelines`, `int_ids_observations.sql`, its `last_reported`
     CTE). A method-less value under any other provenance has an unknown status. The file
-    keys each entry by a graph provenance; a reader holding a dataset id reads it through
+    keys each entry by a graph provenance, so a reader holding a dataset id reads it through
     `materialise.member_folds.reported_sources`.
     """
     return _method_status().reported_provenances
@@ -95,7 +95,7 @@ def declared_projection_methods(provenance: str) -> frozenset[str]:
     """The `measurementMethod`s the file declares `provenance` uses only for years after its
     last actual year, so every row under one is a projection. Empty for a provenance the file
     declares none for, whose estimates are actual rows. The file keys each entry by a graph
-    provenance; a reader holding a dataset id reads it through
+    provenance, so a reader holding a dataset id reads it through
     `materialise.member_folds.projection_methods`, which joins its members' entries.
 
     Each entry rests on the evidence its `reported_provenances` entry cites: IMF WEO's

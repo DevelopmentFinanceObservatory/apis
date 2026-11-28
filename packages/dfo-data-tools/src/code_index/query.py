@@ -89,8 +89,8 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
     )
 
 
-# The sort key of a row with no code: above every code string, so a code the publisher left
-# uncoded (`CodeSystemConfig.uncoded`) follows its system's coded rows.
+# The sort key of a row with no code. It sorts above every code string, so a code the publisher
+# left uncoded (`CodeSystemConfig.uncoded`) follows its system's coded rows.
 _UNCODED_KEY = "\U0010ffff"
 
 
@@ -794,7 +794,7 @@ class CodeIndex:
 
     def dataset_of(self, provenance: str) -> str:
         """The id of the declared dataset `provenance` is a member of, or `provenance` itself
-        when no declared dataset holds it. A plain table is its own sole member; a Dataset
+        when no declared dataset holds it. A plain table is its own sole member. A Dataset
         node's members are the provenances that are part of it (`provenances_of`)."""
         return self._dataset_by_provenance.get(provenance, provenance)
 

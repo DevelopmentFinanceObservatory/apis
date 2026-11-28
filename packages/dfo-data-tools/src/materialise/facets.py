@@ -219,8 +219,9 @@ class ElectedDataset:
     """The dataset elected for an index-resolved family, as one member carries it.
 
     `provenance` is the elected dataset's id, shared by every member of the family, and
-    `provenances` its member provenances (`code_index.query.CodeIndex.provenances_of`): the
-    dataset itself for a plain table, or the provenances that are part of a graph `Dataset`.
+    `provenances` its member provenances (`code_index.query.CodeIndex.provenances_of`), which
+    are the dataset itself for a plain table or the provenances that are part of a graph
+    `Dataset`.
     `recorded_provenances` holds the member provenances of every dataset the code index
     records the member under. `of` builds one from the index's member map. A facet of a
     member provenance carries the dataset's id on the provenance axis wherever it is read
@@ -252,8 +253,8 @@ class ElectedDataset:
         )
 
     def publishes(self, provenance_id: str | None) -> bool:
-        """Whether a facet of `provenance_id` is the elected dataset's: its provenance is one
-        of the dataset's members. The mint (`dataset_candidates`) and a Search read plan
+        """Whether a facet of `provenance_id` is the elected dataset's, which holds when its
+        provenance is one of the dataset's members. The mint (`dataset_candidates`) and a Search read plan
         (`search.engine.retrieval.read_plan.in_elected_datasets`) both keep a member's
         candidates by this test before any ranking, so they elect within one dataset."""
         return provenance_id in self.provenances

@@ -1060,7 +1060,7 @@ A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENAB
 
 ### GET /api/graph/schema/usage
 
-How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each dataset that at least one StatVar row of the index names: a plain table's Provenance, or a declared dataset's id for the provenances that are part of its graph `Dataset`, whose member provenances appear in no entry. The route joins the code index with the served coverage index and one batched read of every Provenance node's `name` and `description`, each empty answer confirmed alone.
+How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each dataset that at least one StatVar row of the index names. The entry is a plain table's Provenance, or a declared dataset's id for the provenances that are part of its graph `Dataset`, whose member provenances appear in no entry. The route joins the code index with the served coverage index and one batched read of every Provenance node's `name` and `description`, each empty answer confirmed alone.
 
 An entry holds:
 

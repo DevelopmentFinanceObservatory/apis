@@ -369,7 +369,7 @@ no flow axis (`recipient`), or only donors (`donor`). Each kind has one house de
 
 @dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
-    """One published table, keyed by `id`: the provenance its observations carry, or a
+    """One published table, keyed by `id`, which is the provenance its observations carry or a
     graph `Dataset` whose member provenances carry them. The export resolves the members from
     the provenances whose `isPartOf` names the Dataset
     (`code_index.export.resolve_dataset_members`), and `CodeIndex.provenances_of` and

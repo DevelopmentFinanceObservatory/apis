@@ -19,7 +19,7 @@ names and columns it does not know and reads an absent optional column as
 null, so a new column, part or manifest field ships without a format change.
 A changed type, key, sort order or mask definition, a removed part, or a
 field a reader newly requires bumps `FORMAT`. Format 3 requires `types` on
-every code index party row. Format 4 keys a code index dataset row by `id`
+every code index party row. Format 4 keys a code index dataset row by `id`,
 lists the datasets of a StatVar row under `datasets`, and requires a `members` list on every
 code index dataset row.
 

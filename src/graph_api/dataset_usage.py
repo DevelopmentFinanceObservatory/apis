@@ -3,9 +3,10 @@ Provenance's graph node.
 
 `build_usage` makes one `ProvenanceUsage` per key of
 `CodeIndex.variables_by_provenance`, so a Provenance appears when at least one StatVar row of
-the index names it. The index keys datasets, a plain table's provenance or a declared
-dataset's id, so a dataset of several member provenances appears once, under its id. Its `label` and `description` come from the Provenance's graph node, read
-for `PROVENANCE_NODE_PROPERTIES`: the label is the node's display name
+the index names it. The index keys datasets (a plain table's provenance or a declared
+dataset's id), so a dataset of several member provenances appears once, under its id. Its
+`label` and `description` come from the Provenance's graph node, read for
+`PROVENANCE_NODE_PROPERTIES`: the label is the node's display name
 (`dc_graph.display_name`) and the description the least of its `description` values, as the
 schema document labels its nodes. A Provenance the graph does not hold, or whose node carries no
 name or no description, gets null for that field.

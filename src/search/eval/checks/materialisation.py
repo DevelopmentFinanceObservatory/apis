@@ -17,8 +17,7 @@ something. An exact count is checked, within 5 percent, against the oracle's own
 the facets the answer states it serves, inside the coverage window, and under a ``latest``
 request at each StatVar's one period. A facet's provenance is read as the dataset it is a
 member of in the bound release's code index (``CodeIndex.dataset_of``), the ref an answer
-states. A role-bearing answer's StatVar serves the year the
-coverage index elects for it over those facets and the bound roles
+states. A role-bearing answer's StatVar serves the year the coverage index elects for it over those facets and the bound roles
 (``CoverageIndex.elected_years``), from the series holding that year. A place-keyed
 answer's StatVar, and a role-bearing one the index elects no year for, serves its latest
 period from the series reaching it. A series whose
@@ -40,8 +39,9 @@ confirmed against another coverage stamp, or mixing ``observationAbout`` with a 
 converted answer whose conversion left rows out of its count; a non-role answer with a
 partial preview whose planned places are not on the wire; a non-role answer naming no place
 at all; a non-role answer at whose places the graph holds no records, as at a region
-node; and a composite answer whose components the code index cannot derive. A failed graph, coverage or members read (``base.READ_ERRORS``), a missing client, or
-no bound release to read a facet's dataset from, is an infrastructure result. Any other error propagates.
+node; and a composite answer whose components the code index cannot derive. A failed graph,
+coverage or members read (``base.READ_ERRORS``), a missing client, or no bound release to
+read a facet's dataset from, is an infrastructure result. Any other error propagates.
 
 The check reads the graph once per definite part, so it registers ``modal_only``: the driver
 runs it on the modal sample alone.

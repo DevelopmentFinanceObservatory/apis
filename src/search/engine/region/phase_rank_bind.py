@@ -1368,7 +1368,7 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
 
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:
     """Whether a part under `scope` may answer `shape`. `scope.allowed` holds dataset ids
-    (`CodeIndex.dataset_of`): a plain table's provenance, or a declared Dataset's id for
+    (`CodeIndex.dataset_of`), a plain table's provenance or a declared Dataset's id for
     its member provenances.
 
     A shape of a family the index declares stays when a dataset publishing it is eligible
@@ -1380,8 +1380,8 @@ def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bo
     dataset the index does not declare, and the read applies the scope's member
     provenances to it (`SourceScope.provenances`, `origin_catalogue.Catalogue.scoped`): a
     provenance the part excludes serves none of its data, and the availability read sees
-    none of it. A declared dataset publishes only
-    the index's rows, so a scope of declared datasets alone holds none of its data. A UN
+    none of it. A declared dataset publishes only the index's rows, so a scope of declared
+    datasets alone holds none of its data. A UN
     System Data Commons shape reaches here only when the scope allows a UN provenance
     (`phase_intake._un_shapes`)."""
     if shape_datasets(shape, index):

@@ -175,7 +175,7 @@ def resolve_recipe(
     `conversionRecipe`, its `isPartOf` Datasets' arcs. A declared dataset's id whose node
     elects none converts under the recipe every member provenance elects the same way
     (`member_folds.dataset_recipe_id`), read in one batch of the members and one of their
-    Datasets; members electing different recipes, or one electing none, leave the dataset
+    Datasets. Members electing different recipes, or one electing none, leave the dataset
     `recipe_undeclared`. Only those fallbacks read `graph`.
     """
     try:

@@ -156,8 +156,8 @@ def stands_for_code(
     other. Both read as their datasets (`CodeIndex.dataset_of`), so a Spec reading a
     declared dataset stands for a code its members hold.
 
-    The Spec reads `provenance`'s dataset alone, where a part naming it reads only it. `provenance`
-    gives none of the code's StatVars another code, as `compile_part_code` requires. Each of
+    The Spec reads `provenance`'s dataset alone, where a part naming it reads only it.
+    `provenance` gives none of the code's StatVars another code, as `compile_part_code` requires. Each of
     `served` is one of the code's, as recall from the code's StatVars leaves them. The
     StatVars a Datasets mint of `identity` serves are known and all the code's
     (`bound_values.elects_within`), as the part's pipeline requires

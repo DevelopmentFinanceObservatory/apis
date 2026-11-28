@@ -773,10 +773,9 @@ def _reshape_groupby_collapse(
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `selection`, a `groupby.codes`
     selection on axes the frame decodes, a sum checks the groups it sums. `provenance_refs`
-    and the rows' `provenance` cells name datasets: every row of a declared dataset's member
+    and the rows' `provenance` cells name datasets. Every row of a declared dataset's member
     provenances carries the dataset's id (`materialise.columnar.dataset_cells`), so a total
-    over rows of several members carries that id. The checks before
-    the folds read every row: provenance disagreement, decode gaps (which refuse a level
+    over rows of several members carries that id. The checks before the folds read every row: provenance disagreement, decode gaps (which refuse a level
     roll-up's missing ancestor), StatVar collision and, for a spliced composite's components,
     a StatVar no one component serves or a cell holding rows of two components
     (`groupby.SpliceCheck.refuse_structure`), so they refuse as the same render without a

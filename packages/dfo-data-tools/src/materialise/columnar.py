@@ -108,9 +108,9 @@ def _map_dictionary_values(
 
 def dataset_cells(batch: pa.RecordBatch) -> pa.RecordBatch:
     """`batch` with each `provenance` cell holding its dataset's id in the bound release's
-    code index (`code_index.shared.dataset_of`): a declared dataset's id for a row of one of
-    its member provenances, the provenance itself for a plain table's row. Each distinct cell
-    is mapped once, and a batch with no member provenance is returned as it is, so a plain
+    code index (`code_index.shared.dataset_of`). A row of a declared dataset's member
+    provenance holds the dataset's id, and a plain table's row holds its provenance. Each
+    distinct cell is mapped once, and a batch with no member provenance is returned as it is, so a plain
     table's rows keep their bytes. Every reader of a row's provenance after the read (the
     selection, the held-back cut, the frame) reads the dataset.
 

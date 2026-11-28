@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 
 
 def _facet_source_dcid(facet: Facet) -> str | None:
-    """The facet's value on the provenance axis (`citable_source_ids`): the id of the
+    """The facet's value on the provenance axis (`citable_source_ids`), which is the id of the
     declared dataset its provenance is a member of, or None when it declares no provenance."""
     dcids = citable_source_ids([facet])
     return dcids[0] if dcids else None

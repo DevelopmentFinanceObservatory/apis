@@ -161,8 +161,8 @@ def applied_horizons(sources: Iterable[str]) -> tuple[tuple[str, str | None], ..
     holding the sorted `measurementMethod`s declared its projections
     (`member_folds.projection_methods`). A declared dataset's id holds every distinct mark its
     member provenances carry, since it holds back each period any member marks, and every
-    projection method any member declares. A source with neither has no entry, as one the catalogue does not document,
-    and with no catalogue bound no source has a mark."""
+    projection method any member declares. A source with neither has no entry, as one the
+    catalogue does not document, and with no catalogue bound no source has a mark."""
     try:
         catalogue = current_catalogue()
     except CatalogueNotBound:

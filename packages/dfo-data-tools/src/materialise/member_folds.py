@@ -1,9 +1,9 @@
 """The facts a dataset id reads from sources that record them per member provenance.
 
 From the read boundary on, a facet's provenance-axis value, a row's `provenance` cell and every
-answer-level ref carry a dataset id (`code_index.shared.dataset_of`): a declared Dataset's id
-for a series of one of its member provenances, the provenance itself for a plain table. The
-origin catalogue, the graph's `lastDataRefreshDate` and `conversionRecipe` arcs, the packaged
+answer-level ref carry a dataset id (`code_index.shared.dataset_of`). A series of a declared
+Dataset's member provenance carries the Dataset's id, and a plain table's series carries its
+provenance. The origin catalogue, the graph's `lastDataRefreshDate` and `conversionRecipe` arcs, the packaged
 `method_status.json` and a StatVar's declared defaults record their facts per provenance. Every
 reader that joins the two goes through this module, which answers for the dataset a ref
 belongs to, whichever of the two vocabularies the ref is in: it reads the members of
@@ -13,7 +13,7 @@ A plain table is its own sole member, so each fold reads its own fact unchanged.
 The rule of each fact:
 
 - catalogue row facts (`dataset_origin`, `dataset_name`, `entry_licence`, `row_licence`): the
-  value every member the catalogue lists gives (`shared_row_fact`), else `None`; the name
+  value every member the catalogue lists gives (`shared_row_fact`), else `None`. The name
   falls back to the dataset's declared label.
 - the partial mark (`partial_marks`, `partial_mark`): every member's mark, judged by the one
   that starts first, so the dataset holds back each period any member marks.
@@ -83,7 +83,7 @@ _PROVENANCE_AXIS = "provenance"
 
 def members_of(ref: str) -> tuple[str, ...]:
     """The member provenances of the dataset `ref` belongs to in the bound release's code
-    index (`CodeIndex.provenances_of` of `CodeIndex.dataset_of`), sorted: `(ref,)` for a
+    index (`CodeIndex.provenances_of` of `CodeIndex.dataset_of`), sorted. It is `(ref,)` for a
     plain table, and every member of the Dataset for a Dataset's id or a member's."""
     index = get_index()
     return index.provenances_of(index.dataset_of(ref))
@@ -123,7 +123,7 @@ def dataset_origin(ref: str, *, catalogue: Catalogue) -> tuple[SourceRef, DataCo
 def dataset_name(ref: str, *, catalogue: Catalogue) -> str | None:
     """The name the catalogue rows of `ref`'s members share (`shared_row_fact`), else the
     declared label of `ref`'s dataset in the bound release's code index where the dataset has
-    members of its own (`provenances_of` differs from the dataset), else `None`: a plain table
+    members of its own (`provenances_of` differs from the dataset), else `None`. A plain table
     states the name its catalogue row gives it or none."""
     if (name := shared_row_fact(ref, catalogue=catalogue, fact=lambda row: row.name)) is not None:
         return name
@@ -181,7 +181,7 @@ def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
 @cache
 def _warn_undocumented_member(source: str, member: str) -> None:
     """Logs, once per process, that the rows of `source` are judged without `member`'s partial
-    mark: the catalogue documents no such member, so its partial period is unknown."""
+    mark. The catalogue documents no such member, so its partial period is unknown."""
     _log.warning(
         "held-back cut: the origin catalogue documents no member %s of %s; its rows are "
         "judged by the other members' marks",
@@ -191,8 +191,8 @@ def _warn_undocumented_member(source: str, member: str) -> None:
 
 
 def partial_mark(catalogue: Catalogue, source: str) -> str | None:
-    """The partial mark `source`'s rows are judged by: the one of `partial_marks` that starts
-    first (`partial_period.start_of`), since it reaches every period a later one reaches, so a
+    """The partial mark `source`'s rows are judged by, the one of `partial_marks` that starts
+    first (`partial_period.start_of`). It reaches every period a later one reaches, so a
     dataset holds back each period any member marks. `None` where none is marked.
 
     Raises:
@@ -236,17 +236,18 @@ def _reported_sources(index: CodeIndex) -> frozenset[str]:
 
 
 def status_of(method: str | None, provenance: str | None) -> StatusClass | None:
-    """The status of the values a facet with `method` under `provenance` holds: the
+    """The status of the values a facet with `method` under `provenance` holds. It is the
     method's class (`method_status.method_status_classes`), or for no method `reported` when
-    `provenance` is among `reported_sources`. `None` when unknown."""
+    `provenance` is among `reported_sources`, and `None` when unknown."""
     if method is None:
         return "reported" if provenance in reported_sources() else None
     return method_status_classes().get(method)
 
 
 def refresh_nodes(ref: str) -> tuple[str, ...]:
-    """The graph nodes whose `lastDataRefreshDate` dates `ref`'s dataset: the dataset's own
-    node, then each member provenance (`members_of`). `(ref,)` for a plain table."""
+    """The graph nodes whose `lastDataRefreshDate` dates `ref`'s dataset, which are the
+    dataset's own node, then each member provenance (`members_of`). `(ref,)` for a plain
+    table."""
     return tuple(dict.fromkeys((get_index().dataset_of(ref), *members_of(ref))))
 
 
@@ -268,8 +269,8 @@ def dataset_recipe_id(ref: str, *, recipe_of: Callable[[str], str | None]) -> st
 
 
 def dataset_policy(axis: str, policy: FacetDefaultPolicy) -> FacetDefaultPolicy:
-    """`policy`, a default `axis` declares, as a reader of the dataset vocabulary compares it:
-    a provenance default naming a member provenance names the member's dataset
+    """`policy`, a default `axis` declares, as a reader of the dataset vocabulary compares it.
+    A provenance default naming a member provenance names the member's dataset
     (`CodeIndex.dataset_of`). Any other axis, and a plain table's provenance, is unchanged."""
     if axis != _PROVENANCE_AXIS:
         return policy

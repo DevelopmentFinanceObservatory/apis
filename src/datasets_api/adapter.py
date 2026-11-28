@@ -494,9 +494,9 @@ def provenance_pin(
     """The provenances `identity`'s `facets.provenance` binds, as a `ref` or a set of
     `refs` (`code_index.members.pinned_refs`), or `None` when it binds none. Each ref binds the
     member provenances of its dataset (`CodeIndex.provenances_of` of `CodeIndex.dataset_of`),
-    whose facets the catalogue admits, as Search scopes a ref (`search.engine.source_scope.read_provenances`):
-    a declared dataset's id and a member provenance bind every member, and a plain table's
-    provenance binds itself."""
+    whose facets the catalogue admits, as Search scopes a ref
+    (`search.engine.source_scope.read_provenances`). A declared dataset's id and a member
+    provenance bind every member, and a plain table's provenance binds itself."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     return (
         frozenset(

@@ -135,8 +135,8 @@ class ConversionCatalogue:
 
     def recipe(self, provenance: str) -> ConversionRecipe | None:
         """The recipe `provenance` converts under, as a mint resolves it
-        (`materialise.recipes.resolve_recipe`): its own, or for a declared dataset's id, or a
-        member's, the dataset node's, else the one every member names
+        (`materialise.recipes.resolve_recipe`). For a declared dataset's id or a member's, that
+        is the dataset node's recipe, else the one every member names
         (`materialise.member_folds.dataset_recipe_id`). None when it names none."""
         recipe_id = dataset_recipe_id(provenance, recipe_of=self.recipes.get)
         return RECIPE_BODIES[recipe_id] if recipe_id is not None else None
