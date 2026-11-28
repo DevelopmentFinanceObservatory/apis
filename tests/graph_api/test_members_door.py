@@ -523,6 +523,16 @@ def test_a_cursor_decodes_only_under_its_own_binding(changed):
         cursor.decode(token, replace(_BINDING, **changed))
 
 
+def test_a_cursor_of_another_sort_key_revision_is_refused(monkeypatch):
+    """A cursor issued before the sort keys changed would resume at a shifted position."""
+    monkeypatch.setattr(cursor, "_ORDER_REVISION", 1)
+    token = cursor.encode(_BINDING, cursor.Position(key="110", dcid="x"))
+    monkeypatch.undo()
+
+    with pytest.raises(cursor.CursorInvalid):
+        cursor.decode(token, _BINDING)
+
+
 @pytest.mark.parametrize("token", ["", "not-a-cursor", "WzFd", "e30"])
 def test_a_token_that_is_no_cursor_is_refused(token):
     with pytest.raises(cursor.CursorInvalid):
