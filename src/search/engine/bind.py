@@ -37,6 +37,7 @@ from search.engine.retrieval.bound_values import (
     ratio_base_axis,
     shape_invariants,
     shape_partly_stated,
+    shape_vocabulary,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
 from search.models import Axis, RoleAxis
@@ -633,13 +634,14 @@ def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> 
     that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
     leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves.
 
-    Read for `shape`, a parent covers only the leaves of `shape`'s code systems that a
-    shape of its vocabulary can bind (`qualifier_match.bindable_codes`), so a code of the
-    enum that only another dataset's rows hold, an IATI-only purpose code under a CRS
-    parent, changes nothing a CRS shape reads. A listed code always covers itself."""
+    Read for `shape`, a parent covers only the leaves of `shape`'s code systems that the
+    rows of its datasets hold (`qualifier_match.bindable_codes` of its `shape_vocabulary`),
+    so a code of the enum that only another dataset's rows hold changes nothing it reads:
+    an IATI-only purpose code under a CRS parent on a CRS shape, and a CRS-only one on an
+    IATI shape. A listed code always covers itself."""
     index = get_index()
     listed = set(codes)
-    vocabulary = _code_systems(shape) if shape is not None else frozenset()
+    vocabulary = shape_vocabulary(shape, index) if shape is not None else frozenset()
     bindable = bindable_codes(index, vocabulary) if shape is not None else frozenset()
 
     def counts(leaf: str) -> bool:
@@ -653,15 +655,6 @@ def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> 
         for code in listed
         for leaf in index.descendants(code)
         if not index.has_children(leaf) and counts(leaf)
-    )
-
-
-def _code_systems(shape: ShapeDraft) -> frozenset[str]:
-    """The code systems `shape` reads, its slots' properties and the slots a breakdown
-    left out (`region.state.shape_vocabulary`)."""
-    return (
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        | shape.omitted_slots
     )
 
 

@@ -1253,6 +1253,9 @@ CODE_SYNONYMS_WITHIN_VOCABULARY: Mapping[str, frozenset[str]] = {
     "ClimateChangePolicyObjective": frozenset({"climate"}),
     "AdaptationOnlyClimateChangePolicyObjective": frozenset({"adaptation"}),
     "MitigationOnlyClimateChangePolicyObjective": frozenset({"mitigation"}),
+    # "expenditure" names IATI's type 4 on an IATI shape; read everywhere it would bring the
+    # IATI family into a World Bank question on government expenditure.
+    "IATITransactionType4": frozenset({"expenditure"}),
 }
 
 # Names a question uses for a code that no matcher reads, exported as `CodeRow.also_called`.

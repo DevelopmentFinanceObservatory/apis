@@ -14,10 +14,10 @@
       operations: []
 
 - id: iati-unfpa-expenditure-2024
-  query: UNFPA expenditure in 2024
+  query: IATI expenditure by UNFPA in 2024
   activation: pending_data:iati
-  why: Expenditure is an IATI transaction type no other table offers, so the opt-in IATI dataset answers, with UNFPA as the provider.
-  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse}
+  why: Naming IATI elects the IATI dataset, which reads "expenditure" as its transaction type 4, with UNFPA as the provider.
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse, dataset: named}
   expect:
     definite:
       measure:

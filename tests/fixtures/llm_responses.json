@@ -26367,25 +26367,6 @@
       }
     ]
   },
-  "ExclusionRead@3c024839b279:523123cf9b81c4b11a9a966496203f72ea1d8d7d": {
-    "exclusions": []
-  },
-  "Extraction@840d8db0c01a:2a942e33cdd1808467a6e6389eb51bc03d302bf7": {
-    "kind": "resolution",
-    "variables": [
-      "UNFPA expenditure"
-    ],
-    "entities": [],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": [
-      {
-        "kind": "point",
-        "start": "2024",
-        "end": "2024"
-      }
-    ]
-  },
   "ExclusionRead@3c024839b279:a5681f0d55ad922701dfd785d4d45115adb19c81": {
     "exclusions": []
   },
@@ -26423,6 +26404,36 @@
         "kind": "point",
         "start": "2023",
         "end": "2023"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:ca6ea242fe64d154d4f7b42488b78f74736b569e": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:5524556cee4bf4c443ce11a4a89a8eaaedf535e3": {
+    "kind": "resolution",
+    "variables": [
+      "IATI expenditure"
+    ],
+    "entities": [
+      {
+        "text": "UNFPA",
+        "span": "UNFPA",
+        "variables": [
+          0
+        ],
+        "cue": "by",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
       }
     ]
   }

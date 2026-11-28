@@ -109,6 +109,7 @@ from search.engine.errors import (
     RoleSignatureError,
 )
 from search.engine.identity_edit import population_refusal
+from search.engine.qualifier_match import Vocabulary
 from search.engine.reading_coverage import covers
 from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.engine.retrieval.facts import (
@@ -2199,6 +2200,38 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
     debt series beside CRS flows, whose family no declared dataset publishes."""
     family = shape_family(shape, index)
     return family.datasets if family is not None else ()
+
+
+@per_index
+def _vocabularies(_index: CodeIndex) -> dict[int, Vocabulary]:
+    """Each shape's vocabulary (`shape_vocabulary`) read on one index, by shape object id. A
+    weakref finalizer removes a shape's entry before Python can reuse the id."""
+    return {}
+
+
+def shape_vocabulary(shape: ShapeDraft, index: CodeIndex | None = None) -> Vocabulary:
+    """The constraint properties `shape` can carry into binding, its slots' properties, which
+    are also the code systems it reads qualifier text in, with the datasets publishing its
+    family (`shape_datasets`), whose rows hold the codes it can bind
+    (`qualifier_match.bindable_codes`). A slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
+    and a term on that slot is one the answer leaves unapplied. A shape the index does not
+    carry reads with no datasets. Read once per shape and index."""
+    index = index or get_index()
+    by_shape = _vocabularies(index)
+    key = id(shape)
+    vocabulary = by_shape.get(key)
+    if vocabulary is None:
+        vocabulary = Vocabulary(
+            (
+                *(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid),
+                *shape.omitted_slots,
+            ),
+            datasets=shape_datasets(shape, index),
+        )
+        by_shape[key] = vocabulary
+        weakref.finalize(shape, by_shape.pop, key, None)
+    return vocabulary
 
 
 def declared_datasets(shape: ShapeDraft, index: CodeIndex) -> list[DatasetDeclaration]:

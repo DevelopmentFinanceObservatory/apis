@@ -43,7 +43,7 @@ from search.models import GraphRef, QuantityForm
 from tests.engine._binders import elected_reply, keep_the_pick
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._index_slots import crs_vocabulary
+from tests.engine._index_slots import CRS, IATI, dataset_flow_slot_keys
 from tests.engine._quantity import NO_QUANTITY
 
 # Helpers
@@ -1112,24 +1112,46 @@ def test_the_rank_elects_among_shapes_the_menu_states_alike(
     assert rank_elected([first, chosen], output, availability=availability) == elected
 
 
-def test_a_bound_parent_reads_alike_whatever_leaves_only_another_datasets_rows_hold():
-    """Upper secondary education (`CRSPurposeCode113`) on a CRS shape covers 11320 and
-    11330, the leaves CRS rows hold. 11321 and 11322, which only IATI rows hold, change
-    nothing: a shape listing the parent beside those two leaves reads it as one listing
-    the leaves alone."""
-    slots = tuple(
-        SlotKeyDraft(axis="how", property_dcid=prop, label=prop)
-        for prop in sorted(crs_vocabulary())
-    )
-    leaves = ["CRSPurposeCode11320", "CRSPurposeCode11330"]
-    listing = _shape(
-        "parent", slot_keys=slots, slot_taxonomy={"how:crsPurpose": ["CRSPurposeCode113", *leaves]}
+@pytest.mark.parametrize(
+    ("dataset", "parent", "leaves"),
+    [
+        pytest.param(
+            CRS,
+            "CRSPurposeCode113",
+            ["CRSPurposeCode11320", "CRSPurposeCode11330"],
+            id="crs-shape-past-iati-only-leaves",
+        ),
+        pytest.param(
+            IATI,
+            "CRSPurposeCode123",
+            [
+                *("CRSPurposeCode12310", "CRSPurposeCode12330", "CRSPurposeCode12340"),
+                *("CRSPurposeCode12350", "CRSPurposeCode12382"),
+            ],
+            id="iati-shape-past-a-crs-only-leaf",
+        ),
+    ],
+)
+def test_a_bound_parent_reads_alike_whatever_leaves_only_another_datasets_rows_hold(
+    dataset, parent, leaves
+):
+    """A bound parent on a shape covers the leaves its own dataset's rows hold, `leaves`.
+    Upper secondary education (`CRSPurposeCode113`) on a CRS shape passes over 11321 and
+    11322, which only IATI rows hold, and noncommunicable disease (`CRSPurposeCode123`) on
+    an IATI shape passes over 12320, which only CRS rows hold: a shape listing the parent
+    beside its leaves reads it as one listing the leaves alone."""
+    listing = dataclasses.replace(
+        _shape("parent", slot_taxonomy={"how:crsPurpose": [parent, *leaves]}),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_qual_dcid="Nominal",
+        slot_keys=dataset_flow_slot_keys(dataset),
     )
     alone = dataclasses.replace(
         listing, shape_id="leaves", slot_taxonomy={"how:crsPurpose": leaves}
     )
 
-    assert reads_bound_values_alike(listing, alone, [_value("crsPurpose", "CRSPurposeCode113")])
+    assert reads_bound_values_alike(listing, alone, [_value("crsPurpose", parent)])
 
 
 def test_dropped_qualifiers_block_renders_only_when_phrases_exist():

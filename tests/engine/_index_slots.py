@@ -21,6 +21,7 @@ from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierSpan,
     TextReading,
+    Vocabulary,
     read_by_vocabulary,
 )
 from search.engine.region.phase_rank_bind import (
@@ -68,16 +69,49 @@ def crs_flow_slot_keys() -> tuple[SlotKeyDraft, ...]:
     )
 
 
-def crs_vocabulary() -> frozenset[str]:
-    """The vocabulary of a CRS shape, as qualifier matching reads it: every property a
-    family the CRS publishes carries."""
-    return frozenset(
-        prop
-        for families in get_index().families_by_five_tuple.values()
-        for family in families
-        if "provenance/OECDCreditorReportingSystem" in family.datasets
-        for prop in family.properties
+CRS = "provenance/OECDCreditorReportingSystem"
+IATI = "dataset/InternationalAidTransparencyInitiative"
+
+
+def dataset_flow_slot_keys(dataset: str) -> tuple[SlotKeyDraft, ...]:
+    """The slot keys of the shape of nominal financial-flow amounts built from the family
+    `dataset` publishes."""
+    five_tuple = FiveTuple(
+        population_type="FinancialFlow",
+        measured_property="amount",
+        stat_type="measuredValue",
+        measurement_qualifier="Nominal",
+        measurement_denominator=None,
     )
+    (family,) = (
+        family
+        for family in get_index().families_by_five_tuple[five_tuple]
+        if dataset in family.datasets
+    )
+    return tuple(
+        SlotKeyDraft(axis="how", property_dcid=prop, label=prop)
+        for prop in sorted(family.properties)
+    )
+
+
+def dataset_vocabulary(dataset: str) -> Vocabulary:
+    """The vocabulary of a shape built from `dataset`'s rows, as qualifier matching reads it:
+    every property a family `dataset` publishes carries, read within its rows."""
+    return Vocabulary(
+        (
+            prop
+            for families in get_index().families_by_five_tuple.values()
+            for family in families
+            if dataset in family.datasets
+            for prop in family.properties
+        ),
+        datasets=(dataset,),
+    )
+
+
+def crs_vocabulary() -> Vocabulary:
+    """The vocabulary of a CRS shape (`dataset_vocabulary`)."""
+    return dataset_vocabulary(CRS)
 
 
 def unbound_index_slots(**five_tuple: str | None) -> list[IdentitySlot]:
