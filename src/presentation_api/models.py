@@ -341,6 +341,15 @@ class ComponentReadResponse(BaseModel):
         description="the closed, token-capped fact summary this revision reports"
     )
     resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
+    period_mode: Literal["fixed", "rolling"] = Field(
+        description="whether the span of periods this revision draws stays put when the card "
+        "is drawn on newer data. A stat card with a change follows its change basis alone. "
+        "Any other card is rolling when its window states a relative period or omits a side, "
+        "when it has no window, when it picks one period from the data (a stat card without a "
+        "change, an entity-mode bar chart) short of its window's end, or when its last drawn "
+        "value falls before its window's end, and fixed otherwise. A note and a source card "
+        "are fixed. Values and the series shown can change inside a fixed span"
+    )
     retention: RetentionModel | None = Field(
         default=None,
         description="how long the frame this reply draws can still be fetched, counted from "
