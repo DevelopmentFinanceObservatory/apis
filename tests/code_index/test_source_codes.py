@@ -5,6 +5,7 @@ contradict."""
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -104,7 +105,7 @@ def test_an_index_without_the_block_holds_no_code():
         ),
         (
             {"provenance": _OTHER, "code": "DT.TDS.DEGG.CD", "dcids": ["Ids_Aggregate"]},
-            "whose row carries provenances",
+            "whose row carries datasets",
         ),
         ({"provenance": _IDS, "code": "dt.tds.degg.cd", "dcids": ["Ids_Aggregate"]}, "upper"),
         ({"provenance": _IDS, "code": " NGDP", "dcids": ["Ids_Aggregate"]}, "upper"),
@@ -174,9 +175,15 @@ def _ledger_document(provenance: str) -> dict:
 
 def test_a_code_a_member_provenance_asserts_names_a_statvar_its_dataset_holds():
     """A code row carries the provenance asserting the code's arc, a member, and a StatVar
-    row the dataset holding it, so the loader compares them through the member map."""
+    row the dataset holding it, so the loader compares them through the member map, and
+    the index reads the code under the dataset."""
     index = parse_index(_ledger_document(_NORTH))
 
-    assert index.source_code_members("LEDGER.CD") == {_NORTH: ("Ledger_Flow",)}
-    with pytest.raises(IndexFormatError, match="whose row carries provenances"):
+    assert index.source_code_members("LEDGER.CD") == {_LEDGER: ("Ledger_Flow",)}
+    with pytest.raises(IndexFormatError, match="whose row carries datasets"):
         parse_index(_ledger_document(_OTHER))
+    elsewhere = _ledger_document(_NORTH)
+    elsewhere["statvars"].append({**elsewhere["statvars"][0], "dcid": "Other_Flow"})
+    elsewhere["source_codes"][0]["dcids"] = ["Other_Flow"]
+    with pytest.raises(IndexFormatError, match=re.escape(f"(dataset {_LEDGER!r})")):
+        parse_index(elsewhere)

@@ -386,7 +386,9 @@ def _variables(dcid: str, index: CodeIndex) -> _Listing[str]:
     code index's variables. A dcid the catalogue lists as no Dataset is read as a Provenance,
     if either table holds it. A member provenance of a declared dataset raises
     `RelationLacked` naming the dataset, since the index records which variables the dataset
-    holds and not which of its members holds each."""
+    holds and not which of its members holds each. For the same reason a catalogue Dataset
+    holding some members of a declared dataset and not all (`CodeIndex.provenances_of`)
+    raises `RelationLacked` naming the declared dataset."""
     if (dataset := index.dataset_of(dcid)) != dcid:
         raise RelationLacked(dcid, "variables", listed_under=dataset)
     catalogue = current_catalogue()
@@ -396,6 +398,9 @@ def _variables(dcid: str, index: CodeIndex) -> _Listing[str]:
             raise RelationLacked(dcid, "variables")
         provenances = (dcid,)
     datasets = tuple(dict.fromkeys(index.dataset_of(p) for p in provenances))
+    for dataset in datasets:
+        if dataset != dcid and not set(index.provenances_of(dataset)) <= set(provenances):
+            raise RelationLacked(dcid, "variables", listed_under=dataset)
     held = [
         index.variables_by_provenance[d] for d in datasets if d in index.variables_by_provenance
     ]

@@ -933,7 +933,7 @@ def _is_member_list(value: object) -> TypeGuard[list[str]]:
 def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[StatVarRow]) -> None:
     """Checks the dataset declarations against the StatVar rows.
 
-    Raises `IndexFormatError` when a row names a provenance no dataset
+    Raises `IndexFormatError` when a row names a dataset no dataset
     declares, a row of a dataset does not carry one of its declared
     `invariants` explicitly (an absent property fails whatever its
     `absent_reading`), a declared dataset has no row, or a dataset states a
@@ -956,8 +956,8 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
         for dataset_id in row.datasets:
             if dataset_id not in invariants:
                 raise IndexFormatError(
-                    f"StatVar {row.dcid!r} carries provenance {dataset_id!r}, which no "
-                    f"dataset declares (declared: {sorted(invariants)!r})"
+                    f"StatVar {row.dcid!r} carries dataset {dataset_id!r}, but no dataset "
+                    f"declares it (declared: {sorted(invariants)!r})"
                 )
             for prop, code in invariants[dataset_id].items():
                 if row.constraint_properties.get(prop) != code:
@@ -1125,10 +1125,11 @@ def _check_source_codes(
                     f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, which "
                     "is no StatVar row of the index"
                 )
-            if dataset_of.get(row.provenance, row.provenance) not in provenances[dcid]:
+            dataset = dataset_of.get(row.provenance, row.provenance)
+            if dataset not in provenances[dcid]:
                 raise IndexFormatError(
-                    f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, whose "
-                    f"row carries provenances {list(provenances[dcid])!r}"
+                    f"source code {row.code!r} under {row.provenance!r} (dataset {dataset!r}) "
+                    f"names {dcid!r}, whose row carries datasets {list(provenances[dcid])!r}"
                 )
 
 

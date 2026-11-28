@@ -544,7 +544,9 @@ def _resolved_stat_vars(
     population. ``member_count_exact`` tells a total from a lower bound. ``served_count`` is
     the mint's own count when Search knows it (``stated``). ``source_codes`` are the
     publisher codes the code index gives the members, whether the members were elected from
-    the index or recalled. A code is ``exact`` when a part naming it would accept the Spec of
+    the index or recalled, each under the dataset holding it (`CodeIndex.source_codes_of`), so
+    a code two members of a declared dataset hold is one entry naming the dataset's id. A
+    code is ``exact`` when a part naming it would accept the Spec of
     `identity`, which reads `provenance`, as its answer (`source_code.stands_for_code`)."""
     index = get_index()
     served = {sv.ref.ref for sv in stat_vars}

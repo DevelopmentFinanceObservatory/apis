@@ -649,3 +649,34 @@ class TestDeclaredDataset:
         _assert_refused(response, "/relation")
         dataset = LEDGER if member == NORTH else SOLO
         assert repr(dataset) in response.json()["detail"]
+
+    def test_a_catalogue_dataset_holding_some_members_refuses_naming_the_declared_dataset(
+        self, shared_resolver: SharedResolver, serve_catalogue: Callable[[Catalogue], None]
+    ):
+        """The catalogue lists one Ledger member under a Dataset of its own. The index holds
+        the Ledger's variables and not which member holds each, so that Dataset's list is
+        refused, naming the Ledger, while a Dataset holding every member still lists."""
+        partial = "dc/d/LedgerNorthOnly"
+        rows = [
+            replace(_row(member, dataset), source=_LEDGER_SOURCE)
+            for member, dataset in ((NORTH, partial), (SOUTH, LEDGER), (SOLO_MEMBER, SOLO))
+        ]
+        serve_catalogue(FakeCatalogue(provenances={row.id: row for row in rows}))
+        graph = FakeGraphNodeReader(
+            nodes={
+                **{d: {"typeOf": ("Dataset",)} for d in (partial, LEDGER, SOLO)},
+                **{member: {"typeOf": ("Provenance",)} for member in MEMBERS},
+            }
+        )
+        with bound_index(_ledger_index()):
+            client = TestClient(
+                _surface_app(shared=shared_resolver, policy=_POLICY, graph=graph),
+                raise_server_exceptions=False,
+            )
+            with client:
+                response = _get(client, partial, relation="variables")
+                whole = _get(client, SOLO, relation="variables")
+
+        _assert_refused(response, "/relation")
+        assert repr(LEDGER) in response.json()["detail"]
+        assert whole.status_code == 200, whole.text

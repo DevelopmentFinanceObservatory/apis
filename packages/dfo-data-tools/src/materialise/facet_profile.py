@@ -36,7 +36,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import BrokenExecutor, CancelledError, Executor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from typing import TYPE_CHECKING, NamedTuple, Protocol
@@ -55,6 +55,7 @@ from materialise.facets import (
     PlaceAdmission,
     SeriesCounts,
     coverage_probe,
+    read_as_datasets,
     subject_probe,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
@@ -376,6 +377,9 @@ def _profile(
     places: tuple[str, ...] = (),
     countries_fallback: bool = False,
 ) -> FacetProfile:
+    """`stat_var`'s profile from `probe`, its candidates read as their datasets'
+    (`facets.read_as_datasets`), as an election reads them (`generation._admitted`)."""
+    probe = replace(probe, candidates=tuple(read_as_datasets(probe.candidates)))
     breadth = probe.breadth_in(None) or {}
     admission = probe.admission
     return FacetProfile(

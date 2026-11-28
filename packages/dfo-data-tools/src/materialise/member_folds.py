@@ -34,8 +34,10 @@ Every function reads the member map of the bound release's code index and raises
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
+from functools import cache
 from typing import TYPE_CHECKING
 
 from code_index.shared import get_index, per_index
@@ -48,6 +50,8 @@ from materialise.method_status import (
 from materialise.partial_period import start_of
 from origin_catalogue import Catalogue, DataCommons, ProvenanceRow, SourceRef, entry_ref
 from origin_catalogue.catalogue import Licence, Undocumented, partial_period_of
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from code_index.query import CodeIndex
@@ -99,11 +103,12 @@ def agreed[T](values: Iterable[T | None]) -> T | None:
 def shared_row_fact[T](
     ref: str, *, catalogue: Catalogue, fact: Callable[[ProvenanceRow], T | None]
 ) -> T | None:
-    """The `fact` every catalogue row of `ref`'s members (`members_of`) gives, a member the
-    catalogue does not list adding none. `None` when no member is listed or the listed rows
-    give different values."""
-    rows = [row for member in members_of(ref) if (row := catalogue.provenance(member)) is not None]
-    return agreed(fact(row) for row in rows)
+    """The `fact` every catalogue row of `ref`'s members (`members_of`) gives. `None` when a
+    member is not listed, since its fact is unknown, or the rows give different values."""
+    rows = [catalogue.provenance(member) for member in members_of(ref)]
+    if any(row is None for row in rows):
+        return None
+    return agreed(fact(row) for row in rows if row is not None)
 
 
 def dataset_origin(ref: str, *, catalogue: Catalogue) -> tuple[SourceRef, DataCommons] | None:
@@ -145,7 +150,8 @@ def row_licence(ref: str, *, catalogue: Catalogue) -> Licence | None:
 def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
     """The distinct partial marks, sorted, of `source`'s members (`members_of`), each as the
     catalogue documents it (`origin_catalogue.partial_period_of`), a member the catalogue does
-    not document adding none. Empty where none is marked.
+    not document adding none and logged once (`_warn_undocumented_member`). Empty where none is
+    marked.
 
     Raises:
         Undocumented: `catalogue` documents none of the members."""
@@ -155,6 +161,7 @@ def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
         try:
             mark = partial_period_of(catalogue, provenance)
         except Undocumented:
+            _warn_undocumented_member(source, provenance)
             continue
         documented = True
         if mark is not None:
@@ -162,6 +169,18 @@ def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
     if not documented:
         raise Undocumented(source)
     return tuple(sorted(marks))
+
+
+@cache
+def _warn_undocumented_member(source: str, member: str) -> None:
+    """Logs, once per process, that the rows of `source` are judged without `member`'s partial
+    mark: the catalogue documents no such member, so its partial period is unknown."""
+    _log.warning(
+        "held-back cut: the origin catalogue documents no member %s of %s; its rows are "
+        "judged by the other members' marks",
+        member,
+        source,
+    )
 
 
 def partial_mark(catalogue: Catalogue, source: str) -> str | None:

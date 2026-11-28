@@ -437,6 +437,33 @@ def test_materialisation_exact_counts_the_estimates_continuing_a_series(
     assert f"observed={observed}," in ev.detail
 
 
+def test_materialisation_exact_counts_another_member_s_estimates_continuing_a_series():
+    """Kenya's reported Ledger series is held by one member to 2024 and the other member's
+    `Estimated` facet runs to 2030. Both read as the Ledger dataset, as in a mint, so the
+    estimates continue the series: 2015 to 2027 counts ten reported years and three
+    estimated ones."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    facets = {
+        _KEN: [
+            _facet("f-north", range(2000, 2025), provenance=NORTH),
+            _facet("f-south", range(2020, 2031), provenance=SOUTH, method="Estimated"),
+        ]
+    }
+    resp = _exact_response(
+        13,
+        facets={"provenance": {"basis": "fallback", "ref": LEDGER}},
+        window={"start_year": 2015, "end_year": 2027},
+        entities=("country/KEN",),
+    )
+
+    with bound_ledger_index():
+        ev = _score(resp, facets)
+
+    assert ev.verdict == PASS, ev.detail
+    assert "observed=13," in ev.detail
+
+
 _PER_SERIES = {"provenance": {"basis": "fallback", "selection": "per_series"}}
 
 

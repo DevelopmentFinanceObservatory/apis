@@ -74,6 +74,7 @@ from search.engine.source_scope import SourceReference, SourceScope
 from search.engine.spec_build import build_shape_model
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
+    BaseIdentity,
     DatasetResubmitInput,
     GraphRef,
     ParsedEntity,
@@ -1334,6 +1335,69 @@ def test_a_code_two_sources_hold_needs_one_named(allowed, outcome):
         assert [s.ref for s in compiled.sources] == ["dc/base/A", "dc/base/B"]
     else:
         assert (compiled.provenance, compiled.dcids) == outcome
+
+
+def _ledger_code_index(rows: list[SourceCodeRow]) -> CodeIndex:
+    """`_index` of `rows` declaring the Ledger dataset of its two member provenances
+    (`tests.materialise._ledger`)."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, ledger_index
+
+    return CodeIndex(
+        stamp=_STAMP,
+        declarations=(),
+        codes=(),
+        statvars=(),
+        source_codes=rows,
+        datasets=tuple(ledger_index().datasets.values()),
+        dataset_members={LEDGER: (NORTH, SOUTH)},
+    )
+
+
+def test_a_code_both_members_of_a_dataset_hold_is_one_holder_under_the_dataset(monkeypatch):
+    """Both Ledger members file `LEDGER.CD`, so the code compiles under the dataset's id
+    with both members' StatVars, the wire names the dataset as its holder, and a Spec
+    reading the dataset stands for it. A StatVar one member gives another code shares it."""
+    from tests.materialise._ledger import LEDGER, NORTH, PLAIN, SOUTH
+
+    index = _ledger_code_index(
+        [
+            SourceCodeRow(provenance=NORTH, code="LEDGER.CD", dcids=("sv/north",)),
+            SourceCodeRow(provenance=SOUTH, code="LEDGER.CD", dcids=("sv/south",)),
+        ]
+    )
+    expected = SeriesCodeMembers(
+        code="LEDGER.CD", provenance=LEDGER, dcids=("sv/north", "sv/south")
+    )
+    named = SourceScope(allowed=frozenset({LEDGER}), named=True)
+    monkeypatch.setattr("search.engine.source_code.elects_within", lambda _identity, _dcids: True)
+
+    def stands(read: str) -> bool:
+        return stands_for_code(
+            "LEDGER.CD",
+            provenance=LEDGER,
+            identity=cast(BaseIdentity, None),
+            served={"sv/north", "sv/south"},
+            read=read,
+            index=index,
+        )
+
+    assert compile_part_code("LEDGER.CD", scope=None, index=index) == expected
+    assert compile_part_code("LEDGER.CD", scope=named, index=index) == expected
+    assert index.source_codes_of("sv/north") == ((LEDGER, "LEDGER.CD"),)
+    assert (stands(LEDGER), stands(NORTH), stands(PLAIN)) == (True, True, False)
+
+    shared = _ledger_code_index(
+        [
+            SourceCodeRow(provenance=NORTH, code="LEDGER.CD", dcids=("sv/north",)),
+            SourceCodeRow(provenance=SOUTH, code="LEDGER.ALT", dcids=("sv/north",)),
+        ]
+    )
+    compiled = compile_part_code("LEDGER.CD", scope=None, index=shared)
+    assert isinstance(compiled, SourceCodeRefusal)
+    assert (compiled.reason, compiled.shared_codes) == (
+        "source_code_shares_variable",
+        ("LEDGER.ALT",),
+    )
 
 
 _SCAN_INDEX = _index(

@@ -178,12 +178,12 @@ def resolve_recipe(
     Datasets; members electing different recipes, or one electing none, leave the dataset
     `recipe_undeclared`. Only those fallbacks read `graph`.
     """
-    members = [member for member in members_of(provenance_id) if member != provenance_id]
     try:
         return _elected_recipe(
             graph, provenance_id=provenance_id, provenance_arcs=provenance_arcs, deadline=deadline
         )
     except RecipeNotDeclaredError:
+        members = [member for member in members_of(provenance_id) if member != provenance_id]
         if not members:
             raise
     member_arcs = graph.node_arcs_many(

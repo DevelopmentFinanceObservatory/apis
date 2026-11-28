@@ -62,7 +62,13 @@ from code_index.members import SourceNotInFamily, identity_family_query, index_f
 from code_index.shared import get_index
 from dc_graph import Facet
 from graph_release.context import ReleaseNotBound
-from materialise.facets import Cadence, at_cadence, cadences_by_member, continuation
+from materialise.facets import (
+    Cadence,
+    at_cadence,
+    cadences_by_member,
+    continuation,
+    read_as_datasets,
+)
 from materialise.window import RequestedWindow, latest_period
 from search.engine.identity_edit import population_members
 from search.engine.region.codes import (
@@ -187,10 +193,13 @@ def _series_points(
     the series' `facets` continuing it past its last period inside `window`, chosen as the
     engine and a mint choose them (`materialise.facets.continuation`, at the cadence of the
     group's lead facet). A continuing facet serves only its dates after the group's last
-    period (`materialise.columnar.continuation_mask`)."""
+    period (`materialise.columnar.continuation_mask`). Both are read as their datasets'
+    (`materialise.facets.read_as_datasets`), so a facet of another member of the group's
+    declared dataset continues it, as in a mint."""
     points = _group_points(group, window=window)
     if window is None or window.end_year is None:
         return points
+    group, facets = read_as_datasets(group), read_as_datasets(facets)
     (cadence_of,) = cadences_by_member([facets])
     cadence = cadence_of.get(group[0].facet_id or "")
     continuing = continuation(

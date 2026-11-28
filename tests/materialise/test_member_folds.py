@@ -32,6 +32,7 @@ from materialise.member_folds import (
     dataset_origin,
     entry_licence,
     is_projection,
+    partial_marks,
     row_licence,
     status_of,
 )
@@ -113,10 +114,10 @@ def _facet(provenance: str, *, method: str | None = None, latest: str = "2015") 
         pytest.param(
             [_row(NORTH, name="Ledger register")],
             LEDGER,
-            "Ledger register",
-            "source/Ledger",
-            _CC_BY,
-            id="an-unlisted-member-adds-nothing",
+            "Ledger",
+            None,
+            None,
+            id="an-unlisted-member-leaves-every-fact-unknown",
         ),
         pytest.param(
             [_row(SOLO_MEMBER, name="Solo books")],
@@ -136,12 +137,10 @@ def _facet(provenance: str, *, method: str | None = None, latest: str = "2015") 
         ),
     ],
 )
-def test_catalogue_row_facts_are_the_ones_every_listed_member_shares(
-    rows, ref, name, source, licence
-):
+def test_catalogue_row_facts_are_the_ones_every_member_shares(rows, ref, name, source, licence):
     """The catalogue lists member provenances only, so a dataset's name, source, Data Commons
-    and licence are the ones its listed members' rows share, and its name falls back to its
-    declared label."""
+    and licence are the ones its members' rows share, none when a member is unlisted, and its
+    name falls back to its declared label."""
     catalogue = FakeCatalogue(
         provenances={row.id: row for row in rows},
         card_facts={row.id: CardFacts(license_type=row.licence.label) for row in rows},
@@ -217,6 +216,20 @@ def test_a_dataset_reports_its_methodless_values_when_every_member_does(
     monkeypatch.setattr(member_folds, "reported_provenances", lambda: frozenset(reported))
 
     assert {status_of(None, ref) for ref in (LEDGER, NORTH, SOUTH)} == {status}
+
+
+def test_an_undocumented_member_adds_no_mark_and_is_logged(caplog: pytest.LogCaptureFixture):
+    """South is undocumented, so the Ledger's marks are North's alone, and the read logs
+    South as a member judged without its mark."""
+    crs = dev_provenance_nodes()["provenance/OECDCreditorReportingSystem"]
+    north = {**crs, "partialObservationDate": ("2025",)}
+    member_folds._warn_undocumented_member.cache_clear()
+
+    with caplog.at_level("WARNING", logger=member_folds.__name__):
+        marks = partial_marks(documenting({NORTH: north}), LEDGER)
+
+    assert marks == ("2025",)
+    assert [record.args for record in caplog.records] == [(SOUTH, LEDGER)]
 
 
 def _unmarked(provenances: tuple[str, ...]) -> dict[str, dict[str, tuple[str, ...]]]:

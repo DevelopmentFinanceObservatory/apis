@@ -42,6 +42,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.graph_release.support import build_view_release
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
+from ._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
 from ._scope_availability import ScopeAvailability
 from .conftest import FakeGraphReader
 
@@ -402,6 +403,36 @@ def test_a_role_bearing_profile_defaults_to_the_method_the_graph_declares(declar
     )[_FLOWS]
 
     assert _default_ids(profile) == default
+
+
+def test_a_declared_dataset_s_member_facets_profile_under_the_dataset(bind_catalogue):
+    """The profile's candidates carry the Ledger dataset's id, as an election reads them, so
+    a reader of the provenance axis on a profile reads the dataset and never a member."""
+    north, south = _facet("fN", NORTH), _facet("fS", SOUTH, obs_count=66)
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row(NORTH, DFO), provenance_row(SOUTH, DFO)],
+            dfo_variables=[_POPULATION],
+        )
+    )
+    graph = _graph({_PLACES[0]: [north], **{p: [south] for p in _PLACES[1:]}})
+
+    with bound_ledger_index():
+        profile = read_facet_profiles(
+            [_POPULATION],
+            graph=graph,
+            availability=graph.scope_availability(),
+            coverage=_empty_coverage().index,
+            max_bytes=_MAX_BYTES,
+            deadline=None,
+        )[_POPULATION]
+
+    assert isinstance(profile, FacetProfile), profile
+    assert {(c.facet_id, c.dataset_id) for c in profile.candidates} == {
+        ("fN", LEDGER),
+        ("fS", LEDGER),
+    }
+    assert {f.dataset_id for f in profile.default} == {LEDGER}
 
 
 # --- P8: the countries fallback is marked ------------------------------------------------
