@@ -105,6 +105,7 @@ from search.engine.retrieval.bound_values import (
     shape_member_facts,
     shape_population_arcs,
     shape_query,
+    shape_vocabulary,
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.read_plan import ReadPlan, minimal_constraint_svs
@@ -468,17 +469,6 @@ def _served_members(shape: ShapeDraft, query: FamilyQuery) -> list[str]:
 # Why the presence read an alternate's default scope needs did not complete: no worker of
 # the alternates' presence pool was free, the presence source failed, or it timed out.
 AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out"]
-
-
-def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
-    """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
-    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
-    and a term on that slot is one the answer leaves unapplied."""
-    return (
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        | shape.omitted_slots
-    )
 
 
 def qualifier_dropped_warning(phrase: str) -> Warning:

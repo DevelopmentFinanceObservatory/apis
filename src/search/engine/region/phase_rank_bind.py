@@ -1716,12 +1716,13 @@ def _unbindable_qualifiers(
     denominators: Mapping[str, DenominatorRead],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that name only codes
-    no shape can bind (`qualifier_match.bindable_codes`), one of them of a system `shape`
-    declares, and whose words `shape`'s own reading (`own_spans`) leaves partly
-    unread, each as an unbound record with evidence ``"unavailable"``.
+    `shape` cannot bind (`qualifier_match.bindable_codes` of its `shape_vocabulary`), one of
+    them of a system `shape` declares, and whose words `shape`'s own reading (`own_spans`)
+    leaves partly unread, each as an unbound record with evidence ``"unavailable"``.
 
     A shape's own reading skips such codes, so "population", `CRSTypeOfFinance4`, neither
-    binds nor hides a purpose reading on a CRS shape. Where nothing else reads the word,
+    binds nor hides a purpose reading on a CRS shape, and "loans", `CRSTypeOfFinance400`,
+    which only IATI rows hold, is unavailable on one. Where nothing else reads the word,
     "population ODA" refuses on it. A term every word of which the shape reads
     otherwise yields to that reading, and so does one inside a phrase the bind model's
     menu choice reads (`chosen`, `_menu_choices`): "population policies" read as purpose
@@ -1729,9 +1730,8 @@ def _unbindable_qualifiers(
     names of declared measures the variable holds, that the shape holds
     (`_measure_named_ranges`).
     """
-    index = get_index()
-    bindable = bindable_codes(index)
     vocabulary = shape_vocabulary(shape)
+    bindable = bindable_codes(get_index(), vocabulary)
     read = [
         *((own.start, own.end) for own in for_shape(own_spans, shape)),
         *chosen,

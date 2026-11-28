@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from code_index.labels import PRICE_BASIS_AXIS, PRICES_BY_QUALIFIER
-from code_index.shared import get_measure_index
+from code_index.shared import get_index, get_measure_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import (
     WarningKey,
@@ -31,7 +31,7 @@ from search.engine.departures import (
     qualifier_property,
     warning_key,
 )
-from search.engine.qualifier_match import _normalize
+from search.engine.qualifier_match import _normalize, bindable_codes
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import judge_value_requirements
 from search.engine.region.qualifier_readings import answer_reads_measure, shape_reads_measure_axis
@@ -330,7 +330,9 @@ def judge(
     record, which an answer names by its own record of the phrase (`_unbound_outcome`), and
     a term no answer is judged on (`None`) is outside
     every answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
-    answer that leaves it unmet, so it departs and refuses nothing."""
+    answer that leaves it unmet, so it departs and refuses nothing. An answer is outside
+    every requirement of a phrase it was asked to leave out whose run names only codes its
+    shape cannot bind (`_unread_exclusions`)."""
     requirements = tuple(requirements)
     answers = tuple(answers)
     served = tuple(served) or (None,) * len(answers)
@@ -412,7 +414,13 @@ def judge(
                 # A value only the bind model read is disclosed and refuses nothing.
                 answer[-1] = "outside"
                 named.pop(j, None)
-        outcomes.append(tuple(answer))
+        unread = _unread_exclusions(requirements, held)
+        outcomes.append(
+            tuple(
+                "outside" if requirement.phrase in unread else outcome
+                for requirement, outcome in zip(requirements, answer, strict=True)
+            )
+        )
         slot_terms.append(named)
     return Judgement(
         requirements=requirements, outcomes=tuple(outcomes), slot_terms=tuple(slot_terms)
@@ -473,6 +481,32 @@ def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
         for code in rule.codes
         for value in index.reading_set(code)
     )
+
+
+def _unread_exclusions(
+    requirements: Sequence[Requirement], vocabulary: frozenset[str]
+) -> frozenset[str]:
+    """The phrases the request asked to leave out of which a run names, on code systems,
+    only codes a shape of `vocabulary` cannot bind (`qualifier_match.bindable_codes`), codes
+    that only other datasets' rows hold. Such a shape reads no code in the run's words, so
+    its answer is outside the phrase, as every answer is outside a phrase a word of which
+    names no code (`state.exclusion_requirements`): "excluding loans" names
+    `CRSTypeOfFinance400`, which only IATI rows hold, so a CRS answer neither meets nor
+    leaves it unmet."""
+    index = get_index()
+    bindable = bindable_codes(index, vocabulary)
+    reads: dict[tuple[str, str], bool] = {}
+    for requirement in requirements:
+        rule = requirement.rule
+        if requirement.origin != "exclusion" or (run := excluded_run(rule)) is None:
+            continue
+        read = (
+            any(code in bindable for code in rule.codes)
+            if isinstance(rule, CodeRule) and rule.property_dcid in index.declarations
+            else True
+        )
+        reads[(requirement.phrase, run)] = reads.get((requirement.phrase, run), False) or read
+    return frozenset(phrase for (phrase, _run), read in reads.items() if not read)
 
 
 def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[str]]) -> Outcome:

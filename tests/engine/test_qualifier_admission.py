@@ -62,6 +62,7 @@ from search.engine.region.phase_rank_bind import (
     _log_admitted_qualifiers,
     _menu_choices,
     _resolve_query_qualifiers,
+    _unbindable_qualifiers,
     _undeclared_qualifiers,
 )
 from search.engine.region.pipeline import resolve_variable
@@ -81,8 +82,10 @@ from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snap
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._index_slots import (
+    IATI,
     crs_flow_slot_keys,
     crs_vocabulary,
+    dataset_vocabulary,
     own_variable_spans,
     query_qualifiers,
     read_text,
@@ -334,10 +337,9 @@ def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own
 
 def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
     """`CRSTypeOfFinance400` ("loans") is a CRS finance type that only IATI rows hold,
-    through codes under it, and those rows also declare `iatiTransactionType`. A CRS
-    shape's own reading of "ODA loans" claims no finance type; a shape that also reads the
-    transaction type reads loans."""
-    iati = _CRS | {"iatiTransactionType"}
+    through codes under it. A CRS shape's own reading of "ODA loans" claims no finance
+    type; an IATI shape's reads loans."""
+    iati = dataset_vocabulary(IATI)
     reading = read_text("ODA loans", _REAL_INDEX, vocabularies=[_CRS, iati])
 
     def finance_types(vocabulary: frozenset[str]) -> set[str]:
@@ -350,6 +352,33 @@ def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
 
     assert finance_types(_CRS) == set()
     assert "CRSTypeOfFinance400" in finance_types(iati)
+
+
+@pytest.mark.parametrize(
+    ("variable", "unavailable"),
+    [
+        pytest.param("loans to Kenya", [("loans", "unavailable")], id="loans"),
+        # The reading in every code system takes "ODA loans" as DAC2a aid type 218, which
+        # the CRS shape does not declare.
+        pytest.param("ODA loans to Kenya", [], id="oda-loans"),
+    ],
+)
+def test_a_code_only_another_datasets_rows_hold_is_unavailable_on_a_crs_shape(
+    variable, unavailable
+):
+    """`CRSTypeOfFinance400` ("loans"), which only IATI rows hold, is a finance type no CRS
+    shape binds, so the CRS shape records "loans" as unavailable."""
+    state = _model_choice_state(variable, [])
+    records = _unbindable_qualifiers(
+        variable,
+        state.variable_spans_in_every_system,
+        state.capped_shapes[0],
+        state.variable_spans_by_vocabulary,
+        named=(),
+        denominators={},
+    )
+
+    assert [(record.text, record.evidence) for record in records] == unavailable
 
 
 # ---------------------------------------------------------------------------
@@ -723,9 +752,10 @@ def test_admit_qualifier_ties_narrows_a_four_row_tie_per_declaring_shape():
 
 
 def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
-    """ "ODA" ties CRS's flow type and DAC2a's ODA code in the vocabulary of ONE's imputed
-    sectors table, which declares both systems. Its rows hold the flow type alone, so the
-    tie promotes to it and bind is never offered DAC2a's ODA code."""
+    """ "ODA" ties CRS's flow type and DAC2a's ODA code in the code systems of ONE's imputed
+    sectors table, which declares both. Its rows hold the flow type alone, so its own
+    reading, within its rows, matches the flow type, and a tie read over every row promotes
+    to it: bind is never offered DAC2a's ODA code."""
     sectors_sv = (
         "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
         "CRSPurposeCode11220_Nominal"
@@ -735,11 +765,12 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
     )
     (sectors,) = derive_shapes(confirmed_svs=[sectors_sv], graph=graph)
     vocabulary = shape_vocabulary(sectors)
-    ties = (
-        read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary])
-        .by_vocabulary[vocabulary]
-        .ties
-    )
+    systems = frozenset(vocabulary)
+    reading = read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary, systems])
+    own = reading.by_vocabulary[vocabulary]
+    assert [match.code_dcid for match in own.matches] == ["CRSTypeOfFlow10"]
+    assert own.ties == ()
+    ties = reading.by_vocabulary[systems].ties
     assert [{row.code_dcid for row in tie.rows} for tie in ties] == [
         {"CRSTypeOfFlow10", "DAC2aAidType206"}
     ]

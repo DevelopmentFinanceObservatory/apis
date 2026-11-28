@@ -29,6 +29,7 @@ from search.engine.qualifier_match import (
     _all_normalized_text_ranges,
     _all_system_markers,
     _max_phrase_words,
+    cross_vocabulary_codes,
     match_qualifier_readings,
     match_qualifier_ties,
     match_qualifiers,
@@ -1416,3 +1417,30 @@ def test_climate_finance_for_adaptation_binds_the_adaptation_only_part():
     assert [m.code_dcid for m in matches] == [_CLIMATE_TOTAL, _CLIMATE_ADAPTATION]
     combination = _combine_matches(variable, matches, _climate_index())
     assert combination.values == {_CLIMATE_SYSTEM: (_CLIMATE_ADAPTATION,)}
+
+
+@pytest.mark.parametrize(
+    ("variable", "named"),
+    [
+        pytest.param(
+            "government expenditure on education as share of total government spending",
+            [],
+            id="government-expenditure",
+        ),
+        pytest.param("health expenditure per capita in Africa", [], id="health-expenditure"),
+        pytest.param("outgoing commitments to Kenya", ["IATITransactionType2"], id="control"),
+    ],
+)
+def test_bare_expenditure_names_no_iati_transaction_type_in_every_code_system(variable, named):
+    """ "expenditure" names IATI's transaction type 4 only on an IATI shape
+    (`declarations.CODE_SYNONYMS_WITHIN_VOCABULARY`), so a World Bank question on
+    expenditure brings in no IATI family, while "outgoing commitment" names type 2
+    everywhere."""
+    reading = read_text(variable, _REAL_INDEX)
+
+    assert [
+        row.dcid
+        for span in reading.everywhere.spans
+        for row in cross_vocabulary_codes(span)
+        if row.code_system == "iatiTransactionType"
+    ] == named

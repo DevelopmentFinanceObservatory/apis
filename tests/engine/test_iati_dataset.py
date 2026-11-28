@@ -173,16 +173,19 @@ def test_a_question_naming_no_dataset_leaves_the_opt_in_iati_out(variable: str):
     assert _TRANSACTION_TYPE not in _bound(spec)
 
 
-def test_a_transaction_type_only_iati_offers_answers_from_iati():
-    """Expenditure is a transaction type no other table offers, so naming it keeps IATI's
-    shape, and UNFPA's expenditure answers from IATI under type 4 alone."""
+def test_iatis_expenditure_answers_under_its_transaction_type(monkeypatch: pytest.MonkeyPatch):
+    """A part naming IATI reads "expenditure" as IATI's transaction type 4, so UNFPA's
+    expenditure answers from IATI under type 4 alone."""
+    _name_dataset(monkeypatch, _IATI)
     llm = _ScriptedLLM(
         "expenditure",
-        entities=(ExtractedEntity(text="UNFPA", span="UNFPA", role="source", cue=None),),
+        entities=(ExtractedEntity(text="UNFPA", span="UNFPA", role="source", cue="by"),),
         drafted=_binds(_EXPENDITURE),
     )
 
-    response = _resolve("UNFPA expenditure in 2024", llm, _graph("expenditure", _IATI_EXPENDITURE))
+    response = _resolve(
+        "IATI expenditure by UNFPA in 2024", llm, _graph("expenditure", _IATI_EXPENDITURE)
+    )
 
     (part,) = response.parts
     assert isinstance(part, DefinitePart), part

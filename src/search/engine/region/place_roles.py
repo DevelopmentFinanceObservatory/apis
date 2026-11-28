@@ -64,6 +64,7 @@ from search.engine.retrieval.bound_values import (
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
+    shape_vocabulary,
 )
 from search.engine.retrieval.whole_reading import WholeReading, whole_population, whole_reading
 from search.engine.role_text import asks_members, role_contradicted
@@ -904,11 +905,7 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     bank ODA" and "multilateral education aid" it stands beside a word a DAC2a shape does
     not read."""
     index = get_index()
-    # `state.shape_vocabulary`, which this module cannot import.
-    vocabulary = (
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        | shape.omitted_slots
-    )
+    vocabulary = shape_vocabulary(shape, index)
     (reading,) = read_by_vocabulary(
         [variable], index, get_measure_index(), vocabularies=[vocabulary]
     )

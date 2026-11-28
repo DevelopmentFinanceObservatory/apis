@@ -191,7 +191,9 @@ def test_single_variable_raw_query_naming_aid_defaults_the_flow_type():
 def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():
     """Two extracted variables leave "aid" unattributed, so both flow slots stay open. The
     grant-equivalent flow both parts elect does not state "loans", as the binder rates it,
-    so that part refuses on it, flagging the flow with its slot open."""
+    so that part refuses on it, flagging the flow with its slot open. "loans" names
+    `CRSTypeOfFinance400`, which only IATI rows hold, so the CRS shape records it as
+    unavailable."""
     response = offline_resolve(
         make_request("How much aid did Kenya get?"),
         graph=_e2e_graph_for("funding", "loans"),
@@ -204,7 +206,7 @@ def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():
     assert isinstance(loans, NoDataPart)
     assert loans.no_data.reason == "qualifier_not_bound"
     assert [(q.text, q.disposition, q.evidence) for q in loans.no_data.unbound_qualifiers] == [
-        ("loans", "no_vocabulary", "uncovered")
+        ("loans", "unbound", "unavailable")
     ]
     flagged = loans.no_data.flagged_match
     assert flagged is not None

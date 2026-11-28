@@ -10,7 +10,7 @@ import asyncio
 import gc
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -46,6 +46,7 @@ from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._index_slots import CRS, IATI, dataset_flow_slot_keys
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_qualifier_suppression_and_provenance import _E2E_QUERY, _e2e_graph
 
@@ -1217,6 +1218,28 @@ def test_a_run_naming_two_systems_is_left_out_only_on_every_property(shape, bind
     judgement = judge(requirements, [(shape, bindings)])
 
     assert judgement.met_exclusions() == ({"excluding budget support"} if met else frozenset())
+
+
+@pytest.mark.parametrize(
+    ("dataset", "met"),
+    [
+        pytest.param(CRS, False, id="crs-answer-reads-no-loan"),
+        pytest.param(IATI, True, id="iati-answer-leaves-loans-out"),
+    ],
+)
+def test_a_run_naming_only_codes_the_answers_rows_lack_is_not_left_out(dataset, met):
+    """ "loans" names `CRSTypeOfFinance400`, which only IATI rows hold. A CRS answer binding
+    standard grants reads no loan, so it cannot show the loans left out, as a word naming
+    no code shows nothing; an IATI answer binding them leaves loans out."""
+    exclusion = LeftOut(phrase="excluding loans", things=("loans",), at=0, shown="excluding loans")
+    (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
+    shape = replace(
+        _crs_shape(), meas_qual_dcid="Nominal", slot_keys=dataset_flow_slot_keys(dataset)
+    )
+
+    judgement = judge(requirements, [(shape, _crs_bound(crsTypeOfFinance="CRSTypeOfFinance110"))])
+
+    assert judgement.met_exclusions() == ({"excluding loans"} if met else frozenset())
 
 
 @pytest.mark.parametrize(
