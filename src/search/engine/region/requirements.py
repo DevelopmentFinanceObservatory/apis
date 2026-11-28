@@ -18,7 +18,7 @@ requirements only an answer can meet (`settle_unanswered`), and the rest depart.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -47,7 +47,7 @@ from search.engine.region.state import (
     shape_vocabulary,
     with_requirement,
 )
-from search.engine.retrieval.bound_values import applies_value
+from search.engine.retrieval.bound_values import applies_value, shape_datasets
 from search.engine.shape import ShapeDraft
 from search.engine.unit.conversion import PriceBasis
 from search.models import GraphRef, ResolvedQualifier
@@ -331,7 +331,7 @@ def judge(
     a term no answer is judged on (`None`) is outside
     every answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
     answer that leaves it unmet, so it departs and refuses nothing. An answer is outside
-    every requirement of a phrase it was asked to leave out whose run names only codes its
+    each requirement of a run the request asked to leave out that names only codes its
     shape cannot bind (`_unread_exclusions`)."""
     requirements = tuple(requirements)
     answers = tuple(answers)
@@ -414,10 +414,12 @@ def judge(
                 # A value only the bind model read is disclosed and refuses nothing.
                 answer[-1] = "outside"
                 named.pop(j, None)
-        unread = _unread_exclusions(requirements, held)
+        unread = _unread_exclusions(requirements, shape_datasets(shape))
         outcomes.append(
             tuple(
-                "outside" if requirement.phrase in unread else outcome
+                "outside"
+                if (requirement.phrase, excluded_run(requirement.rule)) in unread
+                else outcome
                 for requirement, outcome in zip(requirements, answer, strict=True)
             )
         )
@@ -484,17 +486,19 @@ def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
 
 
 def _unread_exclusions(
-    requirements: Sequence[Requirement], vocabulary: frozenset[str]
-) -> frozenset[str]:
-    """The phrases the request asked to leave out of which a run names, on code systems,
-    only codes a shape of `vocabulary` cannot bind (`qualifier_match.bindable_codes`), codes
-    that only other datasets' rows hold. Such a shape reads no code in the run's words, so
-    its answer is outside the phrase, as every answer is outside a phrase a word of which
-    names no code (`state.exclusion_requirements`): "excluding loans" names
-    `CRSTypeOfFinance400`, which only IATI rows hold, so a CRS answer neither meets nor
-    leaves it unmet."""
+    requirements: Sequence[Requirement], datasets: Collection[str]
+) -> frozenset[tuple[str, str]]:
+    """Each phrase the request asked to leave out and run of it that names, on code systems,
+    only codes a shape built from the rows of `datasets` cannot bind
+    (`qualifier_match.bindable_codes`), codes that only other datasets' rows hold. Such a
+    shape reads no code in the run's words, so its answer is outside the run's
+    requirements, as every answer is outside a phrase a word of which names no code
+    (`state.exclusion_requirements`). "excluding loans" names `CRSTypeOfFinance400`, which
+    only IATI rows hold, so a CRS answer neither meets nor leaves it unmet. The phrase's
+    other runs are judged as they stand: in "excluding standard grants and loans" a CRS
+    answer binding standard grants (`CRSTypeOfFinance110`) leaves "standard grants" unmet."""
     index = get_index()
-    bindable = bindable_codes(index, vocabulary)
+    bindable = bindable_codes(index, datasets=datasets)
     reads: dict[tuple[str, str], bool] = {}
     for requirement in requirements:
         rule = requirement.rule
@@ -505,8 +509,9 @@ def _unread_exclusions(
             if isinstance(rule, CodeRule) and rule.property_dcid in index.declarations
             else True
         )
-        reads[(requirement.phrase, run)] = reads.get((requirement.phrase, run), False) or read
-    return frozenset(phrase for (phrase, _run), read in reads.items() if not read)
+        key = (requirement.phrase, run)
+        reads[key] = reads.get(key, False) or read
+    return frozenset(key for key, read in reads.items() if not read)
 
 
 def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[str]]) -> Outcome:

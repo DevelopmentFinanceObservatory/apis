@@ -21,6 +21,7 @@ from search.engine.bind import (
     _build_universal_bind_prompt,
     _UniversalBindOutput,
     bind_universal,
+    covered_leaves,
     rank_elected,
     reads_bound_values_alike,
     split_stray_bindings,
@@ -1152,6 +1153,27 @@ def test_a_bound_parent_reads_alike_whatever_leaves_only_another_datasets_rows_h
     )
 
     assert reads_bound_values_alike(listing, alone, [_value("crsPurpose", parent)])
+
+
+def test_a_parent_none_of_whose_leaves_the_rows_hold_covers_itself():
+    """No IATI row holds a code under standard loans (`CRSTypeOfFinance422`), so on an
+    IATI shape the parent covers itself, and a shape listing only its sibling 421 does not
+    read it alike."""
+    listing = dataclasses.replace(
+        _shape("parent", slot_taxonomy={"how:crsTypeOfFinance": ["CRSTypeOfFinance422"]}),
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        meas_qual_dcid="Nominal",
+        slot_keys=dataset_flow_slot_keys(IATI),
+    )
+    sibling = dataclasses.replace(
+        listing, shape_id="sibling", slot_taxonomy={"how:crsTypeOfFinance": ["CRSTypeOfFinance421"]}
+    )
+
+    assert covered_leaves(["CRSTypeOfFinance422"], shape=listing) == {"CRSTypeOfFinance422"}
+    assert not reads_bound_values_alike(
+        listing, sibling, [_value("crsTypeOfFinance", "CRSTypeOfFinance422")]
+    )
 
 
 def test_dropped_qualifiers_block_renders_only_when_phrases_exist():

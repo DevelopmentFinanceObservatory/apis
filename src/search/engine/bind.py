@@ -35,6 +35,7 @@ from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
     ratio_base_axis,
+    shape_datasets,
     shape_invariants,
     shape_partly_stated,
     shape_vocabulary,
@@ -635,14 +636,20 @@ def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> 
     leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves.
 
     Read for `shape`, a parent covers only the leaves of `shape`'s code systems that the
-    rows of its datasets hold (`qualifier_match.bindable_codes` of its `shape_vocabulary`),
+    rows of its datasets hold (`qualifier_match.bindable_codes` of its `shape_datasets`),
     so a code of the enum that only another dataset's rows hold changes nothing it reads:
     an IATI-only purpose code under a CRS parent on a CRS shape, and a CRS-only one on an
-    IATI shape. A listed code always covers itself."""
+    IATI shape. A listed code always covers itself, and so does a parent none of whose
+    leaves count: no IATI row holds a code under standard loans (`CRSTypeOfFinance422`),
+    so on an IATI shape it covers itself and reads apart from a shape binding nothing."""
     index = get_index()
     listed = set(codes)
-    vocabulary = shape_vocabulary(shape, index) if shape is not None else frozenset()
-    bindable = bindable_codes(index, vocabulary) if shape is not None else frozenset()
+    vocabulary = shape_vocabulary(shape) if shape is not None else frozenset()
+    bindable = (
+        bindable_codes(index, datasets=shape_datasets(shape, index))
+        if shape is not None
+        else frozenset()
+    )
 
     def counts(leaf: str) -> bool:
         if shape is None or leaf in listed or leaf in bindable:
@@ -650,12 +657,15 @@ def covered_leaves(codes: Iterable[str], *, shape: ShapeDraft | None = None) -> 
         row = index.code_by_dcid(leaf)
         return row is None or row.code_system not in vocabulary
 
-    return frozenset(
-        leaf
-        for code in listed
-        for leaf in index.descendants(code)
-        if not index.has_children(leaf) and counts(leaf)
-    )
+    covered: set[str] = set()
+    for code in listed:
+        leaves = {
+            leaf
+            for leaf in index.descendants(code)
+            if not index.has_children(leaf) and counts(leaf)
+        }
+        covered |= leaves or {code}
+    return frozenset(covered)
 
 
 def _bound_slots(bindings: Sequence[SlotBindingDraft]) -> dict[tuple[Axis, str], list[str]]:

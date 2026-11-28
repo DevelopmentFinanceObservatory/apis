@@ -109,7 +109,6 @@ from search.engine.errors import (
     RoleSignatureError,
 )
 from search.engine.identity_edit import population_refusal
-from search.engine.qualifier_match import Vocabulary
 from search.engine.reading_coverage import covers
 from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.engine.retrieval.facts import (
@@ -2202,36 +2201,42 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
     return family.datasets if family is not None else ()
 
 
-@per_index
-def _vocabularies(_index: CodeIndex) -> dict[int, Vocabulary]:
-    """Each shape's vocabulary (`shape_vocabulary`) read on one index, by shape object id. A
-    weakref finalizer removes a shape's entry before Python can reuse the id."""
-    return {}
-
-
-def shape_vocabulary(shape: ShapeDraft, index: CodeIndex | None = None) -> Vocabulary:
+def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in, with the datasets publishing its
-    family (`shape_datasets`), whose rows hold the codes it can bind
-    (`qualifier_match.bindable_codes`). A slot a breakdown decision left out
+    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
     (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
-    and a term on that slot is one the answer leaves unapplied. A shape the index does not
-    carry reads with no datasets. Read once per shape and index."""
+    and a term on that slot is one the answer leaves unapplied."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
+
+
+def vocabulary_datasets(
+    shapes: Iterable[ShapeDraft], index: CodeIndex | None = None
+) -> dict[frozenset[str], tuple[str, ...]]:
+    """Each vocabulary of `shapes` (`shape_vocabulary`) and the datasets whose rows its
+    reading binds codes in (`qualifier_match.bindable_codes`): those publishing the family of
+    each of its shapes (`shape_datasets`), in first-seen order, or none, every row, when one
+    of its shapes has none.
+
+    A reading is keyed by its vocabulary alone, so the shapes sharing one read a text alike,
+    and a code binds in it when one of them can bind it. Each shape then judges its own
+    codes on its own datasets' rows (`bind.covered_leaves`, the unbindable qualifiers and
+    the exclusion judgement)."""
     index = index or get_index()
-    by_shape = _vocabularies(index)
-    key = id(shape)
-    vocabulary = by_shape.get(key)
-    if vocabulary is None:
-        vocabulary = Vocabulary(
-            (
-                *(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid),
-                *shape.omitted_slots,
-            ),
-            datasets=shape_datasets(shape, index),
-        )
-        by_shape[key] = vocabulary
-        weakref.finalize(shape, by_shape.pop, key, None)
-    return vocabulary
+    scopes: dict[frozenset[str], tuple[str, ...]] = {}
+    every_row: set[frozenset[str]] = set()
+    for shape in shapes:
+        vocabulary = shape_vocabulary(shape)
+        datasets = shape_datasets(shape, index)
+        if not datasets:
+            every_row.add(vocabulary)
+        scopes[vocabulary] = tuple(dict.fromkeys((*scopes.get(vocabulary, ()), *datasets)))
+    return {
+        vocabulary: () if vocabulary in every_row else datasets
+        for vocabulary, datasets in scopes.items()
+    }
 
 
 def declared_datasets(shape: ShapeDraft, index: CodeIndex) -> list[DatasetDeclaration]:

@@ -626,10 +626,9 @@ def exclusion_requirements(
 
     A phrase is judged only when every word of what it leaves out (`LeftOut.things`, less
     function words) lies in one of its runs that names codes. A word no code names leaves
-    the phrase unjudged, and so does a phrase that names no thing: "excluding standard grants
-    and loans" judges no answer, for "loans" names no code, and "excluding French standard
-    grants" judges none, for leaving out every standard grant leaves out more than the French
-    ones.
+    the phrase unjudged, and so does a phrase that names no thing: "not net fragile" judges
+    no answer, for "fragile" names no code, and "excluding French standard grants" judges
+    none, for leaving out every standard grant leaves out more than the French ones.
 
     The requirements carry no departure. The door that holds the phrase discloses it unless
     every answer leaves out every run (`requirements.Judgement.met_exclusions`).

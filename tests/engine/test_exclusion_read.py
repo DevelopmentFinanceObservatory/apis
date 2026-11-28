@@ -1242,6 +1242,24 @@ def test_a_run_naming_only_codes_the_answers_rows_lack_is_not_left_out(dataset, 
     assert judgement.met_exclusions() == ({"excluding loans"} if met else frozenset())
 
 
+def test_a_run_of_codes_the_answers_rows_hold_is_judged_beside_one_they_lack():
+    """ "loans" names `CRSTypeOfFinance400`, which only IATI rows hold, and "standard
+    grants" `CRSTypeOfFinance110`. A CRS answer binding standard grants is outside the loans
+    run and leaves the standard grants run unmet."""
+    phrase = "excluding standard grants and loans"
+    exclusion = LeftOut(phrase=phrase, things=("standard grants", "loans"), at=0, shown=phrase)
+    (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
+    shape = replace(_crs_shape(), meas_qual_dcid="Nominal", slot_keys=dataset_flow_slot_keys(CRS))
+
+    judgement = judge(requirements, [(shape, _crs_bound(crsTypeOfFinance="CRSTypeOfFinance110"))])
+
+    (outcomes,) = judgement.outcomes
+    assert {
+        (excluded_run(requirement.rule), outcome)
+        for requirement, outcome in zip(requirements, outcomes, strict=True)
+    } == {("standard grants", "unmet"), ("loans", "outside")}
+
+
 @pytest.mark.parametrize(
     ("met", "part", "envelope"),
     [

@@ -45,6 +45,7 @@ from code_index.types import (
     MeasureIndex,
     MeasurePartitionLabel,
     MeasureValueRow,
+    StatVarRow,
 )
 from dfo_platform.lru_memo import LruMemo
 from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
@@ -903,7 +904,8 @@ def _max_phrase_words(index: CodeIndex, measure_index: MeasureIndex | None) -> i
 
 @dataclass(frozen=True, slots=True)
 class _Scope:
-    """A vocabulary one scan reads and the codes a shape of it can bind, read once a scan."""
+    """A vocabulary one scan reads and the codes its shapes can bind (`bindable_codes`),
+    read once a scan."""
 
     vocabulary: AbstractSet[str]
     bindable: frozenset[str]
@@ -1068,100 +1070,89 @@ def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
     )
 
 
-class Vocabulary(frozenset[str]):
-    """The code systems a shape reads, its slots' properties, and the datasets whose rows it
-    is built from (`datasets`), within which it binds codes (`bindable_codes`).
-
-    Two vocabularies are equal when they hold the same systems and datasets, so a shape of
-    IATI rows and a shape of CRS rows read a text apart. A vocabulary of no datasets equals
-    the plain set of its systems and reads every row."""
-
-    __slots__ = ("datasets",)
-    datasets: frozenset[str]
-
-    def __new__(cls, systems: Iterable[str] = (), *, datasets: Iterable[str] = ()) -> Vocabulary:
-        vocabulary = super().__new__(cls, systems)
-        vocabulary.datasets = frozenset(datasets)
-        return vocabulary
-
-    def __reduce__(self) -> tuple[object, ...]:
-        return (_vocabulary, (frozenset(self), self.datasets))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, frozenset):
-            return NotImplemented
-        datasets = other.datasets if isinstance(other, Vocabulary) else frozenset()
-        return self.datasets == datasets and frozenset.__eq__(self, other)
-
-    def __ne__(self, other: object) -> bool:
-        equal = self.__eq__(other)
-        return equal if equal is NotImplemented else not equal
-
-    def __hash__(self) -> int:
-        systems = frozenset.__hash__(self)
-        return hash((systems, self.datasets)) if self.datasets else systems
-
-
-def _vocabulary(systems: frozenset[str], datasets: frozenset[str]) -> Vocabulary:
-    return Vocabulary(systems, datasets=datasets)
-
-
 @per_index
-def _bindable_by_scope(_index: CodeIndex) -> dict[frozenset[str], frozenset[str]]:
+def _bindable_by_datasets(_index: CodeIndex) -> dict[frozenset[str], frozenset[str]]:
     """Each index's bindable codes (`bindable_codes`), by the datasets they are scoped to,
     the empty set for every row."""
     return {}
 
 
-def bindable_codes(index: CodeIndex, vocabulary: AbstractSet[str] | None = None) -> frozenset[str]:
-    """The dcids of the codes a shape can bind: each code some StatVar row of `index` holds,
-    itself or through a descendant, and every code of a system no row carries, whose
-    StatVars the index does not list and so cannot rule out.
+def bindable_codes(index: CodeIndex, *, datasets: Collection[str] = ()) -> frozenset[str]:
+    """The dcids of the codes a shape built from the rows of `datasets` can bind: each code
+    one of those rows holds, itself or through a descendant, and every code of a system no
+    row of `index` carries, whose StatVars the index does not list and so cannot rule out.
+    No datasets, a shape the index does not carry (`shape_datasets`), reads every row.
 
     A code of a system the rows carry that no row holds binds on no shape. "population"
-    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries.
+    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. "loans",
+    `CRSTypeOfFinance400`, is a finance type only IATI rows hold, so it binds on no CRS
+    shape, and a CRS purpose code no IATI row holds binds on no IATI shape.
 
-    For a `Vocabulary` with datasets, a shape's (`shape_vocabulary`), the rows are those of
-    its datasets, so a code only another dataset's rows hold binds on no shape of it.
-    "loans", `CRSTypeOfFinance400`, is a finance type only IATI rows hold, so it binds on no
-    CRS shape, and a CRS purpose code no IATI row holds binds on no IATI shape. Any other
-    vocabulary reads every row. Built once per index and datasets.
+    The rows of `datasets` are the rows of every family one of them publishes
+    (`IndexFamily.rows`) and each listed row (`CodeIndex.listed_statvars`) one of them
+    holds. A family's rows include those no dataset publishes, `StatVarRow.datasets` empty,
+    which the index files with the family whose properties hold theirs: a shape of the
+    family reads them as its members, so it binds their codes. Built once per index and
+    datasets.
     """
-    scope = vocabulary.datasets if isinstance(vocabulary, Vocabulary) else frozenset()
-    by_scope = _bindable_by_scope(index)
-    cached = by_scope.get(scope)
+    scope = frozenset(datasets)
+    by_datasets = _bindable_by_datasets(index)
+    cached = by_datasets.get(scope)
     if cached is not None:
         return cached
-    rows = (*index.statvars, *index.listed_statvars)
+    if scope:
+        rows: Iterable[StatVarRow] = (
+            *(
+                row
+                for families in index.families_by_five_tuple.values()
+                for family in families
+                if not scope.isdisjoint(family.datasets)
+                for row in family.rows
+            ),
+            *(row for row in index.listed_statvars if not scope.isdisjoint(row.datasets)),
+        )
+    else:
+        rows = (*index.statvars, *index.listed_statvars)
     bindable: set[str] = set()
-    carried: set[str] = set()
     for row in rows:
-        carried.update(row.constraint_properties)
-        if scope and scope.isdisjoint(row.datasets):
-            continue
         for value in row.constraint_properties.values():
             code = index.code_by_dcid(value)
             while code is not None and code.dcid not in bindable:
                 bindable.add(code.dcid)
                 code = index.code_by_dcid(code.parent) if code.parent is not None else None
+    carried = _carried_systems(index)
     bindable.update(code.dcid for code in index.codes if code.code_system not in carried)
-    cached = by_scope[scope] = frozenset(bindable)
+    cached = by_datasets[scope] = frozenset(bindable)
     return cached
 
 
+@per_index
+def _carried_systems(index: CodeIndex) -> frozenset[str]:
+    """The constraint properties some row of `index` carries."""
+    return frozenset(
+        system
+        for row in (*index.statvars, *index.listed_statvars)
+        for system in row.constraint_properties
+    )
+
+
 def _recognise_raw(
-    query: str, lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+    query: str,
+    lexicon: _Lexicon,
+    vocabulary: AbstractSet[str] | None,
+    datasets: Collection[str] = (),
 ) -> tuple[_RawSpan, ...]:
     """Return the spans one scan claims, sorted by start offset.
 
     `vocabulary` holds the code systems the scan reads; `None` reads every system. A code
     row of another system neither matches nor claims a token, so a longer label only a
-    foreign system carries cannot hide a shorter one this vocabulary reads. A code no shape
-    can bind (`bindable_codes`) is foreign in the same way: on a CRS shape "population"
-    names no type of finance and stays free for a purpose reading. The scan in every
-    system keeps such codes, so its reading states what the words name, and the measure
-    values every vocabulary shares stay those of that reading ("gross" in "gross national
-    income" is no netting basis). Measure values are read in every vocabulary.
+    foreign system carries cannot hide a shorter one this vocabulary reads. A code a shape
+    built from the rows of `datasets` cannot bind (`bindable_codes`) is foreign in the same
+    way: on a CRS shape "population" names no type of finance and stays free for a purpose
+    reading. The scan in every system keeps such codes, so its reading states what the
+    words name, and the measure values every vocabulary shares stay those of that reading
+    ("gross" in "gross national income" is no netting basis). Measure values are read in
+    every vocabulary.
 
     First, try the widest run of words matching a label or synonym at each position
     (`code_index.tokens`). Any match claims the words, even when ambiguous; a span of
@@ -1182,7 +1173,9 @@ def _recognise_raw(
     scope = (
         None
         if vocabulary is None
-        else _Scope(vocabulary=vocabulary, bindable=bindable_codes(lexicon.index, vocabulary))
+        else _Scope(
+            vocabulary=vocabulary, bindable=bindable_codes(lexicon.index, datasets=datasets)
+        )
     )
 
     for width in range(min(lexicon.max_width, n), 0, -1):
@@ -1269,9 +1262,10 @@ def _read(
     measure_spans: tuple[_RawSpan, ...] | None = None,
     *,
     located: bool = False,
+    datasets: Collection[str] = (),
 ) -> VocabularyReading:
-    """`_recognise_raw`'s scan of `query` in `vocabulary`, projected to spans, one-row
-    matches and ties (`_project`).
+    """`_recognise_raw`'s scan of `query` in `vocabulary`, binding codes within the rows of
+    `datasets`, projected to spans, one-row matches and ties (`_project`).
 
     `measure_spans`, the one-measure-value spans of the scan in every code system, replace
     the scan's own: a vocabulary drops a foreign code row, but the measure reading of the
@@ -1281,7 +1275,7 @@ def _read(
     raw = (
         _scan_everywhere(query, lexicon)
         if vocabulary is None
-        else _recognise_raw(query, lexicon, vocabulary)
+        else _recognise_raw(query, lexicon, vocabulary, datasets)
     )
     if measure_spans is not None:
         kept = [r for r in raw if not _is_measure_span(r)]
@@ -1374,13 +1368,16 @@ def read_by_vocabulary(
     measure_index: MeasureIndex | None = None,
     *,
     vocabularies: Iterable[frozenset[str]],
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> tuple[TextReading, ...]:
     """Each of `texts` read in every code system and in each of `vocabularies`, one scan per
     text and distinct vocabulary, with the lookup tables built once for the call.
 
     Each vocabulary's reading sees only its own code systems (`VocabularyReading`), so a
     shape reads a text in its own systems' labels and never receives two readings of one
-    token from two parses. Measure values take the reading in every code system, shared by
+    token from two parses. It reads only the codes a shape built from the rows of its
+    `datasets` entry can bind (`bindable_codes`), every row for a vocabulary `datasets`
+    does not map (`retrieval.bound_values.vocabulary_datasets`). Measure values take the reading in every code system, shared by
     every vocabulary. Each match and tie row carries its offsets in its own text. The scan
     in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
     variable (`interpret._detect`) and the bind phase's share one scan.
@@ -1395,7 +1392,14 @@ def read_by_vocabulary(
             TextReading(
                 everywhere=_project(everywhere, located=True),
                 by_vocabulary={
-                    vocabulary: _read(text, lexicon, vocabulary, measure_spans, located=True)
+                    vocabulary: _read(
+                        text,
+                        lexicon,
+                        vocabulary,
+                        measure_spans,
+                        located=True,
+                        datasets=(datasets or {}).get(vocabulary, ()),
+                    )
                     for vocabulary in vocabularies
                 },
             )

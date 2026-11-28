@@ -61,6 +61,7 @@ from search.engine.retrieval.bound_values import (
     declared_datasets,
     phrases_within,
     ratio_base_axis,
+    shape_datasets,
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
@@ -905,9 +906,13 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     bank ODA" and "multilateral education aid" it stands beside a word a DAC2a shape does
     not read."""
     index = get_index()
-    vocabulary = shape_vocabulary(shape, index)
+    vocabulary = shape_vocabulary(shape)
     (reading,) = read_by_vocabulary(
-        [variable], index, get_measure_index(), vocabularies=[vocabulary]
+        [variable],
+        index,
+        get_measure_index(),
+        vocabularies=[vocabulary],
+        datasets={vocabulary: shape_datasets(shape, index)},
     )
     spans = reading.by_vocabulary[vocabulary].spans
     declarations = [index.declarations[prop] for prop in vocabulary if prop in index.declarations]
