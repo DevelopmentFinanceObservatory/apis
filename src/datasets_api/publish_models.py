@@ -91,6 +91,7 @@ from pydantic import (
 )
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
+from datasets_api.manifest_models import WarningModel
 from datasets_api.models import _require_schema_version_int
 from description.steps import CONTINUE_SERIES_OP, MAX_COMPUTED_STEPS, Step, VersionRef
 
@@ -466,11 +467,27 @@ class Recipe(BaseModel):
             "computed them; null for a recipe stored without them"
         ),
     )
+    warnings: list[WarningModel] = Field(
+        default_factory=list,
+        description=(
+            "the Datasets warnings of the frame the recipe computes, as the run that stored it "
+            "raised them; empty when it raised none"
+        ),
+    )
 
     def stored_body(self) -> dict[str, Any]:
-        """The recipe as the store keeps it: its JSON, without `left_out` when it has none, so
-        a recipe a client publishes is stored as posted."""
-        return self.model_dump(mode="json", exclude={"left_out"} if self.left_out is None else None)
+        """The recipe as the store keeps it: its JSON, without `left_out` when it has none and
+        without `warnings` when it has none, so a recipe a client publishes is stored as
+        posted."""
+        exclude = {
+            name
+            for name, empty in (
+                ("left_out", self.left_out is None),
+                ("warnings", not self.warnings),
+            )
+            if empty
+        }
+        return self.model_dump(mode="json", exclude=exclude or None)
 
     @model_validator(mode="after")
     def _bound_size(self) -> Self:
@@ -482,6 +499,23 @@ class Recipe(BaseModel):
                 f"MAX_RECIPE_BYTES={MAX_RECIPE_BYTES}"
             )
         return self
+
+
+class PostedRecipe(Recipe):
+    """A recipe a client posts, with its frame (`PublishFrameRequest.recipe`) or alone (`PUT
+    /api/datasets/frames/{spec_id}/{content_version}/recipe`). Its `warnings` are the output of
+    the run that computes the frame, and the seams that take a posted recipe hold the frame,
+    not that run, so they cannot derive them: a posted recipe states none, and one that states
+    any is refused at `warnings`."""
+
+    warnings: list[WarningModel] = Field(
+        default_factory=list,
+        max_length=0,
+        description=(
+            "empty: the Datasets warnings of a frame are derived by the run that computes it, "
+            "and a posted recipe that states any is refused"
+        ),
+    )
 
 
 class PublishFrameRequest(BaseModel):
@@ -541,7 +575,7 @@ class PublishFrameRequest(BaseModel):
         )
     )
 
-    recipe: Recipe | None = Field(
+    recipe: PostedRecipe | None = Field(
         default=None,
         description=(
             "the recipe that produced this frame. The door stores it beside the version, "
