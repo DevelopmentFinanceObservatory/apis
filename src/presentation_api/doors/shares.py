@@ -105,11 +105,14 @@ well-formed id, refuses 400 `request_invalid`. A read naming a frame draws the s
 when the history holds an entry of that card on that frame and the frame's retention holds
 (`share_slots.named_frame`). It states `current` while that entry is the slot's newest and
 `stale` once the slot has shown something since, runs no newer-data check and records no
-history entry. A frame the history lists for no entry of the slot's card refuses 404
-`frame_not_served`, and so does a note's card on the card route. A note's data route answers
+history entry. A frame the history never recorded for the card the slot holds now, its
+component id and revision, refuses 404 `frame_not_served`, and so does a note's card on the
+card route. A note's data route answers
 404 `not_found`, as it does without a frame. A frame whose version record is gone or revoked,
-that links no stored frame, or whose `held_until` has passed refuses 410 `frame_expired`. A
-door with no snapshot reader cannot read retention and refuses retryable 503
+that links no stored frame, or whose `held_until` has passed is past the share route's
+retention and refuses 410 `frame_expired`. When only its `held_until` has passed, a dataset
+file read can renew its rows while their stored bytes exist. A share client reads the slot
+without a frame for its newest version. A door with no snapshot reader cannot read retention and refuses retryable 503
 `service_unavailable`. A retention read that fails answers its own refusal, so a Datasets store
 that cannot answer gives 503 `service_unavailable`. Each is checked before a 304, and the read
 takes the retention once for its checks, its body and its `ETag`. The reply is
@@ -1111,6 +1114,11 @@ def _redrawn_under(
     return [deps.release_registry.pinned().catalog_version, vocabulary]
 
 
+# The shape version of a slot reply's body. A change to what a body states for the same
+# inputs bumps it, so an ETag minted for a body of the old shape answers 200 with the new one.
+_SLOT_BODY_VERSION = 2
+
+
 def _slot_etag(
     share: ShareRecord,
     *,
@@ -1121,11 +1129,13 @@ def _slot_etag(
     drawn_with: object,
 ) -> str:
     """A slot reply's strong ETag. It hashes what the body is drawn from, so a revalidation
-    answers 304 without drawing the body: the share, its mode and the slot, the card revision,
-    the frame served and its freshness, `variant` (the route and format), and `drawn_with`,
-    whatever else the body states (a card read's retention, a newer frame's release and
-    vocabulary). Equal inputs draw equal bodies, so they carry one ETag."""
+    answers 304 without drawing the body: the body's shape version (`_SLOT_BODY_VERSION`), the
+    share, its mode and the slot, the card revision, the frame served and its freshness,
+    `variant` (the route and format), and `drawn_with`, whatever else the body states (a card
+    read's retention, a newer frame's release and vocabulary). Equal inputs draw equal bodies,
+    so they carry one ETag."""
     validator = {
+        "body": _SLOT_BODY_VERSION,
         "share": share.id,
         "mode": share.mode,
         "slot": slot,
@@ -1651,8 +1661,8 @@ def build_shares_door(
         "every 15 minutes, as the slot's data route chooses it. With spec_id and "
         "content_version, the card is drawn on that frame, current while it is the slot's "
         "newest in the history and stale after, cached for five minutes: 404 frame_not_served "
-        "when the share's history lists no entry of the slot's card on it, 410 frame_expired "
-        "once the frame's retention has ended.",
+        "when the share's history never recorded the slot's current card on it, 410 "
+        "frame_expired once the frame is past the share route's retention.",
     )
     router.add_api_route(
         SHARE_SLOT_DATA_PATH,
@@ -1676,8 +1686,8 @@ def build_shares_door(
         "frame, or a live slot's newest data, checked at most every 15 minutes. With spec_id "
         "and content_version, the rows are that frame's, current while it is the slot's newest "
         "in the history and stale after, cached for five minutes: 404 frame_not_served when "
-        "the share's history lists no entry of the slot's card on it, 410 frame_expired once "
-        "the frame's retention has ended.",
+        "the share's history never recorded the slot's current card on it, 410 frame_expired "
+        "once the frame is past the share route's retention.",
     )
 
     return DoorContribution(

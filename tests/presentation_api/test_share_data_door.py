@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import hashlib
 import io
+import json
 import logging
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
@@ -276,6 +278,24 @@ def test_a_live_slots_card_is_drawn_on_the_frame_its_data_serves(
     assert door.newest.renderings == [_rendering(_STORED)]
 
 
+def _frameless_card_etag(share_id: str, body: Mapping[str, Any], *, mode: str) -> str:
+    """The ETag a slot card read carried while its body stated no `frame`: the hash of the
+    share, mode, slot, card, frame, freshness, route and retention, with no body version."""
+    frame = body["frame"]
+    validator = {
+        "share": share_id,
+        "mode": mode,
+        "slot": 1,
+        "card": [body["component_id"], body["revision"]],
+        "frame": [frame["spec_id"], frame["content_version"]],
+        "freshness": body["freshness"],
+        "variant": "card",
+        "drawn_with": [body["retention"], None],
+    }
+    encoded = json.dumps(validator, sort_keys=True, separators=(",", ":")).encode()
+    return f'"{hashlib.sha256(encoded).hexdigest()[:32]}"'
+
+
 def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door):
     card = door.card()
     share = door.share(card, latest=False)
@@ -284,12 +304,19 @@ def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door)
     resp = door.slot_card(share["id"], headers={"accept-encoding": "identity"})
     etag = resp.headers["etag"]
     again = door.slot_card(share["id"], headers={"if-none-match": etag})
+    # A cache holding the body from before the card read stated its frame gets the new body.
+    stale_etag = _frameless_card_etag(share["id"], resp.json(), mode="snapshot")
+    frameless = door.slot_card(
+        share["id"], headers={"if-none-match": stale_etag, "accept-encoding": "identity"}
+    )
 
     assert resp.status_code == 200
     assert resp.json() == {**read, "frame": _wire(_STORED), "freshness": "current"}
     assert resp.headers["cache-control"] == "public, max-age=300"
     assert etag.startswith('"') and etag.endswith('"')
     assert (again.status_code, again.content) == (304, b"")
+    assert (frameless.status_code, frameless.headers["etag"]) == (200, etag)
+    assert frameless.json()["frame"] == _wire(_STORED)
     served = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()["served"]
     assert [entry["frame"]["content_version"] for entry in served] == [_STORED.content_version]
     assert door.newest.asked == []

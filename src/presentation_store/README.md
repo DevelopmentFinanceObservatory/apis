@@ -84,6 +84,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0012_share.sql`: Creates the `share`, `share_revision`, `share_slot`, and `served_frame` tables.
 - `0017_served_frame_timeline.sql`: Replaces `served_frame`'s natural key with an identity `id`, lets its card and frame columns hold NULL together for an emptied slot, and indexes each slot's newest entry.
 - `0018_served_frame_share_newest.sql`: Indexes each share's `served_frame` entries newest first by `first_served_at` and `id`, the keyset the history route pages by.
+- `0019_served_frame_slot_frame.sql`: Indexes each slot's `served_frame` entries by card, card revision and frame, newest first, so a slot read naming a frame finds its entry, or its absence, in one index probe.
 
 ### Running Migrations
 

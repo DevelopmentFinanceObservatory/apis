@@ -169,6 +169,9 @@ _PRESENTATION_STORE = {
     "0018_served_frame_share_newest.sql": (
         "58bb4fe9e55208ca901d002654c9d59dcdeafde3730d1ab57204f1cc049883fd"
     ),
+    "0019_served_frame_slot_frame.sql": (
+        "ac6e833587f6f892a250504e8c59eff18010eb98871ddf026ebbbc9fd7099a27"
+    ),
 }
 
 

@@ -26,9 +26,10 @@ when a later read may pass, and the card's own frame until the next check otherw
 A read may name a frame instead (`named_frame`). It serves the slot's card on that frame when
 the slot's history holds an entry of that card on it and the frame's retention holds, with no
 newer-data check and no history record. It states `current` while that entry is the slot's
-newest and `stale` once the slot has shown something since. A frame the slot never served its
-card on raises `FrameNotServed`, one whose retention has ended `FrameExpired`, and a door that
-cannot read retention `RetentionUnavailable`.
+newest and `stale` once the slot has shown something since. A frame the slot's current card,
+its component id and revision, never recorded raises `FrameNotServed`, one past the share
+route's retention `FrameExpired`, and a door that cannot read retention
+`RetentionUnavailable`.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
 the one the components door's data route serves), on the served frame as a target when it is
@@ -162,8 +163,9 @@ class ShareSlotEmpty(Exception):
 
 
 class FrameNotServed(Exception):
-    """The slot's history holds no entry of its card on the frame a read names. Maps to 404
-    `frame_not_served`."""
+    """The slot's history holds no entry of the card the slot holds now, its component id and
+    revision, on the frame a read names, which includes a frame recorded for a card a replace
+    took out of the slot. Maps to 404 `frame_not_served`."""
 
     def __init__(self, *, share_id: str, slot: int, frame: FrameRef) -> None:
         self.share_id = share_id
@@ -176,9 +178,10 @@ class FrameNotServed(Exception):
 
 
 class FrameExpired(Exception):
-    """The slot served its card on the frame a read names, and that frame's retention has
-    ended: its version record is gone or revoked, it links no stored frame, or its
-    `held_until` has passed. Maps to 410 `frame_expired`."""
+    """The slot served its card on the frame a read names, and that frame is past the share
+    route's retention: its version record is gone or revoked, it links no stored frame, or its
+    `held_until` has passed. When only its `held_until` has passed, a dataset file read can
+    renew the frame's rows while their stored bytes exist. Maps to 410 `frame_expired`."""
 
     def __init__(self, *, share_id: str, slot: int, frame: FrameRef, reason: str) -> None:
         self.share_id = share_id
@@ -186,8 +189,8 @@ class FrameExpired(Exception):
         self.frame = frame
         super().__init__(
             f"share {share_id!r} slot {slot} served frame {frame.spec_id!r} at content_version "
-            f"{frame.content_version!r}, whose retention has ended ({reason}); read the slot "
-            "without a frame for the data it serves now"
+            f"{frame.content_version!r}, which is past the share route's retention ({reason}); "
+            "read the slot without a frame for the newest version it serves"
         )
 
 
@@ -370,7 +373,7 @@ def named_frame(
     Raises:
         FrameNotServed: The slot's history holds no entry of `card` on `frame`, which includes
             every frame for a note's card.
-        FrameExpired: `frame`'s retention has ended: `frame_retention` finds no servable
+        FrameExpired: `frame` is past the share route's retention: `frame_retention` finds no servable
             version or stored frame (`RetentionUnreadable`), or its `held_until` has passed.
         RetentionUnavailable: The door has no snapshot reader.
         Any failure of the store or of the retention read, as its own refusal.

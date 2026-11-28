@@ -135,13 +135,16 @@ SHARE_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
     "frame_not_served": (
         "Frame Not Served",
-        "A share slot read names a frame the slot's history does not list for the card the "
-        "slot shows.",
+        "A share slot read names a frame the slot's history never recorded for the card the "
+        "slot holds now, its component id and revision, which includes a frame recorded for a "
+        "card a replace took out of the slot.",
     ),
     "frame_expired": (
         "Frame Expired",
-        "A share slot read names a frame the slot served whose retention has ended. Read the "
-        "slot without a frame for the data it serves now.",
+        "A share slot read names a frame the slot's card served that is past the share "
+        "route's retention, so the share route refuses it. When only its held_until has "
+        "passed, a dataset file read can renew the frame's rows while their stored bytes "
+        "exist. Read the slot without a frame for the newest version it serves.",
     ),
 }
 
