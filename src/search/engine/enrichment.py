@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
 from search.engine.assemble import definite_departures
+from search.engine.conjoin import BINDING_FOLDED
 from search.engine.departures import NO_ENTITY_WORDS, surviving_facts
 from search.engine.errors import GraphInfraError
 from search.engine.events import Event, LateDepartures, ObservationsEvent, PlaceOptionsEvent
@@ -342,9 +343,10 @@ def late_departures(
     returned, or `None` when they equal the list the part shipped.
 
     The list is built as the part built its own (`assemble.definite_departures`), from its
-    own heading words, warnings and operations and the facts raised beside the warnings the
-    part, its envelope or its region's unapplied qualifiers hold, so a folded part keeps the
-    list of a folded part. The read's observations join the Spec, so `modelled_values` reads
+    own heading words, warnings and operations, the facts raised beside the warnings the
+    part, its envelope or its region's unapplied qualifiers hold, and the facts no warning
+    discloses (`RegionResult.inferred_facts`, `unpublished_whole_facts`), so a folded part
+    keeps the list of a folded part. The read's observations join the Spec, so `modelled_values` reads
     modelled and projected series, and places the UN front door refused during the read join
     as raised `entity_unavailable` facts (`un_system.refused_places_fact`), merged into one
     per role with those the part states. A client replaces the part's list with it."""
@@ -381,6 +383,16 @@ def late_departures(
             *source.envelope_warnings,
         ],
     )
+    # The departures no warning discloses join the list as `conjoin._build_part` joins them,
+    # on every part but a folded one.
+    unwarned = (
+        ()
+        if any(warning.code == BINDING_FOLDED for warning in part.warnings)
+        else (
+            *source.representative.inferred_facts,
+            *source.representative.unpublished_whole_facts.get(spec.spec_id, ()),
+        )
+    )
     read = (
         spec
         if observed is None
@@ -391,7 +403,7 @@ def late_departures(
     learned = definite_departures(
         read,
         variable_text=part.variable_text,
-        raised=[*raised, *refused],
+        raised=[*raised, *unwarned, *refused],
         operations=part.operations,
         entity_words=entity_words,
         members_in_words=source.region.members_in_words,

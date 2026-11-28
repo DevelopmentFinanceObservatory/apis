@@ -828,9 +828,11 @@ def _parse_datasets(
     """Parses `datasets` rows into the declarations and each dataset's member provenances
     (`members`, `CodeIndex.provenances_of`), failing closed on a row missing a field, a
     `members` that is not a non-empty sorted list of distinct strings, a provenance two rows
-    list as a member, an `absent_observation` value outside `{"zero", "unknown"}`, an `account`
-    outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
-    a `rank` that is not an integer, an empty `label`, an empty `description`,
+    list as a member, a `default_after_others` (optional, absent reads as false) that is
+    not a boolean or that a table that is not opt-in carries, an `absent_observation` value
+    outside `{"zero", "unknown"}`, an `account` outside `dfo_platform.roles.FlowAccount`, an
+    `opt_in` that is not a boolean, a `rank` that is not an integer, an empty `label`, an
+    empty `description`,
     a `stated_words` row `_parse_stated_words` refuses, a `party_words` row
     `_parse_party_words` refuses or a `noted_words` row `_parse_noted_words` refuses (the
     three keys are optional), a `house_default_for`
@@ -860,6 +862,7 @@ def _parse_datasets(
                 noted_words=_parse_noted_words(row["id"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
+                default_after_others=row.get("default_after_others", False),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -879,6 +882,15 @@ def _parse_datasets(
             raise IndexFormatError(
                 f"datasets row for {dataset.id!r} carries opt_in={dataset.opt_in!r}, "
                 "which is not a boolean"
+            )
+        if not isinstance(dataset.default_after_others, bool):
+            raise IndexFormatError(
+                f"datasets row for {dataset.id!r} carries "
+                f"default_after_others={dataset.default_after_others!r}, which is not a boolean"
+            )
+        if dataset.default_after_others and not dataset.opt_in:
+            raise IndexFormatError(
+                f"datasets row for {dataset.id!r} carries default_after_others but is not opt-in"
             )
         if not isinstance(dataset.rank, int) or isinstance(dataset.rank, bool):
             raise IndexFormatError(

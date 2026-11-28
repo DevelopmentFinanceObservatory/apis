@@ -2191,6 +2191,7 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.ratio_base_axis is not None
             else {}
         ),
+        **({"default_after_others": True} if dataset.default_after_others else {}),
     }
 
 
