@@ -174,7 +174,7 @@ class _PartBase(StrictModel):
             "group_read_as_members, whole_total_read, whole_total_unpublished, "
             "direction_discarded, organisation_read_as_source, "
             "direction_inferred, organisation_read_as_party, core_contribution_read, "
-            "scope_limited. [] when the answer is what was asked. A "
+            "dataset_defaulted, scope_limited. [] when the answer is what was asked. A "
             "client that renders its own sentence reads them here; each one's text "
             "also closes the sentence that carries this part (see Departure.text). "
             "A warning on the same part reports run health and stays separate"

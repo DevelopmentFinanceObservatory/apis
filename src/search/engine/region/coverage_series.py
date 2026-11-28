@@ -8,6 +8,9 @@ the variables the bindings elect reaches it. A Spec that lists a side member by 
 the same of its own variables before it states the side's total
 (`whole_totals.whole_total_warnings`, `series_held`). Binding repair also reads the years
 a passed-over total holds over every year (`series_reach`), the span the answer states for it.
+The pass that answers a late question from a table declaring `default_after_others` reads
+the years a shape's family holds at any place (`years_held_anywhere`) and the measure
+values the members its bindings elect share (`elected_measure_values`).
 """
 
 from __future__ import annotations
@@ -15,12 +18,14 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from search.engine.extract import DateRequest
 from search.engine.region.place_set import PlaceSet
 from search.engine.retrieval.bound_values import (
+    MeasurePartition,
     _bound_value_filter_facts,
     bound_values_from_bindings,
+    observed_measure_values,
     part_member_rows,
 )
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts, MemberFacts
@@ -113,6 +118,21 @@ def series_span(
     return min(years), max(years)
 
 
+def _elected_members(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+) -> dict[str, MemberFacts]:
+    """The members of `shape`'s family no value of `bindings` contradicts
+    (`bound_values._bound_value_filter_facts`). The family is the rows its part may answer
+    from (`part_member_rows`), else its recalled members."""
+    rows = part_member_rows(shape, get_index())
+    members: dict[str, MemberFacts] = (
+        {row.dcid: IndexMemberFacts(row=row) for row in rows}
+        if rows
+        else {dcid: ArcsMemberFacts(arcs=arcs) for dcid, arcs in (shape.sv_arc_facts or {}).items()}
+    )
+    return _bound_value_filter_facts(members, bound_values_from_bindings(bindings))
+
+
 def _family_at(
     state: ResolveState,
     shape: ShapeDraft,
@@ -121,13 +141,7 @@ def _family_at(
 ) -> tuple[list[str], dict[RoleAxis, list[str]]]:
     """The variables of role-bearing `shape`'s family `bindings` elect, and the places
     `sets` bind on each flow axis, as `holds_series` and `series_reach` read them."""
-    rows = part_member_rows(shape, get_index())
-    members: dict[str, MemberFacts] = (
-        {row.dcid: IndexMemberFacts(row=row) for row in rows}
-        if rows
-        else {dcid: ArcsMemberFacts(arcs=arcs) for dcid, arcs in (shape.sv_arc_facts or {}).items()}
-    )
-    elected = _bound_value_filter_facts(members, bound_values_from_bindings(bindings))
+    elected = _elected_members(shape, bindings)
     bound = {
         axis: [
             dcid
@@ -159,6 +173,30 @@ def holds_series(
         variables=variables,
         bound=bound,
         window=requested_window(state.date_request),
+    )
+
+
+def elected_measure_values(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+) -> MeasurePartition | None:
+    """The values the members of `shape`'s family `bindings` elect (`_elected_members`)
+    share on the measure index's axes, such as flow type and netting basis
+    (`bound_values.observed_measure_values`). `None` when they elect no member or the
+    members disagree."""
+    members = list(_elected_members(shape, bindings).values())
+    return observed_measure_values(get_measure_index().axes, members)
+
+
+def years_held_anywhere(state: ResolveState, shape: ShapeDraft) -> frozenset[int]:
+    """The years any series of `shape`'s family holds at any place, less the years a read
+    of the part's requested years holds back (`CoverageIndex.years_held`, under the
+    window's opt-in). The family is the rows its part may answer from (`part_member_rows`),
+    else its recalled members. Empty when the coverage index holds no year of them."""
+    rows = part_member_rows(shape, get_index())
+    variables = [row.dcid for row in rows] if rows else list(shape.sv_arc_facts or ())
+    window = requested_window(state.date_request)
+    return state.coverage.index.years_held(
+        variables=variables, include=frozenset() if window is None else window.opt_in
     )
 
 

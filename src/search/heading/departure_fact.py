@@ -175,6 +175,9 @@ class DepartureFact:
       asked to leave out ("excluding humanitarian aid"), which the answer does not.
     - `recipient` (`core_contribution_read`): what the multilateral recipient `shown` names
       is, which the text words its figures by.
+    - `defaulted_from` and `last_year` (`dataset_defaulted`): the labels of the datasets the
+      part reads by default, and the last year they publish at any place, before the start
+      of the years asked; `shown` is the label of the dataset that answers.
     """
 
     code: DepartureCode
@@ -227,6 +230,8 @@ class DepartureFact:
     read_by: UndirectedRule | None = None
     listed_by: str | None = None
     recipient: ContributionRecipient | None = None
+    defaulted_from: tuple[str, ...] = ()
+    last_year: int | None = None
 
 
 def ordered_facts(facts: Iterable[DepartureFact]) -> tuple[DepartureFact, ...]:

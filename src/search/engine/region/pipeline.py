@@ -36,12 +36,13 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
-from search.engine.departures import warning_key
+from search.engine.departures import dataset_defaulted, warning_key
 from search.engine.envelope import now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
     DefaultScopeIndexSourcedError,
     EngineInfraError,
+    EngineInputError,
 )
 from search.engine.events import Event, EventSink
 from search.engine.extract import DateRequest
@@ -51,6 +52,11 @@ from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.composite_answer import CompositeRelaunch, settled_composite
+from search.engine.region.coverage_series import (
+    elected_measure_values,
+    requested_window,
+    years_held_anywhere,
+)
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -105,12 +111,26 @@ from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.region.whole_totals import whole_total_unpublished_facts
 from search.engine.region.withheld import elected_series, with_withheld_warning
-from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
+from search.engine.retrieval.bound_values import (
+    RoleClassWalks,
+    elects_within,
+    held_family_memo,
+    shape_datasets,
+)
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
-from search.engine.source_scope import SourceScope
-from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Warning
+from search.engine.source_scope import SourceScope, compile_sources, source_label
+from search.heading.departure_fact import DepartureFact
+from search.models import (
+    Entry,
+    EntryPath,
+    Operation,
+    PartScope,
+    RoleAxis,
+    SourceMention,
+    Warning,
+)
 from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope
 from search.scope.state import ScopeIntake
@@ -263,7 +283,12 @@ async def resolve_variable(
     Commons' resolve and shape derivation run beside it (`ResolveState.un_leg`). When our
     pass ends `no_data`, or answers on a pick its binder rated "none of the shapes" above,
     a UN pass elects over the UN pool's shapes (`_fill_gap`). Any other part answered on
-    our pass never waits for the UN leg. A part whose UN leg failed or was late and that
+    our pass never waits for the UN leg. When the answer that stands then is `no_data` with
+    `no_observations`, for years after the last year our elected shape's datasets publish,
+    a further pass resolves the part again within the datasets that declare
+    `default_after_others` and publish those years, on the time left before the deadline,
+    and its answer stands when it is definite, undoubted and reads the same measure
+    (`_default_after_others`). A part whose UN leg failed or was late and that
     the UN pass could have changed carries `un_system_unavailable`, which keeps the
     response out of the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no
     strong shape of its own waits for the UN leg and its menu also holds the UN pool's
@@ -306,14 +331,19 @@ async def resolve_variable(
         deadline: float | None,
         timing: dict[str, int],
         party_words_off: bool,
+        scope: SourceScope | None = source_scope,
+        recall_detection: Detected | None = detected,
     ) -> ResolveState:
+        """A resolution of the part in `pool`. `scope` is the part's source scope, unless a
+        pass reads it under another, and `recall_detection` the door's detection, made
+        under the part's own scope."""
         return ResolveState(
             party_words_off=party_words_off,
             variable=variable,
             entities=entities,
             date_request=date_request,
             detect_query=detect_query,
-            detected=detected,
+            detected=recall_detection,
             role_query=role_query,
             entity_roles=entity_roles or {},
             member_entities=member_entities,
@@ -347,10 +377,10 @@ async def resolve_variable(
             stream_observations=_options.stream_observations,
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
-            scope=source_scope,
+            scope=scope,
             request_catalogue=request_catalogue,
             source_code=source_code,
-            pin_served_provenance=source_scope is not None,
+            pin_served_provenance=scope is not None,
             materialise_graph=materialise_graph,
             materialise_sdmx=_options.materialise_sdmx,
             rate_cache=_options.rate_cache,
@@ -423,6 +453,21 @@ async def resolve_variable(
                                 deadline=bound,
                                 timing={},
                                 party_words_off=True,
+                            ),
+                        )
+                        enter_phase("default_after_others")
+                        result = await _default_after_others(
+                            result,
+                            first=state,
+                            deadline=_options.deadline,
+                            scoped_state=lambda scope, bound: new_state(
+                                pool="ours",
+                                emit=None,
+                                deadline=bound,
+                                timing={},
+                                party_words_off=party_words_off,
+                                scope=scope,
+                                recall_detection=None,
                             ),
                         )
                     finally:
@@ -725,6 +770,259 @@ def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionRes
     note_degraded_read("alternate presence")
     warning = alternates_unevaluated_warning(state.alternates_presence_failure)
     return dataclasses.replace(result, warnings=(*result.warnings, warning))
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _DefaultAfterOthers:
+    """The plan of the pass `_default_after_others` runs: the scope it reads the part
+    under, the datasets of our pass's elected shape and the last year they publish at any
+    place."""
+
+    scope: SourceScope
+    defaults: tuple[str, ...]
+    last_year: int
+
+
+def _default_after_others_plan(
+    result: RegionResult, first: ResolveState
+) -> _DefaultAfterOthers | str:
+    """The pass `_default_after_others` runs after our pass's `result`, or why it runs none.
+
+    It runs when all of these hold:
+
+    - `result` is `no_data` with `no_observations` on an elected shape whose datasets
+      (`ShapeDraft.datasets`) are known;
+    - the part names no source and no series code: its scope only excludes, or it has
+      none, and `ResolveState.source_code` is `None`;
+    - the part's window (`coverage_series.requested_window`) has a start year, which a
+      request for the latest year lacks;
+    - that start year is later than the last year the elected shape's family holds at any
+      place (`coverage_series.years_held_anywhere`); a family the coverage holds no year
+      of runs none;
+    - some recalled shape (`ResolveState.shapes_found`) whose datasets, those stamped on it
+      or before candidacy those publishing its family (`bound_values.shape_datasets`), all
+      declare `default_after_others` holds a year of the window at some place. Those
+      datasets are the pass's.
+
+    The scope compiles the part's own mentions with one mention of each such dataset by
+    its ref (`source_scope.compile_sources`), so a part excluding the dataset compiles to an
+    empty scope and runs none, as does a scope the catalogue refuses."""
+    elected = first.shape_draft
+    if result.status != "no_data" or result.no_data_reason != "no_observations":
+        return "no_observations_absent"
+    if elected is None or not elected.datasets:
+        return "no_elected_dataset"
+    if (first.scope is not None and first.scope.named) or first.source_code is not None:
+        return "source_named"
+    window = requested_window(first.date_request)
+    start = None if window is None else window.start_year
+    if window is None or start is None:
+        return "no_start_year"
+    last = max(years_held_anywhere(first, elected), default=None)
+    if last is None or last >= start:
+        return "default_holds_window"
+    first_year, end = start, window.end_year
+    index = get_index()
+
+    def late(dataset: str) -> bool:
+        declared = index.datasets.get(dataset)
+        return declared is not None and declared.default_after_others
+
+    def reaches(shape: ShapeDraft) -> bool:
+        return any(
+            year >= first_year and (end is None or year <= end)
+            for year in years_held_anywhere(first, shape)
+        )
+
+    def publishing(shape: ShapeDraft) -> tuple[str, ...]:
+        return shape.datasets if shape.datasets is not None else shape_datasets(shape, index)
+
+    datasets = sorted(
+        {
+            dataset
+            for shape in first.shapes_found
+            if (published := publishing(shape))
+            and all(late(dataset) for dataset in published)
+            and reaches(shape)
+            for dataset in published
+        }
+    )
+    if not datasets:
+        return "no_late_dataset"
+    mentions = (
+        *(() if first.scope is None else first.scope.mentions),
+        *(SourceMention(ref=dataset) for dataset in datasets),
+    )
+    catalogue = first.request_catalogue
+    if catalogue is None:
+        return "no_catalogue"
+    try:
+        scope = compile_sources(
+            mentions,
+            catalogue=catalogue,
+            pointers=[f"/sources/{i}" for i in range(len(mentions))],
+            refuse_empty=False,
+        )
+    except EngineInputError:
+        return "scope_refused"
+    if not isinstance(scope, SourceScope) or not scope.allowed:
+        return "scope_empty"
+    return _DefaultAfterOthers(scope=scope, defaults=tuple(elected.datasets), last_year=last)
+
+
+async def _default_after_others(
+    result: RegionResult,
+    *,
+    first: ResolveState,
+    deadline: float | None,
+    scoped_state: Callable[[SourceScope, float | None], ResolveState],
+) -> RegionResult:
+    """`result`, the answer that stands after our pass and the UN pass (`_fill_gap`), or the
+    answer of a pass reading the part within the datasets that publish the years after our
+    elected shape's last year.
+
+    The pass runs when `_default_after_others_plan` gives a plan, so only while `result`
+    is `no_data` with `no_observations`. It is a full resolution of the part under the
+    plan's scope (`scoped_state`): its own recall and phases, read through the catalogue
+    scoped to the scope, with no detection of the door's and no events, the stream's
+    describing our pass. It runs on the time the passes before it left, ending
+    `_UN_PASS_RESERVE_S` before `deadline`, and a pass with none left does not start. Its
+    answer stands when it is `definite`, its binder did not rate "none of the shapes" above
+    its pick (`BindResult.none_first`), its elected shape names its datasets, and the
+    members its bindings elect share the measure values of those our pass's bindings
+    elect, such as flow type and netting basis (`coverage_series.elected_measure_values`);
+    either side's values being unknown keeps `result`. A standing answer carries
+    `dataset_defaulted` (`departures.dataset_defaulted`) among its unwarned departures
+    (`RegionResult.inferred_facts`), naming both datasets by their index labels and the
+    last year of ours, and the `un_system_unavailable` warnings `result` carries, since the
+    UN pass that could have changed the answer did not complete either way.
+
+    The pass records its reads apart. A standing answer hands them all on (`carry`); a
+    dropped one hands on its lost and cut reads as cut alone, so no cache stores the part
+    and the part is not degraded by an answer it does not show. A pass that fails upstream
+    (`_UPSTREAM_FAILURES`) leaves `result` standing and the part degraded, so no cache
+    stores it. A party reading the pass withdraws (`PartyReadingWithdrawn`) and a refusal
+    of the whole request (`_REQUEST_REFUSALS`) in the pass leave `result` standing, since
+    `result` answered the question before any such dataset existed, and any other failure,
+    in the plan, the pass or the check of its answer, is a defect, logged, that leaves it
+    standing too. Cancellation propagates. Whichever answer stands carries both passes'
+    step timings and model usage, and the dropped answer's trailing tasks are cancelled
+    (`deadline._cancel_trailing_tasks`)."""
+    try:
+        plan = _default_after_others_plan(result, first)
+    except Exception:
+        logger.exception("the default-after-others plan of part %d failed", first.variable_index)
+        return result
+    if isinstance(plan, str):
+        _log_default_after_others(first, result, outcome=f"skipped:{plan}")
+        return result
+    bound = None if deadline is None else deadline - _UN_PASS_RESERVE_S
+    if bound is not None and time.monotonic() >= bound:
+        _log_default_after_others(first, result, outcome="skipped:deadline")
+        return result
+    state = scoped_state(plan.scope, bound)
+    reads = DegradedReads()
+    second: RegionResult | None = None
+    fact: DepartureFact | None = None
+    t0 = now_ms()
+    try:
+        with recording_degraded_reads(into=reads):
+            async with asyncio.timeout(None if bound is None else bound - time.monotonic()):
+                with scoped_reads(plan.scope.provenances):
+                    await _phase_recall(state)
+                    second = await _run_phases(state)
+        fact, outcome = _defaulted_fact(second, first=first, state=state, plan=plan)
+    except Exception as exc:
+        withdrawn = isinstance(exc, PartyReadingWithdrawn)
+        outcome = "kept:party_reading_withdrawn" if withdrawn else f"error:{type(exc).__name__}"
+        _log_default_after_others(first, result, outcome=outcome, ms=now_ms() - t0)
+        if isinstance(exc, _UPSTREAM_FAILURES):
+            note_degraded_read("default-after-others pass")
+        elif not withdrawn and not isinstance(exc, _REQUEST_REFUSALS):
+            logger.exception(
+                "the default-after-others pass of part %d failed", first.variable_index
+            )
+        carry(DegradedReads(cut=[*reads.reads, *reads.cut]))
+        if second is not None:
+            await _cancel_trailing_tasks([second])
+        return result
+    finally:
+        if state.un_leg is not None:
+            state.un_leg.task.cancel()
+    _log_default_after_others(first, result, outcome=outcome, ms=now_ms() - t0)
+    if fact is None:
+        carry(DegradedReads(cut=[*reads.reads, *reads.cut]))
+        await _cancel_trailing_tasks([second])
+        chosen, facts, warnings = result, result.inferred_facts, result.warnings
+    else:
+        carry(reads)
+        await _cancel_trailing_tasks([result])
+        unavailable = tuple(
+            warning
+            for warning in result.warnings
+            if warning.code == UN_SYSTEM_UNAVAILABLE and warning not in second.warnings
+        )
+        chosen, facts = second, (*second.inferred_facts, fact)
+        warnings = (*second.warnings, *unavailable)
+    timing = dict(result.timing_by_step)
+    for step, ms in second.timing_by_step.items():
+        timing[step] = timing.get(step, 0) + ms
+    return dataclasses.replace(
+        chosen,
+        inferred_facts=facts,
+        warnings=warnings,
+        timing_by_step=timing,
+        llm_usage=sum_usage(result.llm_usage, second.llm_usage),
+    )
+
+
+def _defaulted_fact(
+    second: RegionResult,
+    *,
+    first: ResolveState,
+    state: ResolveState,
+    plan: _DefaultAfterOthers,
+) -> tuple[DepartureFact | None, str]:
+    """The `dataset_defaulted` departure of `second`, the answer of the pass resolving
+    `state`, when it stands in place of our pass's (`first`), or `None`, and the outcome
+    the pass's log line names."""
+    if second.status != "definite":
+        return None, f"kept:{second.status}/{second.no_data_reason}"
+    if state.bind_decision is not None and state.bind_decision.none_first:
+        return None, "kept:doubted"
+    ours = elected_measure_values(first.shape_draft, first.bindings)
+    theirs = elected_measure_values(state.shape_draft, state.bindings)
+    if ours is None or theirs is None or ours.values != theirs.values:
+        return None, "kept:measure_differs"
+    elected = state.shape_draft
+    shown = (
+        ", ".join(source_label(dataset) for dataset in elected.datasets or ()) if elected else ""
+    )
+    if not shown:
+        return None, "kept:no_dataset"
+    fact = dataset_defaulted(
+        shown=shown,
+        defaulted_from=[source_label(dataset) for dataset in plan.defaults],
+        last_year=plan.last_year,
+    )
+    return fact, "answered"
+
+
+def _log_default_after_others(
+    first: ResolveState, result: RegionResult, *, outcome: str, ms: int = 0
+) -> None:
+    """One line per part: the status of the answer standing before the
+    default-after-others pass and what the pass did (why it was skipped, at DEBUG, or the
+    status it reached, or that its answer stood) and its time."""
+    logger.log(
+        logging.DEBUG if outcome.startswith("skipped:") else logging.INFO,
+        "default_after_others part=%d status=%s/%s outcome=%s ms=%d",
+        first.variable_index,
+        result.status,
+        result.no_data_reason,
+        outcome,
+        ms,
+    )
 
 
 async def _fill_gap(

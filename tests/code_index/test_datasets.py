@@ -176,6 +176,34 @@ def test_loader_reads_the_member_provenances_of_each_dataset():
     } == {_LEDGER}
 
 
+def test_loader_reads_a_late_default_and_an_absent_key_declares_none():
+    payload = _with_imputed_dataset()
+    payload["datasets"][-1]["default_after_others"] = True
+
+    index = parse_index(payload)
+
+    assert index.datasets[_IMPUTED_PROVENANCE].default_after_others is True
+    assert index.datasets[_CRS_PROVENANCE].default_after_others is False
+
+
+@pytest.mark.parametrize(
+    ("position", "value", "match"),
+    [
+        (-1, "yes", "which is not a boolean"),
+        (0, True, "but is not opt-in"),
+    ],
+    ids=["not-a-boolean", "not-opt-in"],
+)
+def test_loader_rejects_a_late_default_that_is_malformed_or_on_a_default_table(
+    position: int, value: object, match: str
+):
+    payload = _with_imputed_dataset()
+    payload["datasets"][position]["default_after_others"] = value
+
+    with pytest.raises(IndexFormatError, match=match):
+        parse_index(payload)
+
+
 @pytest.mark.parametrize(
     "members",
     [

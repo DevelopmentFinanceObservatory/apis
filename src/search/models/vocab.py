@@ -131,6 +131,7 @@ DepartureCode = Literal[
     "direction_inferred",
     "organisation_read_as_party",
     "core_contribution_read",
+    "dataset_defaulted",
     "scope_limited",
 ]
 """Every way an answer can differ from what its request asked (see

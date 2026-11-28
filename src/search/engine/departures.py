@@ -23,7 +23,11 @@ the Spec the part answers with and the operations it carries (`spec_departure_fa
 no-data answer for years its series holds no point in carries `year_unavailable`
 (`window_gap_fact`), and a no-data answer whose check the engine narrowed carries
 `scope_limited` (`scope_limited_fact`). An answer reading DAC2a's total ODA at a multilateral
-recipient carries `core_contribution_read` (`_core_contribution_facts`).
+recipient carries `core_contribution_read` (`_core_contribution_facts`). An answer the pass
+for a dataset declaring `default_after_others` gives in place of the default datasets'
+no-data answer carries `dataset_defaulted` (`dataset_defaulted`,
+`region.pipeline._default_after_others`), beside the answer's other unwarned departures
+(`RegionResult.inferred_facts`).
 
 A part states one `entity_unavailable` per role whichever reads raised it
 (`merged_entity_facts`), and only the facts that tell its reader something its heading and
@@ -286,6 +290,21 @@ def direction_inferred(
         over=axis,
         read_by=read_by,
         listed_by=listed_by,
+    )
+
+
+def dataset_defaulted(
+    *, shown: str, defaulted_from: Sequence[str], last_year: int
+) -> DepartureFact:
+    """An answer from the dataset labelled `shown` to a request naming no dataset, whose
+    years start after `last_year`, the last year the datasets labelled `defaulted_from`
+    publish. Naming a source clears it."""
+    return DepartureFact(
+        code="dataset_defaulted",
+        binding_ref=SOURCE_REF,
+        shown=shown,
+        defaulted_from=tuple(defaulted_from),
+        last_year=last_year,
     )
 
 

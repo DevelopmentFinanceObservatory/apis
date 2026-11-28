@@ -708,6 +708,19 @@ def _core_contribution_read(
             )
 
 
+def _dataset_defaulted(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
+    """The dataset the part reads by default (`defaulted_from`), the last year it
+    publishes, and the dataset that answers in its place (`shown`)."""
+    if not fact.shown or not fact.defaulted_from or fact.last_year is None:
+        raise ValueError("dataset_defaulted needs both datasets and the default's last year")
+    publishes = "publishes" if len(fact.defaulted_from) == 1 else "publish"
+    verb = "shows" if shows_data else "checked"
+    return (
+        f"{join_labels(list(fact.defaulted_from))} {publishes} data up to {fact.last_year}, "
+        f"so this {verb} {fact.shown}."
+    )
+
+
 def _scope_limited(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
     return no_data_limit_text(fact.limits)
 
@@ -737,6 +750,7 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "direction_inferred": _direction_inferred,
         "organisation_read_as_party": _organisation_read_as_party,
         "core_contribution_read": _core_contribution_read,
+        "dataset_defaulted": _dataset_defaulted,
         "scope_limited": _scope_limited,
     }
 )

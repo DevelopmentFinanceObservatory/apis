@@ -443,6 +443,20 @@ class DatasetDeclaration:
     divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
     of the recipient's GNI (`destination`). `None` declares nothing, as in a
     release exported without the field.
+
+    `default_after_others` marks an opt-in table that answers a question naming no dataset
+    in the years the default tables have yet to publish: IATI's publishers report the
+    current year while the CRS lags behind. When a part's pass ends with no observations on
+    a default shape, its window starts after the last year that shape's family holds at any
+    place, and a recalled shape of tables declaring the field holds a year of the window,
+    a second pass resolves the part as a part naming those tables does. Its answer stands
+    when it is definite and its elected members share the measure values of the first
+    pass's, such as flow type and netting basis, and it then states `dataset_defaulted`
+    (`search.engine.region.pipeline._default_after_others`). So "disbursements to Kenya in
+    2026" answers from IATI, while a window touching a year the default holds, a request for
+    the latest year, a part excluding the table, and a default reading of another measure,
+    such as DAC2a's net ODA line, keep the default tables' answer or no data. Only an opt-in
+    table may declare it.
     """
 
     id: str
@@ -458,6 +472,7 @@ class DatasetDeclaration:
     noted_words: tuple[NotedWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
     ratio_base_axis: RoleAxis | None = None
+    default_after_others: bool = False
 
 
 ComponentRole = Literal["bilateral", "imputed", "headline_net", "headline_ge"]

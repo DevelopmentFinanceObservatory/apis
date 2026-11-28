@@ -1049,6 +1049,18 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "Other UN is the DAC's line for multilateral agencies it does not name, so these "
         "figures are core contributions to them, counted in total ODA.",
     ),
+    # "disbursements to Kenya in 2026": the CRS ends in 2025 and IATI answers.
+    (
+        DepartureFact(
+            code="dataset_defaulted",
+            binding_ref="source:",
+            shown="IATI",
+            defaulted_from=("OECD Creditor Reporting System (CRS)",),
+            last_year=2025,
+        ),
+        "aid",
+        "OECD Creditor Reporting System (CRS) publishes data up to 2025, so this shows IATI.",
+    ),
     # crs-010: the check covered only the ODA default the engine chose.
     (
         DepartureFact(code="scope_limited", binding_ref="how:crsTypeOfFlow", limits=("ODA",)),
@@ -1336,6 +1348,18 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         "contributions to it, counted in total ODA.",
     ),
     (
+        DepartureFact(
+            code="dataset_defaulted",
+            binding_ref="source:",
+            shown="IATI",
+            defaulted_from=("OECD DAC2a", "OECD Creditor Reporting System (CRS)"),
+            last_year=2025,
+        ),
+        "aid",
+        "OECD DAC2a and OECD Creditor Reporting System (CRS) publish data up to 2025, so this "
+        "checked IATI.",
+    ),
+    (
         DepartureFact(code="scope_limited", binding_ref="how:crsTypeOfFlow", limits=("ODA",)),
         "aid",
         "This check covered only ODA.",
@@ -1458,6 +1482,20 @@ def test_departures_follow_precedence_and_carry_the_fact():
         # With nothing asked, the text has only the measure shown to state.
         (DepartureFact(code="closest_match", binding_ref=None), "measure shown"),
         (DepartureFact(code="member_unavailable", binding_ref=None), "variables"),
+        (
+            DepartureFact(code="dataset_defaulted", binding_ref="source:", shown="IATI"),
+            "both datasets",
+        ),
+        (
+            DepartureFact(
+                code="dataset_defaulted",
+                binding_ref="source:",
+                shown="",
+                defaulted_from=("OECD Creditor Reporting System (CRS)",),
+                last_year=2025,
+            ),
+            "both datasets",
+        ),
     ],
 )
 def test_a_fact_missing_its_value_raises(fact, missing):
