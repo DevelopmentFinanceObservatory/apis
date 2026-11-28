@@ -38,6 +38,8 @@ from origin_catalogue import record_un_read_failure
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.materialise.conftest import FakeGraphReader
 
+from ._release_doubles import bound_index
+
 _KEN = "country/KEN"
 _PROVENANCE = "PROV1"
 _DETAIL = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
@@ -462,14 +464,16 @@ def test_a_member_held_under_another_provenance_of_the_elected_dataset_is_not_un
     row = _row(_warning([_IN]), zero=[_IN])
     row["trace"]["facets"][0]["ref"] = _LEDGER
     store = _Store([row])
+    index = _ledger_code_index()
     readers = Readers(
         graph=FakeGraphReader(facets=facets),
         availability=ScopeAvailability(data=()),
-        code_index=_ledger_code_index(),
+        code_index=index,
         coverage=None,
     )
 
-    assert _run(store, readers=readers) == 0
+    with bound_index(index):
+        assert _run(store, readers=readers) == 0
 
     stored = _stored(store)
     assert stored["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_In"]}

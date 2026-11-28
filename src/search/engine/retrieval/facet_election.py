@@ -25,11 +25,13 @@ from materialise.facets import (
     merge_facets,
     overlaps_window,
     rank_pool,
+    read_as_datasets,
 )
 from materialise.group_facets import declared_in_pool, elect_group, rank_group
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
+from search.engine.retrieval.elected_dataset import provenance_axis
 
 if TYPE_CHECKING:
     from materialise.graph import FacetDefaultPolicy
@@ -135,8 +137,8 @@ def scope_served(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The facet ids a mint of the answer's Spec serves when it elects `lead`, each facet
     merged across every place: its selection, the facets of `candidates` sharing `lead`'s
-    provenance (`materialise.facets.facet_axis_value`, the dataset's id for a facet of an
-    elected dataset of several members), method and unit at its cadence (`materialise.facets.cadences_by_member`),
+    provenance axis value (`elected_dataset.provenance_axis`, the declared dataset's id),
+    method and unit at its cadence (`materialise.facets.cadences_by_member`),
     `lead` first, as `materialise.facets.joint_matches` admits them; then the facets
     continuing the selection's series in `window`, each past its own place's last year
     (`materialise.facets.continuation`). Several qualifying methods rank by the places each
@@ -153,7 +155,7 @@ def scope_served(
     head = by_id[lead.facet_id]
 
     def axes(facet: Facet) -> tuple[str | None, ...]:
-        return (facet_axis_value(facet, "provenance"), facet.measurement_method, facet.unit)
+        return (provenance_axis(facet), facet.measurement_method, facet.unit)
 
     selection = [
         head,
@@ -185,9 +187,7 @@ class RoleBulkCandidate:
     Metadata is shared by facet id in the coverage index. `lifetime` holds each StatVar's
     observation count, span and first series' end over every year under the same bound
     roles (`CoverageIndex.facet_spans`), the values a mint ranks and continues the facet by;
-    it is empty for candidates built outside coverage. `dataset_id` is its StatVars'
-    candidates' (`RoleFacetCandidate.dataset_id`), which the facet it ranks as carries
-    (`ranked_facet`).
+    it is empty for candidates built outside coverage.
     """
 
     facet_id: str
@@ -199,7 +199,6 @@ class RoleBulkCandidate:
     unit: str | None = None
     observation_period: str | None = None
     lifetime: dict[str, FacetSpan] = field(default_factory=dict)
-    dataset_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +281,7 @@ def with_declared_lifetime(
             measurement_method=meta.measurement_method,
             unit=meta.unit,
         )
+        (facet,) = read_as_datasets((facet,))
         if any(facet_axis_value(facet, axis) == p.resolved_ref for axis, p in policies.items()):
             held.append(
                 RoleFacetCandidate(
@@ -323,7 +323,6 @@ def merge_role_candidates(
                     measurement_method=c.measurement_method,
                     unit=c.unit,
                     observation_period=c.observation_period,
-                    dataset_id=c.dataset_id,
                 )
                 merged[c.facet_id] = candidate
             candidate.by_sv.setdefault(sv, []).append(c)
@@ -438,7 +437,8 @@ def _pair_union(candidates: Sequence[RoleBulkCandidate], *, window: RequestedWin
 
 
 def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None) -> Facet:
-    """`candidate` as the facet `rank_pool` ranks (`rank_role_candidates`)."""
+    """`candidate` as the facet `rank_pool` ranks (`rank_role_candidates`), read as a mint
+    reads it (`materialise.facets.read_as_datasets`)."""
     spans = [candidate.lifetime[sv] for sv in candidate.by_sv if sv in candidate.lifetime]
     if spans:
         obs_count = sum(span.n_obs for span in spans)
@@ -449,7 +449,7 @@ def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None
         first, last = (window.start_year, window.end_year) if window is not None else (None, None)
         obs_count = role_n_obs(candidate, first_year=first, last_year=last)
         earliest_date, latest_date, first_series_end = None, candidate.latest_date, None
-    return Facet(
+    facet = Facet(
         facet_id=candidate.facet_id,
         provenance_id=candidate.provenance_id,
         measurement_method=candidate.measurement_method,
@@ -461,8 +461,9 @@ def ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None
         observation_period=candidate.observation_period,
         # Coverage's years, whatever the facet's cadence, so no evidence that it is annual.
         dates_coarsened=True,
-        dataset_id=candidate.dataset_id,
     )
+    (read,) = read_as_datasets((facet,))
+    return read
 
 
 def role_continuation(

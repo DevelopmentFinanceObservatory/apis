@@ -10,10 +10,14 @@ in process:
 - `datasets`: a source's upstream Datasets, from the origin catalogue through the source index
   (`build_source_catalogue`), ordered by dcid. A provenance with no Dataset is its own entry, as
   the source index lists it.
-- `variables`: the variables DFO indexes under a Dataset or a Provenance, from the code index's
-  provenance map (`CodeIndex.variables_by_provenance`) over the catalogue's map from Dataset to
-  Provenance, ordered by dcid. A Provenance the code index does not associate adds no items, and
-  the answer says `complete: false` with the gap `variables_not_indexed`.
+- `variables`: the variables DFO indexes under a Dataset or a Provenance, ordered by dcid. The
+  catalogue maps a Dataset to its Provenances, each Provenance is read as the dataset it is a
+  member of in the code index (`CodeIndex.dataset_of`), and the code index's map from dataset to
+  variables (`CodeIndex.variables_by_provenance`) gives the items. A dataset the code index
+  does not associate adds no items, and the answer says `complete: false` with the gap
+  `variables_not_indexed`. A member provenance of a declared dataset has no list of its own,
+  since the code index records variables by dataset, so the door refuses it 400 at `/relation`,
+  naming the dataset whose list holds its variables.
 - `members`: a group's members under a projection and an `as_of` date, from the membership
   policy, ordered by dcid.
 - `countries`: a region's countries under its policy and a projection, ordered by dcid.
@@ -228,10 +232,16 @@ class ListRequestInvalid(Exception):
 
 class RelationLacked(ListRequestInvalid):
     """The node has no list of the requested relation. The door refuses it 400 at `/relation`
-    where the node is held, and 404 `node_not_held` where it is not."""
+    where the node is held, and 404 `node_not_held` where it is not. `listed_under` names the
+    node whose list holds what the request asked for, when there is one."""
 
-    def __init__(self, dcid: str, relation: MembersRelation) -> None:
-        super().__init__("/relation", f"{dcid!r} has no {relation} list")
+    def __init__(
+        self, dcid: str, relation: MembersRelation, *, listed_under: str | None = None
+    ) -> None:
+        detail = f"{dcid!r} has no {relation} list"
+        if listed_under is not None:
+            detail += f"; its {relation} are listed under {listed_under!r}"
+        super().__init__("/relation", detail)
 
 
 class NodeTypesUnread(Exception):
@@ -371,19 +381,26 @@ def _datasets(dcid: str) -> _Listing[MemberItem]:
 
 
 def _variables(dcid: str, index: CodeIndex) -> _Listing[str]:
-    """A Dataset's variables are the union of its provenances' variables. A dcid the catalogue
-    lists as no Dataset is read as a Provenance, if either table holds it."""
+    """A Dataset's variables are the union of its provenances' datasets' variables, each
+    provenance read as the dataset it is a member of (`CodeIndex.dataset_of`), which keys the
+    code index's variables. A dcid the catalogue lists as no Dataset is read as a Provenance,
+    if either table holds it. A member provenance of a declared dataset raises
+    `RelationLacked` naming the dataset, since the index records which variables the dataset
+    holds and not which of its members holds each."""
+    if (dataset := index.dataset_of(dcid)) != dcid:
+        raise RelationLacked(dcid, "variables", listed_under=dataset)
     catalogue = current_catalogue()
     provenances = _catalogue_lists(catalogue.build_id).provenances_by_dataset.get(dcid)
     if provenances is None:
         if dcid not in index.variables_by_provenance and catalogue.provenance(dcid) is None:
             raise RelationLacked(dcid, "variables")
         provenances = (dcid,)
+    datasets = tuple(dict.fromkeys(index.dataset_of(p) for p in provenances))
     held = [
-        index.variables_by_provenance[p] for p in provenances if p in index.variables_by_provenance
+        index.variables_by_provenance[d] for d in datasets if d in index.variables_by_provenance
     ]
     rows = held[0] if len(held) == 1 else tuple(sorted({v for dcids in held for v in dcids}))
-    whole = len(held) == len(provenances)
+    whole = len(held) == len(datasets)
     return _Listing(
         rows=rows,
         sort_key=_by_dcid,

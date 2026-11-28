@@ -20,6 +20,7 @@ from assembler.testing import build_resolved_frame
 from dataset_store.snapshot import FrameLineage, LiveSnapshotReader, SnapshotReader
 from datasets_api.lineage_incomplete import derived_incomplete_after
 from datasets_api.manifest import version_document
+from tests.materialise._ledger import LEDGER
 
 from ._description_doubles import datasets_client, publish
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -70,11 +71,12 @@ def _record_root(
     *,
     recorded: list[object] | None,
     built_at: datetime | None = None,
+    source: str = _SOURCE,
 ) -> None:
-    """A dataset version of `_PARTIAL` and `_COMPLETE` from `_SOURCE` storing `recorded`,
+    """A dataset version of `_PARTIAL` and `_COMPLETE` from `source` storing `recorded`,
     or none for `None`, judged by the catalogue build `built_at`."""
     trace = {
-        "facets": [{"axis": "provenance", "ref": _SOURCE}],
+        "facets": [{"axis": "provenance", "ref": source}],
         "resolved_stat_vars": [{"ref": _PARTIAL}, {"ref": _COMPLETE}],
     }
     with store.transaction() as tx:
@@ -257,6 +259,21 @@ def test_a_computation_over_a_computed_version_knows_its_input_s_cells(
 
     assert second.incomplete_after == stored
     assert flagged is partial
+
+
+def test_a_kept_complete_cell_of_a_declared_dataset_s_partial_root_is_unmarked() -> None:
+    """The root's trace selects `dataset/Ledger` and its rows carry that id, as every row of
+    the dataset's member provenances does (`lineage_incomplete._dataset_cells`), so the kept
+    complete cell is the root's and takes none of its partial periods."""
+    store = FakeVersionRecordDatasetStore()
+    partial = {**_entry([_PARTIAL], source=LEDGER), "provenance": LEDGER}
+    _record_root(store, recorded=[partial], source=LEDGER)
+    rows = [{**row, "provenance": LEDGER} for row in _rows(_COMPLETE)]
+
+    lineage, flagged = _publish(store, _FIRST, inputs=[_ROOT[1]], rows=rows)
+
+    assert lineage.incomplete_after == [{**_entry([_COMPLETE], None), "provenance": LEDGER}]
+    assert flagged is False
 
 
 def _without_provenance(stat_var: str) -> list[dict[str, object]]:

@@ -4,9 +4,10 @@ A mint serves a member of an index-resolved family from its elected dataset alon
 (`materialise.facets.dataset_candidates`). Every Search reader of a member's facets (a read
 plan, a pin refusal, a facet option, an option's coverage) keeps them by the same test,
 `materialise.facets.ElectedDataset.publishes`, through the functions here, so no door
-states or admits a facet a mint of the Spec would not serve. A read plan also reads each
-kept facet as the mint reads it (`read_in_datasets`): a dataset of several member
-provenances stamps its facets with its id, so the plan's elections take them as one table.
+states or admits a facet a mint of the Spec would not serve. Every facet a reader keeps is
+read as the mint reads it (`materialise.facets.read_as_datasets`): a facet of a declared
+dataset's member provenance carries the dataset's id, so the elections take the members as one
+table. Every Search reader of a candidate's provenance axis reads `provenance_axis`.
 
 A mint refuses a member it serves when only a dataset the code index does not record for
 the member publishes its observations at the bound entities
@@ -21,6 +22,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
+from code_index.shared import get_index
 from materialise.facets import DatasetCandidate, ElectedDataset
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate
@@ -39,17 +41,15 @@ class _Sourced(Protocol):
     def provenance_id(self) -> str | None: ...
 
 
-class _Read(_Sourced, Protocol):
-    @property
-    def dataset_id(self) -> str | None: ...
-
-
-def provenance_axis(candidate: _Read) -> str | None:
-    """`candidate`'s value on the provenance axis, as
-    `materialise.facets.facet_axis_value` reads a facet's: the elected dataset's id for a
-    candidate of a dataset of several member provenances (`read_in_datasets`), else its
-    provenance. A conversion converts its rows under this ref, and an answer cites it."""
-    return candidate.dataset_id or candidate.provenance_id
+def provenance_axis(candidate: _Sourced) -> str | None:
+    """`candidate`'s value on the provenance axis, as `materialise.facets.facet_axis_value`
+    reads a facet once read (`read_as_datasets`): the id of the declared dataset its
+    provenance is a member of in the bound release's code index (`CodeIndex.dataset_of`),
+    which is the provenance itself for a plain table. A function of the provenance alone, so a
+    facet, a role candidate and a bulk candidate read alike, stamped or not. An answer cites
+    this ref, a series states it, and a conversion converts its rows under it."""
+    provenance = candidate.provenance_id
+    return None if provenance is None else get_index().dataset_of(provenance)
 
 
 def elected_datasets(member_facts: Mapping[str, MemberFacts] | None) -> dict[str, ElectedDataset]:
@@ -67,33 +67,24 @@ def publishes(datasets: ElectedDatasets, stat_var: str, candidate: _Sourced) -> 
     return dataset is None or dataset.publishes(candidate.provenance_id)
 
 
-def read_in_datasets[C: (Facet, RoleFacetCandidate)](
-    datasets: ElectedDatasets, stat_var: str, candidate: C
-) -> C:
-    """`candidate` as a mint of `stat_var` reads it (`ElectedDataset.read_as_dataset`):
-    carrying its elected dataset's id as its `dataset_id` when that dataset has several
-    member provenances and publishes it, so `materialise.facets.facet_axis_value` reads one
-    provenance for every member's facets. Any other candidate is returned as it is."""
-    dataset = datasets.get(stat_var)
-    if (
-        dataset is None
-        or not dataset.several_members
-        or not dataset.publishes(candidate.provenance_id)
-    ):
-        return candidate
-    return replace(candidate, dataset_id=dataset.provenance)
-
-
 def published[C: (Facet, RoleFacetCandidate)](
     datasets: ElectedDatasets, stat_var: str, candidates: Iterable[C]
 ) -> list[C]:
-    """The `candidates` of `stat_var` its elected dataset publishes, in order, each read as
-    the dataset's (`read_in_datasets`), so a pin of the dataset's id admits them."""
-    return [
-        read_in_datasets(datasets, stat_var, c)
-        for c in candidates
-        if publishes(datasets, stat_var, c)
-    ]
+    """The `candidates` of `stat_var` its elected dataset publishes, in order. A facet is read
+    as a mint reads it (`materialise.facets.read_as_datasets`), carrying its dataset's id, so a
+    pin of that id admits it; a role candidate's provenance axis is `provenance_axis`."""
+    return [_read(c) for c in candidates if publishes(datasets, stat_var, c)]
+
+
+def _read[C: (Facet, RoleFacetCandidate)](candidate: C) -> C:
+    """A facet as a mint reads it (`materialise.facets.read_as_datasets`), and a role
+    candidate as it is."""
+    if isinstance(candidate, RoleFacetCandidate):
+        return candidate
+    dataset = provenance_axis(candidate)
+    if dataset == candidate.provenance_id or dataset == candidate.dataset_id:
+        return candidate
+    return replace(candidate, dataset_id=dataset)
 
 
 def published_by_stat_var[C: (Facet, RoleFacetCandidate)](

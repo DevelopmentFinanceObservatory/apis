@@ -1056,7 +1056,7 @@ def _headline(
 def _pins(identity: Mapping[str, object], index: CodeIndex) -> frozenset[str] | None:
     """The provenances `identity` pins: those a read naming its pinned refs admits under
     `index` (`code_index.members.pinned_refs`, `source_scope.read_provenances`), every member
-    of a dataset of several. None for none."""
+    provenance of a declared dataset. None for none."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets") or {})
     return read_provenances(pinned_refs(facets), code_index=index) or None
 

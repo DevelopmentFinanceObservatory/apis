@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import pytest
-
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.shared import get_index
 from code_index.types import StatVarRow
@@ -250,18 +248,15 @@ def _ledger_index() -> CodeIndex:
     )
 
 
-@pytest.mark.parametrize(
-    "provenance_refs", [(_LEDGER,), (_NORTH, _SOUTH)], ids=["dataset_ref", "member_refs"]
-)
-def test_rows_of_two_member_provenances_of_one_dataset_sum_to_one_total(provenance_refs):
-    """Each member's row carries its own provenance. The refs read as the dataset, and the
-    sum reads each row's provenance as the dataset's id, so it neither refuses
+def test_rows_of_two_member_provenances_of_one_dataset_sum_to_one_total():
+    """Each member's row carries the dataset's id, as the mint writes it
+    (`materialise.columnar.dataset_cells`), so the sum neither refuses
     `provenance_disagreement` nor `facet_homogeneity`, and the total cites the dataset."""
     table = Table(
         columns=_TABLE_COLUMNS,
         rows=(
-            ("dcid:SV_health", "country/USA", "country/KEN", "2022", 10.0, "USD", _NORTH),
-            ("dcid:SV_malaria", "country/USA", "country/KEN", "2022", 4.0, "USD", _SOUTH),
+            ("dcid:SV_health", "country/USA", "country/KEN", "2022", 10.0, "USD", _LEDGER),
+            ("dcid:SV_malaria", "country/USA", "country/KEN", "2022", 4.0, "USD", _LEDGER),
         ),
     )
 
@@ -272,7 +267,7 @@ def test_rows_of_two_member_provenances_of_one_dataset_sum_to_one_total(provenan
         reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
         code_index=_ledger_index(),
         resolved_stat_var_refs=_RESOLVED_REFS,
-        provenance_refs=provenance_refs,
+        provenance_refs=(_LEDGER,),
         subject_id="spec_ledger",
         pivot_max_output_cells=5_000_000,
     )

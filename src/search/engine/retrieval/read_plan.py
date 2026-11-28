@@ -51,6 +51,7 @@ from materialise.facets import (
     FACET_AXES,
     MemberProbe,
     overlaps_window,
+    read_as_datasets,
     read_variable_breadths,
     subject_probe,
 )
@@ -61,12 +62,9 @@ from search.engine.clients.graph import Facet
 from search.engine.extract import read_window
 from search.engine.reading_coverage import CoverageYears, ReadingCoverage, observed_years
 from search.engine.retrieval.elected_dataset import (
-    NO_DATASETS,
-    ElectedDatasets,
     elected_datasets,
     provenance_axis,
     publishes,
-    read_in_datasets,
 )
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
@@ -401,7 +399,7 @@ def kept_dates(
     if last is None:
         return dates
     through = served_until(
-        source=facet.provenance_id,
+        source=provenance_axis(facet),
         method=facet.measurement_method,
         newest=last,
         include=include,
@@ -431,7 +429,7 @@ def kept_points(
         d
         for d in dates
         if served_until(
-            source=facet.provenance_id,
+            source=provenance_axis(facet),
             method=facet.measurement_method,
             newest=d,
             include=include,
@@ -921,14 +919,12 @@ class PairPlan:
             held_runs=None,
         )
 
-    def narrowed(self, admits: Admits, *, datasets: ElectedDatasets = NO_DATASETS) -> PairPlan:
+    def narrowed(self, admits: Admits) -> PairPlan:
         """This plan under a request's facet filter: each series and each member's probe
-        keep the candidates `admits` accepts, each read as its member's elected dataset of
-        `datasets` reads it (`elected_dataset.read_in_datasets`), and every group is elected
-        again from them."""
+        keep the candidates `admits` accepts, and every group is elected again from them."""
 
         def kept(sv: str, candidates: Iterable[Facet]) -> tuple[Facet, ...]:
-            return tuple(read_in_datasets(datasets, sv, c) for c in candidates if admits(sv, c))
+            return tuple(c for c in candidates if admits(sv, c))
 
         narrowed = plan_pairs(
             [replace(s, candidates=kept(s.stat_var, s.candidates)) for s in self.series],
@@ -1335,17 +1331,16 @@ class BulkPlan:
             default=0,
         )
 
-    def narrowed(self, admits: Admits, *, datasets: ElectedDatasets = NO_DATASETS) -> BulkPlan:
+    def narrowed(self, admits: Admits) -> BulkPlan:
         """This plan under a request's facet filter: each candidate keeps the pairs of the
-        members whose facet `admits` accepts, each read as its member's elected dataset of
-        `datasets` reads it (`elected_dataset.read_in_datasets`), and the read serves the top
-        of the survivors' ranking, as a plan built from the admitted candidates would."""
+        members whose facet `admits` accepts, and the read serves the top of the survivors'
+        ranking, as a plan built from the admitted candidates would."""
         candidates: dict[str, RoleBulkCandidate] = {}
         for facet_id, candidate in self.candidates.items():
             by_sv = {
                 sv: kept
                 for sv, per_sv in candidate.by_sv.items()
-                if (kept := [read_in_datasets(datasets, sv, c) for c in per_sv if admits(sv, c)])
+                if (kept := [c for c in per_sv if admits(sv, c)])
             }
             if by_sv == candidate.by_sv:
                 candidates[facet_id] = candidate
@@ -1358,7 +1353,6 @@ class BulkPlan:
                     latest_date=max(
                         (c.latest_date for c in kept_all if c.latest_date), default=None
                     ),
-                    dataset_id=kept_all[0].dataset_id,
                 )
         election = role_election(
             candidates,
@@ -1519,7 +1513,7 @@ def _collapsed_counts(
     tuples: dict[RoleTuple, int] = {}
     by_year: dict[tuple[RoleTuple, tuple[str | None, ...], int], int] = {}
     for c in candidates:
-        identity = (c.unit, c.measurement_method, c.provenance_id)
+        identity = (c.unit, c.measurement_method, provenance_axis(c))
         for role_tuple, counts in c.pairs.year_counts(first_year=first, last_year=last):
             for year, n_obs in counts:
                 key = (role_tuple, identity, year)
@@ -1705,21 +1699,25 @@ def facets_served(plan: ReadPlan) -> list[Facet]:
 
     A per-series plan lists them by source: most points served first (one per series under
     `latest`, else `series_points` in the plan's years, summed across the series a source
-    serves), then by provenance dcid, then by facet id. The order is the plan's alone, so a
-    first answer and its resubmit cite the same sources in the same order whatever order
-    their places were probed in."""
+    serves), then by provenance axis value (`elected_dataset.provenance_axis`), then by facet
+    id. The order is the plan's alone, so a first answer and its resubmit cite the same
+    sources in the same order whatever order their places were probed in."""
     if isinstance(plan, PairPlan):
         read = plan.years if isinstance(plan.years, TimeWindow) else None
         points: dict[str | None, int] = {}
         facets: list[Facet] = []
         for s in plan.served:
             n = 1 if plan.years == "latest" else series_points(s, read)
-            for provenance in {f.provenance_id for f in s.group}:
+            for provenance in {provenance_axis(f) for f in s.group}:
                 points[provenance] = points.get(provenance, 0) + n
             facets.extend(s.group)
         return sorted(
             facets,
-            key=lambda f: (-points[f.provenance_id], f.provenance_id or "", f.facet_id or ""),
+            key=lambda f: (
+                -points[provenance_axis(f)],
+                provenance_axis(f) or "",
+                f.facet_id or "",
+            ),
         )
     if plan.elected is None:
         return []
@@ -1812,7 +1810,7 @@ def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
 def served_provenances(plan: ReadPlan | None) -> tuple[str, ...]:
     """The distinct provenances of the series `plan` serves (`series_facets`), in serving
     order, each read on the provenance axis (`elected_dataset.provenance_axis`): the
-    dataset's id for a facet of an elected dataset of several members."""
+    declared dataset's id."""
     return tuple(
         dict.fromkeys(
             provenance for facet in series_facets(plan) if (provenance := provenance_axis(facet))
@@ -2096,13 +2094,11 @@ def plan_declared_defaults(
 
 def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts]) -> ReadPlan:
     """`plan` with each member of an index-resolved family keeping only the candidates its
-    elected dataset publishes (`elected_dataset.publishes`), read as the dataset's
-    (`elected_dataset.read_in_datasets`), and every group and bulk facet elected again from
-    them (`narrowed`), under the defaults its populated members then declare
-    (`declared_defaults`). A mint filters a member's candidates by the same test and reads
-    them the same way before it ranks (`materialise.facets.dataset_candidates`), so the
-    member provenances of a dataset of several elect as one table, and agrees on declared defaults
-    over the members still populated (`materialise.group_facets._group_declared_policies`),
+    elected dataset publishes (`elected_dataset.publishes`), and every group and bulk facet
+    elected again from them (`narrowed`), under the defaults its populated members then
+    declare (`declared_defaults`). A mint filters a member's candidates by the same test
+    before it ranks (`materialise.facets.dataset_candidates`), and agrees on declared
+    defaults over the members still populated (`materialise.group_facets._group_declared_policies`),
     so an answer and a mint of its Spec elect within one dataset and under one method, and a
     member holding data under another dataset alone serves nothing. Every resolver passes
     its plan through here. A plan every member of which has an elected dataset reads an
@@ -2114,9 +2110,7 @@ def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts])
     if not datasets:
         return plan
     indexed = replace(plan, index_sourced=all(sv in datasets for sv in plan.members))
-    return indexed.narrowed(
-        lambda sv, candidate: publishes(datasets, sv, candidate), datasets=datasets
-    )
+    return indexed.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
 
 
 def preview_years(plan: ReadPlan | None) -> PlanYears:
@@ -2130,6 +2124,27 @@ def plan_probes(plan: ReadPlan | None) -> Mapping[str, MemberProbe] | None:
     decision reads so it elects the group the plan serves. None for a bulk plan or no plan,
     whose decision probes for itself."""
     return plan.probes if isinstance(plan, PairPlan) else None
+
+
+def _as_datasets(facets: tuple[Facet, ...]) -> tuple[Facet, ...]:
+    """`facets` as a mint reads them (`materialise.facets.read_as_datasets`): `facets` itself
+    when no facet is a declared dataset's member."""
+    read = read_as_datasets(facets)
+    return facets if all(a is b for a, b in zip(read, facets, strict=True)) else tuple(read)
+
+
+def _series_as_datasets(series: PlanSeries) -> PlanSeries:
+    """`series` with its candidates and group read as a mint reads them (`_as_datasets`)."""
+    candidates, group = _as_datasets(series.candidates), _as_datasets(series.group)
+    if candidates is series.candidates and group is series.group:
+        return series
+    return replace(series, candidates=candidates, group=group)
+
+
+def _probe_as_datasets(probe: MemberProbe) -> MemberProbe:
+    """`probe` with its candidates read as a mint reads them (`_as_datasets`)."""
+    candidates = _as_datasets(probe.candidates)
+    return probe if candidates is probe.candidates else replace(probe, candidates=candidates)
 
 
 def plan_pairs(
@@ -2155,8 +2170,12 @@ def plan_pairs(
     election of the year its `latest` read serves each member in. `index_sourced` marks an
     index-resolved family (`PairPlan.index_sourced`), and `declared` the defaults each
     member declares, those every populated member declares serving where a group holds them
-    (`PairPlan.declared_defaults`)."""
-    series = list(series)
+    (`PairPlan.declared_defaults`). Every candidate is read as a mint reads it
+    (`materialise.facets.read_as_datasets`) before any election, so the member provenances of
+    a declared dataset elect as one table whatever dataset a member's family elects."""
+    series = [_series_as_datasets(s) for s in series]
+    if probes is not None:
+        probes = {sv: _probe_as_datasets(probe) for sv, probe in probes.items()}
     if probes is None:
         probes = series_probes(
             series,

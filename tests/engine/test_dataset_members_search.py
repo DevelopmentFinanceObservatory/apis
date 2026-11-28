@@ -10,8 +10,10 @@ members' facets as one group, and the answer cites and labels the dataset. The p
 
 from __future__ import annotations
 
+import copy
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass, field, replace
 from typing import cast
 
 import pytest
@@ -19,11 +21,12 @@ import pytest
 from code_index import shared as shared_module
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp
+from graph_release.context import bound_release, current_release
 from materialise.facets import ElectedDataset
 from origin_catalogue import bound_catalogue
 from origin_catalogue.catalogue import DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
-from origin_catalogue.origins import DFO
+from origin_catalogue.origins import BASE, DFO
 from search.engine import spec_build
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
@@ -41,9 +44,11 @@ from search.models import (
     TimeWindow,
 )
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
+from tests.engine import _answer_invariants_world as world_module
+from tests.engine._answer_invariants_world import ALAND, BLAND, World
 from tests.engine._fake_coverage import build_coverage_index
 from tests.fixtures import FakeGraph
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _LEDGER = "dataset/Ledger"
 _NORTH = "provenance/LedgerNorth"
@@ -203,7 +208,7 @@ _PLAIN_DATASET = ElectedDataset(
 
 
 def _plan(
-    search_settings, *, bulk: bool, north: str, south: str, dataset: ElectedDataset
+    search_settings, *, bulk: bool, north: str, south: str, dataset: ElectedDataset | None
 ) -> read_plan.ReadPlan:
     """The role plan of `_FLOW` at AAA and BBB, 2015 to 2020, electing `dataset`: facet
     `fN` of `north` holds AAA with more observations, `fS` of `south` holds BBB, both in
@@ -242,13 +247,15 @@ def _served_ids(plan: read_plan.ReadPlan) -> set[str]:
     return {facet_id for s in plan.served for facet_id in s.group_ids}
 
 
+@pytest.mark.parametrize("dataset", [_LEDGER_DATASET, None], ids=["elected", "no-election"])
 @pytest.mark.parametrize("bulk", [True, False], ids=["bulk", "pair"])
 def test_the_election_serves_both_members_facets_as_one(
-    search_settings, index: CodeIndex, bulk: bool
+    search_settings, index: CodeIndex, bulk: bool, dataset: ElectedDataset | None
 ) -> None:
-    """Both members' facets carry the dataset's id on the provenance axis, so one group
-    serves AAA from North and BBB from South, and the answer cites the dataset."""
-    plan = _plan(search_settings, bulk=bulk, north=_NORTH, south=_SOUTH, dataset=_LEDGER_DATASET)
+    """Both members' facets carry the dataset's id on the provenance axis, whether or not
+    the StatVar's family elects the dataset, so one group serves AAA from North and BBB from
+    South, and the answer cites the dataset."""
+    plan = _plan(search_settings, bulk=bulk, north=_NORTH, south=_SOUTH, dataset=dataset)
 
     assert isinstance(plan, read_plan.BulkPlan) is bulk
     assert _served_ids(plan) == {"fN", "fS"}
@@ -278,14 +285,13 @@ def test_two_plain_tables_elect_one(search_settings, index: CodeIndex, bulk: boo
     [
         pytest.param(_LEDGER, "Ledger Register", id="dataset-of-several"),
         pytest.param(_PLAIN, "Plain Table", id="plain-table"),
-        pytest.param(_UNDECLARED, "Undeclared Table", id="undeclared-provenance"),
     ],
 )
 def test_elected_sources_labels_the_elected_dataset(
     monkeypatch: pytest.MonkeyPatch, index: CodeIndex, elected: str, label: str
 ) -> None:
-    """An index family can elect a provenance the index publishes without declaring it, so
-    the label is the one a bound source slot carries (`source_scope.source_label`)."""
+    """The answer names the elected dataset under its declared label, the label a bound
+    source slot carries."""
     monkeypatch.setattr(spec_build, "identity_dataset", lambda _identity: elected)
     sources = [
         ProvenanceRef(ref=elected, label="graph name"),
@@ -335,18 +341,19 @@ def _member_facet(facet_id: str, provenance: str, *, dataset_id: str | None = No
     ("pinned", "refused"),
     [
         pytest.param(_LEDGER, False, id="the-dataset"),
-        pytest.param(_NORTH, False, id="one-member"),
-        pytest.param(_SOUTH, False, id="the-other-member"),
+        pytest.param(_NORTH, True, id="one-member"),
+        pytest.param(_SOUTH, True, id="the-other-member"),
         pytest.param(_PLAIN, True, id="another-table"),
     ],
 )
 @pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "as-read"])
-def test_a_member_provenance_pin_reads_as_its_dataset(
+def test_a_provenance_pin_admits_the_dataset_alone(
     index: CodeIndex, pinned: str, refused: bool, stamped: bool
 ) -> None:
-    """Both members hold the StatVar, so a pin of the dataset or of either member is
-    available, whether or not an election stamped the facets; a pin of another table
-    refuses `facet_not_available`."""
+    """The provenance axis holds dataset ids, so a pin of the dataset is available whether
+    or not the facets were stamped, as for a StatVar read with no elected dataset, and a pin
+    of either member or another table refuses `facet_not_available`, offering the
+    dataset's id."""
     dataset_id = _LEDGER if stamped else None
     facets_by_sv = {
         _FLOW: [
@@ -362,4 +369,126 @@ def test_a_member_provenance_pin_reads_as_its_dataset(
         deadline=None,
     )
 
-    assert (refusal is not None and refusal.code == "facet_not_available") is refused
+    if not refused:
+        assert refusal is None
+        return
+    assert refusal is not None
+    assert refusal.code == "facet_not_available"
+    assert [alternative.ref for alternative in refusal.alternatives or ()] == [_LEDGER]
+
+
+# ---------------------------------------------------------------------------
+# No answer names a member provenance.
+# ---------------------------------------------------------------------------
+
+_SOLO = "dataset/Solo"
+_SOLO_MEMBER = "provenance/SoloMember"
+_MEMBER_DATASETS = {_LEDGER: (_NORTH, _SOUTH), _SOLO: (_SOLO_MEMBER,)}
+
+
+def _declaring_members(real: CodeIndex) -> CodeIndex:
+    """`real` also declaring the Ledger of North and South and the Solo dataset of one
+    member, as a release whose export read both Dataset nodes holds them."""
+    index = copy.copy(real)
+    index.datasets = {
+        **real.datasets,
+        **{
+            dataset: DatasetDeclaration(
+                id=dataset,
+                label=f"{dataset.rsplit('/', 1)[-1]} Register",
+                description="A test table.",
+                opt_in=False,
+                absent_observation="unknown",
+                account="provider",
+                rank=200 + rank,
+            )
+            for rank, dataset in enumerate(_MEMBER_DATASETS)
+        },
+    }
+    index._provenances_by_dataset = {**real._provenances_by_dataset, **_MEMBER_DATASETS}
+    index._dataset_by_provenance = {
+        **real._dataset_by_provenance,
+        **{member: dataset for dataset, members in _MEMBER_DATASETS.items() for member in members},
+    }
+    return index
+
+
+@pytest.fixture
+def member_world(monkeypatch, search_settings, bind_catalogue, request) -> Iterator[World]:
+    """The answer-invariants world on `request.param`'s route, Aland's series held by one
+    member and Bland's by another (`north-south`), or both by the one member of a dataset
+    (`solo`), under a release declaring both datasets. No family elects a dataset."""
+    route, holders = request.param
+    world_module.carry_logical_clock(monkeypatch)
+    search_settings(obs_preview_max_pairs=1 if route.endswith("bulk") else 120)
+    for facet_id, member in (("f-north", _NORTH), ("f-south", _SOUTH), ("f-solo", _SOLO_MEMBER)):
+        monkeypatch.setitem(world_module.FACETS, facet_id, (member, "CurrencyUSD"))
+    years = tuple(range(2010, 2021))
+    aland, bland = holders
+    monkeypatch.setitem(
+        world_module.ROW_SETS,
+        "members",
+        {ALAND: ((aland, years),), BLAND: ((bland, years),)},
+    )
+    ref = {
+        _NORTH: _LEDGER_REF,
+        _SOUTH: _LEDGER_REF,
+        _SOLO_MEMBER: DatasetRef(ref=_SOLO, label="Solo Register"),
+    }
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                **world_module.CATALOGUE.provenances,
+                **{
+                    member: provenance_row(
+                        member, BASE, source=_PUBLISHER, name=member, dataset=dataset
+                    )
+                    for member, dataset in ref.items()
+                },
+            }
+        )
+    )
+    release = current_release()
+    views = replace(release.views, code_index=_declaring_members(release.views.code_index))
+    with bound_release(replace(release, views=views)):
+        yield world_module.world(route, "members", "definite")
+
+
+_MEMBER_WORLDS = [
+    pytest.param((route, holders), id=f"{route}-{name}")
+    for route in world_module.ROUTES
+    for name, holders in (("north-south", ("f-north", "f-south")), ("solo", ("f-solo", "f-solo")))
+]
+
+
+@pytest.mark.parametrize("member_world", _MEMBER_WORLDS, indirect=True)
+def test_no_answer_names_a_member_provenance(member_world: World) -> None:
+    """The first answer and its resubmit cite and serve the dataset's id: neither the
+    serialised part nor its Spec names a member provenance anywhere, and every series states
+    the dataset under its declared label and the source its members share. The standard route's group serves both places, one from each member. A
+    role route with no index family serves one facet id, as the mint does, and so one place
+    when each place's series has its own facet."""
+    world = member_world
+    with world_module.door_loop():
+        first = world.first([ALAND, BLAND], None, preview=True, unit_text=None)
+        (spec,) = first.specs
+        again = world.resubmit(spec, preview=True)
+
+    dataset = _SOLO if world.rows[0].facet_id == "f-solo" else _LEDGER
+    for answer in (first, again):
+        assert answer.part is not None, answer.error or answer.refusal
+        (stated,) = answer.specs
+        observations = stated.resolved.observations
+        assert observations is not None
+        label = f"{dataset.rsplit('/', 1)[-1]} Register"
+        assert {
+            (ref.ref, ref.label, ref.source.ref if ref.source else None)
+            for ref in (s.facet["provenance"] for s in observations.series)
+        } == {(dataset, label, _PUBLISHER)}
+        if world.route == "standard":
+            assert len(observations.series) == 2
+        assert stated.resolved.facets["provenance"].ref == dataset
+        serialised = answer.part.model_dump_json() + stated.model_dump_json()
+        assert dataset in serialised
+        for member in (_NORTH, _SOUTH, _SOLO_MEMBER):
+            assert member not in serialised

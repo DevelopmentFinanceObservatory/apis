@@ -534,7 +534,7 @@ Gaps on a list:
 
 - `membership_incomplete`: the authority holds the projection only in part. The page is `complete: false`.
 - `projection_not_recorded`: the authority records no members for the projection (`institutions`). The page has no items.
-- `variables_not_indexed`: a Provenance of the Dataset has no entry in the code index.
+- `variables_not_indexed`: a Provenance of the Dataset belongs to no dataset with an entry in the code index.
 - `labels_not_read`: the label read failed, ran past the deadline or found every DCP-read worker busy, and the labels are `null`.
 - `facets_not_read`: the variable's facet profile could not be read. The page lists nothing.
 - `facets_not_served`: the surface reads no facet profiles, because it has no profile cache. The page lists nothing. The gap is permanent.
@@ -698,7 +698,7 @@ A stored document longer than six characters per byte of `dfo_provenance_docs.MA
 
 #### `usage`
 
-`usage.api_access` and `usage.python` are `null` for every `dcid` (`graph_api.usage.usage_document`). The document generates no code sample. `GET /api/graph/node/{dcid}/members?relation=variables` lists the variables DFO indexes under a Dataset or a Provenance.
+`usage.api_access` and `usage.python` are `null` for every `dcid` (`graph_api.usage.usage_document`). The document generates no code sample. `GET /api/graph/node/{dcid}/members?relation=variables` lists the variables DFO indexes under a Dataset or a Provenance. The code index keys variables by dataset, so each Provenance of a Dataset is read as the dataset it is a member of (`CodeIndex.dataset_of`), and a member provenance of a declared dataset answers `400 request_invalid` at `/relation`, its detail naming the dataset whose list holds its variables.
 
 #### Reads
 
@@ -1060,7 +1060,7 @@ A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENAB
 
 ### GET /api/graph/schema/usage
 
-How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each Provenance that at least one StatVar row of the index names. The route joins the code index with the served coverage index and one batched read of every Provenance node's `name` and `description`, each empty answer confirmed alone.
+How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each dataset that at least one StatVar row of the index names: a plain table's Provenance, or a declared dataset's id for the provenances that are part of its graph `Dataset`, whose member provenances appear in no entry. The route joins the code index with the served coverage index and one batched read of every Provenance node's `name` and `description`, each empty answer confirmed alone.
 
 An entry holds:
 
@@ -1068,7 +1068,7 @@ An entry holds:
 - `stat_var_count`: how many StatVars the Provenance publishes. A StatVar that two Provenances publish counts under both.
 - `patterns`: the distinct combinations of `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties` over its StatVars, each with its `stat_var_count` and the first three of its StatVars' dcids as `examples`. They are sorted by `stat_var_count` descending, then by the fields.
 - `constraint_values`: for each constraint property the StatVars set, sorted by `property`, the `values` it takes, each `{value, stat_var_count}`, sorted by value.
-- `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the Provenance's coverage series, each list sorted and distinct, and empty where coverage holds nothing.
+- `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the coverage series of the Provenance, or of every member provenance of a declared dataset, each list sorted and distinct, and empty where coverage holds nothing.
 
 The body is built once per code index and coverage build, by one build that concurrent first requests share, and kept until the generation changes or the generation stamp's maximum age passes. A request that finds another coverage build rebuilds it. A request whose wait passes 10 s while the build runs answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`. A build past its 60 s deadline answers `504 timeout`, and a failed node read answers as it does on `GET /api/graph/schema`. A failed build is not kept. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
 

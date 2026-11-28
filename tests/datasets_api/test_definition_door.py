@@ -219,11 +219,12 @@ def _client(
     operation_store=None,
     task_client=None,
     task_creates=None,
+    release=None,
 ):
     """Builds a composed client with separate spec and version stores. A version store wires
     live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads.
-    `recipe_store`, `version_lister`, `operation_store`, `task_client` and `task_creates` are
-    `make_client`'s."""
+    `recipe_store`, `version_lister`, `operation_store`, `task_client`, `task_creates` and
+    `release` are `make_client`'s."""
     store = store if store is not None else FakeDatasetStore()
     if version_store is not None:
         from artifact_store import LiveArtifactInventory
@@ -262,6 +263,7 @@ def _client(
         operation_store=operation_store,
         task_client=task_client,
         task_creates=task_creates,
+        release=release,
     )
 
 

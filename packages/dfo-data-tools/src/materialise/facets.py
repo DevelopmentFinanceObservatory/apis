@@ -245,12 +245,6 @@ class ElectedDataset:
             ),
         )
 
-    @property
-    def several_members(self) -> bool:
-        """Whether the dataset's id differs from its sole member provenance, so its facets
-        carry the id (`read_as_datasets`)."""
-        return self.provenances != (self.provenance,)
-
     def publishes(self, provenance_id: str | None) -> bool:
         """Whether a facet of `provenance_id` is the elected dataset's: its provenance is one
         of the dataset's members. The mint (`dataset_candidates`) and a Search read plan
@@ -291,15 +285,6 @@ class ElectedDataset:
                     stat_var=stat_var,
                 )
         return kept
-
-    def read_as_dataset(self, candidates: Iterable[Facet]) -> list[Facet]:
-        """`candidates` in order, each read as its dataset's (`read_as_datasets`)."""
-        return read_as_datasets(candidates)
-
-    def admitting(self, selections: dict[str, FacetSelection]) -> dict[str, FacetSelection]:
-        """`selections` as they are: a selection of the dataset's id admits every member's
-        facets and rows, which carry the id (`read_as_datasets`)."""
-        return selections
 
 
 def read_as_datasets(candidates: Iterable[Facet]) -> list[Facet]:

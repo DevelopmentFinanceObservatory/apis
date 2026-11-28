@@ -148,7 +148,9 @@ from materialise.facets import (
     continues_selection,
     continuing_candidates,
     dataset_candidates,
+    facet_axis_value,
     probe_collection_candidates,
+    read_as_datasets,
 )
 from materialise.finish import (
     COUNTRIES_FALLBACK_SENTENCE,
@@ -316,9 +318,9 @@ class _Member:
     """One member's probe, its candidates as the mint's election read them, and those its
     elected dataset publishes.
 
-    The candidates of a member of a dataset of several member provenances carry the
-    dataset's id (`facets.ElectedDataset.read_as_dataset`), so they match the trace's
-    provenance selection, whose ref is that id."""
+    Each candidate of a member provenance of a declared dataset carries the dataset's id
+    (`facets.read_as_datasets`), as at the mint, so it matches the trace's provenance
+    selection, whose ref is that id."""
 
     probe: MemberProbe
     candidates: tuple[Facet, ...]
@@ -935,7 +937,6 @@ def _split(
     selections = _selections(trace)
     probed = _probed(row, identity, resolved, window=window, selections=selections, readers=readers)
     members = probed.members
-    selections = _admitting_members(selections, readers=readers)
     _continuation_stated(selections, probed)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
@@ -986,21 +987,6 @@ def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
     return selections
 
 
-def _admitting_members(
-    selections: dict[str, FacetSelection], *, readers: Readers
-) -> dict[str, FacetSelection]:
-    """`selections` with a provenance selection of a dataset of several member provenances
-    admitting every member (`facets.ElectedDataset.admitting`), as the mint's selection did.
-    A stored trace entry records the dataset's id alone (`FacetSelection.of_trace_entry`)."""
-    provenance = selections.get("provenance")
-    if provenance is None or provenance.ref is None:
-        return selections
-    dataset = ElectedDataset.of(
-        provenance.ref, recorded=(), provenances_of=readers.code_index.provenances_of
-    )
-    return dataset.admitting(selections)
-
-
 def _continuation_stated(selections: Mapping[str, FacetSelection], probed: _Probed) -> None:
     """Raise `_Refused` when the mint continued the selection on `measurementMethod` with a
     method the trace does not name.
@@ -1047,13 +1033,18 @@ def _may_continue(
     longer holds with one of `candidates`: its method selection is continuable
     (`facets.continues_selection`), and a candidate continues a series of the selected method,
     source and unit (`facets.continuing_candidates`) whose end is unknown, so no year bounds
-    it. Where no source or unit is selected, each one the candidates carry is tried."""
+    it. Where no source or unit is selected, each one the candidates carry is tried, a source
+    as the provenance axis reads it (`facets.facet_axis_value`)."""
     method = selections.get(_METHOD_AXIS)
     if method is None or not continues_selection(method):
         return False
     facets = [facet for member in candidates for facet in member]
     provenance, unit = selections.get("provenance"), selections.get("unit")
-    sources = {provenance.ref} if provenance is not None else {f.provenance_id for f in facets}
+    sources = (
+        {provenance.ref}
+        if provenance is not None
+        else {facet_axis_value(f, "provenance") for f in facets}
+    )
     units = {unit.ref} if unit is not None else {f.unit for f in facets}
     return any(
         continuing_candidates(
@@ -1181,11 +1172,7 @@ def _probe(
         return {
             request.stat_var: _Member(
                 probe=probe,
-                candidates=(
-                    probe.candidates
-                    if request.dataset is None
-                    else tuple(request.dataset.read_as_dataset(probe.candidates))
-                ),
+                candidates=tuple(read_as_datasets(probe.candidates)),
                 electable=tuple(dataset_candidates(request, probe.candidates)),
             )
             for request, probe in zip(requests, probes, strict=True)

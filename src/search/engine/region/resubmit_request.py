@@ -221,9 +221,9 @@ def _facet_filter_from_bindings(
 ) -> Mapping[str, FacetAxisFilter] | None:
     """Build the request's facet filter from the posted source, method, and unit bindings.
 
-    Provenance uses `source_dcids`, each also naming its dataset (`CodeIndex.dataset_of`),
-    the value a facet of an elected dataset of several members carries
-    (`_facet_source_dcid`); a `provenance` key in `identity.facets` is ignored. The
+    Provenance admits a facet whose provenance axis value (`_facet_source_dcid`, the
+    declared dataset's id) is one of `source_dcids`; a `provenance` key in
+    `identity.facets` is ignored. The
     resubmit already reads under `pinned_provenance_scope`, so the provenance filter keeps
     what admission kept. Each
     other axis tests its value through `_facet_binding_admits`, the one matching rule every
@@ -234,8 +234,7 @@ def _facet_filter_from_bindings(
     """
     result: dict[str, FacetAxisFilter] = {}
     if source_dcids:
-        index = get_index()
-        allowed_sources = frozenset(source_dcids) | frozenset(map(index.dataset_of, source_dcids))
+        allowed_sources = frozenset(source_dcids)
         result["provenance"] = FacetAxisFilter(
             predicate=lambda f: _facet_source_dcid(f) in allowed_sources,
         )

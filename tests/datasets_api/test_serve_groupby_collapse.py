@@ -7,29 +7,40 @@ members differ on the synthetic summable `testAxis`.
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import cast
 
 import httpx
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame
 
 import datasets_api.serve as serve_module
 import materialise.generation as generation_module
+from artifact_store import LiveArtifactInventory
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
-from origin_catalogue import Catalogue
+from origin_catalogue import DFO, Catalogue
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
-from tests.origin_catalogue.fake_catalogue import dev_provenance_nodes, documenting
+from tests.origin_catalogue.fake_catalogue import (
+    FakeCatalogue,
+    dev_provenance_nodes,
+    documenting,
+    provenance_row,
+)
 
 from ._frame_doubles import _canonical_frame_row, _version_artifact_rows
 from ._graph_doubles import FakeMintGraphReader
+from ._release_doubles import IndexServingRelease
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 _MEMBER_A = "FamilyMemberA"
 _MEMBER_B = "FamilyMemberB"
@@ -644,24 +655,50 @@ def test_a_summed_version_stores_the_raw_judgement_of_its_rows(
 
 # A dataset of several member provenances: `dataset/Ledger` files member A's series under one
 # provenance and member B's under another, as a register filed by publisher does.
+# `dataset/Solo` is a declared Dataset whose one member provenance files both.
 _LEDGER = "dataset/Ledger"
 _NORTH = "provenance/LedgerNorth"
 _SOUTH = "provenance/LedgerSouth"
-_LEDGER_FACETS = {_NORTH: "facetNorth", _SOUTH: "facetSouth"}
-_LEDGER_ROWS = ((_MEMBER_A, _NORTH, 1000), (_MEMBER_B, _SOUTH, 500))
+_SOLO = "dataset/Solo"
+_SOLO_MEMBER = "provenance/SoloMember"
+_MEMBERS = (_NORTH, _SOUTH, _SOLO_MEMBER)
+_FACETS_BY_MEMBER = {_NORTH: "facetNorth", _SOUTH: "facetSouth", _SOLO_MEMBER: "facetSolo"}
+_LEDGER_PUBLISHER = "dc/s/LedgerPublisher"
 
 
-def _ledger_code_index() -> CodeIndex:
+@dataclass(frozen=True)
+class _Declared:
+    """A declared dataset and the member provenance filing each of `_MEMBER_A` (1000) and
+    `_MEMBER_B` (500)."""
+
+    dataset: str
+    filed_a: str
+    filed_b: str
+
+    @property
+    def rows(self) -> tuple[tuple[str, str, int], ...]:
+        return ((_MEMBER_A, self.filed_a, 1000), (_MEMBER_B, self.filed_b, 500))
+
+    @property
+    def members(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((self.filed_a, self.filed_b)))
+
+
+_TWO_MEMBERS = _Declared(_LEDGER, _NORTH, _SOUTH)
+_ONE_MEMBER = _Declared(_SOLO, _SOLO_MEMBER, _SOLO_MEMBER)
+
+
+def _ledger_code_index(declared: _Declared = _TWO_MEMBERS) -> CodeIndex:
     base = _code_index()
     return CodeIndex(
         stamp=base.stamp,
         declarations=tuple(base.declarations.values()),
         codes=base.codes,
-        statvars=tuple(replace(row, datasets=(_LEDGER,)) for row in base.statvars),
+        statvars=tuple(replace(row, datasets=(declared.dataset,)) for row in base.statvars),
         datasets=(
             DatasetDeclaration(
-                id=_LEDGER,
-                label="Ledger",
+                id=declared.dataset,
+                label=declared.dataset.removeprefix("dataset/"),
                 description="A test register filed by publisher.",
                 opt_in=False,
                 absent_observation="unknown",
@@ -669,34 +706,45 @@ def _ledger_code_index() -> CodeIndex:
                 rank=0,
             ),
         ),
-        dataset_members={_LEDGER: (_NORTH, _SOUTH)},
+        dataset_members={declared.dataset: declared.members},
     )
 
 
-def _ledger_graph(*, dataset_refreshed: str | None = None) -> FakeMintGraphReader:
-    """The members' arcs, and each member provenance's refresh date, the South one newer. The
-    Dataset node states `dataset_refreshed` as its own when given."""
+def _ledger_graph(
+    *, dataset_refreshed: str | None = None, declared: _Declared = _TWO_MEMBERS
+) -> FakeMintGraphReader:
+    """The members' arcs, and each member provenance's refresh date, the later member newer.
+    The Dataset node states `dataset_refreshed` as its own when given."""
     graph = _graph()
+    label = declared.dataset.removeprefix("dataset/")
     return FakeMintGraphReader(
         arcs={
             **{member: graph._arcs[member] for member in (_MEMBER_A, _MEMBER_B)},
-            _LEDGER: {
+            declared.dataset: {
                 "typeOf": ("Dataset",),
-                "name": ("Ledger",),
+                "name": (label,),
                 **({"lastDataRefreshDate": (dataset_refreshed,)} if dataset_refreshed else {}),
             },
-            _NORTH: {"typeOf": ("Provenance",), "lastDataRefreshDate": ("2026-03-01",)},
-            _SOUTH: {"typeOf": ("Provenance",), "lastDataRefreshDate": ("2026-05-01",)},
+            **{
+                member: {
+                    "typeOf": ("Provenance",),
+                    "isPartOf": (declared.dataset,),
+                    "lastDataRefreshDate": (refreshed,),
+                }
+                for member, refreshed in zip(
+                    declared.members, ("2026-03-01", "2026-05-01"), strict=False
+                )
+            },
         },
-        labels={_LEDGER: "Ledger", _RECIPIENT: "Kenya"},
+        labels={declared.dataset: label, _RECIPIENT: "Kenya"},
     )
 
 
-def _ledger_sdmx_transport() -> httpx.MockTransport:
+def _ledger_sdmx_transport(declared: _Declared = _TWO_MEMBERS) -> httpx.MockTransport:
     body = _CSV_HEADER + "".join(
         f"dataflow,DC:DF_OBS(1.0.0),I,{member},{_RECIPIENT},USD,GrantEquivalent,"
-        f"NotApplicable,{provenance},2020,{value},,{_LEDGER_FACETS[provenance]}\r\n"
-        for member, provenance, value in _LEDGER_ROWS
+        f"NotApplicable,{provenance},2020,{value},,{_FACETS_BY_MEMBER[provenance]}\r\n"
+        for member, provenance, value in declared.rows
     )
     return httpx.MockTransport(
         lambda request: httpx.Response(
@@ -705,36 +753,47 @@ def _ledger_sdmx_transport() -> httpx.MockTransport:
     )
 
 
-def _ledger_coverage_service() -> FakeCoverageService:
+def _ledger_coverage_service(declared: _Declared = _TWO_MEMBERS) -> FakeCoverageService:
     index = build_coverage_index(
         [
-            (member, _LEDGER_FACETS[provenance], ABSENT_ENTITY, _RECIPIENT, [2020])
-            for member, provenance, _value in _LEDGER_ROWS
+            (member, _FACETS_BY_MEMBER[provenance], ABSENT_ENTITY, _RECIPIENT, [2020])
+            for member, provenance, _value in declared.rows
         ],
         role_names={
             member: RoleNames(donor=None, recipient="recipient")
             for member in (_MEMBER_A, _MEMBER_B)
         },
         facet_metadata={
-            facet_id: FacetMetadata(
+            _FACETS_BY_MEMBER[provenance]: FacetMetadata(
                 provenance_id=provenance,
                 measurement_method=_MEASUREMENT_METHOD,
                 unit=_UNIT,
                 observation_period="P1Y",
             )
-            for provenance, facet_id in _LEDGER_FACETS.items()
+            for provenance in declared.members
         },
     )
     return FakeCoverageService(index)
 
 
-def _ledger_client(*, dataset_refreshed: str | None = None):
+def _ledger_client(
+    *,
+    dataset_refreshed: str | None = None,
+    declared: _Declared = _TWO_MEMBERS,
+    version_store: FakeVersionRecordDatasetStore | None = None,
+    artifact_store=None,
+):
+    """A client serving a release whose code index declares `declared`, as a production
+    request reads its release's index."""
     return _client(
-        graph=_ledger_graph(dataset_refreshed=dataset_refreshed),
-        sdmx_transport=_ledger_sdmx_transport(),
-        version_store=FakeVersionRecordDatasetStore(),
-        code_index=_ledger_code_index(),
-        coverage=_ledger_coverage_service(),
+        graph=_ledger_graph(dataset_refreshed=dataset_refreshed, declared=declared),
+        sdmx_transport=_ledger_sdmx_transport(declared),
+        version_store=version_store
+        if version_store is not None
+        else FakeVersionRecordDatasetStore(),
+        artifact_store=artifact_store,
+        release=IndexServingRelease(_ledger_code_index(declared)),
+        coverage=_ledger_coverage_service(declared),
     )
 
 
@@ -810,3 +869,89 @@ def test_a_sum_over_two_member_provenances_of_one_dataset_folds_to_one_total(
     )
 
     assert collapsed["coverage"]["rows"] == 1
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [{"state": "value", "ref": _NORTH}, {"state": "set", "refs": [_NORTH]}],
+    ids=["value", "set"],
+)
+def test_a_pin_on_a_member_provenance_refuses_naming_the_dataset(pin):
+    """The provenance axis holds the dataset's id, so a member provenance is no value on it:
+    the mint refuses `facet_not_available` and offers the dataset."""
+    spec_id, sidecar = _ledger_spec(pin)
+
+    resp = _ledger_client().post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {"kind": "spec_id", "spec_id": spec_id, "definition": sidecar},
+            "options": {"bundle": False},
+        },
+    )
+
+    assert resp.status_code == 422, resp.text
+    problem = resp.json()
+    assert problem["code"] == "facet_not_available"
+    assert problem["issues"]
+    for issue in problem["issues"]:
+        assert issue["axis"] == "provenance"
+        assert [alternative["ref"] for alternative in issue["alternatives"]] == [_LEDGER]
+
+
+def _served_texts(data: bytes) -> list[str]:
+    """`data` as text: each file of a zip, the rows of a Parquet file, else the bytes."""
+    if data.startswith(b"PK"):
+        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
+            return [text for name in bundle.namelist() for text in _served_texts(bundle.read(name))]
+    if data.startswith(b"PAR1"):
+        return [json.dumps(pq.read_table(io.BytesIO(data)).to_pylist(), default=str)]
+    return [data.decode("utf-8", errors="replace")]
+
+
+@pytest.mark.parametrize("declared", [_TWO_MEMBERS, _ONE_MEMBER], ids=["two-members", "one-member"])
+def test_a_mint_of_a_declared_dataset_names_no_member_provenance(
+    declared: _Declared, serve_catalogue: Callable[[Catalogue], None]
+):
+    """Every row, ref and citation a mint serves or stores names the dataset: its manifests,
+    traces and citations, and every file it writes (frame, CSV, bundle, summed version). The
+    dataset's citation takes the source and Data Commons its members' catalogue rows share,
+    as Search cites it."""
+    serve_catalogue(
+        FakeCatalogue(
+            provenances={
+                member: provenance_row(member, DFO, source=_LEDGER_PUBLISHER)
+                for member in declared.members
+            }
+        )
+    )
+    version_store = FakeVersionRecordDatasetStore()
+    artifacts = _InventoryRecordingArtifactStore(
+        inventory=LiveArtifactInventory(store=version_store)
+    )
+    client = _ledger_client(
+        declared=declared, version_store=version_store, artifact_store=artifacts
+    )
+    spec_id, sidecar = _ledger_spec()
+
+    manifests = [
+        _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
+        for options in (
+            {"bundle": False},
+            {"bundle": True},
+            {"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}},
+        )
+    ]
+
+    assert [manifest["coverage"]["rows"] for manifest in manifests] == [2, 2, 1]
+    (cited,) = manifests[0]["citation"]["sources"]
+    assert (cited["ref"], cited["source"]["ref"], cited["data_commons"]["id"]) == (
+        declared.dataset,
+        _LEDGER_PUBLISHER,
+        "dfo",
+    )
+    texts = [json.dumps(manifest) for manifest in manifests]
+    texts += [text for data in artifacts._objects.values() for text in _served_texts(data)]
+    assert len(texts) > len(manifests)
+    assert any(declared.dataset in text for text in texts[len(manifests) :])
+    assert not [member for member in _MEMBERS if any(member in text for text in texts)]

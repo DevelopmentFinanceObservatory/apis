@@ -29,8 +29,9 @@ from materialise.provenance_doc import (
     SourceDocumentNotFound,
     TooManyChildProvenances,
 )
-from origin_catalogue import BASE, UN_SYSTEM
+from origin_catalogue import BASE, DFO, UN_SYSTEM, DatasetRef
 from series_coverage.index import ProvenanceShape
+from tests.materialise._ledger import LEDGER, NORTH, SOUTH
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from .conftest import FakeGraphNodeReader, make_client, send_past_a_full_pool, wait_until
@@ -879,6 +880,39 @@ class TestOrigin:
         assert details["source"] == {"ref": "dc/s/WorldBank", "label": "dc/s/WorldBank"}
         assert details["data_commons"] == {"id": "base", "label": "Data Commons by Google"}
         assert "details.source" not in resp.json()["gaps"]
+
+    def test_a_declared_dataset_is_documented_with_its_members_source(self, serve_catalogue):
+        """`dataset/Ledger`, the id the mint and Search cite, documents its member
+        provenances, whose catalogue rows give its source and Data Commons."""
+        dataset = DatasetRef(ref=LEDGER, label="Ledger")
+        serve_catalogue(
+            restrictive_catalogue(
+                provenances=[
+                    provenance_row(member, DFO, source="dc/s/LedgerPublisher", dataset=dataset)
+                    for member in (NORTH, SOUTH)
+                ]
+            )
+        )
+        graph = FakeGraphNodeReader(
+            nodes={
+                LEDGER: {"typeOf": ("Dataset",), "name": ("Ledger",)},
+                **{member: {"typeOf": ("Provenance",)} for member in (NORTH, SOUTH)},
+            },
+            subjects={(LEDGER, "isPartOf"): SubjectPage(dcids=(NORTH, SOUTH), truncated=False)},
+        )
+        client = make_client(graph=graph)
+
+        with client:
+            resp = client.get(f"/api/graph/documentation/{LEDGER}")
+
+        assert resp.status_code == 200, resp.text
+        details = resp.json()["details"]
+        assert details["name_of_source"] == "Ledger"
+        assert details["source"] == {
+            "ref": "dc/s/LedgerPublisher",
+            "label": "dc/s/LedgerPublisher",
+        }
+        assert details["data_commons"]["id"] == "dfo"
 
     def test_a_un_agency_provenance_is_documented_as_its_own_source(self, serve_catalogue):
         dcid = "undata/p/SDG"

@@ -35,7 +35,7 @@ from code_index.types import CompositeDeclaration
 from description.blocks import documentation_link
 from materialise.bundle_sources import composite_bundle_label
 from materialise.enrichment import read_party_kinds
-from materialise.provenance_doc import ProvenanceNameReader, provenance_names
+from materialise.provenance_doc import ProvenanceNameReader, dataset_origin, provenance_names
 from materialise.roles import axis_for_role
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from origin_catalogue import ProvenanceRow, current_catalogue
@@ -137,30 +137,46 @@ def _source_and_origin(row: ProvenanceRow) -> tuple[SourceRef, DataCommonsRef]:
     )
 
 
+def _dataset_citation(
+    dcid: str, labels: Mapping[str, str]
+) -> tuple[str | None, SourceRef | None, DataCommonsRef | None] | None:
+    """The name, source and Data Commons of `dcid` when it is a declared dataset with member
+    provenances (`CodeIndex.provenances_of` differs from `(dcid,)`), else None. The name is
+    `labels`', else the declared label. The source and Data Commons are those every member's
+    catalogue row shares (`materialise.provenance_doc.dataset_origin`, which the mint's
+    citation reads too), and None where the members name different ones or none has a row."""
+    index = get_index()
+    members = index.provenances_of(dcid)
+    if members == (dcid,):
+        return None
+    declared = index.datasets.get(dcid)
+    label = labels.get(dcid) or (declared.label if declared is not None else None)
+    shared = dataset_origin(dcid, catalogue=current_catalogue())
+    if shared is None:
+        return label, None, None
+    source, origin = shared
+    return (
+        label,
+        SourceRef(ref=source.ref, label=source.label),
+        DataCommonsRef(id=origin.id, label=origin.label),
+    )
+
+
 def provenance_ref(dcid: str, labels: Mapping[str, str]) -> ProvenanceRef | None:
     """The provenance ref for `dcid`, with the catalogue row's name, source and Data Commons.
-    A dataset of several member provenances (`CodeIndex.provenances_of`), which an answer
-    cites by its id, takes its name from `labels`, else its declared label, and the source
-    and Data Commons its members' catalogue rows share. Any other provenance the catalogue
-    does not list takes its name from `labels`, which holds what
-    `materialise.provenance_doc.provenance_names` gives it, and has no source or Data Commons.
-    `None` when neither names it."""
-    catalogue = current_catalogue()
-    row = catalogue.provenance(dcid)
+    A declared dataset with member provenances, which an answer cites by its id, takes the
+    name, source and Data Commons `_dataset_citation` gives it, whatever its member count. Any
+    other provenance the catalogue does not list takes its name from `labels`, which holds
+    what `materialise.provenance_doc.provenance_names` gives it, and has no source or Data
+    Commons. `None` when neither names it."""
+    row = current_catalogue().provenance(dcid)
     if row is not None:
         source, origin = _source_and_origin(row)
         return ProvenanceRef(ref=dcid, label=row.name, source=source, data_commons=origin)
-    index = get_index()
-    members = index.provenances_of(dcid)
-    if len(members) > 1:
-        declared = index.datasets.get(dcid)
-        label = labels.get(dcid) or (declared.label if declared is not None else None)
-        rows = [member for member in map(catalogue.provenance, members) if member is not None]
+    if (dataset := _dataset_citation(dcid, labels)) is not None:
+        label, source, origin = dataset
         if label is None:
             return None
-        if not rows or len({(r.source.ref, r.data_commons.id) for r in rows}) != 1:
-            return ProvenanceRef(ref=dcid, label=label)
-        source, origin = _source_and_origin(rows[0])
         return ProvenanceRef(ref=dcid, label=label, source=source, data_commons=origin)
     label = labels.get(dcid)
     return None if label is None else ProvenanceRef(ref=dcid, label=label)
@@ -175,20 +191,31 @@ def provenance_refs(dcids: Sequence[str], labels: Mapping[str, str]) -> list[Pro
 
 def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef:
     """A series' provenance-axis facet ref for `dcid`, with the catalogue row's members and the
-    route of its document. A provenance the catalogue does not list takes its name from
-    `labels`, if any. A declared composite (`code_index.composites`), which neither the graph
-    nor the catalogue holds, takes its bundle name (`composite_facet_ref`) and no document route."""
+    route of its document. A declared dataset with member provenances takes the name, source
+    and Data Commons `_dataset_citation` gives it, as its `provenance_ref` does. A provenance
+    the catalogue does not list takes its name from `labels`, if any. A declared composite
+    (`code_index.composites`), which neither the graph nor the catalogue holds, takes its
+    bundle name (`composite_facet_ref`) and no document route."""
     composite = DECLARED_COMPOSITES.get(dcid)
     if composite is not None:
         return composite_facet_ref(composite, index=get_index())
     row = current_catalogue().provenance(dcid)
     documentation = documentation_link(dcid)
-    if row is None:
-        return SeriesFacetRef(ref=dcid, label=labels.get(dcid), documentation=documentation)
-    source, origin = _source_and_origin(row)
-    return SeriesFacetRef(
-        ref=dcid, label=row.name, source=source, data_commons=origin, documentation=documentation
-    )
+    if row is not None:
+        source, origin = _source_and_origin(row)
+        return SeriesFacetRef(
+            ref=dcid,
+            label=row.name,
+            source=source,
+            data_commons=origin,
+            documentation=documentation,
+        )
+    if (dataset := _dataset_citation(dcid, labels)) is not None:
+        label, source, origin = dataset
+        return SeriesFacetRef(
+            ref=dcid, label=label, source=source, data_commons=origin, documentation=documentation
+        )
+    return SeriesFacetRef(ref=dcid, label=labels.get(dcid), documentation=documentation)
 
 
 def composite_facet_ref(composite: CompositeDeclaration, *, index: CodeIndex) -> SeriesFacetRef:

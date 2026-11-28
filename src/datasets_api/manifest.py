@@ -1212,10 +1212,11 @@ def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
 def source_refs_of(trace: ManifestTrace | Mapping[str, object]) -> list[str]:
     """The provenance refs a version's figures come from, in first-seen order: for a composite
     each component's (`trace.components`), whose tables its citation names, and otherwise the
-    one its rows carry (`provenance_refs_of`). A live `ManifestTrace` or a stored or wire
-    trace mapping. The citation cites these, and the parties of their datasets decide which
-    rows are totals; `provenance_refs_of` gives what the rows carry, which the render's source
-    guards read."""
+    dataset its rows carry (`provenance_refs_of`), a plain table's provenance or a declared
+    dataset's id, which every row of its member provenances carries. A live `ManifestTrace` or
+    a stored or wire trace mapping. The citation cites these, and the parties of their datasets
+    decide which rows are totals; `provenance_refs_of` gives what the rows carry, which the
+    render's source guards read."""
     if isinstance(trace, ManifestTrace):
         components: Sequence[Mapping[str, object]] = trace.components
         facets: Iterable[Mapping[str, object]] = trace.facets

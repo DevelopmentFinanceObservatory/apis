@@ -660,8 +660,8 @@ def refuse_provenance_disagreement(*, provenance_refs: Sequence[str]) -> None:
     """Raise `RollupNotSummableError` (`rollup_not_summable`,
     `provenance_disagreement`) when the frame spans multiple datasets.
 
-    `provenance_refs` are dataset ids: the render reads each provenance ref as the dataset it
-    is a member of (`code_index.query.CodeIndex.dataset_of`), so the member provenances of one
+    `provenance_refs` are dataset ids: the rows of a declared dataset's member provenances
+    carry the dataset's id (`materialise.columnar.dataset_cells`), so the members of one
     dataset agree. Each dataset declares whether absent observations count as zero or stay
     unknown. Mixed datasets can disagree, so refuse before selecting a rule. A materialised
     group carries one dataset, so this guards other callers.

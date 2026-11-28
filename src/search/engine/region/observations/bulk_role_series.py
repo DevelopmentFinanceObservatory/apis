@@ -81,6 +81,7 @@ from search.engine.region.observations.bulk_conversion import (
 )
 from search.engine.region.observations.served_years import no_points_in_served_years
 from search.engine.region.result import FacetAxisFilter
+from search.engine.retrieval.elected_dataset import provenance_axis
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
 )
@@ -431,8 +432,9 @@ def _collapse_cell(
     sv: str, role_tuple: RoleTuple, point: _Point, candidates: Mapping[str, RoleBulkCandidate]
 ) -> CollapseCell:
     """`point` of `sv` at `role_tuple` as the mint's collapse keys and ranks a row
-    (`materialise.facet_collapse.CollapseCell`), its facet's unit, method, provenance and
-    period read off its candidate. The pair's dcids are the row's role values, so its grain
+    (`materialise.facet_collapse.CollapseCell`), its facet's unit, method, provenance axis
+    value (`elected_dataset.provenance_axis`, the cell a mint's row carries) and period read
+    off its candidate. The pair's dcids are the row's role values, so its grain
     key keeps places apart."""
     date, _value, facet_id = point
     candidate = candidates[facet_id]
@@ -442,7 +444,7 @@ def _collapse_cell(
         time_period=date,
         unit=candidate.unit,
         measurement_method=candidate.measurement_method,
-        provenance=candidate.provenance_id,
+        provenance=provenance_axis(candidate),
         observation_period=candidate.observation_period,
         facet_id=facet_id,
     )

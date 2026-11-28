@@ -526,8 +526,7 @@ type UnitCoverageRefusal = RateCoverageGapError | RecipeNotDeclaredError | NonCu
 
 type _FacetKey = tuple[str | None, str | None]
 """A served facet's unit and provenance axis value (`elected_dataset.provenance_axis`, the
-dataset's id for a facet of an elected dataset of several members), the two axes a
-conversion decision reads."""
+declared dataset's id), the two axes a conversion decision reads."""
 
 type _ServedRows = set[ServedBlock]
 """The rows a plan serves under one facet key, as conversion sees them
