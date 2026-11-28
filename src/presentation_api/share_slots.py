@@ -40,8 +40,7 @@ of the card revision, drawn on the served frame (`assembler.pipeline.render_comp
 is not the frame the revision is stored on, with that frame's retention and the freshness
 beside it, and the frame it is drawn on as `frame`. A note draws no frame, so its card is its
 stored read, `current`, with `frame` null. Every read of a slot's own frame records the frame it
-served in `served_frame` with the card revision's recorded
-rendering.
+served in `served_frame` with the card revision's recorded rendering.
 
 The history lists those records newest first, a page at a time, each with the retention of its
 frame counted from when DFO stored it (`presentation_api.retention.stated_retention`, read once per distinct
@@ -365,8 +364,8 @@ def serve_on_slot_frame[T](
 def named_frame(
     *, share: ShareRecord, slot: int, card: ShareCard, frame: FrameRef, deps: SharesDeps
 ) -> NamedFrame:
-    """`frame`, which a read of slot `slot` of `share`, showing `card`, names, with its
-    freshness from the slot's history and its retention, read once.
+    """The frame a read of slot `slot` of `share` names, where `card` is the card the slot shows.
+    Returns it with its freshness from the slot's history and its retention, read once.
 
     Raises:
         FrameNotServed: The slot's history holds no entry of `card` on `frame`, which includes

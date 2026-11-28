@@ -37,9 +37,9 @@ shows something else, locks the share row, checks that the revision the read ser
 latest, and checks the newest entry again under the lock, so concurrent reads of one slot record
 one entry, a read of an unchanged slot takes no lock, and a read that served a revision a replace
 or snapshot conversion has since moved past records nothing. `slot_served` answers whether a
-slot's timeline holds a card on a frame and whether that entry is the slot's newest, in one
-statement over one slot's entries through migration 0017's `served_frame_slot_newest_idx`, a
-few rows since a slot records an entry only when what it shows changes.
+slot's timeline holds a card on a frame and whether that entry is the slot's newest. It runs one
+statement over one slot's entries through migration 0017's `served_frame_slot_newest_idx`. A slot
+records an entry only when what it shows changes, so that is a few rows.
 `sample_shares` draws shares that are not taken down at random, optionally within a
 `created_at` window, each with its kind, mode, `created_at` and the number of slots its latest
 revision shows a card in, and nothing about its owner, title, token or payload. It orders the

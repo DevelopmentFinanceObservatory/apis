@@ -106,19 +106,19 @@ when the history holds an entry of that card on that frame and the frame's reten
 (`share_slots.named_frame`). It states `current` while that entry is the slot's newest and
 `stale` once the slot has shown something since, runs no newer-data check and records no
 history entry. A frame the history lists for no entry of the slot's card refuses 404
-`frame_not_served`, and so does a note's card on the card route; a note's data route answers
+`frame_not_served`, and so does a note's card on the card route. A note's data route answers
 404 `not_found`, as it does without a frame. A frame whose version record is gone or revoked,
 that links no stored frame, or whose `held_until` has passed refuses 410 `frame_expired`. A
 door with no snapshot reader cannot read retention and refuses retryable 503
-`service_unavailable`, and a retention read that fails answers its own refusal, a store that
-cannot answer 503 `service_unavailable`. Each is checked before a 304, and the read takes the
-retention once for its checks, its body and its `ETag`. The reply is `public, max-age=300`, a
-snapshot's, under a strong `ETag` hashed as a default read's is. Its rows are always the named
-frame's. The share's mode, the frame's retention, the freshness and, on a frame other than the
-card's own, the catalogue release and vocabulary it is drawn under state the share as it is
-now, and each moves the `ETag`, so a cache revalidating after five minutes learns of a
-takedown, an expiry, a pin or a newer frame. A replace that moves the slot to another card
-makes the read refuse `frame_not_served`.
+`service_unavailable`. A retention read that fails answers its own refusal, so a Datasets store
+that cannot answer gives 503 `service_unavailable`. Each is checked before a 304, and the read
+takes the retention once for its checks, its body and its `ETag`. The reply is
+`public, max-age=300`, a snapshot's, under a strong `ETag` hashed as a default read's is. Its
+rows are always the named frame's. The share's mode, the frame's retention, the freshness and,
+on a frame other than the card's own, the catalogue release and vocabulary it is drawn under
+follow the share's current state and each moves the `ETag`, so a cache revalidating after five
+minutes learns of a takedown, an expiry, a pin or a newer frame. A replace that moves the slot
+to another card makes the read refuse `frame_not_served`.
 
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin. It returns a
 timeline of what each slot showed, newest first, each frame with its retention counted from when
