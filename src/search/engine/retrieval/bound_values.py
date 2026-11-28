@@ -2204,10 +2204,11 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
 def pair_datasets(
     first: ShapeDraft, second: ShapeDraft, index: CodeIndex | None = None
 ) -> tuple[str, ...]:
-    """The datasets a comparison of `first` and `second` reads both shapes' codes within
-    (`bind.covered_leaves`): those publishing either shape's family (`shape_datasets`), in
-    first-seen order, or none, every row, when either shape has none, so a shape the index
-    does not carry never scopes the other to the other's own datasets."""
+    """The datasets within which a comparison of `first` and `second` reads both shapes'
+    codes (`bind.covered_leaves`). They are those publishing either shape's family
+    (`shape_datasets`), in first-seen order, or none (every row) when either shape has
+    none, so a shape the index does not carry never scopes the other to the other's own
+    datasets."""
     index = index or get_index()
     ours, theirs = shape_datasets(first, index), shape_datasets(second, index)
     if not ours or not theirs:
@@ -2218,7 +2219,7 @@ def pair_datasets(
 def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
     are also the code systems it reads qualifier text in. A slot a breakdown decision left out
-    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
+    (`ShapeDraft.omitted_slots`) stays in it. The query was read in the family's vocabulary,
     and a term on that slot is one the answer leaves unapplied."""
     return (
         frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
@@ -2230,9 +2231,9 @@ def vocabulary_datasets(
     shapes: Iterable[ShapeDraft], index: CodeIndex | None = None
 ) -> dict[frozenset[str], tuple[str, ...]]:
     """Each vocabulary of `shapes` (`shape_vocabulary`) and the datasets whose rows its
-    reading binds codes in (`qualifier_match.bindable_codes`): those publishing the family of
-    each of its shapes (`shape_datasets`), in first-seen order, or none, every row, when one
-    of its shapes has none.
+    reading binds codes in (`qualifier_match.bindable_codes`). They are those publishing the
+    family of each of its shapes (`shape_datasets`), in first-seen order, or none (every
+    row) when one of its shapes has none.
 
     A reading is keyed by its vocabulary alone, so the shapes sharing one read a text alike,
     and a code binds in it when one of them can bind it. Each shape then judges its own

@@ -638,10 +638,10 @@ def covered_leaves(codes: Iterable[str], *, datasets: Collection[str]) -> frozen
 
     A parent covers only the leaves the rows of `datasets` can bind
     (`qualifier_match.bindable_codes`), every row when `datasets` is empty. A reader with
-    one shape passes that shape's datasets (`shape_datasets`); a reader comparing two
+    one shape passes that shape's datasets (`shape_datasets`). A reader comparing two
     shapes passes one universe for both sides, the union of their datasets
     (`pair_datasets`), so a parent both shapes list covers the same leaves on each. A
-    listed code always covers itself, and so does a parent none of whose leaves count: no
+    listed code always covers itself, and so does a parent none of whose leaves count. No
     IATI row holds a code under reimbursable grants (`CRSTypeOfFinance422`), so within the
     IATI dataset it covers itself and reads apart from a shape binding nothing.
 

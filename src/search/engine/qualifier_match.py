@@ -1083,9 +1083,9 @@ def bindable_codes(index: CodeIndex, *, datasets: Collection[str] = ()) -> froze
     row of `index` carries, whose StatVars the index does not list and so cannot rule out.
     No datasets, a shape the index does not carry (`shape_datasets`), reads every row.
 
-    A reader with one shape scopes by that shape's datasets; a reader comparing two shapes
+    A reader with one shape scopes by that shape's datasets. A reader comparing two shapes
     scopes both sides by the union of the two shapes' datasets
-    (`bound_values.pair_datasets`); the reading in every code system stays unscoped.
+    (`bound_values.pair_datasets`). The reading in every code system stays unscoped.
 
     A code of a system the rows carry that no row holds binds on no shape. "population"
     (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. "police",
@@ -1095,7 +1095,7 @@ def bindable_codes(index: CodeIndex, *, datasets: Collection[str] = ()) -> froze
     The rows of `datasets` are the rows of every family one of them publishes
     (`IndexFamily.rows`) and each listed row (`CodeIndex.listed_statvars`) one of them
     holds. A family's rows include those no dataset publishes, `StatVarRow.datasets` empty,
-    which the index files with the family whose properties hold theirs: a shape of the
+    which the index files with the family whose properties hold theirs. A shape of the
     family reads them as its members, so it binds their codes. Built once per index and
     datasets.
     """
@@ -1381,8 +1381,8 @@ def read_by_vocabulary(
     shape reads a text in its own systems' labels and never receives two readings of one
     token from two parses. It reads only the codes a shape built from the rows of its
     `datasets` entry can bind (`bindable_codes`), every row for a vocabulary `datasets`
-    does not map (`retrieval.bound_values.vocabulary_datasets`). Measure values take the reading in every code system, shared by
-    every vocabulary. Each match and tie row carries its offsets in its own text. The scan
+    does not map (`retrieval.bound_values.vocabulary_datasets`). Measure values take the
+    reading in every code system, shared by every vocabulary. Each match and tie row carries its offsets in its own text. The scan
     in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
     variable (`interpret._detect`) and the bind phase's share one scan.
     """
