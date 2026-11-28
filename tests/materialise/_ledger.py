@@ -1,5 +1,7 @@
 """The synthetic `dataset/Ledger`, whose series two member provenances hold, as a register
 filed by publisher does, and `dataset/Solo`, a declared Dataset with one member provenance.
+Both declare their members reporting organisations whose accounts can overlap
+(`DatasetDeclaration.members_report_overlapping_accounts`).
 
 `bound_ledger_index` binds a release whose code index declares both, so every reader of a
 provenance's dataset (`code_index.shared.dataset_of`) reads them. `provenance/Plain` is a
@@ -13,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 
 from code_index.query import CodeIndex
-from code_index.types import DatasetDeclaration, IndexStamp
+from code_index.types import AbsentObservation, DatasetDeclaration, IndexStamp
 from graph_release.context import bound_release, current_release
 
 LEDGER = "dataset/Ledger"
@@ -25,21 +27,35 @@ PLAIN = "provenance/Plain"
 MEMBERS = (NORTH, SOUTH, SOLO_MEMBER)
 
 
-def _declaration(dataset: str, *, rank: int) -> DatasetDeclaration:
+def _declaration(
+    dataset: str,
+    *,
+    rank: int,
+    absent_observation: AbsentObservation = "unknown",
+    reporters: bool = False,
+) -> DatasetDeclaration:
     return DatasetDeclaration(
         id=dataset,
         label=dataset.rsplit("/", 1)[-1],
         description=f"The test dataset {dataset}.",
         opt_in=False,
-        absent_observation="unknown",
+        absent_observation=absent_observation,
         account="provider",
         rank=rank,
+        members_report_overlapping_accounts=reporters,
     )
 
 
-def ledger_index(ledger_members: tuple[str, ...] = (NORTH, SOUTH)) -> CodeIndex:
+def ledger_index(
+    ledger_members: tuple[str, ...] = (NORTH, SOUTH),
+    *,
+    absent_observation: AbsentObservation = "unknown",
+    reporters: bool = True,
+) -> CodeIndex:
     """A code index declaring `LEDGER` of `ledger_members`, `NORTH` and `SOUTH` by default,
-    `SOLO` of `SOLO_MEMBER`, and the plain table `PLAIN`."""
+    `SOLO` of `SOLO_MEMBER`, and the plain table `PLAIN`, each reading an absent observation
+    as `absent_observation`. `LEDGER` and `SOLO` declare their members reporting
+    organisations unless `reporters` is false."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",
@@ -52,9 +68,11 @@ def ledger_index(ledger_members: tuple[str, ...] = (NORTH, SOUTH)) -> CodeIndex:
         codes=(),
         statvars=(),
         datasets=(
-            _declaration(LEDGER, rank=0),
-            _declaration(SOLO, rank=1),
-            _declaration(PLAIN, rank=2),
+            _declaration(
+                LEDGER, rank=0, absent_observation=absent_observation, reporters=reporters
+            ),
+            _declaration(SOLO, rank=1, absent_observation=absent_observation, reporters=reporters),
+            _declaration(PLAIN, rank=2, absent_observation=absent_observation),
         ),
         dataset_members={LEDGER: ledger_members, SOLO: (SOLO_MEMBER,)},
     )

@@ -14,10 +14,12 @@ import dataclasses
 import io
 import json
 from dataclasses import replace
+from functools import partial
 
 import pyarrow as pa
 import pytest
 
+from code_index.members import absent_reads_zero_in
 from dc_sdmx import observation_schema
 from graph_release.context import bound_release
 from materialise import EnrichmentLookup, materialise_group
@@ -30,11 +32,12 @@ from materialise.facets import (
     read_as_datasets,
 )
 from materialise.formats import write_frame1
-from materialise.generation import _select_member_facets, reads_absent_as_zero
+from materialise.generation import _select_member_facets, absent_zero_members
 from materialise.graph import Facet
 from materialise.group_facets import select_group_facets
 from materialise.held_runs import read_runs
 from materialise.observation_rows import UN_OBSERVATION_ROLES, _variable_batch
+from materialise.window import AppliedWindow, RequestedWindow
 from origin_catalogue import bound_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -52,7 +55,17 @@ from ._group_support import (
     _request,
     _sdmx_client_for,
 )
-from ._ledger import LEDGER, MEMBERS, NORTH, PLAIN, SOLO, SOLO_MEMBER, SOUTH, bound_ledger_index
+from ._ledger import (
+    LEDGER,
+    MEMBERS,
+    NORTH,
+    PLAIN,
+    SOLO,
+    SOLO_MEMBER,
+    SOUTH,
+    bound_ledger_index,
+    ledger_index,
+)
 from .conftest import FakeGraphReader
 
 _LEDGER_DATASET = ElectedDataset(
@@ -232,19 +245,109 @@ def test_under_national_currency_a_method_counts_the_series_of_both_member_prove
 
 
 def test_a_group_of_one_dataset_reads_the_dataset_declaration_on_absent_members():
+    """The rule is read for the dataset the selections dispatch, for each member provenance
+    among the member's candidates and each year of the window."""
     requests = [_member(_STAT_VAR_A), _member(_STAT_VAR_B)]
     candidates = [[_facet(NORTH, obs_count=2)], [_facet(SOUTH)]]
     selections = select_group_facets(
         requests, candidates, graph=FakeGraphReader()
     ).election.selections
-    read: list[str] = []
+    read: list[tuple[str, str | None, int | None]] = []
 
-    def absent_reads_zero(dataset: str) -> bool:
-        read.append(dataset)
+    def absent_reads_zero(dataset: str, provenance: str | None, year: int | None) -> bool:
+        read.append((dataset, provenance, year))
         return dataset == LEDGER
 
-    assert reads_absent_as_zero(selections, absent_reads_zero)
-    assert read == [LEDGER]
+    zero = absent_zero_members(
+        selections,
+        absent_reads_zero,
+        member_provenances={_STAT_VAR_B: frozenset({SOUTH, PLAIN})},
+        window=AppliedWindow(kind="range", start_year=2015, end_year=2016, origin="query"),
+    )
+
+    assert zero == {_STAT_VAR_B}
+    assert read == [(LEDGER, SOUTH, 2015), (LEDGER, SOUTH, 2016)]
+
+
+@pytest.mark.parametrize(
+    ("reporters", "south_holds_2015", "named"),
+    [
+        pytest.param(True, True, False, id="held-year-reads-zero"),
+        pytest.param(True, False, True, id="unheld-year-reads-unknown"),
+        pytest.param(False, False, False, id="undeclared-reads-zero"),
+    ],
+)
+def test_a_reporters_member_out_of_the_window_is_marked_where_its_absence_is_unknown(
+    reporters: bool, south_holds_2015: bool, named: bool
+):
+    """Member B, which South files, holds only 2010, outside the 2015 window, under a
+    Ledger reading an absent observation as zero. Where South holds 2015 in another series,
+    B adds zero there and goes unreported; where South holds nothing in 2015 its absence is
+    unknown, so the group's `coverage_below_scope` names it. A Ledger that declares nothing
+    of its members reads it as zero whatever South holds."""
+    window = RequestedWindow(kind="range", start_year=2015, end_year=2015)
+    rows = [
+        (_BARE_A, _facet_id(NORTH), "country/DONOR", _ENTITY, [2015]),
+        (_BARE_B, _facet_id(SOUTH), "country/DONOR", _ENTITY, [2010]),
+    ]
+    if south_holds_2015:
+        rows.append((_BARE_B, _facet_id(SOUTH), "country/DONOR", "country/OTHER", [2015]))
+    coverage = build_coverage_index(
+        rows,
+        role_names={
+            bare: RoleNames(donor="donor", recipient="recipient") for bare in (_BARE_A, _BARE_B)
+        },
+        facet_metadata={
+            _facet_id(provenance): FacetMetadata(
+                provenance_id=provenance,
+                measurement_method="METH",
+                unit="UNIT",
+                observation_period="P1Y",
+            )
+            for provenance in (NORTH, SOUTH)
+        },
+    )
+    sdmx, _requests = _sdmx_client_for(
+        {
+            bare: _CSV_HEADER
+            + _csv_row(
+                stat_var=bare,
+                year=year,
+                value="10",
+                unit="UNIT",
+                method="METH",
+                provenance=provenance,
+                facet_id=_facet_id(provenance),
+            )
+            for bare, provenance, year in ((_BARE_A, NORTH, "2015"), (_BARE_B, SOUTH, "2010"))
+        }
+    )
+    index = ledger_index(absent_observation="zero", reporters=reporters)
+    graph = FakeGraphReader()
+
+    result = materialise_group(
+        [
+            dataclasses.replace(_member(stat_var), window=window)
+            for stat_var in (_STAT_VAR_A, _STAT_VAR_B)
+        ],
+        sdmx=sdmx,
+        graph=graph,
+        enrichment=EnrichmentLookup(graph),
+        parties={},
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        coverage=coverage,
+        absent_reads_zero=partial(
+            absent_reads_zero_in, index, held_years=coverage.provenance_years
+        ),
+    )
+
+    marked = [
+        warning.get("out_of_window_members")
+        for warning in result.warnings
+        if warning["code"] == "coverage_below_scope"
+    ]
+    assert marked == ([{"count": 1, "refs": [_STAT_VAR_B]}] if named else [])
 
 
 def _mint(provenances: tuple[str, str], dataset: ElectedDataset | None):

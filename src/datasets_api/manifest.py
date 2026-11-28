@@ -89,7 +89,7 @@ from datasets_api.versions import (
     link_digest,
     unlinked_state,
 )
-from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
+from datasets_api.warnings import DATASETS_WARNING_CATALOGUE, REPORTERS_SUMMED
 from dc_graph import GraphReadError
 from description.citation import citation_line, figures_processed
 from dfo_platform.roles import FlowFamily, axis_for_role, role_wording
@@ -144,14 +144,17 @@ def warning_model(warning: Mapping[str, object]) -> WarningModel:
 def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[WarningModel, ...]:
     """Formats reshape warnings from this surface's catalogue.
 
-    `enrichment_unavailable` adds its column and empty-cell count to the message.
+    `enrichment_unavailable` adds its column and empty-cell count to the message, and
+    `reporters_summed` keeps its own, which counts the reporting organisations.
     """
     models: list[WarningModel] = []
     for warning in warnings:
         code = cast(str, warning["code"])
         _title, detail, severity = DATASETS_WARNING_CATALOGUE[code]
         message = detail
-        if code == "enrichment_unavailable":
+        if code == REPORTERS_SUMMED:
+            message = cast(str, warning["message"])
+        elif code == "enrichment_unavailable":
             column = cast(str, warning["column"])
             count = cast(int, warning["count"])
             plural = "" if count == 1 else "s"

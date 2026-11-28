@@ -43,8 +43,8 @@ def test_definition_door_shares_one_rate_cache_across_two_materialisations(monke
 
 def test_the_definition_door_reads_absence_as_its_code_index_declares(monkeypatch):
     """The group's out-of-window members follow the absent-observation rule the rendered sum
-    reads (`absent_member_reads_zero`), over the door's own code index, whichever path
-    resolved the members."""
+    reads (`absent_reads_zero_in`), over the door's own code index, whichever path resolved
+    the members."""
     recorded: list[object] = []
     real_materialise_group = serve_module.materialise_group
 
@@ -63,7 +63,7 @@ def test_the_definition_door_reads_absence_as_its_code_index_declares(monkeypatc
 
     [absent_reads_zero] = recorded
     assert callable(absent_reads_zero)
-    assert (absent_reads_zero(CRS_PROVENANCE), absent_reads_zero("provenance/Undeclared")) == (
-        True,
-        False,
-    )
+    assert (
+        absent_reads_zero(CRS_PROVENANCE, CRS_PROVENANCE, 2020),
+        absent_reads_zero("provenance/Undeclared", "provenance/Undeclared", 2020),
+    ) == (True, False)

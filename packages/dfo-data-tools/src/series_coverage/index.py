@@ -1793,6 +1793,47 @@ class CoverageIndex:
         held = np.bitwise_or.reduce(masks, axis=0)
         return _years_of(held.tolist(), self._horizon)
 
+    def provenance_years(self, provenance: str) -> frozenset[int]:
+        """The years any series of member provenance `provenance` holds an observation in,
+        over the whole horizon (`_provenance_years`). Empty for a provenance no facet of the
+        index names. A dataset declaring `members_report_overlapping_accounts` reads an
+        absent observation as zero only in these years of the row's member
+        (`code_index.members.absent_reads_zero_in`)."""
+        return self._provenance_years.get(provenance, frozenset())
+
+    @cached_property
+    def _provenance_years(self) -> Mapping[str, frozenset[int]]:
+        """Each facet provenance's years, the OR of the year masks of every
+        `(variable, facet_id)` pair (`_pair_year_masks`) whose facet metadata names it, built
+        once per index. A facet's provenance is its own `FacetMetadata.provenance_id`, a
+        declared dataset's member provenance and not the dataset, and a facet with no metadata
+        or no provenance adds to none."""
+        pairs = self._pair_years
+        facet_provenances: dict[str, int] = {}
+        facet_provenance = np.full(len(self._facet_ids), -1, dtype=np.int64)
+        for code, facet_id in enumerate(cast("list[str]", self._facet_ids.to_pylist())):
+            metadata = self._facet_metadata.get(facet_id)
+            if metadata is not None and metadata.provenance_id is not None:
+                facet_provenance[code] = facet_provenances.setdefault(
+                    metadata.provenance_id, len(facet_provenances)
+                )
+        row_provenance = facet_provenance[pairs.facet_codes]
+        named = row_provenance >= 0
+        order = np.argsort(row_provenance[named], kind="stable")
+        provenance_codes = row_provenance[named][order]
+        if provenance_codes.size == 0:
+            return MappingProxyType({})
+        masks = pairs.masks[named][order]
+        starts = np.flatnonzero(np.r_[True, provenance_codes[1:] != provenance_codes[:-1]])
+        held = np.bitwise_or.reduceat(masks, starts, axis=0)
+        names = list(facet_provenances)
+        return MappingProxyType(
+            {
+                names[int(provenance_codes[start])]: _years_of(words.tolist(), self._horizon)
+                for start, words in zip(starts.tolist(), held, strict=True)
+            }
+        )
+
     def covers(self, variable: str) -> bool:
         """Whether the index holds any row of `variable`."""
         return variable in self._variable_codes

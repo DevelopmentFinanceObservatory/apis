@@ -70,7 +70,7 @@ from code_index.composites import (
     composite_ref,
     population_check,
 )
-from code_index.members import absent_member_reads_zero
+from code_index.members import absent_reads_zero_in
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration, PartyRow
 from dataset_store.clock import utc_now
@@ -649,7 +649,13 @@ def _materialise_scoped(
                     precomputed_probe=precomputed_probe,
                     deadline=deadline,
                     progress=progress,
-                    absent_reads_zero=partial(absent_member_reads_zero, code_index),
+                    absent_reads_zero=partial(
+                        absent_reads_zero_in,
+                        code_index,
+                        held_years=None
+                        if coverage_index is None
+                        else coverage_index.provenance_years,
+                    ),
                 )
         except DefaultFacetUndefinedError as exc:
             if exc.request is not None:
@@ -1512,6 +1518,9 @@ def _render_pass(
         resolved_stat_var_refs=_resolved_stat_var_refs(result),
         output_profile=result.output_profile,
         deadline=deps.deadline,
+        held_years=(
+            None if prewrite.coverage_index is None else prewrite.coverage_index.provenance_years
+        ),
     )
     artifact, reshape_warnings, derived = rendered.artifact, rendered.warnings, rendered.derived
     if not (documentation_complete and rendered.labels_complete):

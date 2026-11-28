@@ -110,6 +110,7 @@ def test_parse_index_reads_a_document_as_load_index_reads_its_file(code_index: C
         ("account", "lender"),
         ("account", None),
         ("ratio_base_axis", "recipient"),
+        ("members_report_overlapping_accounts", "yes"),
     ],
 )
 def test_loader_rejects_a_value_outside_a_fields_vocabulary(field: str, value: object):

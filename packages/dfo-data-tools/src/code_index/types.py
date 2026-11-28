@@ -443,6 +443,14 @@ class DatasetDeclaration:
     divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
     of the recipient's GNI (`destination`). `None` declares nothing, as in a
     release exported without the field.
+
+    `members_report_overlapping_accounts` says the dataset's member provenances are
+    reporting organisations that each file their own account of the flows they report, so
+    money one disburses to another can appear in both accounts. A figure folding rows of two
+    or more such members carries the `reporters_summed` warning, and an absent observation
+    reads zero only in the years the row's member provenance holds any observation
+    (`code_index.members.absent_reads_zero_in`). False, the default, declares a table whose
+    rows count each flow once.
     """
 
     id: str
@@ -458,6 +466,7 @@ class DatasetDeclaration:
     noted_words: tuple[NotedWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
     ratio_base_axis: RoleAxis | None = None
+    members_report_overlapping_accounts: bool = False
 
 
 ComponentRole = Literal["bilateral", "imputed", "headline_net", "headline_ge"]

@@ -835,8 +835,9 @@ def _parse_datasets(
     `_parse_party_words` refuses or a `noted_words` row `_parse_noted_words` refuses (the
     three keys are optional), a `house_default_for`
     (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
-    (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
-    `id` or `rank` repeated across rows. Each raises
+    (optional, absent reads as `None`) outside `AXIS_LABELS`, a
+    `members_report_overlapping_accounts` (optional, absent reads as false) that is not a
+    boolean, or a `id` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     members: dict[str, tuple[str, ...]] = {}
@@ -860,6 +861,9 @@ def _parse_datasets(
                 noted_words=_parse_noted_words(row["id"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
+                members_report_overlapping_accounts=row.get(
+                    "members_report_overlapping_accounts", False
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -879,6 +883,11 @@ def _parse_datasets(
             raise IndexFormatError(
                 f"datasets row for {dataset.id!r} carries opt_in={dataset.opt_in!r}, "
                 "which is not a boolean"
+            )
+        if not isinstance(dataset.members_report_overlapping_accounts, bool):
+            raise IndexFormatError(
+                f"datasets row for {dataset.id!r} carries members_report_overlapping_accounts="
+                f"{dataset.members_report_overlapping_accounts!r}, which is not a boolean"
             )
         if not isinstance(dataset.rank, int) or isinstance(dataset.rank, bool):
             raise IndexFormatError(

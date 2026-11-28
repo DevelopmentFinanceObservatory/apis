@@ -67,6 +67,9 @@ _WARNING_KIND_BY_CODE: Mapping[str, str] = {
     "deflator_missing_omitted": "coverage_gap",
     # The groupby sums multiple StatVars into one family total.
     "stat_vars_summed": "comparability_break",
+    # The total adds accounts several reporting organisations file, which can count a flow
+    # between two of them twice.
+    "reporters_summed": "comparability_break",
     # Every facet for a series sits under a provenance the origin registry does not admit.
     "withheld_by_registry": "coverage_gap",
     # The origin catalogue that admitted the frame's sources is past its staleness limit.

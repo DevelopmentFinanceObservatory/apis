@@ -11,6 +11,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -462,6 +463,8 @@ class _GroupOutcome:
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
     holds under any window. `year_totals` is every member's `_MemberOutcome.year_totals`, and
     `held_runs` every member's `_MemberOutcome.held_runs`, merged per kind and source.
+    `member_provenances` maps each member's `stat_var` to the provenances of its probe's
+    candidates, which an absent member's zero reads (`absent_zero_members`).
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -488,6 +491,7 @@ class _GroupOutcome:
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
     year_totals: Mapping[tuple[str | None, str], YearTotals] = field(default_factory=dict)
     held_runs: tuple[HeldRun, ...] = ()
+    member_provenances: Mapping[str, frozenset[str | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1560,18 +1564,55 @@ def _probe_member(
     )
 
 
-def reads_absent_as_zero(
-    selections: Mapping[str, FacetSelection], absent_reads_zero: Callable[[str], bool] | None
-) -> bool:
-    """Whether a group's members holding no observation in the requested years go unreported:
-    `selections` dispatch one dataset and `absent_reads_zero` says it reads an absent member
-    as zero (`code_index.members.absent_member_reads_zero`). The provenance selection's ref
-    is the dataset's id (`facets.read_as_datasets`), so every member provenance reads the one
-    declaration. Without `absent_reads_zero` every dataset reads unknown. The mint
-    (`pipeline.materialise_group`) and the stored-warning backfill
-    (`datasets_api.warning_backfill`) both ask this."""
+type AbsentRule = Callable[[str, str | None, int | None], bool]
+"""Whether an observation dataset `d` carries no row for, on a series its member provenance
+`p` files, in year `y`, adds zero to a sum, called as `rule(d, p, y)`, `y` `None` for a year
+not known (`code_index.members.absent_reads_zero_in` over a code index and a coverage
+index)."""
+
+
+def absent_zero_members(
+    selections: Mapping[str, FacetSelection],
+    absent_reads_zero: AbsentRule | None,
+    *,
+    member_provenances: Mapping[str, AbstractSet[str | None]],
+    window: AppliedWindow | None,
+) -> frozenset[str]:
+    """The members of `member_provenances` holding no observation in the requested years
+    that go unreported, since each adds zero in every year of `window`.
+
+    `selections` must dispatch one dataset, the provenance selection's ref being the dataset's
+    id (`facets.read_as_datasets`), and `absent_reads_zero` must read the member's absence as
+    zero in each year from `window.start_year` to `window.end_year`, for each provenance of
+    the dataset among the member's candidates in `member_provenances`, or for no provenance
+    when none is. A window open at either end reads one year not known. Without
+    `absent_reads_zero` every dataset reads unknown. The mint (`pipeline.materialise_group`)
+    and the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
     served = dispatched_provenances(selections)
-    return absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
+    if absent_reads_zero is None or len(served) != 1:
+        return frozenset()
+    (dataset,) = served
+    years: Sequence[int | None] = (
+        range(window.start_year, window.end_year + 1)
+        if window is not None and window.start_year is not None and window.end_year is not None
+        else (None,)
+    )
+    return frozenset(
+        member
+        for member, provenances in member_provenances.items()
+        if all(
+            absent_reads_zero(dataset, provenance, year)
+            for provenance in _filed_by(provenances, dataset)
+            for year in years
+        )
+    )
+
+
+def _filed_by(provenances: AbstractSet[str | None], dataset: str) -> tuple[str | None, ...]:
+    """The member provenances of `dataset` among `provenances`, sorted, or one `None` when
+    none is."""
+    filed = sorted(p for p in provenances if p is not None and dataset_of(p) == dataset)
+    return tuple(filed) or (None,)
 
 
 def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
@@ -3516,6 +3557,10 @@ def _generate_group(
         candidate_provenances=frozenset(
             candidate.provenance_id for member in probed for candidate in member.candidates
         ),
+        member_provenances={
+            request.stat_var: frozenset(candidate.provenance_id for candidate in member.candidates)
+            for request, member in zip(requests, probed, strict=True)
+        },
         held_runs=read_runs(
             (member.candidates, frozenset(plan.dispatch_ids))
             for member, plan in zip(probed, group_plan.plans, strict=True)

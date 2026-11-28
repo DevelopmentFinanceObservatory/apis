@@ -2552,13 +2552,17 @@ def test_export_index_joins_each_rows_sorted_provenances_and_stamps_no_build():
 
 
 @pytest.mark.parametrize(
-    ("ratio_base_axis", "written"),
-    [(None, {}), ("destination", {"ratio_base_axis": "destination"})],
+    "written",
+    [
+        {},
+        {"ratio_base_axis": "destination"},
+        {"members_report_overlapping_accounts": True},
+    ],
 )
 def test_export_index_writes_dataset_declarations_and_they_round_trip(
-    tmp_path: Path, ratio_base_axis: RoleAxis | None, written: dict
+    tmp_path: Path, written: dict
 ):
-    declared = dataclasses.replace(_OPT_IN, ratio_base_axis=ratio_base_axis)
+    declared = dataclasses.replace(_OPT_IN, **written)
     graph = _two_system_graph()
     document = export_index(
         graph,

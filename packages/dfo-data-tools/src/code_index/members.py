@@ -1249,8 +1249,48 @@ def absent_member_reads_zero(index: CodeIndex, dataset: str | None) -> bool:
     `dataset` is the provenance of the elected dataset, and the reading is its
     `DatasetDeclaration.absent_observation`. No dataset, and a provenance no dataset
     declares, read unknown. The mint's sum and Search's `Slot.summable` both read absence
-    through this function."""
+    through this function. A dataset declaring `members_report_overlapping_accounts` reads
+    zero only in the years its member holds (`absent_reads_zero_in`), so a sum over it reads
+    a missing member year by year."""
     return dataset is not None and index.absent_observation(dataset) == "zero"
+
+
+def reports_overlapping_accounts(index: CodeIndex, dataset: str | None) -> bool:
+    """Whether `dataset` declares `DatasetDeclaration.members_report_overlapping_accounts`:
+    its members are reporting organisations whose accounts can count one flow twice. False
+    for no dataset, a composite and a provenance no dataset declares."""
+    declared = None if dataset is None else index.datasets.get(dataset)
+    return declared is not None and declared.members_report_overlapping_accounts
+
+
+def absent_reads_zero_in(
+    index: CodeIndex,
+    dataset: str | None,
+    provenance: str | None,
+    year: int | None,
+    *,
+    held_years: Callable[[str], AbstractSet[int]] | None,
+) -> bool:
+    """Returns whether an observation `dataset` carries no row for adds zero to a sum, on a
+    series member provenance `provenance` files, in `year`.
+
+    A dataset that reads absence as unknown (`absent_member_reads_zero`) reads unknown in
+    every year. One declaring `members_report_overlapping_accounts` reads zero only where
+    `year` is one of `held_years(provenance)`, the years any series of that member holds an
+    observation (`series_coverage.index.CoverageIndex.provenance_years`), and unknown for
+    any other year, a `year` of `None`, which is not known, no `provenance` and no
+    `held_years`: a member that filed nothing in a year has no account there to read a zero
+    from. Any other dataset reads zero in every year."""
+    if not absent_member_reads_zero(index, dataset):
+        return False
+    if not reports_overlapping_accounts(index, dataset):
+        return True
+    return (
+        provenance is not None
+        and year is not None
+        and held_years is not None
+        and year in held_years(provenance)
+    )
 
 
 def listed_group(index: CodeIndex, query: FamilyQuery, *, member_cap: int) -> MemberGroup | None:
@@ -1328,6 +1368,7 @@ __all__ = [
     "SourceNotInFamily",
     "absent_member_reads_zero",
     "absent_readings",
+    "absent_reads_zero_in",
     "antichain_minimal_rows",
     "bind_slot_value",
     "canonical_identity",
@@ -1359,5 +1400,6 @@ __all__ = [
     "prepare_member_views",
     "publishers",
     "query_family",
+    "reports_overlapping_accounts",
     "shared_pins",
 ]

@@ -2191,6 +2191,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.ratio_base_axis is not None
             else {}
         ),
+        **(
+            {"members_report_overlapping_accounts": True}
+            if dataset.members_report_overlapping_accounts
+            else {}
+        ),
     }
 
 

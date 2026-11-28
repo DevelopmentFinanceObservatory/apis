@@ -2,18 +2,24 @@
 sums.
 
 A source declaring absence as zero permits a missing member. An undeclared source or mixed
-provenance refuses.
+provenance refuses. A dataset of reporting organisations reads a missing member as zero only
+in the years its reporting organisation holds, and a total of two of them warns
+`reporters_summed`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
+
+import pytest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.shared import get_index
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import _RenderReads, _reshape
+from datasets_api.warnings import reporters_summed_message
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 from tests.graph_release.support import serving_index
@@ -225,8 +231,10 @@ _NORTH = "provenance/LedgerNorth"
 _SOUTH = "provenance/LedgerSouth"
 
 
-def _ledger_index() -> CodeIndex:
-    """`_index`'s members under `dataset/Ledger`, whose series two member provenances hold."""
+def _ledger_index(*, absent_zero: bool = False, reporters: bool = True) -> CodeIndex:
+    """`_index`'s members under `dataset/Ledger`, whose series two member provenances hold,
+    reading an absent observation as zero when `absent_zero`, and declaring its members
+    reporting organisations unless `reporters` is false."""
     base = _index(declares_crs_zero=False)
     return CodeIndex(
         stamp=_STAMP,
@@ -239,9 +247,10 @@ def _ledger_index() -> CodeIndex:
                 label="Ledger",
                 description="A test register filed by publisher.",
                 opt_in=False,
-                absent_observation="unknown",
+                absent_observation="zero" if absent_zero else "unknown",
                 account="provider",
                 rank=0,
+                members_report_overlapping_accounts=reporters,
             ),
         ),
         dataset_members={_LEDGER: (_NORTH, _SOUTH)},
@@ -277,6 +286,110 @@ def test_rows_of_two_member_provenances_of_one_dataset_sum_to_one_total():
         (row[columns.index("value")], row[columns.index("provenance")])
         for row in reshaped.table.rows
     ] == [(14.0, _LEDGER)]
+
+
+def _reported(*rows: tuple[str, str, float, str]) -> Table:
+    """A Ledger frame of `(StatVar, year, value, reporting organisation)` rows, each from the
+    USA to Kenya, as the mint writes a member's row (`materialise.columnar.dataset_cells`)."""
+    return Table(
+        columns=(*_TABLE_COLUMNS, "reporting_organisation"),
+        rows=tuple(
+            (f"dcid:{stat_var}", "country/USA", "country/KEN", year, value, "USD", _LEDGER, by)
+            for stat_var, year, value, by in rows
+        ),
+    )
+
+
+def _sum_ledger(
+    table: Table,
+    *,
+    index: CodeIndex,
+    held_years: Callable[[str], frozenset[int]] | None = None,
+):
+    return _reshape(
+        table,
+        options=_options(),
+        entity_columns=_ENTITY_COLUMNS,
+        reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
+        code_index=index,
+        resolved_stat_var_refs=_RESOLVED_REFS,
+        provenance_refs=(_LEDGER,),
+        subject_id="spec_ledger",
+        pivot_max_output_cells=5_000_000,
+        held_years=held_years,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reporters", "malaria_by", "warned"),
+    [
+        pytest.param(True, _SOUTH, True, id="two-reporters"),
+        pytest.param(True, _NORTH, False, id="one-reporter"),
+        pytest.param(False, _SOUTH, False, id="undeclared"),
+    ],
+)
+def test_a_total_of_two_reporting_organisations_rows_warns_reporters_summed(
+    reporters: bool, malaria_by: str, warned: bool
+):
+    """A total adding North's and South's rows of a dataset declaring its members reporting
+    organisations warns, counting both; a total of North's rows alone does not, nor does the
+    same total under a dataset that declares nothing of its members."""
+    table = _reported(("SV_health", "2022", 10.0, _NORTH), ("SV_malaria", "2022", 4.0, malaria_by))
+
+    reshaped = _sum_ledger(table, index=_ledger_index(reporters=reporters))
+
+    assert [row[reshaped.table.columns.index("value")] for row in reshaped.table.rows] == [14.0]
+    summed = [w["message"] for w in reshaped.warnings if w["code"] == "reporters_summed"]
+    assert summed == ([reporters_summed_message(2)] if warned else [])
+
+
+# North holds 2021 to 2023 across its series, South 2021 to 2024.
+_HELD = {_NORTH: frozenset({2021, 2022, 2023}), _SOUTH: frozenset({2021, 2022, 2023, 2024})}
+
+
+@pytest.mark.parametrize(
+    ("reporters", "last_year", "totals"),
+    [
+        pytest.param(
+            True, 2023, {"2021": 14.0, "2022": 4.0, "2023": 14.0}, id="held-year-reads-zero"
+        ),
+        pytest.param(True, 2024, None, id="unheld-year-reads-unknown"),
+        pytest.param(
+            False,
+            2024,
+            {"2021": 14.0, "2022": 4.0, "2023": 14.0, "2024": 4.0},
+            id="undeclared-reads-zero-every-year",
+        ),
+    ],
+)
+def test_a_reporters_missing_row_reads_zero_only_in_years_it_holds(
+    reporters: bool, last_year: int, totals: dict[str, float] | None
+):
+    """North's health row is missing in 2022 and 2024. North holds 2022 in another series, so
+    the 2022 total reads the missing row as zero; it holds nothing in 2024, so a total that
+    year is unknown and the sum refuses. A dataset that declares nothing of its members keeps
+    reading every missing row as zero."""
+    table = _reported(
+        ("SV_health", "2021", 10.0, _NORTH),
+        ("SV_health", "2023", 10.0, _NORTH),
+        *(("SV_malaria", str(year), 4.0, _SOUTH) for year in range(2021, last_year + 1)),
+    )
+    index = _ledger_index(absent_zero=True, reporters=reporters)
+
+    def held_years(provenance: str) -> frozenset[int]:
+        return _HELD.get(provenance, frozenset())
+
+    if totals is None:
+        with pytest.raises(RollupNotSummableError) as refused:
+            _sum_ledger(table, index=index, held_years=held_years)
+        assert refused.value.precondition == "missing_members"
+        return
+    reshaped = _sum_ledger(table, index=index, held_years=held_years)
+    columns = reshaped.table.columns
+    assert {
+        row[columns.index("time_period")]: row[columns.index("value")]
+        for row in reshaped.table.rows
+    } == totals
 
 
 # --- Declaration lookup uses the injected index -----------------------------

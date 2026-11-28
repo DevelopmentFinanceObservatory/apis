@@ -24,6 +24,7 @@ import materialise.generation as generation_module
 from artifact_store import LiveArtifactInventory
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
+from datasets_api.warnings import reporters_summed_message
 from origin_catalogue import DFO, Catalogue
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
@@ -704,6 +705,7 @@ def _ledger_code_index(declared: _Declared = _TWO_MEMBERS) -> CodeIndex:
                 absent_observation="unknown",
                 account="provider",
                 rank=0,
+                members_report_overlapping_accounts=True,
             ),
         ),
         dataset_members={declared.dataset: declared.members},
@@ -870,6 +872,36 @@ def test_a_sum_over_two_member_provenances_of_one_dataset_folds_to_one_total(
     )
 
     assert collapsed["coverage"]["rows"] == 1
+
+
+@pytest.mark.parametrize(
+    ("declared", "warned"),
+    [
+        pytest.param(_TWO_MEMBERS, True, id="two-members"),
+        pytest.param(_ONE_MEMBER, False, id="one-member"),
+    ],
+)
+def test_a_sum_over_two_reporting_organisations_warns_reporters_summed(
+    declared: _Declared, warned: bool
+):
+    """Both datasets declare their members reporting organisations. The sum over the
+    recipient of North's and South's rows warns `reporters_summed`, counting both, and the
+    unsummed version does not; Solo's one member files both rows, so its sum does not."""
+    spec_id, sidecar = _ledger_spec()
+    client = _ledger_client(declared=declared)
+
+    raw, summed = (
+        _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
+        for options in (
+            {"bundle": False},
+            {"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}},
+        )
+    )
+
+    assert "reporters_summed" not in {warning["code"] for warning in raw["warnings"]}
+    assert [w["message"] for w in summed["warnings"] if w["code"] == "reporters_summed"] == (
+        [reporters_summed_message(2)] if warned else []
+    )
 
 
 @pytest.mark.parametrize(

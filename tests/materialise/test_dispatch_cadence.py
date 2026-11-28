@@ -10,7 +10,7 @@ dates and values below are the UN graph's for `country/KEN`, recorded 2026-10-07
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 
 import httpx
@@ -30,6 +30,7 @@ from materialise.facets import (
     subject_probe,
 )
 from materialise.generation import (
+    AbsentRule,
     _generate_chunk,
     _MemberFetchPlan,
     _plan_collection_chunks,
@@ -128,7 +129,7 @@ def _materialise(
     sdmx: SdmxClient,
     warnings: dict[str, MaterialisationWarning] | None = None,
     witnesses: set[str] | None = None,
-    absent_reads_zero: Callable[[str], bool] | None = None,
+    absent_reads_zero: AbsentRule | None = None,
 ) -> dict[str, list[str]]:
     """Each StatVar's served periods, after a default-window bind check over the frame. The
     result's warnings go to `warnings`, by code, and the trace's per-axis
@@ -771,15 +772,15 @@ def test_a_member_holding_the_groups_period_only_before_the_window_is_reported(
     warnings: dict[str, MaterialisationWarning] = {}
     read: list[str] = []
 
-    def absent_reads_zero(provenance: str) -> bool:
-        read.append(provenance)
+    def absent_reads_zero(dataset: str, provenance: str | None, year: int | None) -> bool:
+        read.append(dataset)
         return reads_zero
 
     periods = _materialise(requests, graph, sdmx, warnings, absent_reads_zero=absent_reads_zero)
 
     assert periods == {f"dcid:{_RATE}": sorted(in_window), f"dcid:{adult}": sorted(in_window)}
-    # The rule is the served provenance's.
-    assert read == ["undata/p/ILO"]
+    # The rule is the served provenance's, read for a member out of the window alone.
+    assert set(read) == (set() if youth_in_window else {"undata/p/ILO"})
     if fields is None:
         assert "coverage_below_scope" not in warnings
     else:

@@ -1723,6 +1723,12 @@ def _derived_versions_without_frame_summed(
     return [(str(row["subject_id"]), str(row["content_version"])) for row in rows]
 
 
+def _served_provenance_years(provenance: str) -> frozenset[int]:
+    """The years `provenance` holds in the served release's coverage index
+    (`CoverageIndex.provenance_years`), read only when a collapse asks."""
+    return get_coverage_service().current().provenance_years(provenance)
+
+
 def _is_own_frame(version: StoredVersion, *, frame_sha256: str) -> bool:
     """Whether the frame hashing to `frame_sha256` is derived `version`'s own: the hash it
     records, or the hash its `content_version` was minted from, alone."""
@@ -1773,6 +1779,7 @@ def _matched_frame_summed(
                     cast("list[Mapping[str, object]]", trace.get("facets", []))
                 ),
                 subject_id=version.subject_id,
+                held_years=_served_provenance_years,
             )
         except RollupNotSummableError:
             # Under `code_index` the groupby does not sum this frame.

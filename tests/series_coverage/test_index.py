@@ -2060,3 +2060,24 @@ def test_years_held_and_series_by_year_match_a_row_by_row_count(
 
     assert held == frozenset(expected)
     assert counts == {year: expected.get(year, 0) for year in window}
+
+
+def test_provenance_years_or_every_series_of_the_provenance_across_mask_words() -> None:
+    """Each facet provenance holds the years any of its series holds, over every variable
+    and both mask words, matching a count over the rows themselves, and a provenance no facet
+    names holds none."""
+    table, horizon = coverage_table(_YEARS_HELD_ROWS)
+    idx = CoverageIndex(
+        table,
+        _ELECTION_ROLE_NAMES,
+        {
+            facet: FacetMetadata(provenance_id=provenance, observation_period="P1Y")
+            for facet, provenance in _YEARS_HELD_PROVENANCES.items()
+        },
+        horizon=horizon,
+    )
+    variables = [_WINDOW_SV, _SECOND_SV]
+
+    for facet, provenance in _YEARS_HELD_PROVENANCES.items():
+        assert idx.provenance_years(provenance) == frozenset(_reference_years(variables, [facet]))
+    assert idx.provenance_years("provenance/Unknown") == frozenset()

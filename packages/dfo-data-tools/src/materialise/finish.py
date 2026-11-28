@@ -5,7 +5,7 @@ Previews reuse member warnings without a trace."""
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, frame_sha256
@@ -333,7 +333,7 @@ def _finish_group(
     parties: Mapping[str, PartyRow],
     dependencies: Dependencies,
     graph_revision: str | None,
-    absent_reads_zero: bool = False,
+    zero_absent_members: Collection[str] = frozenset(),
 ) -> pipeline.MaterialisationResult:
     """Runs after generation returns. Mints from `outcome.frame_sha256`, computed
     during the group's single fetch, so hashing rereads no rows. The group's single fetch builds
@@ -390,7 +390,7 @@ def _finish_group(
         content_version=content_version,
         trace=trace,
         coverage=outcome.coverage,
-        warnings=_build_warnings(requests[0], outcome, absent_reads_zero=absent_reads_zero),
+        warnings=_build_warnings(requests[0], outcome, zero_absent_members=zero_absent_members),
         series_statistics=series_statistics,
         output_profile=output_profile,
         conversion_record=None,
@@ -413,7 +413,7 @@ def _build_warnings(
     request: MaterialisationRequest,
     outcome: _MemberOutcome | _GroupOutcome | _PreviewOutcome,
     *,
-    absent_reads_zero: bool = False,
+    zero_absent_members: Collection[str] = frozenset(),
 ) -> tuple[MaterialisationWarning, ...]:
     """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. Its message
     says the request's places hold no observations when the facet probe returned no candidate
@@ -424,9 +424,9 @@ def _build_warnings(
     The members are those at another observation period in the requested years
     (`_GroupOutcome.off_cadence_members`), and those holding observations only outside them
     (`_GroupOutcome.out_of_window_members`), and those holding no facet of the elected group
-    (`_GroupOutcome.unserved_members`). The second are left out with `absent_reads_zero`,
-    when the served dataset reads an absent member as zero, since such a member adds nothing
-    to the requested years. One `coverage_below_scope` states every cause that applies.
+    (`_GroupOutcome.unserved_members`). The second are left out where they are among
+    `zero_absent_members`, those the served dataset reads as zero in every requested year
+    (`generation.absent_zero_members`), since such a member adds nothing to those years. One `coverage_below_scope` states every cause that applies.
     `currency_unmapped_omitted` applies when any conversion record omitted an entity's rows;
     an omitted entity the request bound counts as reported there, so `coverage_below_scope`
     does not count it. `deflator_missing_omitted` applies when any record left out rows for a
@@ -482,7 +482,9 @@ def _build_warnings(
     member_count = 0
     if isinstance(outcome, _GroupOutcome) and row_count:
         off_cadence = outcome.off_cadence_members
-        out_of_window = () if absent_reads_zero else outcome.out_of_window_members
+        out_of_window = tuple(
+            member for member in outcome.out_of_window_members if member not in zero_absent_members
+        )
         unserved_members = outcome.unserved_members
         member_count = len(outcome.member_observation_counts)
     if writes_coverage_below_scope(

@@ -4,7 +4,9 @@ Warnings appear in 200 manifests. The refusal registry handles errors. The capab
 version hashes this catalogue, so wording and severity changes affect it.
 
 A new manifest raises `enrichment_unavailable`, `withheld_by_registry`, `un_system_unavailable`,
-`currency_unmapped_omitted` and `deflator_missing_omitted` (the last two from `materialise`).
+`currency_unmapped_omitted` and `deflator_missing_omitted` (the last two from `materialise`), and
+a group-by collapse summing rows of several reporting organisations raises `reporters_summed`
+(`datasets_api.groupby.ReporterCheck`).
 `origin_catalogue_stale` goes to the manifest's `diagnostics`. `facet_default_selected`,
 `stat_vars_summed` and `deflator_projected` are steps and caveats of the version's description
 record (`datasets_api.description_record`), and nothing raises `revision_unavailable`. Those
@@ -18,6 +20,23 @@ The `materialise` package keeps its warning catalogue independent, except that
 from __future__ import annotations
 
 from materialise.reshape import RESHAPE_CODE_CATALOGUE
+
+REPORTERS_SUMMED = "reporters_summed"
+"""The warning a group-by collapse raises when a total sums rows that two or more reporting
+organisations of a dataset declaring `members_report_overlapping_accounts` filed
+(`datasets_api.groupby.ReporterCheck`)."""
+
+
+def reporters_summed_message(count: int) -> str:
+    """The `REPORTERS_SUMMED` message for a total summing the rows of `count` reporting
+    organisations, which a reader of the message alone can act on."""
+    return (
+        f"This figure adds up transactions that {count} reporting organisations each report "
+        "in their own accounts. Money one of them passes to another can be counted twice: "
+        "once when the first reports disbursing it and again when the second reports "
+        "spending it."
+    )
+
 
 DATASETS_WARNING_CATALOGUE: dict[str, tuple[str, str, str]] = {
     "revision_unavailable": (
@@ -73,6 +92,13 @@ DATASETS_WARNING_CATALOGUE: dict[str, tuple[str, str, str]] = {
         "The UN System Data Commons did not answer for part of the request: either the "
         "resolve, so the answer holds no UN candidates, or reads for named places, so the "
         "answer holds no UN data for the places the warning names.",
+        "warn",
+    ),
+    REPORTERS_SUMMED: (
+        "Reporters Summed",
+        "The figure sums transactions that several reporting organisations each report, so "
+        "money one organisation passes to another can be counted again when the second "
+        "reports spending it.",
         "warn",
     ),
     "origin_catalogue_stale": (

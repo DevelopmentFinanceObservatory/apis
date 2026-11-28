@@ -30,8 +30,9 @@ matching facet first, since the old sentence named only such members. Each of th
 cadence, out of the window, or, when it holds no facet of the elected dataset at all, out of
 the window, which a member the graph no longer holds is (`gone`). Every zero-count member the
 classifier calls unserved is named under `unserved_members`, as a mint names each, whether or
-not it is one of the K. The out-of-window members are dropped when the group reads an absent
-member as zero (`generation.reads_absent_as_zero`), as a mint drops them. A warning whose
+not it is one of the K. An out-of-window member is dropped when the group reads its absence
+as zero in every year of the trace's applied window (`generation.absent_zero_members`), as a
+mint drops it. A warning whose
 member sentences all drop keeps its other sentences (`emptied`), and is dropped when a mint
 would not write it (`finish.writes_coverage_below_scope`, `dropped`).
 
@@ -103,13 +104,13 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from functools import cached_property, partial
-from typing import cast
+from typing import Literal, cast
 
 from dfo_spec_kit.identity import IdentityError
 from pydantic import ValidationError
 
 from artifact_publication.jobs import emit
-from code_index.members import absent_member_reads_zero
+from code_index.members import absent_reads_zero_in
 from code_index.query import CodeIndex
 from dataset_store import DatasetStore
 from dataset_store.warning_formats import (
@@ -159,7 +160,7 @@ from materialise.finish import (
     member_sentences,
     writes_coverage_below_scope,
 )
-from materialise.generation import dispatched_provenances, reads_absent_as_zero
+from materialise.generation import absent_zero_members, dispatched_provenances
 from materialise.graph import Facet, GraphReader, GraphReadError
 from materialise.group_facets import (
     UncountedKind,
@@ -169,7 +170,7 @@ from materialise.group_facets import (
 )
 from materialise.pipeline import MaterialisationRequest
 from materialise.place_scope import AvailabilityReader, PlaceScopeReadError
-from materialise.window import RequestedWindow
+from materialise.window import AppliedWindow, RequestedWindow
 from origin_catalogue import recording_un_blocked_places
 from series_coverage.index import CoverageIndex
 
@@ -947,28 +948,54 @@ def _split(
         )
         for ref in zero_refs
     }
-    absent_reads_zero = reads_absent_as_zero(
-        selections, partial(absent_member_reads_zero, readers.code_index)
+    zero = absent_zero_members(
+        selections,
+        partial(
+            absent_reads_zero_in,
+            readers.code_index,
+            held_years=None if readers.coverage is None else readers.coverage.provenance_years,
+        ),
+        member_provenances={
+            ref: frozenset(candidate.provenance_id for candidate in members[ref].candidates)
+            for ref in zero_refs
+        },
+        window=_applied_window(trace),
     )
     # The old sentence named members with a jointly matching facet, so those fill the count
-    # first, each part in dcid order. A mint's fields count only the kinds it names, and none
-    # out of the window when the group reads an absent member as zero; fewer of those than
-    # the fields count is the graph's movement, which the comparison reports.
-    kinds_counted = (
-        ("off_cadence",) if new_format and absent_reads_zero else ("off_cadence", "out_of_window")
-    )
-    matched = [ref for ref in after_named if kinds[ref] in kinds_counted]
+    # first, each part in dcid order. A mint's fields count only the kinds it names, and no
+    # member out of the window that the group reads as zero in every requested year; fewer
+    # of those than the fields count is the graph's movement, which the comparison reports.
+    matched = [
+        ref
+        for ref in after_named
+        if kinds[ref] == "off_cadence"
+        or (kinds[ref] == "out_of_window" and not (new_format and ref in zero))
+    ]
     rest = [] if new_format else [ref for ref in after_named if ref not in matched]
     left_out = [*named, *[*matched, *rest][: count - len(named)]]
     return Split(
         off_cadence=tuple(ref for ref in left_out if kinds[ref] == "off_cadence"),
         # A member holding no facet of the elected dataset was named as the old sentence named
         # it, and holds no observation in the requested years.
-        out_of_window=()
-        if absent_reads_zero
-        else tuple(ref for ref in left_out if kinds[ref] in ("out_of_window", None)),
+        out_of_window=tuple(
+            ref for ref in left_out if kinds[ref] in ("out_of_window", None) and ref not in zero
+        ),
         unserved_members=tuple(ref for ref in zero_refs if kinds[ref] == "unserved"),
         gone=sum(1 for ref in left_out if not members[ref].candidates),
+    )
+
+
+def _applied_window(trace: Mapping[str, object]) -> AppliedWindow | None:
+    """The mint's applied window, from `trace.applied_window`, `None` when the trace holds
+    none."""
+    entry = trace.get("applied_window")
+    if not isinstance(entry, Mapping):
+        return None
+    return AppliedWindow(
+        kind=cast(str, entry.get("kind")),
+        start_year=cast("int | None", entry.get("start_year")),
+        end_year=cast("int | None", entry.get("end_year")),
+        origin=cast("Literal['query', 'default', 'coverage_clamp']", entry.get("origin")),
     )
 
 
