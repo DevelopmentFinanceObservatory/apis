@@ -68,7 +68,11 @@ from search.engine.region.phase_rank_bind import (
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.qualifier_readings import match_query_readings
 from search.engine.region.state import ResolveState, shape_vocabulary
-from search.engine.retrieval.bound_values import held_codes, shape_for_part
+from search.engine.retrieval.bound_values import (
+    held_codes,
+    shape_for_part,
+    vocabulary_datasets,
+)
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
@@ -82,9 +86,11 @@ from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snap
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._index_slots import (
+    CRS,
     IATI,
     crs_flow_slot_keys,
     crs_vocabulary,
+    dataset_scopes,
     dataset_vocabulary,
     own_variable_spans,
     query_qualifiers,
@@ -340,7 +346,9 @@ def test_a_code_only_another_datasets_rows_hold_claims_no_word_on_a_crs_shape():
     through codes under it. A CRS shape's own reading of "ODA loans" claims no finance
     type; an IATI shape's reads loans."""
     iati = dataset_vocabulary(IATI)
-    reading = read_text("ODA loans", _REAL_INDEX, vocabularies=[_CRS, iati])
+    reading = read_text(
+        "ODA loans", _REAL_INDEX, vocabularies=[_CRS, iati], datasets=dataset_scopes(CRS, IATI)
+    )
 
     def finance_types(vocabulary: frozenset[str]) -> set[str]:
         return {
@@ -765,12 +773,19 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
     )
     (sectors,) = derive_shapes(confirmed_svs=[sectors_sv], graph=graph)
     vocabulary = shape_vocabulary(sectors)
-    systems = frozenset(vocabulary)
-    reading = read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary, systems])
-    own = reading.by_vocabulary[vocabulary]
+    own = read_text(
+        "ODA to Kenya",
+        _REAL_INDEX,
+        vocabularies=[vocabulary],
+        datasets=vocabulary_datasets([sectors]),
+    ).by_vocabulary[vocabulary]
     assert [match.code_dcid for match in own.matches] == ["CRSTypeOfFlow10"]
     assert own.ties == ()
-    ties = reading.by_vocabulary[systems].ties
+    ties = (
+        read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary])
+        .by_vocabulary[vocabulary]
+        .ties
+    )
     assert [{row.code_dcid for row in tie.rows} for tie in ties] == [
         {"CRSTypeOfFlow10", "DAC2aAidType206"}
     ]
@@ -2244,8 +2259,10 @@ def _model_choice_state(
         for sv in svs
         for derived in derive_shapes(confirmed_svs=[sv], graph=graph)
     ]
-    vocabulary = shape_vocabulary(shape)
-    reading = read_text(variable, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary])
+    scopes = vocabulary_datasets([shape])
+    reading = read_text(
+        variable, _REAL_INDEX, get_measure_index(), vocabularies=scopes, datasets=scopes
+    )
     bindings = (
         [
             SlotBindingDraft(
@@ -2459,6 +2476,10 @@ _IMPUTED_SECTORS_SV = (
     "CRSPurposeCode11220_Nominal"
 )
 _DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal"
+_IATI_LOAN_SV = (
+    "Amount_FinancialFlow_Gross_Disbursement_IATITransactionType3_CRSTypeOfFlow10_"
+    "CRSTypeOfFinance410_CRSCooperationModalityC01_CRSPurposeCode11120_Nominal"
+)
 
 
 @pytest.mark.parametrize(
@@ -2476,6 +2497,11 @@ _DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000
         ("imputed education aid", [], ["imputed education"]),
         ("ODA loans for education", [], ["loans"]),
         ("ODA loans for education", [_IMPUTED_SECTORS_SV], ["loans"]),
+        # "loans" is type of finance 400, which only IATI rows hold. An unnamed part has no
+        # need of the opt-in IATI shape, so it binds nothing elsewhere and "loans" keeps
+        # the menu offering 420.
+        ("education loans", [], ["education loans"]),
+        ("education loans", [_IATI_LOAN_SV], ["education loans"]),
         ("equity investment ODA", [], ["equity investment"]),
         ("technical cooperation ODA", [], ["technical cooperation"]),
         # A word naming data itself is read (subj-health-data), and a run reaches past an

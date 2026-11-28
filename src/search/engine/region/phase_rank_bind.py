@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -212,6 +212,7 @@ from search.engine.retrieval.bound_values import (
     shape_for_part,
     shape_listed_rows,
     shape_population_arcs,
+    vocabulary_datasets,
 )
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
@@ -907,12 +908,15 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # matches and ties, and the elected shape's qualifier records. Each vocabulary, a
     # shape's slot properties, reads the text on its own: "ODA" binds the CRS flow type on a
     # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
-    # "multilateral ODA" never hides "ODA" from a CRS shape.
+    # "multilateral ODA" never hides "ODA" from a CRS shape. Each vocabulary reads only the
+    # codes its shapes' datasets' rows hold (`vocabulary_datasets`).
+    scopes = vocabulary_datasets(candidates)
     sources = _read_sources(
         state.variable,
         state.dropped_qualifier_phrases,
         query_text=state.query_text,
-        vocabularies=(shape_vocabulary(shape) for shape in candidates),
+        vocabularies=scopes,
+        datasets=scopes,
     )
     state.variable_spans_in_every_system = sources.variable.everywhere.spans
     state.variable_spans_by_vocabulary = {
@@ -1366,6 +1370,36 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     return [shape for shape in shapes if not unasked(shape)]
 
 
+def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:
+    """The shapes the part recalled (`ResolveState.shapes_found`) whose codes another shape's
+    menu reads as bound elsewhere (`_candidate_menus`): each one before a named dataset
+    narrows them, less each one only opt-in tables publish (`is_opt_in`) that the part
+    cannot answer from, outside its source scope (`_in_scope`) or one a part not naming a
+    source has no need of (`_without_unasked_opt_in`). A part naming the CRS still reads
+    "multilateral" in "multilateral ODA" as DAC1's aid type, while IATI, unasked, binds no
+    "loans" on a CRS part."""
+    index = get_index()
+    shapes = state.shapes_found
+
+    def opt_in_only(shape: ShapeDraft) -> bool:
+        datasets = shape_datasets(shape, index)
+        return bool(datasets) and all(is_opt_in(index, dataset) for dataset in datasets)
+
+    if not any(opt_in_only(shape) for shape in shapes):
+        return list(shapes)
+    scope = state.scope
+    asked = {
+        shape.shape_id
+        for shape in _without_unasked_opt_in(state, _dataset_candidates(shapes, None))
+    }
+    return [
+        shape
+        for shape in shapes
+        if not opt_in_only(shape)
+        or (shape.shape_id in asked and (scope is None or _in_scope(shape, scope, index)))
+    ]
+
+
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:
     """Whether a part under `scope` may answer `shape`. `scope.allowed` holds dataset ids
     (`CodeIndex.dataset_of`), a plain table's provenance or a declared Dataset's id for
@@ -1716,7 +1750,7 @@ def _unbindable_qualifiers(
     denominators: Mapping[str, DenominatorRead],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that name only codes
-    `shape` cannot bind (`qualifier_match.bindable_codes` of its `shape_vocabulary`), one of
+    `shape` cannot bind (`qualifier_match.bindable_codes` of its `shape_datasets`), one of
     them of a system `shape` declares, and whose words `shape`'s own reading (`own_spans`)
     leaves partly unread, each as an unbound record with evidence ``"unavailable"``.
 
@@ -1731,7 +1765,8 @@ def _unbindable_qualifiers(
     (`_measure_named_ranges`).
     """
     vocabulary = shape_vocabulary(shape)
-    bindable = bindable_codes(get_index(), vocabulary)
+    index = get_index()
+    bindable = bindable_codes(index, datasets=shape_datasets(shape, index))
     read = [
         *((own.start, own.end) for own in for_shape(own_spans, shape)),
         *chosen,
@@ -2100,13 +2135,19 @@ def _read_sources(
     *,
     query_text: str | None = None,
     vocabularies: Iterable[frozenset[str]],
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> _SourceReadings:
     """Read ``variable``, optional ``query_text`` and each dropped phrase separately, so a
-    match cannot span sources, each in every one of `vocabularies`."""
+    match cannot span sources, each in every one of `vocabularies`, binding codes within
+    the rows of its `datasets` entry (`qualifier_match.read_by_vocabulary`)."""
     texts = [variable, *([query_text] if query_text else []), *dropped_qualifier_phrases]
     return _SourceReadings(
         texts=read_by_vocabulary(
-            texts, get_index(), get_measure_index(), vocabularies=vocabularies
+            texts,
+            get_index(),
+            get_measure_index(),
+            vocabularies=vocabularies,
+            datasets=datasets,
         ),
         owned=1 + bool(query_text),
     )
@@ -2320,8 +2361,8 @@ def _admit_qualifier_ties(
     names, so an identical tie the variable and the query text both carry is kept once:
     asked twice, the model may answer each copy with another row. A tie of a declared
     system whose codes the family holds none of, though rows of another family do, is
-    `unheld`. A shape's own reading skips codes no shape can bind
-    (`qualifier_match.bindable_codes`), so they form no tie.
+    `unheld`. A shape's own reading skips codes no row of its vocabulary's datasets holds
+    (`vocabulary_datasets`), so they form no tie.
     """
     promoted: list[list[QualifierMatch]] = []
     admitted: list[list[QualifierTie]] = []
@@ -3087,9 +3128,13 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     shape the part recalled binds (`ResolveState.shapes_found`, before a named dataset
     narrows them), one declaring the code's system whose family holds it
     (`ResolveState.held_codes_of`), is read too, and `shape` leaves its words to the
-    coverage rule. "imputed" in "imputed education aid" is DAC2a aid type 106, which the
-    imputed multilateral shape binds, so a CRS shape is offered no "imputed student cost"
-    for it, and "multilateral" in "multilateral ODA", DAC1 aid type 2000, stays an
+    coverage rule. A shape only opt-in tables publish binds nothing elsewhere when the part
+    cannot answer from it (`_binding_elsewhere`): "loans" in "education loans" is
+    `CRSTypeOfFinance400`, which only IATI rows hold, and with IATI left unasked a CRS
+    shape keeps the menu that offers type of finance 420. "imputed" in "imputed education
+    aid" is DAC2a aid type 106, which the imputed multilateral shape binds, so a CRS shape
+    is offered no "imputed student cost" for it, and "multilateral" in "multilateral ODA",
+    DAC1 aid type 2000, stays an
     unavailable term on a part naming the CRS. "ODA loans" is DAC2a aid type 218, and
     with no recalled shape holding it "loans" keeps its menu, which offers type of
     finance 420. "population", type of finance 4, binds on no shape and keeps its menu.
@@ -3128,7 +3173,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
         occurrence for text in state.entity_texts for occurrence in token_occurrences(tokens, text)
     ]
     read += state.party_alias_spans
-    others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
+    others = [other for other in _binding_elsewhere(state) if other.shape_id != shape.shape_id]
 
     def bound_elsewhere(row: CodeRow) -> bool:
         return any(

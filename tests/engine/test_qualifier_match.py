@@ -39,7 +39,7 @@ from search.engine.qualifier_match import (
     read_by_vocabulary,
 )
 from search.engine.region.phase_rank_bind import _combine_matches
-from tests.engine._index_slots import crs_vocabulary, read_text
+from tests.engine._index_slots import CRS, crs_vocabulary, dataset_scopes, read_text
 
 # ---------------------------------------------------------------------------
 # The fixture index, the code index the session release serves.
@@ -56,8 +56,10 @@ _IMPUTED = frozenset(
 
 
 def _read(query: str, vocabulary: frozenset[str] = _CRS) -> VocabularyReading:
-    """`query` read in `vocabulary`, a CRS shape's by default, as the prune step reads it."""
-    return read_text(query, _REAL_INDEX, vocabularies=[vocabulary]).by_vocabulary[vocabulary]
+    """`query` read in `vocabulary`, a CRS shape's by default, as the prune step reads it,
+    the CRS vocabulary within CRS rows."""
+    reading = read_text(query, _REAL_INDEX, vocabularies=[vocabulary], datasets=dataset_scopes(CRS))
+    return reading.by_vocabulary[vocabulary]
 
 
 def _matches(query: str) -> tuple[QualifierMatch, ...]:

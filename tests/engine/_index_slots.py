@@ -10,7 +10,7 @@ publishes it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 
 from code_index import FamilyQuery
 from code_index.query import CodeIndex
@@ -21,7 +21,6 @@ from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierSpan,
     TextReading,
-    Vocabulary,
     read_by_vocabulary,
 )
 from search.engine.region.phase_rank_bind import (
@@ -29,8 +28,7 @@ from search.engine.region.phase_rank_bind import (
     _QueryQualifiers,
     _read_sources,
 )
-from search.engine.region.state import shape_vocabulary
-from search.engine.retrieval.bound_values import shape_query
+from search.engine.retrieval.bound_values import shape_query, vocabulary_datasets
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import IdentityBindingUnbound, IdentitySlot
 from statvar_members import FiveTuple
@@ -94,24 +92,27 @@ def dataset_flow_slot_keys(dataset: str) -> tuple[SlotKeyDraft, ...]:
     )
 
 
-def dataset_vocabulary(dataset: str) -> Vocabulary:
+def dataset_vocabulary(dataset: str) -> frozenset[str]:
     """The vocabulary of a shape built from `dataset`'s rows, as qualifier matching reads it:
-    every property a family `dataset` publishes carries, read within its rows."""
-    return Vocabulary(
-        (
-            prop
-            for families in get_index().families_by_five_tuple.values()
-            for family in families
-            if dataset in family.datasets
-            for prop in family.properties
-        ),
-        datasets=(dataset,),
+    every property a family `dataset` publishes carries."""
+    return frozenset(
+        prop
+        for families in get_index().families_by_five_tuple.values()
+        for family in families
+        if dataset in family.datasets
+        for prop in family.properties
     )
 
 
-def crs_vocabulary() -> Vocabulary:
+def crs_vocabulary() -> frozenset[str]:
     """The vocabulary of a CRS shape (`dataset_vocabulary`)."""
     return dataset_vocabulary(CRS)
+
+
+def dataset_scopes(*datasets: str) -> dict[frozenset[str], tuple[str, ...]]:
+    """Each of `datasets`' vocabularies (`dataset_vocabulary`) and the dataset whose rows
+    its reading binds codes in, as `vocabulary_datasets` gives them for its shapes."""
+    return {dataset_vocabulary(dataset): (dataset,) for dataset in datasets}
 
 
 def unbound_index_slots(**five_tuple: str | None) -> list[IdentitySlot]:
@@ -147,12 +148,18 @@ def query_qualifiers(
     query_text: str | None = None,
     qualifiers: Sequence[CodedQualifier] | None = None,
     vocabularies: Iterable[frozenset[str]],
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> _QueryQualifiers:
-    """The query's matches, ties and owned phrases in each of `vocabularies`, as the prune
-    step reads them from one reading of each text source."""
+    """The query's matches, ties and owned phrases in each of `vocabularies`, read within
+    the rows of its `datasets` entry, as the prune step reads them from one reading of each
+    text source."""
     vocabularies = tuple(vocabularies)
     sources = _read_sources(
-        variable, dropped_qualifier_phrases, query_text=query_text, vocabularies=vocabularies
+        variable,
+        dropped_qualifier_phrases,
+        query_text=query_text,
+        vocabularies=vocabularies,
+        datasets=datasets,
     )
     return _match_query_qualifiers(sources, qualifiers=qualifiers, vocabularies=vocabularies)
 
@@ -163,10 +170,13 @@ def read_text(
     measure_index: MeasureIndex | None = None,
     *,
     vocabularies: Iterable[frozenset[str]] = (),
+    datasets: Mapping[frozenset[str], Collection[str]] | None = None,
 ) -> TextReading:
-    """`text` read in every code system and in each of `vocabularies`
-    (`read_by_vocabulary`)."""
-    (reading,) = read_by_vocabulary([text], index, measure_index, vocabularies=vocabularies)
+    """`text` read in every code system and in each of `vocabularies`, within the rows of
+    its `datasets` entry (`read_by_vocabulary`)."""
+    (reading,) = read_by_vocabulary(
+        [text], index, measure_index, vocabularies=vocabularies, datasets=datasets
+    )
     return reading
 
 
@@ -174,10 +184,8 @@ def own_variable_spans(
     variable: str, *shapes: ShapeDraft
 ) -> dict[frozenset[str], tuple[QualifierSpan, ...]]:
     """`variable`'s spans in each of `shapes`' vocabularies, as the prune step stores them."""
+    scopes = vocabulary_datasets(shapes)
     reading = read_text(
-        variable,
-        get_index(),
-        get_measure_index(),
-        vocabularies=[shape_vocabulary(shape) for shape in shapes],
+        variable, get_index(), get_measure_index(), vocabularies=scopes, datasets=scopes
     )
     return {vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()}
