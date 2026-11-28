@@ -1592,8 +1592,8 @@ def _dispatch_refresh(
 ) -> dict[str, ProvenanceRefresh]:
     """The refresh dates of the provenances `selections` dispatch, called before the fetch so
     a run's source tokens are never newer than its rows. Dates `precomputed_probe` holds
-    serve as read; the rest come from one `node_arcs_many`. A declared dataset's id takes its
-    Dataset node's date, else its newest member's (`facets._probe_provenance_refresh`)."""
+    serve as read; the rest come from one `node_arcs_many`. A declared dataset's id takes the
+    newest of its Dataset node's date and every member's (`facets._probe_provenance_refresh`)."""
     refs = dispatched_provenances(selections)
     known = precomputed_probe.provenance_refresh if precomputed_probe is not None else {}
     missing = [ref for ref in refs if ref not in known]

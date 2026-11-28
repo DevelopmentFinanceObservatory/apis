@@ -185,7 +185,7 @@ def parse_index(
     _check_datasets(datasets, statvars)
     _check_party_words(datasets, parties)
     _check_whole_totals(parties, whole_total_sets)
-    _check_source_codes(source_codes, [*statvars, *listed_statvars])
+    _check_source_codes(source_codes, [*statvars, *listed_statvars], members=dataset_members)
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     _check_implied_values(implied_values, declarations, codes, [*statvars, *listed_statvars])
     served_composites = _check_composites(composites, datasets, statvars)
@@ -1086,13 +1086,22 @@ def _parse_value_parents(rows: Iterable[Mapping]) -> dict[str, str]:
     return parents
 
 
-def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVarRow]) -> None:
+def _check_source_codes(
+    rows: Sequence[SourceCodeRow],
+    statvars: Sequence[StatVarRow],
+    *,
+    members: Mapping[str, Sequence[str]],
+) -> None:
     """Checks the `source_codes` rows against the StatVar rows.
 
     Raises `IndexFormatError` for a code that is empty or not upper-cased and stripped, a
     `(provenance, code)` pair on two rows, a row naming no StatVar, and a dcid that is no
-    StatVar row of the index or whose row does not carry the code's provenance.
+    StatVar row of the index or whose row does not carry the code's dataset: the declared
+    dataset `members` (each dataset's member provenances) lists the code's provenance under,
+    else the provenance itself, as `CodeIndex.dataset_of` reads it. A code row carries the
+    provenance that asserted the code's arc and a StatVar row the datasets holding it.
     Search answers a code with these rows, so each must be a StatVar it serves from that source."""
+    dataset_of = {provenance: dataset for dataset, held in members.items() for provenance in held}
     provenances = {row.dcid: row.datasets for row in statvars}
     seen: set[tuple[str, str]] = set()
     for row in rows:
@@ -1116,7 +1125,7 @@ def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVa
                     f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, which "
                     "is no StatVar row of the index"
                 )
-            if row.provenance not in provenances[dcid]:
+            if dataset_of.get(row.provenance, row.provenance) not in provenances[dcid]:
                 raise IndexFormatError(
                     f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, whose "
                     f"row carries provenances {list(provenances[dcid])!r}"

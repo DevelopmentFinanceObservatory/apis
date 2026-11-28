@@ -46,7 +46,7 @@ from materialise.facet_collapse import (
     facet_rank,
     keep_mask,
 )
-from materialise.method_status import status_of
+from materialise.member_folds import status_of
 from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import (

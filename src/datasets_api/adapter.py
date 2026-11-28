@@ -492,16 +492,17 @@ def provenance_pin(
     identity: Mapping[str, object], *, code_index: CodeIndex
 ) -> frozenset[str] | None:
     """The provenances `identity`'s `facets.provenance` binds, as a `ref` or a set of
-    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none. A ref naming a
-    dataset of several member provenances binds its members
-    (`code_index.query.CodeIndex.provenances_of`), whose facets the catalogue admits; any
-    other ref binds itself."""
+    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none. Each ref binds the
+    member provenances of its dataset (`CodeIndex.provenances_of` of `CodeIndex.dataset_of`),
+    whose facets the catalogue admits, as Search scopes a ref (`search.engine.source_scope.read_provenances`):
+    a declared dataset's id and a member provenance bind every member, and a plain table's
+    provenance binds itself."""
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     return (
         frozenset(
             provenance
             for ref in pinned_refs(facets)
-            for provenance in code_index.provenances_of(ref)
+            for provenance in code_index.provenances_of(code_index.dataset_of(ref))
         )
         or None
     )
@@ -513,8 +514,8 @@ def pinned_provenance_scope(
     """Bind the request's catalogue narrowed to `identity`'s pinned provenances
     (`provenance_pin`, `origin_catalogue.scoped_reads`) for every read of a mint of it, so
     a pinned source is admitted before DFO precedence and a base pin serves at a place
-    where a DFO table also holds data. A pinned dataset of several member provenances
-    admits each member. Binds nothing for an identity that pins no provenance.
+    where a DFO table also holds data. A declared dataset's id binds its member provenances,
+    so the pin admits each member. Binds nothing for an identity that pins no provenance.
 
     A composite identity's pin names no table, so a caller derives its components first
     (`composite_components`) and scopes each component's reads by its component identity.

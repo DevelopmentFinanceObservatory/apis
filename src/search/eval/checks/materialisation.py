@@ -15,7 +15,9 @@ Reads, on each definite part's spec (``parts[].spec``):
 A bare answer passes on ``has_data`` and a breadth answer on every dimension counting
 something. An exact count is checked, within 5 percent, against the oracle's own count of
 the facets the answer states it serves, inside the coverage window, and under a ``latest``
-request at each StatVar's one period. A role-bearing answer's StatVar serves the year the
+request at each StatVar's one period. A facet's provenance is read as the dataset it is a
+member of in the bound release's code index (``CodeIndex.dataset_of``), the ref an answer
+states. A role-bearing answer's StatVar serves the year the
 coverage index elects for it over those facets and the bound roles
 (``CoverageIndex.elected_years``), from the series holding that year. A place-keyed
 answer's StatVar, and a role-bearing one the index elects no year for, serves its latest
@@ -38,8 +40,8 @@ confirmed against another coverage stamp, or mixing ``observationAbout`` with a 
 converted answer whose conversion left rows out of its count; a non-role answer with a
 partial preview whose planned places are not on the wire; a non-role answer naming no place
 at all; a non-role answer at whose places the graph holds no records, as at a region
-node; and a composite answer whose components the code index cannot derive. A failed graph, coverage or members read (``base.READ_ERRORS``), or a missing client,
-is an infrastructure result. Any other error propagates.
+node; and a composite answer whose components the code index cannot derive. A failed graph, coverage or members read (``base.READ_ERRORS``), a missing client, or
+no bound release to read a facet's dataset from, is an infrastructure result. Any other error propagates.
 
 The check reads the graph once per definite part, so it registers ``modal_only``: the driver
 runs it on the modal sample alone.
@@ -49,7 +51,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from code_index.composites import (
     DECLARED_COMPOSITES,
@@ -103,6 +105,9 @@ _FACET_AXIS_FIELDS = {
 }
 """The `Facet` field holding each axis of `resolved.facets`."""
 
+type _DatasetOf = Callable[[str], str]
+"""The dataset a provenance's rows carry (`CodeIndex.dataset_of` of the bound release)."""
+
 type _Stated = tuple[str | None, bool]
 """One axis of `resolved.facets`: its `ref`, and whether a `request_basis` binds it."""
 
@@ -133,8 +138,18 @@ def _axis_admits(stated: _Stated | None, value: str | None) -> bool:
     return value == ref
 
 
+def _axis_values(facet: object, dataset_of: _DatasetOf) -> tuple[str | None, ...]:
+    """`facet`'s value on each axis of `_FACET_AXIS_FIELDS`, its provenance read as the
+    dataset it is a member of (`dataset_of`), the value an answer states."""
+    values = []
+    for axis, attribute in _FACET_AXIS_FIELDS.items():
+        value = cast("str | None", getattr(facet, attribute, None))
+        values.append(dataset_of(value) if axis == "provenance" and value is not None else value)
+    return tuple(values)
+
+
 def _stated_groups(
-    facets: Sequence[Facet], stated: Mapping[str, _Stated]
+    facets: Sequence[Facet], stated: Mapping[str, _Stated], dataset_of: _DatasetOf
 ) -> dict[_FacetGroup, list[Facet]]:
     """The facets of one series that `stated` admits on every axis (`_axis_admits`), by
     group. A group is one cadence of one provenance, measurement method and unit, since a
@@ -144,7 +159,7 @@ def _stated_groups(
     (cadence_of,) = cadences_by_member([facets])
     groups: dict[_FacetGroup, list[Facet]] = {}
     for facet in facets:
-        values = tuple(getattr(facet, field) for field in _FACET_AXIS_FIELDS.values())
+        values = _axis_values(facet, dataset_of)
         if all(
             _axis_admits(stated.get(axis), value)
             for axis, value in zip(_FACET_AXIS_FIELDS, values, strict=True)
@@ -272,6 +287,7 @@ def _reachable_totals(
     window: TimeWindow | None,
     latest: bool,
     elected: Mapping[str, int],
+    dataset_of: _DatasetOf,
 ) -> int | None:
     """The totals the stated facets can give across `facets_by_series`, each series keyed by
     its StatVar, as a bitset whose bit `t` is set when one stated group per series sums to
@@ -292,7 +308,9 @@ def _reachable_totals(
     if latest:
         by_sv: dict[str, list[list[list[Facet]]]] = {}
         for sv, facets in facets_by_series:
-            by_sv.setdefault(sv, []).append(list(_stated_groups(facets, stated).values()))
+            by_sv.setdefault(sv, []).append(
+                list(_stated_groups(facets, stated, dataset_of).values())
+            )
         for sv, series_groups in by_sv.items():
             if sv in elected:
                 served = _elected_totals(series_groups, elected[sv], window)
@@ -305,7 +323,7 @@ def _reachable_totals(
         return totals
     for _sv, facets in facets_by_series:
         points = 0
-        for group in _stated_groups(facets, stated).values():
+        for group in _stated_groups(facets, stated, dataset_of).values():
             points |= 1 << _series_points(group, facets, window=window)
         totals = _add_totals(totals, points or 1)
     return totals
@@ -364,7 +382,7 @@ def _role_series_facets(
 
 
 def _stated_admits(
-    stated: Mapping[str, _Stated], coverage: CoverageSnapshot
+    stated: Mapping[str, _Stated], coverage: CoverageSnapshot, dataset_of: _DatasetOf
 ) -> Callable[[str, str], bool]:
     """Whether a coverage row's facet is one the answer states it serves on every axis
     (`_axis_admits`), given the row's variable and facet id, as `_stated_groups` admits
@@ -372,10 +390,10 @@ def _stated_admits(
     metadata = coverage.index.facet_metadata
 
     def admits(_variable: str, facet_id: str) -> bool:
-        meta = metadata.get(facet_id)
+        values = _axis_values(metadata.get(facet_id), dataset_of)
         return all(
-            _axis_admits(stated.get(axis), getattr(meta, field, None))
-            for axis, field in _FACET_AXIS_FIELDS.items()
+            _axis_admits(stated.get(axis), value)
+            for axis, value in zip(_FACET_AXIS_FIELDS, values, strict=True)
         )
 
     return admits
@@ -572,6 +590,10 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
     reads = _counted_reads(spec, stat_vars, stated, window, ctx)
     if isinstance(reads, Result):
         return reads
+    try:
+        dataset_of = get_index().dataset_of
+    except ReleaseNotBound:
+        return infra_error("an exact count reads facets as their datasets from a bound release")
 
     if any(role in _COVERAGE_ROLE_FOR_AXIS for _ref, role in entities):
         if ctx.coverage is None:
@@ -604,14 +626,19 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
                 snapshot.index.elected_years(
                     variables=read.stat_vars,
                     bound=read_bound,
-                    admits=_stated_admits(read.stated, snapshot),
+                    admits=_stated_admits(read.stated, snapshot, dataset_of),
                 )
                 if latest
                 else {}
             )
             # Coverage holding no row of the bound tuples reaches a total of 0 alone.
             served_totals = _reachable_totals(
-                facets_by_series, read.stated, window=read.window, latest=latest, elected=elected
+                facets_by_series,
+                read.stated,
+                window=read.window,
+                latest=latest,
+                elected=elected,
+                dataset_of=dataset_of,
             )
             totals = _add_totals(totals, served_totals or 1)
         return _count_result(totals, expected_count)
@@ -638,6 +665,7 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
             window=read.window,
             latest=latest,
             elected={},
+            dataset_of=dataset_of,
         )
         if served_totals is not None:
             totals = served_totals if totals is None else _add_totals(totals, served_totals)

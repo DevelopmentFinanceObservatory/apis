@@ -42,6 +42,7 @@ from materialise.convert import converted_facets, deflator_key
 from materialise.errors import UpstreamResponseError
 from materialise.facets import unit_currency_code
 from materialise.graph import GraphReader
+from materialise.member_folds import dataset_recipe_id
 from materialise.national_currency import read_national_currencies
 from materialise.rate_tables import (
     RateTable,
@@ -133,8 +134,11 @@ class ConversionCatalogue:
         object.__setattr__(self, "revision", _revision(self))
 
     def recipe(self, provenance: str) -> ConversionRecipe | None:
-        """The recipe `provenance` names, None when it names none."""
-        recipe_id = self.recipes.get(provenance)
+        """The recipe `provenance` converts under, as a mint resolves it
+        (`materialise.recipes.resolve_recipe`): its own, or for a declared dataset's id, or a
+        member's, the dataset node's, else the one every member names
+        (`materialise.member_folds.dataset_recipe_id`). None when it names none."""
+        recipe_id = dataset_recipe_id(provenance, recipe_of=self.recipes.get)
         return RECIPE_BODIES[recipe_id] if recipe_id is not None else None
 
     def served_recipe(self, provenances: Iterable[str]) -> ConversionRecipe | None:
@@ -256,11 +260,13 @@ def _subjects(reader: GraphReader, dcid: str, prop: str, deadline: float | None)
 
 
 def _provenance_recipes(reader: GraphReader, deadline: float | None) -> dict[str, str]:
-    """Each provenance's recipe, as the materialiser elects it (`elect_recipe`) from the
-    same arcs `resolve_recipe` reads. A provenance can elect a recipe only when it or one
-    of its Datasets names one with a body, so the candidates are the nodes naming such a
-    recipe and the provenances of every Dataset among them. A candidate the materialiser
-    would refuse, such as one naming two recipes, has none."""
+    """Each provenance's recipe, and each Dataset's that names one, as the materialiser elects
+    it (`elect_recipe`) from the same arcs `resolve_recipe` reads. A provenance can elect a
+    recipe only when it or one of its Datasets names one with a body, so the candidates are
+    the nodes naming such a recipe and the provenances of every Dataset among them. A Dataset
+    naming one keeps it under its own id, which a declared dataset's answer reads
+    (`ConversionCatalogue.recipe`). A candidate the materialiser would refuse, such as one
+    naming two recipes, has none."""
     naming = sorted(
         {
             subject
@@ -276,7 +282,7 @@ def _provenance_recipes(reader: GraphReader, deadline: float | None) -> dict[str
     datasets = {dataset for node in candidates for dataset in recipe_datasets(arcs[node])}
     arcs = _read_missing(reader, arcs, sorted(datasets), deadline)
     recipes: dict[str, str] = {}
-    for provenance in sorted(candidates):
+    for provenance in sorted(candidates | set(naming)):
         try:
             recipe = elect_recipe(
                 provenance_id=provenance, provenance_arcs=arcs[provenance], dataset_arcs=arcs

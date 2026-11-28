@@ -59,6 +59,7 @@ from materialise.facets import (
 )
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.group_facets import group_served
+from materialise.member_folds import dataset_policies
 from materialise.place_scope import (
     MAX_EVERY_PLACE,
     AvailabilityReader,
@@ -347,10 +348,12 @@ def _isolated(
         return _profile(
             stat_var,
             probe(),
-            policies={
-                axis: graph.default_facet_policy(stat_var=stat_var, axis=axis)
-                for axis in FACET_AXES
-            },
+            policies=dataset_policies(
+                {
+                    axis: graph.default_facet_policy(stat_var=stat_var, axis=axis)
+                    for axis in FACET_AXES
+                }
+            ),
             places=places,
             countries_fallback=countries_fallback,
         )

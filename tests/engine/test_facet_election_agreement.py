@@ -1085,14 +1085,14 @@ def test_a_plan_and_a_mint_continue_a_series_with_its_estimates_alike(
     dispatches, whether each series is read on its own or one facet serves the whole scope.
     Each series' group leads with the reported facet, so the answer states the elected
     method. WEO's `Estimated` is a declared projection pair
-    (`method_status.projection_methods`), which a read opting in to nothing holds back, so
+    (`member_folds.projection_methods`), which a read opting in to nothing holds back, so
     then neither continues with it. A window whose `include` names `"projected"` continues
     with it on both."""
-    from materialise import method_status
+    from materialise import member_folds
     from tests.materialise import _weo_recorded as weo
 
     if not declared:
-        monkeypatch.setattr(method_status, "projection_methods", lambda _provenance: frozenset())
+        monkeypatch.setattr(member_folds, "projection_methods", lambda _provenance: frozenset())
     continued_by = None if declared and not include else continued_by
 
     facets_by_place = weo.recorded_facets()
@@ -1231,13 +1231,13 @@ def test_a_plan_continues_the_whole_selection_a_mint_serves(
     cadence, and continues the series they hold together. A plan states continued estimates
     exactly when the mint's frame holds an estimated row, whether each series is read on its
     own or one facet serves the whole scope. WEO's `Estimated` is a declared projection pair
-    (`method_status.projection_methods`), which a read opting in to nothing holds back, so
+    (`member_folds.projection_methods`), which a read opting in to nothing holds back, so
     neither the plan nor the mint continues with it. Undeclared, it continues as estimates."""
-    from materialise import method_status
+    from materialise import member_folds
     from tests.materialise import _weo_recorded as weo
 
     if not declared:
-        monkeypatch.setattr(method_status, "projection_methods", lambda _provenance: frozenset())
+        monkeypatch.setattr(member_folds, "projection_methods", lambda _provenance: frozenset())
     continued = continued and not declared
 
     facets_by_place, values = _with_revised(revised, estimates=estimates, without_lead=without_lead)

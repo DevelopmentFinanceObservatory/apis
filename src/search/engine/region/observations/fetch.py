@@ -64,7 +64,7 @@ from materialise import (
 from materialise.convert import ConversionRecord
 from materialise.facet_collapse import FacetRank, FacetRankStats, facet_rank
 from materialise.facets import FacetSelection, UnitRequest, merge_facets_by_series
-from materialise.method_status import status_of
+from materialise.member_folds import status_of
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import (
     NonCurrencyUnitError,
@@ -806,7 +806,7 @@ def _estimated_dates(
 ) -> frozenset[str]:
     """The dates of the rows of `rows` carrying a measurement method the measurement-method
     classification classes estimated under the row's provenance
-    (`materialise.method_status.status_of`), as the rows of a continuation
+    (`materialise.member_folds.status_of`), as the rows of a continuation
     (`materialise.facets.FacetSelection.continued_by`) do."""
     date = columns.index("time_period")
     method, provenance = columns.index("measurementMethod"), columns.index("provenance")

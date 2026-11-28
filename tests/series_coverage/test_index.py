@@ -845,6 +845,36 @@ def test_a_read_holds_back_partial_and_projected_years_unless_it_opts_in() -> No
     }
 
 
+def test_a_declared_dataset_holds_back_each_member_from_its_earliest_member_mark() -> None:
+    """`dataset/Ledger` holds one variable under North, which marks 2025 partial, and another
+    under South, which marks none. A mint's rows carry the dataset's id and are cut at its
+    earliest member mark (`materialise.member_folds.partial_mark`), so the index holds back
+    South's 2025 too, and both variables hold what the mint serves."""
+    from tests.materialise._ledger import NORTH, SOUTH, bound_ledger_index
+
+    north, south = "ledger-north", "ledger-south"
+    idx = _election_index(
+        [
+            *_donor_rows(_WINDOW_SV, {2025: 3, 2024: 3}, facet_id=north),
+            *_donor_rows(_SECOND_SV, {2025: 3, 2024: 3}, facet_id=south),
+        ],
+        {
+            north: FacetMetadata(provenance_id=NORTH, unit="USD"),
+            south: FacetMetadata(provenance_id=SOUTH, unit="USD"),
+        },
+    )
+    crs = dev_provenance_nodes()[_CRS_PROVENANCE]
+    unmarked = {prop: values for prop, values in crs.items() if prop != "partialObservationDate"}
+    nodes = {NORTH: {**unmarked, "partialObservationDate": ("2025",)}, SOUTH: unmarked}
+
+    with bound_ledger_index(), bound_catalogue(documenting(nodes)):
+        held = {sv: idx.years_held(variables=[sv]) for sv in (_WINDOW_SV, _SECOND_SV)}
+        opted = idx.years_held(variables=[_SECOND_SV], include=frozenset({"partial"}))
+
+    assert held == {_WINDOW_SV: {2024}, _SECOND_SV: {2024}}
+    assert opted == {2024, 2025}
+
+
 def test_a_facet_without_metadata_is_served_whole_and_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

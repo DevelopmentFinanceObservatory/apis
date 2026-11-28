@@ -8,7 +8,7 @@ A read holds back two kinds of years unless its window's `include` names them
   run starts at that period's year and ends at the newest year any served actual facet of the
   source holds (`Facet.latest_date`). A source whose served facets end before the period holds
   no partial run.
-- `projected`: the years a projection facet (`method_status.is_projection`) continues a
+- `projected`: the years a projection facet (`member_folds.is_projection`) continues a
   served series past its actual years, by the rule the mint continues a series by
   (`facets.continuation`, `facets.continues_series`). The run starts at the earliest year a
   continuing projection facet holds after the earliest year a continued series ends, and ends
@@ -18,7 +18,7 @@ A read holds back two kinds of years unless its window's `include` names them
 A run's source is the dataset a facet's provenance is a member of
 (`code_index.shared.dataset_of`), the provenance itself for a plain table, as a row's
 `provenance` cell holds it, and a declared dataset's partial period is the earliest its members
-mark (`held_back.partial_mark`).
+mark (`member_folds.partial_mark`).
 
 A served facet is one the read dispatches. The read dispatches no projection facet it holds
 back, so the projected runs read every candidate of the series.
@@ -42,7 +42,7 @@ from code_index.shared import dataset_of
 from materialise.facets import at_cadence, cadences_by_member, continues_series, read_as_datasets
 from materialise.graph import Facet
 from materialise.held_back import HeldKind, cut_catalogue, partial_mark
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection
 from materialise.partial_period import start_of
 from origin_catalogue import Catalogue
 from origin_catalogue.catalogue import Undocumented

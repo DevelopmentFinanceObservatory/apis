@@ -832,14 +832,15 @@ def test_a_mint_of_a_dataset_of_two_member_provenances_serves_both_members(pin):
 
 @pytest.mark.parametrize(
     ("dataset_refreshed", "token"),
-    [(None, "2026-05-01"), ("2026-06-01", "2026-06-01")],
-    ids=["newest_member", "dataset_node"],
+    [(None, "2026-05-01"), ("2026-06-01", "2026-06-01"), ("2026-04-01", "2026-05-01")],
+    ids=["newest_member", "dataset_node", "member_newer_than_node"],
 )
 def test_a_dataset_of_two_member_provenances_cites_its_id_with_one_refresh_date(
     dataset_refreshed, token
 ):
-    """The source token of a dataset of several members is its Dataset node's refresh date,
-    else the newest member's (`facets._probe_provenance_refresh`)."""
+    """The source token of a dataset of several members is the newest refresh date of its
+    Dataset node and every member (`facets._probe_provenance_refresh`), so a member's new
+    import moves it."""
     spec_id, sidecar = _ledger_spec()
 
     manifest = _mint(

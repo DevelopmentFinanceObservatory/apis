@@ -18,6 +18,7 @@ from code_index.composites import component_identities
 from code_index.declarations import COMPOSITES, CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api.config import DatasetsBuildSettings
+from graph_release.context import bound_release, current_release
 from materialise import composite as composite_module
 from origin_catalogue import CatalogueNotBound, current_catalogue, scoped_reads
 from search.models import BaseIdentity, ResolvedStatVars
@@ -434,7 +435,8 @@ def _composite_reads(mint: CompositeMint) -> tuple[object, ...]:
 
 def test_a_composite_mint_reads_its_counts_under_the_request_s_catalogue():
     """A `CompositeMint` given the request's catalogue reads its headline, StatVar counts and
-    parties under it, so a context with no catalogue bound reads what the bound one reads."""
+    parties under it, so a context binding the request's release and no catalogue reads what
+    the bound one reads."""
     populated: _Populated = {
         _BILATERAL_206: (_DAC2A_FACET, 100, (2020, 2021)),
         _DAC2A_IMPUTED: (_DAC2A_FACET, 7, (2020, 2021)),
@@ -451,8 +453,14 @@ def test_a_composite_mint_reads_its_counts_under_the_request_s_catalogue():
             catalogue=current_catalogue(),
         )
 
+    release = current_release()
+
+    def without_a_catalogue(composite: CompositeMint) -> tuple[object, ...]:
+        with bound_release(release):
+            return _composite_reads(composite)
+
     bound = _composite_reads(mint())
-    unbound = contextvars.Context().run(_composite_reads, mint())
+    unbound = contextvars.Context().run(without_a_catalogue, mint())
 
     assert bound[0] is not None
     assert unbound == bound

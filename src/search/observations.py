@@ -35,7 +35,8 @@ from code_index.types import CompositeDeclaration
 from description.blocks import documentation_link
 from materialise.bundle_sources import composite_bundle_label
 from materialise.enrichment import read_party_kinds
-from materialise.provenance_doc import ProvenanceNameReader, dataset_origin, provenance_names
+from materialise.member_folds import dataset_origin
+from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from materialise.roles import axis_for_role
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from origin_catalogue import ProvenanceRow, current_catalogue
@@ -143,7 +144,7 @@ def _dataset_citation(
     """The name, source and Data Commons of `dcid` when it is a declared dataset with member
     provenances (`CodeIndex.provenances_of` differs from `(dcid,)`), else None. The name is
     `labels`', else the declared label. The source and Data Commons are those every member's
-    catalogue row shares (`materialise.provenance_doc.dataset_origin`, which the mint's
+    catalogue row shares (`materialise.member_folds.dataset_origin`, which the mint's
     citation reads too), and None where the members name different ones or none has a row."""
     index = get_index()
     members = index.provenances_of(dcid)
@@ -493,7 +494,7 @@ class SeriesRead:
     each facet axis the series' facet declares (`provenance`, `measurementMethod`, `unit`) to
     its ref. `conversion` describes a converted series, whose facet `unit` is the native unit
     the rows converted from. `holds_estimates` is whether a point's own method is classed
-    estimated (`materialise.method_status.status_of`), as a continuation's points are, while
+    estimated (`materialise.member_folds.status_of`), as a continuation's points are, while
     `facets` states the facet the series was elected by.
     """
 

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from materialise.facets import bound_coverage_facets
 from materialise.held_back import HELD_KINDS, cut_catalogue
 from materialise.held_runs import HeldRun, merged_runs, read_runs
+from materialise.member_folds import dataset_name
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     PairPlan,
@@ -165,9 +166,11 @@ def _window_read(window: IdentityWindow) -> tuple[PlanYears, frozenset[HeldKind]
 
 
 def _catalogue_names() -> Callable[[str], str | None]:
-    """The name the bound origin catalogue's provenance table gives each source."""
+    """The name the bound origin catalogue's provenance table gives each source, as a mint's
+    held-back run names it (`materialise.member_folds.dataset_name`): for a declared dataset's
+    id, the name its members' rows share, else its declared label."""
     catalogue = cut_catalogue()
-    return lambda source: row.name if (row := catalogue.provenance(source)) else None
+    return lambda source: dataset_name(source, catalogue=catalogue)
 
 
 def _stated(

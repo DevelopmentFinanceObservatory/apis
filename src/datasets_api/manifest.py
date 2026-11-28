@@ -100,6 +100,7 @@ from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
 from materialise.held_back import HeldKind, Judgement, judge, last_year_before, source_of
 from materialise.held_runs import HeldRun
+from materialise.member_folds import dataset_name
 from materialise.partial_period import reaches, start_of
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
@@ -506,20 +507,20 @@ def _stated_run(
     catalogue: Catalogue | None = None,
 ) -> dict[str, object]:
     """`run` as the frame `result` holds states it (`manifest_models.HeldBack`): `catalogue`,
-    by default the one bound, names its source, and a partial run carries its reported share
-    (`_reported_share`)."""
+    by default the one bound, names its source (`materialise.member_folds.dataset_name`, the
+    name a declared dataset's members share, else its declared label), and a partial run
+    carries its reported share (`_reported_share`)."""
     catalogue = catalogue or current_catalogue()
     share = (
         _reported_share(result, run=run, component_of=_component_of(result))
         if run.kind == "partial"
         else None
     )
-    row = catalogue.provenance(run.source)
     return HeldBack(
         kind=run.kind,
         served=served,
         source=run.source,
-        source_name=None if row is None else row.name,
+        source_name=dataset_name(run.source, catalogue=catalogue),
         start_year=run.start_year,
         end_year=run.end_year,
         reported_share=None if share is None else ReportedShare.model_validate(share),

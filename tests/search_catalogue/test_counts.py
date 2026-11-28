@@ -292,6 +292,49 @@ def test_the_aid_block_counts_the_rows_of_every_declared_dataset(tmp_path):
     assert counted.places["country/ZMB"].variables == 1
 
 
+def test_the_aid_block_counts_a_declared_dataset_s_member_rows_under_its_id(tmp_path):
+    """`dataset/Ledger` holds its rows under two member provenances
+    (`tests.materialise._ledger`), and its declaration is keyed by its id: the member rows
+    are its aid rows, and a party that totals others in the dataset alone counts in none."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    north, south = "facet-north", "facet-south"
+    table, horizon = coverage_table(
+        [
+            (V1, north, "country/FRA", "country/KEN", [2018]),
+            (V1, south, "country/DEU", "country/ETH", [2020]),
+            (V1, south, "GroupOfSeven", "country/ETH", [2020]),
+        ]
+    )
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {
+            north: FacetMetadata(provenance_id=NORTH),
+            south: FacetMetadata(provenance_id=SOUTH),
+        },
+        horizon=horizon,
+    )
+    g7 = PartyRow(
+        dcid="GroupOfSeven",
+        kind="party",
+        published=((LEDGER, "origin"),),
+        dataset_kinds=((LEDGER, "total"),),
+    )
+
+    with bound_ledger_index():
+        counted = catalogue_counts(
+            catalogue=origin_snapshot(tmp_path),
+            coverage=coverage,
+            datasets={LEDGER},
+            parties={"GroupOfSeven": g7},
+        )
+
+    assert counted.counts.aid == AidCounts(
+        donors=2, recipients=2, years=YearRange(first=2018, last=2020)
+    )
+
+
 def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
     snapshot = origin_snapshot(tmp_path)
     tables = replace(snapshot.tables, withheld_variables=frozenset({V5}))

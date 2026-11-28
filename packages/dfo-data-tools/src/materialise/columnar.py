@@ -23,7 +23,7 @@ from materialise.held_back import (
     last_year_before,
     partial_mark,
 )
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection
 from materialise.window import (
     AppliedWindow,
     Coverage,

@@ -1626,12 +1626,13 @@ def served_units(plan: ReadPlan) -> frozenset[str | None]:
 
 
 def served_facet_keys(plan: ReadPlan) -> frozenset[tuple[str | None, str | None]]:
-    """The native unit and provenance of each facet `plan` serves (`served_units`)."""
+    """The native unit and provenance-axis value (`provenance_axis`, a declared dataset's id
+    for a member's facet) of each facet `plan` serves (`served_units`)."""
     if isinstance(plan, PairPlan):
-        return frozenset((f.unit, f.provenance_id) for s in plan.served for f in s.group)
+        return frozenset((f.unit, provenance_axis(f)) for s in plan.served for f in s.group)
     if plan.population == 0:
         return frozenset()
-    return frozenset((facet.unit, facet.provenance_id) for facet in plan.served_facets)
+    return frozenset((facet.unit, provenance_axis(facet)) for facet in plan.served_facets)
 
 
 def plan_roles(plan: ReadPlan) -> tuple[str, ...]:

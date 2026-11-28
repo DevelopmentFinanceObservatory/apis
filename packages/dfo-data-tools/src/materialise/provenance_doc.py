@@ -135,11 +135,11 @@ from dfo_provenance_docs import (
 )
 
 from code_index.composites import DECLARED_COMPOSITES
-from code_index.shared import get_index
 from dc_graph import ArcTarget, GraphReadError, display_name
 from dfo_platform.roles import RoleAxis
 from materialise.cadence import known_cadence_label
 from materialise.graph import SubjectPage
+from materialise.member_folds import dataset_origin, row_licence
 from materialise.roles import axis_noun
 from origin_catalogue import Catalogue, DataCommons, SourceRef
 from origin_catalogue.card_facts import (
@@ -995,9 +995,10 @@ def read_source_citations(
     when `documented`, its entry's documentation (`_catalogued_documentation`). Any other
     dcid, such as a declared dataset's id or a DFO provenance newer than the loaded
     catalogue, is read from the graph whole. It carries no source or Data Commons, except a
-    declared dataset of the bound release's code index (`CodeIndex.provenances_of`), which
-    takes the source and Data Commons its listed member provenances' rows share
-    (`dataset_origin`), as Search cites it (`search.observations.provenance_ref`):
+    declared dataset of the bound release's code index, which takes the source and Data
+    Commons its listed member provenances' rows share (`member_folds.dataset_origin`), as
+    Search cites it (`search.observations.provenance_ref`), and, when its node states no
+    `licenseType`, the licence those rows share (`member_folds.row_licence`):
 
     - `name`: the parent Dataset's `name` when the node is a Provenance with an `isPartOf`
       parent typed Dataset (`first_dataset_parent`), else the node's own, each through
@@ -1039,6 +1040,18 @@ def read_source_citations(
             continue
         if (origin := dataset_origin(dcid, catalogue=catalogue)) is not None:
             citation = replace(citation, source=origin[0], data_commons=origin[1])
+        unlicensed = (citation.licence, citation.licence_type, citation.licence_url) == (
+            None,
+            None,
+            None,
+        )
+        if unlicensed and (licence := row_licence(dcid, catalogue=catalogue)) is not None:
+            citation = replace(
+                citation,
+                licence=licence.label,
+                licence_type=licence.type,
+                licence_url=licence.url,
+            )
         if documented:
             documentation, failed = _read_citation_documentation(
                 graph,
@@ -1052,25 +1065,6 @@ def read_source_citations(
             )
         citations[dcid] = citation
     return citations
-
-
-def dataset_origin(dcid: str, *, catalogue: Catalogue) -> tuple[SourceRef, DataCommons] | None:
-    """The source and Data Commons the catalogue rows of `dcid`'s member provenances share,
-    when `dcid` is a declared dataset's id in the bound release's code index
-    (`CodeIndex.provenances_of`) and every member `catalogue` lists names the same pair.
-    `None` for any other dcid, for a dataset no member of which is listed, and for members
-    that disagree. A citation (`read_source_citations`) and a Search answer
-    (`search.observations.provenance_ref`) both cite a dataset by it.
-
-    Raises:
-        graph_release.context.ReleaseNotBound: no graph release is bound."""
-    members = get_index().provenances_of(dcid)
-    if members == (dcid,):
-        return None
-    rows = [row for member in members if (row := catalogue.provenance(member)) is not None]
-    if not rows or len({(row.source.ref, row.data_commons.id) for row in rows}) != 1:
-        return None
-    return rows[0].source, rows[0].data_commons
 
 
 def _catalogued_citation(

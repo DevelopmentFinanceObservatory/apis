@@ -26,7 +26,8 @@ and their observation counts can overlap or run past the range (`_points_exact`)
 conversion keeps only some of the years they span. The window is null when a counted series' facets leave its first or
 last year unknown, since the file's years could then run past either bound. The licence is
 the one served provenance's source-index entry's, as the origin catalogue holds it
-(`origin_catalogue.CardFacts`), so stating it reads nothing over the network.
+(`origin_catalogue.CardFacts`), and a declared dataset's the one its members' entries share
+(`materialise.member_folds.entry_licence`), so stating it reads nothing over the network.
 """
 
 from __future__ import annotations
@@ -34,7 +35,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from origin_catalogue import current_catalogue, entry_ref
+from materialise.member_folds import entry_licence
+from origin_catalogue import current_catalogue
 from search.engine.retrieval.coverage import (
     counted_rows,
     coverage_exclusions,
@@ -338,12 +340,9 @@ def coverage_kept_years(
 
 
 def provenance_licence(provenance: str) -> DownloadLicence | None:
-    """The licence of `provenance`'s source-index entry (`origin_catalogue.entry_ref`), or
-    None when the catalogue does not list the provenance or its entry's provenances name no
-    single licence."""
-    catalogue = current_catalogue()
-    row = catalogue.provenance(provenance)
-    facts = catalogue.dataset_facts(entry_ref(row)) if row is not None else None
-    if facts is None or facts.license_type is None:
-        return None
-    return DownloadLicence(label=facts.license_type)
+    """The licence of `provenance`'s source-index entry (`origin_catalogue.entry_ref`), or for
+    a declared dataset's id the licence its members' entries share
+    (`materialise.member_folds.entry_licence`). None when the catalogue lists no member, the
+    entries state none, or the members' entries name different ones."""
+    label = entry_licence(provenance, catalogue=current_catalogue())
+    return None if label is None else DownloadLicence(label=label)

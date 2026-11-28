@@ -47,7 +47,8 @@ from assembler.resolve import ResolvedSeries
 from description.facts import Coordinate, DrawnSeries, SelectionFacts, Span, StatusCounts
 from description.steps import ComposedUnit, SimpleUnit, Unit, VariableSide
 from dfo_platform.columns import PROVENANCE_COLUMN
-from materialise.method_status import method_status_classes, reported_provenances
+from materialise.member_folds import reported_sources
+from materialise.method_status import method_status_classes
 from materialise.statistics import count_statuses
 from materialise.unit_cells import composed_unit_sides
 
@@ -144,7 +145,7 @@ def _status(*, rows: Sequence[Mapping[str, object]], periods: Sequence[str]) -> 
         for period in periods
     )
     figures = count_statuses(
-        values_by_facet, classes=method_status_classes(), reported=reported_provenances()
+        values_by_facet, classes=method_status_classes(), reported=reported_sources()
     )
     return StatusCounts(estimated=figures.estimated, provisional=figures.provisional)
 

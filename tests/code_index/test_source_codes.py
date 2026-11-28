@@ -146,3 +146,37 @@ def test_the_fixture_index_names_the_debt_service_code_s_aggregate_and_by_credit
     assert {row.dcid for row in index.listed_statvars} == {
         dcid for row in index.source_codes for dcid in row.dcids
     }
+
+
+_LEDGER = "dataset/Ledger"
+_NORTH = "provenance/LedgerNorth"
+
+
+def _ledger_document(provenance: str) -> dict:
+    """`_document` with `dataset/Ledger` declared of two member provenances, one StatVar it
+    holds, and a code for that StatVar under `provenance`."""
+    payload = _document([{"provenance": provenance, "code": "LEDGER.CD", "dcids": ["Ledger_Flow"]}])
+    crs = payload["datasets"][0]
+    payload["datasets"].append(
+        {
+            **crs,
+            "id": _LEDGER,
+            "label": "Ledger",
+            "rank": crs["rank"] + 1,
+            "members": [_NORTH, "provenance/LedgerSouth"],
+        }
+    )
+    payload["statvars"].append(
+        {**payload["statvars"][0], "dcid": "Ledger_Flow", "datasets": [_LEDGER]}
+    )
+    return payload
+
+
+def test_a_code_a_member_provenance_asserts_names_a_statvar_its_dataset_holds():
+    """A code row carries the provenance asserting the code's arc, a member, and a StatVar
+    row the dataset holding it, so the loader compares them through the member map."""
+    index = parse_index(_ledger_document(_NORTH))
+
+    assert index.source_code_members("LEDGER.CD") == {_NORTH: ("Ledger_Flow",)}
+    with pytest.raises(IndexFormatError, match="whose row carries provenances"):
+        parse_index(_ledger_document(_OTHER))

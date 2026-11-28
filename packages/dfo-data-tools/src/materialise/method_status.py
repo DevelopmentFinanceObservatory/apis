@@ -6,7 +6,8 @@ whose method-less values are reported, and declares the methods each provenance 
 years after its last actual one. One file holds all three, so one content hash covers the
 classification. `materialise.statistics` counts a version's estimated and provisional values
 from it, `materialise.facets` continues a reported series with an estimated one by it, and
-`materialise.held_back` holds projected rows back by it.
+`materialise.held_back` holds projected rows back by it, each through
+`materialise.member_folds`, which reads a dataset id's member provenances.
 """
 
 from __future__ import annotations
@@ -83,35 +84,23 @@ def reported_provenances() -> frozenset[str]:
     series on the dev graph. World Bank IDS holds it by construction: the pipeline leaves the
     method of every year up to the last reported debt-stock year empty and marks every later
     year `dcid:Estimated` (`dfo-pipelines`, `int_ids_observations.sql`, its `last_reported`
-    CTE). A method-less value under any other provenance has an unknown status.
+    CTE). A method-less value under any other provenance has an unknown status. The file
+    keys each entry by a graph provenance; a reader holding a dataset id reads it through
+    `materialise.member_folds.reported_sources`.
     """
     return _method_status().reported_provenances
 
 
-def projection_methods(provenance: str | None) -> frozenset[str]:
-    """The `measurementMethod`s `provenance` uses only for years after its last actual year,
-    so every row under one is a projection. Empty for a provenance the file declares none
-    for, whose estimates are actual rows.
+def declared_projection_methods(provenance: str) -> frozenset[str]:
+    """The `measurementMethod`s the file declares `provenance` uses only for years after its
+    last actual year, so every row under one is a projection. Empty for a provenance the file
+    declares none for, whose estimates are actual rows. The file keys each entry by a graph
+    provenance; a reader holding a dataset id reads it through
+    `materialise.member_folds.projection_methods`, which joins its members' entries.
 
     Each entry rests on the evidence its `reported_provenances` entry cites: IMF WEO's
     `Estimated` series starts the year after its method-less series ends at all 1,472 pairs
     holding both on the dev graph, and World Bank IDS marks `Estimated` exactly the years
     after its last reported debt-stock year.
     """
-    if provenance is None:
-        return frozenset()
     return _method_status().projection_methods.get(provenance, frozenset())
-
-
-def is_projection(provenance: str | None, method: str | None) -> bool:
-    """Whether a row under `method` and `provenance` is a projection (`projection_methods`)."""
-    return method is not None and method in projection_methods(provenance)
-
-
-def status_of(method: str | None, provenance: str | None) -> StatusClass | None:
-    """The status of the values a facet with `method` under `provenance` holds: the
-    method's class, or for no method `reported` under a `reported_provenances` entry.
-    `None` when unknown."""
-    if method is None:
-        return "reported" if provenance in reported_provenances() else None
-    return method_status_classes().get(method)

@@ -63,6 +63,7 @@ from materialise.facets import (
     summed_counts,
 )
 from materialise.graph import Facet, FacetDefaultPolicy, GraphReader
+from materialise.member_folds import dataset_policy
 from materialise.window import RequestedWindow
 
 if TYPE_CHECKING:
@@ -247,7 +248,9 @@ def _group_declared_policies(
     graph: GraphReader,
 ) -> dict[str, FacetDefaultPolicy | None]:
     """Each axis the group leaves to selection, mapped to the graph policy every populated
-    member declares, or `None` when they declare none or disagree. Bound axes are absent. An
+    member declares, or `None` when they declare none or disagree, a provenance default naming
+    a member provenance read as its dataset (`member_folds.dataset_policy`). Bound axes are
+    absent. An
     index-sourced group reads its `measurementMethod` policy too, so a family whose members
     declare one method serves that method alone (`_resolve_group_axis_selections`)."""
     bindings = requests[0].facet_bindings
@@ -261,8 +264,9 @@ def _group_declared_policies(
         if bindings.get(axis, FacetBinding(state="unbound")).state == "bound":
             continue
         declared = {
-            graph.default_facet_policy(stat_var=request.stat_var, axis=axis)
+            None if policy is None else dataset_policy(axis, policy)
             for request in populated_requests
+            for policy in (graph.default_facet_policy(stat_var=request.stat_var, axis=axis),)
         }
         policies[axis] = next(iter(declared)) if len(declared) == 1 else None
     return policies

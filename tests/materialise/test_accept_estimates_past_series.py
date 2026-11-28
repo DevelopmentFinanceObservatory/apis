@@ -305,7 +305,7 @@ Zimbabwe and 2026 at France and Ecuador, through 2030."""
 def test_the_mints_figures_count_estimated_values_from_each_rows_method(
     window, provenance, estimated, provisional, continuations
 ):
-    from materialise.statistics import reported_provenances
+    from materialise.method_status import reported_provenances
 
     assert WEO in reported_provenances()
     assert _UNLISTED not in reported_provenances()

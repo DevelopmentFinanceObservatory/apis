@@ -17,7 +17,7 @@ and the year before, unconverted and before its window and held-back cuts
 
 A series is a row's variable, provenance, unit and role cells. Its `measurementMethod` is left
 out, so a series an estimate continues stays one series, and rows under a projection method
-(`method_status.is_projection`) are left out, since they hold no reported value. Only annual
+(`member_folds.is_projection`) are left out, since they hold no reported value. Only annual
 periods count, so a frame of a finer grain states no share. A pair whose rows the mint let go
 past its row ceiling (`YearTotals.capped`) states no share.
 """
@@ -47,7 +47,7 @@ from dc_sdmx.results import VALUE_COLUMN as RAW_VALUE_COLUMN
 from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.columnar import distinct_combinations, observed_values
 from materialise.held_back import source_of
-from materialise.method_status import is_projection
+from materialise.member_folds import is_projection
 
 __all__ = [
     "Basis",

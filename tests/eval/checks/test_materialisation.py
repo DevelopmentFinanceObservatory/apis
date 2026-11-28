@@ -253,6 +253,32 @@ def test_materialisation_exact_counts_the_other_source_when_stated():
     assert _score(_exact_response(20, facets=stated), facets).verdict == FAIL
 
 
+def test_materialisation_exact_counts_a_declared_dataset_over_every_member():
+    """An answer states a declared dataset's id, and the graph serves its series under the
+    member provenances (`tests.materialise._ledger`), so the count reads each facet as its
+    dataset and sums both members."""
+    from tests.materialise._ledger import LEDGER, NORTH, SOUTH, bound_ledger_index
+
+    facets = {
+        _ETH: [
+            _facet("f-north", range(2000, 2010), provenance=NORTH),
+            _facet("f-south", range(2010, 2020), provenance=SOUTH),
+            _facet("f-wdi", range(1990, 2020)),
+        ]
+    }
+    stated = {"provenance": {"basis": "fallback", "ref": LEDGER}}
+
+    with bound_ledger_index():
+        assert _score(_exact_response(20, facets=stated), facets).verdict == PASS
+        assert _score(_exact_response(10, facets=stated), facets).verdict == FAIL
+
+
+@pytest.mark.unbound_release
+def test_materialisation_exact_with_no_release_bound_is_infra():
+    ev = _score(_exact_response(10), _TWO_SOURCES)
+    assert (ev.verdict, ev.infra) == (U, True)
+
+
 def test_materialisation_exact_counts_overlapping_dates_of_one_group_once():
     """Two facets of one group at one observation period share 2015 to 2019: the series
     holds fifteen dates, not twenty."""

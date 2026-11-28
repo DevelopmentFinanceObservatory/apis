@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, final
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
-from code_index.shared import dataset_of, get_index
+from code_index.shared import dataset_of
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
 from dc_sdmx import Among, ContainedIn, EntityFilter
@@ -53,7 +53,13 @@ from materialise.graph import (
     GraphReadError,
     ProvenanceRefresh,
 )
-from materialise.method_status import is_projection, status_of
+from materialise.member_folds import (
+    dataset_policies,
+    is_projection,
+    newest_refresh,
+    refresh_nodes,
+    status_of,
+)
 from materialise.place_scope import (
     AvailabilityReader,
     DefaultPlaceScope,
@@ -1620,23 +1626,14 @@ def _probe_provenance_refresh(
     arc yields `ProvenanceRefresh(None)`, a source token with no date. Empty `provenance_ids`
     returns `{}` without a network call.
 
-    The id of a declared dataset among `provenance_ids`, whose member provenances in the bound
-    release's code index (`code_index.query.CodeIndex.provenances_of`) are other than itself,
-    takes its Dataset node's own date, else the newest of its members', which the same batch
-    reads."""
+    The id of a declared dataset among `provenance_ids` takes the newest of its Dataset node's
+    date and every member provenance's (`member_folds.refresh_nodes`,
+    `member_folds.newest_refresh`), which the same batch reads, so a member's new import moves
+    the dataset's token."""
     if not provenance_ids:
         return {}
-    index = get_index()
-    members = {
-        ref: provenances
-        for ref in provenance_ids
-        if (provenances := index.provenances_of(ref)) != (ref,)
-    }
-    read = list(
-        dict.fromkeys(
-            [*provenance_ids, *(p for ref in provenance_ids for p in members.get(ref, ()))]
-        )
-    )
+    nodes = {ref: refresh_nodes(ref) for ref in provenance_ids}
+    read = list(dict.fromkeys(node for ref in provenance_ids for node in nodes[ref]))
     arcs_by_id = graph.node_arcs_many(read, properties=_PROVENANCE_REFRESH_PROPERTIES)
 
     def own_date(dcid: str) -> str | None:
@@ -1644,14 +1641,10 @@ def _probe_provenance_refresh(
         last_values = arcs.get("lastDataRefreshDate", ()) if arcs is not None else ()
         return last_values[0] if last_values else None
 
-    refresh_by_id: dict[str, ProvenanceRefresh] = {}
-    for provenance_id in provenance_ids:
-        date = own_date(provenance_id)
-        if date is None:
-            member_dates = [d for p in members.get(provenance_id, ()) if (d := own_date(p))]
-            date = max(member_dates, default=None)
-        refresh_by_id[provenance_id] = ProvenanceRefresh(last_data_refresh_date=date)
-    return refresh_by_id
+    return {
+        ref: ProvenanceRefresh(last_data_refresh_date=newest_refresh(map(own_date, nodes[ref])))
+        for ref in provenance_ids
+    }
 
 
 def _flatten_bound_entities(role_bindings: Mapping[str, EntityFilter]) -> tuple[str, ...]:
@@ -1780,13 +1773,16 @@ def declared_default_policies(
     bindings: Mapping[str, FacetBinding], *, graph: GraphReader, stat_var: str
 ) -> dict[str, FacetDefaultPolicy | None]:
     """Each axis `bindings` leaves to selection (unbound, or a unit request), mapped to its
-    graph-declared default policy or `None`. Bound axes are absent. One read per axis, shared
-    by every axis's `select_facet` call."""
-    return {
-        axis: graph.default_facet_policy(stat_var=stat_var, axis=axis)
-        for axis in FACET_AXES
-        if bindings.get(axis, FacetBinding(state="unbound")).state != "bound"
-    }
+    graph-declared default policy or `None`, a provenance default naming a member provenance
+    read as its dataset (`member_folds.dataset_policies`). Bound axes are absent. One read per
+    axis, shared by every axis's `select_facet` call."""
+    return dataset_policies(
+        {
+            axis: graph.default_facet_policy(stat_var=stat_var, axis=axis)
+            for axis in FACET_AXES
+            if bindings.get(axis, FacetBinding(state="unbound")).state != "bound"
+        }
+    )
 
 
 def _declared_refs(
@@ -1828,7 +1824,7 @@ def rank_candidates(
     provenance is in `precedence` (`dfo_precedence`), then by descending `breadth`, descending
     window years covered (`years_in_window`), descending `obs_count`, descending
     `latest_date`, descending `variable_breadth`, then a method classed estimated or
-    provisional after any other, from any source (`method_status.status_of`), then
+    provisional after any other, from any source (`member_folds.status_of`), then
     `provenance_id`, `measurement_method`, `unit`, and `facet_id`. A `None` tiebreak value
     sorts last. Stable sorts make the total order deterministic.
 
@@ -2228,7 +2224,7 @@ def continuation(
     end of any series the `served` facets hold, at any place or role tuple
     (`Facet.earliest_series_end`), is continued by the facets that share the served
     provenance and a served unit, sit at the served cadence (`serves`, by facet id), hold
-    estimated values (`method_status.status_of`), reach a later year than that series and
+    estimated values (`member_folds.status_of`), reach a later year than that series and
     hold a point in the window. When several estimated methods qualify, the one whose facet
     ranks first (`rank_candidates`) serves. A served series that is itself estimated
     continues with nothing, as do served series that all reach the window's end and any
@@ -2272,7 +2268,7 @@ def continues_series(
     in the year `after`, whatever window reads it: it shares the provenance (`facet_axis_value`,
     a declared dataset's id for a facet of one of its member provenances) and a unit, sits at
     the served cadence (`serves`, by facet id), holds estimated values
-    (`method_status.status_of`) and reaches a later year than `after`. It reads facet metadata
+    (`member_folds.status_of`) and reaches a later year than `after`. It reads facet metadata
     alone (`Facet.latest_date`), so it costs no observation read. `after` None sets no lower
     bound, for a series whose end is unknown."""
     return (
@@ -2299,7 +2295,7 @@ def continuing_candidates(
     `units` that ends in the year `after` (`continuation`), in candidate order: those that
     continue it whatever the window (`continues_series`) and hold a point in the window. An
     empty list under a window that is not a range with an end year, for an estimated `method`,
-    or when `after` reaches the window's end. A projection pair (`method_status.is_projection`)
+    or when `after` reaches the window's end. A projection pair (`member_folds.is_projection`)
     continues only a window whose `include` names `"projected"`, since the mint holds back its
     every row otherwise (`columnar.held_back_mask`). The units share one value except under a
     national-currency binding, where each place's admission keeps its own."""

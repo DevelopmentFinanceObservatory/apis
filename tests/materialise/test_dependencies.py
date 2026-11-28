@@ -31,6 +31,7 @@ from materialise.dependencies import (
     dependency_changes,
     members_digest,
     refreshed_dependencies,
+    run_imported_data,
 )
 from materialise.facets import (
     FacetBinding,
@@ -601,7 +602,12 @@ def test_a_run_over_a_statvar_another_origin_holds_keys_on_no_import():
 
 @pytest.mark.unbound_release
 def test_a_run_with_no_release_bound_keys_on_none():
-    assert _keyed_run({"provenance/X": DFO}, DFO).imported_data is None
+    catalogue = FakeCatalogue(
+        provenances={"provenance/X": provenance_row("provenance/X", DFO)},
+        dfo_variables=frozenset({_BARE_STAT_VAR}),
+    )
+    with bound_catalogue(catalogue):
+        assert run_imported_data(stat_vars=[_STAT_VAR], provenances=["provenance/X"]) is None
 
 
 @pytest.mark.parametrize(

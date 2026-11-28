@@ -56,8 +56,7 @@ from materialise.convert import ConversionRecord
 from materialise.facets import ProvenanceRefresh, _probe_provenance_refresh
 from materialise.generation import bare_stat_var_ref, elected_latest_year
 from materialise.graph import GraphReader
-from materialise.held_back import partial_marks
-from materialise.method_status import projection_methods
+from materialise.member_folds import members_of, partial_marks, projection_methods
 from materialise.window import LatestYear, RequestedWindow
 from origin_catalogue import CatalogueNotBound, current_catalogue
 from origin_catalogue.catalogue import Undocumented
@@ -158,10 +157,11 @@ def _recipe_digest(recipe_id: str) -> str | None:
 def applied_horizons(sources: Iterable[str]) -> tuple[tuple[str, str | None], ...]:
     """The held-back horizon of each of `sources` as sorted `(<kind>:<ref>, horizon)` pairs: a
     `partial:` entry holding the source's partial marks in the bound origin catalogue
-    (`held_back.partial_marks`), sorted and joined by commas, and a `projected:` entry holding
-    the sorted `measurementMethod`s declared its projections. A declared dataset's id holds
-    every distinct mark its member provenances carry, since it holds back each period any
-    member marks. A source with neither has no entry, as one the catalogue does not document,
+    (`member_folds.partial_marks`), sorted and joined by commas, and a `projected:` entry
+    holding the sorted `measurementMethod`s declared its projections
+    (`member_folds.projection_methods`). A declared dataset's id holds every distinct mark its
+    member provenances carry, since it holds back each period any member marks, and every
+    projection method any member declares. A source with neither has no entry, as one the catalogue does not document,
     and with no catalogue bound no source has a mark."""
     try:
         catalogue = current_catalogue()
@@ -206,7 +206,7 @@ def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str | N
     DFO alone as holding each of `stat_vars` and lists each of `provenances`, which must not be
     empty, as DFO's. Otherwise `None`, also for a `None` provenance (a facet naming none), and
     with no release bound. A declared dataset's id among `provenances` reads as its member
-    provenances in the release's code index (`CodeIndex.provenances_of`), the provenances the
+    provenances in the release's code index (`member_folds.members_of`), the provenances the
     catalogue lists, so a dataset of DFO's provenances keys the run.
 
     Holding is the catalogue's `data_commons`, every origin with admitted data for the
@@ -220,11 +220,10 @@ def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str | N
     catalogue = current_catalogue()
     if any(catalogue.data_commons(bare_stat_var_ref(ref)) != (DFO,) for ref in set(stat_vars)):
         return None
-    index = release.views.code_index
     for ref in refs:
         if ref is None:
             return None
-        for provenance in index.provenances_of(ref):
+        for provenance in members_of(ref):
             row = catalogue.provenance(provenance)
             if row is None or row.data_commons != DFO:
                 return None
@@ -402,8 +401,8 @@ def refreshed_dependencies(
 
     The source and conversion-source refs keep `stored`'s, each with the `lastDataRefreshDate`
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
-    serves uncached. A declared dataset's id takes its Dataset node's date, else its newest
-    member's, as the run's did (`facets._probe_provenance_refresh`). Each stored
+    serves uncached. A declared dataset's id takes the newest of its Dataset node's date and
+    every member's, as the run's did (`facets._probe_provenance_refresh`). Each stored
     recipe takes the digest of its deployed body. `held_back` is the horizon of each stored
     source under the bound catalogue (`applied_horizons`), so a head rebuilds when the
     catalogue's mark for a source moves. `members` and `window` come from `requests` as
