@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import hashlib
 import io
+import json
 import logging
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
@@ -32,6 +34,7 @@ from assembler.testing import (
 )
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api.retention import RetentionUnreadable
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 from dfo_platform.app import create_app
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -218,6 +221,10 @@ def _serve_door(
         yield _Door(client, frame_store=frame_store, newest=newest, presentation=presentation)
 
 
+def _wire(frame: FrameRef) -> dict[str, str]:
+    return {"spec_id": frame.spec_id, "content_version": frame.content_version}
+
+
 def _values(body: dict) -> list[float]:
     return [row["value"] for row in body["rows"]]
 
@@ -271,6 +278,24 @@ def test_a_live_slots_card_is_drawn_on_the_frame_its_data_serves(
     assert door.newest.renderings == [_rendering(_STORED)]
 
 
+def _frameless_card_etag(share_id: str, body: Mapping[str, Any], *, mode: str) -> str:
+    """The ETag a slot card read carried while its body stated no `frame`: the hash of the
+    share, mode, slot, card, frame, freshness, route and retention, with no body version."""
+    frame = body["frame"]
+    validator = {
+        "share": share_id,
+        "mode": mode,
+        "slot": 1,
+        "card": [body["component_id"], body["revision"]],
+        "frame": [frame["spec_id"], frame["content_version"]],
+        "freshness": body["freshness"],
+        "variant": "card",
+        "drawn_with": [body["retention"], None],
+    }
+    encoded = json.dumps(validator, sort_keys=True, separators=(",", ":")).encode()
+    return f'"{hashlib.sha256(encoded).hexdigest()[:32]}"'
+
+
 def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door):
     card = door.card()
     share = door.share(card, latest=False)
@@ -279,12 +304,19 @@ def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door)
     resp = door.slot_card(share["id"], headers={"accept-encoding": "identity"})
     etag = resp.headers["etag"]
     again = door.slot_card(share["id"], headers={"if-none-match": etag})
+    # A cache holding the body from before the card read stated its frame gets the new body.
+    stale_etag = _frameless_card_etag(share["id"], resp.json(), mode="snapshot")
+    frameless = door.slot_card(
+        share["id"], headers={"if-none-match": stale_etag, "accept-encoding": "identity"}
+    )
 
     assert resp.status_code == 200
-    assert resp.json() == {**read, "freshness": "current"}
+    assert resp.json() == {**read, "frame": _wire(_STORED), "freshness": "current"}
     assert resp.headers["cache-control"] == "public, max-age=300"
     assert etag.startswith('"') and etag.endswith('"')
     assert (again.status_code, again.content) == (304, b"")
+    assert (frameless.status_code, frameless.headers["etag"]) == (200, etag)
+    assert frameless.json()["frame"] == _wire(_STORED)
     served = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()["served"]
     assert [entry["frame"]["content_version"] for entry in served] == [_STORED.content_version]
     assert door.newest.asked == []
@@ -811,8 +843,23 @@ def test_a_replacement_puts_a_new_card_in_the_slot_with_no_check(door: _Door):
         ("slots/0/data", 400, "request_invalid"),
         ("slots/1/data?format=zip", 400, "request_invalid"),
         ("slots/1/data?bundle=true", 400, "request_invalid"),
+        (f"slots/1/data?spec_id={_STORED.spec_id}", 400, "request_invalid"),
+        (f"slots/1?content_version={_STORED.content_version}", 400, "request_invalid"),
+        (
+            f"slots/1?spec_id=spec-x&content_version={_STORED.content_version}",
+            400,
+            "request_invalid",
+        ),
     ],
-    ids=["no-such-slot", "slot-zero", "unknown-format", "json-bundle"],
+    ids=[
+        "no-such-slot",
+        "slot-zero",
+        "unknown-format",
+        "json-bundle",
+        "spec-id-alone",
+        "content-version-alone",
+        "malformed-spec-id",
+    ],
 )
 def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: int, code: str):
     share = door.share(door.card(), latest=True)
@@ -1247,3 +1294,151 @@ def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _
         headers={_TOKEN: share["write_token"]},
     )
     assert (replaced.status_code, replaced.json()["code"]) == (409, "share_not_replaceable")
+
+
+def _hold(
+    monkeypatch: pytest.MonkeyPatch, retention: dict[FrameRef, dict[str, object] | Exception | None]
+) -> list[FrameRef]:
+    """State each frame's retention as `retention` gives it, raising an exception it gives.
+    Returns the frames whose retention was read, in order."""
+    read: list[FrameRef] = []
+
+    def stated(frame_ref: FrameRef, *, snapshot_reader) -> dict[str, object] | None:
+        read.append(frame_ref)
+        answer = retention[frame_ref]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(presentation_retention, "frame_retention", stated)
+    return read
+
+
+def _named(door: _Door, route: str, share_id: str, frame: FrameRef, **headers: str):
+    path = f"/api/presentation/shares/{share_id}/slots/1{'/data' if route == 'data' else ''}"
+    return door.client.get(path, params=_wire(frame), headers=headers)
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+@pytest.mark.parametrize(
+    ("frame", "freshness"),
+    [(_STORED, "stale"), (_MOVED, "current")],
+    ids=["served-before-the-newest", "newest-served"],
+)
+def test_a_read_naming_a_frame_the_slot_served_serves_it_with_no_check(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, route: str, frame: FrameRef, freshness: str
+):
+    read = _hold(monkeypatch, {_STORED: {"pinned": True}, _MOVED: {"pinned": True}})
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _MOVED
+    moved = door.data(share["id"]) if route == "data" else door.slot_card(share["id"])
+    history = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()
+    read.clear()
+
+    named = _named(door, route, share["id"], frame, **{"if-none-match": '"other"'})
+    reads = list(read)
+    again = _named(door, route, share["id"], frame, **{"if-none-match": named.headers["etag"]})
+
+    assert named.status_code == 200, named.json()
+    body = named.json()
+    assert (body["frame"], body["freshness"]) == (_wire(frame), freshness)
+    assert moved.json()["frame"] == _wire(_MOVED)
+    moved_by = _MOVED_BY if frame == _MOVED else 0.0
+    if route == "data":
+        assert _values(body) == [row["value"] + moved_by for row in malaria_ethiopia_rows()]
+    else:
+        assert _drawn_on(body) == frame.content_version
+        assert body["retention"] == {"pinned": True}
+    # One retention read serves the checks, the body and the ETag.
+    assert reads == [frame]
+    assert named.headers["cache-control"] == "public, max-age=300"
+    assert named.headers["x-dfo-freshness"] == freshness
+    assert "x-dfo-checked-at" not in named.headers
+    assert (again.status_code, again.headers["etag"]) == (304, named.headers["etag"])
+    assert again.headers["cache-control"] == "public, max-age=300"
+    # The named reads ran no check and recorded nothing, so the slot still serves its check.
+    assert door.newest.asked == [_STORED]
+    assert door.client.get(f"/api/presentation/shares/{share['id']}/history").json() == history
+    assert door.data(share["id"]).json()["frame"] == _wire(_MOVED)
+
+
+_GONE = RetentionUnreadable(
+    subject_id=_STORED.spec_id, content_version=_STORED.content_version, reason="revoked"
+)
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+@pytest.mark.parametrize("if_none_match", [None, '"any"'], ids=["read", "revalidate"])
+@pytest.mark.parametrize(
+    ("case", "status", "code"),
+    [
+        ("never-served", 404, "frame_not_served"),
+        ("other-card", 404, "frame_not_served"),
+        ("held-until-passed", 410, "frame_expired"),
+        ("no-servable-version", 410, "frame_expired"),
+    ],
+)
+def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_whose_retention_ended(
+    door: _Door,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    if_none_match: str | None,
+    case: str,
+    status: int,
+    code: str,
+):
+    held = (_START - timedelta(days=1)).isoformat()
+    stored = _GONE if case == "no-servable-version" else {"pinned": False, "held_until": held}
+    _hold(monkeypatch, {_STORED: stored, _MOVED: {"pinned": True}})
+    share = door.share(door.card(), latest=True)
+    if case == "other-card":
+        # The slot served _MOVED for its first card, then a replace put another card in it.
+        door.newest.answer = _MOVED
+        door.data(share["id"])
+        door.client.put(
+            f"/api/presentation/shares/{share['id']}",
+            json={"cards": [{"component_id": door.card(), "revision": 1}]},
+            headers={_TOKEN: share["write_token"]},
+        )
+    frame = _MOVED if case in ("never-served", "other-card") else _STORED
+    headers = {} if if_none_match is None else {"if-none-match": if_none_match}
+
+    resp = _named(door, route, share["id"], frame, **headers)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retry_mode"]) == (
+        status,
+        code,
+        "do_not_retry",
+    )
+    assert resp.headers["access-control-allow-origin"] == "*"
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+@pytest.mark.parametrize(
+    ("answer", "status", "code", "retryable"),
+    [
+        (DatasetsStoreUnavailable("exemplar"), 503, "service_unavailable", True),
+        (RuntimeError("retention read failed"), 500, "internal_error", False),
+        (None, 503, "service_unavailable", True),
+    ],
+    ids=["store-unavailable", "unexpected-failure", "no-snapshot-reader"],
+)
+def test_a_read_naming_a_frame_whose_retention_cannot_be_read_answers_its_cause_and_never_410(
+    door: _Door,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    answer: Exception | None,
+    status: int,
+    code: str,
+    retryable: bool,
+):
+    _hold(monkeypatch, {_STORED: answer})
+    share = door.share(door.card(), latest=True)
+
+    resp = _named(door, route, share["id"], _STORED)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retryable"]) == (
+        status,
+        code,
+        retryable,
+    )

@@ -49,6 +49,9 @@ _STATED_MODES: Mapping[str, RetryMode] = MappingProxyType(
         "share_id_taken": "do_not_retry",
         "share_import_not_permitted": "do_not_retry",
         "verify_not_permitted": "do_not_retry",
+        # The slot's history lists the frames a read may name, and an expired one never returns.
+        "frame_not_served": "do_not_retry",
+        "frame_expired": "do_not_retry",
         "method_not_allowed": "do_not_retry",
     }
 )

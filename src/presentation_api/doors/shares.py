@@ -91,12 +91,37 @@ replacement left empty, answers 404 `not_found`, and so does a note's slot.
 
 `GET /api/presentation/shares/{share_id}/slots/{slot}` is public and allows any origin. It
 answers the slot's card as `GET /api/presentation/components/{component_id}` reads it, plus
-`freshness`, drawn on the frame the data route serves, chosen by the same function
-(`share_slots.serve_on_slot_frame`), with that frame's retention. Its `x-dfo-freshness` and
-`x-dfo-checked-at` headers, strong `ETag`, 304 and caching are the data route's, and its
-`ETag` also covers the frame's retention and, on a newer frame, the vocabulary revision the
-read is worded in. A note's card is its stored read. A slot number the share has not had, or an
-empty slot, answers 404 `not_found`.
+`frame` and `freshness`, drawn on the frame the data route serves, chosen by the same function
+(`share_slots.serve_on_slot_frame`), with that frame's retention. `frame` is that frame's
+`{spec_id, content_version}`, the identity the history lists, and null for a note. Its
+`x-dfo-freshness` and `x-dfo-checked-at` headers, strong `ETag`, 304 and caching are the data
+route's, and its `ETag` also covers the frame's retention and, on a newer frame, the vocabulary
+revision the read is worded in. A note's card is its stored read. A slot number the share has
+not had, or an empty slot, answers 404 `not_found`.
+
+Both slot routes take `spec_id` and `content_version`, which name a frame together, as the
+history's `frame` and the card read's `frame` state it; one without the other, or either not a
+well-formed id, refuses 400 `request_invalid`. A read naming a frame draws the slot's card on it
+when the history holds an entry of that card on that frame and the frame's retention holds
+(`share_slots.named_frame`). It states `current` while that entry is the slot's newest and
+`stale` once the slot has shown something since, runs no newer-data check and records no
+history entry. A frame the history never recorded for the card the slot holds now, its
+component id and revision, refuses 404 `frame_not_served`, and so does a note's card on the
+card route. A note's data route answers
+404 `not_found`, as it does without a frame. A frame whose version record is gone or revoked,
+that links no stored frame, or whose `held_until` has passed is past the share route's
+retention and refuses 410 `frame_expired`. When only its `held_until` has passed, a dataset
+file read can renew its rows while their stored bytes exist. A share client reads the slot
+without a frame for its newest version. A door with no snapshot reader cannot read retention and refuses retryable 503
+`service_unavailable`. A retention read that fails answers its own refusal, so a Datasets store
+that cannot answer gives 503 `service_unavailable`. Each is checked before a 304, and the read
+takes the retention once for its checks, its body and its `ETag`. The reply is
+`public, max-age=300`, a snapshot's, under a strong `ETag` hashed as a default read's is. Its
+rows are always the named frame's. The share's mode, the frame's retention, the freshness and,
+on a frame other than the card's own, the catalogue release and vocabulary it is drawn under
+follow the share's current state and each moves the `ETag`, so a cache revalidating after five
+minutes learns of a takedown, an expiry, a pin or a newer frame. A replace that moves the slot
+to another card makes the read refuse `frame_not_served`.
 
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin. It returns a
 timeline of what each slot showed, newest first, each frame with its retention counted from when
@@ -262,7 +287,13 @@ from presentation_api.models import (
     ShareWriteResponse,
 )
 from presentation_api.newest_frames import NewestFrames
-from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
+from presentation_api.path_params import (
+    PathParamInvalid,
+    require_component_id,
+    require_content_version,
+    require_share_id,
+    require_spec_id,
+)
 from presentation_api.refusals import FRAME_UNAVAILABLE_EXEMPLARS
 from presentation_api.retention import stated_retention
 from presentation_api.routes import (
@@ -280,11 +311,16 @@ from presentation_api.routes import (
 from presentation_api.share_slots import (
     HISTORY_PAGE_DEFAULT,
     HISTORY_PAGE_MAX,
+    FrameExpired,
+    FrameNotServed,
+    NamedFrame,
+    RetentionUnavailable,
     ShareSlotEmpty,
     SlotData,
     SlotFormat,
     history_document,
     history_position,
+    named_frame,
     serve_slot,
     serve_slot_card,
     serving_frame,
@@ -351,6 +387,12 @@ _CHECKED_AT_HEADER = "x-dfo-checked-at"
 _SLOT_DATA_EXPOSED = f"ETag, {_FRESHNESS_HEADER}, {_CHECKED_AT_HEADER}"
 _LIVE_CACHE_CONTROL = "no-cache"
 _SNAPSHOT_CACHE_CONTROL = "public, max-age=300"
+# A read naming a frame states the share's mode, the frame's retention and its standing in the
+# slot's history as they are now, so caches revalidate it as often as a snapshot's reply and a
+# takedown, an expiry or a newer frame reaches them within five minutes.
+_NAMED_FRAME_CACHE_CONTROL = _SNAPSHOT_CACHE_CONTROL
+
+_EXEMPLAR_FRAME = FrameRef(spec_id="spec_" + "0" * 32, content_version="cv_" + "0" * 32)
 
 # How many cards each kind takes, on create and on replace.
 _KIND_CARDS: Mapping[str, tuple[int, int]] = {
@@ -1072,6 +1114,11 @@ def _redrawn_under(
     return [deps.release_registry.pinned().catalog_version, vocabulary]
 
 
+# The shape version of a slot reply's body. A change to what a body states for the same
+# inputs bumps it, so an ETag minted for a body of the old shape answers 200 with the new one.
+_SLOT_BODY_VERSION = 2
+
+
 def _slot_etag(
     share: ShareRecord,
     *,
@@ -1082,11 +1129,13 @@ def _slot_etag(
     drawn_with: object,
 ) -> str:
     """A slot reply's strong ETag. It hashes what the body is drawn from, so a revalidation
-    answers 304 without drawing the body: the share, its mode and the slot, the card revision,
-    the frame served and its freshness, `variant` (the route and format), and `drawn_with`,
-    whatever else the body states (a card read's retention, a newer frame's release and
-    vocabulary). Equal inputs draw equal bodies, so they carry one ETag."""
+    answers 304 without drawing the body: the body's shape version (`_SLOT_BODY_VERSION`), the
+    share, its mode and the slot, the card revision, the frame served and its freshness,
+    `variant` (the route and format), and `drawn_with`, whatever else the body states (a card
+    read's retention, a newer frame's release and vocabulary). Equal inputs draw equal bodies,
+    so they carry one ETag."""
     validator = {
+        "body": _SLOT_BODY_VERSION,
         "share": share.id,
         "mode": share.mode,
         "slot": slot,
@@ -1102,11 +1151,20 @@ def _slot_etag(
     return f'"{hashlib.sha256(encoded).hexdigest()[:32]}"'
 
 
-def _slot_headers(share: ShareRecord, *, state: _SlotState, etag: str) -> dict[str, str]:
+def _slot_headers(
+    share: ShareRecord, *, state: _SlotState, etag: str, named: bool = False
+) -> dict[str, str]:
+    """A slot reply's headers. `named` marks a read that named its frame."""
+    if named:
+        cache_control = _NAMED_FRAME_CACHE_CONTROL
+    elif share.mode == "live":
+        cache_control = _LIVE_CACHE_CONTROL
+    else:
+        cache_control = _SNAPSHOT_CACHE_CONTROL
     headers = {
         "ETag": etag,
         _FRESHNESS_HEADER: state.freshness,
-        "Cache-Control": _LIVE_CACHE_CONTROL if share.mode == "live" else _SNAPSHOT_CACHE_CONTROL,
+        "Cache-Control": cache_control,
         "Access-Control-Expose-Headers": _SLOT_DATA_EXPOSED,
     }
     if state.checked_at is not None:
@@ -1115,16 +1173,62 @@ def _slot_headers(share: ShareRecord, *, state: _SlotState, etag: str) -> dict[s
 
 
 def _slot_response(
-    data: SlotData, *, share: ShareRecord, etag: str, if_none_match: str | None
+    data: SlotData,
+    *,
+    share: ShareRecord,
+    etag: str,
+    if_none_match: str | None,
+    named: bool = False,
 ) -> Response:
     """A slot read's reply: its freshness, caching and strong ETag, 304 when `If-None-Match`
     names that ETag."""
-    headers = _slot_headers(share, state=_SlotState.of(data), etag=etag)
+    headers = _slot_headers(share, state=_SlotState.of(data), etag=etag, named=named)
     if _matches(if_none_match, etag):
         return Response(status_code=304, headers=headers)
     if data.file_name is not None:
         headers["Content-Disposition"] = artifact_content_disposition(data.file_name)
     return Response(content=data.body, media_type=data.media_type, headers=headers)
+
+
+type _FrameQuery = Annotated[
+    str | None,
+    Query(
+        description="with spec_id and content_version both set, serve the slot on that frame, "
+        "one the share's history lists for the slot's card, as the history's frame states it"
+    ),
+]
+
+
+def _named_frame(spec_id: str | None, content_version: str | None) -> FrameRef | None:
+    """The frame a slot read's `spec_id` and `content_version` name, or `None` when it names
+    none.
+
+    Raises:
+        RequestValidationError: One of the two is given without the other.
+        PathParamInvalid: Either is not a well-formed id.
+    """
+    if spec_id is None and content_version is None:
+        return None
+    if spec_id is None or content_version is None:
+        missing = "spec_id" if spec_id is None else "content_version"
+        raise RequestValidationError(
+            [
+                {
+                    "type": "missing",
+                    "loc": ("query", missing),
+                    "msg": "spec_id and content_version name a frame together",
+                    "input": None,
+                }
+            ]
+        )
+    return FrameRef(
+        spec_id=require_spec_id(spec_id), content_version=require_content_version(content_version)
+    )
+
+
+def _named_state(named: NamedFrame) -> _SlotState:
+    """What a read naming a frame the slot served serves."""
+    return _SlotState(frame=named.frame, freshness=named.freshness, checked_at=None)
 
 
 async def read_share_slot_data(
@@ -1133,9 +1237,12 @@ async def read_share_slot_data(
     slot: Annotated[int, Path(ge=1)],
     format_: Annotated[SlotFormat, Query(alias="format")] = "json",
     bundle: Annotated[bool, Query()] = False,
+    spec_id: _FrameQuery = None,
+    content_version: _FrameQuery = None,
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     require_share_id(share_id)
+    named = _named_frame(spec_id, content_version)
     if bundle and format_ == "json":
         raise RequestValidationError(
             [
@@ -1158,16 +1265,29 @@ async def read_share_slot_data(
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
         card = slot_card(share, slot)
+        # A note's slot refuses `not_found` in `serve_slot`, with a frame named or not.
+        resolved = (
+            named_frame(share=share, slot=slot, card=card, frame=named, deps=deps)
+            if named is not None and card.frame is not None
+            else None
+        )
         # A note's slot refuses, so only a data card's slot answers 304.
         if if_none_match is not None and card.frame is not None:
-            state = _settled_state(share, slot=slot, card=card, deps=deps)
+            state = (
+                _settled_state(share, slot=slot, card=card, deps=deps)
+                if resolved is None
+                else _named_state(resolved)
+            )
             if state is not None and _matches(if_none_match, tag := etag(share, card, state)):
-                return Response(
-                    status_code=304, headers=_slot_headers(share, state=state, etag=tag)
-                )
-        data = serve_slot(share=share, slot=slot, format=format_, bundle=bundle, deps=deps)
+                headers = _slot_headers(share, state=state, etag=tag, named=resolved is not None)
+                return Response(status_code=304, headers=headers)
+        data = serve_slot(
+            share=share, slot=slot, format=format_, bundle=bundle, deps=deps, named=resolved
+        )
         tag = etag(share, card, _SlotState.of(data))
-        return _slot_response(data, share=share, etag=tag, if_none_match=if_none_match)
+        return _slot_response(
+            data, share=share, etag=tag, if_none_match=if_none_match, named=resolved is not None
+        )
 
     return await _run(deps, job)
 
@@ -1176,9 +1296,12 @@ async def read_share_slot_card(
     share_id: str,
     deps: SharesDepsDep,
     slot: Annotated[int, Path(ge=1)],
+    spec_id: _FrameQuery = None,
+    content_version: _FrameQuery = None,
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     require_share_id(share_id)
+    named = _named_frame(spec_id, content_version)
 
     def etag(share: ShareRecord, card: ShareCard, state: _SlotState, retention: object) -> str:
         drawn_with = [retention, _redrawn_under(card, state.frame, worded=True, deps=deps)]
@@ -1189,7 +1312,17 @@ async def read_share_slot_card(
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
         card = slot_card(share, slot)
-        if if_none_match is not None:
+        resolved = (
+            named_frame(share=share, slot=slot, card=card, frame=named, deps=deps)
+            if named is not None
+            else None
+        )
+        if if_none_match is not None and resolved is not None:
+            state = _named_state(resolved)
+            if _matches(if_none_match, tag := etag(share, card, state, resolved.retention)):
+                headers = _slot_headers(share, state=state, etag=tag, named=True)
+                return Response(status_code=304, headers=headers)
+        elif if_none_match is not None:
             state = _settled_state(share, slot=slot, card=card, deps=deps)
             if state is not None:
                 retention = (
@@ -1200,11 +1333,13 @@ async def read_share_slot_card(
                 if _matches(if_none_match, tag := etag(share, card, state, retention)):
                     headers = _slot_headers(share, state=state, etag=tag)
                     return Response(status_code=304, headers=headers)
-        data = serve_slot_card(share=share, slot=slot, deps=deps)
+        data = serve_slot_card(share=share, slot=slot, deps=deps, named=resolved)
         # The read states its frame's retention as it read it, so the ETag hashes that.
-        retention = json.loads(data.body)["retention"]
+        retention = json.loads(data.body)["retention"] if resolved is None else resolved.retention
         tag = etag(share, card, _SlotState.of(data), retention)
-        return _slot_response(data, share=share, etag=tag, if_none_match=if_none_match)
+        return _slot_response(
+            data, share=share, etag=tag, if_none_match=if_none_match, named=resolved is not None
+        )
 
     return await _run(deps, job)
 
@@ -1254,6 +1389,12 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, ShareNotFound | ShareSlotEmpty):
         return refused("not_found", detail=str(exc), retryable=False)
+    if isinstance(exc, FrameNotServed):
+        return refused("frame_not_served", detail=str(exc), retryable=False)
+    if isinstance(exc, FrameExpired):
+        return refused("frame_expired", detail=str(exc), retryable=False)
+    if isinstance(exc, RetentionUnavailable):
+        return refused("service_unavailable", detail=str(exc), retryable=True)
     if isinstance(
         exc, PinBudgetExhausted | OpenPinBudgetExhausted | PinUnitHeld | CopyClaimUnsettled
     ):
@@ -1507,16 +1648,21 @@ def build_shares_door(
         responses={
             200: {
                 "description": "The slot's card as a component read states it, drawn on the "
-                "frame the slot's data route serves, with that frame's retention and the "
-                "freshness. x-dfo-freshness and a live slot's x-dfo-checked-at are the data "
-                "route's. A strong ETag answers If-None-Match with 304. Any origin may read it.",
+                "frame the slot's data route serves, with that frame as frame, its retention "
+                "and the freshness. x-dfo-freshness and a live slot's x-dfo-checked-at are the "
+                "data route's. A strong ETag answers If-None-Match with 304. Any origin may "
+                "read it.",
                 "model": ShareSlotCardResponse,
             },
             304: {"description": "The If-None-Match ETag still names this card."},
         },
         description="Read the card a share's slot shows, drawn on the frame the slot serves. "
         "That is a snapshot's recorded frame, or a live slot's newest data, checked at most "
-        "every 15 minutes, as the slot's data route chooses it.",
+        "every 15 minutes, as the slot's data route chooses it. With spec_id and "
+        "content_version, the card is drawn on that frame, current while it is the slot's "
+        "newest in the history and stale after, cached for five minutes: 404 frame_not_served "
+        "when the share's history never recorded the slot's current card on it, 410 "
+        "frame_expired once the frame is past the share route's retention.",
     )
     router.add_api_route(
         SHARE_SLOT_DATA_PATH,
@@ -1537,7 +1683,11 @@ def build_shares_door(
             304: {"description": "The If-None-Match ETag still names these rows."},
         },
         description="Read the rows a share's slot serves. The frame is a snapshot's recorded "
-        "frame, or a live slot's newest data, checked at most every 15 minutes.",
+        "frame, or a live slot's newest data, checked at most every 15 minutes. With spec_id "
+        "and content_version, the rows are that frame's, current while it is the slot's newest "
+        "in the history and stale after, cached for five minutes: 404 frame_not_served when "
+        "the share's history never recorded the slot's current card on it, 410 frame_expired "
+        "once the frame is past the share route's retention.",
     )
 
     return DoorContribution(
@@ -1557,6 +1707,9 @@ def build_shares_door(
             SlotDrawsNoFrame,
             ShareNotFound,
             ShareSlotEmpty,
+            FrameNotServed,
+            FrameExpired,
+            RetentionUnavailable,
             SharePayloadTooLarge,
             ComponentHoldsNoData,
             ComponentExportMismatch,
@@ -1611,6 +1764,9 @@ def build_shares_door(
                 SlotDrawsNoFrame(index=0, component_id="cmp_a", revision=1),
                 ShareNotFound("Ab3dEf7h"),
                 ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
+                FrameNotServed(share_id="Ab3dEf7h", slot=1, frame=_EXEMPLAR_FRAME),
+                FrameExpired(share_id="Ab3dEf7h", slot=1, frame=_EXEMPLAR_FRAME, reason="exemplar"),
+                RetentionUnavailable(),
                 SharePayloadTooLarge("exemplar"),
                 SharesUnavailable(),
                 AllowanceExhausted(

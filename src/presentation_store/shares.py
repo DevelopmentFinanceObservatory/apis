@@ -36,7 +36,10 @@ records the frame a slot read serves. It reads the slot's newest entry first and
 shows something else, locks the share row, checks that the revision the read served is still the
 latest, and checks the newest entry again under the lock, so concurrent reads of one slot record
 one entry, a read of an unchanged slot takes no lock, and a read that served a revision a replace
-or snapshot conversion has since moved past records nothing.
+or snapshot conversion has since moved past records nothing. `slot_served` answers whether a
+slot's timeline holds a card on a frame and whether that entry is the slot's newest. It runs one
+statement over one slot's entries through migration 0017's `served_frame_slot_newest_idx`. A slot
+records an entry only when what it shows changes, so that is a few rows.
 `sample_shares` draws shares that are not taken down at random, optionally within a
 `created_at` window, each with its kind, mode, `created_at` and the number of slots its latest
 revision shows a card in, and nothing about its owner, title, token or payload. It orders the
@@ -100,12 +103,15 @@ __all__ = [
     "ShareStore",
     "ShareWriteTokenInUse",
     "SlotCheck",
+    "SlotStanding",
     "payload_refusal",
 ]
 
 type ShareKind = Literal["card", "canvas", "search", "conversation"]
 type ShareMode = Literal["live", "snapshot"]
 type Freshness = Literal["current", "stale", "pending"]
+type SlotStanding = Literal["newest", "earlier"]
+"""Where a slot's entry stands in its timeline (`ShareStore.slot_served`)."""
 type Renderings = Mapping[tuple[str, int], Mapping[str, object] | None]
 """The rendering each card revision recorded, by component id and revision. A write records
 what its slots show with these; a card revision absent from it records no rendering."""
@@ -465,6 +471,18 @@ class ShareStore(Protocol):
         """
         ...
 
+    def slot_served(
+        self, *, share_id: str, slot: int, card: ShareCard, frame: FrameRef
+    ) -> SlotStanding | None:
+        """Where the newest entry of `slot` showing `card` on `frame` stands in the share's
+        timeline: `newest` when it is the slot's newest entry, `earlier` when the slot has
+        recorded another since, and `None` when the timeline holds no such entry.
+
+        Raises:
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
     def sample_shares(
         self,
         *,
@@ -807,6 +825,35 @@ class LiveShareStore:
             )
 
         self._in_transaction(f"recording a frame share {share_id!r} served", write)
+
+    def slot_served(
+        self, *, share_id: str, slot: int, card: ShareCard, frame: FrameRef
+    ) -> SlotStanding | None:
+        def read(tx: Transaction) -> SlotStanding | None:
+            row = tx.fetch_one(
+                "SELECT f.id = (SELECT n.id FROM presentation.served_frame n "
+                "WHERE n.share_id = %s AND n.slot = %s "
+                "ORDER BY n.first_served_at DESC, n.id DESC LIMIT 1) AS newest "
+                "FROM presentation.served_frame f WHERE f.share_id = %s AND f.slot = %s "
+                "AND f.component_id = %s AND f.component_revision = %s AND f.frame_spec_id = %s "
+                "AND f.frame_content_version = %s ORDER BY f.first_served_at DESC, f.id DESC "
+                "LIMIT 1",
+                (
+                    share_id,
+                    slot,
+                    share_id,
+                    slot,
+                    card.component_id,
+                    card.revision,
+                    frame.spec_id,
+                    frame.content_version,
+                ),
+            )
+            if row is None:
+                return None
+            return "newest" if row["newest"] else "earlier"
+
+        return self._in_transaction(f"reading what share {share_id!r} slot {slot} served", read)
 
     def sample_shares(
         self,
