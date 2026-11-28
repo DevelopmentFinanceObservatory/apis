@@ -330,6 +330,9 @@ def _variable_batch(
         name: [] for name in observation_columns(UN_OBSERVATION_ROLES)
     }
     for place, facet in series:
+        provenance = (
+            facet.provenance_id if facet.provenance_id is None else dataset_of(facet.provenance_id)
+        )
         observations = sorted(
             zip(facet.dates, facet.values, strict=True), key=lambda obs: obs[0], reverse=True
         )
@@ -339,11 +342,7 @@ def _variable_batch(
             columns["unit"].append(facet.unit)
             columns["measurementMethod"].append(facet.measurement_method)
             columns["observationPeriod"].append(facet.observation_period)
-            columns["provenance"].append(
-                facet.provenance_id
-                if facet.provenance_id is None
-                else dataset_of(facet.provenance_id)
-            )
+            columns["provenance"].append(provenance)
             columns["TIME_PERIOD"].append(date)
             columns["OBS_VALUE"].append("" if value is None else repr(float(value)))
             columns["scalingFactor"].append(facet.scaling_factor)

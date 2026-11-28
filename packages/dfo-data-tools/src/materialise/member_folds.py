@@ -122,11 +122,16 @@ def dataset_origin(ref: str, *, catalogue: Catalogue) -> tuple[SourceRef, DataCo
 
 def dataset_name(ref: str, *, catalogue: Catalogue) -> str | None:
     """The name the catalogue rows of `ref`'s members share (`shared_row_fact`), else the
-    declared label of `ref`'s dataset in the bound release's code index, else `None`."""
+    declared label of `ref`'s dataset in the bound release's code index where the dataset has
+    members of its own (`provenances_of` differs from the dataset), else `None`: a plain table
+    states the name its catalogue row gives it or none."""
     if (name := shared_row_fact(ref, catalogue=catalogue, fact=lambda row: row.name)) is not None:
         return name
     index = get_index()
-    declared = index.datasets.get(index.dataset_of(ref))
+    dataset = index.dataset_of(ref)
+    if index.provenances_of(dataset) == (dataset,):
+        return None
+    declared = index.datasets.get(dataset)
     return declared.label if declared is not None else None
 
 
@@ -150,18 +155,20 @@ def row_licence(ref: str, *, catalogue: Catalogue) -> Licence | None:
 def partial_marks(catalogue: Catalogue, source: str) -> tuple[str, ...]:
     """The distinct partial marks, sorted, of `source`'s members (`members_of`), each as the
     catalogue documents it (`origin_catalogue.partial_period_of`), a member the catalogue does
-    not document adding none and logged once (`_warn_undocumented_member`). Empty where none is
-    marked.
+    not document adding none and, in a dataset of several members, logged once
+    (`_warn_undocumented_member`). Empty where none is marked.
 
     Raises:
         Undocumented: `catalogue` documents none of the members."""
     marks: set[str] = set()
     documented = False
-    for provenance in members_of(source):
+    members = members_of(source)
+    for provenance in members:
         try:
             mark = partial_period_of(catalogue, provenance)
         except Undocumented:
-            _warn_undocumented_member(source, provenance)
+            if len(members) > 1:
+                _warn_undocumented_member(source, provenance)
             continue
         documented = True
         if mark is not None:

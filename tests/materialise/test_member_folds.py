@@ -135,6 +135,14 @@ def _facet(provenance: str, *, method: str | None = None, latest: str = "2015") 
             _CC_BY,
             id="plain-table",
         ),
+        pytest.param(
+            [],
+            PLAIN,
+            None,
+            None,
+            None,
+            id="an-unlisted-plain-table-states-no-name",
+        ),
     ],
 )
 def test_catalogue_row_facts_are_the_ones_every_member_shares(rows, ref, name, source, licence):

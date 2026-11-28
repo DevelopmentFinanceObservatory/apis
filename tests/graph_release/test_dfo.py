@@ -375,12 +375,16 @@ _SOUTH_FACET = "ledger-south"
 
 
 def _ledger_release(
-    *, part_of: tuple[tuple[str, str], ...], shared_series: bool = False
+    *,
+    part_of: tuple[tuple[str, str], ...],
+    shared_series: bool = False,
+    shared_place_series: bool = False,
 ) -> tuple[PlatformParts, Declarations]:
     """The slice with its CRS series split between two provenances, `_NORTH` and `_SOUTH` (the
     second half of its variables), the `isPartOf` edges `part_of` and a `Dataset` node
     `_LEDGER`, and the CRS declaration declared as `_LEDGER`. `shared_series` puts one
-    `_NORTH` series under `_SOUTH` as well."""
+    `_NORTH` series under `_SOUTH` as well, and `shared_place_series` puts one series of a
+    variable that declares no roles (so outside the coverage view, its place in `entity1`) under both."""
     parts = slice_platform_parts()
     facets = parts.facets.to_pylist()
     (crs_facet,) = [row for row in facets if row["provenance"] == _CRS]
@@ -397,6 +401,10 @@ def _ledger_release(
     if shared_series:
         north = next(row for row in crs_rows if row["facet_id"] != _SOUTH_FACET)
         series.append({**north, "facet_id": _SOUTH_FACET})
+    if shared_place_series:
+        north = next(row for row in crs_rows if row["facet_id"] != _SOUTH_FACET)
+        place = {**north, "variable_measured": "Count_Place_Keyed", "entity2": None}
+        series += [place, {**place, "facet_id": _SOUTH_FACET}]
     nodes = pa.table(
         {
             "subject_id": [_LEDGER, _NORTH, _SOUTH],
@@ -466,10 +474,11 @@ def test_dfo_parts_key_a_declared_dataset_by_the_provenances_part_of_it() -> Non
 
 
 @pytest.mark.parametrize(
-    ("part_of", "shared_series", "detail_code", "rows"),
+    ("part_of", "shared_series", "shared_place_series", "detail_code", "rows"),
     [
         pytest.param(
             ((_NORTH, _LEDGER), (_SOUTH, _LEDGER), (_IMPUTED, _LEDGER)),
+            False,
             False,
             DATASET_MEMBER_CLAIMED_TWICE,
             ((_IMPUTED, _LEDGER, _IMPUTED),),
@@ -478,16 +487,27 @@ def test_dfo_parts_key_a_declared_dataset_by_the_provenances_part_of_it() -> Non
         pytest.param(
             ((_NORTH, _LEDGER), (_SOUTH, _LEDGER)),
             True,
+            False,
             DATASET_MEMBERS_SHARE_SERIES,
             None,
             id="members-share-a-series",
         ),
+        pytest.param(
+            ((_NORTH, _LEDGER), (_SOUTH, _LEDGER)),
+            False,
+            True,
+            DATASET_MEMBERS_SHARE_SERIES,
+            None,
+            id="members-share-a-place-keyed-series",
+        ),
     ],
 )
 def test_dfo_inputs_refuse_dataset_members_that_do_not_partition_the_dataset(
-    part_of, shared_series, detail_code, rows
+    part_of, shared_series, shared_place_series, detail_code, rows
 ) -> None:
-    parts, declarations = _ledger_release(part_of=part_of, shared_series=shared_series)
+    parts, declarations = _ledger_release(
+        part_of=part_of, shared_series=shared_series, shared_place_series=shared_place_series
+    )
 
     with pytest.raises(PlatformRefusal) as refused:
         dfo_inputs(parts, declarations)

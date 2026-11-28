@@ -56,7 +56,6 @@ from series_coverage.schema import (
     FIRST_YEAR_COLUMN,
     LAST_YEAR_COLUMN,
     RECIPIENT_COLUMN,
-    VARIABLE_COLUMN,
     widen_span,
 )
 
@@ -78,6 +77,13 @@ _PARTY_AXES: Final[Mapping[str, RoleAxis]] = {
     DONOR_COLUMN: "origin",
     RECIPIENT_COLUMN: "destination",
 }
+_SERIES_ENTITY_COLUMNS: Final[tuple[str, ...]] = (
+    "entity1",
+    "entity2",
+    "entity3",
+    "extra_entities_id",
+)
+"""The platform `series` columns that, with the variable, name a series inside one facet."""
 _SOURCES: Final[Mapping[str, str]] = {
     "declarations": "graph_release.dfo.declarations",
     "code_index_blocks": "graph_release.dfo.code_index_blocks",
@@ -157,7 +163,7 @@ def dfo_inputs(platform: PlatformParts, declarations: Declarations) -> DfoInputs
             covered=set(facet_provenances.values()),
         )
         check_member_series(
-            _member_series(coverage, facet_provenances, datasets), datasets.dataset_of
+            _member_series(platform.series, facet_provenances, datasets), datasets.dataset_of
         )
     except ExportRefused as exc:
         raise PlatformRefusal(
@@ -298,11 +304,12 @@ def _facet_provenances(facets: pa.Table) -> dict[str, str]:
 
 
 def _member_series(
-    coverage: pa.Table, facet_provenances: Mapping[str, str], datasets: DatasetMembers
+    series: pa.Table, facet_provenances: Mapping[str, str], datasets: DatasetMembers
 ) -> list[tuple[tuple[str, ...], str]]:
-    """Each series key of `coverage` (variable, donor, recipient) a dataset of several members
-    holds, with each member provenance whose facets hold it. A plain table's rows stay in
-    Arrow, so a release of plain tables builds no list."""
+    """Each series key of the platform `series` (variable, entities and extra-entities id) a
+    dataset of several members holds, with each member provenance whose facets hold it. The
+    platform series carries place-keyed series that the role coverage view leaves out. A plain
+    table's rows stay in Arrow, so a release of plain tables builds no list."""
     shared = {
         provenance
         for members in datasets.members.values()
@@ -312,15 +319,21 @@ def _member_series(
     facets = [facet for facet, provenance in facet_provenances.items() if provenance in shared]
     if not facets:
         return []
-    columns = [VARIABLE_COLUMN, DONOR_COLUMN, RECIPIENT_COLUMN, FACET_COLUMN]
-    held = coverage.filter(
-        pc.is_in(_strings(coverage[FACET_COLUMN]), value_set=pa.array(facets, pa.string()))
+    columns = [
+        "variable_measured",
+        *(name for name in _SERIES_ENTITY_COLUMNS if name in series.column_names),
+        "facet_id",
+    ]
+    held = series.filter(
+        pc.is_in(_strings(series["facet_id"]), value_set=pa.array(facets, pa.string()))
     )
     groups = held.group_by(columns, use_threads=False).aggregate([])
-    values = [cast("list[str]", _strings(groups[column]).to_pylist()) for column in columns]
+    values = [
+        cast("list[str]", _strings(groups[column]).fill_null(ABSENT_ENTITY).to_pylist())
+        for column in columns
+    ]
     return [
-        ((variable, donor, recipient), facet_provenances[facet_id])
-        for variable, donor, recipient, facet_id in zip(*values, strict=True)
+        (tuple(key), facet_provenances[facet_id]) for *key, facet_id in zip(*values, strict=True)
     ]
 
 
