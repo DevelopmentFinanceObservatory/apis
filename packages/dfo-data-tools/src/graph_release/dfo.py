@@ -28,7 +28,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 import numpy as np
 import pyarrow as pa
@@ -306,10 +306,13 @@ def _facet_provenances(facets: pa.Table) -> dict[str, str]:
 def _member_series(
     series: pa.Table, facet_provenances: Mapping[str, str], datasets: DatasetMembers
 ) -> list[tuple[tuple[str, ...], str]]:
-    """Each series key of the platform `series` (variable, entities and extra-entities id) a
-    dataset of several members holds, with each member provenance whose facets hold it. The
-    platform series carries place-keyed series that the role coverage view leaves out. A plain
-    table's rows stay in Arrow, so a release of plain tables builds no list."""
+    """Each series key of the platform `series` (variable, entities and extra-entities id) that
+    two member provenances of one dataset hold, with each member provenance whose facets hold
+    it. Only the facets of datasets of several members are read. The platform series carries
+    place-keyed series that the role coverage view leaves out. The count of distinct member
+    provenances per dataset and series key runs in Arrow, and only the rows of a key with more
+    than one become Python values, so a release whose members partition their series builds no
+    list."""
     shared = {
         provenance
         for members in datasets.members.values()
@@ -319,22 +322,36 @@ def _member_series(
     facets = [facet for facet, provenance in facet_provenances.items() if provenance in shared]
     if not facets:
         return []
-    columns = [
+    key = [
         "variable_measured",
         *(name for name in _SERIES_ENTITY_COLUMNS if name in series.column_names),
-        "facet_id",
     ]
     held = series.filter(
         pc.is_in(_strings(series["facet_id"]), value_set=pa.array(facets, pa.string()))
     )
-    groups = held.group_by(columns, use_threads=False).aggregate([])
-    values = [
-        cast("list[str]", _strings(groups[column]).fill_null(ABSENT_ENTITY).to_pylist())
-        for column in columns
-    ]
-    return [
-        (tuple(key), facet_provenances[facet_id]) for *key, facet_id in zip(*values, strict=True)
-    ]
+    facet_values = pa.array(facets, pa.string())
+    slot = pc.index_in(_strings(held["facet_id"]), value_set=facet_values)
+    provenances = [facet_provenances[facet] for facet in facets]
+    columns = {name: _strings(held[name]).fill_null(ABSENT_ENTITY) for name in key}
+    columns["dataset"] = pa.array(
+        [datasets.dataset_of.get(provenance, provenance) for provenance in provenances],
+        pa.string(),
+    ).take(slot)
+    columns["provenance"] = pa.array(provenances, pa.string()).take(slot)
+    rows = pa.table(columns)
+    group = [*key, "dataset"]
+    distinct_provenances: tuple[str, Literal["count_distinct"]] = (
+        "provenance",
+        "count_distinct",
+    )
+    counts = rows.group_by(group, use_threads=False).aggregate((distinct_provenances,))
+    conflicts = counts.filter(pc.field("provenance_count_distinct") > 1).select(group)
+    if not conflicts.num_rows:
+        return []
+    found = rows.join(conflicts, keys=group, join_type="left semi", use_threads=False)
+    pairs = found.group_by([*key, "provenance"], use_threads=False).aggregate([])
+    values = [cast("list[str]", pairs[name].to_pylist()) for name in [*key, "provenance"]]
+    return [(tuple(row[:-1]), row[-1]) for row in zip(*values, strict=True)]
 
 
 def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
