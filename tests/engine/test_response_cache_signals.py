@@ -34,16 +34,19 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 7 `query_text` readers and 2 `role_query` readers covered by cache signals,
+    """Pin the 8 `query_text` readers and 2 `role_query` readers covered by cache signals,
     plus the two reads of each that fill `QuantityRequest.query_text` in
     `_read_stated_quantity` and `BindRequest.query_text` in `_phase_bind`. Those two reach
     a model only through a binder that reads the query text, which looks up nothing on
-    layer 2 (`CacheScope`), so they need no signal."""
+    layer 2 (`CacheScope`), so they need no signal. The frame's `_slot_defaults` in
+    `_completed_frame` picks each code system's default by the `when_named` words the query
+    text names, which `declared_default_trigger_words` lists word by word with the same
+    `_names_trigger_word` test."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 9, (
+    assert query_text_reads == 10, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 7 compute_layer2_signals computes signals for and the binder requests' 2. "
+        "not the 8 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
     assert role_query_reads == 4, (
