@@ -24,8 +24,8 @@ from materialise.reshape import (
     groupby_sum,
 )
 from search.engine.bind import SlotBindingDraft
-from search.engine.extract import ExtractedEntity
-from search.models import DefinitePart
+from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
+from search.models import DefinitePart, NoDataPart
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -191,6 +191,60 @@ def test_iatis_expenditure_answers_under_its_transaction_type(monkeypatch: pytes
     assert isinstance(part, DefinitePart), part
     assert _sources(part.spec) == [_IATI]
     assert _bound(part.spec)[_TRANSACTION_TYPE] == _EXPENDITURE
+
+
+class _DatedLLM(_ScriptedLLM):
+    """`_ScriptedLLM`, extracting `date` as the question's one date reference."""
+
+    def __init__(self, *variables: str, date: ExtractedDate, **kwargs) -> None:
+        super().__init__(*variables, **kwargs)
+        self._date = date
+
+    async def generate_structured(self, *, prompt, system, schema):
+        reply = await super().generate_structured(prompt=prompt, system=system, schema=schema)
+        if schema is Extraction:
+            extraction, usage = reply
+            return extraction.model_copy(update={"dates": [self._date]}), usage
+        return reply
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2A_NET_ODA = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+
+
+@pytest.mark.parametrize(
+    "first", [_DAC2A_NET_ODA, _IATI_DISBURSEMENTS], ids=["dac2a-first", "iati-first"]
+)
+def test_oda_named_in_a_default_tables_codes_leaves_the_opt_in_iati_out(
+    monkeypatch: pytest.MonkeyPatch, first: str
+):
+    """ "ODA" names the CRS flow type on IATI's shape, a slot DAC2a's net ODA line lacks, but
+    DAC2a reads "ODA" in its own aid type, so the word asks no breakdown only IATI offers.
+    "ODA to Kenya in 2026" leaves IATI out of the bind, whichever shape recall puts first, and
+    finds no data after DAC2a's last year in place of answering from IATI's 2026 rows."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_IATI_DISBURSEMENTS, "fcdo", _FCDO_PARTY, _KEN, [*_YEARS, 2025, 2026]),
+            (_DAC2A_NET_ODA, "dac2a", _GBR, _KEN, [*_YEARS, 2025]),
+        ],
+        role_names=dict.fromkeys((_IATI_DISBURSEMENTS, _DAC2A_NET_ODA), names),
+        facet_metadata={
+            "fcdo": FacetMetadata(provenance_id=_FCDO, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+        },
+    )
+    members = (first, *({_DAC2A_NET_ODA, _IATI_DISBURSEMENTS} - {first}))
+    llm = _DatedLLM("ODA", date=ExtractedDate(kind="point", start="2026"), entities=(_TO_KENYA,))
+
+    response = _resolve("ODA to Kenya in 2026", llm, _graph("ODA", *members))
+
+    assert llm.bind_prompts
+    assert not any(", IATI\n" in prompt for prompt in llm.bind_prompts)
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "no_observations"
 
 
 # ---------------------------------------------------------------------------

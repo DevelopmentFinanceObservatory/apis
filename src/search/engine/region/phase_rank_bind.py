@@ -1333,7 +1333,10 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     (`DatasetDeclaration.invariants`): "imputed multilateral aid to health" names a
     sector and "which sectors get the most imputed multilateral ODA" ranks the sectors,
     which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
-    aid type and ONE's fixed flow type, so DAC2a's own line answers it. A part naming a
+    aid type and ONE's fixed flow type, so DAC2a's own line answers it. A named code
+    keeps the opt-in shape only when none of those other shapes reads its phrase
+    (`QualifierMatch.phrase`): "ODA to Kenya" names IATI's CRS flow type, a slot DAC2a
+    lacks, but DAC2a reads "ODA" in its own codes, so IATI leaves. A part naming a
     source keeps every shape its scope allows. An excluding part keeps the rule as it
     stands without the exclusion, so excluding a table opens no opt-in one, as
     `code_index.members.eligible_among` keeps within one family."""
@@ -1363,8 +1366,14 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
         breakdown = shape_vocabulary(shape) - offered - fixed
         if not breakdown.isdisjoint(operation_slot_phrases(state.operations, shape)):
             return False
+        read_by_others = {
+            match.phrase
+            for other in others
+            for match in for_shape(state.pinned_part_matches, other)
+        }
         return not any(
-            match.code_system in breakdown for match in for_shape(state.pinned_part_matches, shape)
+            match.code_system in breakdown and match.phrase not in read_by_others
+            for match in for_shape(state.pinned_part_matches, shape)
         )
 
     return [shape for shape in shapes if not unasked(shape)]
