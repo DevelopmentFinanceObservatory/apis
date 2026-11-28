@@ -18,7 +18,7 @@ from code_index.labels import without_property_suffix
 from code_index.members import ProvenanceScope, eligible_among, is_opt_in
 from code_index.query import CodeIndex, IndexFamily, fold_word
 from code_index.shared import get_index, get_measure_index
-from code_index.tokens import Token, tokenize, word_tokens
+from code_index.tokens import Token, singular, tokenize, word_tokens
 from code_index.types import (
     CodeRow,
     DatasetDeclaration,
@@ -61,7 +61,7 @@ from search.engine.binders.house_policy import (
     differ_on_basis,
     shape_facts,
 )
-from search.engine.clients.graph import family_reads, family_ref
+from search.engine.clients.graph import default_families_of, family_reads, family_ref
 from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
 from search.engine.departures import qualifier_property
@@ -1324,23 +1324,29 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     naming a source has no need of, so a bind reply cannot elect it.
 
     A table answers from its opt-in rows only when the part names it (`shape_for_part`)
-    or asks a breakdown no other table offers. Another of `shapes` on the same five-tuple
-    that a table that is not opt-in publishes measures what the opt-in shape does: ONE's
-    imputed multilateral sectors and DAC2a's imputed multilateral ODA line are both
-    attributed amounts of financial flows. The opt-in shape stays when the question names
-    a code (`ResolveState.pinned_part_matches`), or asks an operation over `category`
-    of (`operation_slot_phrases`), one of its slots that none of those other shapes
-    holds and that its tables do not hold fixed on every row
+    or asks a breakdown no other table offers. The other tables are the index families of
+    the opt-in shape's five-tuple that a table which is not opt-in publishes and that hold
+    its measure values (`clients.graph.default_families_of`), whatever recall returned, so
+    IATI's gross disbursements leave a part naming no source while the CRS's family holds
+    gross disbursements, and recall adds a row of that family beside IATI's alone
+    (`clients.graph.with_rival_families`). ONE's imputed multilateral sectors and DAC2a's
+    imputed multilateral ODA line are both attributed gross disbursements of financial
+    flows. The opt-in shape stays when the question names a code
+    (`ResolveState.pinned_part_matches`), or asks an operation over `category` of
+    (`operation_slot_phrases`), one of its slots that none of those families' properties
+    hold and that its tables do not hold fixed on every row
     (`DatasetDeclaration.invariants`): "imputed multilateral aid to health" names a
     sector and "which sectors get the most imputed multilateral ODA" ranks the sectors,
     which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
     aid type and ONE's fixed flow type, so DAC2a's own line answers it. A named code
-    keeps the opt-in shape only when none of those other shapes reads its phrase
-    (`QualifierMatch.phrase`). "ODA to Kenya" names IATI's CRS flow type, a slot DAC2a
-    lacks, but DAC2a reads "ODA" in its own codes, so IATI leaves. A part naming a
-    source keeps every shape its scope allows. An excluding part keeps the rule as it
-    stands without the exclusion, so excluding a table opens no opt-in one, as
-    `code_index.members.eligible_among` keeps within one family."""
+    keeps the opt-in shape only when none of those families reads its phrase
+    (`family_reads`, over the codes the phrase names in every code system,
+    `_phrase_codes`): "purchase of equity" names IATI's transaction type 8, which no
+    other table reads, so IATI stays. "ODA to Kenya" names the CRS flow type, a property
+    the CRS family holds, so IATI leaves. A part naming a source keeps every shape its
+    scope allows. An excluding part keeps the rule as it stands without the exclusion,
+    so excluding a table opens no opt-in one, as `code_index.members.eligible_among`
+    keeps within one family."""
     if state.scope is not None and state.scope.named:
         return list(shapes)
     index = get_index()
@@ -1349,35 +1355,38 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
         return bool(shape.datasets) and all(is_opt_in(index, d) for d in shape.datasets or ())
 
     def unasked(shape: ShapeDraft) -> bool:
-        if not opt_in_only(shape):
+        if not opt_in_only(shape) or (family := shape_family(shape, index)) is None:
             return False
-        five_tuple = shape_five_tuple(shape)
-        others = [
-            other
-            for other in shapes
-            if any(not is_opt_in(index, d) for d in other.datasets or ())
-            and shape_five_tuple(other) == five_tuple
-        ]
+        others = default_families_of(family, index=index)
         if not others:
             return False
         fixed = {
             prop for dataset in shape.datasets or () for prop in index.datasets[dataset].invariants
         }
-        offered = frozenset().union(*(shape_vocabulary(other) for other in others))
+        offered = frozenset().union(*(other.properties for other in others))
         breakdown = shape_vocabulary(shape) - offered - fixed
         if not breakdown.isdisjoint(operation_slot_phrases(state.operations, shape)):
             return False
-        read_by_others = {
-            match.phrase
-            for other in others
-            for match in for_shape(state.pinned_part_matches, other)
-        }
         return not any(
-            match.code_system in breakdown and match.phrase not in read_by_others
+            match.code_system in breakdown
+            and not any(
+                family_reads(other, _phrase_codes(match, index), index=index) for other in others
+            )
             for match in for_shape(state.pinned_part_matches, shape)
         )
 
     return [shape for shape in shapes if not unasked(shape)]
+
+
+def _phrase_codes(match: QualifierMatch, index: CodeIndex) -> tuple[CodeRow, ...]:
+    """The code rows `match`'s phrase names in every code system, in the plural or the
+    singular (`CodeIndex.codes_by_tokens`), with the code it reads."""
+    words = tokenize(match.matched_text)
+    forms = (words,) if (less_s := singular(words)) is None else (words, less_s)
+    rows = {row.dcid: row for form in forms for row in index.codes_by_tokens(form)}
+    if (own := index.code_by_dcid(match.code_dcid)) is not None:
+        rows.setdefault(own.dcid, own)
+    return tuple(rows.values())
 
 
 def _binding_elsewhere(state: ResolveState) -> list[ShapeDraft]:

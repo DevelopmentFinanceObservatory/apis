@@ -2289,6 +2289,12 @@ def _model_choice_state(
     state.query_qualifier_matches = {
         vocabulary: own.matches for vocabulary, own in reading.by_vocabulary.items()
     }
+    recalled = [shape, *elsewhere]
+    state.pinned_part_matches = query_qualifiers(
+        variable,
+        vocabularies=[shape_vocabulary(s) for s in recalled],
+        datasets=vocabulary_datasets(recalled),
+    ).matches
     return state
 
 

@@ -585,14 +585,16 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
             [(_CRS_SV,), (_DAC1_COMMITMENT_SV,)],
             id="rival-displaces-its-own-five-tuple-only",
         ),
-        # "Attributed to donors" names the attributed-amount measure, which the imputed table
-        # holds and DAC1's disbursements do not, so the imputed table stays.
+        # "Attributed to donors" names the attributed-amount measure, which DAC1's
+        # disbursements do not hold, so the attributed measure stays. Recall adds DAC2a's
+        # imputed multilateral line beside the opt-in imputed table, and the query names no
+        # sector, so DAC2a's line answers for it.
         pytest.param(
             "aid attributed to donors via multilaterals",
             [],
             "aid attributed to donors via multilaterals",
             (_SECTORS_SV, _DAC1_SV),
-            [(_SECTORS_SV,), (_DAC1_SV,)],
+            [(_DAC2A_IMPUTED_SV,), (_DAC1_SV,)],
             id="attributed-measure",
         ),
         # Both debt series are recalled samples the index does not carry, so the

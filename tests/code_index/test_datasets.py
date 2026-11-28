@@ -721,6 +721,48 @@ def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
     }
 
 
+_FLOWS = "FinancialFlow", "amount"
+_ATTRIBUTED = "FinancialFlow", "attributedAmount"
+
+
+@pytest.mark.parametrize(
+    ("measure", "values", "expected"),
+    [
+        (
+            _FLOWS,
+            {"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
+            [(_CRS_PROVENANCE,), (_DAC1_PROVENANCE,), (_DAC2A_PROVENANCE,), (_DAC2B_PROVENANCE,)],
+        ),
+        (
+            _ATTRIBUTED,
+            {"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
+            [(_DAC2A_PROVENANCE,)],
+        ),
+        (_ATTRIBUTED, {"financialFlowType": "Disbursement", "nettingBasis": "Net"}, []),
+    ],
+    ids=["flows-gross", "attributed-gross", "attributed-net"],
+)
+def test_default_families_hold_the_measure_values_outside_opt_in_tables(
+    measure: tuple[str, str], values: dict[str, str], expected: list[tuple[str, ...]]
+):
+    """`CodeIndex.default_families_on` gives the families of a five-tuple that a table which
+    is not opt-in publishes and that hold every measure value, in serving order. IATI and the
+    imputed table are opt-in and never appear. DAC2a's one attributed row is a gross
+    disbursement, so a net one finds no default family there."""
+    index = load_index(INDEX_FIXTURE)
+    (five_tuple,) = {
+        row_five_tuple(row)
+        for row in index.statvars
+        if (row.population_type, row.measured_property) == measure
+        and row.measurement_qualifier == "Nominal"
+        and row.measurement_denominator is None
+    }
+
+    families = index.default_families_on(five_tuple, values)
+
+    assert [family.datasets for family in families] == expected
+
+
 def test_the_fixture_index_pins_the_constant_slots_of_single_aid_type_five_tuples_only():
     """The imputed table holds one aid type, DAC1 publishes grant equivalents as a share of
     GNI for total ODA alone, DAC2a publishes its ratios for total ODA alone and one

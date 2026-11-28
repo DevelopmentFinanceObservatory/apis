@@ -24,7 +24,9 @@ from materialise.reshape import (
     classify_columns,
     groupby_sum,
 )
+from origin_catalogue import current_catalogue
 from search.engine.bind import SlotBindingDraft
+from search.engine.clients.graph import DetectedSV, with_rival_families
 from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
 from search.models import DefinitePart, NoDataPart
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -50,6 +52,7 @@ _UNFPA = "UnitedNationsPopulationFund"
 _FCDO_PARTY = "ForeignCommonwealthAndDevelopmentOffice"
 _SIDA_PARTY = "SwedishInternationalDevelopmentCooperationAgency"
 _KEN = "country/KEN"
+_UGA = "country/UGA"
 _GBR = "country/GBR"
 _DISBURSEMENT = "IATITransactionType3"
 _EXPENDITURE = "IATITransactionType4"
@@ -87,12 +90,15 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _graph(variable: str, *members: str) -> FakeGraph:
-    """A graph whose recall returns `members` in order for `variable`, with Kenya, the UK and
-    UNFPA resolving by name."""
+def _graph(variable: str, *members: str, recalled: int | None = None) -> FakeGraph:
+    """A graph holding `members` whose recall returns the first `recalled` of them, every
+    one by default, in order for `variable`, with Kenya, Uganda, the UK and UNFPA resolving
+    by name."""
+    svs = list(members[:recalled])
     return FakeGraph(
         nodes={
             _KEN: {"label": "Kenya", "type": "Country"},
+            _UGA: {"label": "Uganda", "type": "Country"},
             _GBR: {"label": "United Kingdom", "type": "Country"},
             _UNFPA: {"label": "United Nations Population Fund", "type": "Organization"},
             _CRS: {"label": "OECD Creditor Reporting System (CRS)"},
@@ -104,11 +110,11 @@ def _graph(variable: str, *members: str) -> FakeGraph:
         },
         detect={
             variable: {
-                "svs": list(members),
-                "cosine_scores": [0.9 - 0.05 * rank for rank in range(len(members))],
+                "svs": svs,
+                "cosine_scores": [0.9 - 0.05 * rank for rank in range(len(svs))],
             }
         },
-        resolve={"Kenya": _KEN, "the UK": _GBR, "UNFPA": _UNFPA},
+        resolve={"Kenya": _KEN, "Uganda": _UGA, "the UK": _GBR, "UNFPA": _UNFPA},
     )
 
 
@@ -298,6 +304,139 @@ def test_oda_named_in_a_default_tables_codes_leaves_the_opt_in_iati_out(
     (part,) = response.parts
     assert isinstance(part, NoDataPart), part
     assert part.no_data.reason == "no_observations"
+
+
+_TO_UGANDA = ExtractedEntity(text="Uganda", span="Uganda", role="recipient", cue="to")
+_IATI_EQUITY = (
+    "Amount_FinancialFlow_Gross_Disbursement_EquityInstrument_IATITransactionType8_"
+    "CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode21010_Nominal"
+)
+
+
+def _recalled_alone(member: str) -> tuple[str, ...]:
+    """`member`, an IATI row recalled alone, with the rows recall adds beside it
+    (`with_rival_families`)."""
+    hit = DetectedSV(dcid=member, score=0.9, type_of="StatisticalVariable", sentence=None)
+    hits = with_rival_families([hit], catalogue=current_catalogue(), index=get_index())
+    return tuple(h.dcid for h in hits)
+
+
+def test_iati_rows_recalled_alone_gain_the_crs_family():
+    """Recall holding IATI's gross disbursements alone gains a row of the CRS family, which
+    publishes gross disbursements on the same five-tuple, and of no other opt-in table."""
+    index = get_index()
+
+    added = _recalled_alone(_IATI_DISBURSEMENTS)[1:]
+
+    families = {index.family_by_dcid[dcid].datasets for dcid in added}
+    assert (_CRS,) in families
+    assert all(_IATI not in datasets for datasets in families)
+
+
+@pytest.mark.parametrize(
+    "date",
+    [ExtractedDate(kind="point", start="2025"), ExtractedDate(kind="latest")],
+    ids=["2025", "latest"],
+)
+def test_disbursements_to_uganda_with_iati_recalled_alone_name_no_iati_source(
+    monkeypatch: pytest.MonkeyPatch, date: ExtractedDate
+):
+    """Recall returns IATI's disbursements alone, and IATI holds Uganda through 2026 while
+    the default tables stop at 2024. A part naming no source answers from a default table:
+    the CRS family joins recall, and IATI leaves the bind because the index's default
+    families publish gross disbursements, whatever recall returned. "latest" answers 2024
+    from a default table, and 2025 finds no data, in place of answering from IATI."""
+    members = _recalled_alone(_IATI_DISBURSEMENTS)
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_IATI_DISBURSEMENTS, "fcdo", _FCDO_PARTY, _UGA, [*_YEARS, 2025, 2026]),
+            *((dcid, "crs", _GBR, _UGA, _YEARS) for dcid in members[1:]),
+        ],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={
+            "fcdo": FacetMetadata(provenance_id=_FCDO, unit="USD"),
+            "crs": FacetMetadata(provenance_id=_CRS, unit="USD"),
+        },
+    )
+    llm = _DatedLLM("disbursements", date=date, entities=(_TO_UGANDA,))
+    query = (
+        "latest disbursements to Uganda"
+        if date.kind == "latest"
+        else ("disbursements to Uganda in 2025")
+    )
+
+    response = _resolve(query, llm, _graph("disbursements", *members, recalled=1))
+
+    assert llm.bind_prompts
+    assert not any(", IATI\n" in prompt for prompt in llm.bind_prompts)
+    (part,) = response.parts
+    if date.kind == "latest":
+        assert isinstance(part, DefinitePart), part
+        assert _sources(part.spec) == [_CRS]
+    else:
+        assert isinstance(part, NoDataPart), part
+        assert part.no_data.reason == "no_observations"
+
+
+def test_iati_leaves_an_unnamed_part_whatever_joined_the_menu(monkeypatch: pytest.MonkeyPatch):
+    """The opt-in rule reads the index's default families, not the menu: with IATI recalled
+    alone and the graph holding no row of a default table, so no default shape joins the
+    menu, IATI still leaves a part naming no source, and the part finds no reading in place
+    of answering 2025 from IATI."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(_IATI_DISBURSEMENTS, "fcdo", _FCDO_PARTY, _UGA, [*_YEARS, 2025])],
+        role_names={_IATI_DISBURSEMENTS: names},
+        facet_metadata={"fcdo": FacetMetadata(provenance_id=_FCDO, unit="USD")},
+    )
+    llm = _DatedLLM(
+        "disbursements", date=ExtractedDate(kind="point", start="2025"), entities=(_TO_UGANDA,)
+    )
+
+    response = _resolve(
+        "disbursements to Uganda in 2025", llm, _graph("disbursements", _IATI_DISBURSEMENTS)
+    )
+
+    assert not llm.bind_prompts
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "variable_not_resolved"
+
+
+def test_purchase_of_equity_with_iati_recalled_alone_keeps_iati(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "purchase of equity" names IATI's transaction type 8, which no default family on the
+    five-tuple reads, so IATI stays beside the CRS family recall adds and answers a part
+    naming no source."""
+    members = _recalled_alone(_IATI_EQUITY)
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_IATI_EQUITY, "fcdo", _FCDO_PARTY, _KEN, _YEARS),
+            *((dcid, "crs", _GBR, _KEN, _YEARS) for dcid in members[1:]),
+        ],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={
+            "fcdo": FacetMetadata(provenance_id=_FCDO, unit="USD"),
+            "crs": FacetMetadata(provenance_id=_CRS, unit="USD"),
+        },
+    )
+    llm = _ScriptedLLM(
+        "purchase of equity", entities=(_TO_KENYA,), drafted=_binds("IATITransactionType8")
+    )
+    graph = _graph("purchase of equity", *members, recalled=1)
+
+    response = _resolve("purchase of equity in Kenya in 2024", llm, graph)
+
+    assert any(", IATI\n" in prompt for prompt in llm.bind_prompts)
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert _sources(part.spec) == [_IATI]
 
 
 # ---------------------------------------------------------------------------
