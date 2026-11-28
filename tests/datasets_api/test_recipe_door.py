@@ -16,7 +16,11 @@ from pydantic import ValidationError
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from dataset_store.snapshot import FrameLineage, LiveSnapshotReader
-from datasets_api.doors.publish import PublishRecipeStoreMissing, publish_frame
+from datasets_api.doors.publish import (
+    PublishRecipeStoreMissing,
+    publish_frame,
+    write_frame_recipe,
+)
 from datasets_api.publish_models import MAX_RECIPE_BYTES, Recipe
 from datasets_api.recipe_store import LiveRecipeStore, ReplayedFrame
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
@@ -61,6 +65,9 @@ def _recipe(**overrides: object) -> dict[str, object]:
     }
     recipe.update(overrides)
     return recipe
+
+
+_WARNING = {"code": "reporters_summed", "severity": "warn", "message": "Several added up."}
 
 
 def _anchor(**overrides: object) -> dict[str, object]:
@@ -263,6 +270,28 @@ def test_put_recipe_is_idempotent_and_readable(deps: _Deps, roots: list[object] 
     assert replay.json() == {"spec_id": _SPEC_ID, "content_version": _CONTENT_VERSION}
 
 
+def test_a_stored_recipe_with_warnings_reads_back_as_stored(deps: _Deps) -> None:
+    """A recipe the service stores with `warnings` reads back with them, through the store's
+    model and the recipe route; one without them is stored without the key."""
+    client = deps.client()
+    deps.publish(client)
+    stored = _recipe(warnings=[_WARNING])
+
+    write_frame_recipe(
+        recipe_store=deps.recipe_store,
+        spec_id=_SPEC_ID,
+        content_version=_CONTENT_VERSION,
+        recipe=Recipe.model_validate(stored),
+    )
+    read = client.get(_RECIPE_PATH, headers=_AUTH_HEADERS)
+
+    assert deps.stored_recipe() == stored
+    assert Recipe.model_validate(deps.stored_recipe()).stored_body() == stored
+    assert read.status_code == 200, read.text
+    assert read.json() == stored
+    assert "warnings" not in Recipe.model_validate(_recipe()).stored_body()
+
+
 def test_a_left_out_series_validates_with_and_without_a_label(deps: _Deps) -> None:
     client = deps.client()
     deps.publish(client)
@@ -424,6 +453,8 @@ def test_recipe_routes_refuse_everyone_when_no_principal_is_configured(
             )
         ),
         {key: value for key, value in _recipe().items() if key != "tree"},
+        # Warnings are the computing run's output, so a posted one is a forgery.
+        _recipe(warnings=[_WARNING]),
     ],
     ids=[
         "extra-top-level-field",
@@ -441,6 +472,7 @@ def test_recipe_routes_refuse_everyone_when_no_principal_is_configured(
         "left-out-empty-coordinates",
         "left-out-coordinates-name-no-series",
         "missing-tree",
+        "posted-warnings",
     ],
 )
 def test_an_invalid_recipe_is_refused_on_both_write_routes(

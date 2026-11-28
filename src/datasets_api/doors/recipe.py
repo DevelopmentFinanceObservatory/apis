@@ -37,7 +37,13 @@ from datasets_api.deps import DepsCell
 from datasets_api.doors.publish import classify_publish_exception, write_frame_recipe
 from datasets_api.headers import no_store_headers
 from datasets_api.principals import Grant, Principals, PublishNotPermitted, granted_route_class
-from datasets_api.publish_models import OcvContentVersion, OpsSpecId, Recipe, ReplayKey
+from datasets_api.publish_models import (
+    OcvContentVersion,
+    OpsSpecId,
+    PostedRecipe,
+    Recipe,
+    ReplayKey,
+)
 from datasets_api.recipe_store import (
     RecipeDiverges,
     RecipeFrameNotStored,
@@ -154,7 +160,7 @@ def build_recipe_door(
     async def put_recipe(
         spec_id: Annotated[OpsSpecId, Path()],
         content_version: Annotated[OcvContentVersion, Path()],
-        body: Recipe,
+        body: PostedRecipe,
     ) -> JSONResponse:
         created, server_timing = await run(
             write_frame_recipe,
