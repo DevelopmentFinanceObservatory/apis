@@ -23,11 +23,12 @@ the two serve one frame. It draws the read on the frame the check chose, and whe
 a newer frame it serves an earlier one `stale`: the last good frame until the failure's wait
 when a later read may pass, and the card's own frame until the next check otherwise.
 
-A read may name a frame instead (`served_retention`). It serves the slot's card on that frame
-when the slot's history holds an entry of that card on it and the history states the frame
-fetchable, `current`, with no newer-data check and no history record, so its reply is fixed for
-that card and frame. A frame the slot never served its card on raises `FrameNotServed`, and one
-past its retention `FrameExpired`.
+A read may name a frame instead (`named_frame`). It serves the slot's card on that frame when
+the slot's history holds an entry of that card on it and the frame's retention holds, with no
+newer-data check and no history record. It states `current` while that entry is the slot's
+newest and `stale` once the slot has shown something since. A frame the slot never served its
+card on raises `FrameNotServed`, one whose retention has ended `FrameExpired`, and a door that
+cannot read retention `RetentionUnavailable`.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
 the one the components door's data route serves), on the served frame as a target when it is
@@ -75,10 +76,12 @@ from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameRef, FrameUnavailable, RevisionRecord
 from datasets_api.app import classify_datasets_exception
 from datasets_api.exports import resolve_endpoint
+from datasets_api.retention import RetentionUnreadable
 from dfo_platform import ProblemSpec
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.codes import bound_registry_endpoint
 from materialise.formats import ExcelIllegalCharacterError
+from presentation_api import retention as frame_retentions
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
 from presentation_api.doors.components import classify_components_exception
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
@@ -103,6 +106,8 @@ __all__ = [
     "HISTORY_PAGE_MAX",
     "FrameExpired",
     "FrameNotServed",
+    "NamedFrame",
+    "RetentionUnavailable",
     "ShareSlotEmpty",
     "SlotData",
     "SlotFormat",
@@ -110,10 +115,10 @@ __all__ = [
     "history_cursor",
     "history_document",
     "history_position",
+    "named_frame",
     "serve_on_slot_frame",
     "serve_slot",
     "serve_slot_card",
-    "served_retention",
     "serving_frame",
     "slot_card",
 ]
@@ -172,18 +177,38 @@ class FrameNotServed(Exception):
 
 
 class FrameExpired(Exception):
-    """The slot served its card on the frame a read names, and that frame's retention no
-    longer holds. Maps to 410 `frame_expired`."""
+    """The slot served its card on the frame a read names, and that frame's retention has
+    ended: its version record is gone or revoked, it links no stored frame, or its
+    `held_until` has passed. Maps to 410 `frame_expired`."""
 
-    def __init__(self, *, share_id: str, slot: int, frame: FrameRef) -> None:
+    def __init__(self, *, share_id: str, slot: int, frame: FrameRef, reason: str) -> None:
         self.share_id = share_id
         self.slot = slot
         self.frame = frame
         super().__init__(
             f"share {share_id!r} slot {slot} served frame {frame.spec_id!r} at content_version "
-            f"{frame.content_version!r}, which DFO no longer holds; read the slot without a "
-            "frame for the data it serves now"
+            f"{frame.content_version!r}, whose retention has ended ({reason}); read the slot "
+            "without a frame for the data it serves now"
         )
+
+
+class RetentionUnavailable(Exception):
+    """The door has no snapshot reader, so it cannot tell whether a frame a read names is still
+    held. Maps to retryable 503 `service_unavailable`."""
+
+    def __init__(self) -> None:
+        super().__init__("this deployment cannot read frame retention; retry")
+
+
+@dataclass(frozen=True)
+class NamedFrame:
+    """A frame a read names that the slot served its card on (`named_frame`): the frame, its
+    freshness, `current` while it is the slot's newest entry and `stale` once the slot has
+    shown something since, and its retention."""
+
+    frame: FrameRef
+    freshness: Freshness
+    retention: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -337,49 +362,54 @@ def serve_on_slot_frame[T](
     return SlotServed(drawn=drawn, frame=frame, freshness=freshness, checked_at=checked_at)
 
 
-def served_retention(
+def named_frame(
     *, share: ShareRecord, slot: int, card: ShareCard, frame: FrameRef, deps: SharesDeps
-) -> dict[str, object] | None:
-    """The retention of `frame`, on which slot `slot` of `share` served `card`, as the history
-    states it.
+) -> NamedFrame:
+    """`frame`, which a read of slot `slot` of `share`, showing `card`, names, with its
+    freshness from the slot's history and its retention, read once.
 
     Raises:
         FrameNotServed: The slot's history holds no entry of `card` on `frame`, which includes
             every frame for a note's card.
-        FrameExpired: The history states `frame` not fetchable (`_fetchable`).
+        FrameExpired: `frame`'s retention has ended: `frame_retention` finds no servable
+            version or stored frame (`RetentionUnreadable`), or its `held_until` has passed.
+        RetentionUnavailable: The door has no snapshot reader.
+        Any failure of the store or of the retention read, as its own refusal.
     """
-    if card.frame is None or not deps.share_store.slot_served(
-        share_id=share.id, slot=slot, card=card, frame=frame
-    ):
+    standing = (
+        deps.share_store.slot_served(share_id=share.id, slot=slot, card=card, frame=frame)
+        if card.frame is not None
+        else None
+    )
+    if standing is None:
         raise FrameNotServed(share_id=share.id, slot=slot, frame=frame)
-    retention = stated_retention(frame, snapshot_reader=deps.snapshot_reader)
+    try:
+        retention = frame_retentions.frame_retention(frame, snapshot_reader=deps.snapshot_reader)
+    except RetentionUnreadable as exc:
+        raise FrameExpired(share_id=share.id, slot=slot, frame=frame, reason=str(exc)) from exc
+    if retention is None:
+        raise RetentionUnavailable
     if not _fetchable(retention, now=deps.now()):
-        raise FrameExpired(share_id=share.id, slot=slot, frame=frame)
-    return retention
+        raise FrameExpired(
+            share_id=share.id,
+            slot=slot,
+            frame=frame,
+            reason=f"held until {retention.get('held_until')}",
+        )
+    freshness: Freshness = "current" if standing == "newest" else "stale"
+    return NamedFrame(frame=frame, freshness=freshness, retention=retention)
 
 
-def _serve_on_served_frame[T](
-    *,
-    share: ShareRecord,
-    slot: int,
-    card: ShareCard,
-    frame: FrameRef,
-    deps: SharesDeps,
-    draw: Callable[[FrameRef], T],
-) -> SlotServed[T]:
-    """Draw `card`, shown in slot `slot` of `share`, with `draw` on `frame`, a frame the slot
-    served (`served_retention`), `current`. It runs no newer-data check and records nothing,
-    so the reply depends on the slot's card and `frame` alone.
+def _serve_on_named_frame[T](named: NamedFrame, *, draw: Callable[[FrameRef], T]) -> SlotServed[T]:
+    """Draw with `draw` on `named`'s frame, at its freshness. It runs no newer-data check and
+    records nothing.
 
     Raises:
-        FrameNotServed: As `served_retention` raises it.
-        FrameExpired: As `served_retention` raises it.
-        Any refusal of `draw` on `frame`, a refusal of the stored intent as
+        Any refusal of `draw` on the frame, a refusal of the stored intent as
             `StoredIntentRefused`.
     """
-    served_retention(share=share, slot=slot, card=card, frame=frame, deps=deps)
-    drawn = _replaying(draw)(frame)
-    return SlotServed(drawn=drawn, frame=frame, freshness="current", checked_at=None)
+    drawn = _replaying(draw)(named.frame)
+    return SlotServed(drawn=drawn, frame=named.frame, freshness=named.freshness, checked_at=None)
 
 
 def serve_slot(
@@ -389,18 +419,16 @@ def serve_slot(
     format: SlotFormat,
     bundle: bool,
     deps: SharesDeps,
-    frame: FrameRef | None = None,
+    named: NamedFrame | None = None,
 ) -> SlotData:
     """Serve slot `slot` of `share` in `format`, as the export's bundle when `bundle` is set,
-    and record the frame served. `bundle` must be false for `json`. With `frame`, serve the
-    rows on that frame, one the slot served, `current`, and record nothing
-    (`_serve_on_served_frame`).
+    and record the frame served. `bundle` must be false for `json`. With `named`, which
+    `named_frame` gave for the slot's card, serve the rows on its frame at its freshness and
+    record nothing.
 
     Raises:
         ShareSlotEmpty: No such slot, or it holds no card.
         ComponentHoldsNoData: The card is a note or shows no data values.
-        FrameNotServed: `frame` is given and the slot never served its card on it.
-        FrameExpired: `frame` is given and DFO no longer holds it.
         Any refusal of the card's export on the frame it serves.
     """
     assert not (bundle and format == "json")
@@ -420,10 +448,8 @@ def serve_slot(
 
     served = (
         serve_on_slot_frame(share=share, slot=slot, card=card, record=record, deps=deps, draw=draw)
-        if frame is None
-        else _serve_on_served_frame(
-            share=share, slot=slot, card=card, frame=frame, deps=deps, draw=draw
-        )
+        if named is None
+        else _serve_on_named_frame(named, draw=draw)
     )
     if format == "json":
         body = _json_document(
@@ -449,18 +475,16 @@ def serve_slot(
 
 
 def serve_slot_card(
-    *, share: ShareRecord, slot: int, deps: SharesDeps, frame: FrameRef | None = None
+    *, share: ShareRecord, slot: int, deps: SharesDeps, named: NamedFrame | None = None
 ) -> SlotData:
     """Serve the card slot `slot` of `share` shows, as a component read with the `frame` it is
     drawn on and `freshness`, drawn on the frame the slot serves (`serve_on_slot_frame`), and
     record the frame served. A note's card is its stored read, `current`, on no frame. With
-    `frame`, draw the card on that frame, one the slot served, `current`, and record nothing
-    (`_serve_on_served_frame`).
+    `named`, which `named_frame` gave for the slot's card, draw the card on its frame at its
+    freshness with the retention it read, and record nothing.
 
     Raises:
         ShareSlotEmpty: No such slot, or it holds no card.
-        FrameNotServed: `frame` is given and the slot never served its card on it.
-        FrameExpired: `frame` is given and DFO no longer holds it.
         Any refusal of drawing the card on the frame it serves.
     """
     card = slot_card(share, slot)
@@ -469,18 +493,25 @@ def serve_slot_card(
     )
 
     def draw(on: FrameRef) -> dict[str, object]:
-        return _card_document(card, frame=on, record=record, deps=deps)
+        document = _card_document(card, frame=on, record=record, deps=deps)
+        retention = (
+            named.retention
+            if named is not None
+            else stated_retention(on, snapshot_reader=deps.snapshot_reader)
+        )
+        return {**document, "retention": retention}
 
     served_on: FrameRef | None = None
     freshness: Freshness = "current"
     checked_at: datetime | None = None
-    if frame is not None:
-        served = _serve_on_served_frame(
-            share=share, slot=slot, card=card, frame=frame, deps=deps, draw=draw
-        )
-        document, served_on = served.drawn, served.frame
+    if named is not None:
+        served = _serve_on_named_frame(named, draw=draw)
+        document, served_on, freshness = served.drawn, served.frame, served.freshness
     elif card.frame is None:
-        document = _card_document(card, frame=None, record=record, deps=deps)
+        document = {
+            **_card_document(card, frame=None, record=record, deps=deps),
+            "retention": None,
+        }
     else:
         served = serve_on_slot_frame(
             share=share, slot=slot, card=card, record=record, deps=deps, draw=draw
@@ -511,7 +542,8 @@ def _card_document(
     card: ShareCard, *, frame: FrameRef | None, record: RevisionRecord, deps: SharesDeps
 ) -> dict[str, object]:
     """The components door's read of the card revision on `frame`: its stored read on the
-    frame it is stored on, or with none, else drawn on `frame`, with `frame`'s retention."""
+    frame it is stored on, or with none, else drawn on `frame`. The caller adds the frame's
+    retention."""
     if frame is None or record.stored_intent.get("frame_ref") == _frame_body(frame):
         document = dict(
             get_component(
@@ -531,10 +563,7 @@ def _card_document(
             vocabulary_source=deps.vocabulary_source,
         )
         document = serialize_read_reply(reply, stored_intent=record.stored_intent)
-    retention = (
-        stated_retention(frame, snapshot_reader=deps.snapshot_reader) if frame is not None else None
-    )
-    return {**document, "retention": retention}
+    return document
 
 
 def history_document(*, share_id: str, page: ServedPage, deps: SharesDeps) -> dict[str, object]:

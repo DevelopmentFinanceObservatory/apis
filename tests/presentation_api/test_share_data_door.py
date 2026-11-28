@@ -32,6 +32,7 @@ from assembler.testing import (
 )
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api.retention import RetentionUnreadable
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 from dfo_platform.app import create_app
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -1268,13 +1269,22 @@ def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _
     assert (replaced.status_code, replaced.json()["code"]) == (409, "share_not_replaceable")
 
 
-def _hold(monkeypatch: pytest.MonkeyPatch, retention: dict[FrameRef, dict[str, object]]) -> None:
-    """State each frame's retention as `retention` gives it."""
+def _hold(
+    monkeypatch: pytest.MonkeyPatch, retention: dict[FrameRef, dict[str, object] | Exception | None]
+) -> list[FrameRef]:
+    """State each frame's retention as `retention` gives it, raising an exception it gives.
+    Returns the frames whose retention was read, in order."""
+    read: list[FrameRef] = []
 
-    def stated(frame_ref: FrameRef, *, snapshot_reader) -> dict[str, object]:
-        return retention[frame_ref]
+    def stated(frame_ref: FrameRef, *, snapshot_reader) -> dict[str, object] | None:
+        read.append(frame_ref)
+        answer = retention[frame_ref]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     monkeypatch.setattr(presentation_retention, "frame_retention", stated)
+    return read
 
 
 def _named(door: _Door, route: str, share_id: str, frame: FrameRef, **headers: str):
@@ -1283,35 +1293,51 @@ def _named(door: _Door, route: str, share_id: str, frame: FrameRef, **headers: s
 
 
 @pytest.mark.parametrize("route", ["data", "card"])
-def test_a_read_naming_a_frame_the_slot_served_serves_it_for_good_with_no_check(
-    door: _Door, monkeypatch: pytest.MonkeyPatch, route: str
+@pytest.mark.parametrize(
+    ("frame", "freshness"),
+    [(_STORED, "stale"), (_MOVED, "current")],
+    ids=["served-before-the-newest", "newest-served"],
+)
+def test_a_read_naming_a_frame_the_slot_served_serves_it_with_no_check(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, route: str, frame: FrameRef, freshness: str
 ):
-    _hold(monkeypatch, {_STORED: {"pinned": True}, _MOVED: {"pinned": True}})
+    read = _hold(monkeypatch, {_STORED: {"pinned": True}, _MOVED: {"pinned": True}})
     share = door.share(door.card(), latest=True)
     door.newest.answer = _MOVED
     moved = door.data(share["id"]) if route == "data" else door.slot_card(share["id"])
     history = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()
+    read.clear()
 
-    named = _named(door, route, share["id"], _STORED)
-    again = _named(door, route, share["id"], _STORED, **{"if-none-match": named.headers["etag"]})
+    named = _named(door, route, share["id"], frame, **{"if-none-match": '"other"'})
+    reads = list(read)
+    again = _named(door, route, share["id"], frame, **{"if-none-match": named.headers["etag"]})
 
     assert named.status_code == 200, named.json()
     body = named.json()
-    assert (body["frame"], body["freshness"]) == (_wire(_STORED), "current")
+    assert (body["frame"], body["freshness"]) == (_wire(frame), freshness)
     assert moved.json()["frame"] == _wire(_MOVED)
+    moved_by = _MOVED_BY if frame == _MOVED else 0.0
     if route == "data":
-        assert _values(body) == [row["value"] for row in malaria_ethiopia_rows()]
+        assert _values(body) == [row["value"] + moved_by for row in malaria_ethiopia_rows()]
     else:
-        assert _drawn_on(body) == _STORED.content_version
-    assert named.headers["cache-control"] == "public, max-age=31536000, immutable"
-    assert named.headers["x-dfo-freshness"] == "current"
+        assert _drawn_on(body) == frame.content_version
+        assert body["retention"] == {"pinned": True}
+    # One retention read serves the checks, the body and the ETag.
+    assert reads == [frame]
+    assert named.headers["cache-control"] == "public, max-age=300"
+    assert named.headers["x-dfo-freshness"] == freshness
     assert "x-dfo-checked-at" not in named.headers
     assert (again.status_code, again.headers["etag"]) == (304, named.headers["etag"])
-    assert again.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert again.headers["cache-control"] == "public, max-age=300"
     # The named reads ran no check and recorded nothing, so the slot still serves its check.
     assert door.newest.asked == [_STORED]
     assert door.client.get(f"/api/presentation/shares/{share['id']}/history").json() == history
     assert door.data(share["id"]).json()["frame"] == _wire(_MOVED)
+
+
+_GONE = RetentionUnreadable(
+    subject_id=_STORED.spec_id, content_version=_STORED.content_version, reason="revoked"
+)
 
 
 @pytest.mark.parametrize("route", ["data", "card"])
@@ -1321,10 +1347,11 @@ def test_a_read_naming_a_frame_the_slot_served_serves_it_for_good_with_no_check(
     [
         ("never-served", 404, "frame_not_served"),
         ("other-card", 404, "frame_not_served"),
-        ("expired", 410, "frame_expired"),
+        ("held-until-passed", 410, "frame_expired"),
+        ("no-servable-version", 410, "frame_expired"),
     ],
 )
-def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_no_longer_holds(
+def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_whose_retention_ended(
     door: _Door,
     monkeypatch: pytest.MonkeyPatch,
     route: str,
@@ -1334,7 +1361,8 @@ def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_no_longer_ho
     code: str,
 ):
     held = (_START - timedelta(days=1)).isoformat()
-    _hold(monkeypatch, {_STORED: {"pinned": False, "held_until": held}, _MOVED: {"pinned": True}})
+    stored = _GONE if case == "no-servable-version" else {"pinned": False, "held_until": held}
+    _hold(monkeypatch, {_STORED: stored, _MOVED: {"pinned": True}})
     share = door.share(door.card(), latest=True)
     if case == "other-card":
         # The slot served _MOVED for its first card, then a replace put another card in it.
@@ -1345,7 +1373,7 @@ def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_no_longer_ho
             json={"cards": [{"component_id": door.card(), "revision": 1}]},
             headers={_TOKEN: share["write_token"]},
         )
-    frame = _STORED if case == "expired" else _MOVED
+    frame = _MOVED if case in ("never-served", "other-card") else _STORED
     headers = {} if if_none_match is None else {"if-none-match": if_none_match}
 
     resp = _named(door, route, share["id"], frame, **headers)
@@ -1356,3 +1384,34 @@ def test_a_read_naming_a_frame_refuses_one_the_slot_never_served_or_no_longer_ho
         "do_not_retry",
     )
     assert resp.headers["access-control-allow-origin"] == "*"
+
+
+@pytest.mark.parametrize("route", ["data", "card"])
+@pytest.mark.parametrize(
+    ("answer", "status", "code", "retryable"),
+    [
+        (DatasetsStoreUnavailable("exemplar"), 503, "service_unavailable", True),
+        (RuntimeError("retention read failed"), 500, "internal_error", False),
+        (None, 503, "service_unavailable", True),
+    ],
+    ids=["store-unavailable", "unexpected-failure", "no-snapshot-reader"],
+)
+def test_a_read_naming_a_frame_whose_retention_cannot_be_read_answers_its_cause_and_never_410(
+    door: _Door,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    answer: Exception | None,
+    status: int,
+    code: str,
+    retryable: bool,
+):
+    _hold(monkeypatch, {_STORED: answer})
+    share = door.share(door.card(), latest=True)
+
+    resp = _named(door, route, share["id"], _STORED)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retryable"]) == (
+        status,
+        code,
+        retryable,
+    )

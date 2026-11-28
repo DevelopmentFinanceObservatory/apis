@@ -524,14 +524,19 @@ class FakeTransaction:
             # Rows are appended in time order, so the slot's newest entry is its last one.
             return [{name: entries[-1][name] for name in _SERVED_FRAME_SHOWN}] if entries else []
 
-        if sql.startswith("SELECT 1 FROM presentation.served_frame WHERE share_id = %s"):
-            shown = tuple(params)
-            return [
-                {"?column?": 1}
-                for row in s.served_frames
-                if (row["share_id"], row["slot"], *(row[name] for name in _SERVED_FRAME_SHOWN))
-                == shown
-            ][:1]
+        if sql.startswith("SELECT f.id = (SELECT n.id FROM presentation.served_frame n"):
+            share_id, slot, *shown_params = params[2:]
+            assert tuple(params[:2]) == (share_id, slot)
+            # Rows are appended in time order, so the slot's newest entry is its last one.
+            entries = [
+                row for row in s.served_frames if (row["share_id"], row["slot"]) == (share_id, slot)
+            ]
+            matching = [
+                row
+                for row in entries
+                if tuple(row[name] for name in _SERVED_FRAME_SHOWN) == tuple(shown_params)
+            ]
+            return [{"newest": matching[-1] is entries[-1]}] if matching else []
 
         if sql.startswith("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE"):
             (share_id,) = params
